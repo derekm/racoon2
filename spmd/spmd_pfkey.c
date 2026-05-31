@@ -289,9 +289,11 @@ spmd_pfkey_init(void)
 		rcf_get_remotebyindex(sl->pl->rm_index, &rm);
 
 		if (rm) {
+		    if (rm->ikev2 != NULL){
 			if (rm->ikev2->addresspool) {
-				spd_add_skip=1;
+			    spd_add_skip=1;
 			}
+		    }
 		}
 
 		if (!rm) {
