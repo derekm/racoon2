@@ -1540,6 +1540,12 @@ purge_remote(struct ph1handle *iph1)
 	for (iph2 = LIST_FIRST(&ph2tree); iph2; iph2 = next_ph2) {
 		next_ph2 = LIST_NEXT(iph2, chain);
 
+		/*
+		 * Handle PH2 entries that were unbound from PH1 before PH1 cleanup.
+		 * Match by peer addresses so orphaned Phase 2 SAs are not left behind
+		 * when the corresponding Phase 1 SA is purged.
+		 */
+
 		if (iph2->ph1 != iph1 &&
 		    !(iph2->ph1 == NULL &&
 		      rcs_cmpsa_wop(iph2->src, iph1->local) == 0 &&
