@@ -2200,13 +2200,9 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 	size_t extralen = NON_ESP_MARKER_USE(iph1) ? NON_ESP_MARKER_LEN : 0;
 
 #ifdef ENABLE_FRAG
-	/* 
-	 * Do not add the non ESP marker for a packet that will
-	 * be fragmented. The non ESP marker should appear in 
-	 * all fragment's packets, but not in the fragmented packet
+	/* IKE fragmentation is not currently implemented.
+	 * Send NAT-T packets normally, including the NON-ESP marker.
 	 */
-	if (iph1->frag && sbuf->l > ISAKMP_FRAG_MAXLEN) 
-		extralen = 0;
 #endif
 	if (extralen)
 		plog (PLOG_DEBUG, PLOGLOC, NULL, "Adding NON-ESP marker\n");
@@ -2238,15 +2234,11 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 	     sbuf->l, rcs_sa2str(iph1->local), rcs_sa2str(iph1->remote));
 
 #ifdef ENABLE_FRAG
-	if (iph1->frag && sbuf->l > ISAKMP_FRAG_MAXLEN) {
-		if (isakmp_sendfrags(iph1, sbuf) == -1) {
-			plog(PLOG_INTERR, PLOGLOC, NULL, 
-			    "isakmp_sendfrags failed\n");
-			if ( vbuf != NULL )
-				rc_vfree(vbuf);
-			return -1;
-		}
-	} else 
+	if (iph1->frag) {
+		plog(PLOG_NOTICE, PLOGLOC, NULL,
+		    "IKE fragmentation requested but not implemented; "
+		    "sending packet unfragmented.\n");
+	}
 #endif
 	{
 		len = sendfromto(s, sbuf->v, sbuf->l,
