@@ -110,7 +110,6 @@ struct isakmp {
 #define ISAKMP_NPTYPE_NATD_DRAFT	130	/* NAT Discovery */
 #define ISAKMP_NPTYPE_NATOA_DRAFT	131	/* NAT Original Address */
 
-/* Frag does not seems to be documented */
 #define ISAKMP_NPTYPE_FRAG	132	/* IKE fragmentation payload */
 
 /* #define ISAKMP_NPTYPE_MAX	17 */
