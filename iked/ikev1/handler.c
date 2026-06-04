@@ -1547,10 +1547,10 @@ purge_remote(struct ph1handle *iph1)
 		 */
 
 		if (iph2->ph1 != iph1 &&
-		    !(iph2->ph1 == NULL &&
-		      rcs_cmpsa_wop(iph2->src, iph1->local) == 0 &&
-		      rcs_cmpsa_wop(iph2->dst, iph1->remote) == 0))
-			continue;
+			(iph2->ph1 != NULL ||
+			 rcs_cmpsa_wop(iph2->src, iph1->local) != 0 ||
+			 rcs_cmpsa_wop(iph2->dst, iph1->remote) != 0))
+		    continue;
 
 		pp = iph2->approval;
 		if (pp != NULL) {
