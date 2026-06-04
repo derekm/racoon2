@@ -82,6 +82,7 @@
 #endif
 
 #include "var.h"
+#include "isakmp_var.h"
 
 #include "algorithm.h"
 #include "dhgroup.h"
@@ -2200,9 +2201,13 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 	size_t extralen = NON_ESP_MARKER_USE(iph1) ? NON_ESP_MARKER_LEN : 0;
 
 #ifdef ENABLE_FRAG
-	/* IKE fragmentation is not currently implemented.
-	 * Send NAT-T packets normally, including the NON-ESP marker.
+	/* 
+	 * Do not add the non ESP marker for a packet that will
+	 * be fragmented. The non ESP marker should appear in 
+	 * all fragment's packets, but not in the fragmented packet
 	 */
+	if (iph1->frag && sbuf->l > ISAKMP_FRAG_MAXLEN) 
+		extralen = 0;
 #endif
 	if (extralen)
 		plog (PLOG_DEBUG, PLOGLOC, NULL, "Adding NON-ESP marker\n");
@@ -2234,11 +2239,15 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 	     sbuf->l, rcs_sa2str(iph1->local), rcs_sa2str(iph1->remote));
 
 #ifdef ENABLE_FRAG
-	if (iph1->frag) {
-		plog(PLOG_NOTICE, PLOGLOC, NULL,
-		    "IKE fragmentation requested but not implemented; "
-		    "sending packet unfragmented.\n");
-	}
+	if (iph1->frag && sbuf->l > ISAKMP_FRAG_MAXLEN) {
+	    if (isakmp_sendfrags(iph1, sbuf) == -1) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, 
+			"isakmp_sendfrags failed\n");
+		if ( vbuf != NULL )
+		    rc_vfree(vbuf);
+		return -1;
+	    }
+	} else 
 #endif
 	{
 		len = sendfromto(s, sbuf->v, sbuf->l,
@@ -2257,6 +2266,88 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 	
 	return 0;
 }
+
+#ifdef ENABLE_FRAG
+int isakmp_sendfrags(struct ph1handle *iph1, rc_vchar_t *buf)
+{
+    size_t hdrlen = sizeof(struct isakmp);
+    size_t frag_hdrlen = sizeof(struct isakmp_frag_hdr);
+
+    size_t max = ISAKMP_FRAG_MAXLEN - hdrlen - frag_hdrlen;
+
+    struct isakmp *orig = (struct isakmp *)buf->v;
+
+    uint8_t frag_id = (uint8_t)(get_uint32(&orig->msgid) & 0xff);
+    int frag_no = 1;
+    size_t off = hdrlen;
+    int s = -1;
+
+    if (max == 0) 
+    {
+        plog(PLOG_INTERR, PLOGLOC, NULL, "invalid fragment size\n");
+        return -1;
+    }
+
+    while (off < buf->l) 
+    {
+        size_t remain = buf->l - off;
+        size_t chunk = (remain > max) ? max : remain;
+	
+        rc_vchar_t *fragbuf = rc_vmalloc(hdrlen + frag_hdrlen + chunk);
+        if (!fragbuf)
+            return -1;
+
+        struct isakmp *ih = (struct isakmp *)fragbuf->v;
+        struct isakmp_frag_hdr *frag = (struct isakmp_frag_hdr *)(fragbuf->v + hdrlen);
+
+        memcpy(ih, orig, hdrlen);
+
+        ih->np = ISAKMP_NPTYPE_FRAG;
+        put_uint32(&ih->len, hdrlen + frag_hdrlen + chunk);
+
+        frag->h.np = orig->np;
+        frag->h.reserved = 0;
+
+        put_uint16(&frag->h.len, frag_hdrlen + chunk);
+
+        frag->frag_id = frag_id;
+        frag->flags = (off + chunk < buf->l) ? ISAKMP_FRAG_MORE : 0;
+
+        put_uint16(&frag->frag_no, frag_no);
+
+        memcpy(fragbuf->v + hdrlen + frag_hdrlen,
+               buf->v + off,
+               chunk);
+
+        if (s == -1) {
+            s = getsockmyaddr(iph1->local);
+            if (s == -1) {
+                rc_vfree(fragbuf);
+                return -1;
+            }
+        }
+
+        int len = sendfromto(s,
+                   fragbuf->v,
+                   fragbuf->l,
+                   iph1->local,
+                   iph1->remote,
+                   ikev1_times_per_send(iph1->rmconf));
+
+        if (len == -1) {
+            plog(PLOG_INTERR, PLOGLOC, NULL, "sendfromto failed\n");
+            rc_vfree(fragbuf);
+            return -1;
+        }
+
+        rc_vfree(fragbuf);
+        off += chunk;
+        frag_no++;
+    }
+
+    return 0;
+}
+#endif
 
 void
 ikev1_set_rmconf(struct ph1handle *iph1, struct rcf_remote *conf)
