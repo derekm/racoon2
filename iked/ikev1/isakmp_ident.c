@@ -141,7 +141,7 @@ ident_i1send(struct ph1handle *iph1, rc_vchar_t *msg /* must be null */)
 		plist = isakmp_plist_append_natt_vids(plist, vid_natt);
 #endif
 #ifdef ENABLE_FRAG
-         if (iph1->rmconf->ike_frag) {
+         if (iph1->rmconf->ikev1->ike_frag) {
                  rc_vchar_t *vid_frag = set_vendorid(VENDORID_FRAG);
                  if (vid_frag != NULL)
                          plist = isakmp_plist_append(plist, vid_frag,
@@ -156,6 +156,13 @@ ident_i1send(struct ph1handle *iph1, rc_vchar_t *msg /* must be null */)
                          plist = isakmp_plist_append(plist, vid_dpd,
                                                      ISAKMP_NPTYPE_VID);
 	 }
+	 iph1->sendbuf = isakmp_plist_set_all(&plist, iph1);
+	 if (iph1->sendbuf == NULL)
+	     goto end;
+
+#ifdef HAVE_PRINT_ISAKMP_C
+	 isakmp_printpacket(iph1->sendbuf, iph1->local, iph1->remote, 0);
+#endif
 
 	/* send the packet, add to the schedule to resend */
 	iph1->retry_counter = ikev1_max_retry_to_send(iph1->rmconf);
@@ -242,7 +249,7 @@ ident_i2recv(struct ph1handle *iph1, rc_vchar_t *msg)
 #endif
 #ifdef ENABLE_FRAG
 			if (vid_numeric == VENDORID_FRAG)
-				iph1->frag = 1;
+				iph1->rmconf->ikev1->ike_frag = 1;
 #endif
 			if (vid_numeric == VENDORID_DPD
 			    && ikev1_dpd(iph1->rmconf) == RCT_BOOL_ON)
@@ -415,7 +422,7 @@ ident_i3recv(struct ph1handle *iph1, rc_vchar_t *msg)
 #endif
 #ifdef ENABLE_FRAG
 			if (vid_numeric == VENDORID_FRAG)
-				iph1->frag = 1;
+				iph1->rmconf->ikev1->ike_frag = 1;
 #endif
 			if (vid_numeric == VENDORID_DPD
 			    && ikev1_dpd(iph1->rmconf) == RCT_BOOL_ON)
@@ -702,7 +709,7 @@ ident_i4recv(struct ph1handle *iph1, rc_vchar_t *msg0)
 #endif
 		#ifdef ENABLE_FRAG
 			if (vid_numeric == VENDORID_FRAG)
-				iph1->frag = 1;
+				iph1->rmconf->ikev1->ike_frag = 1;
 		#endif
 			if (vid_numeric == VENDORID_DPD
 			    && ikev1_dpd(iph1->rmconf) == RCT_BOOL_ON)
@@ -881,7 +888,7 @@ ident_r1recv(struct ph1handle *iph1, rc_vchar_t *msg)
 #endif
 		#ifdef ENABLE_FRAG
 			if (vid_numeric == VENDORID_FRAG)
-				iph1->frag = 1;
+				iph1->rmconf->ikev1->ike_frag = 1;
 		#endif
 			if (vid_numeric == VENDORID_DPD
 			    && ikev1_dpd(iph1->rmconf) == RCT_BOOL_ON)
@@ -985,7 +992,7 @@ ident_r1send(struct ph1handle *iph1, rc_vchar_t *msg)
 		plist = isakmp_plist_append(plist, vid_natt, ISAKMP_NPTYPE_VID);
 #endif
 #ifdef ENABLE_FRAG
-	if (iph1->rmconf->ike_frag) {
+	if (iph1->rmconf->ikev1->ike_frag) {
 		vid_frag = set_vendorid(VENDORID_FRAG);
 		if (vid_frag != NULL)
 			plist = isakmp_plist_append(plist, vid_frag, ISAKMP_NPTYPE_VID);
@@ -1096,7 +1103,7 @@ ident_r2recv(struct ph1handle *iph1, rc_vchar_t *msg)
 #endif
 		#ifdef ENABLE_FRAG
 			if (vid_numeric == VENDORID_FRAG)
-				iph1->frag = 1;
+				iph1->rmconf->ikev1->ike_frag = 1;
 		#endif
 			if (vid_numeric == VENDORID_DPD
 			    && ikev1_dpd(iph1->rmconf) == RCT_BOOL_ON)
@@ -1361,7 +1368,7 @@ ident_r3recv(struct ph1handle *iph1, rc_vchar_t *msg0)
 #endif
 		#ifdef ENABLE_FRAG
 			if (vid_numeric == VENDORID_FRAG)
-				iph1->frag = 1;
+				iph1->rmconf->ikev1->ike_frag = 1;
 		#endif
 			if (vid_numeric == VENDORID_DPD
 			    && ikev1_dpd(iph1->rmconf) == RCT_BOOL_ON)
@@ -1678,7 +1685,7 @@ ident_ir2mx(struct ph1handle *iph1)
 #endif
 
 #ifdef ENABLE_FRAG
-	if (iph1->rmconf->ike_frag)
+	if (iph1->rmconf->ikev1->ike_frag)
 		vid = set_vendorid(VENDORID_FRAG);
 #endif
 	/* append vendor id, if needed */

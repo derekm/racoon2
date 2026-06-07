@@ -884,6 +884,12 @@ add_recvdpkt(struct sockaddr *remote, struct sockaddr *local,
 	struct recvdpkt *new = NULL;
 	int lifetime;
 
+	if (rbuf == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+			"add_recvdpkt: rbuf must not be NULL.\n");
+		return -1;
+	}
+
 	lifetime = ikev1_max_retry_to_send(conf) * ikev1_interval_to_send(conf);
 	if (lifetime == 0) {
 		/* no need to add it */
