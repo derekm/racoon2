@@ -2206,7 +2206,7 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 	 * be fragmented. The non ESP marker should appear in 
 	 * all fragment's packets, but not in the fragmented packet
 	 */
-	if (iph1->frag && sbuf->l > ISAKMP_FRAG_MAXLEN) 
+	if (ike_frag_enabled(iph1->rmconf) && sbuf->l > ISAKMP_FRAG_MAXLEN) 
 		extralen = 0;
 #endif
 	if (extralen)
@@ -2239,7 +2239,7 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 	     sbuf->l, rcs_sa2str(iph1->local), rcs_sa2str(iph1->remote));
 
 #ifdef ENABLE_FRAG
-	if (iph1->frag && sbuf->l > ISAKMP_FRAG_MAXLEN) {
+	if (ike_frag_enabled(iph1->rmconf) && sbuf->l > ISAKMP_FRAG_MAXLEN) {
 	    if (isakmp_sendfrags(iph1, sbuf) == -1) {
 		plog(PLOG_INTERR, PLOGLOC, NULL, 
 			"isakmp_sendfrags failed\n");
@@ -2277,7 +2277,10 @@ int isakmp_sendfrags(struct ph1handle *iph1, rc_vchar_t *buf)
 
     struct isakmp *orig = (struct isakmp *)buf->v;
 
-    uint8_t frag_id = (uint8_t)(get_uint32(&orig->msgid) & 0xff);
+    uint8_t frag_id = (uint8_t)((iph1->frag_msgid ^
+        (uint32_t)time(NULL)) & 0xff);
+    if (frag_id == 0)
+        frag_id = 1;
     int frag_no = 1;
     size_t off = hdrlen;
     int s = -1;
