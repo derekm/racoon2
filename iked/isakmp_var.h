@@ -37,7 +37,11 @@
 #define PORT_ISAKMP_NATT	4500
 
 #define IKEV1_DEFAULT_NONCE_SIZE	16
-#define ISAKMP_FRAG_MAXLEN 1300
+
+/* Max number of fragments we can reassemble */
+#define ISAKMP_MAX_FRAGS		64
+
+#define ISAKMP_FRAG_MAXLEN 552
 
 /* typedef unsigned char cookie_t[8]; */
 typedef unsigned char msgid_t[4];
@@ -81,8 +85,8 @@ extern const char *isakmp_pindex (const isakmp_index_t *, const uint32_t);
 extern int isakmp_open (void);
 extern void isakmp_close (void);
 extern int isakmp_send (struct ph1handle *, rc_vchar_t *);
-extern int isakmp_sendfrags(struct ph1handle *, rc_vchar_t*);
 #ifdef ENABLE_FRAG
+extern int isakmp_sendfrags(struct ph1handle *, rc_vchar_t*);
 extern void isakmp_frag_purge(struct ph1handle *);
 #endif
 
