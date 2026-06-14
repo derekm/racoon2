@@ -2239,15 +2239,21 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 	     sbuf->l, rcs_sa2str(iph1->local), rcs_sa2str(iph1->remote));
 
 #ifdef ENABLE_FRAG
+	plog(PLOG_DEBUG, PLOGLOC, NULL,
+	    "FRAG_DEBUG: enabled=%u ike_frag=%d sbuf_len=%zu\n",
+	    ike_frag_enabled(iph1->rmconf),
+	    (iph1->rmconf && iph1->rmconf->ikev1)
+		? iph1->rmconf->ikev1->ike_frag : -1,
+	    sbuf->l);
 	if (ike_frag_enabled(iph1->rmconf) && sbuf->l > ISAKMP_FRAG_MAXLEN) {
-	    if (isakmp_sendfrags(iph1, sbuf) == -1) {
-		plog(PLOG_INTERR, PLOGLOC, NULL, 
-			"isakmp_sendfrags failed\n");
-		if ( vbuf != NULL )
-		    rc_vfree(vbuf);
-		return -1;
-	    }
-	} else 
+		if (isakmp_sendfrags(iph1, sbuf) == -1) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			    "isakmp_sendfrags failed\n");
+			if (vbuf != NULL)
+				rc_vfree(vbuf);
+			return -1;
+		}
+	} else
 #endif
 	{
 		len = sendfromto(s, sbuf->v, sbuf->l,
@@ -2255,15 +2261,15 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 
 		if (len == -1) {
 			plog(PLOG_INTERR, PLOGLOC, NULL, "sendfromto failed\n");
-			if ( vbuf != NULL )
+			if (vbuf != NULL)
 				rc_vfree(vbuf);
 			return -1;
 		}
 	}
-	
-	if ( vbuf != NULL )
+
+	if (vbuf != NULL)
 		rc_vfree(vbuf);
-	
+
 	return 0;
 }
 
