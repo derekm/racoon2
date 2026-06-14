@@ -605,11 +605,12 @@ ike_ipsec_mode(struct rcf_policy *pl)
 uint
 ike_frag_enabled(struct rcf_remote* conf)
 {
-    if (conf && conf->ikev1->ike_frag)
+    if (conf && conf->ikev1 && conf->ikev1->ike_frag)
 	return conf->ikev1->ike_frag;
 
     if (rcf_default_head 
 	    && rcf_default_head->remote
+	    && rcf_default_head->remote->ikev1
 	    && rcf_default_head->remote->ikev1->ike_frag)
 	return rcf_default_head->remote->ikev1->ike_frag;
 
