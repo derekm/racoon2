@@ -31,10 +31,6 @@
  */
 
 #include "ike_pfkey.h"
-#ifdef ENABLE_FRAG
-#include "vmbuf.h"   /* for rc_vchar_t */
-#include "isakmp_var.h"  /* for ISAKMP_MAX_FRAGS */
-#endif
 
 /* Phase 1 handler */
 /*
