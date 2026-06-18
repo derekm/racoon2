@@ -1606,23 +1606,40 @@ purge_ipsec_spi(struct ph1handle *ph1,
 			pp = iph2->approval;
 			all_done = TRUE;
 			for (pr = pp->head; pr != NULL; pr = pr->next) {
-				TRACE((PLOGLOC, "proto %d spi 0x%08" PRIx32 "\n",
-				       pr->proto_id, 
-				       ntohl(pr->spi_p)));
 				if (pr->proto_id == proto_id && pr->spi_p == spi) {
-					(void) delete_ipsec_sa(&iph2->sadb_request,
-							       iph2->src,
-							       iph2->dst,
-							       proto_id, spi);
+					TRACE((PLOGLOC, "proto %d spi 0x%08" PRIx32 "\n",
+					       pr->proto_id, 
+					       ntohl(pr->spi_p)));
 					/*
-					 * XXX: Temporary hack, until it is
-					 * fixed properly.
+					 * Received SPI matches our outbound SPI.
+					 * Delete both outbound and inbound SAs.
 					 */
-					(void) delete_ipsec_sa(&iph2->sadb_request,
-							       iph2->dst,
-							       iph2->src,
-							       proto_id, pr->spi);
+					delete_ipsec_sa(&iph2->sadb_request,
+						       iph2->src,
+						       iph2->dst,
+						       proto_id, pr->spi_p);
+					delete_ipsec_sa(&iph2->sadb_request,
+						       iph2->dst,
+						       iph2->src,
+						       proto_id, pr->spi);
 					pr->spi_p = 0;
+				} else if (pr->proto_id == proto_id && pr->spi == spi) {
+					TRACE((PLOGLOC, "proto %d spi 0x%08" PRIx32 "\n",
+					       pr->proto_id, 
+					       ntohl(pr->spi)));
+					/*
+					 * Received SPI matches our inbound SPI.
+					 * Delete both inbound and outbound SAs.
+					 */
+					delete_ipsec_sa(&iph2->sadb_request,
+						       iph2->dst,
+						       iph2->src,
+						       proto_id, pr->spi);
+					delete_ipsec_sa(&iph2->sadb_request,
+						       iph2->src,
+						       iph2->dst,
+						       proto_id, pr->spi_p);
+					pr->spi = 0;
 				} else if (pr->spi_p != 0) {
 					all_done = FALSE;
 				}

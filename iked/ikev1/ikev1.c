@@ -1377,10 +1377,14 @@ isakmp_ph1delete(struct ph1handle *iph1)
 	racoon_free(src);
 	racoon_free(dst);
 
-	remph1(iph1);
-	delph1(iph1);
-
-	return;
+	/*
+	 * Use purge_remote() to clean up any orphaned ph2 handles
+	 * in the global ph2tree that match this ph1 (iph2->ph1 == NULL
+	 * but addresses match). This ensures kernel IPsec SAs are
+	 * properly deleted before the ph1 is freed.
+	 */
+	purge_remote(iph1);
+	/* purge_remote() calls remph1() + delph1() internally */
 }
 
 void
