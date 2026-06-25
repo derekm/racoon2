@@ -946,6 +946,17 @@ ikev2_initiator_start(struct ikev2_sa *ike_sa)
 	}
 #endif
 
+#ifdef ENABLE_FRAG
+	/*
+	 * [N(IKEV2_FRAGMENTATION_SUPPORTED)]
+	 */
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0,
+						 IKEV2_FRAGMENTATION_SUPPORTED,
+						 0, 0),
+			    TRUE);
+#endif
+
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
 				     0, ike_sa, &payl);
 	if (!pkt)
@@ -1347,6 +1358,19 @@ responder_state0_send(struct ikev2_sa *ike_sa, struct sockaddr *src,
 		if (natt_create_natd(ike_sa, &payl, dest, src) < 0) {
 			goto abort;
 		}
+	}
+#endif
+
+#ifdef ENABLE_FRAG
+	/*
+	 * [N(IKEV2_FRAGMENTATION_SUPPORTED)]
+	 */
+	if (ike_sa->frag_supported) {
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_FRAGMENTATION_SUPPORTED,
+							 0, 0),
+				    TRUE);
 	}
 #endif
 
