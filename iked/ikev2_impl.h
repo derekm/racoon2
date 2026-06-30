@@ -414,7 +414,7 @@ struct ikev2_frag_item {
 	size_t total_data_len;
 };
 
-extern rc_vchar_t *ikev2_frag_send(struct ikev2_sa *, rc_vchar_t *);
+extern int ikev2_frag_send(struct ikev2_sa *, rc_vchar_t **);
 extern rc_vchar_t *ikev2_frag_recv(struct ikev2_sa *, rc_vchar_t *,
 				    struct sockaddr *, struct sockaddr *);
 extern void ikev2_frag_purge(struct ikev2_sa *);
