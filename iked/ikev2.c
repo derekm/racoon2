@@ -368,7 +368,20 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 			goto end;
 		}
 	} else {
-#if 1
+#ifdef ENABLE_FRAG
+		if (ike_sa != NULL &&
+		    ikehdr->next_payload == IKEV2_PAYLOAD_ENCRYPTED_AND_AUTHENTICATED_FRAGMENT) {
+			rc_vchar_t *reassembled;
+
+			reassembled = ikev2_frag_recv(ike_sa, packet, remote, local);
+			if (!reassembled)
+				goto end;
+
+			rc_vfree(packet);
+			packet = reassembled;
+			ikehdr = (struct ikev2_header *)packet->v;
+		}
+#endif
 		if (ikehdr->next_payload != IKEV2_PAYLOAD_ENCRYPTED) {
 			isakmp_log(ike_sa, local, remote, packet,
 				   PLOG_PROTOERR, PLOGLOC,
@@ -376,7 +389,6 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 			++isakmpstat.malformed_message;
 			goto end;
 		}
-#endif
 		if (ikev2_check_icv(ike_sa, packet) != 0) {
 			isakmp_log(ike_sa, local, remote, packet,
 				   PLOG_PROTOERR, PLOGLOC,
