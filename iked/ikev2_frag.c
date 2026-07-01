@@ -150,13 +150,26 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 		return -1;
 
 	/* Decrypt the ciphertext to recover plaintext payloads */
-	{
-		ivbuf = rc_vnew(iv_ptr, iv_len);
-		if (!ivbuf)
-			goto fail;
-		orig = rc_vnew(ciphertext, ciphertext_len);
-		if (!orig)
-			goto fail;
+	ivbuf = rc_vnew(iv_ptr, iv_len);
+	if (!ivbuf)
+		goto fail;
+	orig = rc_vnew(ciphertext, ciphertext_len);
+	if (!orig)
+		goto fail;
+
+	decrypted = encryptor_decrypt(ike_sa->encryptor,
+				      orig,
+				      ike_sa->is_initiator ?
+					ike_sa->sk_e_r : ike_sa->sk_e_i,
+				      ivbuf);
+	if (!decrypted)
+		goto fail;
+
+	d = (uint8_t *)decrypted->v;
+	pad_length = d[decrypted->l - 1];
+	if (pad_length + 1 > decrypted->l)
+		goto fail;
+	decrypted_len = decrypted->l - pad_length - 1;
 
 	/*
 	 * Determine fragment size threshold (RFC 7383 Section 2.5.1):
@@ -184,6 +197,23 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 	total_frags = (int)((decrypted_len + chunk_max - 1) / chunk_max);
 	if (total_frags > IKEV2_MAX_FRAGS || total_frags <= 0) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "ikev2_frag_send: invalid fragment count %d\n",
+		     total_frags);
+		goto fail;
+	}
+
+	/* Get socket for sending */
+	sock = isakmp_find_socket(ike_sa->local);
+	if (sock == -1) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "ikev2_frag_send: cannot find socket\n");
+		goto fail;
+	}
+
+	TRACE((PLOGLOC,
+	       "fragmenting %zu bytes into %d fragments (chunk_max=%zu)\n",
+	       decrypted_len, total_frags, chunk_max));
+
 	/* Fragment, encrypt, authenticate and send each fragment */
 	for (frag_no = 1; frag_no <= total_frags; frag_no++) {
 		size_t offset = (size_t)(frag_no - 1) * chunk_max;
@@ -302,36 +332,6 @@ fail:
 	     "ikev2_frag_send: fragmentation failed\n");
 	return -1;
 }
-		     "ikev2_frag_send: invalid fragment count %d\n",
-		     total_frags);
-		goto fail;
-	}
-
-	/* Get socket for sending */
-	sock = isakmp_find_socket(ike_sa->local);
-	if (sock == -1) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		     "ikev2_frag_send: cannot find socket\n");
-		goto fail;
-	}
-
-	TRACE((PLOGLOC,
-	       "fragmenting %zu bytes into %d fragments (chunk_max=%zu)\n",
-	       decrypted_len, total_frags, chunk_max));
-		decrypted = encryptor_decrypt(ike_sa->encryptor,
-					      orig,
-					      ike_sa->is_initiator ?
-						ike_sa->sk_e_r : ike_sa->sk_e_i,
-					      ivbuf);
-		if (!decrypted)
-			goto fail;
-
-		d = (uint8_t *)decrypted->v;
-		pad_length = d[decrypted->l - 1];
-		if (pad_length + 1 > decrypted->l)
-			goto fail;
-		decrypted_len = decrypted->l - pad_length - 1;
-	}
 /*
  * Receive and reassemble an IKEv2 fragment.
  * Called from ikev2_input() when next_payload == SKF (type 53).
