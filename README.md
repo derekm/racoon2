@@ -71,6 +71,8 @@ On Linux, `make install` ships systemd units under
 PrivateTmp). `systemctl enable --now racoon2.target` starts
 spmd.socket then iked. Daemons use `-F`; no init.d `sleep 1`.
 
+iked on Linux uses epoll (`--disable-epoll` for select).
+
 Currently, the system supports the following specifications:
 
 	Internet Key Exchange (IKEv2) Protocol
