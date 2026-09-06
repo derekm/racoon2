@@ -9,6 +9,8 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	* samples/upnp_portmap.py: this IGD SOAP AddPortMapping is
 	  Action Failed; Windows HNetCfg.NATUPnP maps UDP 500/4500
 	  (lease 0) and NAT-PMP also works. 500 is not reserved-blocked.
+	* spmd: unlink spmif only after LISTEN_FDS miss, before bind.
+	  Unlink-before-take dropped the name iked connect()s to.
 	* admin: establish-sa/vpn-connect surface errno (ENOENT if no
 	  selector). ikedctl masks ADMIN_FLAG_LONG_REPLY before
 	  ac_errno (aliases ac_len_high). reload-config is SIGHUP
@@ -16,10 +18,10 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 
 2026-09-05 Derek Moore
 
-	* lib: experimental Linux NETLINK_XFRM SAD/SPD backend
+	* lib: Linux NETLINK_XFRM SAD/SPD backend
 	  (lib/if_xfrm.c), XOR-compiled with if_pfkeyv2.c via
-	  --with-km-backend=xfrm|pfkey. Default remains pfkey until
-	  GETSPI/UPDATE are verified against iked on a live kernel.
+	  --with-km-backend=xfrm|pfkey. Linux default is xfrm
+	  (2026-09-06); AF_KEY is opt-in.
 	* samples: Linux systemd units (spmd/iked/kinkd) with
 	  ProtectSystem=strict, PrivateTmp, and socket activation.
 	  spmd.socket is /run/racoon2/spmif; iked.socket is UDP
