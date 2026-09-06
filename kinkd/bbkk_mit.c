@@ -63,12 +63,7 @@
 #include "bbkk.h"
 #include "crypto_openssl.h"
 
-/* XXX: exposed guts */
-extern krb5_error_code krb5_rc_recover(krb5_context, krb5_rcache); 
-extern krb5_error_code krb5_rc_close(krb5_context, krb5_rcache); 
-extern krb5_error_code krb5_rc_resolve_full(krb5_context, krb5_rcache *,
-    const char *); 
-extern krb5_error_code krb5_rc_initialize(krb5_context, krb5_rcache, int); 
+/* XXX: exposed guts (still used by krb5e_force_get_key) */
 extern krb5_error_code krb5_set_time_offsets(krb5_context, krb5_timestamp,
     krb5_int32);
 extern krb5_error_code krb5int_c_mandatory_cksumtype(krb5_context, krb5_enctype,
@@ -91,6 +86,23 @@ static krb5_error_code krb5e_force_get_key(krb5_context context,
     krb5_auth_context ac,
     const krb5_data *inbuf,
     krb5_keytab keytab);
+
+#ifndef HAVE_KRB5_RC_CLOSE
+/* MIT 1.20 removed krb5_rc_close from libkrb5; destroy is still exported. */
+extern krb5_error_code krb5_rc_destroy(krb5_context, krb5_rcache);
+#endif
+
+static void
+bbkk_rcache_close(krb5_context ctx, krb5_rcache rc)
+{
+	if (rc == NULL)
+		return;
+#ifdef HAVE_KRB5_RC_CLOSE
+	(void)krb5_rc_close(ctx, rc);
+#else
+	(void)krb5_rc_destroy(ctx, rc);
+#endif
+}
 
 
 /* XXX too fragile; krb5_auth_context structure of krb5-1.3.4 */
@@ -163,18 +175,15 @@ bbkk_init(bbkk_context *conp, const char *princ_str)
 	}
 
 	setenv("KRB5RCACHEDIR", CACHE_DIR, 1);
-	ret = krb5_rc_resolve_full(con->context, &con->rcache,
-	    "dfl:kinkd.rc");
-	if (ret != 0) {
-		cause = "krb5_rc_resolve_full";
-		goto fail;
-	}
-	/* lifespan==0 means max allowable skew to "dfl:" rcache. */
-	if ((ret = krb5_rc_recover(con->context, con->rcache)) != 0)
-		ret = krb5_rc_initialize(con->context, con->rcache, 0);
-	if (ret != 0) {
-		cause = "krb5_rc_initialize";
-		goto fail;
+	{
+		krb5_data piece;
+
+		memset(&piece, 0, sizeof(piece));
+		ret = krb5_get_server_rcache(con->context, &piece, &con->rcache);
+		if (ret != 0) {
+			cause = "krb5_get_server_rcache";
+			goto fail;
+		}
 	}
 
 	*conp = con;
@@ -185,7 +194,7 @@ fail:
 		kinkd_log(KLLV_DEBUG,
 		    "bbkk: %s: %s\n", cause, error_message(ret));
 	if (con->rcache != NULL)
-		krb5_rc_close(con->context, con->rcache);
+		bbkk_rcache_close(con->context, con->rcache);
 	if (con->ccache != NULL)
 		krb5_cc_destroy(con->context, con->ccache);
 	if (con->principal != NULL)
@@ -202,7 +211,7 @@ bbkk_fini(bbkk_context con)
 	if (DEBUG_KRB5())
 		kinkd_log(KLLV_DEBUG, "bbkk: finalizing\n");
 
-	krb5_rc_close(con->context, con->rcache);
+	bbkk_rcache_close(con->context, con->rcache);
 	krb5_cc_destroy(con->context, con->ccache);
 	krb5_free_principal(con->context, con->principal);
 	krb5_free_context(con->context);
