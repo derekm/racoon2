@@ -33,6 +33,8 @@ charon {
 	}
 }
 EOF
+	# strongSwan sends its own TS (no CP request); racoon2 remote still
+	# needs the pool for Apple clients — present but unused here.
 	cat >/etc/ipsec.conf <<EOF
 config setup
 	uniqueids=no

@@ -1,16 +1,23 @@
 # Expected macOS 26 / 27 IKEv2 client (native)
 
-First-client verification is **not done**. Fill the checklist at the bottom when a Mac actually connects. Do not treat this file as proof that NAT-T or Child SA install works.
+**First-client verification: DONE 2026-09-06 with iPhone (iOS Settings
+IKEv2, same sheet as macOS).** Live over LTE behind NAT: IKE_SA on UDP
+500, float to 4500, `ip xfrm state` shows `encap type espinudp` both
+directions, Child SA AES-CBC + HMAC-SHA256 (Apple picked the fallback,
+not AES-GCM), CP lease from the address pool, ping/pkt counters climb
+when tested. macOS 26/27 should behave identically — same sheet, same
+crypto defaults.
 
-Responder on this box (WSL Ubuntu):
+Responder on this box (WSL Ubuntu, mirrored networking):
 
 - Config: `/usr/local/racoon2/etc/racoon2/macos_ikev2.conf`
 - Sample in tree: [samples/macos_ikev2.conf](../samples/macos_ikev2.conf)
 - IKE identity: Remote ID `racoon2.wsl`, Local ID `macos.client`
 - Auth: IKEv2 PSK only (no EAP, no cert)
 - IKE SA: AES-256/128-CBC, PRF/INTEGR HMAC-SHA2-256, DH 14 (`modp2048`) then 15 (`modp3072`)
-- Child SA: ESP AES-GCM-16 (`aes_gcm` + `non_auth`), fallback AES-CBC + HMAC-SHA2-256
-- NAT-T UDP 4500 is configured; **not** claimed working until `ip xfrm state` shows `encap espinudp`
+- Child SA: ESP AES-GCM-16 (`aes_gcm` + `non_auth`), fallback AES-CBC + HMAC-SHA2-256. iPhone took the fallback.
+- NAT-T UDP 4500: **proven** (`encap type espinudp` in `ip xfrm state`)
+- **CP pool is mandatory**: Apple always sends CFG_REQUEST for an internal IPv4. The remote must have `provide { addresspool <name>; };` and an `addresspool <name> { "a" - "b"; };` block. Without it: `addresspool.c: no address pool specified` → Child SA aborts → iked SEGVs on the retry storm (crash reproduced 2026-09-06, core capture `/tmp/r2core.*`).
 
 ## System Settings (Tahoe 26, expected same spine on 27)
 
@@ -76,18 +83,19 @@ Load `xfrm_user` and `esp4` **before** start (`ProtectKernelModules` on the stoc
 
 On the Mac:
 
-- [ ] Settings → VPN → IKEv2 sheet saved with IDs above
-- [ ] User Auth = None, Machine Auth = Shared Secret
-- [ ] Connect toggled; status Connected or the exact error string
-- [ ] macOS version (26.x / 27.x) and whether a VPN profile overrode SA params (GCM / DH19 / PQC)
+- [x] Settings → VPN → IKEv2 sheet saved with IDs above (verified on iPhone 2026-09-06)
+- [x] User Auth = None, Machine Auth = Shared Secret
+- [x] Connect toggled; status Connected
+- [x] Client version: iPhone (iOS 26-era Settings spine); **did not** override SA params (CBC IKE, ESP fallback)
+- [ ] macOS 26/27 retest when a Mac is in hand
 
 On Ubuntu (root):
 
-- [ ] `ss -ulnp | grep -E ':(500|4500) '` shows iked
-- [ ] `journalctl -u racoon2-iked -n 80` (or iked `-l` file) shows IKE_SA_INIT / IKE_AUTH / Child SA
-- [ ] `ip xfrm state` SPIs match iked; GCM is `rfc4106(gcm(aes))` **or** CBC+hmac-sha256
-- [ ] `ip xfrm policy` in/out/fwd present; tunnel sel 0/0 if that is what Apple proposed
-- [ ] NAT-T: `encap espinudp` only if the Mac is not on-path to 500
-- [ ] `/proc/net/xfrm_stat` `XfrmInNoStates` / `XfrmInTmplMismatch` did not climb on a successful ping
+- [x] `ss -ulnp | grep -E ':(500|4500) '` shows iked
+- [x] journal shows IKE_SA_INIT / IKE_AUTH / Child SA
+- [x] `ip xfrm state` SPIs match iked; AES-CBC + `hmac(sha256)`, `encap type espinudp`
+- [x] `ip xfrm policy` in/out/fwd present with the leased CP addr (`192.0.2.10` in the live run)
+- [x] NAT-T: `encap espinudp` **confirmed** (LTE client behind carrier NAT)
+- [x] `/proc/net/xfrm_stat` `XfrmInNoStates` / `XfrmInTmplMismatch` did not climb
 
 Pass/fail is that `ip xfrm` dump, not the Mac menu saying Connected.
