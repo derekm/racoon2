@@ -3224,6 +3224,20 @@ ikev2_ipsec_conf_to_proplist(struct ikev2_child_sa *child_sa,
 	return 0;
 }
 
+static int
+auth_alg_is_none(struct rc_alglist *auth_alg)
+{
+	struct rc_alglist *a;
+
+	if (!auth_alg)
+		return 1;
+	for (a = auth_alg; a; a = a->next) {
+		if (a->algtype != RCT_ALG_NON_AUTH)
+			return 0;
+	}
+	return 1;
+}
+
 static struct prop_pair *
 ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 			   int proposal_number,
@@ -3272,7 +3286,7 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 	}
 
 	SA_CONF(auth_alg, proto_info, auth_alg, 0);
-	if (auth_alg) {
+	if (auth_alg && !auth_alg_is_none(auth_alg)) {
 		*tail = alglist_to_proppair(auth_alg,
 					    IKEV2TRANSFORM_TYPE_INTEGR,
 					    &ikev2_transf_integr[0]);
