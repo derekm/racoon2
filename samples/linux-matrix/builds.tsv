@@ -1,0 +1,4 @@
+# name	configure_args
+# Linux default is xfrm (empty args). pfkey is opt-in (lossy AF_KEY).
+xfrm	
+pfkey	--with-km-backend=pfkey
