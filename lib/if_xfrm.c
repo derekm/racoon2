@@ -374,7 +374,7 @@ x_to_mode(uint8_t mode)
 }
 
 static uint64_t
-lft_or_inf(uint64_t v)
+lft_bytes_or_inf(uint64_t v)
 {
 	return v == 0 || v == RC_LIFETIME_INFINITE ? XFRM_INF : v;
 }
@@ -504,14 +504,20 @@ static void
 fill_lft(struct xfrm_lifetime_cfg *lft, const struct rcpfk_msg *rc)
 {
 	memset(lft, 0, sizeof(*lft));
-	lft->soft_byte_limit = lft_or_inf(rc->lft_soft_bytes);
-	lft->hard_byte_limit = lft_or_inf(rc->lft_hard_bytes);
+	lft->soft_byte_limit = lft_bytes_or_inf(rc->lft_soft_bytes);
+	lft->hard_byte_limit = lft_bytes_or_inf(rc->lft_hard_bytes);
 	lft->soft_packet_limit = XFRM_INF;
 	lft->hard_packet_limit = XFRM_INF;
-	lft->soft_add_expires_seconds = lft_or_inf(rc->lft_soft_time);
-	lft->hard_add_expires_seconds = lft_or_inf(rc->lft_hard_time);
-	lft->soft_use_expires_seconds = XFRM_INF;
-	lft->hard_use_expires_seconds = XFRM_INF;
+	/*
+	 * Byte/packet 0 → XFRM_INF. Time 0 must stay 0: the kernel
+	 * timer is `if (hard_*_expires_seconds)` and XFRM_INF (~0ULL)
+	 * is signed −1, so tmo ≤ 0 and the SA hard-expires in ~1s.
+	 * iproute2 leaves add/use expires at 0 for unlimited.
+	 */
+	lft->soft_add_expires_seconds = rc->lft_soft_time;
+	lft->hard_add_expires_seconds = rc->lft_hard_time;
+	lft->soft_use_expires_seconds = 0;
+	lft->hard_use_expires_seconds = 0;
 }
 
 static int
@@ -673,18 +679,13 @@ add_auth_attr(struct nlmsghdr *n, size_t maxlen, struct rcpfk_msg *rc)
 static int
 natt_wanted(const struct rcpfk_msg *rc)
 {
-	in_port_t *sp, *dp;
-
-	if (rc->natt_type)
-		return 1;
-	if (rc->sa_src == NULL || rc->sa_dst == NULL)
-		return 0;
-	if (rc->sa_src->sa_family != AF_INET || rc->sa_dst->sa_family != AF_INET)
-		return 0;
-	sp = rcs_getsaport(rc->sa_src);
-	dp = rcs_getsaport(rc->sa_dst);
-	return (sp && *sp == htons(RC_PORT_IKE_NATT)) ||
-	    (dp && *dp == htons(RC_PORT_IKE_NATT));
+	/*
+	 * Only when iked set natt_type (NAT actually detected).
+	 * IKE often lives on UDP 4500 without ESP-in-UDP (no NAT, or
+	 * peer floated IKE only). Port-4500 heuristic caused
+	 * XfrmInStateMismatch: SA had encap, on-wire ESP was proto 50.
+	 */
+	return rc->natt_type != 0;
 }
 #endif
 

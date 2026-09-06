@@ -1329,6 +1329,16 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa,
 	param->flags = 0;
 	if (child_sa->is_initiator)
 		param->flags |= PFK_FLAG_NOPORTS;
+#ifdef ENABLE_NATT
+	if (child_sa->parent &&
+	    (child_sa->parent->behind_nat ||
+	     child_sa->parent->peer_behind_nat)) {
+#ifndef UDP_ENCAP_ESPINUDP
+#define UDP_ENCAP_ESPINUDP 2
+#endif
+		param->natt_type = UDP_ENCAP_ESPINUDP;
+	}
+#endif
 
 	param->wsize = ikev2_ipsec_window_size;
 
