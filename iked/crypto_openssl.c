@@ -3123,8 +3123,14 @@ eay_dh_generate(rc_vchar_t *prime, uint32_t gg, unsigned int publen, rc_vchar_t 
 		DH_set_length(dh, publen);
 
 	/* generate public and private number */
-	if (!DH_generate_key(dh))
-		goto end;
+	if (!DH_generate_key(dh)) {
+		/* OpenSSL 3 rejects a too-small exponent vs p (eaytest used 96). */
+		if (publen == 0)
+			goto end;
+		DH_set_length(dh, 0);
+		if (!DH_generate_key(dh))
+			goto end;
+	}
 
 	DH_get0_key(dh, &pub_key, &priv_key);
 	/* copy results to buffers */
