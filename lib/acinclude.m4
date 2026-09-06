@@ -351,9 +351,10 @@ AC_DEFUN([RC_KM_BACKEND],
 [
 AC_MSG_CHECKING([kernel SAD/SPD backend])
 AC_ARG_WITH(km-backend,
-	[  --with-km-backend=xfrm|pfkey
-                          SAD/SPD kernel interface (default: pfkey;
-                          Linux xfrm is opt-in until verified on a live kernel)],
+	[  --with-km-backend=xfrm|pfkey|userspace
+                          SAD/SPD interface (default: pfkey;
+                          Linux xfrm is opt-in until verified on a live kernel;
+                          userspace is a DPDK/appliance loopback + unix datagram)],
 	[km_backend=$withval], [km_backend=auto])
 if test x"$km_backend" = xauto; then
 	km_backend=pfkey
@@ -369,15 +370,20 @@ xfrm)
 	KM_IF=if_xfrm.c
 	AC_DEFINE(HAVE_XFRM, 1, [Linux NETLINK_XFRM SAD/SPD backend])
 	;;
+userspace)
+	KM_IF=if_userspace.c
+	AC_DEFINE(HAVE_USERSPACE_KM, 1, [userspace SAD/SPD dataplane backend])
+	;;
 pfkey)
 	KM_IF=if_pfkeyv2.c
 	;;
 *)
-	AC_MSG_ERROR([--with-km-backend must be xfrm or pfkey])
+	AC_MSG_ERROR([--with-km-backend must be xfrm, pfkey, or userspace])
 	;;
 esac
 AC_SUBST(KM_IF)
 AM_CONDITIONAL([USE_XFRM], [test x"$km_backend" = xxfrm])
+AM_CONDITIONAL([USE_USERSPACE], [test x"$km_backend" = xuserspace])
 AC_MSG_RESULT([$km_backend ($KM_IF)])
 ])
 

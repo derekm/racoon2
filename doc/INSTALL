@@ -142,8 +142,9 @@ o Linux (kernel 2.6)
   An experimental NETLINK_XFRM backend is --with-km-backend=xfrm
   (needs CONFIG_XFRM_USER). Not the default until verified.
 
-	./configure --with-km-backend=pfkey    # default
-	./configure --with-km-backend=xfrm     # experimental Linux XFRM
+	./configure --with-km-backend=pfkey      # default
+	./configure --with-km-backend=xfrm       # experimental Linux XFRM
+	./configure --with-km-backend=userspace  # DPDK/appliance loopback
 
   additionally these items are also set on later version of Linux-2.6.18
   CONFIG_INET_XFRM_MODE_TRANSPORT

@@ -18,6 +18,11 @@ common issues
      curlft.use_time/packets so iked's lft_current_alloc rekey gate
      can be honest once the path is live.
 
+   + --with-km-backend=userspace is a loopback + optional unix datagram
+     to RACOON2_DATAPLANE_SOCK. It is not a DPDK fast path. Do not add
+     XFRMA_OFFLOAD_DEV / if_id until XFRM GETSPI/UPDATE work on a live
+     kernel. rcpfk_* is the southbound ABI; do not add a second vtable.
+
    + NetBSD kernel that enabled NAT-T, which you defined options IPSEC_NAT_T
      when you built your kernel, can not send packets which triggered
      keying when there is no NAT box between the communication.  racoon2

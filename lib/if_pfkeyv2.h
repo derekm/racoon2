@@ -42,7 +42,7 @@
 
 /* racoon PF_KEY message container */
 struct rcpfk_msg {
-	int so;				/* PF_KEY or NETLINK_XFRM socket */
+	int so;				/* KM fd: PF_KEY, NETLINK_XFRM, or userspace loopback */
 	char estr[RCPFK_ERRSTRBUFSIZE];
 	int eno;
 	void *ptr;

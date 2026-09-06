@@ -17,13 +17,18 @@ libracoon_la_SOURCES =vmbuf.c rc_type.c rc_net.c rc_str.c \
 if USE_XFRM
 libracoon_la_SOURCES += if_xfrm.c
 else
+if USE_USERSPACE
+libracoon_la_SOURCES += if_userspace.c
+else
 libracoon_la_SOURCES += if_pfkeyv2.c
 endif
-EXTRA_DIST = if_xfrm.c if_pfkeyv2.c
+endif
+EXTRA_DIST = if_xfrm.c if_pfkeyv2.c if_userspace.c
 libracoon_la_LIBADD = $(LTLIBOBJS) -lpcap
-TESTS = sample
-check_PROGRAMS = sample
+TESTS = sample kmtest
+check_PROGRAMS = sample kmtest
 sample_SOURCES = sample.c
 sample_LDADD = libracoon.a
+kmtest_SOURCES = kmtest.c if_userspace.c
 
 BUILT_SOURCES = cfparse.h
