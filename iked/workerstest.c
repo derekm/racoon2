@@ -117,6 +117,46 @@ main(void)
 		return 1;
 	}
 	crypto_workers_fini();
+
+	printf("**Test for crypto workers (10 threads).**\n");
+	{
+		int args[10];
+		int i;
+
+		ran = donef = 0;
+		if (crypto_workers_init(10) != 0) {
+			printf("init(10) failed\n");
+			return 1;
+		}
+		if (!crypto_workers_enabled()) {
+			printf("workers not enabled after init(10)\n");
+			crypto_workers_fini();
+			return 1;
+		}
+		for (i = 0; i < 10; i++) {
+			args[i] = i;
+			if (crypto_job_submit(work, done_cb, &args[i]) != 0) {
+				printf("pool10 submit %d failed\n", i);
+				crypto_workers_fini();
+				return 1;
+			}
+		}
+		for (i = 0; i < 100 && donef < 10; i++)
+			wait_drain(100);
+		if (ran != 10 || donef != 10) {
+			printf("pool10: ran=%d done=%d\n", ran, donef);
+			crypto_workers_fini();
+			return 1;
+		}
+		for (i = 0; i < 10; i++) {
+			if (args[i] != i + 1) {
+				printf("pool10 arg[%d]=%d\n", i, args[i]);
+				crypto_workers_fini();
+				return 1;
+			}
+		}
+		crypto_workers_fini();
+	}
 #endif
 	printf("\n===== worker tests passed =====\n\n");
 	return 0;
