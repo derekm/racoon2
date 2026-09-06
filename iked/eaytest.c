@@ -1056,6 +1056,7 @@ main(ac, av)
 		errx(EXIT_FAILURE, "rbuf init failed");
 
 	plog_setmode(RCT_LOGMODE_NORMAL, NULL, "eaytest", TRUE, TRUE);
+	eay_init();
 	printf("Linked with %s\n", eay_version());
 #else
 	f_foreground = 1;
@@ -1083,7 +1084,10 @@ main(ac, av)
 	if (ac && i == len)
 		Usage();
 
-	printf ("\n===== All tests passed =====\n\n");
+	printf("\n===== All tests passed =====\n\n");
+#ifdef RACOON2
+	eay_cleanup();
+#endif
 	exit(0);
 }
 

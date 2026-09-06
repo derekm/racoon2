@@ -12,7 +12,13 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  500/4500. LISTEN_FDS helper in lib/sd_listenfds.c (no
 	  libsystemd). Default startup_scripts on Linux is systemd.
 	* iked: Linux default event wait is epoll (--disable-epoll for
-	  select). make check: evlooptest (beside eaytest).
+	  select). Crypto worker pool (--with-crypto-workers=N or
+	  RACOON2_CRYPTO_WORKERS, default 0) with main-thread drain via
+	  pipe. OpenSSL 3 providers (--with-openssl-provider=NAME or
+	  RACOON2_OPENSSL_PROVIDER) and ENGINE
+	  (--with-openssl-engine=ID / RACOON2_OPENSSL_ENGINE).
+	  oakley_dh_* is not enqueued yet. make check: evlooptest,
+	  workerstest (beside eaytest).
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 

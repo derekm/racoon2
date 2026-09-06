@@ -6,6 +6,15 @@
 /* recent versions of openssl declares argument with 'const' */
 #undef BPP_const
 
+/* default crypto worker threads */
+#undef CRYPTO_WORKERS_DEFAULT
+
+/* OpenSSL ENGINE to set as default */
+#undef EAY_OPENSSL_ENGINE
+
+/* OpenSSL 3 provider to load at startup */
+#undef EAY_OPENSSL_PROVIDER
+
 /* define to enable NAT Traversal support */
 #undef ENABLE_NATT
 
@@ -92,6 +101,9 @@
 
 /* Define to 1 if you have the `setprogname' function. */
 #undef HAVE_SETPROGNAME
+
+/* define if pthreads are available */
+#undef HAVE_PTHREAD
 
 /* define if public key encryption is available */
 #undef HAVE_SIGNING_C
