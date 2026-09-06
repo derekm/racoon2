@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/queue.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 
 #include <stdlib.h>
@@ -159,6 +160,14 @@ admin_process(void)
 	flags = fcntl(so2, F_GETFD, 0);
 	if (flags >= 0)
 		(void)fcntl(so2, F_SETFD, flags | FD_CLOEXEC);
+	{
+		struct timeval tv;
+
+		tv.tv_sec = 2;
+		tv.tv_usec = 0;
+		(void)setsockopt(so2, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		(void)setsockopt(so2, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+	}
 
 	n = recv(so2, (char *)&hdr, sizeof(hdr), MSG_PEEK);
 	if (n < 0 || (size_t)n < sizeof(hdr)) {
@@ -227,8 +236,12 @@ admin_dump_isakmp(void)
 	int n2 = 0;
 	size_t l1 = 0, l2;
 
-	TAILQ_FOREACH(sa, &ikev2_sa_list, link)
+	TAILQ_FOREACH(sa, &ikev2_sa_list, link) {
+		if (sa->state == IKEV2_STATE_DYING ||
+		    sa->state == IKEV2_STATE_DEAD)
+			continue;
 		n2++;
+	}
 #ifdef IKEV1
 	v1 = dumpph1();
 	if (v1)
@@ -253,6 +266,9 @@ admin_dump_isakmp(void)
 		memcpy(out->v, v1->v, l1);
 	pd = (struct ph1dump *)(out->s + l1);
 	TAILQ_FOREACH(sa, &ikev2_sa_list, link) {
+		if (sa->state == IKEV2_STATE_DYING ||
+		    sa->state == IKEV2_STATE_DEAD)
+			continue;
 		admin_ph1dump_from_v2(pd, sa);
 		pd++;
 	}
@@ -367,7 +383,7 @@ admin_dispatch(int so2, char *combuf)
 		}
 		plog(PLOG_INFO, PLOGLOC, NULL,
 		     "admin establish-sa %s%s%s\n", host,
-		     name ? " conf " : "", name ? name : "");
+		     name ? " selector " : "", name ? name : "");
 		isakmp_force_initiate(name, host);
 		break;
 	}
@@ -375,7 +391,6 @@ admin_dispatch(int so2, char *combuf)
 	case ADMIN_DELETE_ALL_SA_DST: {
 		struct admin_com_indexes *ndx;
 		struct sockaddr *dst;
-		struct ikev2_sa *ike_sa;
 #ifdef IKEV1
 		struct ph1handle *iph1;
 #endif
@@ -391,8 +406,21 @@ admin_dispatch(int so2, char *combuf)
 			admin_flush_one_ph1(iph1);
 #endif
 #ifdef IKEV2
-		while ((ike_sa = ikev2_find_sa_by_addr(dst)) != NULL)
-			ikev2_sa_delete(ike_sa);
+		{
+			struct ikev2_sa *sa, *next;
+
+			for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa;
+			     sa = next) {
+				next = IKEV2_SA_LIST_NEXT(sa);
+				if (!sa->remote ||
+				    rcs_cmpsa_wop(sa->remote, dst) != 0)
+					continue;
+				if (sa->state == IKEV2_STATE_DYING ||
+				    sa->state == IKEV2_STATE_DEAD)
+					continue;
+				ikev2_sa_delete(sa);
+			}
+		}
 #endif
 		break;
 	}
