@@ -303,7 +303,7 @@ extern int isakmp_isset(fd_set *);
 extern void isakmp_initiate(struct sadb_request_method *, uint32_t, uint32_t,
 			   unsigned int, struct sockaddr *, struct sockaddr *,
 			   struct sockaddr *);
-extern void isakmp_force_initiate(const char *, const char *);
+extern int isakmp_force_initiate(const char *, const char *);
 extern void isakmp_initiate_cont(void *, const char *);
 extern rc_vchar_t *isakmp_p2v(struct isakmp_gen *);
 
