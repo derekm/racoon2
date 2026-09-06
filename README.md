@@ -91,14 +91,22 @@ Currently, the system supports the following specifications:
 
 	Internet Key Exchange (IKEv2) Protocol
 	RFC 4306, Internet Key Exchange (IKEv2) Protocol
+	RFC 7296, Internet Key Exchange Protocol Version 2 (IKEv2)
 	RFC 4307, Cryptographic Algorithms for Use
 	          in the Internet Key Exchange Version 2 (IKEv2)
 	RFC 4718, IKEv2 Clarifications and Implementation Guidelines
+	RFC 5282, Using Authenticated Encryption Algorithms
+	          with the Encrypted Payload of IKEv2 (AES-GCM-16)
 
 	The Internet Key Exchange (IKE)
 	RFC 2409, The Internet Key Exchange (IKE)
 	RFC 3947, Negotiation of NAT-Traversal in the IKE
 	RFC 3948, UDP Encapsulation of IPsec ESP Packets
+
+	IPsec
+	RFC 4303, IP Encapsulating Security Payload (ESP)
+	RFC 4106, The Use of Galois/Counter Mode (GCM) in IPsec ESP
+	          (AES-GCM-16)
 
 	Kerberized Internet Negotiation of Keys (KINK)
 	RFC 4430, Kerberized Internet Negotiation of Keys (KINK)
@@ -106,6 +114,9 @@ Currently, the system supports the following specifications:
 	RFC 3526, More Modular Exponential (MODP) Diffie-Hellman groups
 	          for Internet Key Exchange (IKE)
 	RFC 2367, PF_KEY Key Management API, Version 2
+
+	Not implemented: RFC 9242 (IKE_INTERMEDIATE), RFC 9370
+	(multiple key exchanges / ADDKE), RFC 8784 PPK.
 	
 The system provides three daemons: iked, kinkd and spmd.
 Each daemon manages IKE, KINK and IPsec Policy respectively.
