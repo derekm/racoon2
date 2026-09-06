@@ -1,5 +1,17 @@
 $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 
+2026-09-05
+
+	* lib: experimental Linux NETLINK_XFRM SAD/SPD backend
+	  (lib/if_xfrm.c), XOR-compiled with if_pfkeyv2.c via
+	  --with-km-backend=xfrm|pfkey. Default remains pfkey until
+	  GETSPI/UPDATE are verified against iked on a live kernel.
+	* samples: Linux systemd units (spmd/iked/kinkd) with
+	  ProtectSystem=strict, PrivateTmp, and socket activation.
+	  spmd.socket is /run/racoon2/spmif; iked.socket is UDP
+	  500/4500. LISTEN_FDS helper in lib/sd_listenfds.c (no
+	  libsystemd). Default startup_scripts on Linux is systemd.
+
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 
 	* begin testing racoon2 as L2TP/IPsec or IKEv2 VPN server on

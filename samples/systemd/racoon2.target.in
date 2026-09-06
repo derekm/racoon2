@@ -1,0 +1,8 @@
+[Unit]
+Description=Racoon2 IPsec key management
+Documentation=man:iked(8) man:spmd(8)
+Wants=spmd.socket spmd.service iked.socket iked.service
+After=spmd.socket iked.socket
+
+[Install]
+WantedBy=multi-user.target

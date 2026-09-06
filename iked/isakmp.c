@@ -414,6 +414,7 @@ static void
 isakmp_open_address(struct sockaddr *addr, int port)
 {
 	int sock = -1;
+	int inherited = -1;
 	struct socket_list *p = 0;
 	struct sockaddr *sa = 0;
 
@@ -436,6 +437,18 @@ isakmp_open_address(struct sockaddr *addr, int port)
 
 	p->addr = sa;
 	p->sock = sock;
+
+	{
+		int useport = (port == 0) ? isakmp_port : port;
+
+		inherited = rc_take_listenfd(SOCKADDR_FAMILY(sa),
+		    SOCK_DGRAM, useport);
+		if (inherited >= 0) {
+			close(sock);
+			sock = -1;
+			p->sock = inherited;
+		}
+	}
 
 	switch (SOCKADDR_FAMILY(sa)) {
 	case AF_INET:
@@ -519,13 +532,21 @@ isakmp_open_address(struct sockaddr *addr, int port)
 		}
 	}
 
-	if (bind(p->sock, sa, SOCKADDR_LEN(sa)) < 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		     "bind(%s): %s\n",
-		     rcs_sa2str(sa), strerror(errno));
-		if (!isakmp_socket_retry)
-			isakmp_socket_retry = sched_new(1, isakmp_reopen_stub, 0);
-		goto fail;
+	if (inherited < 0) {
+		if (bind(p->sock, sa, SOCKADDR_LEN(sa)) < 0) {
+			if (rc_listenfds() > 0 && errno == EADDRINUSE) {
+				plog(PLOG_DEBUG, PLOGLOC, NULL,
+				     "bind(%s) covered by socket activation\n",
+				     rcs_sa2str(sa));
+				goto fail;
+			}
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "bind(%s): %s\n",
+			     rcs_sa2str(sa), strerror(errno));
+			if (!isakmp_socket_retry)
+				isakmp_socket_retry = sched_new(1, isakmp_reopen_stub, 0);
+			goto fail;
+		}
 	}
 
 	plog(PLOG_DEBUG, PLOGLOC, NULL,

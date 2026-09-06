@@ -35,6 +35,7 @@
 #include "if_pfkeyv2.h"
 #include "plog.h"
 #include "pidfile.h"
+#include "sd_listenfds.h"
 #include "rbuf.h"
 #include "if_spmd.h"
 #include "rc_pcap.h"

@@ -138,6 +138,13 @@ o Linux (kernel 2.6)
   CONFIG_XFRM
   CONFIG_XFRM_USER
 
+  Linux SAD/SPD path defaults to PF_KEY (af_key.ko / CONFIG_NET_KEY).
+  An experimental NETLINK_XFRM backend is --with-km-backend=xfrm
+  (needs CONFIG_XFRM_USER). Not the default until verified.
+
+	./configure --with-km-backend=pfkey    # default
+	./configure --with-km-backend=xfrm     # experimental Linux XFRM
+
   additionally these items are also set on later version of Linux-2.6.18
   CONFIG_INET_XFRM_MODE_TRANSPORT
   CONFIG_INET_XFRM_MODE_TUNNEL
@@ -265,6 +272,20 @@ NOTE:
 Then if you want to install them, just type the following:
 
 	# make install
+
+On Linux, configure installs systemd units (ProtectSystem=strict,
+PrivateTmp, socket activation). Enable:
+
+	# systemctl daemon-reload
+	# systemctl enable --now racoon2.target
+
+That pulls in spmd.socket (unix /run/racoon2/spmif) and
+iked.socket (UDP 500/4500). iked and spmd run with -F
+(Type=simple); they inherit LISTEN_FDS. Keep racoon2.conf
+`spmd { unix "/var/run/racoon2/spmif"; }` — /var/run is /run.
+
+	--with-systemdsystemunitdir=DIR   override unit path
+	--enable-startup-scripts          (default; Linux=systemd)
 
 If you did not change the default install directory, you can see
 the following tree.
