@@ -683,7 +683,7 @@ ciphertest(ac, av)
 #ifdef RACOON2
 	key.v = str2val("\
 ccf2 3044 fada ed03 4cfc 484f 5e78 235f c8c9 f3e5 fad6 da83\
-", 24, &key.l);
+", 16, &key.l);
 #else
 	key.v = str2val("f59bd70f 81b9b9cc 2a32c7fd 229a4b37", 16, &key.l);
 #endif
@@ -1056,6 +1056,23 @@ main(ac, av)
 		errx(EXIT_FAILURE, "rbuf init failed");
 
 	plog_setmode(RCT_LOGMODE_NORMAL, NULL, "eaytest", TRUE, TRUE);
+	{
+		const char *s;
+		s = getenv("RACOON2_OPENSSL_PROVIDER");
+		if (s && *s)
+			eay_set_provider(s);
+#ifdef EAY_OPENSSL_PROVIDER
+		else
+			eay_set_provider(EAY_OPENSSL_PROVIDER);
+#endif
+		s = getenv("RACOON2_OPENSSL_ENGINE");
+		if (s && *s)
+			eay_set_engine(s);
+#ifdef EAY_OPENSSL_ENGINE
+		else
+			eay_set_engine(EAY_OPENSSL_ENGINE);
+#endif
+	}
 	eay_init();
 	printf("Linked with %s\n", eay_version());
 #else
