@@ -1,6 +1,6 @@
 $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 
-2026-09-05
+2026-09-05 Derek Moore
 
 	* lib: experimental Linux NETLINK_XFRM SAD/SPD backend
 	  (lib/if_xfrm.c), XOR-compiled with if_pfkeyv2.c via
@@ -36,6 +36,15 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	* eaytest DH: exponent length 0 (matches oakley gen2). OpenSSL 3
 	  rejects a 96-bit secret vs a 1536-bit p; generate retries
 	  without DH_set_length if the first call fails.
+	* eaytest DES/3DES: OpenSSL 3 DES_key_sched rejects even-parity
+	  keys; use DES_set_key_unchecked. Cipher vector radix is 16.
+	  eaytest honors RACOON2_OPENSSL_PROVIDER / RACOON2_OPENSSL_ENGINE
+	  like iked (AFALG ENGINE vs default AES-NI).
+	* samples/macos_ikev2.conf: IKEv2 PSK road-warrior for macOS 26/27
+	  (AES-CBC IKE, ESP GCM-16 then AES-CBC+SHA2-256, DH14/15).
+	  Client steps: doc/macos-26-27-ikev2-client.md
+	* iked: Linux/WSL IP_IPSEC_POLICY bypass is EOPNOTSUPP; still
+	  bind UDP 500/4500 instead of skipping isakmp_open_address.
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 
