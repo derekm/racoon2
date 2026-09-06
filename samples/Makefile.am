@@ -20,3 +20,5 @@ install-exec-hook:
 	$(INSTALL) -m 600 macos_ikev2.conf $(DESTDIR)$(sysconfdir)/macos_ikev2.conf.sample
 	$(INSTALL) -d -m 700 $(DESTDIR)$(sysconfdir)/psk
 	$(INSTALL) -d -m 700 $(DESTDIR)$(sysconfdir)/cert
+
+EXTRA_DIST = upnp_portmap.py
