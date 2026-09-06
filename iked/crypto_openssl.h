@@ -108,6 +108,10 @@ typedef STACK_OF(GENERAL_NAME) GENERAL_NAMES;
 
 #define	AES_CTR_IV_SIZE		8
 #define	AES_CTR_NONCE_SIZE	4
+#define	AES_GCM_IV_SIZE		8
+#define	AES_GCM_SALT_SIZE	4
+#define	AES_GCM_ICV_SIZE	16
+#define	AES_GCM_NONCE_SIZE	12
 
 #define	AES_XCBC_KEYLEN		128	/* bits */
 #define	AES_XCBC_BLOCKLEN	16	/* bytes */

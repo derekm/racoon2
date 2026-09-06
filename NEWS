@@ -43,8 +43,12 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	* samples/macos_ikev2.conf: IKEv2 PSK road-warrior for macOS 26/27
 	  (AES-CBC IKE, ESP GCM-16 then AES-CBC+SHA2-256, DH14/15).
 	  Client steps: doc/macos-26-27-ikev2-client.md
-	* iked: Linux/WSL IP_IPSEC_POLICY bypass is EOPNOTSUPP; still
-	  bind UDP 500/4500 instead of skipping isakmp_open_address.
+	* iked: bind IKE when IPSEC_POLICY bypass is unsupported.
+	  Linux/WSL IP_IPSEC_POLICY is EOPNOTSUPP; still bind UDP 500/4500.
+	* iked: RFC 5282 AES-GCM-16 on the IKE Encrypted Payload (AAD is
+	  IKE header through Encrypted Payload header). kmp_enc_alg
+	  { aes_gcm; } with kmp_hash_alg { non_auth; } omits INTEGR.
+	  ESP GCM is still RFC 4106.
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 

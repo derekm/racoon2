@@ -54,6 +54,7 @@
 #include "keyed_hash.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "encryptor.h"
 
 #include "debug.h"
 
@@ -238,19 +239,51 @@ ikev2_packet_construct(int exch_type, int flags, uint32_t message_id,
 #endif
 
 	if (ike_sa->encryptor) {
-		assert(ike_sa->sk_a_i && ike_sa->sk_a_r &&
-		       ike_sa->sk_e_i && ike_sa->sk_e_r);
-		assert(ike_sa->authenticator && ike_sa->encryptor);
+		int aead = encryptor_icv_length(ike_sa->encryptor) > 0;
+		int icv_extra = 0;
+		rc_vchar_t *aad = 0;
 
-		encrypted = ikev2_encrypt(ike_sa, payloads);
+		assert(ike_sa->sk_e_i && ike_sa->sk_e_r);
+		if (!aead)
+			assert(ike_sa->sk_a_i && ike_sa->sk_a_r &&
+			       ike_sa->authenticator && ike_sa->encryptor);
+
+		if (aead) {
+			int iv_len = encryptor_iv_length(ike_sa->encryptor);
+			int tag_len = encryptor_icv_length(ike_sa->encryptor);
+			size_t inner = payloads->l + 1;
+			size_t enc_pay_len = sizeof(struct ikev2_payload_header)
+			    + iv_len + inner + tag_len;
+			struct ikev2_payload_header ph;
+			struct ikev2_header ahdr;
+
+			packet_len = sizeof(struct ikev2_header) + enc_pay_len;
+			ahdr = hdr;
+			ahdr.next_payload = IKEV2_PAYLOAD_ENCRYPTED;
+			ahdr.length = htonl((uint32_t)packet_len);
+			ph.next_payload = payload_type;
+			ph.header_byte_2 = 0;
+			put_uint16(&ph.payload_length, (uint16_t)enc_pay_len);
+			aad = rc_vmalloc(sizeof(ahdr) + sizeof(ph));
+			if (!aad)
+				goto fail_nomem;
+			memcpy(aad->v, &ahdr, sizeof(ahdr));
+			memcpy((uint8_t *)aad->v + sizeof(ahdr), &ph,
+			       sizeof(ph));
+		} else {
+			icv_extra = auth_output_length(ike_sa->authenticator);
+		}
+
+		encrypted = ikev2_encrypt(ike_sa, payloads, aad);
+		if (aad)
+			rc_vfree(aad);
 		if (!encrypted)
 			goto fail_encr;
 
 		rc_vfree(payloads);
 		payloads =
 			rc_vmalloc(sizeof(struct ikev2_payload_header) +
-				encrypted->l +
-				auth_output_length(ike_sa->authenticator));
+				encrypted->l + icv_extra);
 		if (!payloads)
 			goto fail_nomem;
 		p = (struct ikev2_payload_header *)payloads->v;
@@ -268,7 +301,7 @@ ikev2_packet_construct(int exch_type, int flags, uint32_t message_id,
 
 	pkt = rc_vprepend(payloads, &hdr, sizeof(hdr));
 
-	if (ike_sa->encryptor) {
+	if (ike_sa->encryptor && encryptor_icv_length(ike_sa->encryptor) == 0) {
 		/* calculate Integrity Check Data */
 		icv_len = auth_output_length(ike_sa->authenticator);
 		icv = (uint8_t *)pkt->v + pkt->l - icv_len;

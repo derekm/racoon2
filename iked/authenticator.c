@@ -157,3 +157,53 @@ keyedhash_auth_destroy(struct authenticator *auth)
 	keyed_hash_dispose(h);
 	racoon_free(auth);
 }
+
+static rc_vchar_t *
+none_auth_calculate(struct authenticator *auth, rc_vchar_t *key,
+		    uint8_t *data, size_t len)
+{
+	(void)auth;
+	(void)key;
+	(void)data;
+	(void)len;
+	return rc_vmalloc(0);
+}
+
+static int
+none_auth_key_length(struct authenticator *auth)
+{
+	(void)auth;
+	return 0;
+}
+
+static int
+none_auth_output_length(struct authenticator *auth)
+{
+	(void)auth;
+	return 0;
+}
+
+static void
+none_auth_destroy(struct authenticator *auth)
+{
+	racoon_free(auth);
+}
+
+static struct authenticator_method none_auth_method = {
+	none_auth_calculate,
+	none_auth_key_length,
+	none_auth_output_length,
+	none_auth_destroy,
+};
+
+struct authenticator *
+auth_none_new(void)
+{
+	struct authenticator *a;
+
+	a = racoon_calloc(1, sizeof(*a));
+	if (!a)
+		return 0;
+	a->method = &none_auth_method;
+	return a;
+}

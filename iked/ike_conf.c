@@ -52,6 +52,7 @@
 # include "ikev1_impl.h"
 #endif
 #include "ikev2_impl.h"
+#include "encryptor.h"
 #include "dhgroup.h"
 #include "ike_conf.h"
 #ifdef IKEV1
@@ -2661,10 +2662,10 @@ static struct algdef ikev2_transf_encr[] = {
 	/* AES_CCM_8 */
 	/* AES_CCM_12 */
 	/* AES_CCM_16 */
-	/* ESP only (RFC 4106 ICV16). definition=0 so IKE SA cannot pick it. */
-	ALG_ENC(RCT_ALG_AES_GCM,	IKEV2TRANSF_ENCR_AES_GCM_ICV16, 16, 4, CONF_VARIABLE_KEYLEN | PROTO_VARIABLE_KEYLEN, 0),
-	ALG_ENC(RCT_ALG_AES_GCM,	IKEV2TRANSF_ENCR_AES_GCM_ICV16, 24, 4, CONF_VARIABLE_KEYLEN | PROTO_VARIABLE_KEYLEN, 0),
-	ALG_ENC(RCT_ALG_AES_GCM,	IKEV2TRANSF_ENCR_AES_GCM_ICV16, 32, 4, CONF_VARIABLE_KEYLEN | PROTO_VARIABLE_KEYLEN, 0),
+	/* AES-GCM ICV16: ESP RFC 4106 and IKE RFC 5282. */
+	ALG_ENC(RCT_ALG_AES_GCM,	IKEV2TRANSF_ENCR_AES_GCM_ICV16, 16, 4, PROTO_VARIABLE_KEYLEN, &encr_aesgcm128),
+	ALG_ENC(RCT_ALG_AES_GCM,	IKEV2TRANSF_ENCR_AES_GCM_ICV16, 24, 4, PROTO_VARIABLE_KEYLEN, 0),
+	ALG_ENC(RCT_ALG_AES_GCM,	IKEV2TRANSF_ENCR_AES_GCM_ICV16, 32, 4, PROTO_VARIABLE_KEYLEN, &encr_aesgcm256),
 	/* NULL_AUTH_AES_GMAC */
 	/* IEEE_P1619_XTS_AES */
 	{ 0 }
@@ -2830,6 +2831,9 @@ struct authenticator *
 ikev2_authenticator_new(unsigned int code)
 {
 	struct algdef *def;
+
+	if (code == 0)
+		return auth_none_new();
 
 	for (def = &ikev2_transf_integr[0]; def->racoon_code != 0; ++def) {
 		if (def->transform_id == code && def->generator != 0) {
@@ -3028,6 +3032,8 @@ alglist_to_proppair(struct rc_alglist *alg, int type,
 	return 0;
 }
 
+static int auth_alg_is_none(struct rc_alglist *auth_alg);
+
 struct prop_pair **
 ikev2_conf_to_proplist(struct rcf_remote *rminfo, isakmp_cookie_t spi)
 {
@@ -3124,13 +3130,13 @@ ikev2_conf_to_proplist(struct rcf_remote *rminfo, isakmp_cookie_t spi)
 	alglist = kmp->kmp_hash_alg;
 	if (!alglist && kmp_default)
 		alglist = kmp_default->kmp_hash_alg;
-	if (!alglist)
-		plog(PLOG_INTWARN, PLOGLOC, 0, "kmp_hash_alg list is empty\n");
-	*tail = alglist_to_proppair(alglist,
-				    IKEV2TRANSFORM_TYPE_INTEGR,
-				    &ikev2_transf_integr[0]);
-	if (*tail)
-		tail = &(*tail)->next;
+	if (alglist && !auth_alg_is_none(alglist)) {
+		*tail = alglist_to_proppair(alglist,
+					    IKEV2TRANSFORM_TYPE_INTEGR,
+					    &ikev2_transf_integr[0]);
+		if (*tail)
+			tail = &(*tail)->next;
+	}
 
 	alglist = kmp->kmp_dh_group;
 	if (!alglist && kmp_default)
@@ -3985,6 +3991,8 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 		}
 	}
 	for (alg = kmp->kmp_hash_alg; alg; alg = alg->next) {
+		if (alg->algtype == RCT_ALG_NON_AUTH)
+			continue;
 		if (!is_alg_supported(alg->algtype, alg->keylen, &ikev2_transf_integr[0])) {
 			++*err;
 			if (alg->keylen) {

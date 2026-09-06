@@ -147,6 +147,10 @@ extern int eay_aes_keylen (int);
 /* AES CTR */
 extern rc_vchar_t *eay_aes_ctr (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 
+/* AES-GCM (RFC 5282 IKE): key is AES key || 4-byte salt, iv is 8 bytes, aad is IKE header through Encrypted Payload header. Encrypt returns ciphertext||ICV16; decrypt input is ciphertext||ICV16. */
+extern rc_vchar_t *eay_aes_gcm_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+extern rc_vchar_t *eay_aes_gcm_ike_decrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+
 /* misc */
 extern int eay_null_keylen (int);
 extern int eay_null_hashlen (void);

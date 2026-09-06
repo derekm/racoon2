@@ -45,6 +45,11 @@ struct encryptor_method {
 	int (*weakkey) (rc_vchar_t *);
 	rc_vchar_t *(*encrypt) (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 	rc_vchar_t *(*decrypt) (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+	int icv_len;		/* >0: RFC 5282 AEAD (ICV octets) */
+	rc_vchar_t *(*encrypt_aead) (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
+				     rc_vchar_t *);
+	rc_vchar_t *(*decrypt_aead) (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
+				     rc_vchar_t *);
 };
 
 /* with the current calling structure, there's no state to hold */
@@ -57,6 +62,8 @@ extern struct encryptor_method encr_aes256;
 extern struct encryptor_method encr_aesctr128;
 extern struct encryptor_method encr_aesctr192;
 extern struct encryptor_method encr_aesctr256;
+extern struct encryptor_method encr_aesgcm128;
+extern struct encryptor_method encr_aesgcm256;
 extern struct encryptor_method encr_null;
 
 struct encryptor *encryptor_new(struct encryptor_method *);
@@ -64,9 +71,14 @@ void encryptor_destroy(struct encryptor *);
 int encryptor_block_length(struct encryptor *);
 int encryptor_key_length(struct encryptor *);
 int encryptor_iv_length(struct encryptor *);
+int encryptor_icv_length(struct encryptor *);
 rc_vchar_t *encryptor_encrypt(struct encryptor *, rc_vchar_t *, rc_vchar_t *,
 			      rc_vchar_t *);
 rc_vchar_t *encryptor_decrypt(struct encryptor *, rc_vchar_t *, rc_vchar_t *,
 			      rc_vchar_t *);
+rc_vchar_t *encryptor_encrypt_aead(struct encryptor *, rc_vchar_t *,
+				   rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+rc_vchar_t *encryptor_decrypt_aead(struct encryptor *, rc_vchar_t *,
+				   rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 
 #endif
