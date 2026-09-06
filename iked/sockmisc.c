@@ -113,7 +113,8 @@ getlocaladdr(struct sockaddr *remote, struct sockaddr *hint, int lport)
 		goto err;
 	}
 	if ((rcf_interface_head->application_bypass != RCT_BOOL_OFF) &&
-	    (setsockopt_bypass(s, remote->sa_family) < 0)) {
+	    (setsockopt_bypass(s, remote->sa_family) < 0) &&
+	    errno != EOPNOTSUPP && errno != ENOPROTOOPT) {
 		close(s);
 		goto err;
 	}
@@ -467,7 +468,9 @@ sendfromto(int s, const void *buf, size_t buflen,
 				if (rcf_interface_head->application_bypass
 				    != RCT_BOOL_OFF &&
 				    setsockopt_bypass(sendsock, src->sa_family)
-				    < 0) {
+				    < 0 &&
+				    errno != EOPNOTSUPP &&
+				    errno != ENOPROTOOPT) {
 					close(sendsock);
 					return -1;
 				}
