@@ -2,6 +2,7 @@
 /*
  * Same shape as eaytest / lib/sample: check_PROGRAM, printf + exit status.
  * Exercises the userspace KM backend loopback (no kernel, no DPDK).
+ * Handler is called on a fresh rcpfk_msg like sadb_poll.
  */
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -10,6 +11,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -24,7 +26,7 @@ static int n_add;
 static int
 cb_getspi(struct rcpfk_msg *rc)
 {
-	if (rc->spi == 0)
+	if (rc->spi == 0 || rc->sa_src == NULL || rc->sa_dst == NULL)
 		return -1;
 	n_getspi++;
 	return 0;
@@ -46,10 +48,18 @@ cb_add(struct rcpfk_msg *rc)
 	return 0;
 }
 
+static int
+poll_one(int so, struct rcpfk_msg *out)
+{
+	memset(out, 0, sizeof(*out));
+	out->so = so;
+	return rcpfk_handler(out);
+}
+
 int
 main(void)
 {
-	struct rcpfk_msg rc;
+	struct rcpfk_msg rc, poll;
 	struct rcpfk_cb cb;
 	struct sockaddr_in src, dst;
 	unsigned char key[16];
@@ -79,7 +89,7 @@ main(void)
 		return 1;
 	}
 
-	printf("**Test for GETSPI.**\n");
+	printf("**Test for GETSPI (sadb_poll rc).**\n");
 	rc.seq = 0x4000001;
 	rc.sa_src = (struct sockaddr *)&src;
 	rc.sa_dst = (struct sockaddr *)&dst;
@@ -90,31 +100,36 @@ main(void)
 		printf("getspi send failed: %s\n", rc.estr);
 		return 1;
 	}
-	if (rcpfk_handler(&rc) != 0) {
-		printf("getspi handler failed: %s\n", rc.estr);
+	if (poll_one(rc.so, &poll) != 0) {
+		printf("getspi handler failed: %s\n", poll.estr);
 		return 1;
 	}
-	if (n_getspi != 1 || rc.spi == 0 || rc.seq != 0x4000001) {
-		printf("getspi: n=%d spi=%u seq=%u\n", n_getspi, rc.spi,
-		    rc.seq);
+	if (n_getspi != 1 || ntohl(poll.spi) == 0 || poll.seq != 0x4000001 ||
+	    poll.sa_src == NULL || poll.sa_dst == NULL) {
+		printf("getspi: n=%d spi=%u seq=%u src=%p dst=%p\n",
+		    n_getspi, ntohl(poll.spi), poll.seq,
+		    (void *)poll.sa_src, (void *)poll.sa_dst);
 		return 1;
 	}
 
 	printf("**Test for UPDATE.**\n");
+	rc.spi = poll.spi;
 	rc.enckey = (caddr_t)key;
 	rc.enckeylen = sizeof(key);
 	rc.authkey = (caddr_t)key;
 	rc.authkeylen = sizeof(key);
+	rc.enctype = 20;
 	if (rcpfk_send_update(&rc) != 0) {
 		printf("update send failed: %s\n", rc.estr);
 		return 1;
 	}
-	if (rcpfk_handler(&rc) != 0) {
-		printf("update handler failed: %s\n", rc.estr);
+	if (poll_one(rc.so, &poll) != 0) {
+		printf("update handler failed: %s\n", poll.estr);
 		return 1;
 	}
-	if (n_update != 1) {
-		printf("update cb count %d\n", n_update);
+	if (n_update != 1 || poll.enctype != 20) {
+		printf("update cb count %d enctype %u\n", n_update,
+		    poll.enctype);
 		return 1;
 	}
 
@@ -123,8 +138,8 @@ main(void)
 		printf("add send failed: %s\n", rc.estr);
 		return 1;
 	}
-	if (rcpfk_handler(&rc) != 0) {
-		printf("add handler failed: %s\n", rc.estr);
+	if (poll_one(rc.so, &poll) != 0) {
+		printf("add handler failed: %s\n", poll.estr);
 		return 1;
 	}
 	if (n_add != 1) {
