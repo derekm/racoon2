@@ -13,6 +13,13 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  ikev2-netns workers=0 and workers=1, skip ikev1-strongswan).
 	  Numeric workers cell relaunches iked -F with
 	  RACOON2_CRYPTO_WORKERS. Does not enable racoon2.target.
+	* lib/if_xfrm.c: always emit XFRMA_ALG_AUTH_TRUNC. The #ifdef guard
+	  was dead — XFRMA_ALG_AUTH_TRUNC is an enum, not a #define — so
+	  every ESP SA fell back to plain XFRMA_ALG_AUTH and Linux used a
+	  96-bit ICV for hmac(sha256). RFC 4868 peers (Apple, strongSwan)
+	  send 128 bits; the ICV mismatch ate every packet
+	  (XfrmInStateProtoError, 0 InNoStates). Live: iPhone espinudp
+	  tunnel now AES-CBC + hmac(sha256)-128 bits, pings both ways.
 	* ikev2: IKE_SA DH generate/compute goes through
 	  oakley_dh_*_submit → crypto_job_submit (N=0 inlines).
 	  Child PFS / IKEv1 still call oakley_dh_* on the IKE thread.
