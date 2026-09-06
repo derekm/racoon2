@@ -31,6 +31,7 @@
 
 #include <config.h>
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #if TIME_WITH_SYS_TIME
@@ -147,7 +148,7 @@ struct ikev2_payloads;		/* forward decl */
 static void ikev2_process_delete(struct ikev2_sa *,
 				 struct ikev2_payload_header *,
 				 struct ikev2_payloads *);
-static int compute_skeyseed(struct ikev2_sa *);
+static int compute_skeyseed_submit(struct ikev2_sa *, oakley_dh_done_t, void *);
 
 static int ikev2_spi_is_zero(isakmp_cookie_t *);
 
@@ -170,6 +171,52 @@ struct isakmp_domain ikev2_doi = {
 static void ikev2_periodic_task(void *);
 static struct sched *ikev2_periodic_task_sched;
 int ikev2_periodic_task_interval = 3;
+
+struct ikev2_dh_ctx {
+	struct ikev2_sa *ike_sa;
+	int serial;
+	struct ikev2_payloads payl;
+	rc_vchar_t *sa;
+	rc_vchar_t *ke;
+	struct algdef *dhdef;
+	struct prop_pair **proplist;
+	int payl_inited;
+	uint32_t message_id;
+};
+
+static struct ikev2_sa *
+ikev2_dh_ctx_sa(struct ikev2_dh_ctx *ctx)
+{
+	struct ikev2_sa *sa;
+
+	if (!ctx)
+		return 0;
+	sa = ikev2_find_sa_by_serial(ctx->serial);
+	if (!sa || sa != ctx->ike_sa)
+		return 0;
+	return sa;
+}
+
+static void
+ikev2_dh_ctx_free(struct ikev2_dh_ctx *ctx)
+{
+	if (!ctx)
+		return;
+	if (ctx->payl_inited)
+		ikev2_payloads_destroy(&ctx->payl);
+	if (ctx->sa)
+		rc_vfree(ctx->sa);
+	if (ctx->ke)
+		rc_vfree(ctx->ke);
+	if (ctx->proplist)
+		proplist_discard(ctx->proplist);
+	free(ctx);
+}
+
+static void initiator_start_after_gen(int rc, void *arg);
+static void initiator_skey_done(int rc, void *arg);
+static void responder_state0_after_gen(int rc, void *arg);
+static void responder_state0_after_skey(int rc, void *arg);
 
 int
 ikev2_init(void)
@@ -874,11 +921,6 @@ ikev2_initiator_start(struct ikev2_sa *ike_sa)
 	struct algdef *dhgrpdef;
 	struct prop_pair **proplist = 0;
 	rc_vchar_t *sa = 0;
-	rc_vchar_t *ke = 0;
-	rc_vchar_t *nonce;
-	rc_vchar_t *pkt = 0;
-	struct ikev2payl_ke_h dhgrp_hdr;
-	int nonce_size;
 
 	assert(ike_sa->state == IKEV2_STATE_IDLING
 	       || ike_sa->state == IKEV2_STATE_INI_IKE_SA_INIT_SENT);
@@ -911,63 +953,36 @@ ikev2_initiator_start(struct ikev2_sa *ike_sa)
 	if (!sa)
 		goto fail;
 
-	if (oakley_dh_generate
-	    ((struct dhgroup *)dhgrpdef->definition, &ike_sa->dhpub,
-	     &ike_sa->dhpriv) != 0)
-		goto fail;
+	{
+		struct ikev2_dh_ctx *ctx;
 
-	dhgrp_hdr.dh_group_id = htons(dhgrpdef->transform_id);
-	dhgrp_hdr.reserved = 0;
-	ke = rc_vprepend(ike_sa->dhpub, &dhgrp_hdr, sizeof(dhgrp_hdr));
-	if (!ke)
-		goto fail;
-
-	nonce_size = ikev2_nonce_size(conf);
-	nonce = random_bytes(nonce_size);
-	if (!nonce)
-		goto fail;
-	ike_sa->n_i = nonce;
-
-	/*
-	 * send message 1
-	 * HDR, SAi1, KEi, Ni [N(NAT_DET_SRC), N(NAT_DET_DST)] 
-	 */
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ke, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NONCE, nonce, FALSE);
-
-#ifdef ENABLE_NATT
-	if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON &&
-	    SOCKADDR_FAMILY(ike_sa->remote) == AF_INET) {
-		if (natt_create_natd
-		    (ike_sa, &payl, ike_sa->remote, ike_sa->local) < 0) {
+		ctx = calloc(1, sizeof(*ctx));
+		if (!ctx)
+			goto fail;
+		ctx->ike_sa = ike_sa;
+		ctx->serial = ike_sa->serial_number;
+		ctx->payl = payl;
+		ctx->payl_inited = 1;
+		ctx->sa = sa;
+		ctx->proplist = proplist;
+		ctx->dhdef = dhgrpdef;
+		sa = 0;
+		proplist = 0;
+		ike_sa->crypto_pending = 1;
+		if (oakley_dh_generate_submit(
+		    (struct dhgroup *)dhgrpdef->definition, &ike_sa->dhpub,
+		    &ike_sa->dhpriv, initiator_start_after_gen, ctx) != 0) {
+			ike_sa->crypto_pending = 0;
+			ctx->payl_inited = 0;
+			ctx->sa = 0;
+			ctx->proplist = 0;
+			free(ctx);
 			goto fail;
 		}
+		return;
 	}
-#endif
-
-	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
-				     0, ike_sa, &payl);
-	if (!pkt)
-		goto fail;
-
-	/* save message data for AUTH calculation */
-	if (ike_sa->my_first_message)
-		rc_vfree(ike_sa->my_first_message);
-	ike_sa->my_first_message = rc_vdup(pkt);
-	if (!ike_sa->my_first_message)
-		goto fail;
-
-	ikev2_set_state(ike_sa, IKEV2_STATE_INI_IKE_SA_INIT_SENT);
-	if (ikev2_transmit(ike_sa, pkt) != 0)
-		goto fail;
-	pkt = 0;
 
       end:
-	if (pkt)
-		rc_vfree(pkt);
-	if (ke)
-		rc_vfree(ke);
 	if (sa)
 		rc_vfree(sa);
 	if (proplist)
@@ -981,6 +996,82 @@ ikev2_initiator_start(struct ikev2_sa *ike_sa)
 	++isakmpstat.fail_send_packet;
 	ikev2_abort(ike_sa, ECONNREFUSED);	/* ??? */
 	goto end;
+}
+
+static void
+initiator_start_after_gen(int rc, void *arg)
+{
+	struct ikev2_dh_ctx *ctx = arg;
+	struct ikev2_sa *ike_sa;
+	rc_vchar_t *nonce;
+	rc_vchar_t *pkt = 0;
+	struct ikev2payl_ke_h dhgrp_hdr;
+	int nonce_size;
+
+	ike_sa = ikev2_dh_ctx_sa(ctx);
+	if (!ike_sa) {
+		ikev2_dh_ctx_free(ctx);
+		return;
+	}
+	if (rc != 0)
+		goto fail;
+
+	dhgrp_hdr.dh_group_id = htons(ctx->dhdef->transform_id);
+	dhgrp_hdr.reserved = 0;
+	ctx->ke = rc_vprepend(ike_sa->dhpub, &dhgrp_hdr, sizeof(dhgrp_hdr));
+	if (!ctx->ke)
+		goto fail;
+
+	nonce_size = ikev2_nonce_size(ike_sa->rmconf);
+	nonce = random_bytes(nonce_size);
+	if (!nonce)
+		goto fail;
+	ike_sa->n_i = nonce;
+
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_SA, ctx->sa, FALSE);
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_KE, ctx->ke, FALSE);
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NONCE, nonce, FALSE);
+
+#ifdef ENABLE_NATT
+	if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON &&
+	    SOCKADDR_FAMILY(ike_sa->remote) == AF_INET) {
+		if (natt_create_natd
+		    (ike_sa, &ctx->payl, ike_sa->remote, ike_sa->local) < 0) {
+			goto fail;
+		}
+	}
+#endif
+
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
+				     0, ike_sa, &ctx->payl);
+	if (!pkt)
+		goto fail;
+
+	if (ike_sa->my_first_message)
+		rc_vfree(ike_sa->my_first_message);
+	ike_sa->my_first_message = rc_vdup(pkt);
+	if (!ike_sa->my_first_message)
+		goto fail;
+
+	ikev2_set_state(ike_sa, IKEV2_STATE_INI_IKE_SA_INIT_SENT);
+	if (ikev2_transmit(ike_sa, pkt) != 0)
+		goto fail;
+	pkt = 0;
+	ike_sa->crypto_pending = 0;
+	if (pkt)
+		rc_vfree(pkt);
+	ikev2_dh_ctx_free(ctx);
+	return;
+
+      fail:
+	if (pkt)
+		rc_vfree(pkt);
+	ike_sa->crypto_pending = 0;
+	isakmp_log(ike_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC, "failed to send IKE_SA_INIT\n");
+	++isakmpstat.fail_send_packet;
+	ikev2_abort(ike_sa, ECONNREFUSED);
+	ikev2_dh_ctx_free(ctx);
 }
 
 /*
@@ -1299,17 +1390,22 @@ static void
 responder_state0_send(struct ikev2_sa *ike_sa, struct sockaddr *src,
 		      struct sockaddr *dest)
 {
-	struct ikev2_payloads payl;
-	rc_vchar_t *sa = 0;
-	rc_vchar_t *ke = 0;
+	struct ikev2_dh_ctx *ctx;
 	struct algdef *dhdef;
-	struct ikev2payl_ke_h dhgrp_hdr;
-	rc_vchar_t *pkt = 0;
 
-	ikev2_payloads_init(&payl);
+	(void)src;
+	(void)dest;
 
-	sa = ikev2_ikesa_to_proposal(ike_sa->negotiated_sa, 0);
-	if (!sa) {
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx)
+		goto abort;
+	ctx->ike_sa = ike_sa;
+	ctx->serial = ike_sa->serial_number;
+	ikev2_payloads_init(&ctx->payl);
+	ctx->payl_inited = 1;
+
+	ctx->sa = ikev2_ikesa_to_proposal(ike_sa->negotiated_sa, 0);
+	if (!ctx->sa) {
 		TRACE((PLOGLOC, "no proposal for the peer\n"));
 		goto abort;
 	}
@@ -1319,45 +1415,75 @@ responder_state0_send(struct ikev2_sa *ike_sa, struct sockaddr *src,
 		TRACE((PLOGLOC, "no DH choices for the peer\n"));
 		goto abort;
 	}
-	if (oakley_dh_generate((struct dhgroup *)dhdef->definition, &ike_sa->dhpub,
-			       &ike_sa->dhpriv) != 0) {
+	ctx->dhdef = dhdef;
+	ike_sa->crypto_pending = 1;
+	if (oakley_dh_generate_submit((struct dhgroup *)dhdef->definition,
+	    &ike_sa->dhpub, &ike_sa->dhpriv, responder_state0_after_gen,
+	    ctx) != 0) {
+		ike_sa->crypto_pending = 0;
+		TRACE((PLOGLOC, "failed dh_generate submit\n"));
+		goto abort;
+	}
+	return;
+
+      abort:
+	ikev2_dh_ctx_free(ctx);
+	ikev2_abort(ike_sa, ECONNREFUSED);
+	isakmp_log(ike_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC,
+		   "aborting the exchange for an internal failure\n");
+}
+
+static void
+responder_state0_after_gen(int rc, void *arg)
+{
+	struct ikev2_dh_ctx *ctx = arg;
+	struct ikev2_sa *ike_sa;
+	rc_vchar_t *pkt = 0;
+	struct ikev2payl_ke_h dhgrp_hdr;
+	struct sockaddr *src;
+	struct sockaddr *dest;
+
+	ike_sa = ikev2_dh_ctx_sa(ctx);
+	if (!ike_sa) {
+		ikev2_dh_ctx_free(ctx);
+		return;
+	}
+	if (rc != 0) {
 		TRACE((PLOGLOC, "failed dh_generate\n"));
 		goto abort;
 	}
 
-	dhgrp_hdr.dh_group_id = htons(dhdef->transform_id);
+	src = ike_sa->local;
+	dest = ike_sa->remote;
+	dhgrp_hdr.dh_group_id = htons(ctx->dhdef->transform_id);
 	dhgrp_hdr.reserved = 0;
-	ke = rc_vprepend(ike_sa->dhpub, &dhgrp_hdr, sizeof(dhgrp_hdr));
-	if (!ke) {
+	ctx->ke = rc_vprepend(ike_sa->dhpub, &dhgrp_hdr, sizeof(dhgrp_hdr));
+	if (!ctx->ke) {
 		TRACE((PLOGLOC, "failed creating KE\n"));
 		goto abort;
 	}
 
-	/*
-	 * send message 2
-	 * HDR, SAr1, KEr, Nr, [N(NAT_DET_SRC), N(NAT_DET_DST),] [CERTREQ] 
-	 */
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ke, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NONCE, ike_sa->n_r, FALSE);
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_SA, ctx->sa, FALSE);
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_KE, ctx->ke, FALSE);
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NONCE, ike_sa->n_r, FALSE);
 
 #ifdef ENABLE_NATT
 	if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON &&
 	    SOCKADDR_FAMILY(dest) == AF_INET) {
-		if (natt_create_natd(ike_sa, &payl, dest, src) < 0) {
+		if (natt_create_natd(ike_sa, &ctx->payl, dest, src) < 0) {
 			goto abort;
 		}
 	}
 #endif
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_RESPONSE,
-				     0, ike_sa, &payl);
+				     0, ike_sa, &ctx->payl);
 	if (!pkt) {
 		TRACE((PLOGLOC, "failed creating packet\n"));
 		goto abort;
 	}
 
-	/* save message data for AUTH calculation */
 	if (ike_sa->my_first_message)
 		rc_vfree(ike_sa->my_first_message);
 	ike_sa->my_first_message = rc_vdup(pkt);
@@ -1370,46 +1496,93 @@ responder_state0_send(struct ikev2_sa *ike_sa, struct sockaddr *src,
 		goto fail;
 	pkt = 0;
 
-	/* compute SKEYSEED */
-	/* XXX is it better to postpone heavy calculation if under attack? */
-
 	if (ikev2_set_negotiated_sa(ike_sa, ike_sa->negotiated_sa) != 0)
 		goto abort2;
-	if (compute_skeyseed(ike_sa) != 0)
+	if (compute_skeyseed_submit(ike_sa, responder_state0_after_skey,
+	    ctx) != 0)
 		goto abort2;
-	if (ikev2_compute_keys(ike_sa) != 0)
-		goto abort2;
-	ikev2_destroy_secret(ike_sa);
-
-      done:
-	if (pkt)
-		rc_vfree(pkt);
-	if (ke)
-		rc_vfree(ke);
-	if (sa)
-		rc_vfree(sa);
-
-	ikev2_payloads_destroy(&payl);
 	return;
 
       fail:
-	/* transient failure.  expect it is possible to retransmit later */
 	isakmp_log(ike_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed to send packet\n");
 	++isakmpstat.fail_send_packet;
-	goto done;
+	ike_sa->crypto_pending = 0;
+	if (pkt)
+		rc_vfree(pkt);
+	ikev2_dh_ctx_free(ctx);
+	return;
 
       abort2:
-	/* abort after packet was transmitted. */
-	/* should send informational exchange? */
       abort:
-	/* failed to construct packet, need to abort the exchange */
-	/* send notify? */
+	if (pkt)
+		rc_vfree(pkt);
+	ike_sa->crypto_pending = 0;
 	ikev2_abort(ike_sa, ECONNREFUSED);
 	isakmp_log(ike_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC,
 		   "aborting the exchange for an internal failure\n");
-	goto done;
+	ikev2_dh_ctx_free(ctx);
+}
+
+static void
+responder_state0_after_skey(int rc, void *arg)
+{
+	struct ikev2_dh_ctx *ctx = arg;
+	struct ikev2_sa *ike_sa;
+
+	ike_sa = ikev2_dh_ctx_sa(ctx);
+	if (!ike_sa) {
+		ikev2_dh_ctx_free(ctx);
+		return;
+	}
+	if (rc != 0)
+		goto abort2;
+	if (ikev2_compute_keys(ike_sa) != 0)
+		goto abort2;
+	ikev2_destroy_secret(ike_sa);
+	ike_sa->crypto_pending = 0;
+	ikev2_dh_ctx_free(ctx);
+	return;
+
+      abort2:
+	ike_sa->crypto_pending = 0;
+	ikev2_abort(ike_sa, ECONNREFUSED);
+	isakmp_log(ike_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC,
+		   "aborting the exchange for an internal failure\n");
+	ikev2_dh_ctx_free(ctx);
+}
+
+static void
+initiator_skey_done(int rc, void *arg)
+{
+	struct ikev2_dh_ctx *ctx = arg;
+	struct ikev2_sa *ike_sa;
+
+	ike_sa = ikev2_dh_ctx_sa(ctx);
+	if (!ike_sa) {
+		ikev2_dh_ctx_free(ctx);
+		return;
+	}
+	if (rc != 0)
+		goto abort;
+	if (ikev2_compute_keys(ike_sa) != 0)
+		goto abort;
+	ikev2_destroy_secret(ike_sa);
+	ikev2_set_state(ike_sa, IKEV2_STATE_INI_IKE_AUTH_SENT);
+	ikev2_update_message_id(ike_sa, ctx->message_id, TRUE);
+	initiator_state1_send(ike_sa, 0, ike_sa->remote);
+	ike_sa->crypto_pending = 0;
+	ikev2_dh_ctx_free(ctx);
+	return;
+
+      abort:
+	ike_sa->crypto_pending = 0;
+	isakmp_log(ike_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC, "failed computing IKE keys\n");
+	ikev2_abort(ike_sa, ECONNREFUSED);
+	ikev2_dh_ctx_free(ctx);
 }
 
 static void
@@ -1598,22 +1771,27 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	/* compute SKEYSEED */
 	if (ikev2_set_negotiated_sa(ike_sa, ike_sa->negotiated_sa) != 0)
 		goto abort;
-	if (compute_skeyseed(ike_sa) != 0) {
-		isakmp_log(ike_sa, local, remote, packet,
-			   PLOG_INTERR, PLOGLOC, "failed computing SKEYSEED\n");
-		goto abort;
-	}
-	if (ikev2_compute_keys(ike_sa) != 0) {
-		isakmp_log(ike_sa, local, remote, packet,
-			   PLOG_INTERR, PLOGLOC, "failed computing IKE keys\n");
-		goto abort;
-	}
-	ikev2_destroy_secret(ike_sa);
+	{
+		struct ikev2_dh_ctx *sctx;
 
-	ikev2_set_state(ike_sa, IKEV2_STATE_INI_IKE_AUTH_SENT);
-	ikev2_update_message_id(ike_sa, get_uint32(&ikehdr->message_id), TRUE);
-
-	initiator_state1_send(ike_sa, certreq, remote);
+		sctx = calloc(1, sizeof(*sctx));
+		if (!sctx)
+			goto abort;
+		sctx->ike_sa = ike_sa;
+		sctx->serial = ike_sa->serial_number;
+		sctx->message_id = get_uint32(&ikehdr->message_id);
+		ike_sa->crypto_pending = 1;
+		if (compute_skeyseed_submit(ike_sa, initiator_skey_done,
+		    sctx) != 0) {
+			ike_sa->crypto_pending = 0;
+			ikev2_dh_ctx_free(sctx);
+			isakmp_log(ike_sa, local, remote, packet,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed computing SKEYSEED\n");
+			goto abort;
+		}
+	}
+	goto done;
 
       done:
       drop:
@@ -5275,12 +5453,69 @@ ikev2_ikesa_to_proposal(struct ikev2_isakmpsa *negotiated_sa,
  *
  * return 0 if success, non-zero if failure
  */
-static int
-compute_skeyseed(struct ikev2_sa *ike_sa)
+struct skey_job {
+	struct ikev2_sa *ike_sa;
+	int serial;
+	rc_vchar_t *nonces;
+	rc_vchar_t *g_ir;
+	oakley_dh_done_t done;
+	void *arg;
+};
+
+static void
+compute_skeyseed_after_dh(int rc, void *arg)
 {
-	int retval = -1;
-	rc_vchar_t *nonces = 0;
-	rc_vchar_t *g_ir = 0;
+	struct skey_job *s = arg;
+	struct ikev2_sa *ike_sa;
+	int out = rc;
+
+	ike_sa = ikev2_find_sa_by_serial(s->serial);
+	if (!ike_sa || ike_sa != s->ike_sa)
+		out = -1;
+	else if (rc == 0) {
+		IF_TRACE({
+			TRACE((PLOGLOC, "SKEYSEED\n"));
+			TRACE((PLOGLOC, "nonces\n"));
+			plogdump(PLOG_DEBUG, PLOGLOC, 0, s->nonces->v,
+			    s->nonces->l);
+			TRACE((PLOGLOC, "g_ir\n"));
+			plogdump(PLOG_DEBUG, PLOGLOC, 0, s->g_ir->v,
+			    s->g_ir->l);
+		});
+		ike_sa->skeyseed = keyed_hash(ike_sa->prf, s->nonces, s->g_ir);
+		if (!ike_sa->skeyseed)
+			out = -1;
+		IF_TRACE({
+			if (ike_sa->skeyseed) {
+				TRACE((PLOGLOC,
+				    "SKEYSEED = prf(nonces, g_ir)\n"));
+				plogdump(PLOG_DEBUG, PLOGLOC, 0,
+				    ike_sa->skeyseed->v, ike_sa->skeyseed->l);
+			}
+		});
+	}
+	if (out != 0 && ike_sa && ike_sa == s->ike_sa)
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		    "failed to calculate skeyseed\n");
+	if (s->nonces)
+		rc_vfree(s->nonces);
+	if (s->g_ir)
+		rc_vfreez(s->g_ir);
+	{
+		oakley_dh_done_t d = s->done;
+		void *u = s->arg;
+
+		free(s);
+		if (d)
+			d(out, u);
+	}
+}
+
+static int
+compute_skeyseed_submit(struct ikev2_sa *ike_sa, oakley_dh_done_t done,
+    void *arg)
+{
+	struct skey_job *s;
 	struct keyed_hash *prf;
 	size_t prf_keylen;
 	size_t i_len;
@@ -5288,104 +5523,57 @@ compute_skeyseed(struct ikev2_sa *ike_sa)
 	uint8_t *p;
 	struct dhgroup *dhgrpinfo;
 
-	/*
-	 * g^ir = (g^i)^r;
-	 * skeyseed = prf(Ni | Nr, g^ir);
-	 */
-
 	assert(ike_sa->n_i && ike_sa->n_r
 	       && ike_sa->prf && ike_sa->authenticator && ike_sa->encryptor
 	       && !ike_sa->skeyseed);
 
+	s = calloc(1, sizeof(*s));
+	if (!s)
+		return -1;
+	s->ike_sa = ike_sa;
+	s->serial = ike_sa->serial_number;
+	s->done = done;
+	s->arg = arg;
+
 	prf = ike_sa->prf;
 	prf_keylen = prf->method->preferred_key_len;
-
-	/*
-	 * (RFC4306) 
-	 * If the negotiated prf takes a fixed-length key and the
-	 * lengths of Ni and Nr do not add up to that length, half the
-	 * bits must come from Ni and half from Nr, taking the first
-	 * bits of each.
-	 */
-	/* 
-	 * (RFC4434)
-	 * When the PRF described in this document is used with IKEv2,
-	 * the PRF is considered fixed-length for generating keying
-	 * material but variable-length for authentication.
-	 */
-	/*
-	 * (ikev2bis)
-	 * For historical backwards-compatibility reasons, there are
-	 * two PRFs that are treated specially in this calculation.
-	 * If the negotiated PRF is AES-XCBC-PRF-128 [AESXCBCPRF128]
-	 * or AES-CMAC-PRF-128 [AESCMACPRF128], only the first 64 bits
-	 * of Ni and the first 64 bits of Nr are used in the
-	 * calculation.
-	*/
 
 	if ((!prf->method->is_variable_keylen ||
 	     (prf->method == (struct keyed_hash_method *)&aes_xcbc_hash_method ||
 	      prf->method == (struct keyed_hash_method *)&aes_cmac_hash_method))
 	    && ike_sa->n_i->l + ike_sa->n_r->l != prf_keylen) {
-		assert(prf_keylen % 2 == 0);	/* assuming prf keylen is even */
+		assert(prf_keylen % 2 == 0);
 		i_len = prf_keylen / 2;
 		r_len = prf_keylen / 2;
-		/*
-		 * since Nonce MUST be longer than 16 bytes, and the only PRF
-		 * defined with fixed key length is 128-bit AES-XCBC-PRF-128,
-		 * this assertion always holds.
-		 */
 		assert(ike_sa->n_i->l >= i_len && ike_sa->n_r->l >= r_len);
 	} else {
 		i_len = ike_sa->n_i->l;
 		r_len = ike_sa->n_r->l;
 	}
-	nonces = rc_vmalloc(i_len + r_len);
-	if (!nonces)
+	s->nonces = rc_vmalloc(i_len + r_len);
+	if (!s->nonces)
 		goto fail;
-	p = (uint8_t *)nonces->v;
+	p = (uint8_t *)s->nonces->v;
 	memcpy(p, ike_sa->n_i->v, i_len);
 	p += i_len;
 	memcpy(p, ike_sa->n_r->v, r_len);
 
 	dhgrpinfo = (struct dhgroup *)ike_sa->negotiated_sa->dhdef->definition;
 	if (!dhgrpinfo)
-		goto fail;	/* shouldn't happen */
-
-	if (oakley_dh_compute(dhgrpinfo, ike_sa->dhpub, ike_sa->dhpriv,
-			      ike_sa->dhpub_p, &g_ir) < 0)
 		goto fail;
 
-	IF_TRACE({
-		TRACE((PLOGLOC, "SKEYSEED\n"));
-		TRACE((PLOGLOC, "nonces\n"));
-		plogdump(PLOG_DEBUG, PLOGLOC, 0, nonces->v, nonces->l);
-		TRACE((PLOGLOC, "g_ir\n"));
-		plogdump(PLOG_DEBUG, PLOGLOC, 0, g_ir->v, g_ir->l);
-	});
-	ike_sa->skeyseed = keyed_hash(ike_sa->prf, nonces, g_ir);
-	if (!ike_sa->skeyseed)
+	if (oakley_dh_compute_submit(dhgrpinfo, ike_sa->dhpub, ike_sa->dhpriv,
+	    ike_sa->dhpub_p, &s->g_ir, compute_skeyseed_after_dh, s) != 0)
 		goto fail;
-
-	IF_TRACE({
-		TRACE((PLOGLOC, "SKEYSEED = prf(nonces, g_ir)\n"));
-		plogdump(PLOG_DEBUG, PLOGLOC, 0, ike_sa->skeyseed->v,
-			 ike_sa->skeyseed->l);
-	});
-
-	retval = 0;
-
-      done:
-	if (nonces)
-		rc_vfree(nonces);
-	if (g_ir)
-		rc_vfreez(g_ir);
-	return retval;
+	return 0;
 
       fail:
+	if (s->nonces)
+		rc_vfree(s->nonces);
+	free(s);
 	isakmp_log(ike_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed to calculate skeyseed\n");
-	goto done;
+	return -1;
 }
 
 /*

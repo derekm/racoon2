@@ -40,7 +40,9 @@
 #include "dhgroup.h"
 #include "oakley.h"
 
+#include <stdlib.h>
 #include "crypto_impl.h"
+#include "crypto_workers.h"
 #include "debug.h"
 
 #define INITDHVAL(a, s, t)                                                    \
@@ -224,4 +226,92 @@ oakley_dh_generate(const struct dhgroup *dh, rc_vchar_t **pub,
 	});
 
 	return 0;
+}
+
+struct oakley_dh_job {
+	int op;
+	const struct dhgroup *dh;
+	rc_vchar_t *pub;
+	rc_vchar_t *priv;
+	rc_vchar_t *pub_p;
+	rc_vchar_t **pub_out;
+	rc_vchar_t **priv_out;
+	rc_vchar_t **gxy_out;
+	int rc;
+	oakley_dh_done_t done;
+	void *arg;
+};
+
+static void
+oakley_dh_job_fn(void *a)
+{
+	struct oakley_dh_job *j = a;
+
+	if (j->op == 0)
+		j->rc = oakley_dh_generate(j->dh, j->pub_out, j->priv_out);
+	else
+		j->rc = oakley_dh_compute(j->dh, j->pub, j->priv, j->pub_p,
+		    j->gxy_out);
+}
+
+static void
+oakley_dh_job_done(void *a)
+{
+	struct oakley_dh_job *j = a;
+	oakley_dh_done_t d = j->done;
+	void *arg = j->arg;
+	int rc = j->rc;
+
+	free(j);
+	if (d)
+		d(rc, arg);
+}
+
+static int
+oakley_dh_job_submit(struct oakley_dh_job *j)
+{
+	if (crypto_job_submit(oakley_dh_job_fn, oakley_dh_job_done, j) != 0) {
+		free(j);
+		return -1;
+	}
+	return 0;
+}
+
+int
+oakley_dh_generate_submit(const struct dhgroup *dh, rc_vchar_t **pub,
+    rc_vchar_t **priv, oakley_dh_done_t done, void *arg)
+{
+	struct oakley_dh_job *j;
+
+	j = calloc(1, sizeof(*j));
+	if (j == NULL)
+		return -1;
+	j->op = 0;
+	j->dh = dh;
+	j->pub_out = pub;
+	j->priv_out = priv;
+	j->done = done;
+	j->arg = arg;
+	return oakley_dh_job_submit(j);
+}
+
+int
+oakley_dh_compute_submit(const struct dhgroup *dh, rc_vchar_t *pub,
+    rc_vchar_t *priv, rc_vchar_t *pub_p, rc_vchar_t **gxy,
+    oakley_dh_done_t done, void *arg)
+{
+	struct oakley_dh_job *j;
+
+	j = calloc(1, sizeof(*j));
+	if (j == NULL)
+		return -1;
+	j->op = 1;
+	j->dh = dh;
+	j->pub = pub;
+	j->priv = priv;
+	j->pub_p = pub_p;
+	j->gxy_out = gxy;
+	j->done = done;
+	j->arg = arg;
+	return oakley_dh_job_submit(j);
 }

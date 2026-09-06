@@ -183,6 +183,12 @@ extern int oakley_dh_compute (const struct dhgroup *,
 				  rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t **);
 extern int oakley_dh_generate (const struct dhgroup *,
 				   rc_vchar_t **, rc_vchar_t **);
+
+typedef void (*oakley_dh_done_t)(int rc, void *arg);
+int oakley_dh_generate_submit(const struct dhgroup *, rc_vchar_t **,
+    rc_vchar_t **, oakley_dh_done_t, void *);
+int oakley_dh_compute_submit(const struct dhgroup *, rc_vchar_t *,
+    rc_vchar_t *, rc_vchar_t *, rc_vchar_t **, oakley_dh_done_t, void *);
 extern int oakley_setdhgroup (int, struct dhgroup **);
 
 extern rc_vchar_t *oakley_prf (rc_vchar_t *, rc_vchar_t *, struct ph1handle *);
