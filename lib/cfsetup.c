@@ -3836,7 +3836,13 @@ rcf_get_rvrs_selector(struct rcf_selector *sl, struct rcf_selector **rsl)
 		return -1;
 
 	for (n = rcf_selector_head; n; n = n->next) {
-		const rc_vchar_t *rm_index2 = n->pl->rm_index;
+		const rc_vchar_t *rm_index2;
+
+		if (n == sl || n->pl == NULL)
+			continue;
+		if (n->direction == sl->direction)
+			continue;
+		rm_index2 = n->pl->rm_index;
 		if (rc_vmemcmp(rm_index1, rm_index2))
 			continue;
 		if (rcs_addrlist_cmp(sl->src, n->dst) == 0 &&
