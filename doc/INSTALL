@@ -146,6 +146,16 @@ o Linux (kernel 2.6)
 	./configure --with-km-backend=xfrm       # experimental Linux XFRM
 	./configure --with-km-backend=userspace  # DPDK/appliance loopback
 
+  ESP AES-GCM (RFC 4106 ICV16), XFRM backend:
+
+	sa esp_gcm {
+		sa_protocol esp;
+		esp_enc_alg { aes_gcm; };
+		esp_auth_alg { non_auth; };
+	};
+
+  Do not put aes_gcm in kmp_enc_alg (IKE SA has no GCM encryptor).
+
   additionally these items are also set on later version of Linux-2.6.18
   CONFIG_INET_XFRM_MODE_TRANSPORT
   CONFIG_INET_XFRM_MODE_TUNNEL
