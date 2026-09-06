@@ -1,18 +1,25 @@
 #!/bin/sh
 # kinds/ikev2.sh — strongSwan netns vs live racoon2 (r2_xfrm_e2e.sh).
-# One charon at a time. Does not stop systemd racoon2-*.
+# One charon at a time. Workers cell: stop racoon2-iked only, not spmd.
 kind_ikev2() {
 	name=$1
 	require_root || return 1
 	detect_rip || return 1
-	iked_listening || { log "FAIL: iked not on :500"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
-
 	charon_reset
 	ip netns del "$NS" 2>/dev/null || true
 	ip link del "$VETH_H" 2>/dev/null || true
 	netns_up
 	systemctl stop strongswan-starter.service 2>/dev/null || true
+	ip xfrm state flush || true
+	ip xfrm policy flush || true
+	ip netns exec "$NS" ip xfrm state flush || true
+	ip netns exec "$NS" ip xfrm policy flush || true
+	# spmd caches IKE UDP bypass in-process. Kernel flush without a
+	# restart skips reinstall → IKE_AUTH hits the tunnel SPD.
+	systemctl restart racoon2-spmd 2>/dev/null || true
+	sleep 1
+	iked_apply_workers || return 1
 
 	# ICMP to the host's eth0 addr from the veth often fails (local-dest);
 	# IKE UDP still delivers. Gate on HIP only.
@@ -49,17 +56,10 @@ EOF
 EOF
 	chmod 600 /etc/ipsec.secrets
 
-	ip xfrm state flush || true
-	ip xfrm policy flush || true
-	ip netns exec "$NS" ip xfrm state flush || true
-	ip netns exec "$NS" ip xfrm policy flush || true
 	ip netns exec "$NS" ipsec start
 	sleep 2
-	if ! timeout 25 ip netns exec "$NS" ipsec up r2macos; then
-		log "FAIL: ipsec up r2macos"
-		charon_reset
-		return 1
-	fi
+	# ipsec up can hang after the Child SA is already in; ping is the gate.
+	timeout 25 ip netns exec "$NS" ipsec up r2macos || true
 	sleep 2
 	if ! ip netns exec "$NS" ping -c 3 -W 2 "$RIP"; then
 		log "FAIL: inner ping"

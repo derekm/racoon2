@@ -56,3 +56,80 @@ netns_up() {
 iked_listening() {
 	ss -ulnp | grep -q ":500 "
 }
+
+# R2_WORKERS empty: live systemd. Numeric: stop racoon2-iked, iked -F with
+# RACOON2_CRYPTO_WORKERS, restore after the case. Does not touch spmd.
+# Does not enable racoon2.target.
+iked_apply_workers() {
+	R2_IKED_EPHEMERAL_PID=
+	R2_IKED_STOPPED=
+	case ${R2_WORKERS-} in
+	'')
+		iked_listening || { log "FAIL: iked not on :500"; return 1; }
+		return 0
+		;;
+	esac
+	systemctl stop racoon2-iked 2>/dev/null || true
+	R2_IKED_STOPPED=1
+	i=0
+	while iked_listening; do
+		i=$((i + 1))
+		if [ "$i" -gt 20 ]; then
+			log "FAIL: :500 still bound after stop"
+			return 1
+		fi
+		sleep 1
+	done
+	: >/tmp/r2-iked-matrix.log
+	(
+		cd "$ETC" || exit 1
+		export RACOON2_CRYPTO_WORKERS="$R2_WORKERS"
+		exec "$SBIN/iked" -F -l /tmp/r2-iked-matrix.log
+	) >>/tmp/r2-iked-matrix.log 2>&1 &
+	R2_IKED_EPHEMERAL_PID=$!
+	i=0
+	while ! iked_listening; do
+		i=$((i + 1))
+		if [ "$i" -gt 20 ]; then
+			log "FAIL: ephemeral iked workers=$R2_WORKERS not on :500"
+			return 1
+		fi
+		if ! kill -0 "$R2_IKED_EPHEMERAL_PID" 2>/dev/null; then
+			log "FAIL: ephemeral iked died workers=$R2_WORKERS"
+			return 1
+		fi
+		sleep 1
+	done
+	log "iked pid=$R2_IKED_EPHEMERAL_PID workers=$R2_WORKERS"
+	envn=$(tr '\0' '\n' <"/proc/${R2_IKED_EPHEMERAL_PID}/environ" 2>/dev/null | grep '^RACOON2_CRYPTO_WORKERS=' || true)
+	if [ "$envn" != "RACOON2_CRYPTO_WORKERS=$R2_WORKERS" ]; then
+		log "FAIL: environ $envn want RACOON2_CRYPTO_WORKERS=$R2_WORKERS"
+		return 1
+	fi
+	if [ "$R2_WORKERS" -gt 0 ]; then
+		grep -q "crypto workers: $R2_WORKERS" /tmp/r2-iked-matrix.log || {
+			log "FAIL: no 'crypto workers: $R2_WORKERS' in log"
+			return 1
+		}
+	fi
+}
+
+iked_restore() {
+	if [ -n "${R2_IKED_EPHEMERAL_PID:-}" ]; then
+		kill "$R2_IKED_EPHEMERAL_PID" 2>/dev/null || true
+		wait "$R2_IKED_EPHEMERAL_PID" 2>/dev/null || true
+		R2_IKED_EPHEMERAL_PID=
+	fi
+	if [ "${R2_IKED_STOPPED:-}" = 1 ]; then
+		ip xfrm state flush || true
+		ip xfrm policy flush || true
+		systemctl start racoon2-iked 2>/dev/null || true
+		R2_IKED_STOPPED=
+		i=0
+		while ! iked_listening; do
+			i=$((i + 1))
+			[ "$i" -gt 20 ] && break
+			sleep 1
+		done
+	fi
+}
