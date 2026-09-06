@@ -253,6 +253,28 @@ if test $engine = "yes"; then
 	AC_DEFINE(WITH_OPENSSL_ENGINE, 1, [define to use OpenSSL ENGINE])
 fi
 
+EVLOOP=evloop_select.c
+AC_CHECK_HEADERS([sys/epoll.h])
+AC_MSG_CHECKING(--enable-epoll)
+AC_ARG_ENABLE(epoll,
+	[  --enable-epoll          use epoll for iked (linux default)],
+	[enable_epoll=$enableval], [
+	case $host_os in
+	*linux*) enable_epoll=yes ;;
+	*) enable_epoll=no ;;
+	esac
+])
+AC_MSG_RESULT($enable_epoll)
+if test x"$enable_epoll" = xyes; then
+	if test x"$ac_cv_header_sys_epoll_h" = xyes; then
+		EVLOOP=evloop_epoll.c
+		AC_DEFINE(HAVE_EPOLL, 1, [iked uses epoll])
+	else
+		AC_MSG_WARN([epoll requested but sys/epoll.h missing; using select])
+	fi
+fi
+AC_SUBST(EVLOOP)
+
 # Option RC5
 AC_MSG_CHECKING(if --enable-rc5 option is specified)
 AC_ARG_ENABLE(rc5,

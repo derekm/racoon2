@@ -70,6 +70,7 @@
 #ifdef WITH_ADMIN
 #  include "admin.h"
 #endif
+#include "evloop.h"
 
 const char *racoon_config_path = RACOON_CONF;
 int opt_foreground = FALSE;
@@ -316,8 +317,25 @@ main(int argc, char **argv)
 	(void)signal(SIGUSR1, handle_sigusr1);
 	(void)signal(SIGUSR2, handle_sigusr2);
 
-	eay_init();
+	{
+		const char *s;
 
+		s = getenv("RACOON2_OPENSSL_PROVIDER");
+		if (s && *s)
+			eay_set_provider(s);
+#ifdef EAY_OPENSSL_PROVIDER
+		else
+			eay_set_provider(EAY_OPENSSL_PROVIDER);
+#endif
+		s = getenv("RACOON2_OPENSSL_ENGINE");
+		if (s && *s)
+			eay_set_engine(s);
+#ifdef EAY_OPENSSL_ENGINE
+		else
+			eay_set_engine(EAY_OPENSSL_ENGINE);
+#endif
+	}
+	eay_init();
 	INFO((PLOGLOC, "reading config %s\n", racoon_config_path));
 #ifdef YYDEBUG
 	if (opt_debug & DEBUG_FLAG_CONFIG) {
@@ -411,6 +429,10 @@ main(int argc, char **argv)
 		}
 		iked_pidfile_create();
 	}
+
+	if (evloop_init() != 0)
+		plog(PLOG_INTWARN, PLOGLOC, 0,
+		    "evloop_init failed; wait will fall back to select\n");
 #ifdef HAVE_LIBPCAP
 	{
 		const char *dump_file;
@@ -504,10 +526,10 @@ iked_mainloop(void)
 		monitor_fd(adminsock_fd = admin_socket(), &fdset, &nfds);
 #endif
 		timeout = scheduler();
-		num_fds = select(nfds, &fdset, NULL, NULL, timeout);
+		num_fds = evloop_wait(nfds, &fdset, timeout);
 		if (num_fds == -1) {
 			plog(PLOG_INTERR, PLOGLOC, 0,
-			     "select: %s\n", strerror(errno));
+			     "evloop_wait: %s\n", strerror(errno));
 			continue;
 		}
 
@@ -516,7 +538,7 @@ iked_mainloop(void)
 			rtsock_process();
 #endif
 #ifdef WITH_PARSECOA
-		if (nlsock_fd >= 0 && FD_ISSET(nlxsock_fd, &fdset))
+		if (nlxsock_fd >= 0 && FD_ISSET(nlxsock_fd, &fdset))
 			nl_xfrm_process();
 #endif
 #ifdef WITH_ADMIN
@@ -565,6 +587,7 @@ static void
 iked_exit(int code)
 {
 	INFO((PLOGLOC, "exiting (code %d)\n", code));
+	evloop_fini();
 	eay_cleanup();
 
 	iked_pidfile_remove();

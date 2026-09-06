@@ -11,6 +11,8 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  spmd.socket is /run/racoon2/spmif; iked.socket is UDP
 	  500/4500. LISTEN_FDS helper in lib/sd_listenfds.c (no
 	  libsystemd). Default startup_scripts on Linux is systemd.
+	* iked: Linux default event wait is epoll (--disable-epoll for
+	  select). make check: evlooptest (beside eaytest).
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 
