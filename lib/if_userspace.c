@@ -43,6 +43,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -67,6 +68,7 @@
 #define US_SPDADD	5
 #define US_SPDDEL	6
 #define US_REGISTER	7
+#define US_GET		8
 #define US_BUFLEN	2048
 
 uint32_t rc_spirange_min = 0x00000100;
@@ -95,6 +97,14 @@ struct us_hdr {
 	uint16_t dst_len;
 	uint16_t enckeylen;
 	uint16_t authkeylen;
+	uint8_t enctype;
+	uint8_t authtype;
+	uint8_t wsize;
+	uint8_t pad;
+	uint64_t lft_hard_time;
+	uint64_t lft_hard_bytes;
+	uint64_t lft_soft_time;
+	uint64_t lft_soft_bytes;
 };
 
 static void
@@ -164,6 +174,13 @@ us_pack(char *buf, size_t buflen, uint32_t type, struct rcpfk_msg *rc)
 	h->dst_len = dl;
 	h->enckeylen = el;
 	h->authkeylen = al;
+	h->enctype = rc->enctype;
+	h->authtype = rc->authtype;
+	h->wsize = rc->wsize;
+	h->lft_hard_time = rc->lft_hard_time;
+	h->lft_hard_bytes = rc->lft_hard_bytes;
+	h->lft_soft_time = rc->lft_soft_time;
+	h->lft_soft_bytes = rc->lft_soft_bytes;
 	p = buf + sizeof(*h);
 	if (sl && rc->sa_src) {
 		memcpy(p, rc->sa_src, sl);
@@ -278,7 +295,7 @@ rcpfk_send_getspi(struct rcpfk_msg *rc)
 	if (rc->spi == 0) {
 		if (next_spi < rc_spirange_min || next_spi > rc_spirange_max)
 			next_spi = rc_spirange_min;
-		rc->spi = next_spi++;
+		rc->spi = htonl(next_spi++);
 		if (next_spi > rc_spirange_max)
 			next_spi = rc_spirange_min;
 	}
@@ -306,7 +323,7 @@ rcpfk_send_delete(struct rcpfk_msg *rc)
 int
 rcpfk_send_get(struct rcpfk_msg *rc)
 {
-	return us_post(rc, US_GETSPI);
+	return us_post(rc, US_GET);
 }
 
 int
@@ -413,12 +430,48 @@ rcpfk_handler(struct rcpfk_msg *rc)
 	rc->satype = h->satype;
 	rc->samode = h->samode;
 	rc->dir = h->dir;
+	rc->enctype = h->enctype;
+	rc->authtype = h->authtype;
+	rc->wsize = h->wsize;
+	rc->lft_hard_time = h->lft_hard_time;
+	rc->lft_hard_bytes = h->lft_hard_bytes;
+	rc->lft_soft_time = h->lft_soft_time;
+	rc->lft_soft_bytes = h->lft_soft_bytes;
+	{
+		char *p = buf + sizeof(*h);
+		size_t left = (size_t)n - sizeof(*h);
+
+		if (h->src_len) {
+			if (h->src_len > left ||
+			    h->src_len > sizeof(rc->sa_src_storage)) {
+				us_seterror(rc, EINVAL, "bad src_len");
+				return -1;
+			}
+			memcpy(&rc->sa_src_storage, p, h->src_len);
+			rc->sa_src = (struct sockaddr *)&rc->sa_src_storage;
+			p += h->src_len;
+			left -= h->src_len;
+		}
+		if (h->dst_len) {
+			if (h->dst_len > left ||
+			    h->dst_len > sizeof(rc->sa_dst_storage)) {
+				us_seterror(rc, EINVAL, "bad dst_len");
+				return -1;
+			}
+			memcpy(&rc->sa_dst_storage, p, h->dst_len);
+			rc->sa_dst = (struct sockaddr *)&rc->sa_dst_storage;
+		}
+	}
 	if (cb == NULL)
 		return 0;
 	switch (h->type) {
 	case US_GETSPI:
 		if (cb->cb_getspi)
 			r = cb->cb_getspi(rc);
+		break;
+	case US_GET:
+		if (cb->cb_get)
+			r = cb->cb_get(rc);
 		break;
 	case US_UPDSA:
 		if (cb->cb_update)
