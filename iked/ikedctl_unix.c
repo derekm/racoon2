@@ -218,7 +218,8 @@ transact(void *req, size_t reqlen)
 
 	com_send(req, reqlen);
 	rep = com_recv(&replen);
-	errn = rep->ac_errno;
+	/* ac_errno aliases ac_len_high when ADMIN_FLAG_LONG_REPLY is set */
+	errn = (rep->ac_cmd & ADMIN_FLAG_LONG_REPLY) ? 0 : rep->ac_errno;
 	if (errn) {
 		if (errn == ENOTSUP)
 			errx(EXIT_FAILURE,

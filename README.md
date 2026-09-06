@@ -88,6 +88,11 @@ netlink. IKE SAs:
 	ikedctl flush-sa isakmp
 	ikedctl establish-sa isakmp inet <src> <dst>
 	ikedctl vpn-connect <gateway>
+	ikedctl reload-config
+
+`reload-config` is SIGHUP: `iked_reload()` runs `ikev2_shutdown()`
+before reread — all IKEv2 SAs go. `establish-sa` / `vpn-connect`
+return errno (ENOENT if no selector).
 
 Kernel SAD/SPD (not ikedctl):
 

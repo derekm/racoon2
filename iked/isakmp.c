@@ -917,26 +917,26 @@ isakmp_initiate(struct sadb_request_method *callback_method,
 	return;
 }
 
-void
+int
 isakmp_force_initiate(const char *selector_index, const char *addr)
 {
 	struct isakmp_acquire_request	*req;
-	struct addrinfo	*res;
-	int	err;
+	struct addrinfo	*res = NULL;
+	int	err = 0;
 
 	TRACE((PLOGLOC, "force initiating %s %s\n", selector_index, addr));
 
 	if (!addr && !selector_index) {
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "at least one of peer address or selector_index must be specified\n");
-		return;
+		return EINVAL;
 	}
 
 	req = racoon_calloc(1, sizeof(*req));
 	if (!req) {
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "failed to allocate memory\n");
-		return;
+		return ENOMEM;
 	}
 
 	if (addr) {
@@ -951,15 +951,18 @@ isakmp_force_initiate(const char *selector_index, const char *addr)
 		if (err) {
 			plog(PLOG_INTERR, PLOGLOC, 0,
 			     "getaddrinfo: %s\n", gai_strerror(err));
-			return;
+			err = EINVAL;
+			goto fail;
 		}
 		if (!res || !res->ai_addr) {
 			plog(PLOG_INTERR, PLOGLOC, 0,
 			     "unknown address %s\n", addr);
-			return;
+			err = EINVAL;
+			goto fail;
 		}
 		req->dst = rcs_sadup(res->ai_addr);
 		freeaddrinfo(res);
+		res = NULL;
 
 		req->src = getlocaladdr(req->dst, 0, isakmp_port);
 	}
@@ -978,7 +981,8 @@ isakmp_force_initiate(const char *selector_index, const char *addr)
 		if (!selector) {
 			plog(PLOG_INTERR, PLOGLOC, 0,
 			     "no selector for address %s\n", addr);
-			return;
+			err = ENOENT;
+			goto fail;
 		}
 		index = rc_strdup(rc_vmem2str(selector->sl_index));
 		isakmp_initiate_cont(req, index);
@@ -986,7 +990,16 @@ isakmp_force_initiate(const char *selector_index, const char *addr)
 	}
 
 	TRACE((PLOGLOC, "done.\n"));
-	return;
+	return 0;
+fail:
+	if (res)
+		freeaddrinfo(res);
+	if (req->src)
+		rc_free(req->src);
+	if (req->dst)
+		rc_free(req->dst);
+	racoon_free(req);
+	return err;
 }
 
 void

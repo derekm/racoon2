@@ -165,6 +165,7 @@ admin_process(void)
 
 		tv.tv_sec = 2;
 		tv.tv_usec = 0;
+		/* Cap recv, not O_NONBLOCK: accept then recv races connect-then-send. */
 		(void)setsockopt(so2, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 		(void)setsockopt(so2, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 	}
@@ -384,7 +385,7 @@ admin_dispatch(int so2, char *combuf)
 		plog(PLOG_INFO, PLOGLOC, NULL,
 		     "admin establish-sa %s%s%s\n", host,
 		     name ? " selector " : "", name ? name : "");
-		isakmp_force_initiate(name, host);
+		l_ac_errno = isakmp_force_initiate(name, host);
 		break;
 	}
 

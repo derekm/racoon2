@@ -6,6 +6,10 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  Linux AF_KEY drops kernel→user datagrams on rcvbuf (no
 	  netlink_overrun); not the default. BSD stays pfkey.
 	  `--with-km-backend=pfkey` still builds if_pfkeyv2.c.
+	* admin: establish-sa/vpn-connect surface errno (ENOENT if no
+	  selector). ikedctl masks ADMIN_FLAG_LONG_REPLY before
+	  ac_errno (aliases ac_len_high). reload-config is SIGHUP
+	  (ikev2_shutdown then reread).
 
 2026-09-05 Derek Moore
 
