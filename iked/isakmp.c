@@ -527,8 +527,12 @@ isakmp_open_address(struct sockaddr *addr, int port)
 
 	if (rcf_interface_head->application_bypass != RCT_BOOL_OFF) {
 		if (setsockopt_bypass(p->sock, SOCKADDR_FAMILY(sa)) < 0) {
-			/* setsockopt_bypass() spits error message */
-			goto fail;
+			if (errno != EOPNOTSUPP && errno != ENOPROTOOPT) {
+				/* setsockopt_bypass() spits error message */
+				goto fail;
+			}
+			plog(PLOG_INTWARN, PLOGLOC, NULL,
+			     "IPSEC_POLICY bypass unsupported; binding IKE anyway\n");
 		}
 	}
 
