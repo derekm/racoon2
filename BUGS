@@ -5,7 +5,18 @@ common issues
    + Lifetime of byte only works on Linux based OS, though racoon2 will
      exchange the lifetime of byte during its negotiation.  It is not
      a matter of racoon2.  The kernel code has to be fixed in order to use
-     this function.
+     this function.  The XFRM backend installs both byte and time hard/soft
+     limits (XFRM_INF when the racoon value is 0).
+
+   + Linux NETLINK_XFRM backend is opt-in (--with-km-backend=xfrm).
+     Default remains pfkey. XFRMA_ENCAP and tunnel sel 0/0 are coded
+     but not verified on a live kernel; do not claim Apple NAT-T or
+     IPv6-in-IPv4 work until `ip xfrm state/policy` after iked+spmd
+     matches SPIs and reqids. After a failed IKEv1 session, leftover
+     SAs are not auto-flushed: `ip xfrm state flush` /
+     `ip xfrm policy flush` (or reboot). XFRM expire carries
+     curlft.use_time/packets so iked's lft_current_alloc rekey gate
+     can be honest once the path is live.
 
    + NetBSD kernel that enabled NAT-T, which you defined options IPSEC_NAT_T
      when you built your kernel, can not send packets which triggered

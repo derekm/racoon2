@@ -636,10 +636,12 @@ rcpfk_send_addx(struct rcpfk_msg *rc, int type)
 		goto err;
 
 #ifdef ENABLE_NATT
-	if (rc->sa_src->sa_family == AF_INET &&
-	    rc->sa_dst->sa_family == AF_INET &&
-	    (*rcs_getsaport(rc->sa_src) == htons(RC_PORT_IKE_NATT) ||
-	     *rcs_getsaport(rc->sa_dst) == htons(RC_PORT_IKE_NATT))) {
+	if (rc->natt_type ||
+	    (rc->sa_src && rc->sa_dst &&
+	     rc->sa_src->sa_family == AF_INET &&
+	     rc->sa_dst->sa_family == AF_INET &&
+	     (*rcs_getsaport(rc->sa_src) == htons(RC_PORT_IKE_NATT) ||
+	      *rcs_getsaport(rc->sa_dst) == htons(RC_PORT_IKE_NATT)))) {
 		if (rcpfk_set_sadb_x_nattype(&buf, rc))
 			goto err;
 
@@ -1664,7 +1666,7 @@ rcpfk_set_sadb_x_nattype(rc_vchar_t **msg, struct rcpfk_msg *rc)
 
 	p->sadb_x_nat_t_type_len = PFKEY_UNIT64_U16(extlen);
 	p->sadb_x_nat_t_type_exttype = SADB_X_EXT_NAT_T_TYPE;
-	p->sadb_x_nat_t_type_type = UDP_ENCAP_ESPINUDP;
+	p->sadb_x_nat_t_type_type = rc->natt_type ? rc->natt_type : UDP_ENCAP_ESPINUDP;
 	bzero(p->sadb_x_nat_t_type_reserved,
 	      sizeof(p->sadb_x_nat_t_type_reserved));
 	*msg = buf;
@@ -1691,9 +1693,25 @@ rcpfk_set_sadb_x_natport(rc_vchar_t **msg, struct rcpfk_msg *rc, int type)
 
 	switch (type) {
 	case SADB_X_EXT_NAT_T_SPORT:
+		if (rc->natt_sport) {
+			p->sadb_x_nat_t_port_len = PFKEY_UNIT64_U16(extlen);
+			p->sadb_x_nat_t_port_exttype = type;
+			p->sadb_x_nat_t_port_reserved = 0;
+			p->sadb_x_nat_t_port_port = rc->natt_sport;
+			*msg = buf;
+			return 0;
+		}
 		sa = rc->sa_src;
 		break;
 	case SADB_X_EXT_NAT_T_DPORT:
+		if (rc->natt_dport) {
+			p->sadb_x_nat_t_port_len = PFKEY_UNIT64_U16(extlen);
+			p->sadb_x_nat_t_port_exttype = type;
+			p->sadb_x_nat_t_port_reserved = 0;
+			p->sadb_x_nat_t_port_port = rc->natt_dport;
+			*msg = buf;
+			return 0;
+		}
 		sa = rc->sa_dst;
 		break;
 	default:

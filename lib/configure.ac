@@ -119,6 +119,7 @@ AC_HEADER_SYS_WAIT
 AC_CHECK_HEADERS(sys/time.h net/if_var.h net/ethernet.h limits.h unistd.h stdarg.h varargs.h netinet6/ipsec.h netipsec/ipsec.h)
 
 RC_CHECK_PFKEYV2_H
+RC_KM_BACKEND
 RC_IF_NATT_ENABLE
 
 dnl Checks for typedefs, structures, and compiler characteristics.

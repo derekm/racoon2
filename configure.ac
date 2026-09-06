@@ -18,6 +18,12 @@ RC_IF_INSTALL_OPTS
 
 AC_CONFIG_SUBDIRS([lib spmd iked kinkd])
 
+dnl Documented here; lib/configure.ac selects if_xfrm.c vs if_pfkeyv2.c.
+AC_ARG_WITH(km-backend,
+	[  --with-km-backend=xfrm|pfkey
+                          SAD/SPD kernel interface (default pfkey;
+                          Linux xfrm is opt-in)])
+
 dnl Set the debug option by default for now.
 AC_MSG_CHECKING(if --enable-debug option is specified)
 AC_ARG_ENABLE(debug,

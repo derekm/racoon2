@@ -42,7 +42,7 @@
 
 /* racoon PF_KEY message container */
 struct rcpfk_msg {
-	int so;				/* pfkey socket */
+	int so;				/* PF_KEY or NETLINK_XFRM socket */
 	char estr[RCPFK_ERRSTRBUFSIZE];
 	int eno;
 	void *ptr;
@@ -89,6 +89,11 @@ struct rcpfk_msg {
 	uint8_t pltype;
 	uint8_t ipsec_level;		/* always require in racoon2 */
 	char tag_name[16];
+
+	/* NAT-T: 0 = unset (derive from sa_* ports). Network byte order. */
+	uint16_t natt_sport;
+	uint16_t natt_dport;
+	uint8_t natt_type;		/* 0 unset; Linux UDP_ENCAP_ESPINUDP */
 
 	/* internal buffers; no need to touch from external */
 	struct sockaddr_storage sa_src_storage;
