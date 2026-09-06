@@ -71,7 +71,12 @@ On Linux, `make install` ships systemd units under
 PrivateTmp). `systemctl enable --now racoon2.target` starts
 spmd.socket then iked. Daemons use `-F`; no init.d `sleep 1`.
 
-iked on Linux uses epoll (`--disable-epoll` for select).
+iked on Linux uses epoll (`--disable-epoll` for select). Optional
+crypto workers (`--with-crypto-workers=N`, default 0 = inline) drain
+on the IKE thread. OpenSSL 3 providers (`--with-openssl-provider` /
+`RACOON2_OPENSSL_PROVIDER`) and ENGINE load in `eay_init`. DH/RSA
+handshake enqueue is not wired; a provider only helps if it
+implements those methods on the calling thread.
 
 Currently, the system supports the following specifications:
 

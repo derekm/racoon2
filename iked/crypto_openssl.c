@@ -61,30 +61,81 @@
 #include "gcmalloc.h"
 
 #include <openssl/err.h>
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/provider.h>
+#include <openssl/crypto.h>
+#endif
 #ifdef WITH_OPENSSL_ENGINE
 #include <openssl/engine.h>
 #endif
 
-/*
- * I hate to cast every parameter to des_xx into void *, but it is
- * necessary for SSLeay/OpenSSL portability.  It sucks.
- */
-
-#ifdef HAVE_SIGNING_C
-static int cb_check_cert (int, X509_STORE_CTX *);
-static X509 *mem2x509 (rc_vchar_t *);
+static const char *eay_provider_name;
+static const char *eay_engine_id;
+#ifdef WITH_OPENSSL_ENGINE
+static ENGINE *eay_engine;
 #endif
 
-static caddr_t eay_hmac_init(rc_vchar_t *, const EVP_MD *);
+void
+eay_set_provider(const char *name)
+{
+	eay_provider_name = name;
+}
+
+void
+eay_set_engine(const char *id)
+{
+	eay_engine_id = id;
+}
 
 void
 eay_init(void)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, NULL);
+	if (OSSL_PROVIDER_load(NULL, "default") == NULL)
+		plog(PLOG_INTWARN, PLOGLOC, NULL,
+		    "OpenSSL default provider failed to load\n");
+	if (eay_provider_name && *eay_provider_name) {
+		if (OSSL_PROVIDER_load(NULL, eay_provider_name) == NULL)
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			    "OpenSSL provider '%s' failed to load\n",
+			    eay_provider_name);
+		else
+			plog(PLOG_INFO, PLOGLOC, NULL,
+			    "OpenSSL provider '%s' loaded\n",
+			    eay_provider_name);
+	}
+#else
 	ERR_load_crypto_strings();
 	OpenSSL_add_all_algorithms();
+#endif
 #ifdef WITH_OPENSSL_ENGINE
 	ENGINE_load_builtin_engines();
-	ENGINE_register_all_complete();
+	if (eay_engine_id && *eay_engine_id) {
+		eay_engine = ENGINE_by_id(eay_engine_id);
+		if (eay_engine == NULL || !ENGINE_init(eay_engine)) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			    "OpenSSL ENGINE '%s' failed\n", eay_engine_id);
+			if (eay_engine) {
+				ENGINE_free(eay_engine);
+				eay_engine = NULL;
+			}
+		} else {
+			if (!ENGINE_set_default(eay_engine, ENGINE_METHOD_ALL)) {
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				    "OpenSSL ENGINE '%s' set_default failed\n",
+				    eay_engine_id);
+				ENGINE_finish(eay_engine);
+				ENGINE_free(eay_engine);
+				eay_engine = NULL;
+			} else
+				plog(PLOG_INFO, PLOGLOC, NULL,
+				    "OpenSSL ENGINE '%s' is default\n",
+				    eay_engine_id);
+		}
+	} else {
+		ENGINE_register_all_complete();
+	}
 #endif
 }
 
@@ -92,9 +143,20 @@ void
 eay_cleanup(void)
 {
 #ifdef WITH_OPENSSL_ENGINE
+	if (eay_engine) {
+		ENGINE_finish(eay_engine);
+		ENGINE_free(eay_engine);
+		eay_engine = NULL;
+	}
 	ENGINE_cleanup();
 #endif
 }
+
+#ifdef HAVE_SIGNING_C
+static int cb_check_cert(int, X509_STORE_CTX *);
+static X509 *mem2x509(rc_vchar_t *);
+#endif
+static caddr_t eay_hmac_init(rc_vchar_t *, const EVP_MD *);
 
 #ifdef HAVE_SIGNING_C
 

@@ -241,6 +241,12 @@ Available options to the configure script besides standard ones are:
 	--disable-kinkd
 	--enable-pcap
 	--enable-epoll / --disable-epoll   (Linux iked default: epoll)
+	--with-crypto-workers=N            (DH/RSA thread pool; 0=inline)
+	--with-openssl-provider=qatprovider
+	--with-openssl-engine=qat
+
+	RACOON2_CRYPTO_WORKERS, RACOON2_OPENSSL_PROVIDER,
+	RACOON2_OPENSSL_ENGINE override the last three at runtime.
 
 If you use racoon2 on Mac OS X, please use these options.
 	--disable-kinkd

@@ -253,6 +253,37 @@ if test $engine = "yes"; then
 	AC_DEFINE(WITH_OPENSSL_ENGINE, 1, [define to use OpenSSL ENGINE])
 fi
 
+AC_ARG_WITH(openssl-provider,
+	[  --with-openssl-provider=NAME
+                          OpenSSL 3 provider (e.g. qatprovider)],
+	[if test "x$withval" != x && test "x$withval" != xyes && test "x$withval" != xno; then
+		AC_DEFINE_UNQUOTED(EAY_OPENSSL_PROVIDER, ["$withval"],
+			[OpenSSL 3 provider to load at startup])
+	 fi])
+AC_ARG_WITH(openssl-engine,
+	[  --with-openssl-engine=ID
+                          OpenSSL ENGINE id (e.g. qat)],
+	[if test "x$withval" != x && test "x$withval" != xyes && test "x$withval" != xno; then
+		AC_DEFINE_UNQUOTED(EAY_OPENSSL_ENGINE, ["$withval"],
+			[OpenSSL ENGINE to set as default])
+	 fi])
+
+AC_CHECK_LIB(pthread, pthread_create,
+	[AC_DEFINE(HAVE_PTHREAD, 1, [define if pthreads are available])
+	 LIBS="$LIBS -lpthread"])
+
+AC_ARG_WITH(crypto-workers,
+	[  --with-crypto-workers=N    DH/RSA worker threads (0=inline, env RACOON2_CRYPTO_WORKERS overrides)],
+	[crypto_workers=$withval], [crypto_workers=0])
+case $crypto_workers in
+''|yes|no) crypto_workers=0 ;;
+*[!0-9]*)
+	AC_MSG_ERROR([--with-crypto-workers needs a number])
+	;;
+esac
+AC_DEFINE_UNQUOTED(CRYPTO_WORKERS_DEFAULT, $crypto_workers,
+	[default crypto worker threads])
+
 EVLOOP=evloop_select.c
 AC_CHECK_HEADERS([sys/epoll.h])
 AC_MSG_CHECKING(--enable-epoll)

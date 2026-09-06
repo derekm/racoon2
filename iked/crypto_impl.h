@@ -34,6 +34,11 @@
 
 #include "crypto_openssl.h"
 
+extern void eay_init (void);
+extern void eay_cleanup (void);
+extern void eay_set_provider (const char *);
+extern void eay_set_engine (const char *);
+
 #ifdef HAVE_SIGNING_C
 /* X509 Certificate */
 
@@ -48,9 +53,6 @@
 #define GENT_URI	GEN_URI
 #define GENT_IPADD	GEN_IPADD
 #define GENT_RID	GEN_RID
-
-extern void eay_init (void);
-extern void eay_cleanup (void);
 
 extern rc_vchar_t *eay_str2asn1dn (char *, int);
 extern int eay_cmp_asn1dn (rc_vchar_t *, rc_vchar_t *);

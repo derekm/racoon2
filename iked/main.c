@@ -71,6 +71,7 @@
 #  include "admin.h"
 #endif
 #include "evloop.h"
+#include "crypto_workers.h"
 
 const char *racoon_config_path = RACOON_CONF;
 int opt_foreground = FALSE;
@@ -430,6 +431,24 @@ main(int argc, char **argv)
 		iked_pidfile_create();
 	}
 
+	{
+		const char *s = getenv("RACOON2_CRYPTO_WORKERS");
+		int nw = 0;
+
+		if (s && *s)
+			nw = atoi(s);
+#ifdef CRYPTO_WORKERS_DEFAULT
+		else
+			nw = CRYPTO_WORKERS_DEFAULT;
+#endif
+		if (nw < 0)
+			nw = 0;
+		if (nw > 32)
+			nw = 32;
+		if (crypto_workers_init(nw) != 0)
+			plog(PLOG_INTWARN, PLOGLOC, 0,
+			    "crypto worker pool failed; running inline\n");
+	}
 	if (evloop_init() != 0)
 		plog(PLOG_INTWARN, PLOGLOC, 0,
 		    "evloop_init failed; wait will fall back to select\n");
@@ -498,6 +517,7 @@ iked_mainloop(void)
 #ifdef WITH_ADMIN
 	int adminsock_fd;
 #endif
+	int cryptofd;
 
 	for (;;) {
 		if (reload) {
@@ -525,6 +545,8 @@ iked_mainloop(void)
 #ifdef WITH_ADMIN
 		monitor_fd(adminsock_fd = admin_socket(), &fdset, &nfds);
 #endif
+		cryptofd = crypto_workers_fd();
+		monitor_fd(cryptofd, &fdset, &nfds);
 		timeout = scheduler();
 		num_fds = evloop_wait(nfds, &fdset, timeout);
 		if (num_fds == -1) {
@@ -558,6 +580,8 @@ iked_mainloop(void)
 		while ((isakmp_sock = isakmp_isset(&fdset)) >= 0) {
 			isakmp_handler(isakmp_sock);
 		}
+		if (cryptofd >= 0 && FD_ISSET(cryptofd, &fdset))
+			crypto_workers_drain();
 	}
 }
 
@@ -587,6 +611,7 @@ static void
 iked_exit(int code)
 {
 	INFO((PLOGLOC, "exiting (code %d)\n", code));
+	crypto_workers_fini();
 	evloop_fini();
 	eay_cleanup();
 
