@@ -56,6 +56,12 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	* lib/if_xfrm.c: XFRMA_ENCAP only when rcpfk_msg.natt_type is set.
 	  Port 4500 on the IKE sockaddr is not NAT. iked sets natt_type
 	  from behind_nat / peer_behind_nat.
+	* lib/cfsetup.c: rcf_get_rvrs_selector skips same direction
+	  (0.0.0.0/0 matched itself → spmd 550, no SPD).
+	* spmd: POLICY ADD uses urgent SPDUPDATE so XFRM ACK is not
+	  overwritten by a second pending FWD.
+	* spmd: Linux IKE UDP 500/4500 XFRM allow policies before tunnel
+	  SPD (IP_IPSEC_POLICY bypass is EOPNOTSUPP).
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 

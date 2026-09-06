@@ -652,7 +652,75 @@ err:
 /************************************************************************
  * PF_KEY operations
  ************************************************************************/
-/* 
+#ifdef __linux__
+/*
+ * IP_IPSEC_POLICY bypass is EOPNOTSUPP on Linux. Install XFRM allow
+ * policies for IKE UDP 500/4500 between the tunnel endpoints so
+ * IKE_AUTH is not captured by the tunnel SPD that POLICY ADD just
+ * installed (same handshake).
+ */
+static void
+spmd_sa_setport(struct sockaddr *sa, uint16_t port)
+{
+	if (sa == NULL)
+		return;
+	if (sa->sa_family == AF_INET)
+		((struct sockaddr_in *)sa)->sin_port = htons(port);
+#ifdef INET6
+	else if (sa->sa_family == AF_INET6)
+		((struct sockaddr_in6 *)sa)->sin6_port = htons(port);
+#endif
+}
+
+static int
+spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
+    uint8_t dir, uint16_t port)
+{
+	struct rcpfk_msg *b;
+	int ret;
+
+	b = spmd_alloc_rcpfk_msg();
+	if (b == NULL)
+		return -1;
+	b->pltype = RCT_ACT_NONE;
+	b->dir = dir;
+	b->ul_proto = IPPROTO_UDP;
+	b->sp_src = rcs_sadup(src);
+	b->sp_dst = rcs_sadup(dst);
+	if (b->sp_src == NULL || b->sp_dst == NULL) {
+		spmd_free_rcpfk_msg(b);
+		return -1;
+	}
+	spmd_sa_setport(b->sp_src, port);
+	spmd_sa_setport(b->sp_dst, port);
+	b->pref_src = (src->sa_family == AF_INET6) ? 128 : 32;
+	b->pref_dst = (dst->sa_family == AF_INET6) ? 128 : 32;
+	b->seq = (pfkey_seq++) != 0 ? pfkey_seq : (pfkey_seq++);
+	ret = rcpfk_send_spdupdate(b);
+	if (ret == 0)
+		ret = rcpfk_handler(b);
+	spmd_free_rcpfk_msg(b);
+	return ret;
+}
+
+static void
+spmd_ike_bypass(struct sockaddr *local, struct sockaddr *remote)
+{
+	static const uint16_t ports[] = { RC_PORT_IKE, RC_PORT_IKE_NATT };
+	size_t i;
+
+	if (local == NULL || remote == NULL)
+		return;
+	for (i = 0; i < sizeof(ports) / sizeof(ports[0]); i++) {
+		(void)spmd_ike_bypass_one(remote, local, RCT_DIR_INBOUND,
+		    ports[i]);
+		(void)spmd_ike_bypass_one(local, remote, RCT_DIR_OUTBOUND,
+		    ports[i]);
+	}
+}
+#endif
+
+/*
  * Create a SPDUPDATE task
  * NOTE : rc{seq, slid, ...} will be overwritten 
  */
@@ -664,6 +732,9 @@ spmd_spd_update(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 #ifdef __linux__
 	int need_fwd=0;
 	struct rcpfk_msg *fwd_rc = NULL;
+
+	if (rc->samode == RCT_IPSM_TUNNEL && rc->sa_src && rc->sa_dst)
+		spmd_ike_bypass(rc->sa_src, rc->sa_dst);
 
 	if ((rc->dir == RCT_DIR_INBOUND) &&  (rc->samode == RCT_IPSM_TUNNEL)) {
 		need_fwd = 1;

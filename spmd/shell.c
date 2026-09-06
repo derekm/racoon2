@@ -1323,7 +1323,7 @@ shell_policy_handler(int sh_argc, char **sh_argv, struct task *t)
 	struct in_addr src_sin, dst_sin;
 	struct in6_addr src_sin6, dst_sin6;
 	in_port_t src_port, dst_port; /* host byte order */
-	int not_urgent = 0;
+	int urgent = 1;		/* sync XFRM UPDPOLICY+ACK; 0 overwrites pending */
 
 	memset(buf, 0, sizeof(buf));
 
@@ -1520,7 +1520,7 @@ shell_policy_handler(int sh_argc, char **sh_argv, struct task *t)
 
 		org_dir = rc1->dir;
 
-		if (spmd_spd_update(sl1, rc1, not_urgent)<0) {
+		if (spmd_spd_update(sl1, rc1, urgent)<0) {
 			strlcpy(status, "550 ", sizeof(status));
 			snprintf(buf, sizeof(buf), "%sOperation Failed(sl_index=%.*s)\r\n", 
 							status, (int)sl1->sl_index->l, sl1->sl_index->s);
@@ -1550,7 +1550,7 @@ shell_policy_handler(int sh_argc, char **sh_argv, struct task *t)
 			rc2->sa_src = rcs_sadup(sa_dres->ai_addr);
 			rc2->sa_dst = rcs_sadup(sa_sres->ai_addr);
 		}
-		if (spmd_spd_update(sl2, rc2, not_urgent)<0) {
+		if (spmd_spd_update(sl2, rc2, urgent)<0) {
 			strlcpy(status, "550 ", sizeof(status));
 			snprintf(buf, sizeof(buf), "%sOperation Failed(sl_index=%.*s)\r\n", 
 							status, (int)sl2->sl_index->l, sl2->sl_index->s);
