@@ -36,6 +36,7 @@
 #include "vmbuf.h"
 #include "encryptor.h"
 #include "crypto_impl.h"
+#include "crypto_openssl.h"
 #include "plog.h"
 #include "debug.h"
 
@@ -93,6 +94,37 @@ struct encryptor_method encr_aesctr256 = {
 	eay_aes_weakkey,
 	eay_aes_ctr,
 	eay_aes_ctr,
+};
+
+static rc_vchar_t *
+aead_need_aad(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv)
+{
+	(void)data;
+	(void)key;
+	(void)iv;
+	return 0;
+}
+
+struct encryptor_method encr_aesgcm128 = {
+	"aes-128-gcm",
+	1, AES_GCM_IV_SIZE, (128 / 8) + AES_GCM_SALT_SIZE,
+	eay_aes_weakkey,
+	aead_need_aad,
+	aead_need_aad,
+	AES_GCM_ICV_SIZE,
+	eay_aes_gcm_ike_encrypt,
+	eay_aes_gcm_ike_decrypt,
+};
+
+struct encryptor_method encr_aesgcm256 = {
+	"aes-256-gcm",
+	1, AES_GCM_IV_SIZE, (256 / 8) + AES_GCM_SALT_SIZE,
+	eay_aes_weakkey,
+	aead_need_aad,
+	aead_need_aad,
+	AES_GCM_ICV_SIZE,
+	eay_aes_gcm_ike_encrypt,
+	eay_aes_gcm_ike_decrypt,
 };
 
 static rc_vchar_t *null_encrypt_decrypt(rc_vchar_t *, rc_vchar_t *,
@@ -180,6 +212,12 @@ encryptor_iv_length(struct encryptor *encr)
 	return ((struct encryptor_method *)encr)->iv_len;
 }
 
+int
+encryptor_icv_length(struct encryptor *encr)
+{
+	return ((struct encryptor_method *)encr)->icv_len;
+}
+
 rc_vchar_t *
 encryptor_encrypt(struct encryptor *encr, rc_vchar_t *plaintext,
 		  rc_vchar_t *key, rc_vchar_t *iv)
@@ -221,6 +259,28 @@ encryptor_decrypt(struct encryptor *encr, rc_vchar_t *ciphertext,
 	});
 
 	return ret;
+}
+
+rc_vchar_t *
+encryptor_encrypt_aead(struct encryptor *encr, rc_vchar_t *plaintext,
+		       rc_vchar_t *key, rc_vchar_t *iv, rc_vchar_t *aad)
+{
+	struct encryptor_method *m = (struct encryptor_method *)encr;
+
+	if (!m->encrypt_aead)
+		return NULL;
+	return m->encrypt_aead(plaintext, key, iv, aad);
+}
+
+rc_vchar_t *
+encryptor_decrypt_aead(struct encryptor *encr, rc_vchar_t *ciphertext,
+		       rc_vchar_t *key, rc_vchar_t *iv, rc_vchar_t *aad)
+{
+	struct encryptor_method *m = (struct encryptor_method *)encr;
+
+	if (!m->decrypt_aead)
+		return NULL;
+	return m->decrypt_aead(ciphertext, key, iv, aad);
 }
 
 #ifdef SELFTEST

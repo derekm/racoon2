@@ -53,3 +53,4 @@ int auth_output_length(struct authenticator *);
 void auth_destroy(struct authenticator *);
 
 struct authenticator *keyedhash_authenticator(struct keyed_hash *);
+struct authenticator *auth_none_new(void);

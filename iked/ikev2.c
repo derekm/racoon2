@@ -5014,6 +5014,9 @@ ikev2_proppair_to_isakmpsa(struct prop_pair *prop)
 					/* XXX CAST, BLOWFISH, RC5??? */
 				case IKEV2TRANSF_ENCR_AES_CBC:
 				case IKEV2TRANSF_ENCR_AES_CTR:
+				case IKEV2TRANSF_ENCR_AES_GCM_ICV8:
+				case IKEV2TRANSF_ENCR_AES_GCM_ICV12:
+				case IKEV2TRANSF_ENCR_AES_GCM_ICV16:
 					s->encrklen = keylen;
 					break;
 				default:

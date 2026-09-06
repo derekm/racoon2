@@ -57,6 +57,7 @@
 #include "ikev2_impl.h"
 #include "ike_conf.h"
 #include "crypto_impl.h"
+#include "encryptor.h"
 
 #include "debug.h"
 
@@ -425,6 +426,9 @@ ikev2_check_icv(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 	rc_vchar_t *auth_output = 0;
 	int retval = -1;
 
+	if (ike_sa->encryptor && encryptor_icv_length(ike_sa->encryptor) > 0)
+		return 0;	/* RFC 5282: ICV is the AEAD tag, verified in decrypt */
+
 	if (!ike_sa->authenticator)
 		return -1;
 
@@ -523,7 +527,10 @@ ikev2_decrypt(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 
 	block_len = encryptor_block_length(ike_sa->encryptor);
 	iv_len = encryptor_iv_length(ike_sa->encryptor);
-	icv_len = auth_output_length(ike_sa->authenticator);
+	if (encryptor_icv_length(ike_sa->encryptor) > 0)
+		icv_len = encryptor_icv_length(ike_sa->encryptor);
+	else
+		icv_len = auth_output_length(ike_sa->authenticator);
 
 	ikehdr = (struct ikev2_header *)packet->v;
 	p = (struct ikev2_payload_header *)(ikehdr + 1);
@@ -536,14 +543,17 @@ ikev2_decrypt(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 		return -1;
 	}
 
-	if (get_payload_data_length(p) < iv_len + block_len + icv_len) {
+	if (get_payload_data_length(p) < iv_len + 1 + icv_len) {
 		TRACE((PLOGLOC, "short payload\n"));
 		return -1;
 	}
 
 	iv = (uint8_t *)(p + 1);
 	ciphertext = iv + iv_len;
-	ciphertext_len = get_payload_data_length(p) - iv_len - icv_len;
+	if (encryptor_icv_length(ike_sa->encryptor) > 0)
+		ciphertext_len = get_payload_data_length(p) - iv_len;
+	else
+		ciphertext_len = get_payload_data_length(p) - iv_len - icv_len;
 
 	/* decrypt */
 	ivbuf = rc_vnew(iv, iv_len);
@@ -552,10 +562,21 @@ ikev2_decrypt(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 	orig = rc_vnew(ciphertext, ciphertext_len);
 	if (!orig)
 		goto fail_nomem;
-	decrypted = encryptor_decrypt(ike_sa->encryptor,
-				      orig,
-				      ike_sa->is_initiator ? ike_sa->sk_e_r : ike_sa->sk_e_i,
-				      ivbuf);
+	if (encryptor_icv_length(ike_sa->encryptor) > 0) {
+		rc_vchar_t *aad;
+
+		aad = rc_vnew(packet->v, (uint8_t *)(p + 1) - (uint8_t *)packet->v);
+		if (!aad)
+			goto fail_nomem;
+		decrypted = encryptor_decrypt_aead(ike_sa->encryptor, orig,
+		    ike_sa->is_initiator ? ike_sa->sk_e_r : ike_sa->sk_e_i,
+		    ivbuf, aad);
+		rc_vfree(aad);
+	} else {
+		decrypted = encryptor_decrypt(ike_sa->encryptor, orig,
+		    ike_sa->is_initiator ? ike_sa->sk_e_r : ike_sa->sk_e_i,
+		    ivbuf);
+	}
 	if (!decrypted)
 		goto fail;
 
@@ -599,7 +620,7 @@ ikev2_decrypt(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
  * prepends IV, but does not prepend payload header
  */
 rc_vchar_t *
-ikev2_encrypt(struct ikev2_sa *ike_sa, rc_vchar_t *payloads)
+ikev2_encrypt(struct ikev2_sa *ike_sa, rc_vchar_t *payloads, rc_vchar_t *aad)
 {
 	rc_type random_pad;
 	rc_type random_padlen;
@@ -648,6 +669,8 @@ ikev2_encrypt(struct ikev2_sa *ike_sa, rc_vchar_t *payloads)
 		pad_len += n * block_len;
 		assert(pad_len >= 0 && pad_len <= UINT8_MAX);
 	}
+	if (encryptor_icv_length(ike_sa->encryptor) > 0)
+		pad_len = 0;
 
 	/* generate initialization vector */
 	iv_len = encryptor_iv_length(ike_sa->encryptor);
@@ -674,10 +697,14 @@ ikev2_encrypt(struct ikev2_sa *ike_sa, rc_vchar_t *payloads)
 
 	/* then call encryption engine */
 	ivbuf_save = rc_vdup(ivbuf);
-	encrypted = encryptor_encrypt(ike_sa->encryptor,
-				      plaintext,
-				      ike_sa->is_initiator ? ike_sa->
-				      sk_e_i : ike_sa->sk_e_r, ivbuf);
+	if (encryptor_icv_length(ike_sa->encryptor) > 0)
+		encrypted = encryptor_encrypt_aead(ike_sa->encryptor, plaintext,
+		    ike_sa->is_initiator ? ike_sa->sk_e_i : ike_sa->sk_e_r,
+		    ivbuf, aad);
+	else
+		encrypted = encryptor_encrypt(ike_sa->encryptor, plaintext,
+		    ike_sa->is_initiator ? ike_sa->sk_e_i : ike_sa->sk_e_r,
+		    ivbuf);
 	if (!encrypted)
 		goto fail;
 

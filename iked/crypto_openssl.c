@@ -2124,6 +2124,150 @@ fail:
 	return NULL;
 }
 
+/*
+ * RFC 5282 AES-GCM for IKEv2 Encrypted Payload.
+ * key: AES-128/192/256 key || 4-octet salt
+ * iv: 8 octets (sent in the payload)
+ * nonce: salt || iv (12 octets)
+ * encrypt: plaintext -> ciphertext || ICV16
+ * decrypt: ciphertext || ICV16 -> plaintext
+ */
+static const EVP_CIPHER *
+eay_aes_gcm_cipher(size_t aes_key_len)
+{
+	switch (aes_key_len) {
+	case 16:
+		return EVP_aes_128_gcm();
+	case 24:
+		return EVP_aes_192_gcm();
+	case 32:
+		return EVP_aes_256_gcm();
+	default:
+		return NULL;
+	}
+}
+
+static int
+eay_aes_gcm_nonce(unsigned char nonce[AES_GCM_NONCE_SIZE],
+		  rc_vchar_t *key, rc_vchar_t *iv, size_t *aes_key_len)
+{
+	if (!key || !iv || iv->l != AES_GCM_IV_SIZE)
+		return -1;
+	if (key->l < AES_GCM_SALT_SIZE)
+		return -1;
+	*aes_key_len = key->l - AES_GCM_SALT_SIZE;
+	if (eay_aes_gcm_cipher(*aes_key_len) == NULL)
+		return -1;
+	memcpy(nonce, key->u + *aes_key_len, AES_GCM_SALT_SIZE);
+	memcpy(nonce + AES_GCM_SALT_SIZE, iv->v, AES_GCM_IV_SIZE);
+	return 0;
+}
+
+rc_vchar_t *
+eay_aes_gcm_ike_encrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			rc_vchar_t *aad)
+{
+	unsigned char nonce[AES_GCM_NONCE_SIZE];
+	size_t aes_key_len;
+	EVP_CIPHER_CTX *ctx = NULL;
+	rc_vchar_t *out = NULL;
+	int len = 0, len2 = 0;
+	const EVP_CIPHER *ciph;
+
+	if (!data || eay_aes_gcm_nonce(nonce, key, iv, &aes_key_len) != 0)
+		return NULL;
+	ciph = eay_aes_gcm_cipher(aes_key_len);
+	ctx = EVP_CIPHER_CTX_new();
+	if (!ctx)
+		return NULL;
+	out = rc_vmalloc(data->l + AES_GCM_ICV_SIZE);
+	if (!out)
+		goto fail;
+	if (!EVP_EncryptInit_ex(ctx, ciph, NULL, NULL, NULL))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
+				 AES_GCM_NONCE_SIZE, NULL))
+		goto fail;
+	if (!EVP_EncryptInit_ex(ctx, NULL, NULL,
+				(unsigned char *)key->v, nonce))
+		goto fail;
+	if (aad && aad->l > 0) {
+		if (!EVP_EncryptUpdate(ctx, NULL, &len,
+				       (unsigned char *)aad->v, (int)aad->l))
+			goto fail;
+	}
+	if (!EVP_EncryptUpdate(ctx, (unsigned char *)out->v, &len,
+			       (unsigned char *)data->v, (int)data->l))
+		goto fail;
+	if (!EVP_EncryptFinal_ex(ctx, (unsigned char *)out->v + len, &len2))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, AES_GCM_ICV_SIZE,
+				 (unsigned char *)out->v + data->l))
+		goto fail;
+	EVP_CIPHER_CTX_free(ctx);
+	return out;
+fail:
+	EVP_CIPHER_CTX_free(ctx);
+	if (out)
+		rc_vfree(out);
+	return NULL;
+}
+
+rc_vchar_t *
+eay_aes_gcm_ike_decrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			rc_vchar_t *aad)
+{
+	unsigned char nonce[AES_GCM_NONCE_SIZE];
+	size_t aes_key_len;
+	size_t ct_len;
+	EVP_CIPHER_CTX *ctx = NULL;
+	rc_vchar_t *out = NULL;
+	int len = 0, len2 = 0;
+	const EVP_CIPHER *ciph;
+
+	if (!data || data->l < AES_GCM_ICV_SIZE)
+		return NULL;
+	if (eay_aes_gcm_nonce(nonce, key, iv, &aes_key_len) != 0)
+		return NULL;
+	ciph = eay_aes_gcm_cipher(aes_key_len);
+	ct_len = data->l - AES_GCM_ICV_SIZE;
+	ctx = EVP_CIPHER_CTX_new();
+	if (!ctx)
+		return NULL;
+	out = rc_vmalloc(ct_len);
+	if (!out)
+		goto fail;
+	if (!EVP_DecryptInit_ex(ctx, ciph, NULL, NULL, NULL))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
+				 AES_GCM_NONCE_SIZE, NULL))
+		goto fail;
+	if (!EVP_DecryptInit_ex(ctx, NULL, NULL,
+				(unsigned char *)key->v, nonce))
+		goto fail;
+	if (aad && aad->l > 0) {
+		if (!EVP_DecryptUpdate(ctx, NULL, &len,
+				       (unsigned char *)aad->v, (int)aad->l))
+			goto fail;
+	}
+	if (ct_len > 0 &&
+	    !EVP_DecryptUpdate(ctx, (unsigned char *)out->v, &len,
+			       (unsigned char *)data->v, (int)ct_len))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, AES_GCM_ICV_SIZE,
+				 (unsigned char *)data->v + ct_len))
+		goto fail;
+	if (!EVP_DecryptFinal_ex(ctx, (unsigned char *)out->v + len, &len2))
+		goto fail;
+	EVP_CIPHER_CTX_free(ctx);
+	return out;
+fail:
+	EVP_CIPHER_CTX_free(ctx);
+	if (out)
+		rc_vfree(out);
+	return NULL;
+}
+
 /* for ipsec part */
 int
 eay_null_hashlen(void)

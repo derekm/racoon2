@@ -480,7 +480,7 @@ extern int ikev2_child_getspi_response(struct sadb_request *, struct sockaddr *,
 
 extern rc_vchar_t *ikev2_pack_proposal(struct prop_pair **);
 
-rc_vchar_t *ikev2_encrypt(struct ikev2_sa *, rc_vchar_t *);
+rc_vchar_t *ikev2_encrypt(struct ikev2_sa *, rc_vchar_t *, rc_vchar_t *);
 
 void ikev2_rekey_childsa(struct ikev2_child_sa *, rc_type, uint32_t);
 void ikev2_rekey_ikesa_initiate(struct ikev2_sa *);
