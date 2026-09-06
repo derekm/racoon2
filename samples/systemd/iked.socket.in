@@ -1,0 +1,15 @@
+[Unit]
+Description=Racoon2 IKE UDP sockets (500/4500)
+Documentation=man:iked(8)
+PartOf=iked.service
+Before=iked.service
+
+[Socket]
+ListenDatagram=0.0.0.0:500
+ListenDatagram=0.0.0.0:4500
+ListenDatagram=[::]:500
+ListenDatagram=[::]:4500
+Service=iked.service
+
+[Install]
+WantedBy=sockets.target

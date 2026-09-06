@@ -243,6 +243,10 @@ shell_sock_open_file(const struct sockaddr *sa)
 		goto fin;
 	}
 
+	s = rc_take_listenfd(AF_UNIX, SOCK_STREAM, 0);
+	if (s >= 0)
+		return s;
+
 	s = socket(PF_UNIX, SOCK_STREAM, 0);
 	if (s<0) {
 		SPMD_PLOG(SPMD_L_INTERR, "Can't setup spmd interface socket:%s", strerror(errno));

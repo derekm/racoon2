@@ -53,19 +53,23 @@ and use Racoon2 to get working IPsec connections with minimal
 effort.
 
 Currently Racoon2 works well as an L2TP/IPsec VPN server or as
-an IKEv2 VPN server running on NetBSD. Racoon2 on Linux will provide
-only limited functionality because Racoon2 uses the pfkeyv2 interface
-to the kernel, while many Linux features require the IKEv2 daemon to
-use the netlink interface to the kernel instead. Until the netlink
-interface to the Linux kernel is addd to Racoon2, only the most basic
-connections can be made using Racoon2 on Linux. Currently L2TP/IPsec
-connections from Windows or iphone clients can be made to Racoon2
-running on Linux, and IPv4 in IPv4 IKEv2 tunnel conections can be made
-from Windows clients to Racoon2 running on Linux, but Apple clients
-can have difficulty connecting because of the limitations of the pfkeyv2
-interface to the Linux kernel that Racoon2 uses. Please refer to NEWS
-for updates on current developments.
+an IKEv2 VPN server running on NetBSD. Linux still uses the
+pfkeyv2 compat socket by default. An experimental NETLINK_XFRM
+backend (`lib/if_xfrm.c`, same rcpfk_* ABI as BSD pfkeyv2,
+selected like iked's netlink.c vs rtsock.c) is opt-in:
 
+	./configure --with-km-backend=xfrm
+
+It is not verified on a live kernel yet. Apple NAT-T, IPv6-in-IPv4
+tunnels, and SPD FWD still need that verification (`ip xfrm state`
+/`ip xfrm policy` after iked+spmd). Until then, Linux pfkeyv2
+remains the path that has actually been tested (IPv4-in-IPv4,
+L2TP/IPsec). Please refer to NEWS and BUGS.
+
+On Linux, `make install` ships systemd units under
+`/usr/lib/systemd/system` (socket activation + ProtectSystem=strict,
+PrivateTmp). `systemctl enable --now racoon2.target` starts
+spmd.socket then iked. Daemons use `-F`; no init.d `sleep 1`.
 
 Currently, the system supports the following specifications:
 

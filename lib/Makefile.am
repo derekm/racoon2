@@ -13,7 +13,7 @@ lib_LTLIBRARIES = libracoon.la
 libracoon_la_SOURCES =vmbuf.c rc_type.c rc_net.c rc_str.c \
 	if_spmd.c \
 	cfsetup.c rc_pcap.c cftoken.l cfparse.y \
-	pidfile.c plog.c safefile.c version.c rbuf.c addresspool.c
+	pidfile.c sd_listenfds.c plog.c safefile.c version.c rbuf.c addresspool.c
 if USE_XFRM
 libracoon_la_SOURCES += if_xfrm.c
 else

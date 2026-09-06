@@ -1,0 +1,43 @@
+[Unit]
+Description=Racoon2 IKE daemon (iked)
+Documentation=man:iked(8)
+After=network-online.target spmd.socket
+Wants=network-online.target
+Requires=spmd.socket
+# spmd.service starts on first spmif connect if socket-activated.
+
+[Service]
+Type=simple
+ExecStart=@sbindir@/iked -F
+Restart=on-failure
+RestartSec=2s
+RuntimeDirectory=racoon2
+RuntimeDirectoryMode=0700
+WorkingDirectory=@sysconfdir@
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_KEY
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+SystemCallArchitectures=native
+ReadOnlyPaths=@sysconfdir@
+ReadWritePaths=/run/racoon2 /var/run/racoon2 /run
+
+[Install]
+WantedBy=multi-user.target
+Also=iked.socket

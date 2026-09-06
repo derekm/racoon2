@@ -60,6 +60,9 @@ AC_SUBST(startup_scripts)
 AC_ARG_ENABLE(startup-scripts, [  --enable-startup-scripts  install startup scripts [yes]], , [enable_startup_scripts=yes])
 if test x"$enable_startup_scripts" = xyes; then
 	case $host_os in
+	linux*)
+		startup_scripts=systemd
+		;;
 	netbsd*1.[[56]]*|netbsd*[[2-9]].*)
 		startup_scripts=rc.d
 		;;
@@ -74,6 +77,19 @@ else
 	dnl For pkgsrc framework (use RCD_SCRIPTS instead).
 	startup_scripts=none
 fi
+
+AC_MSG_CHECKING([systemd unit directory])
+AC_ARG_WITH(systemdsystemunitdir,
+	[  --with-systemdsystemunitdir=DIR  systemd unit dir],
+	[systemdsystemunitdir=$withval], [systemdsystemunitdir=auto])
+if test x"$systemdsystemunitdir" = xauto; then
+	systemdsystemunitdir=`pkg-config --variable=systemdsystemunitdir systemd 2>/dev/null`
+	if test -z "$systemdsystemunitdir"; then
+		systemdsystemunitdir=/usr/lib/systemd/system
+	fi
+fi
+AC_SUBST(systemdsystemunitdir)
+AC_MSG_RESULT([$systemdsystemunitdir])
 
 dnl perl_bindir
 AC_PATH_PROGS(perl_bindir, perl, missing_perl)
@@ -105,5 +121,13 @@ AC_CONFIG_FILES([Makefile pskgen/Makefile
 	samples/init.d/kinkd
 	samples/init.d/spmd
 	samples/init.d/Makefile
+	samples/systemd/Makefile
+	samples/systemd/spmd.service
+	samples/systemd/spmd.socket
+	samples/systemd/iked.service
+	samples/systemd/iked.socket
+	samples/systemd/kinkd.service
+	samples/systemd/racoon2.target
+	samples/none/Makefile
 	samples/vals.conf])
 AC_OUTPUT

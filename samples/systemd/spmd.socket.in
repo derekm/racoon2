@@ -1,0 +1,15 @@
+[Unit]
+Description=Racoon2 spmd control socket
+Documentation=man:spmd(8)
+PartOf=spmd.service
+Before=spmd.service iked.service
+
+[Socket]
+ListenStream=/run/racoon2/spmif
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=true
+Service=spmd.service
+
+[Install]
+WantedBy=sockets.target

@@ -3,6 +3,7 @@
 ACLOCAL_AMFLAGS = -I m4
 
 SUBDIRS = @startup_scripts@ hook
+DIST_SUBDIRS = init.d rc.d systemd none hook
 
 install-exec-hook:
 	$(INSTALL) -d -o 0 -g 0 -m 700 $(DESTDIR)/var/run/racoon2
