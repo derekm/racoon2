@@ -643,7 +643,13 @@ add_auth_attr(struct nlmsghdr *n, size_t maxlen, struct rcpfk_msg *rc)
 		xfrm_seterror(rc, EINVAL, "auth key too long");
 		return -1;
 	}
-#ifdef XFRMA_ALG_AUTH_TRUNC
+	/*
+	 * XFRMA_ALG_AUTH_TRUNC is an enum constant, not a #define — an
+	 * #ifdef guard is always false and the missing alg_trunc_len made
+	 * the kernel default to a 96-bit ICV for hmac(sha256), which
+	 * RFC 4868 peers (Apple, strongSwan) never send. Always emit the
+	 * trunc attribute.
+	 */
 	{
 		struct xfrm_algo_auth *aa;
 		char buf[sizeof(*aa) + 256];
@@ -658,21 +664,6 @@ add_auth_attr(struct nlmsghdr *n, size_t maxlen, struct rcpfk_msg *rc)
 			memcpy(aa->alg_key, rc->authkey, klen);
 		return xfrm_addattr(n, maxlen, XFRMA_ALG_AUTH_TRUNC, aa, alen);
 	}
-#else
-	{
-		struct xfrm_algo *alg;
-		char buf[sizeof(*alg) + 256];
-
-		alen = sizeof(*alg) + klen;
-		memset(buf, 0, alen);
-		alg = (void *)buf;
-		strncpy(alg->alg_name, m->name, sizeof(alg->alg_name) - 1);
-		alg->alg_key_len = (unsigned int)(klen * 8);
-		if (klen && rc->authkey)
-			memcpy(alg->alg_key, rc->authkey, klen);
-		return xfrm_addattr(n, maxlen, XFRMA_ALG_AUTH, alg, alen);
-	}
-#endif
 }
 
 #ifdef ENABLE_NATT

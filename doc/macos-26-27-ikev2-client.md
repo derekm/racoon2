@@ -17,6 +17,10 @@ Responder on this box (WSL Ubuntu, mirrored networking):
 - IKE SA: AES-256/128-CBC, PRF/INTEGR HMAC-SHA2-256, DH 14 (`modp2048`) then 15 (`modp3072`)
 - Child SA: ESP AES-GCM-16 (`aes_gcm` + `non_auth`), fallback AES-CBC + HMAC-SHA2-256. iPhone took the fallback.
 - NAT-T UDP 4500: **proven** (`encap type espinudp` in `ip xfrm state`)
+- ESP ICV: hmac(sha256) at **128 bits** (RFC 4868). The old 96-bit
+  truncation (dead XFRMA_ALG_AUTH_TRUNC guard, `fdb120f`+fix) rejected
+  every packet from RFC 4868 peers: `XfrmInStateProtoError` climbed,
+  `XfrmInNoStates` stayed 0 — ICV mismatch, not a missing SA.
 - **CP pool is mandatory**: Apple always sends CFG_REQUEST for an internal IPv4. The remote must have `provide { addresspool <name>; };` and an `addresspool <name> { "a" - "b"; };` block. Without it: `addresspool.c: no address pool specified` → Child SA aborts → iked SEGVs on the retry storm (crash reproduced 2026-09-06, core capture `/tmp/r2core.*`).
 
 ## System Settings (Tahoe 26, expected same spine on 27)
