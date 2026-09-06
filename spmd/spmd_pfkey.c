@@ -289,7 +289,7 @@ spmd_pfkey_init(void)
 		rcf_get_remotebyindex(sl->pl->rm_index, &rm);
 
 		if (rm) {
-			if (rm->ikev2->addresspool) {
+			if (rm->ikev2 && rm->ikev2->addresspool) {
 				spd_add_skip=1;
 			}
 		}
@@ -655,10 +655,82 @@ err:
 #ifdef __linux__
 /*
  * IP_IPSEC_POLICY bypass is EOPNOTSUPP on Linux. Install XFRM allow
- * policies for IKE UDP 500/4500 between the tunnel endpoints so
- * IKE_AUTH is not captured by the tunnel SPD that POLICY ADD just
- * installed (same handshake).
+ * policies for IKE UDP 500/4500 between the SA endpoints so IKE_AUTH
+ * is not captured by the tunnel/transport SPD that POLICY ADD just
+ * installed (same handshake). Cached so the FWD retry and the inbound
+ * leg of one POLICY ADD do not reinstall; failures are logged.
  */
+#define SPMD_BYPASS_MAX 32
+
+struct spmd_bypass_key {
+	sa_family_t family;
+	uint8_t dir;
+	uint16_t port;
+	uint8_t src[16];
+	uint8_t dst[16];
+};
+
+static struct spmd_bypass_key spmd_bypass_cache[SPMD_BYPASS_MAX];
+static unsigned int spmd_bypass_ncache;
+
+static void
+spmd_bypass_key_fill(struct spmd_bypass_key *k, const struct sockaddr *src,
+    const struct sockaddr *dst, uint8_t dir, uint16_t port)
+{
+	const uint8_t *s;
+	size_t alen;
+
+	memset(k, 0, sizeof(*k));
+	k->family = src->sa_family;
+	k->dir = dir;
+	k->port = port;
+	alen = (k->family == AF_INET6) ? 16 : 4;
+	if (k->family == AF_INET) {
+		s = (const void *)&((const struct sockaddr_in *)src)->sin_addr;
+	} else {
+#ifdef INET6
+		s = (const void *)&((const struct sockaddr_in6 *)src)->sin6_addr;
+#else
+		s = NULL;
+#endif
+	}
+	if (s)
+		memcpy(k->src, s, alen);
+	/* dst is always the same family as src on this path */
+	alen = (dst->sa_family == AF_INET6) ? 16 : 4;
+	if (k->family == AF_INET) {
+		s = (const void *)&((const struct sockaddr_in *)dst)->sin_addr;
+	} else {
+#ifdef INET6
+		s = (const void *)&((const struct sockaddr_in6 *)dst)->sin6_addr;
+#else
+		s = NULL;
+#endif
+	}
+	if (s)
+		memcpy(k->dst, s, alen);
+}
+
+static int
+spmd_bypass_cached(const struct spmd_bypass_key *k)
+{
+	unsigned int i;
+
+	for (i = 0; i < spmd_bypass_ncache; i++) {
+		if (memcmp(&spmd_bypass_cache[i], k, sizeof(*k)) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static void
+spmd_bypass_add(const struct spmd_bypass_key *k)
+{
+	if (spmd_bypass_ncache >= SPMD_BYPASS_MAX)
+		return;
+	spmd_bypass_cache[spmd_bypass_ncache++] = *k;
+}
+
 static void
 spmd_sa_setport(struct sockaddr *sa, uint16_t port)
 {
@@ -676,8 +748,15 @@ static int
 spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
     uint8_t dir, uint16_t port)
 {
+	struct spmd_bypass_key k;
 	struct rcpfk_msg *b;
 	int ret;
+
+	if (src == NULL || dst == NULL)
+		return -1;
+	spmd_bypass_key_fill(&k, src, dst, dir, port);
+	if (spmd_bypass_cached(&k))
+		return 0;
 
 	b = spmd_alloc_rcpfk_msg();
 	if (b == NULL)
@@ -699,6 +778,14 @@ spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
 	ret = rcpfk_send_spdupdate(b);
 	if (ret == 0)
 		ret = rcpfk_handler(b);
+	if (ret != 0)
+		SPMD_PLOG(SPMD_L_INTERR,
+		    "IKE bypass %d/%s %s->%s failed: %s",
+		    port, dir == RCT_DIR_INBOUND ? "in" : "out",
+		    rcs_sa2str_wop(src), rcs_sa2str_wop(dst),
+		    b->estr[0] ? b->estr : "(no error detail)");
+	else
+		spmd_bypass_add(&k);
 	spmd_free_rcpfk_msg(b);
 	return ret;
 }
@@ -733,7 +820,9 @@ spmd_spd_update(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 	int need_fwd=0;
 	struct rcpfk_msg *fwd_rc = NULL;
 
-	if (rc->samode == RCT_IPSM_TUNNEL && rc->sa_src && rc->sa_dst)
+	/* Tunnel and transport SPDs both capture IKE on Linux
+	 * (IP_IPSEC_POLICY is EOPNOTSUPP); bypass covers any mode. */
+	if (rc->sa_src && rc->sa_dst)
 		spmd_ike_bypass(rc->sa_src, rc->sa_dst);
 
 	if ((rc->dir == RCT_DIR_INBOUND) &&  (rc->samode == RCT_IPSM_TUNNEL)) {
