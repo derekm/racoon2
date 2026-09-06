@@ -570,6 +570,23 @@ t2isakmpsa(struct isakmp_pl_t *trns, struct isakmpsa *sa)
 		type = get_uint16(&d->type) & ~ISAKMP_GEN_MASK;
 		flag = get_uint16(&d->type) & ISAKMP_GEN_MASK;
 
+		/*
+		 * Bounds-check the attribute before touching it: the fixed
+		 * isakmp_data header must fit in the remaining bytes, and for
+		 * TLV (long-form) attributes the attacker-supplied value length
+		 * must not exceed what is left in the transform.  Without this,
+		 * a crafted length field drives an out-of-bounds read in the
+		 * memcpy() calls below and in the loop advance (CWE-125).
+		 * Ported from racoon (ipsec-tools) t2isakmpsa().
+		 */
+		if (tlen < (int)sizeof(*d) ||
+		    (!flag && (int)get_uint16(&d->lorv) >
+		     tlen - (int)sizeof(*d))) {
+			plog(PLOG_PROTOERR, PLOGLOC, NULL,
+				"malformed ISAKMP SA attribute (bad length)\n");
+			goto err;
+		}
+
 		plog(PLOG_DEBUG, PLOGLOC, NULL,
 			"type=%s, flag=0x%04x, lorv=%s\n",
 			s_oakley_attr(type), flag,
@@ -624,7 +641,7 @@ t2isakmpsa(struct isakmp_pl_t *trns, struct isakmpsa *sa)
 			if (xtype == OAKLEY_ATTR_GRP_TYPE_MODP)
 				sa->dhgrp->type = xtype;
 			else
-				return -1;
+				goto err;
 			break;
 		}
 		case OAKLEY_ATTR_GRP_PI:
@@ -639,7 +656,7 @@ t2isakmpsa(struct isakmp_pl_t *trns, struct isakmpsa *sa)
 				uint16_t xlen = get_uint16(&d->lorv);
 				sa->dhgrp->gen1 = 0;
 				if (xlen > 4)
-					return -1;
+					goto err;
 				memcpy(&sa->dhgrp->gen1, d + 1, xlen);
 				sa->dhgrp->gen1 = ntohl(sa->dhgrp->gen1);
 			}
@@ -653,7 +670,7 @@ t2isakmpsa(struct isakmp_pl_t *trns, struct isakmpsa *sa)
 				uint16_t xlen = get_uint16(&d->lorv);
 				sa->dhgrp->gen2 = 0;
 				if (xlen > 4)
-					return -1;
+					goto err;
 				memcpy(&sa->dhgrp->gen2, d + 1, xlen);
 				sa->dhgrp->gen2 = ntohl(sa->dhgrp->gen2);
 			}
@@ -687,6 +704,11 @@ t2isakmpsa(struct isakmp_pl_t *trns, struct isakmpsa *sa)
 					OAKLEY_ATTR_SA_LD_TYPE) {
 				plog(PLOG_PROTOERR, PLOGLOC, NULL,
 				    "life duration must follow ltype\n");
+				/* free the TLV value read above; every other exit
+				 * from this case does (ported from racoon
+				 * (ipsec-tools) t2isakmpsa()). */
+				rc_vfree(val);
+				val = NULL;
 				break;
 			}
 
@@ -777,12 +799,14 @@ t2isakmpsa(struct isakmp_pl_t *trns, struct isakmpsa *sa)
 				"keylen must not be specified "
 				"for encryption algorithm %d\n",
 				sa->enctype);
-			return -1;
+			goto err;
 		}
 	}
 
 	return 0;
 err:
+	rc_vfree(sa->dhgrp);
+	sa->dhgrp = NULL;
 	return error;
 }
 
