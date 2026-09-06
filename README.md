@@ -60,6 +60,15 @@ selected like iked's netlink.c vs rtsock.c) is opt-in:
 
 	./configure --with-km-backend=xfrm
 
+A userspace dataplane backend (same rcpfk_* ABI) is
+
+	./configure --with-km-backend=userspace
+
+That loopbacks SA/SPD to iked and optionally mirrors to
+`RACOON2_DATAPLANE_SOCK`. There is no DPDK forwarding process in
+this tree. Hardware offload (`XFRMA_OFFLOAD_DEV`, xfrmi) is not
+wired.
+
 It is not verified on a live kernel yet. Apple NAT-T, IPv6-in-IPv4
 tunnels, and SPD FWD still need that verification (`ip xfrm state`
 /`ip xfrm policy` after iked+spmd). Until then, Linux pfkeyv2

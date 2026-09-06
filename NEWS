@@ -19,6 +19,11 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  (--with-openssl-engine=ID / RACOON2_OPENSSL_ENGINE).
 	  oakley_dh_* is not enqueued yet. make check: evlooptest,
 	  workerstest (beside eaytest).
+	* lib: userspace SAD/SPD backend (lib/if_userspace.c), XOR
+	  --with-km-backend=userspace. Loopback socketpair drives
+	  iked GETSPI/UPDATE callbacks; optional unix datagram to
+	  RACOON2_DATAPLANE_SOCK. No DPDK app, no XFRMA_OFFLOAD_DEV.
+	  make check: kmtest (compiles if_userspace.c even when KM is pfkey).
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 

@@ -9,6 +9,9 @@
 /* Linux NETLINK_XFRM SAD/SPD backend */
 #undef HAVE_XFRM
 
+/* userspace SAD/SPD dataplane backend */
+#undef HAVE_USERSPACE_KM
+
 /* Define to 1 if you have the `atoll' function. */
 #undef HAVE_ATOLL
 
