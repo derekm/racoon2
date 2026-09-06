@@ -284,7 +284,6 @@ esac
 AC_DEFINE_UNQUOTED(CRYPTO_WORKERS_DEFAULT, $crypto_workers,
 	[default crypto worker threads])
 
-EVLOOP=evloop_select.c
 AC_CHECK_HEADERS([sys/epoll.h])
 AC_MSG_CHECKING(--enable-epoll)
 AC_ARG_ENABLE(epoll,
@@ -298,13 +297,12 @@ AC_ARG_ENABLE(epoll,
 AC_MSG_RESULT($enable_epoll)
 if test x"$enable_epoll" = xyes; then
 	if test x"$ac_cv_header_sys_epoll_h" = xyes; then
-		EVLOOP=evloop_epoll.c
 		AC_DEFINE(HAVE_EPOLL, 1, [iked uses epoll])
 	else
 		AC_MSG_WARN([epoll requested but sys/epoll.h missing; using select])
 	fi
 fi
-AC_SUBST(EVLOOP)
+AM_CONDITIONAL([USE_EPOLL], [test x"$enable_epoll" = xyes && test x"$ac_cv_header_sys_epoll_h" = xyes])
 
 # Option RC5
 AC_MSG_CHECKING(if --enable-rc5 option is specified)
