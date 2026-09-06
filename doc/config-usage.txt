@@ -230,7 +230,12 @@ o Cryptographic algorithm and its representation
 		aes128_cbc
 		aes192_cbc
 		aes256_cbc
+		aes_ctr
+		aes_gcm
 		twofish_cbc
+
+	aes_gcm is ESP only (RFC 4106 ICV16). Do not put it in
+	kmp_enc_alg. Pair with esp_auth_alg { non_auth; }.
 
 	kmp_hash_alg directive can have one of the following algorithm types.
 

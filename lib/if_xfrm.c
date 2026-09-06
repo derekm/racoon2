@@ -138,6 +138,21 @@ static const struct xfrm_algmap enc_map[] = {
 	{ 0, NULL, 0 }
 };
 
+#ifndef XFRMA_ALG_AEAD
+#define XFRMA_ALG_AEAD 18
+#endif
+
+struct xfrm_aeadmap {
+	int rct;
+	const char *name;
+	unsigned int icv_bits;
+};
+
+static const struct xfrm_aeadmap aead_map[] = {
+	{ RCT_ALG_AES_GCM,	"rfc4106(gcm(aes))",	128 },
+	{ 0, NULL, 0 }
+};
+
 static const struct xfrm_algmap auth_map[] = {
 	{ RCT_ALG_NON_AUTH,		"digest_null",		0 },
 	{ RCT_ALG_HMAC_MD5,		"hmac(md5)",		96 },
@@ -155,6 +170,18 @@ static const struct xfrm_algmap *
 alg_lookup(const struct xfrm_algmap *m, int rct)
 {
 	for (; m->name != NULL; m++) {
+		if (m->rct == rct)
+			return m;
+	}
+	return NULL;
+}
+
+static const struct xfrm_aeadmap *
+aead_lookup(int rct)
+{
+	const struct xfrm_aeadmap *m;
+
+	for (m = aead_map; m->name != NULL; m++) {
 		if (m->rct == rct)
 			return m;
 	}
@@ -528,6 +555,39 @@ fill_usersa(struct xfrm_usersa_info *sa, struct rcpfk_msg *rc)
 }
 
 static int
+add_aead_attr(struct nlmsghdr *n, size_t maxlen, struct rcpfk_msg *rc)
+{
+	const struct xfrm_aeadmap *m;
+	size_t klen, alen;
+	struct {
+		char alg_name[64];
+		unsigned int alg_key_len;
+		unsigned int alg_icv_len;
+		char alg_key[256];
+	} aead;
+
+	m = aead_lookup(rc->enctype);
+	if (m == NULL) {
+		xfrm_seterror(rc, EOPNOTSUPP, "aead alg %d not mapped",
+		    rc->enctype);
+		return -1;
+	}
+	klen = rc->enckeylen;
+	if (klen > sizeof(aead.alg_key)) {
+		xfrm_seterror(rc, EINVAL, "aead key too long");
+		return -1;
+	}
+	memset(&aead, 0, sizeof(aead));
+	strncpy(aead.alg_name, m->name, sizeof(aead.alg_name) - 1);
+	aead.alg_key_len = (unsigned int)(klen * 8);
+	aead.alg_icv_len = m->icv_bits;
+	if (klen && rc->enckey)
+		memcpy(aead.alg_key, rc->enckey, klen);
+	alen = 64 + sizeof(unsigned int) * 2 + klen;
+	return xfrm_addattr(n, maxlen, XFRMA_ALG_AEAD, &aead, alen);
+}
+
+static int
 add_enc_attr(struct nlmsghdr *n, size_t maxlen, struct rcpfk_msg *rc)
 {
 	const struct xfrm_algmap *m;
@@ -760,7 +820,11 @@ xfrm_send_sa(struct rcpfk_msg *rc, uint16_t nltype)
 	if (fill_usersa(sa, rc))
 		return -1;
 	if (nltype == XFRM_MSG_NEWSA || nltype == XFRM_MSG_UPDSA) {
-		if (add_enc_attr(n, sizeof(buf), rc) ||
+		if (aead_lookup(rc->enctype)) {
+			if (add_aead_attr(n, sizeof(buf), rc) ||
+			    add_encap_attr(n, sizeof(buf), rc))
+				return -1;
+		} else if (add_enc_attr(n, sizeof(buf), rc) ||
 		    add_auth_attr(n, sizeof(buf), rc) ||
 		    add_encap_attr(n, sizeof(buf), rc))
 			return -1;
@@ -1124,7 +1188,8 @@ rcpfk_supported_auth(int algtype)
 int
 rcpfk_supported_enc(int algtype)
 {
-	return alg_lookup(enc_map, algtype) != NULL;
+	return alg_lookup(enc_map, algtype) != NULL ||
+	    aead_lookup(algtype) != NULL;
 }
 
 static void

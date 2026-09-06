@@ -24,6 +24,9 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  iked GETSPI/UPDATE callbacks; optional unix datagram to
 	  RACOON2_DATAPLANE_SOCK. No DPDK app, no XFRMA_OFFLOAD_DEV.
 	  make check: kmtest (compiles if_userspace.c even when KM is pfkey).
+	* ESP AES-GCM-16 (RFC 4106): config aes_gcm, XFRMA_ALG_AEAD
+	  rfc4106(gcm(aes)). IKE SA still AES-CBC/CTR (no RFC 5282
+	  encryptor). Pair with non_auth.
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 
