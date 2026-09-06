@@ -54,8 +54,8 @@ AC_ARG_ENABLE(natt, [  --enable-natt           enable NAT-T support],
 		else
 		AC_MSG_RESULT([no])
 		AC_MSG_CHECKING(if NAT-T is available)
-		AC_EGREP_CPP(natt_compilable,
-#ifdef HAVE_NET_PFKEYV2_H
+		AC_EGREP_CPP([natt_compilable],
+[[#ifdef HAVE_NET_PFKEYV2_H
 # include <net/pfkeyv2.h>
 #else
 # include <linux/pfkeyv2.h>
@@ -63,8 +63,8 @@ AC_ARG_ENABLE(natt, [  --enable-natt           enable NAT-T support],
 #ifdef SADB_X_EXT_NAT_T_TYPE
 natt_compilable
 #endif
-],
-		enable_natt=yes, enable_natt=no)
+]],
+		[enable_natt=yes], [enable_natt=no])
 		fi
 	])
 if test x"$enable_natt" = xyes; then

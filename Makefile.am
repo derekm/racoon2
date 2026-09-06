@@ -2,6 +2,9 @@
 
 ACLOCAL_AMFLAGS = -I m4
 
-SUBDIRS = lib spmd kinkd iked pskgen samples
+if BUILD_KINKD
+KINKD_DIR = kinkd
+endif
+SUBDIRS = lib spmd $(KINKD_DIR) iked pskgen samples
 
 

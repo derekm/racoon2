@@ -27,6 +27,9 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	* ESP AES-GCM-16 (RFC 4106): config aes_gcm, XFRMA_ALG_AEAD
 	  rfc4106(gcm(aes)). IKE SA still AES-CBC/CTR (no RFC 5282
 	  encryptor). Pair with non_auth.
+	* Autoconf 2.71 (Ubuntu 24.04). AC_PREREQ 2.13 generated a
+	  broken configure on 2.71 (m4sh functions after option
+	  parse; lib NAT-T AC_EGREP_CPP ate AC_FUNC_MEMCMP).
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 

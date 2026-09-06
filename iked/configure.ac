@@ -2,11 +2,11 @@
 # $Id: configure.in,v 1.66 2009/03/19 05:38:31 fukumoto Exp $
 # Process this file with autoconf to produce a configure script.
 
-AC_PREREQ(2.13)
-AC_CONFIG_MACRO_DIRS([m4])
+AC_PREREQ([2.71])
 AC_INIT([racoon2], [2018-07-09], [racoon2@mailmain.astron.com])
-LT_INIT
+AC_CONFIG_MACRO_DIRS([m4])
 AM_INIT_AUTOMAKE([subdir-objects])
+LT_INIT
 
 AC_PREFIX_DEFAULT(/usr/local/racoon2)
 AC_CONFIG_HEADERS([config.h])

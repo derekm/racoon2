@@ -29,7 +29,7 @@ endif
 
 TESTS = eaytest evlooptest workerstest
 check_PROGRAMS = eaytest evlooptest workerstest
-eaytest_SOURCES = eaytest.c
+eaytest_SOURCES = eaytest.c crypto_openssl.c str2val.c
 workerstest_SOURCES = workerstest.c crypto_workers.c
 
 sbin_PROGRAMS=iked

@@ -227,7 +227,8 @@ o NetBSD 3.0
 3. Build and install the Racoon2.
 
 Regenerate the configure scripts at the top of the racoon kit that
-yoy expanded in your systems. Just type:
+yoy expanded in your systems. Autoconf 2.71 (Ubuntu 24.04) is required
+(AC_PREREQ 2.71). Just type:
 
 	% autoreconf -f -i
 

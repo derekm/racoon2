@@ -1,16 +1,16 @@
 dnl Process this file with autoconf to produce a configure script.
-AC_PREREQ(2.13)
-AC_CONFIG_MACRO_DIRS([m4])
+AC_PREREQ([2.71])
 AC_INIT([racoon2], [2018-07-09], [racoon2@mailmain.astron.com])
-LT_INIT
+AC_CONFIG_MACRO_DIRS([m4])
 AM_INIT_AUTOMAKE
+LT_INIT
 
 AC_PREFIX_DEFAULT(/usr/local/racoon2)
 
 dnl Checks for programs.
 AC_PROG_CC
 AC_PROG_CPP
-AC_PROG_LEX
+AC_PROG_LEX([noyywrap])
 AC_PROG_INSTALL
 AC_PROG_MAKE_SET
 RC_PROG_MKDEP
