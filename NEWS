@@ -49,6 +49,13 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  IKE header through Encrypted Payload header). kmp_enc_alg
 	  { aes_gcm; } with kmp_hash_alg { non_auth; } omits INTEGR.
 	  ESP GCM is still RFC 4106.
+	* lib/if_xfrm.c: do not store XFRM_INF in add/use expire seconds.
+	  Kernel `if (hard_use_expires_seconds)` treats ~0ULL as signed −1
+	  and hard-expires the SA in ~1s (XfrmInNoStates). 0 = unlimited,
+	  matching iproute2. Byte/packet limits still use XFRM_INF.
+	* lib/if_xfrm.c: XFRMA_ENCAP only when rcpfk_msg.natt_type is set.
+	  Port 4500 on the IKE sockaddr is not NAT. iked sets natt_type
+	  from behind_nat / peer_behind_nat.
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 
