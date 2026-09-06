@@ -29,6 +29,6 @@ TESTS = sample kmtest
 check_PROGRAMS = sample kmtest
 sample_SOURCES = sample.c
 sample_LDADD = libracoon.a
-kmtest_SOURCES = kmtest.c if_userspace.c
+kmtest_SOURCES = kmtest.c kmtest_backend.c
 
 BUILT_SOURCES = cfparse.h
