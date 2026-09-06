@@ -228,7 +228,6 @@ shell_build_sock_unix(const char *path)
 #ifdef HAVE_SA_LEN
 	slocal->sun_len = SUN_LEN(slocal);
 #endif
-	unlink(path);
 
 	return (struct sockaddr *)slocal;
 }
@@ -252,6 +251,8 @@ shell_sock_open_file(const struct sockaddr *sa)
 		SPMD_PLOG(SPMD_L_INTERR, "Can't setup spmd interface socket:%s", strerror(errno));
 		goto fin; 
 	} 
+	/* Stale path only when we bind. LISTEN_FDS already owns the name. */
+	(void)unlink(((const struct sockaddr_un *)sa)->sun_path);
 
 	if (bind(s, sa, SUN_LEN((const struct sockaddr_un *)sa)) < 0) {
 		SPMD_PLOG(SPMD_L_INTERR, "Failed: bind():%s", strerror(errno));

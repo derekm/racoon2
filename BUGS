@@ -18,8 +18,9 @@ common issues
 
    + --with-km-backend=userspace is a loopback + optional unix datagram
      to RACOON2_DATAPLANE_SOCK. It is not a DPDK fast path. Do not add
-     XFRMA_OFFLOAD_DEV / if_id until XFRM GETSPI/UPDATE work on a live
-     kernel. rcpfk_* is the southbound ABI; do not add a second vtable.
+     XFRMA_OFFLOAD_DEV / if_id until ethtool shows non-[fixed]
+     esp-hw-offload. rcpfk_* is the southbound ABI; do not add a second
+     vtable.
 
    + NetBSD kernel that enabled NAT-T, which you defined options IPSEC_NAT_T
      when you built your kernel, can not send packets which triggered
