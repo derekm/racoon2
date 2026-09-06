@@ -1,0 +1,8 @@
+# Autotools / POSIX scripts must be LF. Windows core.autocrlf=true
+# otherwise emits `pskgen/Makefile\r.in` from AC_CONFIG_FILES.
+*.ac        text eol=lf
+*.am        text eol=lf
+*.m4        text eol=lf
+*.in        text eol=lf
+configure   text eol=lf
+*.sh        text eol=lf

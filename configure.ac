@@ -1,9 +1,9 @@
 dnl $Id: configure.in,v 1.24 2007/12/27 01:08:52 mk Exp $
 
 dnl Process this file with autoconf to produce a configure script.
-AC_PREREQ(2.13)
-AC_CONFIG_MACRO_DIRS([m4])
+AC_PREREQ([2.71])
 AC_INIT([racoon2], [2018-07-09], [racoon2@mailmain.astron.com])
+AC_CONFIG_MACRO_DIRS([m4])
 AM_INIT_AUTOMAKE([subdir-objects])
 
 AC_PREFIX_DEFAULT(/usr/local)
@@ -16,7 +16,12 @@ AC_PROG_RANLIB
 AC_PROG_MAKE_SET
 RC_IF_INSTALL_OPTS
 
-AC_CONFIG_SUBDIRS([lib spmd iked kinkd])
+AC_CONFIG_SUBDIRS([lib spmd iked])
+AC_ARG_ENABLE([kinkd],
+	[AS_HELP_STRING([--disable-kinkd], [do not build kinkd (needs Kerberos)])],
+	[], [enable_kinkd=yes])
+AM_CONDITIONAL([BUILD_KINKD], [test x"$enable_kinkd" = xyes])
+AS_IF([test x"$enable_kinkd" = xyes], [AC_CONFIG_SUBDIRS([kinkd])])
 
 dnl Documented here; lib/configure.ac selects if_xfrm.c / if_pfkeyv2.c / if_userspace.c.
 AC_ARG_WITH(km-backend,
@@ -47,8 +52,7 @@ AC_ARG_ENABLE(pedant,
 AC_MSG_RESULT($enable_pedant)
 
 dnl set $prefix to the configure option
-dnl autoconf-2.13 does not propagate the default prefix to subdirs,
-dnl so do by ourselves.
+dnl Older autoconf did not propagate the default prefix to subdirs.
 if test x$prefix = x"NONE" ; then
 	prefix="$ac_default_prefix"
 	ac_configure_args="$ac_configure_args --prefix='$prefix'"
