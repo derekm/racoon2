@@ -6,6 +6,9 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  Linux AF_KEY drops kernel→user datagrams on rcvbuf (no
 	  netlink_overrun); not the default. BSD stays pfkey.
 	  `--with-km-backend=pfkey` still builds if_pfkeyv2.c.
+	* samples/upnp_portmap.py: this IGD SOAP AddPortMapping is
+	  Action Failed; Windows HNetCfg.NATUPnP maps UDP 500/4500
+	  (lease 0) and NAT-PMP also works. 500 is not reserved-blocked.
 	* admin: establish-sa/vpn-connect surface errno (ENOENT if no
 	  selector). ikedctl masks ADMIN_FLAG_LONG_REPLY before
 	  ac_errno (aliases ac_len_high). reload-config is SIGHUP
