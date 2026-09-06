@@ -967,14 +967,14 @@ dhtest(ac, av)
 		p2.v = str2val(px[i].p, 16, &p2.l);
 		printf("prime number = \n"); PVDUMP(&p1);
 
-		if (eay_dh_generate(&p1, 2, 96, &pub1, &priv1) < 0) {
+		if (eay_dh_generate(&p1, 2, 0, &pub1, &priv1) < 0) {
 			printf("error\n");
 			return -1;
 		}
 		printf("private key for user 1 = \n"); PVDUMP(priv1);
 		printf("public key for user 1  = \n"); PVDUMP(pub1);
 
-		if (eay_dh_generate(&p2, 2, 96, &pub2, &priv2) < 0) {
+		if (eay_dh_generate(&p2, 2, 0, &pub2, &priv2) < 0) {
 			printf("error\n");
 			return -1;
 		}

@@ -30,6 +30,12 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	* Autoconf 2.71 (Ubuntu 24.04). AC_PREREQ 2.13 generated a
 	  broken configure on 2.71 (m4sh functions after option
 	  parse; lib NAT-T AC_EGREP_CPP ate AC_FUNC_MEMCMP).
+	* kinkd: MIT krb5 1.20 dropped krb5_rc_close/resolve_full;
+	  use krb5_get_server_rcache + krb5_rc_destroy. GCC 10
+	  -fno-common: rcf_interface_head is extern in kink_conf.h.
+	* eaytest DH: exponent length 0 (matches oakley gen2). OpenSSL 3
+	  rejects a 96-bit secret vs a 1536-bit p; generate retries
+	  without DH_set_length if the first call fails.
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 
