@@ -1,0 +1,17 @@
+# Linux test matrix (WSL NAT)
+
+Lived adhoc runs from this tree, as case rows. Not pytest.
+
+	wsl.exe -d Ubuntu -u root -- bash /mnt/c/Users/derek/src/racoon2/samples/linux-matrix/run.sh
+	./run.sh --cases 'unit|admin-empty'
+	./run.sh --rebuild xfrm --prefix /usr/local/racoon2
+
+`--rebuild` runs `./configure` only if there is no Makefile in `R2_SRC`
+(default `/home/derek/src/racoon2`). It does **not** `systemctl enable
+racoon2.target`. IKE cases use live `racoon2-iked` / `racoon2-spmd`.
+
+Add a case: a row in `cases.tsv` + a `kind_*` in `kinds/<kind>.sh`.
+Add a build: a row in `builds.tsv`.
+
+Skip on purpose: `ikev1-strongswan` (msg5 vs 5.9.13). `lib/sample`.
+Windows UDP into WSL NAT. Apple NAT-T / v6-in-v4. RFC 9242/9370.

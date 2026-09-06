@@ -1,0 +1,10 @@
+# name	kind	expect	note
+# expect: pass | skip
+# Adding a case is a row. Kind scripts live in kinds/<kind>.sh
+kmtest	unit	pass	lib/kmtest (userspace loopback even when KM is xfrm)
+eaytest	unit	pass	iked/eaytest
+evlooptest	unit	pass	iked/evlooptest
+workerstest	unit	pass	iked/workerstest
+admin-empty	admin	pass	show-sa empty; esp ENOTSUP; vpn-connect ENOENT
+ikev2-netns	ikev2	pass	strongSwan netns; ping; show-sa; vpn-disconnect
+ikev1-strongswan	ikev1	skip	msg5 decrypt garbage vs strongSwan 5.9.13
