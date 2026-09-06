@@ -1,10 +1,12 @@
-# name	kind	expect	note
+# name	kind	expect	workers	note
 # expect: pass | skip
+# workers: - = live systemd iked; 0 = inline; N = pool
 # Adding a case is a row. Kind scripts live in kinds/<kind>.sh
-kmtest	unit	pass	lib/kmtest (userspace loopback even when KM is xfrm)
-eaytest	unit	pass	iked/eaytest
-evlooptest	unit	pass	iked/evlooptest
-workerstest	unit	pass	iked/workerstest
-admin-empty	admin	pass	show-sa empty; esp ENOTSUP; vpn-connect ENOENT
-ikev2-netns	ikev2	pass	strongSwan netns; ping; show-sa; vpn-disconnect
-ikev1-strongswan	ikev1	skip	msg5 decrypt garbage vs strongSwan 5.9.13
+kmtest	unit	pass	-	lib/kmtest (userspace loopback even when KM is xfrm)
+eaytest	unit	pass	-	iked/eaytest
+evlooptest	unit	pass	-	iked/evlooptest
+workerstest	unit	pass	-	iked/workerstest (inline, 1, 10)
+admin-empty	admin	pass	-	show-sa empty; esp ENOTSUP; vpn-connect ENOENT
+ikev2-netns	ikev2	pass	0	strongSwan netns; inline drain (RACOON2_CRYPTO_WORKERS=0)
+ikev2-netns-w1	ikev2	pass	1	strongSwan netns; pool N=1
+ikev1-strongswan	ikev1	skip	-	msg5 decrypt garbage vs strongSwan 5.9.13

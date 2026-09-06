@@ -2,7 +2,9 @@
 # Reproducible WSL Linux matrix. Cases are rows in cases.tsv.
 #   wsl.exe -d Ubuntu -u root -- bash samples/linux-matrix/run.sh
 #   ./run.sh --cases 'unit|admin-empty'
-# Does not stop systemd racoon2-* unless --rebuild installs over PREFIX.
+# IKE rows with a workers cell stop racoon2-iked only, spawn iked -F
+# with RACOON2_CRYPTO_WORKERS, restore after the case.
+# Does not enable racoon2.target. Does not stop racoon2-spmd.
 set -u
 HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/lib.sh"
@@ -62,7 +64,8 @@ fi
 pass=0
 fail=0
 skip=0
-while IFS='	' read -r name kind expect note; do
+trap iked_restore EXIT
+while IFS='	' read -r name kind expect workers note; do
 	case $name in ''|\#*) continue ;; esac
 	if [ -n "$FILTER" ]; then
 		echo "$name $kind" | grep -Eq "$FILTER" || continue
@@ -72,7 +75,9 @@ while IFS='	' read -r name kind expect note; do
 		skip=$((skip + 1))
 		continue
 	fi
-	log "=== $name ($kind) ==="
+	case $workers in -|'') R2_WORKERS= ;; *) R2_WORKERS=$workers ;; esac
+	export R2_WORKERS
+	log "=== $name ($kind) workers=${R2_WORKERS:-live} ==="
 	if kind_$kind "$name"; then
 		log "PASS $name"
 		pass=$((pass + 1))
@@ -80,6 +85,7 @@ while IFS='	' read -r name kind expect note; do
 		log "FAIL $name"
 		fail=$((fail + 1))
 	fi
+	iked_restore
 done < "$HERE/cases.tsv"
 
 log "pass=$pass fail=$fail skip=$skip"

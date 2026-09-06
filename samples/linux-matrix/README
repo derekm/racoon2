@@ -8,7 +8,12 @@ Lived adhoc runs from this tree, as case rows. Not pytest.
 
 `--rebuild` runs `./configure` only if there is no Makefile in `R2_SRC`
 (default `/home/derek/src/racoon2`). It does **not** `systemctl enable
-racoon2.target`. IKE cases use live `racoon2-iked` / `racoon2-spmd`.
+racoon2.target`. IKE rows with an empty `workers` cell use live
+`racoon2-iked`. A numeric cell stops `racoon2-iked` only (not spmd),
+runs `iked -F` with `RACOON2_CRYPTO_WORKERS`, restores systemd after
+the case. `0` = inline drain; `1` = pool. IKE still does not enqueue
+`oakley_dh_*` — these rows prove iked starts at that N and the Child
+SA still pings.
 
 Add a case: a row in `cases.tsv` + a `kind_*` in `kinds/<kind>.sh`.
 Add a build: a row in `builds.tsv`.
