@@ -6,3 +6,4 @@
 *.in        text eol=lf
 configure   text eol=lf
 *.sh        text eol=lf
+*.py        text eol=lf
