@@ -17,5 +17,6 @@ install-exec-hook:
 	$(INSTALL) -m 600 transport_kink.conf $(DESTDIR)$(sysconfdir)/transport_kink.conf.sample
 	$(INSTALL) -m 600 tunnel_kink.conf $(DESTDIR)$(sysconfdir)/tunnel_kink.conf.sample
 	$(INSTALL) -m 600 local-test.conf $(DESTDIR)$(sysconfdir)/local-test.conf.sample
+	$(INSTALL) -m 600 macos_ikev2.conf $(DESTDIR)$(sysconfdir)/macos_ikev2.conf.sample
 	$(INSTALL) -d -m 700 $(DESTDIR)$(sysconfdir)/psk
 	$(INSTALL) -d -m 700 $(DESTDIR)$(sysconfdir)/cert
