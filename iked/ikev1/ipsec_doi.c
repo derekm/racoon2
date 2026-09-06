@@ -610,7 +610,7 @@ t2isakmpsa(struct isakmp_pl_t *trns, struct isakmpsa *sa)
 			}
 			val = rc_vmalloc(len);
 			if (!val)
-				return -1;
+				goto err;
 			memcpy(val->v, p, len);
 			break;
 
@@ -805,8 +805,10 @@ t2isakmpsa(struct isakmp_pl_t *trns, struct isakmpsa *sa)
 
 	return 0;
 err:
-	rc_vfree(sa->dhgrp);
-	sa->dhgrp = NULL;
+	if (sa->dhgrp) {
+		oakley_dhgrp_free(sa->dhgrp);
+		sa->dhgrp = NULL;
+	}
 	return error;
 }
 
