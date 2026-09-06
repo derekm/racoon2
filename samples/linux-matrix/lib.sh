@@ -11,7 +11,11 @@ ETC="${PREFIX}/etc/racoon2"
 SBIN="${PREFIX}/sbin"
 
 log() { printf '%s\n' "$*"; }
-die() { printf 'FAIL: %s\n' "$*" >&2; return 1; }
+die() {
+	printf 'FAIL: %s\n' "$*" >&2
+	R2_CASE_FAIL=1
+	return 1
+}
 
 require_root() {
 	if [ "$(id -u)" -ne 0 ]; then
@@ -80,6 +84,25 @@ iked_apply_workers() {
 		fi
 		sleep 1
 	done
+	# Restart spmd first (drops IKE-bypass cache). Then flush whatever
+	# boot SPD it reinstalled. Then spawn iked. Reverse order leaves a
+	# 0/0→RIP tunnel SPD that captures IKE (XfrmInTmplMismatch).
+	# Does not enable racoon2.target.
+	systemctl restart racoon2-spmd || {
+		log "FAIL: restart racoon2-spmd"
+		return 1
+	}
+	i=0
+	while [ ! -S /run/racoon2/spmif ] && [ ! -S /var/run/racoon2/spmif ]; do
+		i=$((i + 1))
+		if [ "$i" -gt 10 ]; then
+			log "FAIL: no spmif after racoon2-spmd restart"
+			return 1
+		fi
+		sleep 1
+	done
+	ip xfrm state flush || true
+	ip xfrm policy flush || true
 	: >/tmp/r2-iked-matrix.log
 	(
 		cd "$ETC" || exit 1

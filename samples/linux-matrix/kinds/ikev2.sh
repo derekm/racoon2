@@ -11,14 +11,8 @@ kind_ikev2() {
 	ip link del "$VETH_H" 2>/dev/null || true
 	netns_up
 	systemctl stop strongswan-starter.service 2>/dev/null || true
-	ip xfrm state flush || true
-	ip xfrm policy flush || true
 	ip netns exec "$NS" ip xfrm state flush || true
 	ip netns exec "$NS" ip xfrm policy flush || true
-	# spmd caches IKE UDP bypass in-process. Kernel flush without a
-	# restart skips reinstall → IKE_AUTH hits the tunnel SPD.
-	systemctl restart racoon2-spmd 2>/dev/null || true
-	sleep 1
 	iked_apply_workers || return 1
 
 	# ICMP to the host's eth0 addr from the veth often fails (local-dest);
@@ -29,6 +23,16 @@ kind_ikev2() {
 	fi
 
 	pskhex=$(xxd -p -c 256 "$ETC/psk/macos.psk" | tr -d '\n')
+	mkdir -p /etc/strongswan.d/charon
+	cat >/etc/strongswan.d/charon/bypass-lan.conf <<'EOF'
+charon {
+	plugins {
+		bypass-lan {
+			load = no
+		}
+	}
+}
+EOF
 	cat >/etc/ipsec.conf <<EOF
 config setup
 	uniqueids=no
