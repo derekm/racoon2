@@ -121,6 +121,8 @@ enum ikev2_child_state {
 #define	IKEV2_SA_LIST_LINK(head_, p_)	TAILQ_INSERT_TAIL((head_), (p_), link)
 #define	IKEV2_SA_LIST_REMOVE(head_, p_)	TAILQ_REMOVE((head_), (p_), link)
 
+extern IKEV2_SA_LIST_HEAD ikev2_sa_list;
+
 #define	IKEV2_CHILD_LIST_HEAD			TAILQ_HEAD(ikev2_child_sa_list, ikev2_child_sa)
 #define	IKEV2_CHILD_LIST_INIT(head_)		TAILQ_INIT(head_)
 #define	IKEV2_CHILD_LIST_EMPTY(head_)		TAILQ_EMPTY((head_))

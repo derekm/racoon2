@@ -4,7 +4,7 @@ ACLOCAL_AMFLAGS = -I m4
 
 AM_CPPFLAGS =	-I. -I./extra
 AM_CPPFLAGS +=	@CPPFLAGS@
-AM_CPPFLAGS += -DSYSCONFDIR=\"${sysconfdir}\"
+AM_CPPFLAGS += -DSYSCONFDIR='"$(sysconfdir)"'
 AM_CPPFLAGS += -DDEBUG
 AM_CPPFLAGS += -DDEBUG_TRACE
 # AM_CPPFLAGS += -DSELFTEST
@@ -20,11 +20,26 @@ IKEV2_NATT_SRC = nattraversal.c
 IKED_COMMON = main.c dh.c ike_sa.c ike_conf.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC}
 
 if USE_EPOLL
-iked_SOURCES = $(IKED_COMMON) evloop_epoll.c
 evlooptest_SOURCES = evlooptest.c evloop_epoll.c
+if USE_ADMIN
+iked_SOURCES = $(IKED_COMMON) evloop_epoll.c admin.c
+else
+iked_SOURCES = $(IKED_COMMON) evloop_epoll.c
+endif
+else
+evlooptest_SOURCES = evlooptest.c evloop_select.c
+if USE_ADMIN
+iked_SOURCES = $(IKED_COMMON) evloop_select.c admin.c
 else
 iked_SOURCES = $(IKED_COMMON) evloop_select.c
-evlooptest_SOURCES = evlooptest.c evloop_select.c
+endif
+endif
+
+if USE_ADMIN
+sbin_PROGRAMS = iked ikedctl
+ikedctl_SOURCES = ikedctl_unix.c
+else
+sbin_PROGRAMS = iked
 endif
 
 TESTS = eaytest evlooptest workerstest
@@ -32,9 +47,8 @@ check_PROGRAMS = eaytest evlooptest workerstest
 eaytest_SOURCES = eaytest.c crypto_openssl.c str2val.c
 workerstest_SOURCES = workerstest.c crypto_workers.c
 
-sbin_PROGRAMS=iked
-
 LIBS = @LIBS@
 
 man_MANS = iked.8
-EXTRA_DIST = evloop.h evloop_select.c evloop_epoll.c crypto_workers.h
+EXTRA_DIST = evloop.h evloop_select.c evloop_epoll.c crypto_workers.h \
+	ikedctl.c ikedctl.h ikedctl_unix.c admin.c admin.h

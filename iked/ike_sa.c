@@ -52,7 +52,7 @@
 void ikev2_sa_start_nego_timer(struct ikev2_sa *sa);
 void ikev2_sa_start_grace_period(struct ikev2_sa *sa);
 
-IKEV2_SA_LIST_HEAD ikev2_sa_list;
+struct ikev2_sa_list ikev2_sa_list;
 
 #define	FOREACH_SA(v_)	TAILQ_FOREACH(v_, &ikev2_sa_list, link)
 
