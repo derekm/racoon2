@@ -49,10 +49,13 @@ AC_DEFUN([RC_IF_NATT_ENABLE],
 AC_MSG_CHECKING(if --enable-natt option is specified)
 AC_ARG_ENABLE(natt, [  --enable-natt           enable NAT-T support],
 	[], [
+		if test x"$km_backend" = xxfrm; then
+			enable_natt=yes
+		else
 		AC_MSG_RESULT([no])
 		AC_MSG_CHECKING(if NAT-T is available)
 		AC_EGREP_CPP(natt_compilable,
-[#ifdef HAVE_NET_PFKEYV2_H
+#ifdef HAVE_NET_PFKEYV2_H
 # include <net/pfkeyv2.h>
 #else
 # include <linux/pfkeyv2.h>
@@ -62,6 +65,7 @@ natt_compilable
 #endif
 ],
 		enable_natt=yes, enable_natt=no)
+		fi
 	])
 if test x"$enable_natt" = xyes; then
 	AC_DEFINE(ENABLE_NATT, 1, [define to enable NAT Traversal support])
@@ -337,6 +341,44 @@ case $host in
 	fi
 	;;
 esac
+])
+
+dnl
+dnl SAD/SPD kernel backend: Linux NETLINK_XFRM vs BSD PF_KEY.
+dnl Same XOR source-file swap as iked RTSOCK (netlink.c vs rtsock.c).
+dnl
+AC_DEFUN([RC_KM_BACKEND],
+[
+AC_MSG_CHECKING([kernel SAD/SPD backend])
+AC_ARG_WITH(km-backend,
+	[  --with-km-backend=xfrm|pfkey
+                          SAD/SPD kernel interface (default: pfkey;
+                          Linux xfrm is opt-in until verified on a live kernel)],
+	[km_backend=$withval], [km_backend=auto])
+if test x"$km_backend" = xauto; then
+	km_backend=pfkey
+fi
+case $km_backend in
+xfrm)
+	case $host_os in
+	*linux*) ;;
+	*) AC_MSG_ERROR([--with-km-backend=xfrm is Linux-only]) ;;
+	esac
+	AC_CHECK_HEADERS([linux/xfrm.h linux/netlink.h linux/rtnetlink.h], [],
+		[AC_MSG_ERROR([linux/xfrm.h and netlink headers required for xfrm backend])])
+	KM_IF=if_xfrm.c
+	AC_DEFINE(HAVE_XFRM, 1, [Linux NETLINK_XFRM SAD/SPD backend])
+	;;
+pfkey)
+	KM_IF=if_pfkeyv2.c
+	;;
+*)
+	AC_MSG_ERROR([--with-km-backend must be xfrm or pfkey])
+	;;
+esac
+AC_SUBST(KM_IF)
+AM_CONDITIONAL([USE_XFRM], [test x"$km_backend" = xxfrm])
+AC_MSG_RESULT([$km_backend ($KM_IF)])
 ])
 
 dnl

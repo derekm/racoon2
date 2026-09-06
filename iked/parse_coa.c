@@ -46,6 +46,9 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/xfrm.h>
+#ifndef XFRMGRP_SA
+#define XFRMGRP_SA 4
+#endif
 #include "racoon.h"
 #include "debug.h"
 #include "var.h"
@@ -78,7 +81,7 @@ nl_xfrm_open(void) {
 		return -1;
 
 	local.nl_family = AF_NETLINK;
-	local.nl_groups = NETLINK_XFRM;
+	local.nl_groups = XFRMGRP_SA;
 
 	err = bind(nlx_socket, (struct sockaddr*)&local, sizeof(local));
 	if (err < 0)
