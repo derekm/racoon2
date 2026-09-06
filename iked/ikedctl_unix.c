@@ -47,7 +47,7 @@ usage(const char *p)
 "  %s [-s socket] reload-config\n"
 "  %s [-s socket] show-sa isakmp\n"
 "  %s [-s socket] flush-sa isakmp\n"
-"  %s [-s socket] establish-sa isakmp inet <src> <dst> [remoteconf]\n"
+"  %s [-s socket] establish-sa isakmp inet <src> <dst> [selector_index]\\n"
 "  %s [-s socket] vpn-connect <gateway>\n"
 "  %s [-s socket] vpn-disconnect <gateway>\n"
 "\n"
@@ -234,7 +234,7 @@ transact(void *req, size_t reqlen)
 }
 
 static char *
-local_for(const char *dst)
+local_for(const char *dst, int *af)
 {
 	struct addrinfo hints, *res;
 	int fd;
@@ -246,6 +246,7 @@ local_for(const char *dst)
 	hints.ai_socktype = SOCK_DGRAM;
 	if (getaddrinfo(dst, "500", &hints, &res) != 0)
 		errx(EXIT_FAILURE, "cannot resolve %s", dst);
+	*af = res->ai_family;
 	fd = socket(res->ai_family, SOCK_DGRAM, 0);
 	if (fd < 0)
 		err(EXIT_FAILURE, "socket");
@@ -286,6 +287,17 @@ main(int ac, char **av)
 	cmd = av[0];
 	ac--;
 	av++;
+
+	if ((strcmp(cmd, "show-sa") == 0 || strcmp(cmd, "ss") == 0) &&
+	    ac == 1 && (strcmp(av[0], "esp") == 0 ||
+			strcmp(av[0], "ah") == 0 ||
+			strcmp(av[0], "ipsec") == 0))
+		errx(EXIT_FAILURE, "kernel SAD: ip -s xfrm state");
+	if ((strcmp(cmd, "flush-sa") == 0 || strcmp(cmd, "fs") == 0) &&
+	    ac == 1 && (strcmp(av[0], "esp") == 0 ||
+			strcmp(av[0], "ah") == 0 ||
+			strcmp(av[0], "ipsec") == 0))
+		errx(EXIT_FAILURE, "kernel SAD: ip xfrm state flush");
 
 	com_init();
 
@@ -347,27 +359,32 @@ main(int ac, char **av)
 		   strcmp(cmd, "vc") == 0) {
 		char *src;
 		struct admin_com_indexes *ndx;
+		int af;
 
 		if (ac < 1)
 			usage(pname);
-		src = local_for(av[0]);
+		src = local_for(av[0], &af);
 		req = make_req(ADMIN_ESTABLISH_SA, ADMIN_PROTO_ISAKMP,
 			       sizeof(*ndx), &reqlen);
 		ndx = (struct admin_com_indexes *)
 			((char *)req + sizeof(struct admin_com));
-		fill_index(ndx, AF_INET, src, av[0]);
+		fill_index(ndx, af, src, av[0]);
 		transact(req, reqlen);
 	} else if (strcmp(cmd, "vpn-disconnect") == 0 ||
 		   strcmp(cmd, "vd") == 0) {
 		struct admin_com_indexes *ndx;
+		int af;
+		const char *src;
 
 		if (ac < 1)
 			usage(pname);
+		(void)local_for(av[0], &af);
+		src = (af == AF_INET6) ? "::" : "0.0.0.0";
 		req = make_req(ADMIN_DELETE_ALL_SA_DST, ADMIN_PROTO_ISAKMP,
 			       sizeof(*ndx), &reqlen);
 		ndx = (struct admin_com_indexes *)
 			((char *)req + sizeof(struct admin_com));
-		fill_index(ndx, AF_INET, "0.0.0.0", av[0]);
+		fill_index(ndx, af, src, av[0]);
 		transact(req, reqlen);
 	} else {
 		usage(pname);
