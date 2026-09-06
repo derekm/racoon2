@@ -390,6 +390,7 @@ void
 flushph1(void)
 {
 	struct ph1handle *p, *next;
+	struct ph2handle *p2;
 
 	for (p = LIST_FIRST(&ph1tree); p; p = next) {
 		next = LIST_NEXT(p, chain);
@@ -397,6 +398,21 @@ flushph1(void)
 		/* send delete information */
 		if (p->status == PHASE1ST_ESTABLISHED) 
 			isakmp_info_send_d1(p);
+
+		/*
+		 * Discard any phase2 handles still bound to this ph1
+		 * before freeing it below.  delph1() does not touch
+		 * p->ph2tree, so without this a bound ph2handle's ->ph1
+		 * pointer is left dangling once p is freed and any later
+		 * use of that ph2handle is a use-after-free.  Ported from
+		 * racoon (ipsec-tools) flushph1().
+		 */
+		while ((p2 = LIST_FIRST(&p->ph2tree)) != NULL) {
+			if (p2->status == PHASE2ST_ESTABLISHED)
+				isakmp_info_send_d2(p2);
+			delete_spd(p2);
+			destroy_ph2(p2);
+		}
 
 		remph1(p);
 		delph1(p);
