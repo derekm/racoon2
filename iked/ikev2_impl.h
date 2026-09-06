@@ -211,6 +211,7 @@ struct ikev2_sa {
 
 	int behind_nat;
 	int peer_behind_nat;
+	int crypto_pending;
 	struct sched *natk_timer;
 #if 0	/* XXX for transport mode */
 	struct sockaddr *privaddr_p;

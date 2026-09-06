@@ -10,8 +10,12 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  Action Failed; Windows HNetCfg.NATUPnP maps UDP 500/4500
 	  (lease 0) and NAT-PMP also works. 500 is not reserved-blocked.
 	* samples/linux-matrix: WSL case-row harness (unit, admin-empty,
-	  ikev2-netns, skip ikev1-strongswan). Does not enable
-	  racoon2.target.
+	  ikev2-netns workers=0 and workers=1, skip ikev1-strongswan).
+	  Numeric workers cell relaunches iked -F with
+	  RACOON2_CRYPTO_WORKERS. Does not enable racoon2.target.
+	* ikev2: IKE_SA DH generate/compute goes through
+	  oakley_dh_*_submit → crypto_job_submit (N=0 inlines).
+	  Child PFS / IKEv1 still call oakley_dh_* on the IKE thread.
 	* spmd: unlink spmif only after LISTEN_FDS miss, before bind.
 	  Unlink-before-take dropped the name iked connect()s to.
 	* admin: establish-sa/vpn-connect surface errno (ENOENT if no
