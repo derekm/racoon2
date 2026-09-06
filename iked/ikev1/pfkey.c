@@ -1002,6 +1002,10 @@ pk_sendupdate(struct ph2handle *iph2)
 		param.pref_src = 0;
 		param.pref_dst = 0;
 		param.ul_proto = RC_PROTO_ANY;	/* ??? */
+		#ifdef ENABLE_NATT
+		if (iph2->ph1->natt_flags & NAT_DETECTED)
+			param.natt_type = UDP_ENCAP_ESPINUDP;
+		#endif
 		param.enckey = pr->keymat->v;
 		param.enckeylen = e_keylen;
 		param.authkey = pr->keymat->s + e_keylen;
@@ -1272,6 +1276,10 @@ pk_sendadd(struct ph2handle *iph2)
 		param.pref_src = 0;
 		param.pref_dst = 0;
 		param.ul_proto = RC_PROTO_ANY;	/* ??? */
+		#ifdef ENABLE_NATT
+		if (iph2->ph1->natt_flags & NAT_DETECTED)
+			param.natt_type = UDP_ENCAP_ESPINUDP;
+		#endif
 		param.enckey = pr->keymat_p->v;
 		param.enckeylen = e_keylen;
 		param.authkey = pr->keymat_p->s + e_keylen;
