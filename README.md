@@ -80,6 +80,24 @@ On Linux, `make install` ships systemd units under
 PrivateTmp). `systemctl enable --now racoon2.target` starts
 spmd.socket then iked. Daemons use `-F`; no init.d `sleep 1`.
 
+ikedctl is built on Linux (`--enable-admin`, default). It is a
+unix-socket admin client (`/var/run/iked.sock`), not PF_KEY and not
+netlink. IKE SAs:
+
+	ikedctl show-sa isakmp
+	ikedctl flush-sa isakmp
+	ikedctl establish-sa isakmp inet <src> <dst>
+	ikedctl vpn-connect <gateway>
+
+Kernel SAD/SPD (not ikedctl):
+
+	ip -s xfrm state
+	ip xfrm state flush
+	ip xfrm policy
+	ip xfrm policy flush
+
+Do not XOR-compile ikedctl onto `NETLINK_XFRM`.
+
 iked on Linux uses epoll (`--disable-epoll` for select). Optional
 crypto workers (`--with-crypto-workers=N`, default 0 = inline) drain
 on the IKE thread. OpenSSL 3 providers (`--with-openssl-provider` /

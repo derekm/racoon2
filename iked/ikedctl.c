@@ -3,6 +3,11 @@
 /*	Id: ikedctl.c,v 1.11 2006/04/06 17:06:25 manubsd Exp */
 
 /*
+ * Leftover racoon1 client (no com_*). Linux builds ikedctl_unix.c.
+ * Kernel SAD/SPD: ip xfrm. Do not XOR this file onto NETLINK_XFRM.
+ */
+
+/*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * Copyright (C) 2008 Timo Teras.
  * All rights reserved.

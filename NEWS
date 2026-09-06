@@ -66,6 +66,11 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	* samples/upnp_portmap.py: UPnP IGD mapping for IKE UDP 500 /
 	  4500 to this host (miniupnpc). Router IGDs that refuse
 	  AddPortMapping (Action Failed) need a manual forward.
+	* Linux: ikedctl unix admin (`--enable-admin`, default).
+	  show-sa/flush-sa/establish-sa/vpn-connect isakmp via
+	  /var/run/iked.sock. Kernel SAD/SPD remains `ip xfrm`.
+	  T4 admin_reply send loop (EINTR/short write). Do not
+	  XOR-compile ikedctl for netlink.
 
 2020-02-05 Christos Zoulas, Chuck Zmudzinski
 

@@ -285,6 +285,21 @@ AC_DEFINE_UNQUOTED(CRYPTO_WORKERS_DEFAULT, $crypto_workers,
 	[default crypto worker threads])
 
 AC_CHECK_HEADERS([sys/epoll.h])
+AC_MSG_CHECKING(--enable-admin)
+AC_ARG_ENABLE(admin,
+	[  --enable-admin          unix admin socket + ikedctl (linux default)],
+	[enable_admin=$enableval], [
+	case $host_os in
+	*linux*) enable_admin=yes ;;
+	*) enable_admin=no ;;
+	esac
+])
+AC_MSG_RESULT($enable_admin)
+if test x"$enable_admin" = xyes; then
+	AC_DEFINE(WITH_ADMIN, 1, [unix admin socket for ikedctl])
+fi
+AM_CONDITIONAL([USE_ADMIN], [test x"$enable_admin" = xyes])
+
 AC_MSG_CHECKING(--enable-epoll)
 AC_ARG_ENABLE(epoll,
 	[  --enable-epoll          use epoll for iked (linux default)],
