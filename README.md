@@ -53,12 +53,13 @@ and use Racoon2 to get working IPsec connections with minimal
 effort.
 
 Currently Racoon2 works well as an L2TP/IPsec VPN server or as
-an IKEv2 VPN server running on NetBSD. Linux still uses the
-pfkeyv2 compat socket by default. An experimental NETLINK_XFRM
-backend (`lib/if_xfrm.c`, same rcpfk_* ABI as BSD pfkeyv2,
-selected like iked's netlink.c vs rtsock.c) is opt-in:
+an IKEv2 VPN server running on NetBSD. Linux SAD/SPD default is
+NETLINK_XFRM (`lib/if_xfrm.c`, same rcpfk_* ABI as BSD pfkeyv2,
+XOR like iked's netlink.c vs rtsock.c). Linux `AF_KEY` drops
+kernel→user datagrams when the socket rcvbuf fills — not the
+default. Force the compat socket with:
 
-	./configure --with-km-backend=xfrm
+	./configure --with-km-backend=pfkey
 
 A userspace dataplane backend (same rcpfk_* ABI) is
 
@@ -69,11 +70,10 @@ That loopbacks SA/SPD to iked and optionally mirrors to
 this tree. Hardware offload (`XFRMA_OFFLOAD_DEV`, xfrmi) is not
 wired.
 
-It is not verified on a live kernel yet. Apple NAT-T, IPv6-in-IPv4
-tunnels, and SPD FWD still need that verification (`ip xfrm state`
-/`ip xfrm policy` after iked+spmd). Until then, Linux pfkeyv2
-remains the path that has actually been tested (IPv4-in-IPv4,
-L2TP/IPsec). Please refer to NEWS and BUGS.
+IKEv2 v4-in-v4 (NAT-mode) has lived: SAD+SPD from iked+spmd, ping
+through ESP. Apple NAT-T and IPv6-in-IPv4 are still unclaimed
+until `ip xfrm state`/`ip xfrm policy` after iked+spmd show that
+sel. Please refer to NEWS and BUGS.
 
 On Linux, `make install` ships systemd units under
 `/usr/lib/systemd/system` (socket activation + ProtectSystem=strict,

@@ -138,13 +138,12 @@ o Linux (kernel 2.6)
   CONFIG_XFRM
   CONFIG_XFRM_USER
 
-  Linux SAD/SPD path defaults to PF_KEY (af_key.ko / CONFIG_NET_KEY).
-  An experimental NETLINK_XFRM backend is --with-km-backend=xfrm
-  (needs CONFIG_XFRM_USER). Not the default until verified.
+  Linux SAD/SPD path defaults to NETLINK_XFRM (CONFIG_XFRM_USER).
+  Linux AF_KEY dumps/events drop on rcvbuf; not the default.
 
-	./configure --with-km-backend=pfkey      # default
-	./configure --with-km-backend=xfrm       # experimental Linux XFRM
-	./configure --with-km-backend=userspace  # DPDK/appliance loopback
+	./configure --with-km-backend=xfrm       # Linux default
+	./configure --with-km-backend=pfkey      # BSD default; Linux opt-in
+	./configure --with-km-backend=userspace  # loopback + unix datagram
 
   ESP AES-GCM (RFC 4106 ICV16), XFRM backend:
 

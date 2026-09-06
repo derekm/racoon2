@@ -352,12 +352,14 @@ AC_DEFUN([RC_KM_BACKEND],
 AC_MSG_CHECKING([kernel SAD/SPD backend])
 AC_ARG_WITH(km-backend,
 	[  --with-km-backend=xfrm|pfkey|userspace
-                          SAD/SPD interface (default: pfkey;
-                          Linux xfrm is opt-in until verified on a live kernel;
-                          userspace is a DPDK/appliance loopback + unix datagram)],
+                          SAD/SPD interface (Linux default: xfrm;
+                          BSD default: pfkey; userspace is loopback)],
 	[km_backend=$withval], [km_backend=auto])
 if test x"$km_backend" = xauto; then
-	km_backend=pfkey
+	case $host_os in
+	*linux*) km_backend=xfrm ;;
+	*) km_backend=pfkey ;;
+	esac
 fi
 case $km_backend in
 xfrm)

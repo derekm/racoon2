@@ -26,8 +26,8 @@ AS_IF([test x"$enable_kinkd" = xyes], [AC_CONFIG_SUBDIRS([kinkd])])
 dnl Documented here; lib/configure.ac selects if_xfrm.c / if_pfkeyv2.c / if_userspace.c.
 AC_ARG_WITH(km-backend,
 	[  --with-km-backend=xfrm|pfkey|userspace
-                          SAD/SPD interface (default pfkey;
-                          Linux xfrm is opt-in; userspace is DPDK loopback)])
+                          SAD/SPD interface (Linux default xfrm;
+                          BSD default pfkey; userspace is loopback)])
 
 dnl Set the debug option by default for now.
 AC_MSG_CHECKING(if --enable-debug option is specified)
