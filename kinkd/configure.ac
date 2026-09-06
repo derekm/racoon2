@@ -219,7 +219,7 @@ mit)
 	AC_CHECK_LIB(com_err, main)
 	AC_CHECK_LIB(k5crypto, main)
 	AC_CHECK_LIB(krb5, main, , AC_MSG_ERROR(libkrb5 is not found/linkable.))
-	AC_CHECK_FUNCS(krb5_nfold)
+	AC_CHECK_FUNCS(krb5_nfold krb5_rc_close krb5_rc_destroy krb5_get_server_rcache)
 	;;
 *)
 	AC_MSG_ERROR([Supported Kerberos5 library is not found.  Check your CPPFLAGS/LDFLAGS, or install one if not installed.])
