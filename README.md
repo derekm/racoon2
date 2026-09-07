@@ -211,9 +211,13 @@ Currently, the system supports the following specifications:
 	RFC 4303, IP Encapsulating Security Payload (ESP)
 	RFC 4106, The Use of Galois/Counter Mode (GCM) in IPsec ESP
 	          (AES-GCM-16)
+	RFC 4868, Using HMAC-SHA-256/384/512 with IPsec ESP and AH
+	          (partial: ESP integrity uses HMAC-SHA2-256, 128-bit ICV;
+	          the SHA-384/512 ESP variants are not wired)
 
 	Kerberized Internet Negotiation of Keys (KINK)
 	RFC 4430, Kerberized Internet Negotiation of Keys (KINK)
+	          (in tree; live KDC validation pending — see AAA item)
 
 	RFC 3526, More Modular Exponential (MODP) Diffie-Hellman groups
 	          for Internet Key Exchange (IKE)
