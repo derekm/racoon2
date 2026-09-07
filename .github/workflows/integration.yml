@@ -73,6 +73,20 @@ jobs:
         env:
           R2_PREFIX: /usr/local/racoon2
 
+      - name: Collect integration diagnostics (on failure)
+        if: failure()
+        run: |
+          sudo bash -c '
+          set -x
+          ls -la /run/iked.sock /run/racoon2 2>&1
+          systemctl status iked spmd --no-pager 2>&1 | head -30
+          journalctl -u iked -u spmd -n 40 --no-pager 2>&1 | tail -45
+          ss -ulnp 2>&1 | head -20
+          head -30 /tmp/r2-iked-matrix.log 2>&1
+          id && ls -la /usr/local/racoon2/etc/racoon2 2>&1 | head -8
+          ' > /tmp/r2-diag.txt 2>&1 || true
+          cat /tmp/r2-diag.txt | tail -80
+
       - name: Upload matrix logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -80,6 +94,7 @@ jobs:
           name: matrix-logs
           path: |
             /tmp/r2-iked-matrix.log
+            /tmp/r2-diag.txt
             /tmp/*.log
             /tmp/r2_*.txt
-          if-no-files-found: ignore
+          if-no-files-found: warn
