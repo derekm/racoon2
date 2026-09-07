@@ -116,6 +116,51 @@ On Linux, `make install` ships systemd units under
 PrivateTmp). `systemctl enable --now racoon2.target` starts
 spmd.socket then iked. Daemons use `-F`; no init.d `sleep 1`.
 
+## Parallel work streams (gsoc2026)
+
+This branch (`linux-km`) is half of a two-front effort. The other half
+is the **GSoC 2026 branch** of the same tree, in progress upstream:
+
+- branch at the project repo: **`origin/gsoc2026`** (zoulasc/racoon2)
+- author's fork/remote:
+  **https://github.com/ssszcmawo/racoon2/tree/gsoc2026**
+  (PR series #28–#36 plus the branch history)
+
+`gsoc2026` works the **protocol layer** where linux-km does not:
+RFC 7383 IKEv2 fragmentation, legacy IKEv1 fragmentation, NAT-OA
+substitution (RFC 3947 §4, incl. transport mode), IPv6-by-default,
+`IP_RW` road-warrior handling, plus a tail of independent fixes
+(purge_remote phase-2 cleanup, spmd NULL-deref, double-frees).
+linux-km covers the **dataplane/daemon layer**: NETLINK_XFRM first-class,
+systemd, epoll, async crypto workers, userspace KM seam, the Apple
+NAT-T + IKEv1 NAT-T proofs, and CI. Both branches modernized the same
+core (configure.ac, ikev2_*, cfparse/cfsetup), so the merge is a real
+3-way (~55 shared files) — the goal is a single tree carrying both
+halves: `int/gsoc2026` off `linux-km`, conflict resolution focused on
+those shared cores, then re-proving the iPhone + IKEv1 harnesses before
+the union is promoted.
+
+**Post-merge plan (after the union re-proves both live harnesses):**
+
+1. Fragmentation security review — bounds-check `ikev2_frag`/v1
+   reassembly against the racoon1 CVE-2016-10396-class issues before
+   trusting the fragment paths on the wire.
+2. Port NAT-OA output to the XFRM backend (gsoc emits PF_KEY-shaped
+   messages; the Linux path needs the same content on netlink).
+3. Retire the `IP_ANY` XFRM template mangling — gsoc's `IP_RW` gives
+   the road-warrior story the dataplane fix can lean on.
+4. MOBIKE (RFC 4555) — the mobile/roaming gap iOS hits on address
+   change.
+5. Async child PFS + IKEv1 DH off the IKE thread, then rekey stress
+   at 1h lifetimes through crypto workers.
+6. Fuzzing (libFuzzer → OSS-Fuzz) on ikev2_input / isakmp parse paths.
+7. RFC 8784 (PPK), then re-open RFC 9242/9370 (OpenSSL 3.5/OQS gate).
+8. Transport-mode IKEv2 e2e + IPv6-in-IPv4 proof; Windows native /
+   Android / macOS acceptance.
+9. Enterprise AAA: IKEv2 EAP-MSCHAPv2 + RADIUS client (AD behind the
+   RADIUS server), kinkd live-tested against MIT krb5 and Samba AD DC.
+
+
 ikedctl is built on Linux (`--enable-admin`, default). It is a
 unix-socket admin client (`/var/run/iked.sock`), not PF_KEY and not
 netlink. IKE SAs:
@@ -174,8 +219,14 @@ Currently, the system supports the following specifications:
 	          for Internet Key Exchange (IKE)
 	RFC 2367, PF_KEY Key Management API, Version 2
 
-	Not implemented: RFC 9242 (IKE_INTERMEDIATE), RFC 9370
-	(multiple key exchanges / ADDKE), RFC 8784 PPK.
+	Incoming via the gsoc2026 stream (see "Parallel work streams"):
+	RFC 7383 IKEv2 fragmentation, IKEv1 fragmentation,
+	NAT-OA (RFC 3947 §4).
+
+	Not implemented in this tree yet: RFC 9242 (IKE_INTERMEDIATE),
+	RFC 9370 (multiple key exchanges / ADDKE), RFC 8784 PPK —
+	8784 is the next protocol item; 9242/9370 gate on it plus an
+	OpenSSL 3.5+/OQS ML-KEM provider.
 	
 The system provides three daemons: iked, kinkd and spmd.
 Each daemon manages IKE, KINK and IPsec Policy respectively.
