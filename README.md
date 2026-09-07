@@ -212,8 +212,8 @@ Currently, the system supports the following specifications:
 	RFC 4106, The Use of Galois/Counter Mode (GCM) in IPsec ESP
 	          (AES-GCM-16)
 	RFC 4868, Using HMAC-SHA-256/384/512 with IPsec ESP and AH
-	          (partial: ESP integrity uses HMAC-SHA2-256, 128-bit ICV;
-	          the SHA-384/512 ESP variants are not wired)
+	          (HMAC-SHA2-256/384/512 ESP integrity; ICV 128/192/256 —
+	          proven via netns matrix, auth-trunc in the SAD)
 
 	Kerberized Internet Negotiation of Keys (KINK)
 	RFC 4430, Kerberized Internet Negotiation of Keys (KINK)
@@ -233,16 +233,17 @@ Currently, the system supports the following specifications:
 	OpenSSL 3.5+/OQS ML-KEM provider.
 
 	Partial statuses (scope beyond the supported core):
-	RFC 4868 — ESP integrity implements HMAC-SHA2-256 only;
-	          sha2-384/512 wiring (primitive set exists) is a
-	          self-contained completion item.
 	RFC 4106 — AES-GCM with 16-octet ICV only (the 8/12 variants
 	          defined by the RFC are not wired).
 	RFC 3947 — NAT-OA (section 4) arrives with gsoc2026.
 	RFC 7296 — IKEv2 EAP (section 2.16) absent until the AAA item;
 	          everything else exercised.
-	RFC 2409 — IKEv1 mode-config/XAuth not demonstrated; the
-	          historical L2TP/IPsec server claim maps here.
+	RFC 2409 — IKEv1 mode-config/XAuth is ENABLE_HYBRID scaffolding
+	          only (headers referenced, no sources, no configure
+	          hook) — not buildable. L2TP/IPsec therefore holds for
+	          PSK main-mode clients with PPP-internal auth (e.g. iOS);
+	          Windows L2TP (EAP/XAuth machine auth) is out of scope
+	          until the AAA item.
 	RFC 4430 — kinkd in tree; live KDC validation pending.
 	
 The system provides three daemons: iked, kinkd and spmd.
