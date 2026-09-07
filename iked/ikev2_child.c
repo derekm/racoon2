@@ -63,6 +63,7 @@
 
 #include "sockmisc.h"
 #include "debug.h"
+#include "rc_net.h"
 
 static int ikev2_update_response(struct sadb_request *,
 				 struct sockaddr *, struct sockaddr *,
@@ -1377,6 +1378,38 @@ ikev2_update_response(struct sadb_request *req,
 	return 0;
 }
 
+#ifdef ENABLE_NATT
+static void
+ikev2_sadb_natt_snapshot(struct rcpfk_msg *param,
+    struct sockaddr *src, struct sockaddr *dst)
+{
+	in_port_t *sp, *dp;
+
+	sp = rcs_getsaport(src);
+	dp = rcs_getsaport(dst);
+	if (sp)
+		param->natt_sport = *sp;
+	if (dp)
+		param->natt_dport = *dp;
+}
+#endif
+
+static void
+ikev2_sadb_zero_transport_ports(struct sockaddr *src, struct sockaddr *dst,
+    rc_type mode)
+{
+	in_port_t *p;
+
+	if (mode != RCT_IPSM_TRANSPORT)
+		return;
+	p = rcs_getsaport(src);
+	if (p)
+		*p = 0;
+	p = rcs_getsaport(dst);
+	if (p)
+		*p = 0;
+}
+
 static int
 ikev2_sadb_outbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 		    void *data)
@@ -1400,6 +1433,11 @@ ikev2_sadb_outbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 	if (peer_addr == NULL)
 		return -1;
 
+#ifdef ENABLE_NATT
+	ikev2_sadb_natt_snapshot(param, my_addr, peer_addr);
+#endif
+	ikev2_sadb_zero_transport_ports(my_addr, peer_addr,
+	    ike_ipsec_mode(p));
 	param->sa_src = my_addr;
 	param->sa_dst = peer_addr;
 
@@ -1438,6 +1476,11 @@ ikev2_sadb_inbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 	if (peer_addr == NULL)
 		return -1;
 
+#ifdef ENABLE_NATT
+	ikev2_sadb_natt_snapshot(param, peer_addr, my_addr);
+#endif
+	ikev2_sadb_zero_transport_ports(peer_addr, my_addr,
+	    ike_ipsec_mode(p));
 	param->sa_src = peer_addr;
 	param->sa_dst = my_addr;
 	param->pref_src = 0;

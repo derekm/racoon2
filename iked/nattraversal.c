@@ -60,7 +60,7 @@
 #include "debug.h"
 #include "sockmisc.h"
 
-static rc_vchar_t *natt_create_hash(isakmp_index_t *, struct sockaddr *, int);
+static rc_vchar_t *natt_create_hash(struct ikev2_sa *, struct sockaddr *, int);
 static void natt_natk_callback(void *);
 
 int
@@ -73,12 +73,12 @@ natt_create_natd(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 	rc_vchar_t *nat_dst = NULL;
 	int ret = -1;
 
-	hash_src = natt_create_hash(&ike_sa->index, local, TRUE);
+	hash_src = natt_create_hash(ike_sa, local, TRUE);
 	if (hash_src == NULL) {
 		goto end;
 	}
 
-	hash_dst = natt_create_hash(&ike_sa->index, remote, TRUE);
+	hash_dst = natt_create_hash(ike_sa, remote, TRUE);
 	if (hash_dst == NULL) {
 		goto end;
 	}
@@ -113,13 +113,14 @@ natt_create_natd(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 }
 
 static rc_vchar_t *
-natt_create_hash(isakmp_index_t *index, struct sockaddr *addr, int use_spi_r)
+natt_create_hash(struct ikev2_sa *ike_sa, struct sockaddr *addr, int use_spi_r)
 {
 	rc_vchar_t *hash;
 	rc_vchar_t *buf;
 	char *ptr;
 	void *addr_ptr, *addr_port;
 	size_t buf_size, addr_size;
+	isakmp_index_t *index = &ike_sa->index;
 
 	switch (SOCKADDR_FAMILY(addr)) {
 	case AF_INET:
@@ -161,7 +162,10 @@ natt_create_hash(isakmp_index_t *index, struct sockaddr *addr, int use_spi_r)
 	}
 	ptr += sizeof(isakmp_cookie_t);
 
-	memcpy(ptr, addr_ptr, addr_size);
+	if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE)
+		memset(ptr, 0, addr_size);
+	else
+		memcpy(ptr, addr_ptr, addr_size);
 	ptr += addr_size;
 
 	memcpy(ptr, addr_port, 2);
@@ -185,6 +189,12 @@ natt_process_natd(struct ikev2_sa *ike_sa, struct ikev2payl_notify *n,
 	type = get_notify_type(n);
 	n_data = get_notify_data(n);
 
+	if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE) {
+		ike_sa->behind_nat = TRUE;
+		ike_sa->peer_behind_nat = TRUE;
+		return 0;
+	}
+
 	switch (type) {
 	case IKEV2_NAT_DETECTION_SOURCE_IP:
 		addr = ike_sa->remote;
@@ -200,7 +210,7 @@ natt_process_natd(struct ikev2_sa *ike_sa, struct ikev2payl_notify *n,
 		return -1;
 	}
 
-	hash = natt_create_hash(&ike_sa->index, addr, use_spi_r);
+	hash = natt_create_hash(ike_sa, addr, use_spi_r);
 	if (hash == NULL) {
 		return -1;
 	}

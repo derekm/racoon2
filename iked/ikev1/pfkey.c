@@ -149,7 +149,7 @@ struct sadb_response_method ikev1_sadb_callback = {
 /*
  * Fill SADB endpoints without mutating the IKE sockaddrs.
  * Snapshot NAT-T encap ports (network order) from the IKE pair first;
- * transport-mode selectors then get port 0 (any) so L2TP/etc. match.
+ * transport-mode selectors then get port 0 (any) so any-port TS matches.
  */
 static void
 pfk_fill_sa_addrs(struct rcpfk_msg *param, struct sockaddr *sa_src,

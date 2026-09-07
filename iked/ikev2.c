@@ -2051,7 +2051,8 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 		goto fail;
 
 #ifdef ENABLE_NATT
-	if (ike_sa->behind_nat || ike_sa->peer_behind_nat) {
+	if (ike_sa->behind_nat || ike_sa->peer_behind_nat ||
+	    ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE) {
 		if (natt_float_ports(ike_sa->remote, ike_sa->local,
 				     IKEV2_UDP_PORT_NATT) < 0) {
 			goto fail;
