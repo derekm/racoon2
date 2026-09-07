@@ -1,0 +1,6 @@
+# local logo artifacts — not part of the repo (only nightwatch.png is tracked)
+logos/nightwatch.ans
+logos/nightwatch-16color.ans
+logos/nightwatch-ascii.txt
+logos/nightwatch-ansi.png
+logos/nightwatch.svg
