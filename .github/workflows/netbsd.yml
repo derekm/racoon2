@@ -67,10 +67,8 @@ jobs:
             echo "=== Building ==="
             make -j2
 
-            echo "=== Unit suite (lib: kmtest + sample) ==="
-            make -C lib kmtest sample
-            ./lib/kmtest
-            ( cd lib && ./sample ../samples/libsample.conf )
+            echo "=== Unit suite (lib: make check) ==="
+            make -C lib check
 
             echo "=== Unit suite (iked: eaytest evlooptest workerstest) ==="
             make -C iked check TESTS="eaytest evlooptest workerstest"
