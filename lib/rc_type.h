@@ -92,6 +92,9 @@ typedef enum {
 	RCT_SATYPE_AH_ESP, RCT_SATYPE_AH_IPCOMP,
 	RCT_SATYPE_ESP_IPCOMP, RCT_SATYPE_AH_ESP_IPCOMP,
 
+		/* NAT-T: distinct from RCT_BOOL_ON/OFF and 0=unset */
+	RCT_NATT_FORCE = 0x00FE,
+
 		/* interface */
 	RCT_ADDR_INET  = 0x1000,
 	RCT_ADDR_FQDN  = 0x2000,

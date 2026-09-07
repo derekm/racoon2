@@ -2594,12 +2594,10 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 	int error;
 	uint8_t plen;
 	uint16_t ulproto;
-	uint16_t selport;
+	uint16_t orig_selport = 0;
 	struct ipsecdoi_id_b *idb;
 	struct sockaddr_storage ss;
 	struct sockaddr *si = (void *)&ss;
-	struct sockaddr_in *sin = (void *)&ss;
-	struct sockaddr_in6 *sin6 = (void *)&ss;
 	struct rc_addrlist *address;
 
 	idb = (struct ipsecdoi_id_b *)id->v;
@@ -2636,55 +2634,32 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 		return FALSE;
 	}
 
-	for (address = addr; address; address = address->next) {
-		struct sockaddr *sa = (void *)address->a.ipaddr;
-		struct sockaddr_in *san = (void *)address->a.ipaddr;
-		struct sockaddr_in6 *san6 = (void *)address->a.ipaddr;
-
-		if (!rcs_matchaddr(address, (struct sockaddr *)&ss))
-			continue;
-
-		switch (sa->sa_family) {
-		case AF_INET:
-			/* If selector's port is any port, match the peer's port */
-			if (san->sin_port == IPSEC_PORT_ANY)
-				san->sin_port = sin->sin_port;
-
-			san->sin_addr = sin->sin_addr;
-#ifdef BSD4_4
-			san->sin_len = sin->sin_len;
-#endif
-			san->sin_family = sin->sin_family;
-			break;
+	if (addr && addr->a.ipaddr) {
+		if (addr->a.ipaddr->sa_family == AF_INET)
+			orig_selport = ((struct sockaddr_in *)addr->a.ipaddr)->sin_port;
 #ifdef INET6
-		case AF_INET6:
-			if (san6->sin6_port == IPSEC_PORT_ANY)
-				san6->sin6_port = sin6->sin6_port;
-
-			san6->sin6_addr = sin6->sin6_addr;
-#ifdef BSD4_4
-			san6->sin6_len = sin6->sin6_len;
+		else
+			orig_selport = ((struct sockaddr_in6 *)addr->a.ipaddr)->sin6_port;
 #endif
-			san6->sin6_scope_id = sin6->sin6_scope_id;
-			break;
-#endif
-		default:
-			plog(PLOG_PROTOERR, PLOGLOC, NULL,
-			   "unsupported address family (%d) for selector address\n",
-			   sa->sa_family);
-			return FALSE;
-		}
-		addr = address;
 	}
 
+	for (address = addr; address; address = address->next) {
+		if (!rcs_matchaddr(address, (struct sockaddr *)&ss))
+			continue;
+		addr = address;
+		goto matched;
+	}
+	plog(PLOG_INFO, PLOGLOC, NULL,
+	    "address mismatch %s != %s\n",
+	    addr ? rcs_sa2str(addr->a.ipaddr) : "(none)", rcs_sa2str(si));
+	return FALSE;
+
+matched:
 	/*
-	 * Our selector port 0 (any) matches any peer port, per RFC 2409
-	 * IDci/IDcr semantics; compare addresses only in that case.
+	 * Selector port 0 (any) matches any peer port (RFC 2409 IDci/IDcr).
+	 * Use the original selector port — never mutate the config sockaddr.
 	 */
-	selport = (addr->a.ipaddr->sa_family == AF_INET)
-		? ((struct sockaddr_in *)addr->a.ipaddr)->sin_port
-		: ((struct sockaddr_in6 *)addr->a.ipaddr)->sin6_port;
-	if (selport == 0) {
+	if (orig_selport == 0) {
 		if (rcs_cmpsa_wop(addr->a.ipaddr, (struct sockaddr *)&ss) != 0) {
 			plog(PLOG_INFO, PLOGLOC, NULL,
 			    "address mismatch %s != %s\n", rcs_sa2str(addr->a.ipaddr),
@@ -2701,7 +2676,9 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 	if (upper_layer_protocol == RC_PROTO_ANY)
 		upper_layer_protocol = IPSEC_ULPROTO_ANY;
 
-	if (upper_layer_protocol != ulproto) {
+	if (upper_layer_protocol != IPSEC_ULPROTO_ANY &&
+	    ulproto != IPSEC_ULPROTO_ANY && ulproto != 0 &&
+	    upper_layer_protocol != ulproto) {
 		plog(PLOG_INFO, PLOGLOC, NULL,
 		    "protocol mismatch %d != %d\n",
 		    upper_layer_protocol, ulproto);

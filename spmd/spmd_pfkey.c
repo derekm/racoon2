@@ -454,7 +454,7 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 			break;
 		case RCT_ADDR_FQDN:
 			SPMD_PLOG(SPMD_L_INTERR, 
-				  "FQDN is not supported on TUNNEL mode, check your configuration file (policy=%.*s)", 
+				  "FQDN is not supported as an SA endpoint, check your configuration file (policy=%.*s)", 
 				  (int)pl->pl_index->l, pl->pl_index->s);
 			goto err;
 			break; /* never reach */
@@ -483,7 +483,7 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 			break;
 		case RCT_ADDR_FQDN:
 			SPMD_PLOG(SPMD_L_INTERR, 
-				"FQDN is not supported on TUNNEL mode, check your configuration file (policy=%.*s)", 
+				"FQDN is not supported as an SA endpoint, check your configuration file (policy=%.*s)", 
 				(int)pl->pl_index->l, pl->pl_index->s);
 			goto err;
 			break; /* never reach */

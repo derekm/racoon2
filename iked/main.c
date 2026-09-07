@@ -535,6 +535,8 @@ iked_mainloop(void)
 		}
 
 		monitor_fd(spmif_fd = ike_spmif_socket(), &fdset, &nfds);
+		if (!debug_spmif && spmif_fd < 0)
+			ike_spmif_reconnect();
 
 #ifdef WITH_RTSOCK
 		monitor_fd(rtsock_fd = rtsock_socket(), &fdset, &nfds);

@@ -93,7 +93,8 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 #ifdef ENABLE_NATT
 	case IKEV2_NAT_DETECTION_SOURCE_IP:
 	case IKEV2_NAT_DETECTION_DESTINATION_IP:
-		if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON) {
+		if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
+		    ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE) {
 			if (natt_process_natd(ike_sa, notify, FALSE) == 0) {
 				break;
 			}
@@ -234,7 +235,8 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 #ifdef ENABLE_NATT
 	case IKEV2_NAT_DETECTION_SOURCE_IP:
 	case IKEV2_NAT_DETECTION_DESTINATION_IP:
-		if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON) {
+		if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
+		    ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE) {
 			if (natt_process_natd(ike_sa, notify, TRUE) == 0) {
 				break;
 			}

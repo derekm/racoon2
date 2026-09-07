@@ -173,7 +173,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %token ESP_ENC_ALG ESP_AUTH_ALG AH_AUTH_ALG IPCOMP_ALG
 %token SA_PROTOCOL ESP AH IPCOMP
 	/* common */
-%token BOOL_ON BOOL_OFF STRING
+%token BOOL_ON BOOL_OFF FORCE STRING
 %token UNIT_INFINITE UNIT_SEC UNIT_MIN UNIT_HOUR UNIT_DAY
 %token UNIT_BYTE UNIT_KBYTES UNIT_MBYTES UNIT_GBYTES
 %token COMMA EOS BOC EOC
@@ -207,7 +207,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %type <list> addr_list_spec addr_list addr_spec
 %type <list> algorithm_list_spec algorithm_list algorithm_spec algorithm_type
 %type <num> unit_byte unit_time
-%type <list> byte_spec time_spec boolean
+%type <list> byte_spec time_spec boolean natt_mode
 %type <list> setval_list setval_spec
 %type <list> interface_list interface_spec
 %type <list> resolver_list resolver_spec
@@ -746,7 +746,7 @@ kmp_common_spec
 			MKRCFDIR($$, CFD_INITIAL_CONTACT);
 			$$->nextp = $2;
 		}
-	|	NAT_TRAVERSAL boolean
+	|	NAT_TRAVERSAL natt_mode
 		{
 			MKRCFDIR($$, CFD_NAT_TRAVERSAL);
 			$$->nextp = $2;
@@ -1627,6 +1627,11 @@ unit_time
 boolean
 	:	BOOL_ON  { MKRCFVAL($$, RCT_BOOL_ON); }
 	|	BOOL_OFF { MKRCFVAL($$, RCT_BOOL_OFF); }
+	;
+
+natt_mode
+	:	boolean
+	|	FORCE { MKRCFVAL($$, RCT_NATT_FORCE); }
 	;
 
 %%

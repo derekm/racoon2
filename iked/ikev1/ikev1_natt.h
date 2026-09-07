@@ -51,7 +51,7 @@
 
 /* These are the values from parsing "remote {}" 
    block of the config file. */
-#define NATT_FORCE	0	/* XXX notyet */
+#define NATT_FORCE	RCT_NATT_FORCE
 #define NATT_ON		RCT_BOOL_ON
 #define NATT_OFF	RCT_BOOL_OFF
 

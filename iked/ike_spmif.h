@@ -34,6 +34,7 @@ extern int debug_spmif;
 extern int ike_spmif_init(void);
 extern int ike_spmif_socket(void);
 extern int ike_spmif_poll(void);
+extern int ike_spmif_reconnect(void);
 extern int ike_spmif_post_slid(void *, uint32_t);
 
 extern int ike_spmif_post_policy_add(struct rcf_selector *, rc_type, int,

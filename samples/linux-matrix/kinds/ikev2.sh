@@ -46,6 +46,15 @@ kind_ikev2() {
 		ip xfrm policy add src "${RIP}/32" dst "${CIP}/32" proto udp \
 			sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
 	done
+	# NAT-T float: initiator 500 → responder 4500 (and reverse)
+	ip xfrm policy add src "${CIP}/32" dst "${RIP}/32" proto udp \
+		sport 500 dport 4500 dir in  ptype main action allow 2>/dev/null || true
+	ip xfrm policy add src "${RIP}/32" dst "${CIP}/32" proto udp \
+		sport 4500 dport 500 dir out ptype main action allow 2>/dev/null || true
+	ip xfrm policy add src "${CIP}/32" dst "${RIP}/32" proto udp \
+		sport 4500 dport 500 dir in  ptype main action allow 2>/dev/null || true
+	ip xfrm policy add src "${RIP}/32" dst "${CIP}/32" proto udp \
+		sport 500 dport 4500 dir out ptype main action allow 2>/dev/null || true
 
 	# ESP proposal selection: case name suffix drives the strongSwan
 	# esp= line -- -s384 -> aes256-sha384!, -s512 -> aes256-sha512!,

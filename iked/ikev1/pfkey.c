@@ -76,6 +76,7 @@
 #include <fcntl.h>
 
 #include "racoon.h"
+#include "rc_net.h"
 
 /* #include "libpfkey.h" */
 
@@ -144,6 +145,50 @@ struct sadb_response_method ikev1_sadb_callback = {
 	ikev1_expired,
 	ikev1_get_response
 };
+
+/*
+ * Fill SADB endpoints without mutating the IKE sockaddrs.
+ * Snapshot NAT-T encap ports (network order) from the IKE pair first;
+ * transport-mode selectors then get port 0 (any) so L2TP/etc. match.
+ */
+static void
+pfk_fill_sa_addrs(struct rcpfk_msg *param, struct sockaddr *sa_src,
+    struct sockaddr *sa_dst, struct sockaddr_storage *ss_src,
+    struct sockaddr_storage *ss_dst, int mode)
+{
+#ifdef ENABLE_NATT
+	in_port_t *sp, *dp;
+#endif
+
+	memcpy(ss_src, sa_src, SA_LEN(sa_src));
+	memcpy(ss_dst, sa_dst, SA_LEN(sa_dst));
+	param->sa_src = (struct sockaddr *)ss_src;
+	param->sa_dst = (struct sockaddr *)ss_dst;
+#ifdef ENABLE_NATT
+	sp = rcs_getsaport(sa_src);
+	dp = rcs_getsaport(sa_dst);
+	if (sp)
+		param->natt_sport = *sp;
+	if (dp)
+		param->natt_dport = *dp;
+#endif
+	if (mode == RCT_IPSM_TRANSPORT) {
+		set_port(param->sa_src, 0);
+		set_port(param->sa_dst, 0);
+	}
+}
+
+#ifdef ENABLE_NATT
+static int
+ph1_wants_espinudp(struct ph1handle *ph1)
+{
+	if (ph1 == NULL)
+		return 0;
+	if (ph1->natt_flags & NAT_DETECTED)
+		return 1;
+	return ikev1_nat_traversal(ph1->rmconf) == NATT_FORCE;
+}
+#endif
 
 #ifdef notyet
 /*
@@ -570,6 +615,7 @@ pk_sendgetspi(struct ph2handle *iph2)
 {
 	struct sockaddr *src, *dst;
 	struct sockaddr_storage my_ss, peer_ss;
+	struct sockaddr_storage sel_src_ss, sel_dst_ss;
 	unsigned int satype, mode;
 	struct saprop *pp;
 	struct saproto *pr;
@@ -899,6 +945,7 @@ pk_sendupdate(struct ph2handle *iph2)
 {
 	struct sockaddr *src, *dst;
 	struct sockaddr_storage my_ss, peer_ss;
+	struct sockaddr_storage sel_src_ss, sel_dst_ss;
 	struct saproto *pr;
 	unsigned int e_type, a_type;
 	unsigned int e_keylen, a_keylen, flags;
@@ -997,24 +1044,14 @@ pk_sendupdate(struct ph2handle *iph2)
 		param.lft_hard_bytes = lifebyte;
 		param.lft_soft_time = iph2->approval->lifetime;	/* ??? */
 		param.lft_soft_bytes = lifebyte;
-		param.sa_src = dst;	/* for inbound */
-		param.sa_dst = src;
-		/*
-		 * Transport-mode selectors must not carry the IKE ports
-		 * (500/4500) — the kernel would never match the actual
-		 * traffic (e.g. L2TP UDP/1701) to the SA.  Port 0 = any.
-		 */
-		if (mode == RCT_IPSM_TRANSPORT) {
-			set_port(param.sa_src, 0);
-			set_port(param.sa_dst, 0);
-		}
+		pfk_fill_sa_addrs(&param, dst, src, &sel_src_ss, &sel_dst_ss, mode);
 		param.pref_src = 0;
 		param.pref_dst = 0;
 		param.ul_proto = RC_PROTO_ANY;	/* ??? */
-		#ifdef ENABLE_NATT
-		if (iph2->ph1->natt_flags & NAT_DETECTED)
+#ifdef ENABLE_NATT
+		if (ph1_wants_espinudp(iph2->ph1))
 			param.natt_type = UDP_ENCAP_ESPINUDP;
-		#endif
+#endif
 		param.enckey = pr->keymat->v;
 		param.enckeylen = e_keylen;
 		param.authkey = pr->keymat->s + e_keylen;
@@ -1184,6 +1221,7 @@ pk_sendadd(struct ph2handle *iph2)
 {
 	struct sockaddr *src, *dst;
 	struct sockaddr_storage my_ss, peer_ss;
+	struct sockaddr_storage sel_src_ss, sel_dst_ss;
 	struct saproto *pr;
 	unsigned int e_type, e_keylen, a_type;
 	unsigned int a_keylen, flags;
@@ -1280,24 +1318,14 @@ pk_sendadd(struct ph2handle *iph2)
 		param.lft_hard_bytes = lifebyte;
 		param.lft_soft_time = iph2->approval->lifetime;	/* ??? */
 		param.lft_soft_bytes = lifebyte;
-		param.sa_src = src;
-		param.sa_dst = dst;
-		/*
-		 * Transport-mode selectors must not carry the IKE ports
-		 * (500/4500) — the kernel would never match the actual
-		 * traffic (e.g. L2TP UDP/1701) to the SA.  Port 0 = any.
-		 */
-		if (mode == RCT_IPSM_TRANSPORT) {
-			set_port(param.sa_src, 0);
-			set_port(param.sa_dst, 0);
-		}
+		pfk_fill_sa_addrs(&param, src, dst, &sel_src_ss, &sel_dst_ss, mode);
 		param.pref_src = 0;
 		param.pref_dst = 0;
 		param.ul_proto = RC_PROTO_ANY;	/* ??? */
-		#ifdef ENABLE_NATT
-		if (iph2->ph1->natt_flags & NAT_DETECTED)
+#ifdef ENABLE_NATT
+		if (ph1_wants_espinudp(iph2->ph1))
 			param.natt_type = UDP_ENCAP_ESPINUDP;
-		#endif
+#endif
 		param.enckey = pr->keymat_p->v;
 		param.enckeylen = e_keylen;
 		param.authkey = pr->keymat_p->s + e_keylen;
