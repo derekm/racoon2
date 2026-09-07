@@ -17,11 +17,12 @@ done
 [ "$(id -u)" -eq 0 ] || { echo "need root" >&2; exit 1; }
 ETC=$PREFIX/etc/racoon2
 mkdir -p "$ETC/psk"
-# the units must exist (configure needs libsystemd-dev, else make install
-# skips them and nothing below is meaningful)
-systemctl cat racoon2-iked.service >/dev/null 2>&1 ||
+# the units must be installed (configure needs libsystemd-dev / systemd.pc
+# for the unit dir, else make install skips them — check the files, not
+# systemctl, which can be finicky on CI runners)
+[ -f /usr/lib/systemd/system/racoon2-iked.service ] ||
 	{ echo "FAIL: racoon2-iked.service not installed (missing systemd.pc at configure time?)" >&2; exit 1; }
-systemctl cat racoon2-spmd.service >/dev/null 2>&1 ||
+[ -f /usr/lib/systemd/system/racoon2-spmd.service ] ||
 	{ echo "FAIL: racoon2-spmd.service not installed" >&2; exit 1; }
 if [ -z "$IP" ]; then
 	IP=$(ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
