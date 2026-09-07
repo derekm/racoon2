@@ -71,9 +71,27 @@ this tree. Hardware offload (`XFRMA_OFFLOAD_DEV`, xfrmi) is not
 wired.
 
 IKEv2 v4-in-v4 (NAT-mode) has lived: SAD+SPD from iked+spmd, ping
-through ESP. Apple NAT-T and IPv6-in-IPv4 are still unclaimed
-until `ip xfrm state`/`ip xfrm policy` after iked+spmd show that
-sel. Please refer to NEWS and BUGS.
+through ESP. Apple NAT-T is live-proven: an iPhone over LTE comes up
+behind NAT (NAT-D float 500→4500), SAD shows `encap type espinudp`
+both ways, pings traverse the tunnel (`XFRMA_ALG_AUTH_TRUNC` must be
+emitted — an enum `#ifdef` guard silently shipped 96-bit sha256 ICVs
+and ate every RFC 4868 peer packet). IKEv1 NAT-T is proven the same
+way (strongSwan initiator behind a NAT router; main+quick mode over
+4500, espinudp SAD, ping 3/3). IKEv1 SPD with `peers_sa_ipaddr
+"IP_ANY"` still mangles XFRM tmpls — use a concrete peer address.
+IPv6-in-IPv4 remains unclaimed until `ip xfrm state`/`ip xfrm policy`
+after iked+spmd show that sel. Please refer to NEWS and BUGS.
+
+## CI
+
+GitHub Actions builds and tests the tree on NetBSD 10 (pfkey KM,
+QEMU VM) and Ubuntu (NETLINK_XFRM KM), running the same unit suite
+(`kmtest`, `eaytest`, `evlooptest`, `workerstest`) on both — a
+validated distribution across the pfkey and netlink backends. See
+`.github/workflows/`. The upstream README's claim that Linux is
+"limited functionality … pfkeyv2 only" predates the NETLINK_XFRM
+backend (`lib/if_xfrm.c`, Linux default) and this week's live Apple
+and IKEv1 NAT-T results.
 
 On Linux, `make install` ships systemd units under
 `/usr/lib/systemd/system` (socket activation + ProtectSystem=strict,
