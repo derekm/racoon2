@@ -34,7 +34,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
-            libssl-dev libkrb5-dev bison flex
+            libssl-dev libkrb5-dev libpcap-dev bison flex
 
       - name: Bootstrap
         run: autoreconf -fi
