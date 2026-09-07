@@ -1,8 +1,8 @@
 # NetBSD CI Build & Test for racoon2.
-# Borrowed structure from rdratlos/racoon-ipsec-tools (netbsd-build-test.yml),
-# adapted to racoon2's autotools tree and unit suite. Runs in a NetBSD 10.x
-# VM via cross-platform-actions/action (QEMU). NetBSD builds the pfkey KM
-# backend by default — the pfkey side of the validated distribution.
+# NetBSD 10.1 QEMU (cross-platform-actions): pfkey KM default, unit
+# suite only (lib sample+kmtest, iked eaytest/evlooptest/workerstest).
+# Live IPsec matrix is Linux-only (integration.yml) — this VM has no
+# systemd and no racoon2 rc.d smoke yet. Do not claim NetBSD tunnel CI.
 #
 # Dependencies (via pkgin): autoconf automake libtool pkgconf gmake m4 bison.
 # Base system provides cc (gcc), flex, openssl, krb5 headers.
