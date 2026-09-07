@@ -424,15 +424,16 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 		return -1;
 	}
 
-	if (rc->samode == RCT_IPSM_TUNNEL) {
+	if (rc->samode == RCT_IPSM_TUNNEL ||
+	    rc->samode == RCT_IPSM_TRANSPORT) {
 		if (!pl->my_sa_ipaddr) {
 			SPMD_PLOG(SPMD_L_INTERR, "No my_sa_ipaddr, check your configuration file (policy=%.*s)", 
-			(int)pl->pl_index->l, pl->pl_index->s);
+				(int)pl->pl_index->l, pl->pl_index->s);
 			goto err;
 		}
 		if (!pl->peers_sa_ipaddr) {
 			SPMD_PLOG(SPMD_L_INTERR, "No peers_sa_ipaddr, check your configuration file (policy=%.*s)",
-			(int)pl->pl_index->l, pl->pl_index->s);
+				(int)pl->pl_index->l, pl->pl_index->s);
 			goto err;
 		}
 		/* set the source address of the sa */

@@ -999,6 +999,15 @@ pk_sendupdate(struct ph2handle *iph2)
 		param.lft_soft_bytes = lifebyte;
 		param.sa_src = dst;	/* for inbound */
 		param.sa_dst = src;
+		/*
+		 * Transport-mode selectors must not carry the IKE ports
+		 * (500/4500) — the kernel would never match the actual
+		 * traffic (e.g. L2TP UDP/1701) to the SA.  Port 0 = any.
+		 */
+		if (mode == RCT_IPSM_TRANSPORT) {
+			set_port(param.sa_src, 0);
+			set_port(param.sa_dst, 0);
+		}
 		param.pref_src = 0;
 		param.pref_dst = 0;
 		param.ul_proto = RC_PROTO_ANY;	/* ??? */
@@ -1273,6 +1282,15 @@ pk_sendadd(struct ph2handle *iph2)
 		param.lft_soft_bytes = lifebyte;
 		param.sa_src = src;
 		param.sa_dst = dst;
+		/*
+		 * Transport-mode selectors must not carry the IKE ports
+		 * (500/4500) — the kernel would never match the actual
+		 * traffic (e.g. L2TP UDP/1701) to the SA.  Port 0 = any.
+		 */
+		if (mode == RCT_IPSM_TRANSPORT) {
+			set_port(param.sa_src, 0);
+			set_port(param.sa_dst, 0);
+		}
 		param.pref_src = 0;
 		param.pref_dst = 0;
 		param.ul_proto = RC_PROTO_ANY;	/* ??? */

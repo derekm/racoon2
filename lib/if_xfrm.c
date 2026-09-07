@@ -727,7 +727,8 @@ append_tmpl(struct xfrm_user_tmpl *t, int *n, uint8_t satype,
 	t[*n].aalgos = ~0U;
 	t[*n].ealgos = ~0U;
 	t[*n].calgos = ~0U;
-	if (rc->samode == RCT_IPSM_TUNNEL && rc->sa_src && rc->sa_dst) {
+	if ((rc->samode == RCT_IPSM_TUNNEL ||
+	     rc->samode == RCT_IPSM_TRANSPORT) && rc->sa_src && rc->sa_dst) {
 		sa_to_xaddr(rc->sa_dst, &t[*n].id.daddr, &family);
 		sa_to_xaddr(rc->sa_src, &t[*n].saddr, NULL);
 		t[*n].family = family;
