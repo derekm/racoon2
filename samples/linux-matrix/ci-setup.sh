@@ -20,10 +20,10 @@ mkdir -p "$ETC/psk"
 # the units must be installed (configure needs libsystemd-dev / systemd.pc
 # for the unit dir, else make install skips them — check the files, not
 # systemctl, which can be finicky on CI runners)
-[ -f /usr/lib/systemd/system/racoon2-iked.service ] ||
-	{ echo "FAIL: racoon2-iked.service not installed (missing systemd.pc at configure time?)" >&2; exit 1; }
-[ -f /usr/lib/systemd/system/racoon2-spmd.service ] ||
-	{ echo "FAIL: racoon2-spmd.service not installed" >&2; exit 1; }
+[ -f /usr/lib/systemd/system/iked.service ] ||
+	{ echo "FAIL: iked.service not installed (missing systemd.pc at configure time?)" >&2; exit 1; }
+[ -f /usr/lib/systemd/system/spmd.service ] ||
+	{ echo "FAIL: spmd.service not installed" >&2; exit 1; }
 if [ -z "$IP" ]; then
 	IP=$(ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
 fi
@@ -82,12 +82,12 @@ cp "$(dirname "$0")/../../samples/macos_ikev2.conf" "$ETC/macos_ikev2.conf" 2>/d
 }
 
 systemctl daemon-reload
-systemctl restart racoon2-spmd racoon2-iked
+systemctl restart iked spmd
 i=0
 while ! ss -ulnp | grep -q ':500 '; do
 	i=$((i + 1))
 	[ "$i" -gt 30 ] && { echo "FAIL: iked not on :500" >&2; exit 1; }
 	sleep 1
 done
-systemctl is-active racoon2-iked racoon2-spmd
+systemctl is-active iked spmd
 echo "ci-setup ok: $IP"
