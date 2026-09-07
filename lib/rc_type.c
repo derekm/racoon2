@@ -209,6 +209,14 @@ rct2pfk_enctype(int type)
 	case RCT_ALG_AES_GCM:
 		return SADB_X_EALG_AES_GCM_ICV16;
 #endif
+#ifdef SADB_X_EALG_AES_GCM_ICV8
+	case RCT_ALG_AES_GCM8:
+		return SADB_X_EALG_AES_GCM_ICV8;
+#endif
+#ifdef SADB_X_EALG_AES_GCM_ICV12
+	case RCT_ALG_AES_GCM12:
+		return SADB_X_EALG_AES_GCM_ICV12;
+#endif
 	case RCT_ALG_TWOFISH_CBC:
 		return SADB_X_EALG_TWOFISHCBC;
 	default:
@@ -370,6 +378,10 @@ rct2str(int type)
 		return "AES-CTR";
 	case RCT_ALG_AES_GCM:
 		return "AES-GCM";
+	case RCT_ALG_AES_GCM8:
+		return "AES-GCM-8";
+	case RCT_ALG_AES_GCM12:
+		return "AES-GCM-12";
 	case RCT_ALG_TWOFISH_CBC:
 		return "Twofish-CBC";
 	case RCT_ALG_NON_AUTH:
