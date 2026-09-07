@@ -1,5 +1,17 @@
 $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 
+2026-09-07 Derek Moore
+
+	* nat_traversal is three-state: off / on (detect, default) /
+	  force. force zeros NAT-D (RFC 3947 mismatch => both ends
+	  encapsulate), sets NAT_DETECTED/behind_nat, floats 4500,
+	  ESPINUDP. Same knob on IKEv1 and IKEv2. Grammar:
+	  `nat_traversal force;`
+	* Linux IKE bypass: UDP 500/4500 same-port and 500<->4500
+	  float (RFC 3947) in spmd, not the matrix harness.
+	* Transport SADB: copy endpoints, snapshot encap ports, then
+	  selector ports 0. IKEv1 and IKEv2 Child.
+
 2026-09-06 Derek Moore
 
 	* Linux default KM is NETLINK_XFRM (`--with-km-backend=xfrm`).

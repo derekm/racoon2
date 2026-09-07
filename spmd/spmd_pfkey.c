@@ -661,12 +661,13 @@ err:
  * installed (same handshake). Cached so the FWD retry and the inbound
  * leg of one POLICY ADD do not reinstall; failures are logged.
  */
-#define SPMD_BYPASS_MAX 32
+#define SPMD_BYPASS_MAX 64
 
 struct spmd_bypass_key {
 	sa_family_t family;
 	uint8_t dir;
-	uint16_t port;
+	uint16_t sport;
+	uint16_t dport;
 	uint8_t src[16];
 	uint8_t dst[16];
 };
@@ -676,7 +677,7 @@ static unsigned int spmd_bypass_ncache;
 
 static void
 spmd_bypass_key_fill(struct spmd_bypass_key *k, const struct sockaddr *src,
-    const struct sockaddr *dst, uint8_t dir, uint16_t port)
+    const struct sockaddr *dst, uint8_t dir, uint16_t sport, uint16_t dport)
 {
 	const uint8_t *s;
 	size_t alen;
@@ -684,7 +685,8 @@ spmd_bypass_key_fill(struct spmd_bypass_key *k, const struct sockaddr *src,
 	memset(k, 0, sizeof(*k));
 	k->family = src->sa_family;
 	k->dir = dir;
-	k->port = port;
+	k->sport = sport;
+	k->dport = dport;
 	alen = (k->family == AF_INET6) ? 16 : 4;
 	if (k->family == AF_INET) {
 		s = (const void *)&((const struct sockaddr_in *)src)->sin_addr;
@@ -747,7 +749,7 @@ spmd_sa_setport(struct sockaddr *sa, uint16_t port)
 
 static int
 spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
-    uint8_t dir, uint16_t port)
+    uint8_t dir, uint16_t sport, uint16_t dport)
 {
 	struct spmd_bypass_key k;
 	struct rcpfk_msg *b;
@@ -755,7 +757,7 @@ spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
 
 	if (src == NULL || dst == NULL)
 		return -1;
-	spmd_bypass_key_fill(&k, src, dst, dir, port);
+	spmd_bypass_key_fill(&k, src, dst, dir, sport, dport);
 	if (spmd_bypass_cached(&k))
 		return 0;
 
@@ -771,8 +773,8 @@ spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
 		spmd_free_rcpfk_msg(b);
 		return -1;
 	}
-	spmd_sa_setport(b->sp_src, port);
-	spmd_sa_setport(b->sp_dst, port);
+	spmd_sa_setport(b->sp_src, sport);
+	spmd_sa_setport(b->sp_dst, dport);
 	b->pref_src = (src->sa_family == AF_INET6) ? 128 : 32;
 	b->pref_dst = (dst->sa_family == AF_INET6) ? 128 : 32;
 	b->seq = (pfkey_seq++) != 0 ? pfkey_seq : (pfkey_seq++);
@@ -781,8 +783,8 @@ spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
 		ret = rcpfk_handler(b);
 	if (ret != 0)
 		SPMD_PLOG(SPMD_L_INTERR,
-		    "IKE bypass %d/%s %s->%s failed: %s",
-		    port, dir == RCT_DIR_INBOUND ? "in" : "out",
+		    "IKE bypass %u->%u/%s %s->%s failed: %s",
+		    sport, dport, dir == RCT_DIR_INBOUND ? "in" : "out",
 		    rcs_sa2str_wop(src), rcs_sa2str_wop(dst),
 		    b->estr[0] ? b->estr : "(no error detail)");
 	else
@@ -794,16 +796,25 @@ spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
 static void
 spmd_ike_bypass(struct sockaddr *local, struct sockaddr *remote)
 {
-	static const uint16_t ports[] = { RC_PORT_IKE, RC_PORT_IKE_NATT };
+	/* RFC 3947: IKE may stay on 500 or float 500<->4500. */
+	static const struct {
+		uint16_t sport;
+		uint16_t dport;
+	} pairs[] = {
+		{ RC_PORT_IKE, RC_PORT_IKE },
+		{ RC_PORT_IKE_NATT, RC_PORT_IKE_NATT },
+		{ RC_PORT_IKE, RC_PORT_IKE_NATT },
+		{ RC_PORT_IKE_NATT, RC_PORT_IKE },
+	};
 	size_t i;
 
 	if (local == NULL || remote == NULL)
 		return;
-	for (i = 0; i < sizeof(ports) / sizeof(ports[0]); i++) {
+	for (i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++) {
 		(void)spmd_ike_bypass_one(remote, local, RCT_DIR_INBOUND,
-		    ports[i]);
+		    pairs[i].sport, pairs[i].dport);
 		(void)spmd_ike_bypass_one(local, remote, RCT_DIR_OUTBOUND,
-		    ports[i]);
+		    pairs[i].sport, pairs[i].dport);
 	}
 }
 #endif
@@ -1816,7 +1827,8 @@ sl_to_rc_wo_addr(struct rcf_selector *sl, struct rcpfk_msg *rc)
 	}
 
 	/*** set rc->sa_src, rc->sa_dst ***/
-	if (rc->samode == RCT_IPSM_TUNNEL) {
+	if (rc->samode == RCT_IPSM_TUNNEL ||
+	    rc->samode == RCT_IPSM_TRANSPORT) {
 		if (!pl->my_sa_ipaddr) {
 			SPMD_PLOG(SPMD_L_INTERR, 
 				  "No my_sa_ipaddr, check your configuration file (policy=%.*s)", 

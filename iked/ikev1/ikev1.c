@@ -2598,6 +2598,7 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 	struct sockaddr_storage ss;
 	struct sockaddr *si = (void *)&ss;
 	struct rc_addrlist *address;
+	uint16_t id_port = 0;
 
 	idb = (struct ipsecdoi_id_b *)id->v;
 	switch (idb->type) {
@@ -2621,6 +2622,12 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 			    "cannot convert address=%d\n", error);
 			return FALSE;
 		}
+		if (si->sa_family == AF_INET)
+			id_port = ((struct sockaddr_in *)si)->sin_port;
+#ifdef INET6
+		else if (si->sa_family == AF_INET6)
+			id_port = ((struct sockaddr_in6 *)si)->sin6_port;
+#endif
 
 #ifdef INET6
 		/* scope? */
@@ -2645,13 +2652,26 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 			node_port = ((struct sockaddr_in6 *)address->a.ipaddr)->sin6_port;
 #endif
 		/*
-		 * rcs_matchaddr only hits any-addr or 0<prefixlen<32.
-		 * Host /32 falls through to exact compare (wop if port 0).
-		 * Prefix/any match is enough — do not exact-compare after.
+		 * rcs_matchaddr walks addr->next. Isolate this node so a
+		 * later any-addr/prefix cannot make a non-matching host
+		 * succeed. Prefix/any is a shortcut only; host /32 uses
+		 * exact compare. Non-zero selector port must still match
+		 * IDci/IDcr (RFC 2409).
 		 */
-		if (rcs_matchaddr(address, (struct sockaddr *)&ss)) {
-			addr = address;
-			goto matched;
+		{
+			struct rc_addrlist *saved_next = address->next;
+			int prefix_hit;
+
+			address->next = NULL;
+			prefix_hit = rcs_matchaddr(address,
+			    (struct sockaddr *)&ss);
+			address->next = saved_next;
+			if (prefix_hit) {
+				if (node_port != 0 && node_port != id_port)
+					continue;
+				addr = address;
+				goto matched;
+			}
 		}
 		if (node_port == 0
 		    ? rcs_cmpsa_wop(address->a.ipaddr, (struct sockaddr *)&ss) == 0

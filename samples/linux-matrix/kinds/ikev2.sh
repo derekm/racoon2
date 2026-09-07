@@ -36,25 +36,15 @@ kind_ikev2() {
 	iptables -t raw -C PREROUTING -i "$VETH_H" -s "${CIP}/32" -p icmp -j DROP 2>/dev/null ||
 		iptables -t raw -A PREROUTING -i "$VETH_H" -s "${CIP}/32" -p icmp -j DROP
 
-	# the in-SPD (192.0.2.2 = > RIP/32, tmpl esp) matches plain IKE UDP
-	# from the client and kills it (XfrmInTmplMismatch) before iked sees
-	# it. Pin explicit port-level allow policies for IKE on both dirs —
-	# port-specific selectors outrank the subnet rows.
+	# the in-SPD matches plain IKE UDP (XfrmInTmplMismatch) before
+	# iked sees it. Same-port allow rows; 500<->4500 float is
+	# installed by spmd_ike_bypass (RFC 3947), not here.
 	for p in 500 4500; do
 		ip xfrm policy add src "${CIP}/32" dst "${RIP}/32" proto udp \
 			sport "$p" dport "$p" dir in  ptype main action allow 2>/dev/null || true
 		ip xfrm policy add src "${RIP}/32" dst "${CIP}/32" proto udp \
 			sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
 	done
-	# NAT-T float: initiator 500 → responder 4500 (and reverse)
-	ip xfrm policy add src "${CIP}/32" dst "${RIP}/32" proto udp \
-		sport 500 dport 4500 dir in  ptype main action allow 2>/dev/null || true
-	ip xfrm policy add src "${RIP}/32" dst "${CIP}/32" proto udp \
-		sport 4500 dport 500 dir out ptype main action allow 2>/dev/null || true
-	ip xfrm policy add src "${CIP}/32" dst "${RIP}/32" proto udp \
-		sport 4500 dport 500 dir in  ptype main action allow 2>/dev/null || true
-	ip xfrm policy add src "${RIP}/32" dst "${CIP}/32" proto udp \
-		sport 500 dport 4500 dir out ptype main action allow 2>/dev/null || true
 
 	# ESP proposal selection: case name suffix drives the strongSwan
 	# esp= line -- -s384 -> aes256-sha384!, -s512 -> aes256-sha512!,
