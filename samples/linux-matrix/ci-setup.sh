@@ -84,9 +84,9 @@ cp "$(dirname "$0")/../../samples/macos_ikev2.conf" "$ETC/macos_ikev2.conf" 2>/d
 systemctl daemon-reload
 systemctl restart iked spmd
 i=0
-while ! ss -ulnp | grep -q ':500 '; do
+while ! systemctl is-active --quiet iked || ! ss -ulnp | grep -q ':500 '; do
 	i=$((i + 1))
-	[ "$i" -gt 30 ] && { echo "FAIL: iked not on :500" >&2; exit 1; }
+	[ "$i" -gt 30 ] && { echo "FAIL: iked unit not active/on :500" >&2; exit 1; }
 	sleep 1
 done
 systemctl is-active iked spmd
