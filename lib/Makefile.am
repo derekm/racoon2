@@ -27,6 +27,10 @@ TESTS = sample kmtest
 check_PROGRAMS = sample kmtest
 sample_SOURCES = sample.c
 sample_LDADD = libracoon.la
+# Extensionless tests ignore per-test *_LOG_COMPILER; the wrapper passes
+# the config file to sample and is a no-op for kmtest (main(void)).
+LOG_COMPILER = $(SHELL) $(srcdir)/sample-wrapper.sh
+AM_TESTS_ENVIRONMENT = R2_SAMPLE_CONF='$(abs_srcdir)/../samples/libsample.conf'; export R2_SAMPLE_CONF;
 kmtest_SOURCES = kmtest.c kmtest_backend.c
 
 BUILT_SOURCES = cfparse.h
