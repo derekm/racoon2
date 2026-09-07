@@ -45,12 +45,26 @@
 void al2str(struct rc_addrlist *);
 void macrotest(char *);
 
+/*
+ * Compare a peer identity against one entry of the remote's peers_id
+ * list. Same shape as iked's ike_compare_id: 0 == match.
+ */
+static int
+sample_compare_id(rc_type id_type, rc_vchar_t *id_val, struct rc_idlist *id)
+{
+	if (id_type != id->idtype)
+		return -1;
+	if (!id->id)
+		return -1;
+	return rc_vmemcmp(id->id, id_val);
+}
+
 int
 main(int argc, char **argv)
 {
 	char *file;
 	struct rcf_selector *sl;
-	struct rcf_remote *rm;
+	struct rcf_remote *rm = 0;
 	char *sl_index = 0;
 	int ret;
 
@@ -133,11 +147,15 @@ main(int argc, char **argv)
 	id_val.l = strlen(v);
 	id_val.v = v;
 
-	if (rcf_get_remotebypeersid(id_type, &id_val, RCT_KMP_IKEV2, &rm))
+	if (rcf_get_remotebypeersid(id_type, &id_val, RCT_KMP_IKEV2,
+				     sample_compare_id, &rm))
 		plog(PLOG_INFO, PLOGLOC, NULL, "no remote [%s] found\n", v);
 	else
 		plog(PLOG_INFO, PLOGLOC, NULL, "remote [%s] found\n", v);
-	rcf_free_remote(rm);
+	if (rm) {
+		rcf_free_remote(rm);
+		rm = 0;
+	}
     }
 
 	rcf_clean();

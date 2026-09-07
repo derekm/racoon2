@@ -21,8 +21,12 @@ permissions:
 
 jobs:
   netbsd-build-test:
-    name: 'NetBSD 10 build & test (pfkey KM)'
+    name: 'NetBSD ${{ matrix.version }} build & test (pfkey KM)'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['10.0', '11.0']
 
     steps:
       - name: Checkout repository
@@ -33,7 +37,7 @@ jobs:
         with:
           operating_system: netbsd
           architecture: x86_64
-          version: '10.0'
+          version: '${{ matrix.version }}'
           shell: bash
           memory: 4096
           cpu_count: 2
@@ -63,9 +67,10 @@ jobs:
             echo "=== Building ==="
             make -j2
 
-            echo "=== Unit suite (lib: kmtest; sample is broken upstream) ==="
-            make -C lib kmtest
+            echo "=== Unit suite (lib: kmtest + sample) ==="
+            make -C lib kmtest sample
             ./lib/kmtest
+            ( cd lib && ./sample ../samples/libsample.conf )
 
             echo "=== Unit suite (iked: eaytest evlooptest workerstest) ==="
             make -C iked check TESTS="eaytest evlooptest workerstest"

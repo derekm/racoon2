@@ -2775,16 +2775,22 @@ rcf_clean_addresspool_list(struct rcf_addresspool *head)
 {
 	struct rcf_addresspool	*i;
 	struct rcf_addresspool	*next;
+	struct rcf_address_pool_item *r, *rnext;
 
 	for (i = head; i != NULL; i = next) {
 		next = i->next;
 
-		if (!LIST_EMPTY(&i->pool_list)) {
-			plog(PLOG_CRITICAL, PLOGLOC, NULL,
-			     "BUG: pool_list must be freed in advance\n");
-			continue;
+		/* each pool_list entry is one configured address range */
+		for (r = LIST_FIRST(&i->pool_list); r != NULL; r = rnext) {
+			rnext = LIST_NEXT(r, link);
+			rc_addrpool_release_all(&r->lease_list);
+			rc_free(r);
 		}
-		rc_vfree(i->index);
+		LIST_INIT(&i->pool_list);
+
+		if (i->index)
+			rc_vfree(i->index);
+		rc_free(i);
 	}
 }
 
