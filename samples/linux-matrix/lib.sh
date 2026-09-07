@@ -9,6 +9,10 @@ RIP="${R2_RIP:-}"
 PREFIX="${R2_PREFIX:-/usr/local/racoon2}"
 ETC="${PREFIX}/etc/racoon2"
 SBIN="${PREFIX}/sbin"
+# systemd unit names: the tree installs iked.service/spmd.service; a live
+# box with locally-renamed units can override via R2_IKED_UNIT/R2_SPMD_UNIT.
+IKED_UNIT="${R2_IKED_UNIT:-iked}"
+SPMD_UNIT="${R2_SPMD_UNIT:-spmd}"
 
 log() { printf '%s\n' "$*"; }
 die() {
@@ -73,7 +77,7 @@ iked_apply_workers() {
 		return 0
 		;;
 	esac
-	systemctl stop racoon2-iked 2>/dev/null || true
+	systemctl stop "$IKED_UNIT" 2>/dev/null || true
 	R2_IKED_STOPPED=1
 	i=0
 	while iked_listening; do
@@ -88,8 +92,8 @@ iked_apply_workers() {
 	# boot SPD it reinstalled. Then spawn iked. Reverse order leaves a
 	# 0/0→RIP tunnel SPD that captures IKE (XfrmInTmplMismatch).
 	# Does not enable racoon2.target.
-	systemctl restart racoon2-spmd || {
-		log "FAIL: restart racoon2-spmd"
+	systemctl restart "$SPMD_UNIT" || {
+		log "FAIL: restart $SPMD_UNIT"
 		return 1
 	}
 	i=0
@@ -146,7 +150,7 @@ iked_restore() {
 	if [ "${R2_IKED_STOPPED:-}" = 1 ]; then
 		ip xfrm state flush || true
 		ip xfrm policy flush || true
-		systemctl start racoon2-iked 2>/dev/null || true
+		systemctl start "$IKED_UNIT" 2>/dev/null || true
 		R2_IKED_STOPPED=
 		i=0
 		while ! iked_listening; do
