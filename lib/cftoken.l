@@ -171,6 +171,8 @@ aes192_cbc		{ DP; return(AES192_CBC); }
 aes256_cbc		{ DP; return(AES256_CBC); }
 aes_ctr			{ DP; return(AES_CTR); }
 aes_gcm			{ DP; return(AES_GCM); }
+aes_gcm8		{ DP; return(AES_GCM8); }
+aes_gcm12		{ DP; return(AES_GCM12); }
 twofish_cbc		{ DP; return(TWOFISH_CBC); }
 non_auth		{ DP; return(NON_AUTH); }
 hmac_md5		{ DP; return(HMAC_MD5); }

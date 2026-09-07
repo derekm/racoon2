@@ -210,7 +210,7 @@ Currently, the system supports the following specifications:
 	IPsec
 	RFC 4303, IP Encapsulating Security Payload (ESP)
 	RFC 4106, The Use of Galois/Counter Mode (GCM) in IPsec ESP
-	          (AES-GCM-16)
+	          (AES-GCM-8/12/16 ICV; proven via netns matrix, aead icv 64/96/128)
 	RFC 4868, Using HMAC-SHA-256/384/512 with IPsec ESP and AH
 	          (HMAC-SHA2-256/384/512 ESP integrity; ICV 128/192/256 —
 	          proven via netns matrix, auth-trunc in the SAD)
@@ -233,8 +233,6 @@ Currently, the system supports the following specifications:
 	OpenSSL 3.5+/OQS ML-KEM provider.
 
 	Partial statuses (scope beyond the supported core):
-	RFC 4106 — AES-GCM with 16-octet ICV only (the 8/12 variants
-	          defined by the RFC are not wired).
 	RFC 3947 — NAT-OA (section 4) arrives with gsoc2026.
 	RFC 7296 — IKEv2 EAP (section 2.16) absent until the AAA item;
 	          everything else exercised.
