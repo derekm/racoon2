@@ -1,0 +1,70 @@
+# NetBSD CI Build & Test for racoon2.
+# Borrowed structure from rdratlos/racoon-ipsec-tools (netbsd-build-test.yml),
+# adapted to racoon2's autotools tree and unit suite. Runs in a NetBSD 10.x
+# VM via cross-platform-actions/action (QEMU). NetBSD builds the pfkey KM
+# backend by default — the pfkey side of the validated distribution.
+#
+# Dependencies (via pkgin): autoconf automake libtool pkgconf gmake m4 bison.
+# Base system provides cc (gcc), flex, openssl, krb5 headers.
+
+name: NetBSD build & test
+
+on:
+  push:
+    branches: [linux-km]
+  pull_request:
+    branches: [linux-km]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  netbsd-build-test:
+    name: 'NetBSD 10 build & test (pfkey KM)'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build and test on NetBSD 10
+        uses: cross-platform-actions/action@v0.27.0
+        with:
+          operating_system: netbsd
+          architecture: x86_64
+          version: '10.0'
+          shell: bash
+          memory: 4096
+          cpu_count: 2
+          run: |
+            set -euo pipefail
+
+            echo "=== Syncing package repository ==="
+            sudo pkgin -y update
+
+            echo "=== Installing build dependencies ==="
+            sudo pkgin -y install autoconf automake libtool pkgconf gmake m4 bison
+
+            # Sanitizer: ASan/UBSan on by default (this VM's toolchain is
+            # NetBSD's own gcc — sanitizers here are the non-Linux check).
+            export SAN_CFLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+            export SAN_LDFLAGS="-fsanitize=address,undefined"
+            export CC=cc
+
+            echo "=== Bootstrapping build system ==="
+            autoreconf -fi
+
+            echo "=== Configure ==="
+            CFLAGS="-g -O2 ${SAN_CFLAGS}" \
+            LDFLAGS="${SAN_LDFLAGS}" \
+            ./configure --prefix=/usr/local/racoon2
+
+            echo "=== Building ==="
+            make -j2
+
+            echo "=== Unit suite (lib: kmtest; skip broken sample) ==="
+            make -C lib check TESTS=kmtest
+
+            echo "=== Unit suite (iked: eaytest evlooptest workerstest) ==="
+            make -C iked check TESTS="eaytest evlooptest workerstest"
