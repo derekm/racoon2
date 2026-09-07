@@ -1,3 +1,21 @@
+<p align="center">
+  <img src="logos/nightwatch.png" alt="racoon2 Night Watch" width="180"/>
+</p>
+
+<h1 align="center">Racoon2</h1>
+
+<p align="center">
+<strong>The Racoon2 IPsec server continuation</strong><br/>
+<em>IKEv1 + IKEv2 · Linux NETLINK_XFRM dataplane · iked / spmd / kinkd</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/derekm/racoon2/actions/workflows/ubuntu.yml"><img src="https://github.com/derekm/racoon2/actions/workflows/ubuntu.yml/badge.svg?branch=linux-km" alt="Ubuntu build &amp; test (xfrm + pfkey)"/></a>
+  <a href="https://github.com/derekm/racoon2/actions/workflows/netbsd.yml"><img src="https://github.com/derekm/racoon2/actions/workflows/netbsd.yml/badge.svg?branch=linux-km" alt="NetBSD build &amp; test"/></a>
+</p>
+
+---
+
 This document describes the Racoon2 and the distribution kit.
 You have to read doc/INSTALL and doc/USAGE to use the Racoon2
 after you read this document.  Enjoy !
