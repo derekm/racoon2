@@ -1033,7 +1033,8 @@ initiator_start_after_gen(int rc, void *arg)
 	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NONCE, nonce, FALSE);
 
 #ifdef ENABLE_NATT
-	if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON &&
+	if ((ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
+	     ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE) &&
 	    SOCKADDR_FAMILY(ike_sa->remote) == AF_INET) {
 		if (natt_create_natd
 		    (ike_sa, &ctx->payl, ike_sa->remote, ike_sa->local) < 0) {
@@ -1469,7 +1470,8 @@ responder_state0_after_gen(int rc, void *arg)
 	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NONCE, ike_sa->n_r, FALSE);
 
 #ifdef ENABLE_NATT
-	if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON &&
+	if ((ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
+	     ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE) &&
 	    SOCKADDR_FAMILY(dest) == AF_INET) {
 		if (natt_create_natd(ike_sa, &ctx->payl, dest, src) < 0) {
 			goto abort;

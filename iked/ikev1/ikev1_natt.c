@@ -167,7 +167,7 @@ ikev1_natt_hash_addr(struct ph1handle *iph1, struct sockaddr *addr)
 	memcpy(ptr, iph1->index.r_ck, sizeof(isakmp_cookie_t));
 	ptr += sizeof(isakmp_cookie_t);
 
-	/* Copy-in Address (or zeroes if NATT_FORCE) */
+	/* Copy-in Address (or zeroes if nat_traversal force) */
 	if (ikev1_nat_traversal(iph1->rmconf) == NATT_FORCE)
 		memset(ptr, 0, addr_size);
 	else
@@ -192,8 +192,10 @@ ikev1_natt_compare_addr_hash(struct ph1handle *iph1, rc_vchar_t *natd_received,
 	uint32_t flag;
 	int verified = 0;
 
-	if (ikev1_nat_traversal(iph1->rmconf) == NATT_FORCE)
-		return verified;
+	if (ikev1_nat_traversal(iph1->rmconf) == NATT_FORCE) {
+		iph1->natt_flags |= NAT_DETECTED;
+		return 1;
+	}
 
 	if (natd_seq == 0) {
 		natd_computed = ikev1_natt_hash_addr(iph1, iph1->local);

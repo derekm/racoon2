@@ -142,6 +142,7 @@ off			{ DP; return(BOOL_OFF); }
 enable			{ DP; return(BOOL_ON); }
 disable			{ DP; return(BOOL_OFF); }
 yes			{ DP; return(BOOL_ON); }
+force			{ DP; return(FORCE); }
 no			{ DP; return(BOOL_OFF); }
 infinite		{ DP; return(UNIT_INFINITE); }
 sec|secs|second|seconds	{ DP; return(UNIT_SEC); }

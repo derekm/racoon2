@@ -332,6 +332,8 @@ rct2str(int type)
 		return "on";
 	case RCT_BOOL_OFF:
 		return "off";
+	case RCT_NATT_FORCE:
+		return "force";
 
 		/* interface */
 	case RCT_ADDR_INET:

@@ -1547,6 +1547,12 @@ rcf_fix_nat_traversal(struct cf_list *head, void *dst0)
 
 	if (rcf_check_cfd(head, CFD_NAT_TRAVERSAL))
 		return -1;
+	if (rcf_check_cft(head->nextp, CFT_VALUE))
+		return -1;
+	if (head->nextp->d.val == RCT_NATT_FORCE) {
+		dst->nat_traversal = RCT_NATT_FORCE;
+		return 0;
+	}
 	if (rcf_fix_boolean(head->nextp, &dst->nat_traversal))
 		return -1;
 
