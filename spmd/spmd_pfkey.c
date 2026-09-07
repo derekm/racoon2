@@ -1107,8 +1107,10 @@ spmd_spd_match_delete(uint32_t spid, rc_type samode,
 		dodelete = 0;
 
 	if (dodelete)
-		if (samode == RCT_IPSM_TUNNEL && (rc->sa_src->sa_family != sa_sres->ai_family ||
-		                                  rc->sa_dst->sa_family != sa_dres->ai_family))
+		if (samode == RCT_IPSM_TUNNEL &&
+		    (rc->sa_src == NULL || rc->sa_dst == NULL ||
+		     rc->sa_src->sa_family != sa_sres->ai_family ||
+		     rc->sa_dst->sa_family != sa_dres->ai_family))
 			dodelete = 0;
 	if (dodelete) {
 		switch (sres->ai_family) {
