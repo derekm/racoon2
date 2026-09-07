@@ -1,7 +1,7 @@
 [Unit]
 Description=Racoon2 IKE daemon (iked)
 Documentation=man:iked(8)
-After=network-online.target spmd.socket
+After=network-online.target spmd.socket spmd.service
 Wants=network-online.target
 Requires=spmd.socket
 # spmd.service starts on first spmif connect if socket-activated.
