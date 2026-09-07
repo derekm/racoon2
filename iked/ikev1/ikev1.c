@@ -2594,6 +2594,7 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 	int error;
 	uint8_t plen;
 	uint16_t ulproto;
+	uint16_t selport;
 	struct ipsecdoi_id_b *idb;
 	struct sockaddr_storage ss;
 	struct sockaddr *si = (void *)&ss;
@@ -2676,7 +2677,21 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 		addr = address;
 	}
 
-	if (rcs_cmpsa(addr->a.ipaddr, (struct sockaddr *)&ss) != 0) {
+	/*
+	 * Our selector port 0 (any) matches any peer port, per RFC 2409
+	 * IDci/IDcr semantics; compare addresses only in that case.
+	 */
+	selport = (addr->a.ipaddr->sa_family == AF_INET)
+		? ((struct sockaddr_in *)addr->a.ipaddr)->sin_port
+		: ((struct sockaddr_in6 *)addr->a.ipaddr)->sin6_port;
+	if (selport == 0) {
+		if (rcs_cmpsa_wop(addr->a.ipaddr, (struct sockaddr *)&ss) != 0) {
+			plog(PLOG_INFO, PLOGLOC, NULL,
+			    "address mismatch %s != %s\n", rcs_sa2str(addr->a.ipaddr),
+			    rcs_sa2str(si));
+			return FALSE;
+		}
+	} else if (rcs_cmpsa(addr->a.ipaddr, (struct sockaddr *)&ss) != 0) {
 		plog(PLOG_INFO, PLOGLOC, NULL,
 		    "address mismatch %s != %s\n", rcs_sa2str(addr->a.ipaddr),
 		    rcs_sa2str(si));
