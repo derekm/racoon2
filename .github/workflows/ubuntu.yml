@@ -45,10 +45,11 @@ jobs:
       - name: Build
         run: make -j2
 
-      - name: 'Unit suite (lib: kmtest; sample is broken upstream)'
+      - name: 'Unit suite (lib: kmtest + sample)'
         run: |
-          make -C lib kmtest
+          make -C lib kmtest sample
           ./lib/kmtest
+          ( cd lib && ./sample ../samples/libsample.conf )
 
       - name: 'Unit suite (iked: eaytest evlooptest workerstest)'
         run: make -C iked check TESTS="eaytest evlooptest workerstest"
