@@ -231,6 +231,19 @@ Currently, the system supports the following specifications:
 	RFC 9370 (multiple key exchanges / ADDKE), RFC 8784 PPK —
 	8784 is the next protocol item; 9242/9370 gate on it plus an
 	OpenSSL 3.5+/OQS ML-KEM provider.
+
+	Partial statuses (scope beyond the supported core):
+	RFC 4868 — ESP integrity implements HMAC-SHA2-256 only;
+	          sha2-384/512 wiring (primitive set exists) is a
+	          self-contained completion item.
+	RFC 4106 — AES-GCM with 16-octet ICV only (the 8/12 variants
+	          defined by the RFC are not wired).
+	RFC 3947 — NAT-OA (section 4) arrives with gsoc2026.
+	RFC 7296 — IKEv2 EAP (section 2.16) absent until the AAA item;
+	          everything else exercised.
+	RFC 2409 — IKEv1 mode-config/XAuth not demonstrated; the
+	          historical L2TP/IPsec server claim maps here.
+	RFC 4430 — kinkd in tree; live KDC validation pending.
 	
 The system provides three daemons: iked, kinkd and spmd.
 Each daemon manages IKE, KINK and IPsec Policy respectively.
