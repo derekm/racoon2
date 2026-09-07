@@ -1,0 +1,84 @@
+# Reusable integration workflow: runs the linux-matrix live scenarios
+# (samples/linux-matrix/run.sh) against an installed racoon2.
+#
+# Called from ubuntu.yml after the NETLINK_XFRM build succeeds. The pfkey
+# Linux build is a compile sanity check only and never triggers this.
+#
+# Designed so a NetBSD integration run can reuse this workflow later:
+#   - caller passes inputs.os
+#   - the run body is one command sequence (the `run` script below),
+#     which a NetBSD job would execute inside the QEMU VM the same way
+#   - the Linux job asserts os == 'linux' today; the NetBSD path needs
+#     rc.d-equivalent daemon start (systemctl does not exist) and will
+#     be added when the init-script integration lands. See netbsd.yml.
+
+name: Integration (live matrix)
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: 'Target OS family for the integration run'
+        required: false
+        default: 'linux'
+        type: string
+      cases:
+        description: 'run.sh --cases regex (default: all case rows)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      # future: token for pushing result artifacts; unused today
+      none:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  linux-matrix:
+    name: 'Linux matrix (${{ inputs.cases || ''all cases'' }})'
+    runs-on: ubuntu-latest
+    if: inputs.os == 'linux'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build + test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
+            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2
+
+      - name: Build + install (xfrm backend)
+        run: |
+          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            --rebuild xfrm --cases 'a^'
+        env:
+          R2_PREFIX: /usr/local/racoon2
+
+      - name: Stage live daemon config
+        run: |
+          sudo bash samples/linux-matrix/ci-setup.sh --prefix /usr/local/racoon2
+          sudo systemctl status racoon2-iked racoon2-spmd --no-pager | head -12
+
+      - name: Run the test matrix (xfrm backend)
+        run: |
+          CASES=${{ inputs.cases }}
+          ARGS="--src $GITHUB_WORKSPACE"
+          [ -z "$CASES" ] || ARGS="$ARGS --cases $CASES"
+          sudo -E bash samples/linux-matrix/run.sh $ARGS
+        env:
+          R2_PREFIX: /usr/local/racoon2
+
+      - name: Upload matrix logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-logs
+          path: |
+            /tmp/r2-iked-matrix.log
+            /tmp/*.log
+            /tmp/r2_*.txt
+          if-no-files-found: ignore

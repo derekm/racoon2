@@ -1,9 +1,11 @@
 # Ubuntu CI Build & Test for racoon2.
-# Sister of netbsd.yml: the SAME unit suite on Linux, built with both KM
-# backends — NETLINK_XFRM (the Linux default) and the pfkey compat socket
-# (--with-km-backend=pfkey) — validating xfrm and pfkey in one workflow.
-#
-# All tests here are unprivileged userspace; no kernel/tunnel cases yet.
+# Two build jobs share the same unit suite:
+#   - build-xfrm: NETLINK_XFRM (the Linux default). On success this
+#     triggers the live integration matrix (integration.yml).
+#   - build-pfkey: the Linux pfkey compat socket. Compile-sanity only —
+#     Linux pfkey is lossy (drops kernel->user datagrams on rcvbuf fill),
+#     so no live integration runs against this build.
+# Same unit suite as netbsd.yml on both backends.
 
 name: Ubuntu build & test
 
@@ -18,13 +20,9 @@ permissions:
   contents: read
 
 jobs:
-  build-test:
-    name: 'Ubuntu ${{ matrix.km }} KM backend'
+  build-xfrm:
+    name: 'Ubuntu NETLINK_XFRM build (default KM)'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        km: [xfrm, pfkey]
 
     steps:
       - name: Checkout repository
@@ -40,7 +38,7 @@ jobs:
         run: autoreconf -fi
 
       - name: Configure
-        run: ./configure --prefix=/usr/local/racoon2 --with-km-backend=${{ matrix.km }}
+        run: ./configure --prefix=/usr/local/racoon2
 
       - name: Build
         run: make -j2
@@ -50,3 +48,39 @@ jobs:
 
       - name: 'Unit suite (iked: eaytest evlooptest workerstest)'
         run: make -C iked check TESTS="eaytest evlooptest workerstest"
+
+  build-pfkey:
+    name: 'Ubuntu pfkey compat build (sanity only)'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
+            libssl-dev libkrb5-dev libpcap-dev bison flex
+
+      - name: Bootstrap
+        run: autoreconf -fi
+
+      - name: Configure
+        run: ./configure --prefix=/usr/local/racoon2 --with-km-backend=pfkey
+
+      - name: Build
+        run: make -j2
+
+      - name: 'Unit suite (lib: make check)'
+        run: make -C lib check
+
+      - name: 'Unit suite (iked: eaytest evlooptest workerstest)'
+        run: make -C iked check TESTS="eaytest evlooptest workerstest"
+
+  integration:
+    name: 'Integration (live matrix, xfrm)'
+    needs: build-xfrm
+    uses: ./.github/workflows/integration.yml
+    with:
+      os: linux
