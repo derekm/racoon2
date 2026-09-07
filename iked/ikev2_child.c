@@ -519,19 +519,25 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	child_sa->remote = rcs_sadup(remote);
 
 #ifdef ENABLE_NATT
-	plog(PLOG_INTERR, PLOGLOC, 0,
-	     "parent-local %s parent-remote %s local %s remote %s\n",
-		rcs_sa2str(child_sa->parent->local),
-		rcs_sa2str(child_sa->parent->remote),
-		rcs_sa2str(local),
-		rcs_sa2str(remote));
+	{
+		struct sockaddr *nlocal, *nremote;
 
-	if (child_sa->parent->local)
-		rc_free(child_sa->parent->local);
-	if (child_sa->parent->remote)
-		rc_free(child_sa->parent->remote);
-	child_sa->parent->local = rcs_sadup(local);
-	child_sa->parent->remote = rcs_sadup(remote);
+		nlocal = rcs_sadup(local);
+		nremote = rcs_sadup(remote);
+		if (nlocal == NULL || nremote == NULL) {
+			if (nlocal)
+				rc_free(nlocal);
+			if (nremote)
+				rc_free(nremote);
+			goto fail_nomem;
+		}
+		if (child_sa->parent->local)
+			rc_free(child_sa->parent->local);
+		if (child_sa->parent->remote)
+			rc_free(child_sa->parent->remote);
+		child_sa->parent->local = nlocal;
+		child_sa->parent->remote = nremote;
+	}
 #endif
 
 	if (old_child_sa) {
