@@ -82,6 +82,29 @@ else
 	startup_scripts=none
 fi
 
+dnl systemd unit files are installed configs: @sbindir@/@sysconfdir@ would
+dnl expand to "$\{exec_prefix\}/sbin" (automake keeps the variables
+dnl un-expanded), which systemd rejects ("bad unit file setting"). Resolve
+dnl them to absolute paths at configure time.
+racoon_prefix=$prefix
+test "x$racoon_prefix" = xNONE && racoon_prefix=$ac_default_prefix
+racoon_exec_prefix=$exec_prefix
+test "x$racoon_exec_prefix" = xNONE && racoon_exec_prefix=$racoon_prefix
+racoon_sbindir=$sbindir
+case $racoon_sbindir in
+	*'${exec_prefix}'*) racoon_sbindir=${racoon_exec_prefix}${racoon_sbindir#'${exec_prefix}'} ;;
+esac
+case $racoon_sbindir in
+	*'${prefix}'*) racoon_sbindir=${racoon_prefix}${racoon_sbindir#'${prefix}'} ;;
+esac
+racoon_sysconfdir=$sysconfdir
+case $racoon_sysconfdir in
+	*'${prefix}'*) racoon_sysconfdir=${racoon_prefix}${racoon_sysconfdir#'${prefix}'} ;;
+esac
+systemd_unit_files_have_no_variables=1
+AC_SUBST(racoon_sbindir)
+AC_SUBST(racoon_sysconfdir)
+
 AC_MSG_CHECKING([systemd unit directory])
 AC_ARG_WITH(systemdsystemunitdir,
 	[  --with-systemdsystemunitdir=DIR  systemd unit dir],
