@@ -80,15 +80,32 @@ ike_spmif_socket(void)
 int
 ike_spmif_poll(void)
 {
-	if (spmif_handler(spmif_socket) != 0) {
-		/* no reason to work anymore */
-		spmif_clean(spmif_socket);
-		spmif_socket = -1;
+	int i;
+
+	if (spmif_handler(spmif_socket) == 0)
+		return 0;
+
+	/* spmd died or restarted (socket-activation respawns it on connect).
+	 * spmd re-installs its SPD from the config on start and the kernel
+	 * SAD survives, so the resync is just the socket — reconnect with
+	 * backoff instead of treating this as fatal. */
+	spmif_clean(spmif_socket);
+	spmif_socket = -1;
+	for (i = 0; i < 5; i++) {
+		usleep(250 * 1000 * (i + 1));
+		spmif_socket = spmif_init();
+		if (spmif_socket >= 0)
+			break;
+	}
+	if (spmif_socket < 0) {
 		isakmp_log(0, 0, 0, 0,
 			   PLOG_INTERR, PLOGLOC,
-			   "spmd I/F broken: This is fatal and iked needs to be restarted\n");
+			   "spmd I/F broken and reconnect failed; giving up\n");
 		return -1;
 	}
+	isakmp_log(0, 0, 0, 0,
+		   PLOG_INF, PLOGLOC,
+		   "spmd I/F reconnected\n");
 	return 0;
 }
 
