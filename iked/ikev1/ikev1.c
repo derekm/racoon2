@@ -2594,7 +2594,6 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 	int error;
 	uint8_t plen;
 	uint16_t ulproto;
-	uint16_t orig_selport = 0;
 	struct ipsecdoi_id_b *idb;
 	struct sockaddr_storage ss;
 	struct sockaddr *si = (void *)&ss;
@@ -2634,45 +2633,40 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 		return FALSE;
 	}
 
-	if (addr && addr->a.ipaddr) {
-		if (addr->a.ipaddr->sa_family == AF_INET)
-			orig_selport = ((struct sockaddr_in *)addr->a.ipaddr)->sin_port;
+	for (address = addr; address; address = address->next) {
+		uint16_t node_port = 0;
+
+		if (address->a.ipaddr == NULL)
+			continue;
+		if (address->a.ipaddr->sa_family == AF_INET)
+			node_port = ((struct sockaddr_in *)address->a.ipaddr)->sin_port;
 #ifdef INET6
 		else
-			orig_selport = ((struct sockaddr_in6 *)addr->a.ipaddr)->sin6_port;
+			node_port = ((struct sockaddr_in6 *)address->a.ipaddr)->sin6_port;
 #endif
-	}
-
-	for (address = addr; address; address = address->next) {
-		if (!rcs_matchaddr(address, (struct sockaddr *)&ss))
-			continue;
-		addr = address;
-		goto matched;
+		/*
+		 * rcs_matchaddr only hits any-addr or 0<prefixlen<32.
+		 * Host /32 falls through to exact compare (wop if port 0).
+		 * Prefix/any match is enough — do not exact-compare after.
+		 */
+		if (rcs_matchaddr(address, (struct sockaddr *)&ss)) {
+			addr = address;
+			goto matched;
+		}
+		if (node_port == 0
+		    ? rcs_cmpsa_wop(address->a.ipaddr, (struct sockaddr *)&ss) == 0
+		    : rcs_cmpsa(address->a.ipaddr, (struct sockaddr *)&ss) == 0) {
+			addr = address;
+			goto matched;
+		}
 	}
 	plog(PLOG_INFO, PLOGLOC, NULL,
 	    "address mismatch %s != %s\n",
-	    addr ? rcs_sa2str(addr->a.ipaddr) : "(none)", rcs_sa2str(si));
+	    addr && addr->a.ipaddr ? rcs_sa2str(addr->a.ipaddr) : "(none)",
+	    rcs_sa2str(si));
 	return FALSE;
 
 matched:
-	/*
-	 * Selector port 0 (any) matches any peer port (RFC 2409 IDci/IDcr).
-	 * Use the original selector port — never mutate the config sockaddr.
-	 */
-	if (orig_selport == 0) {
-		if (rcs_cmpsa_wop(addr->a.ipaddr, (struct sockaddr *)&ss) != 0) {
-			plog(PLOG_INFO, PLOGLOC, NULL,
-			    "address mismatch %s != %s\n", rcs_sa2str(addr->a.ipaddr),
-			    rcs_sa2str(si));
-			return FALSE;
-		}
-	} else if (rcs_cmpsa(addr->a.ipaddr, (struct sockaddr *)&ss) != 0) {
-		plog(PLOG_INFO, PLOGLOC, NULL,
-		    "address mismatch %s != %s\n", rcs_sa2str(addr->a.ipaddr),
-		    rcs_sa2str(si));
-		return FALSE;
-	}
-
 	if (upper_layer_protocol == RC_PROTO_ANY)
 		upper_layer_protocol = IPSEC_ULPROTO_ANY;
 

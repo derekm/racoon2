@@ -1332,7 +1332,8 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa,
 #ifdef ENABLE_NATT
 	if (child_sa->parent &&
 	    (child_sa->parent->behind_nat ||
-	     child_sa->parent->peer_behind_nat)) {
+	     child_sa->parent->peer_behind_nat ||
+	     ikev2_nat_traversal(child_sa->parent->rmconf) == RCT_NATT_FORCE)) {
 #ifndef UDP_ENCAP_ESPINUDP
 #define UDP_ENCAP_ESPINUDP 2
 #endif

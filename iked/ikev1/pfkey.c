@@ -615,7 +615,6 @@ pk_sendgetspi(struct ph2handle *iph2)
 {
 	struct sockaddr *src, *dst;
 	struct sockaddr_storage my_ss, peer_ss;
-	struct sockaddr_storage sel_src_ss, sel_dst_ss;
 	unsigned int satype, mode;
 	struct saprop *pp;
 	struct saproto *pr;
@@ -627,6 +626,7 @@ pk_sendgetspi(struct ph2handle *iph2)
 #endif
 	struct rcpfk_msg param;
 
+	memset(&param, 0, sizeof(param));
 #if 0
 	if (iph2->side == INITIATOR) {
 		pp = iph2->proposal;
@@ -1233,7 +1233,7 @@ pk_sendadd(struct ph2handle *iph2)
 #endif
 	struct rcpfk_msg param;
 
-	/* sanity check */
+	memset(&param, 0, sizeof(param));
 	if (iph2->approval == NULL) {
 		plog(PLOG_INTERR, PLOGLOC, 0, "no approvaled SAs found.\n");
 		return -1;
