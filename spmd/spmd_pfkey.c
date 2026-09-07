@@ -1102,7 +1102,9 @@ spmd_spd_match_delete(uint32_t spid, rc_type samode,
 		goto err_fin;
 	}
 
-	if (rc->samode != samode || rc->sp_src->sa_family != sres->ai_family ||
+	if (rc->samode != samode ||
+	    rc->sp_src == NULL || rc->sp_dst == NULL ||
+	    rc->sp_src->sa_family != sres->ai_family ||
 	    rc->sp_dst->sa_family != dres->ai_family)
 		dodelete = 0;
 
