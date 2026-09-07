@@ -9,4 +9,6 @@ workerstest	unit	pass	-	iked/workerstest (inline, 1, 10)
 admin-empty	admin	pass	-	show-sa empty; esp ENOTSUP; vpn-connect ENOENT
 ikev2-netns	ikev2	pass	0	strongSwan netns; inline drain (RACOON2_CRYPTO_WORKERS=0)
 ikev2-netns-w1	ikev2	pass	1	strongSwan netns; pool N=1
+ikev2-netns-s384	ikev2	pass	0	RFC 4868: ESP AES-CBC + HMAC-SHA2-384, ICV 192
+ikev2-netns-s512	ikev2	pass	0	RFC 4868: ESP AES-CBC + HMAC-SHA2-512, ICV 256
 ikev1-strongswan	ikev1	skip	-	IKEv1 NAT-T proven live on the WSL netns harness (Proven 09-06: main+quick, espinudp, ping 3/3); the 2026-09-07 CI pass added netns-XFRM rows for IKEv2; port the ikev1 case to the same CI netns shape next

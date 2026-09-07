@@ -32,11 +32,20 @@ detect_rip() {
 	if [ -n "$RIP" ]; then
 		return 0
 	fi
+	# The client must IKE to exactly the address iked is bound on.
+	# Prefer the IP in the live racoon2.conf's ike interface ("IP port 500");
+	# eth0 is NOT a safe default (mirrored WSL eth0 = Tailscale).
+	RIP=$(sed -n 's/^[[:space:]]*\([0-9][0-9.]*\) port 500[[:space:]]*;.*$/\1/p' \
+		"$ETC/racoon2.conf" 2>/dev/null | head -1)
+	[ -n "$RIP" ] && return 0
 	RIP=$(ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
 	[ -n "$RIP" ] || die "set R2_RIP"
 }
 
 charon_reset() {
+	# the on-fabric ICMP cheat kill: ESP-decapped inner pings to the host
+	# arrive with iif != r2h, so the DROP only kills non-tunnel ICMP.
+	iptables -t raw -D PREROUTING -i "$VETH_H" -s "${CIP}/32" -p icmp -j DROP 2>/dev/null || true
 	killall -9 charon starter 2>/dev/null || true
 	rm -f /var/run/charon.pid /var/run/starter.charon.pid /var/run/charon.ctl
 	ip netns exec "$NS" ipsec stop 2>/dev/null || true
