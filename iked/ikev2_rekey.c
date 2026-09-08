@@ -838,6 +838,16 @@ ikev2_rekey_ikesa_responder_dh_done(int rc, void *arg)
 	ikev2_rekey_responder_tail(ctx);
 }
 
+/**** async compute helpers (defined after ikev2_rekey_ikesa_init_recv) ****/
+struct ikev2_rekey_init_recv_ctx {
+	struct ikev2_sa *old_sa;
+	struct ikev2_sa *new_sa;
+	struct prop_pair **parsed_sa;
+	rc_vchar_t *g_ir;
+};
+static void ikev2_rekey_init_recv_ctx_free(struct ikev2_rekey_init_recv_ctx *);
+static void ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *);
+static void ikev2_rekey_ikesa_init_dh_done(int, void *);
 static void
 ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 {
@@ -958,12 +968,89 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 	negotiated_sa = 0;
 	dhpub_p = n_r = 0;	/* so that they're not deallocated */
 
-	/* g_ir = g^ir; */
-	if (oakley_dh_compute((struct dhgroup *)new_sa->negotiated_sa->dhdef->definition,
-			      new_sa->dhpub, new_sa->dhpriv, new_sa->dhpub_p, &g_ir) == -1)
+	/* g_ir = g^ir; (async) */
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx)
 		goto fail;
+	ctx->old_sa = old_sa;
+	ctx->new_sa = new_sa;
+	ctx->parsed_sa = parsed_sa;
+	parsed_sa = NULL;
 
-	if (rekey_skeyseed(new_sa, old_sa, g_ir) != 0)
+	old_sa->crypto_pending = 1;
+	if (oakley_dh_compute_submit(
+	    (struct dhgroup *)new_sa->negotiated_sa->dhdef->definition,
+	    new_sa->dhpub, new_sa->dhpriv, new_sa->dhpub_p, &ctx->g_ir,
+	    ikev2_rekey_ikesa_init_dh_done, ctx) != 0) {
+		old_sa->crypto_pending = 0;
+		TRACE((PLOGLOC, "failed dh submit\n"));
+		ikev2_rekey_init_recv_ctx_free(ctx);
+		goto fail;
+	}
+	return;	/* resumed in ikev2_rekey_ikesa_init_dh_done */
+
+      done:
+	if (g_ir)
+		rc_vfreez(g_ir);
+	if (n_r)
+		rc_vfree(n_r);
+	if (dhpub_p)
+		rc_vfree(dhpub_p);
+	if (negotiated_sa)
+		racoon_free(negotiated_sa);
+	if (parsed_sa)
+		proplist_discard(parsed_sa);
+	return;
+
+      fail:
+	isakmp_log(old_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC, "failed processing rekey response\n");
+	++isakmpstat.fail_process_packet;
+	goto done;
+
+      no_proposal_chosen:
+	isakmp_log(old_sa, 0, 0, 0,
+		   PLOG_PROTOERR, PLOGLOC, "no proposal chosen\n");
+	++isakmpstat.no_proposal_chosen;
+	goto done;
+      malformed_message:
+	isakmp_log(old_sa, 0, 0, 0,
+		   PLOG_PROTOERR, PLOGLOC, "packet lacks expected payload\n");
+	++isakmpstat.malformed_message;
+	goto done;
+      duplicate:
+	isakmp_log(old_sa, 0, 0, 0,
+		   PLOG_PROTOERR, PLOGLOC, "duplicated payload\n");
+	++isakmpstat.malformed_message;
+	goto done;
+      malformed_payload:
+	isakmp_log(old_sa, 0, 0, 0,
+		   PLOG_PROTOERR, PLOGLOC, "malformed payload\n");
+	++isakmpstat.malformed_payload;
+	/* send INVALID_SYNTAX */
+	goto done;
+}
+
+/* async g^ir for ikev2_rekey_ikesa_init_recv (compute only) */
+
+static void
+ikev2_rekey_init_recv_ctx_free(struct ikev2_rekey_init_recv_ctx *ctx)
+{
+	if (ctx->parsed_sa)
+		proplist_discard(ctx->parsed_sa);
+	if (ctx->g_ir)
+		rc_vfreez(ctx->g_ir);
+	rc_free(ctx);
+}
+
+/* runs on the IKE thread after the worker computed g^ir */
+static void
+ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *ctx)
+{
+	struct ikev2_sa *old_sa = ctx->old_sa;
+	struct ikev2_sa *new_sa = ctx->new_sa;
+
+	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir) != 0)
 		goto fail;
 	if (ikev2_compute_keys(new_sa) != 0)
 		goto fail;
@@ -1027,46 +1114,37 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		ikev2_wakeup_child_sa(xchild_sa);
 	}
 
-      done:
-	if (g_ir)
-		rc_vfreez(g_ir);
-	if (n_r)
-		rc_vfree(n_r);
-	if (dhpub_p)
-		rc_vfree(dhpub_p);
-	if (negotiated_sa)
-		racoon_free(negotiated_sa);
-	if (parsed_sa)
-		proplist_discard(parsed_sa);
+	ikev2_rekey_init_recv_ctx_free(ctx);
 	return;
 
-      fail:
+fail:
 	isakmp_log(old_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed processing rekey response\n");
 	++isakmpstat.fail_process_packet;
-	goto done;
+	ikev2_rekey_init_recv_ctx_free(ctx);
+}
 
-      no_proposal_chosen:
-	isakmp_log(old_sa, 0, 0, 0,
-		   PLOG_PROTOERR, PLOGLOC, "no proposal chosen\n");
-	++isakmpstat.no_proposal_chosen;
-	goto done;
-      malformed_message:
-	isakmp_log(old_sa, 0, 0, 0,
-		   PLOG_PROTOERR, PLOGLOC, "packet lacks expected payload\n");
-	++isakmpstat.malformed_message;
-	goto done;
-      duplicate:
-	isakmp_log(old_sa, 0, 0, 0,
-		   PLOG_PROTOERR, PLOGLOC, "duplicated payload\n");
-	++isakmpstat.malformed_message;
-	goto done;
-      malformed_payload:
-	isakmp_log(old_sa, 0, 0, 0,
-		   PLOG_PROTOERR, PLOGLOC, "malformed payload\n");
-	++isakmpstat.malformed_payload;
-	/* send INVALID_SYNTAX */
-	goto done;
+static void
+ikev2_rekey_ikesa_init_dh_done(int rc, void *arg)
+{
+	struct ikev2_rekey_init_recv_ctx *ctx = arg;
+	struct ikev2_sa *old_sa = ctx->old_sa;
+
+	old_sa->crypto_pending = 0;
+	if (old_sa->state == IKEV2_STATE_DYING ||
+	    old_sa->state == IKEV2_STATE_DEAD) {
+		ikev2_rekey_init_recv_ctx_free(ctx);
+		return;
+	}
+	if (rc != 0) {
+		TRACE((PLOGLOC, "failed dh_compute\n"));
+		isakmp_log(old_sa, 0, 0, 0,
+			   PLOG_INTERR, PLOGLOC, "failed processing rekey response\n");
+		++isakmpstat.fail_process_packet;
+		ikev2_rekey_init_recv_ctx_free(ctx);
+		return;
+	}
+	ikev2_rekey_ikesa_init_recv_tail(ctx);
 }
 
 static void
