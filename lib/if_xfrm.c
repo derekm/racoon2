@@ -701,6 +701,16 @@ add_encap_attr(struct nlmsghdr *n, size_t maxlen, struct rcpfk_msg *rc)
 		enc.encap_dport = rc->natt_dport;
 	else if ((dp = rcs_getsaport(rc->sa_dst)) != NULL)
 		enc.encap_dport = *dp;
+	/*
+	 * RFC 3947 NAT-OA → XFRMA_ENCAP encap_oa (one original
+	 * address). Prefer src (outbound local OA), else dst (peer OA).
+	 */
+	{
+		struct sockaddr *oa = rc->sa_natoa_src ? rc->sa_natoa_src
+		    : rc->sa_natoa_dst;
+		if (oa)
+			(void)sa_to_xaddr(oa, &enc.encap_oa, NULL);
+	}
 	return xfrm_addattr(n, maxlen, XFRMA_ENCAP, &enc, sizeof(enc));
 #else
 	(void)n;

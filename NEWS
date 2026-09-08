@@ -11,6 +11,11 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  float (RFC 3947) in spmd, not the matrix harness.
 	* Transport SADB: copy endpoints, snapshot encap ports, then
 	  selector ports 0. IKEv1 and IKEv2 Child.
+	* RFC 3947 NAT-OA on XFRM: sa_natoa_* → XFRMA_ENCAP encap_oa.
+	  lib/xfrmnatt + matrix row xfrm-natt-oa (root). IKEv1 fills
+	  oa whenever ph1_wants_espinudp, not only NAT_DETECTED.
+	* ubuntu.yml / netbsd.yml fire on int/gsoc2026 as well as
+	  linux-km. Matrix: ikev2-netns-frag (RFC 7383).
 
 2026-09-06 Derek Moore
 

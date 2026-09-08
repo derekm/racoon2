@@ -20,6 +20,10 @@ kind_unit() {
 		make -C "$src/iked" workerstest
 		"$src/iked/workerstest"
 		;;
+	xfrm-natt-oa)
+		make -C "$src/lib" xfrmnatt
+		"$src/lib/xfrmnatt"
+		;;
 	*)
 		die "unknown unit case $name"
 		return 1

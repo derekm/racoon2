@@ -21,16 +21,22 @@ else
 libracoon_la_SOURCES += if_pfkeyv2.c
 endif
 endif
-EXTRA_DIST = if_xfrm.c if_pfkeyv2.c if_userspace.c
+EXTRA_DIST = if_xfrm.c if_pfkeyv2.c if_userspace.c xfrmnatt.c
 libracoon_la_LIBADD = $(LTLIBOBJS) -lpcap
 TESTS = sample kmtest
 check_PROGRAMS = sample kmtest
 sample_SOURCES = sample.c
 sample_LDADD = libracoon.la
 # Extensionless tests ignore per-test *_LOG_COMPILER; the wrapper passes
-# the config file to sample and is a no-op for kmtest (main(void)).
+# the config file to sample and is a no-op for kmtest / xfrmnatt (main).
 LOG_COMPILER = $(SHELL) $(srcdir)/sample-wrapper.sh
 AM_TESTS_ENVIRONMENT = R2_SAMPLE_CONF='$(abs_srcdir)/../samples/libsample.conf'; export R2_SAMPLE_CONF;
 kmtest_SOURCES = kmtest.c kmtest_backend.c
+if USE_XFRM
+TESTS += xfrmnatt
+check_PROGRAMS += xfrmnatt
+xfrmnatt_SOURCES = xfrmnatt.c
+xfrmnatt_LDADD = libracoon.la
+endif
 
 BUILT_SOURCES = cfparse.h

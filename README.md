@@ -145,8 +145,9 @@ the union is promoted.
 1. Fragmentation security review — bounds-check `ikev2_frag`/v1
    reassembly against the racoon1 CVE-2016-10396-class issues before
    trusting the fragment paths on the wire.
-2. Port NAT-OA output to the XFRM backend (gsoc emits PF_KEY-shaped
-   messages; the Linux path needs the same content on netlink).
+2. NAT-OA on XFRM: `sa_natoa_*` → `XFRMA_ENCAP encap_oa`
+   (`lib/xfrmnatt`, matrix `xfrm-natt-oa`). Live IKEv1 NAT-OA
+   peer row still skip (`ikev1-strongswan`).
 3. Retire the `IP_ANY` XFRM template mangling — gsoc's `IP_RW` gives
    the road-warrior story the dataplane fix can lean on.
 4. MOBIKE (RFC 4555) — the mobile/roaming gap iOS hits on address
@@ -224,8 +225,10 @@ Currently, the system supports the following specifications:
 	RFC 2367, PF_KEY Key Management API, Version 2
 
 	RFC 7383 IKEv2 fragmentation and IKEv1 fragmentation are in
-	this tree (gsoc2026). NAT-OA (RFC 3947 §4) is on the PF_KEY
-	path; Linux XFRM port is still open.
+	this tree (gsoc2026). NAT-OA (RFC 3947 §4) fills PF_KEY
+	SADB_X_NAT_OA and Linux XFRMA_ENCAP encap_oa (`sa_natoa_*`).
+	Kernel round-trip is `lib/xfrmnatt`; live IKEv1 NAT-OA peer
+	is not a matrix pass yet.
 
 	Not implemented in this tree yet: RFC 9242 (IKE_INTERMEDIATE),
 	RFC 9370 (multiple key exchanges / ADDKE), RFC 8784 PPK —

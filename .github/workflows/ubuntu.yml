@@ -11,9 +11,9 @@ name: Ubuntu build & test
 
 on:
   push:
-    branches: [linux-km]
+    branches: [linux-km, int/gsoc2026]
   pull_request:
-    branches: [linux-km]
+    branches: [linux-km, int/gsoc2026]
   workflow_dispatch:
 
 permissions:

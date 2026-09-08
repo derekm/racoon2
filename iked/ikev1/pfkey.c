@@ -1057,7 +1057,7 @@ pk_sendupdate(struct ph2handle *iph2)
 		param.authkey = pr->keymat->s + e_keylen;
 
 #ifdef ENABLE_NATT
-        if (iph2->ph1->natt_flags & NAT_DETECTED && iph2->natoa_p)
+        if (ph1_wants_espinudp(iph2->ph1) && iph2->natoa_p)
         {
             struct sockaddr* sa;
             struct sockaddr_storage *ss = &param.sa_natoa_dst_storage;
@@ -1352,7 +1352,7 @@ pk_sendadd(struct ph2handle *iph2)
 		param.authkeylen = a_keylen;
 
 #ifdef ENABLE_NATT
-        if (iph2->ph1->natt_flags & NAT_DETECTED && iph2->natoa)
+        if (ph1_wants_espinudp(iph2->ph1) && iph2->natoa)
         {
             struct sockaddr* sa;
             struct sockaddr_storage *ss = &param.sa_natoa_src_storage;

@@ -13,4 +13,6 @@ ikev2-netns-s384	ikev2	pass	0	RFC 4868: ESP AES-CBC + HMAC-SHA2-384, ICV 192 (re
 ikev2-netns-s512	ikev2	pass	0	RFC 4868: ESP AES-CBC + HMAC-SHA2-512, ICV 256 (responder SAD)
 ikev2-netns-g8	ikev2	pass	0	RFC 4106: AES-GCM 8-octet ICV (aead icv 8 in SAD)
 ikev2-netns-g12	ikev2	pass	0	RFC 4106: AES-GCM 12-octet ICV (aead icv 12 in SAD)
+ikev2-netns-frag	ikev2	pass	0	RFC 7383: strongSwan fragmentation=yes; IKE_SA + responder SAD
+xfrm-natt-oa	unit	pass	-	RFC 3947 NAT-OA via rcpfk → XFRMA_ENCAP encap_oa (root, ip xfrm)
 ikev1-strongswan	ikev1	skip	-	IKEv1 NAT-T proven live on the WSL netns harness (Proven 09-06: main+quick, espinudp, ping 3/3); the 2026-09-07 CI pass added netns-XFRM rows for IKEv2; port the ikev1 case to the same CI netns shape next

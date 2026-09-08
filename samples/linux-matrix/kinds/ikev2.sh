@@ -51,11 +51,13 @@ kind_ikev2() {
 	# default stays aes128gcm16!
 	STRONG_ESP=aes128gcm16!
 	EXPECT_AUTH=
+	FRAG=
 	case "$name" in
 	*-s384) STRONG_ESP='aes256-sha384!'; EXPECT_AUTH='auth-trunc hmac(sha384).* 192$' ;;
 	*-s512) STRONG_ESP='aes256-sha512!'; EXPECT_AUTH='auth-trunc hmac(sha512).* 256$' ;;
 	*-g8)  STRONG_ESP='aes128gcm8!';  EXPECT_AUTH='aead rfc4106(gcm(aes)).* 64$' ;;
 	*-g12) STRONG_ESP='aes128gcm12!'; EXPECT_AUTH='aead rfc4106(gcm(aes)).* 96$' ;;
+	*-frag) FRAG='fragmentation=yes' ;;
 	esac
 	pskhex=$(xxd -p -c 256 "$ETC/psk/macos.psk" | tr -d '\n')
 	mkdir -p /etc/strongswan.d/charon
@@ -91,6 +93,7 @@ conn r2macos
 	ikelifetime=1h
 	keylife=1h
 	keyingtries=1
+	$FRAG
 EOF
 	cat >/etc/ipsec.secrets <<EOF
 @macos.client @racoon2.wsl : PSK 0x${pskhex}
