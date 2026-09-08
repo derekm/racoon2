@@ -63,6 +63,7 @@
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 #include "sockmisc.h"
+#include "encryptor.h"
 
 #include "debug.h"
 
@@ -87,7 +88,6 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 	struct ikev2_payload_header *payl;
 	int type;
 	uint8_t sk_next_payload;
-	uint8_t *enc_start;		/* points to SK payload header */
 	uint8_t *iv_ptr;
 	uint8_t *ciphertext;
 	size_t iv_len, icv_len, block_len;
@@ -116,7 +116,10 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 
 	block_len = encryptor_block_length(ike_sa->encryptor);
 	iv_len = encryptor_iv_length(ike_sa->encryptor);
-	icv_len = auth_output_length(ike_sa->authenticator);
+	if (encryptor_icv_length(ike_sa->encryptor) > 0)
+		icv_len = encryptor_icv_length(ike_sa->encryptor);
+	else
+		icv_len = auth_output_length(ike_sa->authenticator);
 
 	orig_hdr = (struct ikev2_header *)(*packet)->v;
 
@@ -139,36 +142,24 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 	/* Save SK's next_payload - this is the first inner payload type */
 	sk_next_payload = payl->next_payload;
 
-	enc_start = (uint8_t *)payl;
-	iv_ptr = enc_start + sizeof(struct ikev2_payload_header);
-	ciphertext = iv_ptr + iv_len;
-	ciphertext_len = get_payload_length(payl) -
-			 sizeof(struct ikev2_payload_header) - iv_len - icv_len;
 	work = rc_vdup(*packet);
 	if (!work)
 		return -1;
-
-	/* Decrypt the ciphertext to recover plaintext payloads */
-	ivbuf = rc_vnew(iv_ptr, iv_len);
-	if (!ivbuf)
-		goto fail;
-	orig = rc_vnew(ciphertext, ciphertext_len);
-	if (!orig)
+	if (ikev2_decrypt(ike_sa, work) != 0)
 		goto fail;
 
-	decrypted = encryptor_decrypt(ike_sa->encryptor,
-				      orig,
-				      ike_sa->is_initiator ?
-					ike_sa->sk_e_i : ike_sa->sk_e_r,
-				      ivbuf);
+	orig_hdr = (struct ikev2_header *)work->v;
+	payl = (struct ikev2_payload_header *)(orig_hdr + 1);
+	type = orig_hdr->next_payload;
+	while (type != IKEV2_NO_NEXT_PAYLOAD &&
+	       type != IKEV2_PAYLOAD_ENCRYPTED) {
+		POINT_NEXT_PAYLOAD(payl, type);
+	}
+	d = (uint8_t *)(payl + 1);
+	decrypted_len = work->l - (size_t)(d - (uint8_t *)work->v);
+	decrypted = rc_vnew(d, decrypted_len);
 	if (!decrypted)
 		goto fail;
-
-	d = (uint8_t *)decrypted->v;
-	pad_length = d[decrypted->l - 1];
-	if (pad_length + 1 > decrypted->l)
-		goto fail;
-	decrypted_len = decrypted->l - pad_length - 1;
 
 	/*
 	 * Determine fragment size threshold (RFC 7383 Section 2.5.1):
@@ -233,20 +224,46 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 		memcpy(chunk_plain->v, decrypted->v + offset, this_chunk);
 		chunk_plain->l = this_chunk;
 
-		encrypted = ikev2_encrypt(ike_sa, chunk_plain);
+		memset(&skf, 0, sizeof(skf));
+		skf.header.next_payload = (frag_no == 1) ? sk_next_payload : 0;
+		skf.header.header_byte_2 = 0;
+		skf.fragment_number = htons((uint16_t)frag_no);
+		skf.total_fragments = htons((uint16_t)total_frags);
+		memcpy(&frag_hdr, orig_hdr, sizeof(struct ikev2_header));
+		frag_hdr.next_payload =
+			IKEV2_PAYLOAD_ENCRYPTED_AND_AUTHENTICATED_FRAGMENT;
+
+		if (encryptor_icv_length(ike_sa->encryptor) > 0) {
+			int tag_len = encryptor_icv_length(ike_sa->encryptor);
+			size_t enc_pay_len = sizeof(skf) + iv_len + this_chunk + 1
+			    + (size_t)tag_len;
+			rc_vchar_t *aad;
+
+			put_uint16(&skf.header.payload_length, (uint32_t)enc_pay_len);
+			put_uint32(&frag_hdr.length,
+			    (uint32_t)(sizeof(frag_hdr) + enc_pay_len));
+			aad = rc_vmalloc(sizeof(frag_hdr) + sizeof(skf));
+			if (!aad)
+				goto fail;
+			memcpy(aad->v, &frag_hdr, sizeof(frag_hdr));
+			memcpy((uint8_t *)aad->v + sizeof(frag_hdr), &skf, sizeof(skf));
+			encrypted = ikev2_encrypt(ike_sa, chunk_plain, aad);
+			rc_vfree(aad);
+		} else {
+			encrypted = ikev2_encrypt(ike_sa, chunk_plain, NULL);
+		}
 		rc_vfree(chunk_plain);
 		chunk_plain = NULL;
 		if (!encrypted)
 			goto fail;
 
-		/* Build SKF payload header */
-		memset(&skf, 0, sizeof(skf));
-		skf.header.next_payload = (frag_no == 1) ? sk_next_payload : 0;
-		skf.header.header_byte_2 = 0;
-		put_uint16(&skf.header.payload_length,
-			   (uint32_t)(sizeof(skf) + encrypted->l));
-		skf.fragment_number = htons((uint16_t)frag_no);
-		skf.total_fragments = htons((uint16_t)total_frags);
+		if (encryptor_icv_length(ike_sa->encryptor) == 0) {
+			put_uint16(&skf.header.payload_length,
+			    (uint32_t)(sizeof(skf) + encrypted->l + icv_len));
+			put_uint32(&frag_hdr.length,
+			    (uint32_t)(sizeof(frag_hdr) + sizeof(skf) +
+			    encrypted->l + icv_len));
+		}
 
 		skf_payload = rc_vprepend(encrypted, &skf, sizeof(skf));
 		rc_vfree(encrypted);
@@ -254,40 +271,30 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 		if (!skf_payload)
 			goto fail;
 
-		/* Build IKE header copied from original */
-		memcpy(&frag_hdr, orig_hdr, sizeof(struct ikev2_header));
-		frag_hdr.next_payload =
-			IKEV2_PAYLOAD_ENCRYPTED_AND_AUTHENTICATED_FRAGMENT;
-		put_uint32(&frag_hdr.length,
-			   (uint32_t)(sizeof(struct ikev2_header) +
-			   skf_payload->l + icv_len));
-
 		frag_pkt = rc_vmalloc(sizeof(struct ikev2_header) +
-				      skf_payload->l + icv_len);
+				      skf_payload->l +
+				      (encryptor_icv_length(ike_sa->encryptor) > 0 ?
+					  0 : icv_len));
 		if (!frag_pkt)
 			goto fail;
 		memcpy(frag_pkt->v, &frag_hdr, sizeof(struct ikev2_header));
 		memcpy(frag_pkt->v + sizeof(struct ikev2_header),
 		       skf_payload->v, skf_payload->l);
-		frag_pkt->l = sizeof(struct ikev2_header) +
-			       skf_payload->l + icv_len;
-
-		/* Calculate ICV over IKE header + SKF payload */
-		auth_output = auth_calculate(ike_sa->authenticator,
-					     ike_sa->is_initiator ?
-						ike_sa->sk_a_i :
-						ike_sa->sk_a_r,
-					     (uint8_t *)frag_pkt->v,
-					     sizeof(struct ikev2_header) +
-					     skf_payload->l);
-		if (!auth_output)
-			goto fail;
-
-		icv_ptr = frag_pkt->v + sizeof(struct ikev2_header) +
-			  skf_payload->l;
-		memcpy(icv_ptr, auth_output->v, icv_len);
-		rc_vfree(auth_output);
-		auth_output = NULL;
+		frag_pkt->l = sizeof(struct ikev2_header) + skf_payload->l;
+		if (encryptor_icv_length(ike_sa->encryptor) == 0) {
+			frag_pkt->l += icv_len;
+			auth_output = auth_calculate(ike_sa->authenticator,
+			    ike_sa->is_initiator ? ike_sa->sk_a_i : ike_sa->sk_a_r,
+			    (uint8_t *)frag_pkt->v,
+			    sizeof(struct ikev2_header) + skf_payload->l);
+			if (!auth_output)
+				goto fail;
+			icv_ptr = frag_pkt->v + sizeof(struct ikev2_header) +
+			    skf_payload->l;
+			memcpy(icv_ptr, auth_output->v, icv_len);
+			rc_vfree(auth_output);
+			auth_output = NULL;
+		}
 
 		/* Send the fragment */
 		if (sendfromto(sock, frag_pkt->v, frag_pkt->l,
@@ -380,7 +387,10 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	}
 
 	iv_len = encryptor_iv_length(ike_sa->encryptor);
-	icv_len = auth_output_length(ike_sa->authenticator);
+	if (encryptor_icv_length(ike_sa->encryptor) > 0)
+		icv_len = encryptor_icv_length(ike_sa->encryptor);
+	else
+		icv_len = auth_output_length(ike_sa->authenticator);
 
 	hdr = (struct ikev2_header *)packet->v;
 	skf = (struct ikev2payl_encrypted_fragment *)(hdr + 1);
@@ -425,28 +435,33 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		return NULL;
 	}
 
-	/* Verify ICV */
-	icv_ptr = (uint8_t *)packet->v + packet->l - icv_len;
-	auth_output = auth_calculate(ike_sa->authenticator,
+	/* HMAC ICV is inside SKF payload_length (same as SK). AEAD tag is
+	 * in the ciphertext; skip separate ICV. */
+	if (encryptor_icv_length(ike_sa->encryptor) == 0 && icv_len > 0) {
+		icv_ptr = (uint8_t *)packet->v + packet->l - icv_len;
+		auth_output = auth_calculate(ike_sa->authenticator,
 			    ike_sa->is_initiator ?
 				ike_sa->sk_a_r : ike_sa->sk_a_i,
 			    (uint8_t *)packet->v,
 			    icv_ptr - (uint8_t *)packet->v);
-	if (!auth_output) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		     "ikev2_frag_recv: auth_calculate failed\n");
-		return NULL;
-	}
-	if (memcmp(icv_ptr, auth_output->v, icv_len) != 0) {
-		TRACE((PLOGLOC,
-		       "ikev2_frag_recv: ICV check failed (frag %u/%u)\n",
-		       frag_no, total_frags));
+		if (!auth_output) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "ikev2_frag_recv: auth_calculate failed
+");
+			return NULL;
+		}
+		if (memcmp(icv_ptr, auth_output->v, icv_len) != 0) {
+			TRACE((PLOGLOC,
+			       "ikev2_frag_recv: ICV check failed (frag %u/%u)
+",
+			       frag_no, total_frags));
+			rc_vfree(auth_output);
+			++isakmpstat.fail_integrity_check;
+			return NULL;
+		}
 		rc_vfree(auth_output);
-		++isakmpstat.fail_integrity_check;
-		return NULL;
+		auth_output = NULL;
 	}
-	rc_vfree(auth_output);
-	auth_output = NULL;
 
 	TRACE((PLOGLOC, "ikev2_frag_recv: ICV OK (frag %u/%u)\n",
 	       frag_no, total_frags));
@@ -514,24 +529,22 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		       msgid, total_frags));
 	}
 
-	/* Decrypt the fragment */
-	ciphertext_len = payload_len -
-	    sizeof(struct ikev2payl_encrypted_fragment) - iv_len;
+	/* Decrypt the fragment. HMAC: ICV is inside payload_length.
+	 * AEAD: tag is in ciphertext; AAD is IKE header + SKF header. */
+	if (encryptor_icv_length(ike_sa->encryptor) > 0)
+		ciphertext_len = payload_len -
+		    sizeof(struct ikev2payl_encrypted_fragment) - iv_len;
+	else
+		ciphertext_len = payload_len -
+		    sizeof(struct ikev2payl_encrypted_fragment) - iv_len - icv_len;
 	iv_ptr = (uint8_t *)(skf + 1);
 	ciphertext = iv_ptr + iv_len;
 
 	if (ciphertext_len < 1) {
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
-		     "ikev2_frag_recv: empty ciphertext (frag %u/%u)\n",
+		     "ikev2_frag_recv: empty ciphertext (frag %u/%u)
+",
 		     frag_no, total_frags);
-		goto fail;
-	}
-
-	if (ciphertext_len % iv_len != 0) {
-		plog(PLOG_PROTOERR, PLOGLOC, NULL,
-		     "ikev2_frag_recv: ciphertext length %zu not aligned "
-		     "to block size %zu (frag %u/%u)\n",
-		     ciphertext_len, iv_len, frag_no, total_frags);
 		goto fail;
 	}
 
@@ -543,14 +556,26 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	if (!orig)
 		goto fail_nomem;
 
-	decrypted = encryptor_decrypt(ike_sa->encryptor,
-				      orig,
-				      ike_sa->is_initiator ?
-				      ike_sa->sk_e_r : ike_sa->sk_e_i,
-				      ivbuf);
+	if (encryptor_icv_length(ike_sa->encryptor) > 0) {
+		rc_vchar_t *aad;
+		aad = rc_vnew(packet->v,
+		    sizeof(struct ikev2_header) +
+		    sizeof(struct ikev2payl_encrypted_fragment));
+		if (!aad)
+			goto fail_nomem;
+		decrypted = encryptor_decrypt_aead(ike_sa->encryptor, orig,
+		    ike_sa->is_initiator ? ike_sa->sk_e_r : ike_sa->sk_e_i,
+		    ivbuf, aad);
+		rc_vfree(aad);
+	} else {
+		decrypted = encryptor_decrypt(ike_sa->encryptor, orig,
+		    ike_sa->is_initiator ? ike_sa->sk_e_r : ike_sa->sk_e_i,
+		    ivbuf);
+	}
 	if (!decrypted) {
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
-		     "ikev2_frag_recv: decrypt failed (frag %u/%u)\n",
+		     "ikev2_frag_recv: decrypt failed (frag %u/%u)
+",
 		     frag_no, total_frags);
 		goto fail;
 	}

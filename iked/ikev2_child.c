@@ -1400,6 +1400,22 @@ ikev2_sadb_natt_snapshot(struct rcpfk_msg *param,
 }
 #endif
 
+/*
+ * ike_determine_sa_endpoint may return actual_addr in place (NULL
+ * config or IP_RW). Copy before snapshot/zero so transport port-0
+ * does not mutate parent IKE endpoints.
+ */
+static struct sockaddr *
+ikev2_sadb_ep_copy(struct sockaddr_storage *ss, struct sockaddr *sa)
+{
+	if (sa == NULL)
+		return NULL;
+	if (sa == (struct sockaddr *)ss)
+		return sa;
+	memcpy(ss, sa, SA_LEN(sa));
+	return (struct sockaddr *)ss;
+}
+
 static void
 ikev2_sadb_zero_transport_ports(struct sockaddr *src, struct sockaddr *dst,
     rc_type mode)
@@ -1438,6 +1454,8 @@ ikev2_sadb_outbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 					      child_sa->parent->remote);
 	if (peer_addr == NULL)
 		return -1;
+	my_addr = ikev2_sadb_ep_copy(&my_ss, my_addr);
+	peer_addr = ikev2_sadb_ep_copy(&peer_ss, peer_addr);
 
 #ifdef ENABLE_NATT
 	ikev2_sadb_natt_snapshot(param, my_addr, peer_addr);
@@ -1481,6 +1499,8 @@ ikev2_sadb_inbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 					      child_sa->parent->remote);
 	if (peer_addr == NULL)
 		return -1;
+	my_addr = ikev2_sadb_ep_copy(&my_ss, my_addr);
+	peer_addr = ikev2_sadb_ep_copy(&peer_ss, peer_addr);
 
 #ifdef ENABLE_NATT
 	ikev2_sadb_natt_snapshot(param, peer_addr, my_addr);

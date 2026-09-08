@@ -15,7 +15,11 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  lib/xfrmnatt + matrix row xfrm-natt-oa (root). IKEv1 fills
 	  oa whenever ph1_wants_espinudp, not only NAT_DETECTED.
 	* ubuntu.yml / netbsd.yml fire on int/gsoc2026 as well as
-	  linux-km. Matrix: ikev2-netns-frag (RFC 7383).
+	  linux-km. Matrix: ikev2-netns-frag (RFC 7383 knob; not a
+	  reassembly proof).
+	* ikev2_frag.c: 3-arg ikev2_encrypt + AEAD AAD; SKF ICV inside
+	  payload_length like SK. IKEv2 transport SADB zeros a copy
+	  (IP_RW/NULL config must not mutate parent IKE ports).
 
 2026-09-06 Derek Moore
 
