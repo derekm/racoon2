@@ -467,9 +467,67 @@ ikev2_create_child_initiator(struct ikev2_sa *ike_sa)
 	return child_sa;
 }
 
+#ifndef UDP_ENCAP_ESPINUDP
+#define UDP_ENCAP_ESPINUDP 2
+#endif
+
+static void
+ikev2_mobike_natt(struct rcpfk_msg *rc, struct sockaddr *n_src,
+    struct sockaddr *n_dst)
+{
+	in_port_t *sp, *dp;
+
+	sp = rcs_getsaport(n_src);
+	dp = rcs_getsaport(n_dst);
+	if (!sp || !dp)
+		return;
+	if (*sp == htons(500) && *dp == htons(500))
+		return;
+	rc->natt_type = UDP_ENCAP_ESPINUDP;
+	rc->natt_sport = *sp;
+	rc->natt_dport = *dp;
+}
+
+static int
+ikev2_mobike_migrate_dir(struct ikev2_sa *ike_sa, rc_type dir,
+    struct sockaddr *old_s, struct sockaddr *old_d,
+    struct sockaddr *new_s, struct sockaddr *new_d,
+    struct sockaddr *sp_src, struct sockaddr *sp_dst,
+    uint8_t pref_src, uint8_t pref_dst, rc_type samode, uint32_t reqid)
+{
+	struct rcpfk_msg rc;
+
+	memset(&rc, 0, sizeof(rc));
+	rc.sa_src = old_s;
+	rc.sa_dst = old_d;
+	rc.sa2_src = new_s;
+	rc.sa2_dst = new_d;
+	rc.sp_src = sp_src;
+	rc.sp_dst = sp_dst;
+	rc.pref_src = pref_src;
+	rc.pref_dst = pref_dst;
+	rc.satype = RCT_SATYPE_ESP;
+	rc.samode = samode;
+	rc.reqid = reqid;
+	rc.dir = dir;
+	rc.ul_proto = RC_PROTO_ANY;
+	ikev2_mobike_natt(&rc, new_s, new_d);
+	if (sadb_migrate(&rc) != 0) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "MOBIKE migrate failed: %s\n", rc.estr);
+		return -1;
+	}
+	return 0;
+}
+
 /*
  * RFC 4555 UPDATE_SA_ADDRESSES: move IKE + Child SA endpoints to the
  * packet's outer address and XFRM_MSG_MIGRATE the kernel SAD/SPD.
+ *
+ * CP leases rewrite the inner selector (kernel SPD is the leased
+ * host, not conf PEERS_NET). Inbound tmpl is peer→local, not
+ * local→peer. FWD is a separate Linux policy. NAT-T encap ports
+ * follow the new outer UDP ports.
  */
 void
 ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
@@ -477,6 +535,12 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 {
 	struct ikev2_child_sa *c;
 	struct sockaddr *old_r, *old_l;
+	struct rcf_selector *sl = NULL;
+	struct sockaddr *lan = NULL, *inner = NULL;
+	uint8_t lan_pref = 0, inner_pref = 0;
+	struct sockaddr_storage lease_ss;
+	rc_type samode = RCT_IPSM_TUNNEL;
+	uint32_t reqid = 0;
 
 	if (!ike_sa || !ike_sa->mobike_supported || !remote || !local)
 		return;
@@ -494,37 +558,60 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 	for (c = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
 	     !IKEV2_CHILD_LIST_END(c);
 	     c = IKEV2_CHILD_LIST_NEXT(c)) {
-		struct rcpfk_msg rc;
-		struct rcf_selector *sl;
+		if (!sl && c->selector && c->selector->pl &&
+		    c->selector->src && c->selector->dst &&
+		    c->selector->src->type == RCT_ADDR_INET &&
+		    c->selector->dst->type == RCT_ADDR_INET)
+			sl = c->selector;
+		if (inner == NULL && !LIST_EMPTY(&c->lease_list)) {
+			struct rcf_address *a;
+			int plen = 0;
 
-		sl = c->selector;
-		if (!sl || !sl->pl || !sl->src || !sl->dst ||
-		    sl->src->type != RCT_ADDR_INET ||
-		    sl->dst->type != RCT_ADDR_INET)
-			continue;
-		memset(&rc, 0, sizeof(rc));
-		rc.sa_src = old_l;
-		rc.sa_dst = old_r;
-		rc.sa2_src = local;
-		rc.sa2_dst = remote;
-		rc.sp_src = sl->src->a.ipaddr;
-		rc.sp_dst = sl->dst->a.ipaddr;
-		rc.pref_src = sl->src->prefixlen;
-		rc.pref_dst = sl->dst->prefixlen;
-		rc.satype = RCT_SATYPE_ESP;
-		rc.samode = ike_ipsec_mode(sl->pl);
-		rc.reqid = sl->reqid;
-		rc.dir = sl->direction;
-		rc.ul_proto = RC_PROTO_ANY;
-		if (sadb_migrate(&rc) != 0)
-			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-				   "MOBIKE migrate failed: %s\n", rc.estr);
+			a = LIST_FIRST(&c->lease_list);
+			ikev2_cfg_addr2sockaddr((struct sockaddr *)&lease_ss,
+			    a, &plen);
+			inner = (struct sockaddr *)&lease_ss;
+			inner_pref = (uint8_t)plen;
+		}
 		if (c->remote)
 			rc_free(c->remote);
 		if (c->local)
 			rc_free(c->local);
 		c->remote = rcs_sadup(remote);
 		c->local = rcs_sadup(local);
+	}
+
+	if (sl) {
+		samode = ike_ipsec_mode(sl->pl);
+		reqid = sl->reqid;
+		if (sl->direction == RCT_DIR_INBOUND) {
+			lan = sl->dst->a.ipaddr;
+			lan_pref = sl->dst->prefixlen;
+			if (!inner) {
+				inner = sl->src->a.ipaddr;
+				inner_pref = sl->src->prefixlen;
+			}
+		} else {
+			lan = sl->src->a.ipaddr;
+			lan_pref = sl->src->prefixlen;
+			if (!inner) {
+				inner = sl->dst->a.ipaddr;
+				inner_pref = sl->dst->prefixlen;
+			}
+		}
+	}
+
+	if (old_l && old_r && lan && inner) {
+		ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_OUTBOUND,
+		    old_l, old_r, local, remote,
+		    lan, inner, lan_pref, inner_pref, samode, reqid);
+		ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_INBOUND,
+		    old_r, old_l, remote, local,
+		    inner, lan, inner_pref, lan_pref, samode, reqid);
+		if (samode == RCT_IPSM_TUNNEL)
+			ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_FWD,
+			    old_r, old_l, remote, local,
+			    inner, lan, inner_pref, lan_pref, samode, reqid);
 	}
 
 	ike_sa->remote = rcs_sadup(remote);

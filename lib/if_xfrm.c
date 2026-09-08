@@ -1209,8 +1209,16 @@ rcpfk_send_migrate(struct rcpfk_msg *rc)
 	if (rc->sa2_dst)
 		sa_to_xaddr(rc->sa2_dst, &m.new_daddr, &family);
 	m.new_family = family;
-	if (xfrm_addattr(n, sizeof(buf), XFRMA_MIGRATE, &m, sizeof(m)))
+	if (xfrm_addattr(n, sizeof(buf), XFRMA_MIGRATE, &m, sizeof(m))) {
+		xfrm_seterror(rc, ENOBUFS, "XFRMA_MIGRATE");
 		return -1;
+	}
+#ifdef ENABLE_NATT
+	if (add_encap_attr(n, sizeof(buf), rc)) {
+		xfrm_seterror(rc, ENOBUFS, "XFRMA_ENCAP");
+		return -1;
+	}
+#endif
 	pending_set(rc, XFRM_MSG_MIGRATE, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
 #else
