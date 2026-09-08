@@ -147,6 +147,17 @@ rcs_is_addr_any(struct rc_addrlist *al)
 }
 
 int
+rcs_is_addr_wildcard(struct rc_addrlist *al)
+{
+	/* IP_RW (roaming) and IP_ANY (unspecified peer) are the same
+	 * for SA endpoints: use the live IKE address, do not expand
+	 * to dual-stack :: + 0.0.0.0 and stuff a mixed-family tmpl.
+	 */
+	return rcs_is_addr_rw(al) || rcs_is_addr_any(al);
+}
+
+
+int
 rcs_getaddrlistbymacro(const rc_vchar_t *m, struct rc_addrlist **al0)
 {
 	char *buf, *p, *ifname, *mname;

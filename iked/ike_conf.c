@@ -4445,7 +4445,7 @@ ike_determine_sa_endpoint(struct sockaddr_storage *ss,
 		break;
 
 	case RCT_ADDR_MACRO:
-		if (rcs_is_addr_rw(config_ipaddr))
+		if (rcs_is_addr_wildcard(config_ipaddr))
 			return actual_addr;
 
 		if (rcs_getaddrlistbymacro(config_ipaddr->a.vstr,

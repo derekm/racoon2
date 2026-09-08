@@ -721,16 +721,30 @@ add_encap_attr(struct nlmsghdr *n, size_t maxlen, struct rcpfk_msg *rc)
 }
 
 static int
+sa_is_unspec(const struct sockaddr *sa)
+{
+	if (sa == NULL)
+		return 1;
+	if (sa->sa_family == AF_INET)
+		return ((const struct sockaddr_in *)sa)->sin_addr.s_addr == 0;
+#ifdef INET6
+	if (sa->sa_family == AF_INET6)
+		return IN6_IS_ADDR_UNSPECIFIED(
+		    &((const struct sockaddr_in6 *)sa)->sin6_addr);
+#endif
+	return 1;
+}
+
+static int
 append_tmpl(struct xfrm_user_tmpl *t, int *n, uint8_t satype,
     struct rcpfk_msg *rc)
 {
-	uint16_t family = AF_INET;
+	uint16_t src_fam = AF_INET, dst_fam = AF_INET, family = AF_INET;
 
 	if (*n >= 3)
 		return -1;
 	memset(&t[*n], 0, sizeof(t[0]));
 	t[*n].id.proto = satype_to_proto(satype);
-	t[*n].family = family;
 	t[*n].mode = mode_to_x(rc->samode);
 	t[*n].reqid = rc->reqid;
 	t[*n].optional = (rc->ipsec_level == RCT_IPSL_USE);
@@ -739,10 +753,29 @@ append_tmpl(struct xfrm_user_tmpl *t, int *n, uint8_t satype,
 	t[*n].calgos = ~0U;
 	if ((rc->samode == RCT_IPSM_TUNNEL ||
 	     rc->samode == RCT_IPSM_TRANSPORT) && rc->sa_src && rc->sa_dst) {
-		sa_to_xaddr(rc->sa_dst, &t[*n].id.daddr, &family);
-		sa_to_xaddr(rc->sa_src, &t[*n].saddr, NULL);
+		if (sa_to_xaddr(rc->sa_dst, &t[*n].id.daddr, &dst_fam) < 0 ||
+		    sa_to_xaddr(rc->sa_src, &t[*n].saddr, &src_fam) < 0)
+			return -1;
+		if (src_fam != dst_fam) {
+			/*
+			 * IP_ANY expansion used to put :: next to a
+			 * v4 local (c0a8:444f::). Coerce the
+			 * unspecified side; refuse mixed concrete.
+			 */
+			if (sa_is_unspec(rc->sa_src) && !sa_is_unspec(rc->sa_dst)) {
+				memset(&t[*n].saddr, 0, sizeof(t[*n].saddr));
+				family = dst_fam;
+			} else if (sa_is_unspec(rc->sa_dst) &&
+			    !sa_is_unspec(rc->sa_src)) {
+				memset(&t[*n].id.daddr, 0, sizeof(t[*n].id.daddr));
+				family = src_fam;
+			} else
+				return -1;
+		} else
+			family = dst_fam;
 		t[*n].family = family;
-	}
+	} else
+		t[*n].family = family;
 	(*n)++;
 	return 0;
 }

@@ -277,9 +277,8 @@ spmd_pfkey_init(void)
 			rcals = sl->pl->my_sa_ipaddr;
 			rcald = sl->pl->peers_sa_ipaddr;
 
-			if (((rcals != NULL && rcs_is_addr_rw(rcals))
-			    || (rcald != NULL && rcs_is_addr_rw(rcald))) &&
-				sl->pl->ipsec_mode == RCT_IPSM_TUNNEL)
+			if ((rcals != NULL && rcs_is_addr_wildcard(rcals))
+			    || (rcald != NULL && rcs_is_addr_wildcard(rcald)))
 				spd_add_skip=1;
 		}
 
