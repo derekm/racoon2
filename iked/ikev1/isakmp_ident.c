@@ -272,11 +272,6 @@ end:
 	return error;
 }
 
-static void ident_i2send_tail(struct ph1handle *, rc_vchar_t *);
-static void ident_i3send_tail(struct ph1handle *, rc_vchar_t *);
-static void ident_r2send_tail(struct ph1handle *, rc_vchar_t *);
-
-
 static void
 ident_i2send_dh_done(int rc, void *arg)
 {
@@ -352,6 +347,9 @@ ident_i3send_dh_done(int rc, void *arg)
 static void
 ident_i3send_tail(struct ph1handle *iph1, rc_vchar_t *msg0)
 {
+#ifdef HAVE_GSSAPI
+	int len;
+#endif
 	int dohash = 1;
 	/* generate SKEYIDs & IV & final cipher key */
 	if (oakley_skeyid(iph1) < 0)
@@ -744,9 +742,6 @@ ident_i3send(struct ph1handle *iph1, rc_vchar_t *msg0)
 	int error = -1;
 	int dohash = 1;
 	struct ident_dh_ctx *ctx;
-#ifdef HAVE_GSSAPI
-	int len;
-#endif
 
 	/* validity check */
 	if (iph1->status != PHASE1ST_MSG3RECEIVED) {
