@@ -757,43 +757,18 @@ quick_i2send(struct ph2handle *iph2, rc_vchar_t *msg0)
 		goto end;
 	}
 
-	/* compute both of KEYMATs */
-	if (oakley_compute_keymat(iph2, INITIATOR) < 0)
-		goto end;
-
-	iph2->status = PHASE2ST_ADDSA;
-
-#if 0
-	/* don't anything if local test mode. */
-	if (f_local) {
-		error = 0;
-		goto end;
-	}
-#endif
-
-	/* if there is commit bit don't set up SA now. */
-	if (ISSET(iph2->flags, ISAKMP_FLAG_C)) {
-		iph2->status = PHASE2ST_COMMIT;
-		error = 0;
-		goto end;
-	}
-
-	/* Do UPDATE for initiator */
-	plog(PLOG_DEBUG, PLOGLOC, NULL, "call pk_sendupdate\n");
-	if (pk_sendupdate(iph2) < 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey update failed.\n");
-		goto end;
-	}
-	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey update sent.\n");
-
-	/* Do ADD for responder */
-	if (pk_sendadd(iph2) < 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey add failed.\n");
-		goto end;
-	}
-	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey add sent.\n");
-
-	error = 0;
+	/* compute both of KEYMATs; PFS g^ir goes to the pool and the
+	 * SADB install resumes in quick_i2send_after_keymat */
+	if (buf != NULL)
+		rc_vfree(buf);
+	if (msg != NULL)
+		rc_vfree(msg);
+	if (hash != NULL)
+		rc_vfree(hash);
+	if (oakley_compute_keymat_async(iph2, INITIATOR,
+	    quick_i2send_after_keymat) < 0)
+		return -1;
+	return 0;
 
 end:
 	if (buf != NULL)
@@ -804,6 +779,41 @@ end:
 		rc_vfree(hash);
 
 	return error;
+}
+
+/* continuation on the IKE thread after KEYMAT (initiator) */
+static void
+quick_i2send_after_keymat(struct ph2handle *iph2)
+{
+	iph2->status = PHASE2ST_ADDSA;
+
+#if 0
+	/* don't anything if local test mode. */
+	if (f_local) {
+		return;
+	}
+#endif
+
+	/* if there is commit bit don't set up SA now. */
+	if (ISSET(iph2->flags, ISAKMP_FLAG_C)) {
+		iph2->status = PHASE2ST_COMMIT;
+		return;
+	}
+
+	/* Do UPDATE for initiator */
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "call pk_sendupdate\n");
+	if (pk_sendupdate(iph2) < 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey update failed.\n");
+		return;
+	}
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey update sent.\n");
+
+	/* Do ADD for responder */
+	if (pk_sendadd(iph2) < 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey add failed.\n");
+		return;
+	}
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey add sent.\n");
 }
 
 /*
@@ -1840,10 +1850,25 @@ quick_r3prep(struct ph2handle *iph2, rc_vchar_t *msg0)
 		goto end;
 	}
 
-	/* compute both of KEYMATs */
-	if (oakley_compute_keymat(iph2, RESPONDER) < 0)
-		goto end;
+	/* compute both of KEYMATs; PFS g^ir off the IKE thread */
+	if (msg != NULL)
+		rc_vfree(msg);
+	if (oakley_compute_keymat_async(iph2, RESPONDER,
+	    quick_r3prep_after_keymat) < 0)
+		return -1;
+	return 0;
 
+end:
+	if (msg != NULL)
+		rc_vfree(msg);
+
+	return error;
+}
+
+/* continuation on the IKE thread after KEYMAT (responder) */
+static void
+quick_r3prep_after_keymat(struct ph2handle *iph2)
+{
 	iph2->status = PHASE2ST_ADDSA;
 	iph2->flags ^= ISAKMP_FLAG_C;	/* reset bit */
 
@@ -2006,13 +2031,12 @@ quick_r3prep(struct ph2handle *iph2, rc_vchar_t *msg0)
 	}
 	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey add sent.\n");
 
-	error = 0;
 
 end:
 	if (msg != NULL)
 		rc_vfree(msg);
 
-	return error;
+	return;
 }
 
 
