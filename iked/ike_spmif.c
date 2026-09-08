@@ -129,29 +129,25 @@ ike_spmif_post_slid_callback(void *tag, const char *slid)
 	if (!req)
 	    return -1;
 
-	if (slid == NULL)
-	{
-	    struct rcf_selector* selector;
-	    char* index;
+	if (slid == NULL) {
+		struct rcf_selector *selector;
+		char *index;
 
-	    selector = ike_conf_find_selector_by_addr(req->src, req->dst);
-
-	    if (!selector)
-	    {
-		plog(PLOG_INTERR, PLOGLOC, 0,
-			"no selector found for last fix\n");
-		return -1;
-	    }
-
-
-	    index = rc_strdup(rc_vmem2str(selector->sl_index));
-	    isakmp_initiate_cont(req, index);
-	    rc_free(index);
+		selector = ike_conf_find_selector_by_addr(req->src, req->dst);
+		if (!selector) {
+			plog(PLOG_INTERR, PLOGLOC, 0,
+			    "no selector found for last fix\n");
+			isakmp_initiate_cont(req, "");
+			return -1;
+		}
+		index = rc_strdup(rc_vmem2str(selector->sl_index));
+		isakmp_initiate_cont(req, index);
+		rc_free(index);
+		return 0;
 	}
 
 	isakmp_initiate_cont(tag, slid);
-
-	return 0;		/* return value ignored by caller */
+	return 0;
 }
 
 int

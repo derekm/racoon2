@@ -1407,11 +1407,12 @@ isakmp_initiate_cont(void *tag, const char *selector_index)
 
 	req = (struct isakmp_acquire_request *)tag;
 
-	/* Receiving SADB_ACQUIRE:
-	 * selector_info_index => obtain selector_info
-	 * selector_info->policy_info_index => policy_info
-	 * policy_info->remote_info_index => remote_info
-	 */
+	if (!selector_index || selector_index[0] == '\0') {
+		isakmp_log(0, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "can't find selector (index %s)\n",
+			   selector_index ? selector_index : "(null)");
+		goto fail;
+	}
 
 	if (rcf_get_selector(selector_index, &selector)) {
 		isakmp_log(0, req->src, req->dst, 0,

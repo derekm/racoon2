@@ -1333,37 +1333,45 @@ handle_acquire(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 	ac = NLMSG_DATA(nlh);
 	rc->satype = proto_to_satype(ac->id.proto);
 	rc->dir = x_to_dir(ac->policy.dir);
+	rc->slid = ac->policy.index;
 	rc->reqid = 0;
 	rc->sa_src = (void *)&rc->sa_src_storage;
 	rc->sa_dst = (void *)&rc->sa_dst_storage;
 	rc->sp_src = (void *)&rc->sp_src_storage;
 	rc->sp_dst = (void *)&rc->sp_dst_storage;
-	xaddr_to_sa(ac->sel.family, &ac->sel.saddr, ac->sel.sport,
-	    &rc->sa_src_storage);
-	xaddr_to_sa(ac->sel.family, &ac->sel.daddr, ac->sel.dport,
-	    &rc->sa_dst_storage);
-	memcpy(&rc->sp_src_storage, &rc->sa_src_storage,
-	    sizeof(rc->sp_src_storage));
-	memcpy(&rc->sp_dst_storage, &rc->sa_dst_storage,
-	    sizeof(rc->sp_dst_storage));
+	/* Inner packet is the selector, not the IKE peer. */
+	if (xaddr_to_sa(ac->sel.family, &ac->sel.saddr, ac->sel.sport,
+	    &rc->sp_src_storage) < 0 ||
+	    xaddr_to_sa(ac->sel.family, &ac->sel.daddr, ac->sel.dport,
+	    &rc->sp_dst_storage) < 0)
+		return 0;
 	rc->pref_src = ac->sel.prefixlen_s;
 	rc->pref_dst = ac->sel.prefixlen_d;
 	rc->ul_proto = ac->sel.proto ? ac->sel.proto : RC_PROTO_ANY;
-	/* reqid lives on the tmpl, not policy.index (Cilium: tmpl↔state glue). */
+	/* reqid + outer endpoints live on the tmpl, not sel / policy.index. */
 	attrlen = (int)(nlh->nlmsg_len - NLMSG_LENGTH(sizeof(*ac)));
 	rta = (void *)((char *)ac + NLMSG_ALIGN(sizeof(*ac)));
 	for (; RTA_OK(rta, attrlen); rta = RTA_NEXT(rta, attrlen)) {
 		if (rta->rta_type == XFRMA_TMPL &&
 		    RTA_PAYLOAD(rta) >= sizeof(struct xfrm_user_tmpl)) {
 			struct xfrm_user_tmpl *t = RTA_DATA(rta);
+			uint16_t fam = t->family ? t->family : ac->sel.family;
 
 			rc->reqid = t->reqid;
 			if (t->id.proto)
 				rc->satype = proto_to_satype(t->id.proto);
 			rc->samode = x_to_mode(t->mode);
-			break;
+			if (xaddr_to_sa(fam, &t->saddr, 0,
+			    &rc->sa_src_storage) < 0 ||
+			    xaddr_to_sa(fam, &t->id.daddr, 0,
+			    &rc->sa_dst_storage) < 0)
+				return 0;
+			goto have_tmpl;
 		}
 	}
+	/* No tmpl: do not start IKE toward the inner selector. */
+	return 0;
+have_tmpl:
 	if (cb && cb->cb_acquire)
 		return cb->cb_acquire(rc);
 	return 0;
