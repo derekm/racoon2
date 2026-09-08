@@ -48,6 +48,7 @@ interface {
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
+include "$ETC/ikev1_nat.conf";
 include "$ETC/macos_ikev2.conf";
 EOF
 
@@ -78,6 +79,10 @@ EOF
 # the proven road-warrior remote/selectors/policy (tree sample, vals-driven)
 cp "$(dirname "$0")/../../samples/macos_ikev2.conf" "$ETC/macos_ikev2.conf" 2>/dev/null || {
 	echo "$ETC/macos_ikev2.conf needs samples/macos_ikev2.conf (run from the repo)" >&2
+	exit 1
+}
+cp "$(dirname "$0")/../../samples/ikev1_nat.conf" "$ETC/ikev1_nat.conf" 2>/dev/null || {
+	echo "$ETC/ikev1_nat.conf needs samples/ikev1_nat.conf" >&2
 	exit 1
 }
 

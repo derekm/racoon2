@@ -46,20 +46,12 @@ kind_ikev1() {
 			sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
 	done
 
-	# ESP proposal selection: case name suffix drives the strongSwan
-	# esp= line -- -s384 -> aes256-sha384!, -s512 -> aes256-sha512!,
-	# default stays aes128gcm16!
-	STRONG_ESP='aes256-sha256!'
-	EXPECT_AUTH=
-	FRAG=
-	case "$name" in
-	*-s384) STRONG_ESP='aes256-sha384!'; EXPECT_AUTH='auth-trunc hmac(sha384).* 192$' ;;
-	*-s512) STRONG_ESP='aes256-sha512!'; EXPECT_AUTH='auth-trunc hmac(sha512).* 256$' ;;
-	*-g8)  STRONG_ESP='aes128gcm8!';  EXPECT_AUTH='aead rfc4106(gcm(aes)).* 64$' ;;
-	*-g12) STRONG_ESP='aes128gcm12!'; EXPECT_AUTH='aead rfc4106(gcm(aes)).* 96$' ;;
-	*-frag) FRAG='fragmentation=yes' ;;
-	esac
-	pskhex=$(xxd -p -c 256 "$ETC/psk/macos.psk" | tr -d '\n')
+	# IKEv1 main mode: IP-typed IDs (RFC 2409). PSK is the whole
+	# file, not 0x-hex (that is the IKEv2 encoding of the same bytes).
+	# ESP hmac-sha1 matches samples/ikev1_nat.conf.
+	STRONG_ESP='aes256-sha1!'
+	EXPECT_AUTH='auth-trunc hmac(sha1)'
+	psk=$(cat "$ETC/psk/macos.psk")
 	mkdir -p /etc/strongswan.d/charon
 	cat >/etc/strongswan.d/charon/bypass-lan.conf <<'EOF'
 charon {
@@ -70,8 +62,6 @@ charon {
 	}
 }
 EOF
-	# strongSwan sends its own TS (no CP request); racoon2 remote still
-	# needs the pool for Apple clients — present but unused here.
 	cat >/etc/ipsec.conf <<EOF
 config setup
 	uniqueids=no
@@ -79,13 +69,13 @@ config setup
 
 conn r2macos
 	keyexchange=ikev1
-	ike=aes256-sha256-modp2048!
+	ike=aes256-sha1-modp2048!
 	esp=$STRONG_ESP
 	left=$CIP
-	leftid=@macos.client
+	leftid=$CIP
 	leftsubnet=$CIP/32
 	right=$RIP
-	rightid=@racoon2.wsl
+	rightid=$RIP
 	rightsubnet=$RIP/32
 	authby=secret
 	auto=add
@@ -93,10 +83,9 @@ conn r2macos
 	ikelifetime=1h
 	keylife=1h
 	keyingtries=1
-	$FRAG
 EOF
 	cat >/etc/ipsec.secrets <<EOF
-@macos.client @racoon2.wsl : PSK 0x${pskhex}
+$CIP $RIP : PSK "$psk"
 EOF
 	chmod 600 /etc/ipsec.secrets
 
