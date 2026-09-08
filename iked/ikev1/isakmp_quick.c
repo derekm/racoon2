@@ -99,6 +99,9 @@
 
 #include "ike_conf.h"
 
+static void quick_i2send_after_keymat(struct ph2handle *);
+static void quick_r3prep_after_keymat(struct ph2handle *);
+
 #ifdef ENABLE_NATT
     #include "ikev1_natt.h"
 #endif
@@ -189,9 +192,6 @@ end:
  * 	HDR*, HASH(1), SA, Ni [, KE ] [, IDi2, IDr2 ] [, NAT-OAi, NAT-OAr (if NAT-T enabled)]
  */
 int
-static void quick_i2send_after_keymat(struct ph2handle *);
-static void quick_r3prep_after_keymat(struct ph2handle *);
-
 quick_i1send(struct ph2handle *iph2, rc_vchar_t *msg /* must be null pointer */)
 {
 	rc_vchar_t *body = NULL;
