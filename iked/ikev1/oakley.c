@@ -286,9 +286,28 @@ oakley_hash(rc_vchar_t *buf, struct ph1handle *iph1)
  */
 struct ikev1_keymat_ctx {
 	struct ph2handle *iph2;
+	uint64_t serial;	/* iph2->serial at submit; ABA guard (M4) */
 	int side;
 	void (*cont)(struct ph2handle *);
+	/* PFS inputs, dup'd at submit — the worker never derefs iph2 */
+	rc_vchar_t *dhpub, *dhpriv, *dhpub_p;
+	/* worker output, ctx-owned — moved onto iph2 after validation */
+	rc_vchar_t *dhgxy_out;
 };
+
+static void
+ikev1_keymat_ctx_free(struct ikev1_keymat_ctx *ctx)
+{
+	if (ctx->dhpub)
+		rc_vfree(ctx->dhpub);
+	if (ctx->dhpriv)
+		rc_vfree(ctx->dhpriv);
+	if (ctx->dhpub_p)
+		rc_vfree(ctx->dhpub_p);
+	if (ctx->dhgxy_out)
+		rc_vfree(ctx->dhgxy_out);
+	rc_free(ctx);
+}
 
 static void
 ikev1_keymat_done(int rc, void *arg)
@@ -296,22 +315,32 @@ ikev1_keymat_done(int rc, void *arg)
 	struct ikev1_keymat_ctx *ctx = arg;
 	struct ph2handle *iph2 = ctx->iph2;
 
-	if (!ikev1_ph2_alive(iph2)) {
-		/* exchange deleted while the worker ran */
-		rc_free(ctx);
+	if (!ikev1_ph2_alive(iph2, ctx->serial)) {
+		/* exchange deleted or address reused while the worker ran */
+		ikev1_keymat_ctx_free(ctx);
 		return;
 	}
-	if (rc != 0 ||
-	    oakley_compute_keymat_x(iph2, ctx->side, INBOUND_SA) < 0 ||
+	iph2->dh_pending = 0;
+	if (rc != 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "PFS DH computation failed.\n");
+		iph2->status = PHASE2ST_EXPIRED;
+		ikev1_keymat_ctx_free(ctx);
+		return;
+	}
+	/* move the ctx-owned PFS secret onto the live handle */
+	iph2->dhgxy = ctx->dhgxy_out;
+	ctx->dhgxy_out = NULL;
+	if (oakley_compute_keymat_x(iph2, ctx->side, INBOUND_SA) < 0 ||
 	    oakley_compute_keymat_x(iph2, ctx->side, OUTBOUND_SA) < 0) {
 		plog(PLOG_INTERR, PLOGLOC, NULL, "KEYMAT computation failed.\n");
 		iph2->status = PHASE2ST_EXPIRED;
-		rc_free(ctx);
+		ikev1_keymat_ctx_free(ctx);
 		return;
 	}
 	if (ctx->cont)
 		ctx->cont(iph2);
-	rc_free(ctx);
+	ikev1_keymat_ctx_free(ctx);
 }
 
 int
@@ -326,12 +355,24 @@ oakley_compute_keymat_async(struct ph2handle *iph2, int side,
 		if (ctx == NULL)
 			return -1;
 		ctx->iph2 = iph2;
+		ctx->serial = iph2->serial;
 		ctx->side = side;
 		ctx->cont = cont;
-		if (oakley_dh_compute_submit(iph2->pfsgrp, iph2->dhpub,
-		    iph2->dhpriv, iph2->dhpub_p, &iph2->dhgxy,
+		/* input dup's so the worker never derefs iph2 (M4) */
+		ctx->dhpub = rc_vdup(iph2->dhpub);
+		ctx->dhpriv = rc_vdup(iph2->dhpriv);
+		ctx->dhpub_p = rc_vdup(iph2->dhpub_p);
+		if (ctx->dhpub == NULL || ctx->dhpriv == NULL ||
+		    ctx->dhpub_p == NULL) {
+			ikev1_keymat_ctx_free(ctx);
+			return -1;
+		}
+		iph2->dh_pending = 1;
+		if (oakley_dh_compute_submit(iph2->pfsgrp,
+		    ctx->dhpub, ctx->dhpriv, ctx->dhpub_p, &ctx->dhgxy_out,
 		    ikev1_keymat_done, ctx) != 0) {
-			rc_free(ctx);
+			iph2->dh_pending = 0;
+			ikev1_keymat_ctx_free(ctx);
 			return -1;
 		}
 		return 0;	/* resumed in ikev1_keymat_done */

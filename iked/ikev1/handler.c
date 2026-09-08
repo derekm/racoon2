@@ -239,6 +239,9 @@ dumpph1(void)
 /*
  * create new isakmp Phase 1 status record to handle isakmp in Phase1
  */
+static uint64_t ph1_serial;
+static uint64_t ph2_serial;
+
 struct ph1handle *
 newph1(void)
 {
@@ -250,6 +253,7 @@ newph1(void)
 		return NULL;
 
 	iph1->status = PHASE1ST_SPAWN;
+	iph1->serial = ++ph1_serial;
 
 	iph1->dpd_support = 0;
 	iph1->dpd_lastack = 0;
@@ -389,24 +393,29 @@ remph1(struct ph1handle *iph1)
  * the exchange was deleted. Walk the live lists; the job is stale
  * if its handle is not there anymore.
  */
+/*
+ * ABA-safe liveness: the pointer must be a live member of the tree
+ * AND carry the serial captured at submit time (M4).  The walk only
+ * dereferences list nodes, never the caller's pointer.
+ */
 int
-ikev1_ph1_alive(const struct ph1handle *p)
+ikev1_ph1_alive(const struct ph1handle *p, uint64_t serial)
 {
 	const struct ph1handle *x;
 
 	for (x = LIST_FIRST(&ph1tree); x; x = LIST_NEXT(x, chain))
-		if (x == p)
+		if (x == p && x->serial == serial)
 			return 1;
 	return 0;
 }
 
 int
-ikev1_ph2_alive(const struct ph2handle *p)
+ikev1_ph2_alive(const struct ph2handle *p, uint64_t serial)
 {
 	const struct ph2handle *x;
 
 	for (x = LIST_FIRST(&ph2tree); x; x = LIST_NEXT(x, chain))
-		if (x == p)
+		if (x == p && x->serial == serial)
 			return 1;
 	return 0;
 }
@@ -587,6 +596,7 @@ newph2(void)
 		return NULL;
 
 	iph2->status = PHASE1ST_SPAWN;
+	iph2->serial = ++ph2_serial;
 
 	return iph2;
 }

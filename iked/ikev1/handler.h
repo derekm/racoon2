@@ -105,6 +105,7 @@ struct ph1handle {
 
 	int status;		/* status of this SA */
 	int side;		/* INITIATOR or RESPONDER */
+	uint64_t serial;	/* unique per handle; ABA guard for async jobs */
 
 	struct sockaddr *remote;	/* remote address to negosiate ph1 */
 	struct sockaddr *local;	/* local address to negosiate ph1 */
@@ -230,6 +231,7 @@ struct ph1handle {
 struct ph2handle {
 	struct sockaddr *src;	/* my address of SA. */
 	struct sockaddr *dst;	/* peer's address of SA. */
+	uint64_t serial;	/* unique per handle; ABA guard for async jobs */
 
 	/*
 	 * copy ip address from ID payloads when ID type is ip address.
@@ -444,8 +446,8 @@ struct ph2handle;
 struct policyindex;
 
 extern struct ph1handle *getph1byindex (isakmp_index_t *);
-extern int ikev1_ph1_alive (const struct ph1handle *);
-extern int ikev1_ph2_alive (const struct ph2handle *);
+extern int ikev1_ph1_alive (const struct ph1handle *, uint64_t serial);
+extern int ikev1_ph2_alive (const struct ph2handle *, uint64_t serial);
 extern struct ph1handle *getph1byindex0 (isakmp_index_t *);
 extern struct ph1handle *getph1byaddr (struct sockaddr *,
 					   struct sockaddr *);

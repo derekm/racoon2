@@ -94,10 +94,16 @@ static rc_vchar_t *ident_ir3mx (struct ph1handle *);
 /* %%%
  * begin Identity Protection Mode as initiator.
  */
-/* async DH for ident_i2send */
+/* async DH for ident_i2send/i3send/r2send */
 struct ident_dh_ctx {
 	struct ph1handle *iph1;
-	rc_vchar_t *msg;
+	uint64_t serial;	/* iph1->serial at submit; ABA guard (M4) */
+	rc_vchar_t *msg;	/* rc_vdup'd, owned */
+	/* worker inputs, dup'd at submit — the worker never derefs iph1 */
+	rc_vchar_t *dhpub, *dhpriv, *dhpub_p;
+	/* worker outputs, ctx-owned — transferred to iph1 after
+	 * liveness + serial validation in the done callback */
+	rc_vchar_t *dhpub_out, *dhpriv_out, *dhgxy_out;
 };
 
 static void
@@ -105,6 +111,18 @@ ident_dh_ctx_free(struct ident_dh_ctx *ctx)
 {
 	if (ctx->msg)
 		rc_vfree(ctx->msg);
+	if (ctx->dhpub)
+		rc_vfree(ctx->dhpub);
+	if (ctx->dhpriv)
+		rc_vfree(ctx->dhpriv);
+	if (ctx->dhpub_p)
+		rc_vfree(ctx->dhpub_p);
+	if (ctx->dhpub_out)
+		rc_vfree(ctx->dhpub_out);
+	if (ctx->dhpriv_out)
+		rc_vfree(ctx->dhpriv_out);
+	if (ctx->dhgxy_out)
+		rc_vfree(ctx->dhgxy_out);
 	rc_free(ctx);
 }
 
@@ -117,9 +135,9 @@ ident_r2send_dh_done(int rc, void *arg)
 {
 	struct ident_dh_ctx *ctx = arg;
 
-	if (!ikev1_ph1_alive(ctx->iph1)) {
+	if (!ikev1_ph1_alive(ctx->iph1, ctx->serial)) {
 		plog(PLOG_DEBUG, PLOGLOC, NULL,
-		    "phase1 DH discarded (expired)\n");
+		    "phase1 DH discarded (expired/ABA)\n");
 		ident_dh_ctx_free(ctx);
 		return;
 	}
@@ -130,6 +148,14 @@ ident_r2send_dh_done(int rc, void *arg)
 		return;
 	}
 	ctx->iph1->dh_pending = 0;
+	/* worker wrote into ctx-owned slots; move them onto the handle.
+	 * dhgxy is NOT moved: ident_r2send_tail recomputes it from
+	 * dhpub/dhpriv/dhpub_p, and oakley_dh_compute overwrites the
+	 * out-pointer without freeing the old buffer (M4, no leak). */
+	ctx->iph1->dhpub = ctx->dhpub_out;
+	ctx->iph1->dhpriv = ctx->dhpriv_out;
+	ctx->dhpub_out = NULL;
+	ctx->dhpriv_out = NULL;
 	ident_r2send_tail(ctx->iph1, ctx->msg);
 	ident_dh_ctx_free(ctx);
 }
@@ -284,9 +310,9 @@ ident_i2send_dh_done(int rc, void *arg)
 {
 	struct ident_dh_ctx *ctx = arg;
 
-	if (!ikev1_ph1_alive(ctx->iph1)) {
+	if (!ikev1_ph1_alive(ctx->iph1, ctx->serial)) {
 		plog(PLOG_DEBUG, PLOGLOC, NULL,
-		    "phase1 DH discarded (expired)\n");
+		    "phase1 DH discarded (expired/ABA)\n");
 		ident_dh_ctx_free(ctx);
 		return;
 	}
@@ -297,6 +323,11 @@ ident_i2send_dh_done(int rc, void *arg)
 		return;
 	}
 	ctx->iph1->dh_pending = 0;
+	/* worker wrote into ctx-owned slots; move them onto the handle */
+	ctx->iph1->dhpub = ctx->dhpub_out;
+	ctx->iph1->dhpriv = ctx->dhpriv_out;
+	ctx->dhpub_out = NULL;
+	ctx->dhpriv_out = NULL;
 	ident_i2send_tail(ctx->iph1, ctx->msg);
 	ident_dh_ctx_free(ctx);
 }
@@ -347,9 +378,9 @@ ident_i3send_dh_done(int rc, void *arg)
 {
 	struct ident_dh_ctx *ctx = arg;
 
-	if (!ikev1_ph1_alive(ctx->iph1)) {
+	if (!ikev1_ph1_alive(ctx->iph1, ctx->serial)) {
 		plog(PLOG_DEBUG, PLOGLOC, NULL,
-		    "phase1 DH discarded (expired)\n");
+		    "phase1 DH discarded (expired/ABA)\n");
 		ident_dh_ctx_free(ctx);
 		return;
 	}
@@ -360,6 +391,9 @@ ident_i3send_dh_done(int rc, void *arg)
 		return;
 	}
 	ctx->iph1->dh_pending = 0;
+	/* worker wrote into ctx-owned slot; move it onto the handle */
+	ctx->iph1->dhgxy = ctx->dhgxy_out;
+	ctx->dhgxy_out = NULL;
 	ident_i3send_tail(ctx->iph1, ctx->msg);
 	ident_dh_ctx_free(ctx);
 }
@@ -574,6 +608,7 @@ ident_i2send(struct ph1handle *iph1, rc_vchar_t *msg)
 	if (ctx == NULL)
 		goto end;
 	ctx->iph1 = iph1;
+	ctx->serial = iph1->serial;
 	ctx->msg = msg ? rc_vdup(msg) : NULL;
 	if (msg && ctx->msg == NULL) {
 		rc_free(ctx);
@@ -581,7 +616,7 @@ ident_i2send(struct ph1handle *iph1, rc_vchar_t *msg)
 	}
 	iph1->dh_pending = 1;
 	if (oakley_dh_generate_submit(iph1->approval->dhgrp,
-	    &iph1->dhpub, &iph1->dhpriv, ident_i2send_dh_done, ctx) != 0) {
+	    &ctx->dhpub_out, &ctx->dhpriv_out, ident_i2send_dh_done, ctx) != 0) {
 		iph1->dh_pending = 0;
 		ident_dh_ctx_free(ctx);
 		goto end;
@@ -782,14 +817,25 @@ ident_i3send(struct ph1handle *iph1, rc_vchar_t *msg0)
 	if (ctx == NULL)
 		goto end;
 	ctx->iph1 = iph1;
+	ctx->serial = iph1->serial;
 	ctx->msg = msg0 ? rc_vdup(msg0) : NULL;
 	if (msg0 && ctx->msg == NULL) {
 		rc_free(ctx);
 		goto end;
 	}
+	/* input dup's so the worker never derefs iph1 (M4) */
+	ctx->dhpub = iph1->dhpub ? rc_vdup(iph1->dhpub) : NULL;
+	ctx->dhpriv = iph1->dhpriv ? rc_vdup(iph1->dhpriv) : NULL;
+	ctx->dhpub_p = iph1->dhpub_p ? rc_vdup(iph1->dhpub_p) : NULL;
+	if ((iph1->dhpub && ctx->dhpub == NULL) ||
+	    (iph1->dhpriv && ctx->dhpriv == NULL) ||
+	    (iph1->dhpub_p && ctx->dhpub_p == NULL)) {
+		ident_dh_ctx_free(ctx);
+		goto end;
+	}
 	iph1->dh_pending = 1;
 	if (oakley_dh_compute_submit(iph1->approval->dhgrp,
-	    iph1->dhpub, iph1->dhpriv, iph1->dhpub_p, &iph1->dhgxy,
+	    ctx->dhpub, ctx->dhpriv, ctx->dhpub_p, &ctx->dhgxy_out,
 	    ident_i3send_dh_done, ctx) != 0) {
 		iph1->dh_pending = 0;
 		ident_dh_ctx_free(ctx);
@@ -1386,14 +1432,21 @@ ident_r2send(struct ph1handle *iph1, rc_vchar_t *msg)
 	if (ctx == NULL)
 		goto end;
 	ctx->iph1 = iph1;
+	ctx->serial = iph1->serial;
 	ctx->msg = msg ? rc_vdup(msg) : NULL;
 	if (msg && ctx->msg == NULL) {
 		rc_free(ctx);
 		goto end;
 	}
+	/* peer KE dup so the worker never derefs iph1 (M4) */
+	ctx->dhpub_p = iph1->dhpub_p ? rc_vdup(iph1->dhpub_p) : NULL;
+	if (iph1->dhpub_p && ctx->dhpub_p == NULL) {
+		ident_dh_ctx_free(ctx);
+		goto end;
+	}
 	iph1->dh_pending = 1;
-	if (oakley_dh_gencmp_submit(iph1->approval->dhgrp, iph1->dhpub_p,
-	    &iph1->dhpub, &iph1->dhpriv, &iph1->dhgxy,
+	if (oakley_dh_gencmp_submit(iph1->approval->dhgrp, ctx->dhpub_p,
+	    &ctx->dhpub_out, &ctx->dhpriv_out, &ctx->dhgxy_out,
 	    ident_r2send_dh_done, ctx) != 0) {
 		iph1->dh_pending = 0;
 		ident_dh_ctx_free(ctx);
