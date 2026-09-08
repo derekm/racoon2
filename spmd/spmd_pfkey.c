@@ -2503,7 +2503,12 @@ spmd_rsync_slid(const struct rcpfk_msg *rc, const char **slidp)
 		}
 		if (!mine || !mine->a.ipaddr)
 			continue;
+		/* FQDN sides never carry a.ipaddr; sockcmp rejects garbage. */
+#ifdef INET6
 		if (mine->type != RCT_ADDR_INET && mine->type != RCT_ADDR_INET6)
+#else
+		if (mine->type != RCT_ADDR_INET)
+#endif
 			continue;
 		if (rcs_is_addr_wildcard(mine->a.ipaddr))
 			continue;
