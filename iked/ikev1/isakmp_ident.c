@@ -117,12 +117,19 @@ ident_r2send_dh_done(int rc, void *arg)
 {
 	struct ident_dh_ctx *ctx = arg;
 
-	if (!ikev1_ph1_alive(ctx->iph1) || rc != 0) {
-		plog(rc ? PLOG_INTERR : PLOG_DEBUG, PLOGLOC, NULL,
-		    "phase1 DH %s\n", rc ? "failed" : "discarded (expired)");
+	if (!ikev1_ph1_alive(ctx->iph1)) {
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		    "phase1 DH discarded (expired)\n");
 		ident_dh_ctx_free(ctx);
 		return;
 	}
+	if (rc != 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "phase1 DH failed\n");
+		ctx->iph1->dh_pending = 0;	/* allow retry */
+		ident_dh_ctx_free(ctx);
+		return;
+	}
+	ctx->iph1->dh_pending = 0;
 	ident_r2send_tail(ctx->iph1, ctx->msg);
 	ident_dh_ctx_free(ctx);
 }
@@ -277,12 +284,19 @@ ident_i2send_dh_done(int rc, void *arg)
 {
 	struct ident_dh_ctx *ctx = arg;
 
-	if (!ikev1_ph1_alive(ctx->iph1) || rc != 0) {
-		plog(rc ? PLOG_INTERR : PLOG_DEBUG, PLOGLOC, NULL,
-		    "phase1 DH %s\n", rc ? "failed" : "discarded (expired)");
+	if (!ikev1_ph1_alive(ctx->iph1)) {
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		    "phase1 DH discarded (expired)\n");
 		ident_dh_ctx_free(ctx);
 		return;
 	}
+	if (rc != 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "phase1 DH failed\n");
+		ctx->iph1->dh_pending = 0;	/* allow retry */
+		ident_dh_ctx_free(ctx);
+		return;
+	}
+	ctx->iph1->dh_pending = 0;
 	ident_i2send_tail(ctx->iph1, ctx->msg);
 	ident_dh_ctx_free(ctx);
 }
@@ -333,12 +347,19 @@ ident_i3send_dh_done(int rc, void *arg)
 {
 	struct ident_dh_ctx *ctx = arg;
 
-	if (!ikev1_ph1_alive(ctx->iph1) || rc != 0) {
-		plog(rc ? PLOG_INTERR : PLOG_DEBUG, PLOGLOC, NULL,
-		    "phase1 DH %s\n", rc ? "failed" : "discarded (expired)");
+	if (!ikev1_ph1_alive(ctx->iph1)) {
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		    "phase1 DH discarded (expired)\n");
 		ident_dh_ctx_free(ctx);
 		return;
 	}
+	if (rc != 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "phase1 DH failed\n");
+		ctx->iph1->dh_pending = 0;	/* allow retry */
+		ident_dh_ctx_free(ctx);
+		return;
+	}
+	ctx->iph1->dh_pending = 0;
 	ident_i3send_tail(ctx->iph1, ctx->msg);
 	ident_dh_ctx_free(ctx);
 }
@@ -541,6 +562,8 @@ ident_i2send(struct ph1handle *iph1, rc_vchar_t *msg)
 			"status mismatched %d.\n", iph1->status);
 		goto end;
 	}
+	if (iph1->dh_pending)
+		return 0;	/* retransmission while DH job in flight */
 
 	/* fix isakmp index */
 	memcpy(&iph1->index.r_ck, &((struct isakmp *)msg->v)->r_ck,
@@ -556,8 +579,10 @@ ident_i2send(struct ph1handle *iph1, rc_vchar_t *msg)
 		rc_free(ctx);
 		goto end;
 	}
+	iph1->dh_pending = 1;
 	if (oakley_dh_generate_submit(iph1->approval->dhgrp,
 	    &iph1->dhpub, &iph1->dhpriv, ident_i2send_dh_done, ctx) != 0) {
+		iph1->dh_pending = 0;
 		ident_dh_ctx_free(ctx);
 		goto end;
 	}
@@ -749,6 +774,8 @@ ident_i3send(struct ph1handle *iph1, rc_vchar_t *msg0)
 			"status mismatched %d.\n", iph1->status);
 		goto end;
 	}
+	if (iph1->dh_pending)
+		return 0;	/* retransmission while DH job in flight */
 
 	/* compute sharing secret of DH (pool) */
 	ctx = calloc(1, sizeof(*ctx));
@@ -760,9 +787,11 @@ ident_i3send(struct ph1handle *iph1, rc_vchar_t *msg0)
 		rc_free(ctx);
 		goto end;
 	}
+	iph1->dh_pending = 1;
 	if (oakley_dh_compute_submit(iph1->approval->dhgrp,
 	    iph1->dhpub, iph1->dhpriv, iph1->dhpub_p, &iph1->dhgxy,
 	    ident_i3send_dh_done, ctx) != 0) {
+		iph1->dh_pending = 0;
 		ident_dh_ctx_free(ctx);
 		goto end;
 	}
@@ -1349,6 +1378,8 @@ ident_r2send(struct ph1handle *iph1, rc_vchar_t *msg)
 			"status mismatched %d.\n", iph1->status);
 		goto end;
 	}
+	if (iph1->dh_pending)
+		return 0;	/* retransmission while DH job in flight */
 
 	/* generate DH public value + compute shared secret (pool) */
 	ctx = calloc(1, sizeof(*ctx));
@@ -1360,9 +1391,11 @@ ident_r2send(struct ph1handle *iph1, rc_vchar_t *msg)
 		rc_free(ctx);
 		goto end;
 	}
+	iph1->dh_pending = 1;
 	if (oakley_dh_gencmp_submit(iph1->approval->dhgrp, iph1->dhpub_p,
 	    &iph1->dhpub, &iph1->dhpriv, &iph1->dhgxy,
 	    ident_r2send_dh_done, ctx) != 0) {
+		iph1->dh_pending = 0;
 		ident_dh_ctx_free(ctx);
 		goto end;
 	}

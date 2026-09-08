@@ -142,6 +142,8 @@ struct ph1handle {
 	struct sched *scr;	/* schedule for resend */
 	int retry_counter;	/* for resend. */
 	rc_vchar_t *sendbuf;	/* buffer for re-sending */
+	int dh_pending;		/* async DH/KEYMAT job in flight; re-entry
+				 * is a retransmission and is dropped */
 
 	rc_vchar_t *dhpriv;	/* DH; private value */
 	rc_vchar_t *dhpub;	/* DH; public value */
@@ -251,6 +253,9 @@ struct ph2handle {
 	rc_vchar_t *sendbuf;	/* buffer for re-sending */
 	rc_vchar_t *msg1;	/* buffer for re-sending */
 	/* used for responder's first message */
+
+	int dh_pending;		/* async DH/KEYMAT job in flight; re-entry
+				 * is a retransmission and is dropped */
 
 	int retry_checkph1;	/* counter to wait phase 1 finished. */
 	/* NOTE: actually it's timer. */

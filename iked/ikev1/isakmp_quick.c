@@ -690,6 +690,8 @@ quick_i2send(struct ph2handle *iph2, rc_vchar_t *msg0)
 			"status mismatched %d.\n", iph2->status);
 		goto end;
 	}
+	if (iph2->dh_pending)
+		return 0;	/* retransmission while KEYMAT job in flight */
 
 	/* generate HASH(3) */
     {
@@ -768,9 +770,12 @@ quick_i2send(struct ph2handle *iph2, rc_vchar_t *msg0)
 		rc_vfree(msg);
 	if (hash != NULL)
 		rc_vfree(hash);
+	iph2->dh_pending = 1;
 	if (oakley_compute_keymat_async(iph2, INITIATOR,
-	    quick_i2send_after_keymat) < 0)
+	    quick_i2send_after_keymat) < 0) {
+		iph2->dh_pending = 0;
 		return -1;
+	}
 	return 0;
 
 end:
@@ -788,6 +793,7 @@ end:
 static void
 quick_i2send_after_keymat(struct ph2handle *iph2)
 {
+	iph2->dh_pending = 0;
 	iph2->status = PHASE2ST_ADDSA;
 
 #if 0
@@ -1852,13 +1858,18 @@ quick_r3prep(struct ph2handle *iph2, rc_vchar_t *msg0)
 			"status mismatched %d.\n", iph2->status);
 		goto end;
 	}
+	if (iph2->dh_pending)
+		return 0;	/* retransmission while KEYMAT job in flight */
 
 	/* compute both of KEYMATs; PFS g^ir off the IKE thread */
 	if (msg != NULL)
 		rc_vfree(msg);
+	iph2->dh_pending = 1;
 	if (oakley_compute_keymat_async(iph2, RESPONDER,
-	    quick_r3prep_after_keymat) < 0)
+	    quick_r3prep_after_keymat) < 0) {
+		iph2->dh_pending = 0;
 		return -1;
+	}
 	return 0;
 
 end:
@@ -1872,6 +1883,7 @@ end:
 static void
 quick_r3prep_after_keymat(struct ph2handle *iph2)
 {
+	iph2->dh_pending = 0;
 	iph2->status = PHASE2ST_ADDSA;
 	iph2->flags ^= ISAKMP_FLAG_C;	/* reset bit */
 
