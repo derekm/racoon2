@@ -72,8 +72,8 @@ jobs:
             echo "=== make install ==="
             sudo make install
             test -x /usr/local/racoon2/sbin/iked
-            test -x /usr/local/racoon2/etc/rc.d/iked
-            test -x /usr/local/racoon2/etc/rc.d/spmd
+            test -x /usr/local/racoon2/etc/racoon2/rc.d/iked
+            test -x /usr/local/racoon2/etc/racoon2/rc.d/spmd
 
             echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
             # ASan daemons: no leak-abort on orderly stop
