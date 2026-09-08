@@ -1,3 +1,17 @@
+/* async DH for ident_i2send */
+struct ident_dh_ctx {
+	struct ph1handle *iph1;
+	rc_vchar_t *msg;
+};
+
+static void
+ident_dh_ctx_free(struct ident_dh_ctx *ctx)
+{
+	if (ctx->msg)
+		rc_vfree(ctx->msg);
+	rc_free(ctx);
+}
+
 /*	$KAME: isakmp_ident.c,v 1.66 2004/03/03 05:39:59 sakane Exp $	*/
 
 /*
@@ -257,19 +271,6 @@ static void ident_i2send_tail(struct ph1handle *, rc_vchar_t *);
 static void ident_i3send_tail(struct ph1handle *, rc_vchar_t *);
 static void ident_r2send_tail(struct ph1handle *, rc_vchar_t *);
 
-/* async DH for ident_i2send */
-struct ident_dh_ctx {
-	struct ph1handle *iph1;
-	rc_vchar_t *msg;
-};
-
-static void
-ident_dh_ctx_free(struct ident_dh_ctx *ctx)
-{
-	if (ctx->msg)
-		rc_vfree(ctx->msg);
-	rc_free(ctx);
-}
 
 static void
 ident_i2send_dh_done(int rc, void *arg)
@@ -346,6 +347,7 @@ ident_i3send_dh_done(int rc, void *arg)
 static void
 ident_i3send_tail(struct ph1handle *iph1, rc_vchar_t *msg0)
 {
+	int dohash = 1;
 	/* generate SKEYIDs & IV & final cipher key */
 	if (oakley_skeyid(iph1) < 0)
 		return;
@@ -1358,6 +1360,7 @@ ident_r2send(struct ph1handle *iph1, rc_vchar_t *msg)
 		goto end;
 	}
 	return 0;	/* resumed in ident_r2send_dh_done */
+}
 
 /*
  * receive from initiator
