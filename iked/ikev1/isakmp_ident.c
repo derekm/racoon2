@@ -93,6 +93,77 @@ static rc_vchar_t *ident_ir3mx (struct ph1handle *);
 /* %%%
  * begin Identity Protection Mode as initiator.
  */
+static void
+ident_r2send_dh_done(int rc, void *arg)
+{
+	struct ident_dh_ctx *ctx = arg;
+
+	if (!ikev1_ph1_alive(ctx->iph1) || rc != 0) {
+		plog(rc ? PLOG_INTERR : PLOG_DEBUG, PLOGLOC, NULL,
+		    "phase1 DH %s\n", rc ? "failed" : "discarded (expired)");
+		ident_dh_ctx_free(ctx);
+		return;
+	}
+	ident_r2send_tail(ctx->iph1, ctx->msg);
+	ident_dh_ctx_free(ctx);
+}
+
+/* continuation after the DH step: ident_r2send */
+static void
+ident_r2send_tail(struct ph1handle *iph1, rc_vchar_t *msg)
+{
+	/* generate NONCE value */
+	iph1->nonce = eay_set_random(ikev1_nonce_size(iph1->rmconf));
+	if (iph1->nonce == NULL)
+		return;
+
+#ifdef HAVE_GSSAPI
+	if (iph1->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB)
+		gssapi_get_rtoken(iph1, NULL);
+#endif
+
+	/* create HDR;KE;NONCE payload */
+	iph1->sendbuf = ident_ir2mx(iph1);
+	if (iph1->sendbuf == NULL)
+		return;
+
+#ifdef HAVE_PRINT_ISAKMP_C
+	isakmp_printpacket(iph1->sendbuf, iph1->local, iph1->remote, 0);
+#endif
+
+	/* send the packet, add to the schedule to resend */
+	iph1->retry_counter = ikev1_max_retry_to_send(iph1->rmconf);
+	if (isakmp_ph1resend(iph1) == -1)
+		return;
+
+	/* the sending message is added to the received-list. */
+	if (add_recvdpkt(iph1->remote, iph1->local, iph1->sendbuf, msg, iph1->rmconf) == -1) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+			"failed to add a response packet to the tree.\n");
+		return;
+	}
+
+	/* compute sharing secret of DH */
+	if (oakley_dh_compute(iph1->approval->dhgrp, iph1->dhpub,
+				iph1->dhpriv, iph1->dhpub_p, &iph1->dhgxy) < 0)
+		return;
+
+	/* generate SKEYIDs & IV & final cipher key */
+	if (oakley_skeyid(iph1) < 0)
+		return;
+	if (oakley_skeyid_dae(iph1) < 0)
+		return;
+	if (oakley_compute_enckey(iph1) < 0)
+		return;
+	if (oakley_newiv(iph1) < 0)
+		return;
+
+	iph1->status = PHASE1ST_MSG2SENT;
+
+
+	return;
+}
+
 /*
  * send to responder
  * 	psk: HDR, SA
@@ -105,6 +176,7 @@ ident_i1send(struct ph1handle *iph1, rc_vchar_t *msg /* must be null */)
 {
 	struct payload_list *plist = NULL;
 	int error = -1;
+	struct ident_dh_ctx *ctx;
 
 #ifdef ENABLE_NATT
 	rc_vchar_t *vid_natt[MAX_NATT_VID_COUNT] = { NULL };
@@ -179,6 +251,161 @@ end:
 		rc_vfree(vid_frag);
 
 	return error;
+}
+
+static void ident_i2send_tail(struct ph1handle *, rc_vchar_t *);
+static void ident_i3send_tail(struct ph1handle *, rc_vchar_t *);
+static void ident_r2send_tail(struct ph1handle *, rc_vchar_t *);
+
+/* async DH for ident_i2send */
+struct ident_dh_ctx {
+	struct ph1handle *iph1;
+	rc_vchar_t *msg;
+};
+
+static void
+ident_dh_ctx_free(struct ident_dh_ctx *ctx)
+{
+	if (ctx->msg)
+		rc_vfree(ctx->msg);
+	rc_free(ctx);
+}
+
+static void
+ident_i2send_dh_done(int rc, void *arg)
+{
+	struct ident_dh_ctx *ctx = arg;
+
+	if (!ikev1_ph1_alive(ctx->iph1) || rc != 0) {
+		plog(rc ? PLOG_INTERR : PLOG_DEBUG, PLOGLOC, NULL,
+		    "phase1 DH %s\n", rc ? "failed" : "discarded (expired)");
+		ident_dh_ctx_free(ctx);
+		return;
+	}
+	ident_i2send_tail(ctx->iph1, ctx->msg);
+	ident_dh_ctx_free(ctx);
+}
+/* continuation after the DH step: ident_i2send_tail */
+static void
+ident_i2send_tail(struct ph1handle *iph1, rc_vchar_t *msg)
+{
+	/* generate NONCE value */
+	iph1->nonce = eay_set_random(ikev1_nonce_size(iph1->rmconf));
+	if (iph1->nonce == NULL)
+		return;
+
+#ifdef HAVE_GSSAPI
+	if (iph1->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB &&
+	    gssapi_get_itoken(iph1, NULL) < 0)
+		return;
+#endif
+
+	/* create buffer to send isakmp payload */
+	iph1->sendbuf = ident_ir2mx(iph1);
+	if (iph1->sendbuf == NULL)
+		return;
+
+#ifdef HAVE_PRINT_ISAKMP_C
+	isakmp_printpacket(iph1->sendbuf, iph1->local, iph1->remote, 0);
+#endif
+
+	/* send the packet, add to the schedule to resend */
+	iph1->retry_counter = ikev1_max_retry_to_send(iph1->rmconf);
+	if (isakmp_ph1resend(iph1) == -1)
+		return;
+
+	/* the sending message is added to the received-list. */
+	if (add_recvdpkt(iph1->remote, iph1->local, iph1->sendbuf, msg, iph1->rmconf) == -1) {
+		plog(PLOG_INTERR , PLOGLOC, NULL,
+			"failed to add a response packet to the tree.\n");
+		return;
+	}
+
+	iph1->status = PHASE1ST_MSG2SENT;
+
+
+	return;
+}
+
+static void
+ident_i3send_dh_done(int rc, void *arg)
+{
+	struct ident_dh_ctx *ctx = arg;
+
+	if (!ikev1_ph1_alive(ctx->iph1) || rc != 0) {
+		plog(rc ? PLOG_INTERR : PLOG_DEBUG, PLOGLOC, NULL,
+		    "phase1 DH %s\n", rc ? "failed" : "discarded (expired)");
+		ident_dh_ctx_free(ctx);
+		return;
+	}
+	ident_i3send_tail(ctx->iph1, ctx->msg);
+	ident_dh_ctx_free(ctx);
+}
+
+/* continuation after the DH step: ident_i3send_tail */
+static void
+ident_i3send_tail(struct ph1handle *iph1, rc_vchar_t *msg0)
+{
+	/* generate SKEYIDs & IV & final cipher key */
+	if (oakley_skeyid(iph1) < 0)
+		return;
+	if (oakley_skeyid_dae(iph1) < 0)
+		return;
+	if (oakley_compute_enckey(iph1) < 0)
+		return;
+	if (oakley_newiv(iph1) < 0)
+		return;
+
+	/* make ID payload into isakmp status */
+	if (ipsecdoi_setid1(iph1) < 0)
+		return;
+
+#ifdef HAVE_GSSAPI
+	if (iph1->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB &&
+	    gssapi_more_tokens(iph1)) {
+		plog(PLOG_DEBUG, PLOGLOC, NULL, "calling get_itoken\n");
+		if (gssapi_get_itoken(iph1, &len) < 0)
+			return;
+		if (len != 0)
+			dohash = 0;
+	}
+#endif
+
+	/* generate HASH to send */
+	if (dohash) {
+		iph1->hash = oakley_ph1hash_common(iph1, GENERATE);
+		if (iph1->hash == NULL)
+			return;
+	} else
+		iph1->hash = NULL;
+
+	/* set encryption flag */
+	iph1->flags |= ISAKMP_FLAG_E;
+
+	/* create HDR;ID;HASH payload */
+	iph1->sendbuf = ident_ir3mx(iph1);
+	if (iph1->sendbuf == NULL)
+		return;
+
+	/* send the packet, add to the schedule to resend */
+	iph1->retry_counter = ikev1_max_retry_to_send(iph1->rmconf);
+	if (isakmp_ph1resend(iph1) == -1)
+		return;
+
+	/* the sending message is added to the received-list. */
+	if (add_recvdpkt(iph1->remote, iph1->local, iph1->sendbuf, msg0, iph1->rmconf) == -1) {
+		plog(PLOG_INTERR , PLOGLOC, NULL,
+			"failed to add a response packet to the tree.\n");
+		return;
+	}
+
+	/* see handler.h about IV synchronization. */
+	memcpy(iph1->ivm->ive->v, iph1->ivm->iv->v, iph1->ivm->iv->l);
+
+	iph1->status = PHASE1ST_MSG3SENT;
+
+
+	return;
 }
 
 /*
@@ -301,6 +528,7 @@ int
 ident_i2send(struct ph1handle *iph1, rc_vchar_t *msg)
 {
 	int error = -1;
+	struct ident_dh_ctx *ctx;
 
 	/* validity check */
 	if (iph1->status != PHASE1ST_MSG2RECEIVED) {
@@ -313,50 +541,22 @@ ident_i2send(struct ph1handle *iph1, rc_vchar_t *msg)
 	memcpy(&iph1->index.r_ck, &((struct isakmp *)msg->v)->r_ck,
 		sizeof(isakmp_cookie_t));
 
-	/* generate DH public value */
-	if (oakley_dh_generate(iph1->approval->dhgrp,
-				&iph1->dhpub, &iph1->dhpriv) < 0)
+	/* generate DH public value (pool) */
+	ctx = calloc(1, sizeof(*ctx));
+	if (ctx == NULL)
 		goto end;
-
-	/* generate NONCE value */
-	iph1->nonce = eay_set_random(ikev1_nonce_size(iph1->rmconf));
-	if (iph1->nonce == NULL)
-		goto end;
-
-#ifdef HAVE_GSSAPI
-	if (iph1->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB &&
-	    gssapi_get_itoken(iph1, NULL) < 0)
-		goto end;
-#endif
-
-	/* create buffer to send isakmp payload */
-	iph1->sendbuf = ident_ir2mx(iph1);
-	if (iph1->sendbuf == NULL)
-		goto end;
-
-#ifdef HAVE_PRINT_ISAKMP_C
-	isakmp_printpacket(iph1->sendbuf, iph1->local, iph1->remote, 0);
-#endif
-
-	/* send the packet, add to the schedule to resend */
-	iph1->retry_counter = ikev1_max_retry_to_send(iph1->rmconf);
-	if (isakmp_ph1resend(iph1) == -1)
-		goto end;
-
-	/* the sending message is added to the received-list. */
-	if (add_recvdpkt(iph1->remote, iph1->local, iph1->sendbuf, msg, iph1->rmconf) == -1) {
-		plog(PLOG_INTERR , PLOGLOC, NULL,
-			"failed to add a response packet to the tree.\n");
+	ctx->iph1 = iph1;
+	ctx->msg = msg ? rc_vdup(msg) : NULL;
+	if (msg && ctx->msg == NULL) {
+		rc_free(ctx);
 		goto end;
 	}
-
-	iph1->status = PHASE1ST_MSG2SENT;
-
-	error = 0;
-
-end:
-	return error;
-}
+	if (oakley_dh_generate_submit(iph1->approval->dhgrp,
+	    &iph1->dhpub, &iph1->dhpriv, ident_i2send_dh_done, ctx) != 0) {
+		ident_dh_ctx_free(ctx);
+		goto end;
+	}
+	return 0;	/* resumed in ident_i2send_dh_done */
 
 /*
  * receive from responder
@@ -533,6 +733,7 @@ ident_i3send(struct ph1handle *iph1, rc_vchar_t *msg0)
 {
 	int error = -1;
 	int dohash = 1;
+	struct ident_dh_ctx *ctx;
 #ifdef HAVE_GSSAPI
 	int len;
 #endif
@@ -544,74 +745,23 @@ ident_i3send(struct ph1handle *iph1, rc_vchar_t *msg0)
 		goto end;
 	}
 
-	/* compute sharing secret of DH */
-	if (oakley_dh_compute(iph1->approval->dhgrp, iph1->dhpub,
-				iph1->dhpriv, iph1->dhpub_p, &iph1->dhgxy) < 0)
+	/* compute sharing secret of DH (pool) */
+	ctx = calloc(1, sizeof(*ctx));
+	if (ctx == NULL)
 		goto end;
-
-	/* generate SKEYIDs & IV & final cipher key */
-	if (oakley_skeyid(iph1) < 0)
-		goto end;
-	if (oakley_skeyid_dae(iph1) < 0)
-		goto end;
-	if (oakley_compute_enckey(iph1) < 0)
-		goto end;
-	if (oakley_newiv(iph1) < 0)
-		goto end;
-
-	/* make ID payload into isakmp status */
-	if (ipsecdoi_setid1(iph1) < 0)
-		goto end;
-
-#ifdef HAVE_GSSAPI
-	if (iph1->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB &&
-	    gssapi_more_tokens(iph1)) {
-		plog(PLOG_DEBUG, PLOGLOC, NULL, "calling get_itoken\n");
-		if (gssapi_get_itoken(iph1, &len) < 0)
-			goto end;
-		if (len != 0)
-			dohash = 0;
-	}
-#endif
-
-	/* generate HASH to send */
-	if (dohash) {
-		iph1->hash = oakley_ph1hash_common(iph1, GENERATE);
-		if (iph1->hash == NULL)
-			goto end;
-	} else
-		iph1->hash = NULL;
-
-	/* set encryption flag */
-	iph1->flags |= ISAKMP_FLAG_E;
-
-	/* create HDR;ID;HASH payload */
-	iph1->sendbuf = ident_ir3mx(iph1);
-	if (iph1->sendbuf == NULL)
-		goto end;
-
-	/* send the packet, add to the schedule to resend */
-	iph1->retry_counter = ikev1_max_retry_to_send(iph1->rmconf);
-	if (isakmp_ph1resend(iph1) == -1)
-		goto end;
-
-	/* the sending message is added to the received-list. */
-	if (add_recvdpkt(iph1->remote, iph1->local, iph1->sendbuf, msg0, iph1->rmconf) == -1) {
-		plog(PLOG_INTERR , PLOGLOC, NULL,
-			"failed to add a response packet to the tree.\n");
+	ctx->iph1 = iph1;
+	ctx->msg = msg0 ? rc_vdup(msg0) : NULL;
+	if (msg0 && ctx->msg == NULL) {
+		rc_free(ctx);
 		goto end;
 	}
-
-	/* see handler.h about IV synchronization. */
-	memcpy(iph1->ivm->ive->v, iph1->ivm->iv->v, iph1->ivm->iv->l);
-
-	iph1->status = PHASE1ST_MSG3SENT;
-
-	error = 0;
-
-end:
-	return error;
-}
+	if (oakley_dh_compute_submit(iph1->approval->dhgrp,
+	    iph1->dhpub, iph1->dhpriv, iph1->dhpub_p, &iph1->dhgxy,
+	    ident_i3send_dh_done, ctx) != 0) {
+		ident_dh_ctx_free(ctx);
+		goto end;
+	}
+	return 0;	/* resumed in ident_i3send_dh_done */
 
 /*
  * receive from responder
@@ -1191,64 +1341,23 @@ ident_r2send(struct ph1handle *iph1, rc_vchar_t *msg)
 		goto end;
 	}
 
-	/* generate DH public value */
-	if (oakley_dh_generate(iph1->approval->dhgrp,
-				&iph1->dhpub, &iph1->dhpriv) < 0)
+	/* generate DH public value + compute shared secret (pool) */
+	ctx = calloc(1, sizeof(*ctx));
+	if (ctx == NULL)
 		goto end;
-
-	/* generate NONCE value */
-	iph1->nonce = eay_set_random(ikev1_nonce_size(iph1->rmconf));
-	if (iph1->nonce == NULL)
-		goto end;
-
-#ifdef HAVE_GSSAPI
-	if (iph1->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB)
-		gssapi_get_rtoken(iph1, NULL);
-#endif
-
-	/* create HDR;KE;NONCE payload */
-	iph1->sendbuf = ident_ir2mx(iph1);
-	if (iph1->sendbuf == NULL)
-		goto end;
-
-#ifdef HAVE_PRINT_ISAKMP_C
-	isakmp_printpacket(iph1->sendbuf, iph1->local, iph1->remote, 0);
-#endif
-
-	/* send the packet, add to the schedule to resend */
-	iph1->retry_counter = ikev1_max_retry_to_send(iph1->rmconf);
-	if (isakmp_ph1resend(iph1) == -1)
-		goto end;
-
-	/* the sending message is added to the received-list. */
-	if (add_recvdpkt(iph1->remote, iph1->local, iph1->sendbuf, msg, iph1->rmconf) == -1) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-			"failed to add a response packet to the tree.\n");
+	ctx->iph1 = iph1;
+	ctx->msg = msg ? rc_vdup(msg) : NULL;
+	if (msg && ctx->msg == NULL) {
+		rc_free(ctx);
 		goto end;
 	}
-
-	/* compute sharing secret of DH */
-	if (oakley_dh_compute(iph1->approval->dhgrp, iph1->dhpub,
-				iph1->dhpriv, iph1->dhpub_p, &iph1->dhgxy) < 0)
+	if (oakley_dh_gencmp_submit(iph1->approval->dhgrp, iph1->dhpub_p,
+	    &iph1->dhpub, &iph1->dhpriv, &iph1->dhgxy,
+	    ident_r2send_dh_done, ctx) != 0) {
+		ident_dh_ctx_free(ctx);
 		goto end;
-
-	/* generate SKEYIDs & IV & final cipher key */
-	if (oakley_skeyid(iph1) < 0)
-		goto end;
-	if (oakley_skeyid_dae(iph1) < 0)
-		goto end;
-	if (oakley_compute_enckey(iph1) < 0)
-		goto end;
-	if (oakley_newiv(iph1) < 0)
-		goto end;
-
-	iph1->status = PHASE1ST_MSG2SENT;
-
-	error = 0;
-
-end:
-	return error;
-}
+	}
+	return 0;	/* resumed in ident_r2send_dh_done */
 
 /*
  * receive from initiator

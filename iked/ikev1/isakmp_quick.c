@@ -200,58 +200,45 @@ quick_i1send(struct ph2handle *iph2, rc_vchar_t *msg /* must be null pointer */)
 	int pfsgroup, idci, idcr;
 	int np;
 	struct ipsecdoi_id_b *id, *id_p;
+/* async DH for the quick KE sends */
+static void
+quick_i1send_dh_done(int rc, void *arg)
+{
+	struct ph2handle *iph2 = arg;
 
-#ifdef ENABLE_NATT
-	int natoai = 0, natoar = 0;
-	struct ph2natoa *natoa = NULL, *natoa_p = NULL;
-#endif
-
-	/* validity check */
-	if (msg != NULL) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-			"msg has to be NULL in this function.\n");
-		goto end;
+	if (!ikev1_ph2_alive(iph2) || rc != 0) {
+		plog(rc ? PLOG_INTERR : PLOG_DEBUG, PLOGLOC, NULL,
+		    "phase2 DH %s\n", rc ? "failed" : "discarded (expired)");
+		return;
 	}
-	if (iph2->status != PHASE2ST_GETSPIDONE) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-			"status mismatched %d.\n", iph2->status);
-		goto end;
+	quick_i1send_tail(iph2, NULL);
+}
+
+static void
+quick_r2send_dh_done(int rc, void *arg)
+{
+	struct ph2handle *iph2 = arg;
+
+	if (!ikev1_ph2_alive(iph2) || rc != 0) {
+		plog(rc ? PLOG_INTERR : PLOG_DEBUG, PLOGLOC, NULL,
+		    "phase2 DH %s\n", rc ? "failed" : "discarded (expired)");
+		return;
 	}
+	quick_r2send_tail(iph2, NULL);
+}
 
-	/* create SA payload for my proposal */
-	if (ipsecdoi_setph2proposal(iph2) < 0)
-		goto end;
+static void quick_i1send_tail(struct ph2handle *, rc_vchar_t *);
+static void quick_r2send_tail(struct ph2handle *, rc_vchar_t *);
 
-	/* generate NONCE value */
-	iph2->nonce = eay_set_random(ikev1_nonce_size(iph2->ph1->rmconf));
-	if (iph2->nonce == NULL)
-		goto end;
-
-	/*
-	 * DH value calculation is kicked out into cfparse.y.
-	 * because pfs group can not be negotiated, it's only to be checked
-	 * acceptable.
-	 */
-	/* generate KE value if need */
-	pfsgroup = iph2->proposal->pfs_group;
-	if (pfsgroup) {
-		/* DH group settting if PFS is required. */
-		if (oakley_setdhgroup(pfsgroup, &iph2->pfsgrp) < 0) {
-			plog(PLOG_INTERR, PLOGLOC, NULL,
-				"failed to set DH value.\n");
-			goto end;
-		}
-		if (oakley_dh_generate(iph2->pfsgrp,
-				&iph2->dhpub, &iph2->dhpriv) < 0) {
-			goto end;
-		}
-	}
-
+/* continuation after the PFS KE generation (initiator) */
+static void
+quick_i1send_tail(struct ph2handle *iph2, rc_vchar_t *msg)
+{
 	/* generate ID value */
 	if (ipsecdoi_setid2(iph2) < 0) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 			"failed to get ID.\n");
-		goto end;
+		return;
 	}
 	plog(PLOG_DEBUG, PLOGLOC, NULL, "IDci:\n");
 	plogdump(PLOG_DEBUG, PLOGLOC, 0, iph2->id->v, iph2->id->l);
@@ -292,7 +279,7 @@ quick_i1send(struct ph2handle *iph2, rc_vchar_t *msg /* must be null pointer */)
         {
             plog(PLOG_INTERR, PLOGLOC, NULL,
                  "failed to get NAT-OA\n");
-            goto end;
+            return;
         }
 
         natoa = (struct ph2natoa *)iph2->natoa->v;
@@ -328,7 +315,7 @@ quick_i1send(struct ph2handle *iph2, rc_vchar_t *msg /* must be null pointer */)
 	if (body == NULL) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 			"failed to get buffer to send.\n");
-		goto end;
+		return;
 	}
 
 	p = body->v;
@@ -383,22 +370,79 @@ quick_i1send(struct ph2handle *iph2, rc_vchar_t *msg /* must be null pointer */)
 	/* generate HASH(1) */
 	hash = oakley_compute_hash1(iph2->ph1, iph2->msgid, body);
 	if (hash == NULL)
-		goto end;
+		return;
 
 	/* send isakmp payload */
 	iph2->sendbuf = quick_ir1mx(iph2, body, hash);
 	if (iph2->sendbuf == NULL)
-		goto end;
+		return;
 
 	/* send the packet, add to the schedule to resend */
 	iph2->retry_counter = ikev1_max_retry_to_send(iph2->ph1->rmconf);
 	if (isakmp_ph2resend(iph2) == -1)
-		goto end;
+		return;
 
 	/* change status of isakmp status entry */
 	iph2->status = PHASE2ST_MSG1SENT;
 
-	error = 0;
+
+	if (body != NULL)
+		rc_vfree(body);
+	if (hash != NULL)
+		rc_vfree(hash);
+
+	return;
+}
+
+
+#ifdef ENABLE_NATT
+	int natoai = 0, natoar = 0;
+	struct ph2natoa *natoa = NULL, *natoa_p = NULL;
+#endif
+
+	/* validity check */
+	if (msg != NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+			"msg has to be NULL in this function.\n");
+		goto end;
+	}
+	if (iph2->status != PHASE2ST_GETSPIDONE) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+			"status mismatched %d.\n", iph2->status);
+		goto end;
+	}
+
+	/* create SA payload for my proposal */
+	if (ipsecdoi_setph2proposal(iph2) < 0)
+		goto end;
+
+	/* generate NONCE value */
+	iph2->nonce = eay_set_random(ikev1_nonce_size(iph2->ph1->rmconf));
+	if (iph2->nonce == NULL)
+		goto end;
+
+	/*
+	 * DH value calculation is kicked out into cfparse.y.
+	 * because pfs group can not be negotiated, it's only to be checked
+	 * acceptable.
+	 */
+	pfsgroup = iph2->proposal->pfs_group;
+	if (pfsgroup) {
+		/* DH group settting if PFS is required. */
+		if (oakley_setdhgroup(pfsgroup, &iph2->pfsgrp) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+				"failed to set DH value.\n");
+			goto end;
+		}
+		if (oakley_dh_generate_submit(iph2->pfsgrp,
+		    &iph2->dhpub, &iph2->dhpriv,
+		    quick_i1send_dh_done, iph2) != 0) {
+			goto end;
+		}
+		return 0;	/* resumed in quick_i1send_dh_done */
+	}
+	quick_i1send_tail(iph2, msg);
+	return 0;
 
 end:
 	if (body != NULL)
@@ -407,6 +451,171 @@ end:
 		rc_vfree(hash);
 
 	return error;
+}
+
+
+/* continuation after the PFS KE generation (initiator) */
+static void
+quick_i1send_tail(struct ph2handle *iph2, rc_vchar_t *msg)
+{
+	/* generate ID value */
+	if (ipsecdoi_setid2(iph2) < 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+			"failed to get ID.\n");
+		return;
+	}
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "IDci:\n");
+	plogdump(PLOG_DEBUG, PLOGLOC, 0, iph2->id->v, iph2->id->l);
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "IDcr:");
+	plogdump(PLOG_DEBUG, PLOGLOC, 0, iph2->id_p->v, iph2->id_p->l);
+
+	/*
+	 * we do not attach IDci nor IDcr, under the following condition:
+	 * - all proposals are transport mode
+	 * - no MIP6 or proxy
+	 * - id payload suggests to encrypt all the traffic (no specific
+	 *   protocol type)
+	 */
+	id = (struct ipsecdoi_id_b *)iph2->id->v;
+	id_p = (struct ipsecdoi_id_b *)iph2->id_p->v;
+	if (id->proto_id == 0
+	 && id_p->proto_id == 0
+	 && id->port == 0
+	 && id_p->port == 0
+	 && iph2->selector->pl != 0
+	 && (iph2->selector->pl->my_sa_ipaddr != 0
+	   || iph2->selector->pl->peers_sa_ipaddr != 0)
+	 && ipsecdoi_transportmode(iph2->proposal)) {
+		idci = idcr = 0;
+	} else
+		idci = idcr = 1;
+
+#ifdef ENABLE_NATT
+	iph2->natoa = NULL;
+	iph2->natoa_p = NULL;
+
+    if ((iph2->ph1->natt_flags & NAT_DETECTED) != 0 &&
+		(iph2->ph1->natt_options->mode_udp_transport 
+			 & IPSECDOI_ATTR_ENC_MODE_UDPTRNS_RFC) != 0 &&  
+			ike_ipsec_mode(iph2->selector->pl) == RCT_IPSM_TRANSPORT)
+    {
+        if (ph2natoa_set(iph2, iph2->side) < 0)
+        {
+            plog(PLOG_INTERR, PLOGLOC, NULL,
+                 "failed to get NAT-OA\n");
+            return;
+        }
+
+        natoa = (struct ph2natoa *)iph2->natoa->v;
+        natoa_p = (struct ph2natoa *)iph2->natoa_p->v;
+
+        if (natoa != NULL && natoa_p != NULL)
+            natoai = natoar = 1;
+    } 
+    else
+        plog(PLOG_INTWARN, PLOGLOC, NULL,
+         "configuration does not match requirements for NAT-OA, skip\n");
+#endif
+
+	/* create SA;NONCE payload, and KE if need, and IDii, IDir. */
+	tlen = + sizeof(*gen) + iph2->sa->l
+		+ sizeof(*gen) + iph2->nonce->l;
+
+#ifdef ENABLE_NATT
+	if (natoai)
+	    tlen += sizeof(*gen) + iph2->natoa->l;
+	if (natoar)
+	    tlen += sizeof(*gen) + iph2->natoa_p->l;
+#endif
+
+	if (pfsgroup)
+		tlen += (sizeof(*gen) + iph2->dhpub->l);
+	if (idci)
+		tlen += sizeof(*gen) + iph2->id->l;
+	if (idcr)
+		tlen += sizeof(*gen) + iph2->id_p->l;
+
+	body = rc_vmalloc(tlen);
+	if (body == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+			"failed to get buffer to send.\n");
+		return;
+	}
+
+	p = body->v;
+
+	/* add SA payload */
+	p = set_isakmp_payload(p, iph2->sa, ISAKMP_NPTYPE_NONCE);
+
+	/* add NONCE payload */
+	if (pfsgroup)
+		np = ISAKMP_NPTYPE_KE;
+	else if (idci || idcr)
+		np = ISAKMP_NPTYPE_ID;
+	else
+		np = ISAKMP_NPTYPE_NONE;
+	p = set_isakmp_payload(p, iph2->nonce, np);
+
+	/* add KE payload if need. */
+	np = (idci || idcr) ? ISAKMP_NPTYPE_ID : ISAKMP_NPTYPE_NONE;
+	if (pfsgroup)
+		p = set_isakmp_payload(p, iph2->dhpub, np);
+
+	/* IDci */
+	np = (idcr) ? ISAKMP_NPTYPE_ID : ISAKMP_NPTYPE_NONE;
+	if (idci)
+		p = set_isakmp_payload(p, iph2->id, np);
+
+#ifdef ENABLE_NATT
+    np = (natoa || natoa_p) ? ISAKMP_NPTYPE_NATOA_RFC : ISAKMP_NPTYPE_NONE;
+
+    /* IDcr */
+    if (idcr)
+        p = set_isakmp_payload(p, iph2->id_p, np);
+#else
+    /* IDcr */
+    if (idcr)
+        p = set_isakmp_payload(p, iph2->id_p, ISAKMP_NPTYPE_NONE);
+#endif
+
+    
+#ifdef ENABLE_NATT    
+        np = (natoa_p) ? ISAKMP_NPTYPE_NATOA_RFC : ISAKMP_NPTYPE_NONE;
+
+        /* NAT-OAi */
+        if (natoa)
+            p = set_isakmp_payload(p, iph2->natoa, np);
+
+        /* NAT-OAr */
+        if (natoa_p)
+            p = set_isakmp_payload(p, iph2->natoa_p, ISAKMP_NPTYPE_NONE);
+#endif
+
+	/* generate HASH(1) */
+	hash = oakley_compute_hash1(iph2->ph1, iph2->msgid, body);
+	if (hash == NULL)
+		return;
+
+	/* send isakmp payload */
+	iph2->sendbuf = quick_ir1mx(iph2, body, hash);
+	if (iph2->sendbuf == NULL)
+		return;
+
+	/* send the packet, add to the schedule to resend */
+	iph2->retry_counter = ikev1_max_retry_to_send(iph2->ph1->rmconf);
+	if (isakmp_ph2resend(iph2) == -1)
+		return;
+
+	/* change status of isakmp status entry */
+	iph2->status = PHASE2ST_MSG1SENT;
+
+
+	if (body != NULL)
+		rc_vfree(body);
+	if (hash != NULL)
+		rc_vfree(hash);
+
+	return;
 }
 
 /*
@@ -753,47 +962,23 @@ quick_i2send(struct ph2handle *iph2, rc_vchar_t *msg0)
 	if (add_recvdpkt(iph2->ph1->remote, iph2->ph1->local,
 			iph2->sendbuf, msg0, iph2->ph1->rmconf) == -1) {
 		plog(PLOG_INTERR , PLOGLOC, NULL,
+		plog(PLOG_INTERR , PLOGLOC, NULL,
 			"failed to add a response packet to the tree.\n");
 		goto end;
 	}
 
-	/* compute both of KEYMATs */
-	if (oakley_compute_keymat(iph2, INITIATOR) < 0)
-		goto end;
-
-	iph2->status = PHASE2ST_ADDSA;
-
-#if 0
-	/* don't anything if local test mode. */
-	if (f_local) {
-		error = 0;
-		goto end;
-	}
-#endif
-
-	/* if there is commit bit don't set up SA now. */
-	if (ISSET(iph2->flags, ISAKMP_FLAG_C)) {
-		iph2->status = PHASE2ST_COMMIT;
-		error = 0;
-		goto end;
-	}
-
-	/* Do UPDATE for initiator */
-	plog(PLOG_DEBUG, PLOGLOC, NULL, "call pk_sendupdate\n");
-	if (pk_sendupdate(iph2) < 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey update failed.\n");
-		goto end;
-	}
-	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey update sent.\n");
-
-	/* Do ADD for responder */
-	if (pk_sendadd(iph2) < 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey add failed.\n");
-		goto end;
-	}
-	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey add sent.\n");
-
-	error = 0;
+	/* compute both of KEYMATs; PFS g^ir goes to the pool and the
+	 * SADB install resumes in quick_i2send_after_keymat */
+	if (buf != NULL)
+		rc_vfree(buf);
+	if (msg != NULL)
+		rc_vfree(msg);
+	if (hash != NULL)
+		rc_vfree(hash);
+	if (oakley_compute_keymat_async(iph2, INITIATOR,
+	    quick_i2send_after_keymat) < 0)
+		return -1;
+	return 0;
 
 end:
 	if (buf != NULL)
@@ -806,7 +991,40 @@ end:
 	return error;
 }
 
-/*
+/* continuation on the IKE thread after KEYMAT (initiator) */
+static void
+quick_i2send_after_keymat(struct ph2handle *iph2)
+{
+	iph2->status = PHASE2ST_ADDSA;
+
+#if 0
+	/* don't anything if local test mode. */
+	if (f_local) {
+		return;
+	}
+#endif
+
+	/* if there is commit bit don't set up SA now. */
+	if (ISSET(iph2->flags, ISAKMP_FLAG_C)) {
+		iph2->status = PHASE2ST_COMMIT;
+		return;
+	}
+
+	/* Do UPDATE for initiator */
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "call pk_sendupdate\n");
+	if (pk_sendupdate(iph2) < 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey update failed.\n");
+		return;
+	}
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey update sent.\n");
+
+	/* Do ADD for responder */
+	if (pk_sendadd(iph2) < 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey add failed.\n");
+		return;
+	}
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey add sent.\n");
+}
  * receive from responder
  * 	HDR#*, HASH(4), notify
  */
@@ -951,6 +1169,218 @@ end:
 		rc_vfree(notify);
 
 	return error;
+}
+
+/* continuation after the PFS KE generation (responder) */
+static void
+quick_r2send_tail(struct ph2handle *iph2, rc_vchar_t *msg)
+{
+#ifdef ENABLE_NATT
+    if ((iph2->ph1->natt_flags & NAT_DETECTED) != 0 &&
+		(iph2->ph1->natt_options->mode_udp_transport 
+			 & IPSECDOI_ATTR_ENC_MODE_UDPTRNS_RFC) != 0 &&  
+			ike_ipsec_mode(iph2->selector->pl) == RCT_IPSM_TRANSPORT)
+    {
+        if (ph2natoa_set(iph2, iph2->side) < 0)
+        {
+            plog(PLOG_INTERR, PLOGLOC, NULL,
+                 "failed to get NAT-OA\n");
+            return;
+        }
+
+        natoa = (struct ph2natoa*)iph2->natoa->v;
+        natoa_p = (struct ph2natoa*)iph2->natoa_p->v;
+
+        if (natoa != NULL && natoa_p != NULL)
+            natoa_i = natoa_r = 1;
+    } 
+    else 
+        plog(PLOG_INTWARN, PLOGLOC, NULL,
+             "configuration is not suitable for NAT-OA, skip\n");
+#endif
+
+	/* create SA;NONCE payload, and KE and ID if need */
+	tlen = sizeof(*gen) + iph2->sa_ret->l
+		+ sizeof(*gen) + iph2->nonce->l;
+	if (iph2->dhpub_p != NULL && pfsgroup != 0)
+		tlen += (sizeof(*gen) + iph2->dhpub->l);
+	if (iph2->id_p != NULL)
+		tlen += (sizeof(*gen) + iph2->id_p->l
+			+ sizeof(*gen) + iph2->id->l);
+
+#ifdef ENABLE_NATT
+	if (natoa_i)
+	    tlen += sizeof(*gen) + iph2->natoa->l;
+	if (natoa_r)
+	    tlen += sizeof(*gen) + iph2->natoa_p->l;
+#endif
+
+	body = rc_vmalloc(tlen);
+	if (body == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+			"failed to get buffer to send.\n");
+		return;
+	}
+	p = body->v;
+
+	/* make SA payload */
+	p = set_isakmp_payload(body->v, iph2->sa_ret, ISAKMP_NPTYPE_NONCE);
+
+	/* add NONCE payload */
+	np_p = &((struct isakmp_gen *)p)->np;	/* XXX */
+	p = set_isakmp_payload(p, iph2->nonce,
+		(iph2->dhpub_p != NULL && pfsgroup != 0)
+				? ISAKMP_NPTYPE_KE
+				: (iph2->id_p != NULL
+					? ISAKMP_NPTYPE_ID
+					: ISAKMP_NPTYPE_NONE));
+
+	/* add KE payload if need. */
+	if (iph2->dhpub_p != NULL && pfsgroup != 0) {
+		np_p = &((struct isakmp_gen *)p)->np;	/* XXX */
+		p = set_isakmp_payload(p, iph2->dhpub,
+			(iph2->id_p == NULL)
+				? ISAKMP_NPTYPE_NONE
+				: ISAKMP_NPTYPE_ID);
+	}
+
+	/* add ID payloads received. */
+	if (iph2->id_p != NULL) 
+    {
+		/* IDci */
+        np_p = &((struct isakmp_gen *)p)->np;	/* XXX */
+		p = set_isakmp_payload(p, iph2->id_p, ISAKMP_NPTYPE_ID);
+    }
+#ifdef ENABLE_NATT
+    if (iph2->id != NULL)
+    {
+        np_p = &((struct isakmp_gen*)p)->np;
+
+        p = set_isakmp_payload(p, iph2->id, 
+            (iph2->natoa != NULL || iph2->natoa_p != NULL) 
+                ? ISAKMP_NPTYPE_NATOA_RFC : ISAKMP_NPTYPE_NONE);
+    }
+#else 
+        np_p = &((struct isakmp_gen*)p)->np;
+
+        p = set_isakmp_payload(p, iph2->id, ISAKMP_NPTYPE_NONE);
+#endif
+
+#ifdef ENABLE_NATT
+
+        np_p = &((struct isakmp_gen *)p)->np;
+
+        if (iph2->natoa)
+        { 
+            np_p = &((struct isakmp_gen *)p)->np;
+
+            p = set_isakmp_payload(p, iph2->natoa, 
+                                   (iph2->natoa_p == NULL) 
+                                   ? ISAKMP_NPTYPE_NONE : ISAKMP_NPTYPE_NATOA_RFC);
+        }
+
+        if (iph2->natoa_p)
+        {
+            np_p = &((struct isakmp_gen *)p)->np;
+
+            p = set_isakmp_payload(p, iph2->natoa_p, ISAKMP_NPTYPE_NONE);
+        }
+
+#endif
+
+	/* add a RESPONDER-LIFETIME notify payload if needed */
+    {
+	rc_vchar_t *data = NULL;
+	struct saprop *pp = iph2->approval;
+	struct saproto *pr;
+
+	if (pp->claim & IPSECDOI_ATTR_SA_LD_TYPE_SEC) {
+		uint32_t v = htonl((uint32_t)pp->lifetime);
+		data = isakmp_add_attr_l(data, IPSECDOI_ATTR_SA_LD_TYPE,
+					IPSECDOI_ATTR_SA_LD_TYPE_SEC);
+		if (!data)
+			return;
+		data = isakmp_add_attr_v(data, IPSECDOI_ATTR_SA_LD,
+					(caddr_t)&v, sizeof(v));
+		if (!data)
+			return;
+	}
+	if (pp->claim & IPSECDOI_ATTR_SA_LD_TYPE_KB) {
+		uint32_t v = htonl((uint32_t)pp->lifebyte);
+		data = isakmp_add_attr_l(data, IPSECDOI_ATTR_SA_LD_TYPE,
+					IPSECDOI_ATTR_SA_LD_TYPE_KB);
+		if (!data)
+			return;
+		data = isakmp_add_attr_v(data, IPSECDOI_ATTR_SA_LD,
+					(caddr_t)&v, sizeof(v));
+		if (!data)
+			return;
+	}
+
+	/*
+	 * XXX Is there only single RESPONDER-LIFETIME payload in a IKE message
+	 * in the case of SA bundle ?
+	 */
+	if (data) {
+		for (pr = pp->head; pr; pr = pr->next) {
+			body = isakmp_add_pl_n(body, &np_p,
+					ISAKMP_NTYPE_RESPONDER_LIFETIME, pr, data);
+			if (!body) {
+				rc_vfree(data);
+				return error;	/* XXX */
+			}
+		}
+		rc_vfree(data);
+	}
+    }
+
+	/* generate HASH(2) */
+    {
+	rc_vchar_t *tmp;
+
+	tmp = rc_vmalloc(iph2->nonce_p->l + body->l);
+	if (tmp == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+			"failed to get hash buffer.\n");
+		return;
+	}
+	memcpy(tmp->u, iph2->nonce_p->v, iph2->nonce_p->l);
+	memcpy(tmp->u + iph2->nonce_p->l, body->v, body->l);
+
+	hash = oakley_compute_hash1(iph2->ph1, iph2->msgid, tmp);
+	rc_vfree(tmp);
+
+	if (hash == NULL)
+		return;
+    }
+
+	/* send isakmp payload */
+	iph2->sendbuf = quick_ir1mx(iph2, body, hash);
+	if (iph2->sendbuf == NULL)
+		return;
+
+	/* send the packet, add to the schedule to resend */
+	iph2->retry_counter = ikev1_max_retry_to_send(iph2->ph1->rmconf);
+	if (isakmp_ph2resend(iph2) == -1)
+		return;
+
+	/* the sending message is added to the received-list. */
+	if (add_recvdpkt(iph2->ph1->remote, iph2->ph1->local, iph2->sendbuf, iph2->msg1, iph2->ph1->rmconf) == -1) {
+		plog(PLOG_INTERR , PLOGLOC, NULL,
+			"failed to add a response packet to the tree.\n");
+		return;
+	}
+
+	/* change status of isakmp status entry */
+	iph2->status = PHASE2ST_MSG1SENT;
+
+
+	if (body != NULL)
+		rc_vfree(body);
+	if (hash != NULL)
+		rc_vfree(hash);
+
+	return;
 }
 
 /*
@@ -1380,221 +1810,16 @@ quick_r2send(struct ph2handle *iph2, rc_vchar_t *msg)
 				"failed to set DH value.\n");
 			goto end;
 		}
-		/* generate DH public value */
-		if (oakley_dh_generate(iph2->pfsgrp,
-				&iph2->dhpub, &iph2->dhpriv) < 0) {
+		/* generate DH public value (pool) */
+		if (oakley_dh_generate_submit(iph2->pfsgrp,
+		    &iph2->dhpub, &iph2->dhpriv,
+		    quick_r2send_dh_done, iph2) != 0) {
 			goto end;
 		}
+		return 0;	/* resumed in quick_r2send_dh_done */
 	}
-
-#ifdef ENABLE_NATT
-    if ((iph2->ph1->natt_flags & NAT_DETECTED) != 0 &&
-		(iph2->ph1->natt_options->mode_udp_transport 
-			 & IPSECDOI_ATTR_ENC_MODE_UDPTRNS_RFC) != 0 &&  
-			ike_ipsec_mode(iph2->selector->pl) == RCT_IPSM_TRANSPORT)
-    {
-        if (ph2natoa_set(iph2, iph2->side) < 0)
-        {
-            plog(PLOG_INTERR, PLOGLOC, NULL,
-                 "failed to get NAT-OA\n");
-            goto end;
-        }
-
-        natoa = (struct ph2natoa*)iph2->natoa->v;
-        natoa_p = (struct ph2natoa*)iph2->natoa_p->v;
-
-        if (natoa != NULL && natoa_p != NULL)
-            natoa_i = natoa_r = 1;
-    } 
-    else 
-        plog(PLOG_INTWARN, PLOGLOC, NULL,
-             "configuration is not suitable for NAT-OA, skip\n");
-#endif
-
-	/* create SA;NONCE payload, and KE and ID if need */
-	tlen = sizeof(*gen) + iph2->sa_ret->l
-		+ sizeof(*gen) + iph2->nonce->l;
-	if (iph2->dhpub_p != NULL && pfsgroup != 0)
-		tlen += (sizeof(*gen) + iph2->dhpub->l);
-	if (iph2->id_p != NULL)
-		tlen += (sizeof(*gen) + iph2->id_p->l
-			+ sizeof(*gen) + iph2->id->l);
-
-#ifdef ENABLE_NATT
-	if (natoa_i)
-	    tlen += sizeof(*gen) + iph2->natoa->l;
-	if (natoa_r)
-	    tlen += sizeof(*gen) + iph2->natoa_p->l;
-#endif
-
-	body = rc_vmalloc(tlen);
-	if (body == NULL) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-			"failed to get buffer to send.\n");
-		goto end;
-	}
-	p = body->v;
-
-	/* make SA payload */
-	p = set_isakmp_payload(body->v, iph2->sa_ret, ISAKMP_NPTYPE_NONCE);
-
-	/* add NONCE payload */
-	np_p = &((struct isakmp_gen *)p)->np;	/* XXX */
-	p = set_isakmp_payload(p, iph2->nonce,
-		(iph2->dhpub_p != NULL && pfsgroup != 0)
-				? ISAKMP_NPTYPE_KE
-				: (iph2->id_p != NULL
-					? ISAKMP_NPTYPE_ID
-					: ISAKMP_NPTYPE_NONE));
-
-	/* add KE payload if need. */
-	if (iph2->dhpub_p != NULL && pfsgroup != 0) {
-		np_p = &((struct isakmp_gen *)p)->np;	/* XXX */
-		p = set_isakmp_payload(p, iph2->dhpub,
-			(iph2->id_p == NULL)
-				? ISAKMP_NPTYPE_NONE
-				: ISAKMP_NPTYPE_ID);
-	}
-
-	/* add ID payloads received. */
-	if (iph2->id_p != NULL) 
-    {
-		/* IDci */
-        np_p = &((struct isakmp_gen *)p)->np;	/* XXX */
-		p = set_isakmp_payload(p, iph2->id_p, ISAKMP_NPTYPE_ID);
-    }
-#ifdef ENABLE_NATT
-    if (iph2->id != NULL)
-    {
-        np_p = &((struct isakmp_gen*)p)->np;
-
-        p = set_isakmp_payload(p, iph2->id, 
-            (iph2->natoa != NULL || iph2->natoa_p != NULL) 
-                ? ISAKMP_NPTYPE_NATOA_RFC : ISAKMP_NPTYPE_NONE);
-    }
-#else 
-        np_p = &((struct isakmp_gen*)p)->np;
-
-        p = set_isakmp_payload(p, iph2->id, ISAKMP_NPTYPE_NONE);
-#endif
-
-#ifdef ENABLE_NATT
-
-        np_p = &((struct isakmp_gen *)p)->np;
-
-        if (iph2->natoa)
-        { 
-            np_p = &((struct isakmp_gen *)p)->np;
-
-            p = set_isakmp_payload(p, iph2->natoa, 
-                                   (iph2->natoa_p == NULL) 
-                                   ? ISAKMP_NPTYPE_NONE : ISAKMP_NPTYPE_NATOA_RFC);
-        }
-
-        if (iph2->natoa_p)
-        {
-            np_p = &((struct isakmp_gen *)p)->np;
-
-            p = set_isakmp_payload(p, iph2->natoa_p, ISAKMP_NPTYPE_NONE);
-        }
-
-#endif
-
-	/* add a RESPONDER-LIFETIME notify payload if needed */
-    {
-	rc_vchar_t *data = NULL;
-	struct saprop *pp = iph2->approval;
-	struct saproto *pr;
-
-	if (pp->claim & IPSECDOI_ATTR_SA_LD_TYPE_SEC) {
-		uint32_t v = htonl((uint32_t)pp->lifetime);
-		data = isakmp_add_attr_l(data, IPSECDOI_ATTR_SA_LD_TYPE,
-					IPSECDOI_ATTR_SA_LD_TYPE_SEC);
-		if (!data)
-			goto end;
-		data = isakmp_add_attr_v(data, IPSECDOI_ATTR_SA_LD,
-					(caddr_t)&v, sizeof(v));
-		if (!data)
-			goto end;
-	}
-	if (pp->claim & IPSECDOI_ATTR_SA_LD_TYPE_KB) {
-		uint32_t v = htonl((uint32_t)pp->lifebyte);
-		data = isakmp_add_attr_l(data, IPSECDOI_ATTR_SA_LD_TYPE,
-					IPSECDOI_ATTR_SA_LD_TYPE_KB);
-		if (!data)
-			goto end;
-		data = isakmp_add_attr_v(data, IPSECDOI_ATTR_SA_LD,
-					(caddr_t)&v, sizeof(v));
-		if (!data)
-			goto end;
-	}
-
-	/*
-	 * XXX Is there only single RESPONDER-LIFETIME payload in a IKE message
-	 * in the case of SA bundle ?
-	 */
-	if (data) {
-		for (pr = pp->head; pr; pr = pr->next) {
-			body = isakmp_add_pl_n(body, &np_p,
-					ISAKMP_NTYPE_RESPONDER_LIFETIME, pr, data);
-			if (!body) {
-				rc_vfree(data);
-				return error;	/* XXX */
-			}
-		}
-		rc_vfree(data);
-	}
-    }
-
-	/* generate HASH(2) */
-    {
-	rc_vchar_t *tmp;
-
-	tmp = rc_vmalloc(iph2->nonce_p->l + body->l);
-	if (tmp == NULL) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-			"failed to get hash buffer.\n");
-		goto end;
-	}
-	memcpy(tmp->u, iph2->nonce_p->v, iph2->nonce_p->l);
-	memcpy(tmp->u + iph2->nonce_p->l, body->v, body->l);
-
-	hash = oakley_compute_hash1(iph2->ph1, iph2->msgid, tmp);
-	rc_vfree(tmp);
-
-	if (hash == NULL)
-		goto end;
-    }
-
-	/* send isakmp payload */
-	iph2->sendbuf = quick_ir1mx(iph2, body, hash);
-	if (iph2->sendbuf == NULL)
-		goto end;
-
-	/* send the packet, add to the schedule to resend */
-	iph2->retry_counter = ikev1_max_retry_to_send(iph2->ph1->rmconf);
-	if (isakmp_ph2resend(iph2) == -1)
-		goto end;
-
-	/* the sending message is added to the received-list. */
-	if (add_recvdpkt(iph2->ph1->remote, iph2->ph1->local, iph2->sendbuf, iph2->msg1, iph2->ph1->rmconf) == -1) {
-		plog(PLOG_INTERR , PLOGLOC, NULL,
-			"failed to add a response packet to the tree.\n");
-		goto end;
-	}
-
-	/* change status of isakmp status entry */
-	iph2->status = PHASE2ST_MSG1SENT;
-
-	error = 0;
-
-end:
-	if (body != NULL)
-		rc_vfree(body);
-	if (hash != NULL)
-		rc_vfree(hash);
-
-	return error;
+	quick_r2send_tail(iph2, msg);
+	return 0;
 }
 
 /*
@@ -1840,10 +2065,20 @@ quick_r3prep(struct ph2handle *iph2, rc_vchar_t *msg0)
 		goto end;
 	}
 
-	/* compute both of KEYMATs */
-	if (oakley_compute_keymat(iph2, RESPONDER) < 0)
-		goto end;
+	/* compute both of KEYMATs; PFS g^ir off the IKE thread,
+	 * SADB install resumes in quick_r3prep_after_keymat */
+	if (msg != NULL)
+		rc_vfree(msg);
+	if (oakley_compute_keymat_async(iph2, RESPONDER,
+	    quick_r3prep_after_keymat) < 0)
+		return -1;
+	return 0;
+}
 
+/* continuation on the IKE thread after KEYMAT (responder) */
+static void
+quick_r3prep_after_keymat(struct ph2handle *iph2)
+{
 	iph2->status = PHASE2ST_ADDSA;
 	iph2->flags ^= ISAKMP_FLAG_C;	/* reset bit */
 
@@ -1857,18 +2092,24 @@ quick_r3prep(struct ph2handle *iph2, rc_vchar_t *msg0)
 	const char *my_sa_ipaddr_str = rcs_addrlist2str(cal_my_sa_ipaddr);
 	const char *peers_sa_ipaddr_str = rcs_addrlist2str(cal_peers_sa_ipaddr);
 	plog(PLOG_DEBUG, PLOGLOC, NULL,
-		"IKEv1 selector src address: %s port: %u\n", src_str, cal_src->port);
+		"IKEv1 selector src address: %s port: %u
+", src_str, cal_src->port);
 	plog(PLOG_DEBUG, PLOGLOC, NULL,
-		"IKEv1 selector dst address: %s port: %u\n", dst_str, cal_dst->port);
+		"IKEv1 selector dst address: %s port: %u
+", dst_str, cal_dst->port);
 	plog(PLOG_DEBUG, PLOGLOC, NULL,
-		"IKEv1 policy my endpoint address: %s port: %u\n", my_sa_ipaddr_str, cal_my_sa_ipaddr->port);
+		"IKEv1 policy my endpoint address: %s port: %u
+", my_sa_ipaddr_str, cal_my_sa_ipaddr->port);
 	plog(PLOG_DEBUG, PLOGLOC, NULL,
-		"IKEv1 policy peers endpoint address: %s port: %u\n", peers_sa_ipaddr_str, cal_peers_sa_ipaddr->port);
+		"IKEv1 policy peers endpoint address: %s port: %u
+", peers_sa_ipaddr_str, cal_peers_sa_ipaddr->port);
 	plog(PLOG_DEBUG, PLOGLOC, NULL,
-	     "IKEv1 phase 1 endpoints local<=>remote: %s<=>%s\n",
+	     "IKEv1 phase 1 endpoints local<=>remote: %s<=>%s
+",
 	     rcs_sa2str(iph2->ph1->local), rcs_sa2str(iph2->ph1->remote));
 	plog(PLOG_DEBUG, PLOGLOC, NULL,
-	     "IKEv1 phase 1 endpoints src<=>dst: %s<=>%s\n",
+	     "IKEv1 phase 1 endpoints src<=>dst: %s<=>%s
+",
 	     rcs_sa2str(iph2->src), rcs_sa2str(iph2->dst));
 
 	/* generate policy */
@@ -1876,8 +2117,9 @@ quick_r3prep(struct ph2handle *iph2, rc_vchar_t *msg0)
 	struct rcf_selector *s;
 	struct rcf_selector *s_next;
 	if (rcf_get_selectorlist(&s)) {
-		TRACE((PLOGLOC, "rcf_get_selectorlist() failed\n"));
-		return 0;
+		TRACE((PLOGLOC, "rcf_get_selectorlist() failed
+"));
+		return;
         }
 
 	for (; s; s_next = s->next, rcf_free_selector(s), s = s_next) {
@@ -1907,19 +2149,21 @@ quick_r3prep(struct ph2handle *iph2, rc_vchar_t *msg0)
 			const struct rc_addrlist *al_src = s->src;
 			const struct rc_addrlist *al_dst = s->dst;
 			plog(PLOG_INFO, PLOGLOC, NULL,
-				"Generating policy for src=%s, dst=%s\n",
+				"Generating policy for src=%s, dst=%s
+",
 					rcs_addrlist2str(al_src), rcs_addrlist2str(al_dst));
 			if (ike_spmif_post_policy_add(s, ike_ipsec_mode(s->pl),
 						      lifetime, NULL, NULL,
 						      iph2->ph1->rmconf) < 0) {
 				plog(PLOG_INTERR, PLOGLOC, NULL,
-				     "generate policy failed.\n");
+				     "generate policy failed.
+");
 				struct rcf_selector *n, *next;
 				for (n = s; n; n = next) {
 					next = n->next;
 					rcf_free_selector(n);
 				}
-				goto end;
+				return;
 			}
 		}
 		/* In transport mode, the src address is the same as the phase 1 endpoint address
@@ -1942,19 +2186,21 @@ quick_r3prep(struct ph2handle *iph2, rc_vchar_t *msg0)
 			const struct rc_addrlist *al_src = s->src;
 			const struct rc_addrlist *al_dst = s->dst;
 			plog(PLOG_INFO, PLOGLOC, NULL,
-				"Generating policy for src=%s, dst=%s\n",
+				"Generating policy for src=%s, dst=%s
+",
 					rcs_addrlist2str(al_src), rcs_addrlist2str(al_dst));
 			if (ike_spmif_post_policy_add(s, ike_ipsec_mode(s->pl),
 						      lifetime, NULL, NULL,
 						      iph2->ph1->rmconf) < 0) {
 				plog(PLOG_INTERR, PLOGLOC, NULL,
-				     "generate policy failed.\n");
+				     "generate policy failed.
+");
 				struct rcf_selector *n, *next;
 				for (n = s; n; n = next) {
 					next = n->next;
 					rcf_free_selector(n);
 				}
-				goto end;
+				return;
 			}
 		}
 
@@ -1976,7 +2222,8 @@ quick_r3prep(struct ph2handle *iph2, rc_vchar_t *msg0)
 				iph2->ph1->rmconf) < 0)
 		    {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
-			     "generate policy failed.\n");
+			     "generate policy failed.
+");
 
 			struct rcf_selector *n, *next;
 
@@ -1986,33 +2233,30 @@ quick_r3prep(struct ph2handle *iph2, rc_vchar_t *msg0)
 			    rcf_free_selector(n);
 			}
 
-			goto end;
+			return;
 		    }
 
 		}
 	}
 	/* Do UPDATE as responder */
-	plog(PLOG_DEBUG, PLOGLOC, NULL, "call pk_sendupdate\n");
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "call pk_sendupdate
+");
 	if (pk_sendupdate(iph2) < 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey update failed.\n");
-		goto end;
+		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey update failed.
+");
+		return;
 	}
-	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey update sent.\n");
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey update sent.
+");
 
 	/* Do ADD for responder */
 	if (pk_sendadd(iph2) < 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey add failed.\n");
-		goto end;
+		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey add failed.
+");
+		return;
 	}
-	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey add sent.\n");
-
-	error = 0;
-
-end:
-	if (msg != NULL)
-		rc_vfree(msg);
-
-	return error;
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "pfkey add sent.
+");
 }
 
 
