@@ -261,7 +261,9 @@ ikev2_abort(struct ikev2_sa *ike_sa, int err)
 	struct ikev2_child_sa *child_sa;
 
 	TRACE((PLOGLOC, "ikev2_abort(%p, %d)\n", ike_sa, err));
-	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC, "aborting ike_sa\n");
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		   "aborting ike_sa err=%d (%s) state=%d\n",
+		   err, strerror(err), ike_sa->state);
 	ikev2_set_state(ike_sa, IKEV2_STATE_DYING);
 
 	for (child_sa = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
