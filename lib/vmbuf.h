@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2004 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -31,6 +31,9 @@
 
 #include <string.h>
 #include <inttypes.h>
+
+#ifndef VMBUF_H
+#define VMBUF_H
 
 /*
  *	bp      v
@@ -86,3 +89,6 @@ extern rc_vchar_t *rc_vconcat(rc_vchar_t *, const void *, size_t);
     memcpy((p_), (s_)->v, (s_)->l);					\
     (p_) += (s_)->l;							\
 } while (/*CONSTCOND*/0)
+
+
+#endif

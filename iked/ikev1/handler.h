@@ -4,7 +4,7 @@
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -16,7 +16,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -31,6 +31,8 @@
  */
 
 #include "ike_pfkey.h"
+#include "vmbuf.h"   /* for rc_vchar_t */
+#include "isakmp_var.h"  /* for ISAKMP_MAX_FRAGS */
 
 /* Phase 1 handler */
 /*
@@ -96,6 +98,7 @@
  * acquire msg		I	R
  * ID payload		I	R		I	R
  */
+
 struct ph1handle {
 	isakmp_index_t	index;
 
@@ -122,11 +125,10 @@ struct ph1handle {
 #ifdef ENABLE_NATT
 	struct ph1natt_options *natt_options;	/* Selected NAT-T IKE version */
 	uint32_t natt_flags;		/* NAT-T related flags */
-#ifdef ENABLE_FRAG
+#endif
 	int frag;			/* IKE phase 1 fragmentation */
+	uint32_t frag_msgid;		/* IKE phase 1 fragment message ID */
 	struct isakmp_frag_item *frag_chain;	/* Received fragments */
-#endif
-#endif
 
 	int dpd_support;	/* Does remote supports DPD ? */
 	time_t dpd_lastack;	/* Last ack received */
@@ -287,6 +289,12 @@ struct ph2handle {
 	rc_vchar_t *nonce;	/* nonce value in phase 2 */
 	rc_vchar_t *nonce_p;	/* partner's nonce value in phase 2 */
 
+#ifdef ENABLE_NATT
+	rc_vchar_t *natoa; 	/* NAT original address payload */
+	rc_vchar_t *natoa_p;	/* peers's NAT original address payload */
+    struct sockaddr *oa;
+#endif
+
 	rc_vchar_t *sa;		/* whole SA payload to send/to be sent */
 	/* to calculate HASH */
 	/* NOT INCLUDING general header. */
@@ -312,6 +320,18 @@ struct ph2handle {
 
 	          LIST_ENTRY(ph2handle) chain;
 	          LIST_ENTRY(ph2handle) ph1bind;	/* chain to ph1handle */
+};
+
+/*
+ * IKEv1 fragmentation context.
+ */
+struct isakmp_frag_item {
+	uint8_t frag_id;
+	uint32_t msgid;
+	int last_frag;
+	int nfrags;
+	struct isakmp_frag_item *next;
+	rc_vchar_t *parts[ISAKMP_MAX_FRAGS];
 };
 
 /*

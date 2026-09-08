@@ -258,6 +258,7 @@ send_cert_req		{ DP; return(SEND_CERT_REQ); }
 nonce_size		{ DP; return(NONCE_SIZE); }
 initial_contact		{ DP; return(INITIAL_CONTACT); }
 support_proxy		{ DP; return(SUPPORT_PROXY); }
+
 nat_traversal		{ DP; return(NAT_TRAVERSAL); }
 require_config_payload	{ DP; return(REQUIRE_CONFIG); }
 application_version	{ DP; return(APPLICATION_VERSION); }

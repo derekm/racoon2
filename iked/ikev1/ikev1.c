@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2004 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -82,6 +82,7 @@
 #endif
 
 #include "var.h"
+#include "isakmp_var.h"
 
 #include "algorithm.h"
 #include "dhgroup.h"
@@ -111,7 +112,7 @@ static void isakmp_fail_initiate_ph2(struct ph2handle *);
 
 static void isakmp_ph1expire_stub(void *);
 
-static struct isakmpsa * create_isakmpsa(int, int, 
+static struct isakmpsa * create_isakmpsa(int, int,
 					 struct rc_alglist *,
 					 struct rc_alglist *,
 					 struct rc_alglist *,
@@ -141,9 +142,9 @@ PH1EXCHG ph1exchange[][2][PHASE1ST_MAX] = {
 	 {nostate1, agg_r1recv, agg_r1send, agg_r2recv, agg_r2send, nostate1,
 	  nostate1, nostate1, nostate1, nostate1,},
 #else
-	 {nostate1, nostate1, nostate1, nostate1, nostate1, nostate1, 
+	 {nostate1, nostate1, nostate1, nostate1, nostate1, nostate1,
 	  nostate1, nostate1, nostate1, nostate1, },
-	 {nostate1, nostate1, nostate1, nostate1, nostate1, nostate1, 
+	 {nostate1, nostate1, nostate1, nostate1, nostate1, nostate1,
 	  nostate1, nostate1, nostate1, nostate1, },
 #endif
 	 },
@@ -155,9 +156,9 @@ PH1EXCHG ph1exchange[][2][PHASE1ST_MAX] = {
 	 {nostate1, base_r1recv, base_r1send, base_r2recv, base_r2send,
 	  nostate1, nostate1, nostate1, nostate1, nostate1,},
 #else
-	 {nostate1, nostate1, nostate1, nostate1, nostate1, nostate1, 
+	 {nostate1, nostate1, nostate1, nostate1, nostate1, nostate1,
 	  nostate1, nostate1, nostate1, nostate1, },
-	 {nostate1, nostate1, nostate1, nostate1, nostate1, nostate1, 
+	 {nostate1, nostate1, nostate1, nostate1, nostate1, nostate1,
 	  nostate1, nostate1, nostate1, nostate1, },
 #endif
 	 },
@@ -236,7 +237,7 @@ ikev1_main(rc_vchar_t *msg, struct sockaddr *remote, struct sockaddr *local)
 		return 0;
 	}
 
-	/* (RFC2408) 
+	/* (RFC2408)
 	 * Implementations SHOULD never accept packets with a minor
 	 * version number larger than its own, given the major version
 	 * numbers are identical.
@@ -307,7 +308,7 @@ ikev1_main(rc_vchar_t *msg, struct sockaddr *remote, struct sockaddr *local)
 
 			/*
 			 * set the flag to prevent further port floating.
-			 * (FIXME: should we allow it? E.g. when the NAT gw 
+			 * (FIXME: should we allow it? E.g. when the NAT gw
 			 * is rebooted?)
 			 */
 			iph1->natt_flags |= NAT_PORTS_CHANGED | NAT_ADD_NON_ESP_MARKER;
@@ -535,11 +536,11 @@ ikev1_main(rc_vchar_t *msg, struct sockaddr *remote, struct sockaddr *local)
 }
 
 
-/* 
+/*
  * process ACQUIRE for IKEv1
  */
 void
-ikev1_initiate(struct isakmp_acquire_request *req, 
+ikev1_initiate(struct isakmp_acquire_request *req,
 	       struct rcf_policy *policy,
 	       struct rcf_selector *selector,
 	       struct rcf_remote *rm_info)
@@ -573,12 +574,10 @@ ikev1_initiate(struct isakmp_acquire_request *req,
 			((struct sockaddr_in *)peer)->sin_port =
 				htons(isakmp_port);
 			break;
-#ifdef INET6
 		case AF_INET6:
 			((struct sockaddr_in6 *)peer)->sin6_port =
 				htons(isakmp_port);
 			break;
-#endif
 		default:
 			isakmp_log(0, req->src, req->dst, 0,
 				   PLOG_INTERR, PLOGLOC,
@@ -852,7 +851,7 @@ quick_main(struct ph2handle *iph2, rc_vchar_t *msg)
 
 /* new negotiation of phase 1 for initiator */
 int
-isakmp_ph1begin_i(struct rcf_remote *rmconf, 
+isakmp_ph1begin_i(struct rcf_remote *rmconf,
 	          struct sockaddr *remote, struct sockaddr *local)
 {
 	struct ph1handle *iph1;
@@ -946,7 +945,7 @@ isakmp_ph1begin_r(rc_vchar_t *msg, struct sockaddr *remote,
 		return -1;
 	}
 	if (rmconf->ikev1 == NULL) {
-		plog(PLOG_PROTOERR, PLOGLOC, 0, 
+		plog(PLOG_PROTOERR, PLOGLOC, 0,
 		     "received IKEv1 request but no IKEv1 configuration for peer %s\n",
 		     rc_vmem2str(rmconf->rm_index));
 		return -1;
@@ -1376,10 +1375,14 @@ isakmp_ph1delete(struct ph1handle *iph1)
 	racoon_free(src);
 	racoon_free(dst);
 
-	remph1(iph1);
-	delph1(iph1);
-
-	return;
+	/*
+	 * Use purge_remote() to clean up any orphaned ph2 handles
+	 * in the global ph2tree that match this ph1 (iph2->ph1 == NULL
+	 * but addresses match). This ensures kernel IPsec SAs are
+	 * properly deleted before the ph1 is freed.
+	 */
+	purge_remote(iph1);
+	/* purge_remote() calls remph1() + delph1() internally */
 }
 
 void
@@ -1517,9 +1520,9 @@ isakmp_chkph1there(struct ph2handle *iph2)
 		return;
 	}
 
-	/* 
-	 * Search isakmp status table by address and port 
-	 * If NAT-T is in use, consider null ports as a 
+	/*
+	 * Search isakmp status table by address and port
+	 * If NAT-T is in use, consider null ports as a
 	 * wildcard and use IKE ports instead.
 	 */
 #ifdef ENABLE_NATT
@@ -1644,7 +1647,7 @@ isakmp_add_attr_l(rc_vchar_t *buf0, int type, uint32_t val)
  * set values into allocated buffer of isakmp header for phase 1
  */
 static caddr_t
-set_isakmp_header(rc_vchar_t *vbuf, struct ph1handle *iph1, 
+set_isakmp_header(rc_vchar_t *vbuf, struct ph1handle *iph1,
 	         int nptype, uint8_t etype, uint8_t flags, uint32_t msgid)
 {
 	struct isakmp *isakmp;
@@ -1824,8 +1827,8 @@ etypesw2(int etype)
  /*NOTREACHED*/}
 
 int
-copy_ph1addresses(struct ph1handle *iph1, struct rcf_remote *rmconf, 
-		  struct sockaddr *remote, struct sockaddr *local) 
+copy_ph1addresses(struct ph1handle *iph1, struct rcf_remote *rmconf,
+		  struct sockaddr *remote, struct sockaddr *local)
 {
 	uint16_t *port = NULL;
 
@@ -1853,7 +1856,6 @@ copy_ph1addresses(struct ph1handle *iph1, struct rcf_remote *rmconf,
 			break;
 		*port = htons(isakmp_port);
 		break;
-#ifdef INET6
 	case AF_INET6:
 		port = &((struct sockaddr_in6 *)iph1->remote)->sin6_port;
 		if (*port)
@@ -1863,7 +1865,6 @@ copy_ph1addresses(struct ph1handle *iph1, struct rcf_remote *rmconf,
 			break;
 		*port = htons(isakmp_port);
 		break;
-#endif
 	default:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "invalid family: %d\n", iph1->remote->sa_family);
@@ -1881,11 +1882,9 @@ copy_ph1addresses(struct ph1handle *iph1, struct rcf_remote *rmconf,
 	case AF_INET:
 		port = &((struct sockaddr_in *)iph1->local)->sin_port;
 		break;
-#ifdef INET6
 	case AF_INET6:
 		port = &((struct sockaddr_in6 *)iph1->local)->sin6_port;
 		break;
-#endif
 	default:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "invalid family: %d\n", iph1->remote->sa_family);
@@ -1958,13 +1957,11 @@ isakmp_newcookie(caddr_t place, struct sockaddr *remote, struct sockaddr *local)
 		sa1 = (caddr_t)&((struct sockaddr_in *)remote)->sin_addr;
 		sa2 = (caddr_t)&((struct sockaddr_in *)local)->sin_addr;
 		break;
-#ifdef INET6
 	case AF_INET6:
 		alen = sizeof(struct in6_addr);
 		sa1 = (caddr_t)&((struct sockaddr_in6 *)remote)->sin6_addr;
 		sa2 = (caddr_t)&((struct sockaddr_in6 *)local)->sin6_addr;
 		break;
-#endif
 	default:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "invalid family: %d\n", remote->sa_family);
@@ -2199,20 +2196,19 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 #ifdef ENABLE_NATT
 	size_t extralen = NON_ESP_MARKER_USE(iph1) ? NON_ESP_MARKER_LEN : 0;
 
-#ifdef ENABLE_FRAG
-	/* 
+	/*
 	 * Do not add the non ESP marker for a packet that will
-	 * be fragmented. The non ESP marker should appear in 
+	 * be fragmented. The non ESP marker should appear in
 	 * all fragment's packets, but not in the fragmented packet
 	 */
-	if (iph1->frag && sbuf->l > ISAKMP_FRAG_MAXLEN) 
+	if (sbuf->l > ISAKMP_FRAG_MAXLEN)
 		extralen = 0;
 #endif
 	if (extralen)
 		plog (PLOG_DEBUG, PLOGLOC, NULL, "Adding NON-ESP marker\n");
 
-	/* If NAT-T port floating is in use, 4 zero bytes (non-ESP marker) 
-	   must added just before the packet itself. For this we must 
+	/* If NAT-T port floating is in use, 4 zero bytes (non-ESP marker)
+	   must added just before the packet itself. For this we must
 	   allocate a new buffer and release it at the end. */
 	if (extralen) {
 		if ((vbuf = rc_vmalloc (sbuf->l + extralen)) == NULL) {
@@ -2224,12 +2220,11 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 		memcpy (vbuf->u + extralen, sbuf->v, sbuf->l);
 		sbuf = vbuf;
 	}
-#endif
 
 	/* select the socket to be sent */
 	s = getsockmyaddr(iph1->local);
 	if (s == -1){
-		if ( vbuf != NULL )
+		if (vbuf != NULL)
 			rc_vfree(vbuf);
 		return -1;
 	}
@@ -2237,32 +2232,110 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 	plog(PLOG_DEBUG, PLOGLOC, NULL, "%zu bytes from %s to %s\n",
 	     sbuf->l, rcs_sa2str(iph1->local), rcs_sa2str(iph1->remote));
 
-#ifdef ENABLE_FRAG
-	if (iph1->frag && sbuf->l > ISAKMP_FRAG_MAXLEN) {
+	if (sbuf->l > ISAKMP_FRAG_MAXLEN) {
 		if (isakmp_sendfrags(iph1, sbuf) == -1) {
-			plog(PLOG_INTERR, PLOGLOC, NULL, 
+			plog(PLOG_INTERR, PLOGLOC, NULL,
 			    "isakmp_sendfrags failed\n");
-			if ( vbuf != NULL )
+			if (vbuf != NULL)
 				rc_vfree(vbuf);
 			return -1;
 		}
-	} else 
-#endif
+	} else
 	{
-		len = sendfromto(s, sbuf->v, sbuf->l,
-				 iph1->local, iph1->remote, ikev1_times_per_send(iph1->rmconf));
+		len = sendfromto(s, sbuf->v, sbuf->l, iph1->local,
+		    iph1->remote, ikev1_times_per_send(iph1->rmconf));
 
 		if (len == -1) {
 			plog(PLOG_INTERR, PLOGLOC, NULL, "sendfromto failed\n");
-			if ( vbuf != NULL )
+			if (vbuf != NULL)
 				rc_vfree(vbuf);
 			return -1;
 		}
 	}
-	
-	if ( vbuf != NULL )
+
+	if (vbuf != NULL)
 		rc_vfree(vbuf);
-	
+
+	return 0;
+}
+
+int isakmp_sendfrags(struct ph1handle *iph1, rc_vchar_t *buf)
+{
+	size_t hdrlen = sizeof(struct isakmp);
+	size_t frag_hdrlen = sizeof(struct isakmp_frag_hdr);
+
+	size_t max = ISAKMP_FRAG_MAXLEN - hdrlen - frag_hdrlen;
+
+	struct isakmp *orig = (struct isakmp *)buf->v;
+
+	uint8_t frag_id = (uint8_t)((iph1->frag_msgid ^
+	    (uint32_t)time(NULL)) & 0xff);
+	if (frag_id == 0)
+	    frag_id = 1;
+	int frag_no = 1;
+	size_t off = hdrlen;
+	int s = -1;
+
+	if (max == 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "invalid fragment size\n");
+		return -1;
+	}
+
+	while (off < buf->l) {
+		size_t remain = buf->l - off;
+		size_t chunk = (remain > max) ? max : remain;
+
+		rc_vchar_t *fragbuf = rc_vmalloc(hdrlen + frag_hdrlen + chunk);
+		if (!fragbuf)
+			return -1;
+
+		struct isakmp *ih = (struct isakmp *)fragbuf->v;
+		struct isakmp_frag_hdr *frag =
+		    (struct isakmp_frag_hdr *)(fragbuf->v + hdrlen);
+
+		memcpy(ih, orig, hdrlen);
+
+		ih->np = ISAKMP_NPTYPE_FRAG;
+		put_uint32(&ih->len, hdrlen + frag_hdrlen + chunk);
+
+		frag->h.np = orig->np;
+		frag->h.reserved = 0;
+
+		put_uint16(&frag->h.len, frag_hdrlen + chunk);
+
+		frag->frag_id = frag_id;
+		frag->flags = (off + chunk < buf->l) ? ISAKMP_FRAG_MORE : 0;
+
+		put_uint16(&frag->frag_no, frag_no);
+
+		memcpy(fragbuf->v + hdrlen + frag_hdrlen, buf->v + off, chunk);
+
+		if (s == -1) {
+			s = getsockmyaddr(iph1->local);
+			if (s == -1) {
+				rc_vfree(fragbuf);
+				return -1;
+			}
+		}
+
+		int len = sendfromto(s,
+			   fragbuf->v,
+			   fragbuf->l,
+			   iph1->local,
+			   iph1->remote,
+			   ikev1_times_per_send(iph1->rmconf));
+
+		if (len == -1) {
+			plog(PLOG_INTERR, PLOGLOC, NULL, "sendfromto failed\n");
+			rc_vfree(fragbuf);
+			return -1;
+		}
+
+		rc_vfree(fragbuf);
+		off += chunk;
+		frag_no++;
+	}
+
 	return 0;
 }
 
@@ -2282,7 +2355,7 @@ ikev1_verify_cert(struct rcf_remote *conf)
 }
 
 
-int 
+int
 ikev1_getcert_method(struct rcf_remote *conf)
 {
 	return ISAKMP_GETCERT_LOCALFILE;
@@ -2316,7 +2389,7 @@ getrmconf(struct sockaddr *remote)
 
 
 /*isakmp.c*/
-uint32_t 
+uint32_t
 isakmp_newmsgid2(struct ph1handle *iph1)
 {
 	uint32_t msgid2;
@@ -2399,7 +2472,7 @@ dupisakmpsa(struct isakmpsa *sa)
 
 	*res = *sa;
 #ifdef HAVE_GSSAPI
-	/* 
+	/*
 	 * XXX gssid
 	 */
 #endif
@@ -2459,7 +2532,7 @@ ikev1_conf_to_isakmpsa(struct rcf_remote *rmconf)
 			for (enc = ikev1_kmp_enc_alg(rmconf); enc; enc = enc->next) {
 				for (hash = ikev1_kmp_hash_alg(rmconf); hash; hash = hash->next) {
 					sa = create_isakmpsa(prop_no,
-							     trns_no, 
+							     trns_no,
 							     auth,
 							     dh,
 							     enc,
@@ -2494,16 +2567,16 @@ enc_keylen(rc_type algtype, int keylen)
 		return 256;
 	default:
 		return keylen;
-	}			
+	}
 }
 
 
 static struct isakmpsa *
-create_isakmpsa(int prop_no, int trns_no, 
-		struct rc_alglist *auth, 
-		struct rc_alglist *dh, 
-		struct rc_alglist *enc, 
-		struct rc_alglist *hash, 
+create_isakmpsa(int prop_no, int trns_no,
+		struct rc_alglist *auth,
+		struct rc_alglist *dh,
+		struct rc_alglist *enc,
+		struct rc_alglist *hash,
 		struct rcf_remote *rmconf, rc_vchar_t *gssid)
 {
 	struct isakmpsa *new;
@@ -2588,7 +2661,7 @@ check_ph2_id_type(int type)
 
 
 static int
-id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol, 
+id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 	       rc_vchar_t *id)
 {
 	int error;
@@ -2629,9 +2702,7 @@ id_is_matching(struct rc_addrlist *addr, int upper_layer_protocol,
 			id_port = ((struct sockaddr_in6 *)si)->sin6_port;
 #endif
 
-#ifdef INET6
 		/* scope? */
-#endif
 		break;
 
 	default:
@@ -2732,14 +2803,14 @@ ike_conf_find_ikev1sel_by_id(rc_vchar_t *id_local, rc_vchar_t *id_remote)
 
 	if (!check_ph2_id_type(id_l->type)) {
 		isakmp_log(0, 0, 0, 0,
-			   PLOG_PROTOERR, PLOGLOC, 
+			   PLOG_PROTOERR, PLOGLOC,
 			   "received ID for localside (type %s) is not supported ID type\n",
 			   s_ipsecdoi_ident(id_l->type));
 		return 0;
 	}
 	if (!check_ph2_id_type(id_r->type)) {
 		isakmp_log(0, 0, 0, 0,
-			   PLOG_PROTOERR, PLOGLOC, 
+			   PLOG_PROTOERR, PLOGLOC,
 			   "received ID for remoteside (type %s) is not supported ID type\n",
 			   s_ipsecdoi_ident(id_r->type));
 		return 0;
@@ -2833,7 +2904,7 @@ isakmp_plist_append (struct payload_list *plist, rc_vchar_t *payload, int payloa
 	return plist;
 }
 
-rc_vchar_t * 
+rc_vchar_t *
 isakmp_plist_set_all (struct payload_list **plist, struct ph1handle *iph1)
 {
 	struct payload_list *ptr, *first;
@@ -2842,7 +2913,7 @@ isakmp_plist_set_all (struct payload_list **plist, struct ph1handle *iph1)
 	char *p;
 
 	if (plist == NULL) {
-		plog(PLOG_INTERR, PLOGLOC, NULL, 
+		plog(PLOG_INTERR, PLOGLOC, NULL,
 		    "in isakmp_plist_set_all: plist == NULL\n");
 		return NULL;
 	}
@@ -2852,7 +2923,7 @@ isakmp_plist_set_all (struct payload_list **plist, struct ph1handle *iph1)
 	while (ptr->prev)
 		ptr = ptr->prev;
 	first = ptr;
-	
+
 	/* Compute the whole length.  */
 	while (ptr) {
 		tlen += ptr->payload->l + sizeof (struct isakmp_gen);

@@ -200,7 +200,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 	struct cf_list *list;
 };
 
-%type <str> STRING
+%token <str> STRING
 %type <list> number string
 %type <list> string_list_spec string_list
 %type <list> id_list_spec id_list id_spec id_qualval id_qual

@@ -2,7 +2,7 @@
  * Copyright (C) 2004 SuSE Linux AG, Nuernberg, Germany.
  * Contributed by: Michal Ludvig <mludvig@suse.cz>, SUSE Labs
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -14,7 +14,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -35,12 +35,13 @@
 
 #define IKEV1_DEFAULT_NATK_INTERVAL	20
 
-#define	NAT_ANNOUNCED		(1L<<0)
-#define	NAT_DETECTED_ME		(1L<<1)
-#define	NAT_DETECTED_PEER	(1L<<2)
-#define	NAT_PORTS_CHANGED	(1L<<3)
-#define	NAT_KA_QUEUED		(1L<<4)
-#define	NAT_ADD_NON_ESP_MARKER	(1L<<5)
+#define	NAT_ANNOUNCED		    (1L<<0)
+#define	NAT_DETECTED_ME		    (1L<<1)
+#define	NAT_DETECTED_PEER	    (1L<<2)
+#define NAT_DETECTED_BOTH       (NAT_DETECTED_ME | NAT_DETECTED_PEER)
+#define	NAT_PORTS_CHANGED	    (1L<<4)
+#define	NAT_KA_QUEUED		    (1L<<5)
+#define	NAT_ADD_NON_ESP_MARKER	(1L<<6)
 
 #define	NATT_AVAILABLE(ph1)	((iph1)->natt_flags & NAT_ANNOUNCED)
 
@@ -49,7 +50,7 @@
 #define	NON_ESP_MARKER_LEN	sizeof(uint32_t)
 #define	NON_ESP_MARKER_USE(iph1)	((iph1)->natt_flags & NAT_ADD_NON_ESP_MARKER)
 
-/* These are the values from parsing "remote {}" 
+/* These are the values from parsing "remote {}"
    block of the config file. */
 #define NATT_FORCE	RCT_NATT_FORCE
 #define NATT_ON		RCT_BOOL_ON
@@ -76,6 +77,14 @@ struct ph2natt {
 	struct sockaddr *oa;
 };
 
+struct ph2natoa
+{
+    uint8_t type; // ID Type
+    uint8_t reserved[3]; // Reserved
+    
+    // Followed by IPv4 (4 octets) or IPv6 address (16 octets)
+}__attribute__((__packed__));
+
 int natt_vendorid(int vid);
 rc_vchar_t *ikev1_natt_hash_addr(struct ph1handle *iph1,
 				 struct sockaddr *addr);
@@ -96,8 +105,13 @@ void natt_keepalive_init(void);
 int natt_keepalive_add(struct sockaddr *src, struct sockaddr *dst);
 int natt_keepalive_add_ph1(struct ph1handle *iph1);
 void natt_keepalive_remove(struct sockaddr *src, struct sockaddr *dst);
+int natt_addr_substitution(struct ph2handle *sa, int flag);
+int idpl_addr2sa(int id_type, caddr_t data, struct sockaddr_storage *ss);
 
 /* Walk through all rmconfigs and tell if NAT-T is enabled in at least one. */
 int natt_enabled_in_rmconf(void);
+int ph2natoa_set(struct ph2handle *iph2, int side);
+struct sockaddr *natoa_vbuf_to_sockaddr(struct sockaddr_storage *ss, rc_vchar_t *vbuf);
+
 
 #endif				/* _IKEV1_NATT_H */

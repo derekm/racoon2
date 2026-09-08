@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2004 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -104,11 +104,11 @@ static void iked_help(void);
 static void iked_ipv4_only(void);
 static void iked_ipv6_only(void);
 
-static RETSIGTYPE handle_sigusr1(int);
-static RETSIGTYPE handle_sigusr2(int);
-static RETSIGTYPE handle_sigint(int);
-static RETSIGTYPE handle_sigterm(int);
-static RETSIGTYPE handle_sighup(int);
+static void handle_sigusr1(int);
+static void handle_sigusr2(int);
+static void handle_sigint(int);
+static void handle_sigterm(int);
+static void handle_sighup(int);
 
 static void terminate_iked(void);
 static void iked_pidfile_create(void);
@@ -702,7 +702,7 @@ iked_ipv6_only(void)
 }
 
 /*ARGSUSED*/
-static RETSIGTYPE
+static void
 handle_sigusr1(int sig)
 {
 	debug_trace = 1;
@@ -713,14 +713,14 @@ handle_sigusr1(int sig)
 }
 
 /*ARGSUSED*/
-static RETSIGTYPE
+static void
 handle_sigusr2(int sig)
 {
 	debug_trace = 0;
 }
 
 /*ARGSUSED*/
-static RETSIGTYPE
+static void
 handle_sigint(int sig)
 {
 	INFO((PLOGLOC, "received SIGINT\n"));
@@ -728,7 +728,7 @@ handle_sigint(int sig)
 }
 
 /*ARGSUSED*/
-static RETSIGTYPE
+static void
 handle_sigterm(int sig)
 {
 	INFO((PLOGLOC, "received SIGTERM\n"));
@@ -736,7 +736,7 @@ handle_sigterm(int sig)
 }
 
 /*ARGSUSED*/
-static RETSIGTYPE
+static void
 handle_sighup(int sig)
 {
 	TRACE((PLOGLOC, "received SIGHUP\n"));

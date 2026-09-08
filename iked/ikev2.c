@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2004-2005 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -259,6 +259,7 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 	struct ikev2_payload_header *first_payload;
 	struct ikev2_sa *ike_sa;
 	struct rcf_remote *conf = 0;
+	int reassembled = 0;
 
 	++isakmpstat.v2input;
 
@@ -271,6 +272,32 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 	TRACE((PLOGLOC, "processing message version %d.%03d\n",
 	       ISAKMP_GETMAJORV(ikehdr->version), ISAKMP_GETMINORV(ikehdr->version)));
 
+	ike_sa = ikev2_find_sa(packet);
+
+
+	/*
+	 * Handle IKEv2 fragment (SKF) reassembly BEFORE payload checking.
+	 */
+
+	if (ikehdr->next_payload ==
+	    IKEV2_PAYLOAD_ENCRYPTED_AND_AUTHENTICATED_FRAGMENT) {
+		rc_vchar_t *reassembled_pkt;
+
+		if (!ike_sa) {
+			TRACE((PLOGLOC, "received fragment but no ike_sa\n"));
+			goto end;
+		}
+		reassembled_pkt = ikev2_frag_recv(ike_sa, packet, remote, local);
+		if (!reassembled_pkt)
+			goto end;
+
+		rc_vfree(packet);
+		packet = reassembled_pkt;
+		ikehdr = (struct ikev2_header *)packet->v;
+		ike_sa = ikev2_find_sa(packet);
+		reassembled = 1;
+	}
+
 	if (ikev2_check_payloads(packet, TRUE) != 0) {
 		isakmp_log(0, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
 			   "malformed payload format\n");
@@ -282,7 +309,6 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 	message_id = get_uint32(&ikehdr->message_id);
 	first_payload = (struct ikev2_payload_header *)(ikehdr + 1);
 
-	ike_sa = ikev2_find_sa(packet);
 	if (!ike_sa) {
 		int need_cookie, has_cookie, invalid_cookie;
 
@@ -415,50 +441,51 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 			goto end;
 		}
 	} else {
-#if 1
-		if (ikehdr->next_payload != IKEV2_PAYLOAD_ENCRYPTED) {
-			isakmp_log(ike_sa, local, remote, packet,
-				   PLOG_PROTOERR, PLOGLOC,
-				   "unsupported message format: first payload is not ENCRYPTED payload\n");
-			++isakmpstat.malformed_message;
-			goto end;
-		}
-#endif
-		if (ikev2_check_icv(ike_sa, packet) != 0) {
-			isakmp_log(ike_sa, local, remote, packet,
-				   PLOG_PROTOERR, PLOGLOC,
-				   "ICV check failure\n");
-			++isakmpstat.fail_integrity_check;
-			goto end;
-		}
-		if (ikev2_retransmit_forced(ike_sa, message_id, is_response) != 0) {
-			goto end;
-		}
-		if (ikev2_check_message_ordering(ike_sa, message_id, is_response, local, remote) != 0) {
-			isakmp_log(ike_sa, local, remote, packet,
-				   PLOG_DEBUG, PLOGLOC,
-				   "dropping unordered message (id %d)\n",
-				   message_id);
-			++isakmpstat.unordered;
-			goto end;
-		}
-		if (ikev2_decrypt(ike_sa, packet) != 0) {
-			isakmp_log(ike_sa, local, remote, packet,
-				   PLOG_PROTOERR, PLOGLOC,
-				   "failed to decrypt message\n");
-			++isakmpstat.fail_decrypt;
-			goto end;
-		}
+		if (!reassembled) {
+			if (ikehdr->next_payload != IKEV2_PAYLOAD_ENCRYPTED
+				&& ikehdr->next_payload != IKEV2_PAYLOAD_ENCRYPTED_AND_AUTHENTICATED_FRAGMENT) {
+				isakmp_log(ike_sa, local, remote, packet,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "unsupported message format: first payload is not ENCRYPTED payload\n");
+				++isakmpstat.malformed_message;
+				goto end;
+			}
+			if (ikev2_check_icv(ike_sa, packet) != 0) {
+				isakmp_log(ike_sa, local, remote, packet,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "ICV check failure\n");
+				++isakmpstat.fail_integrity_check;
+				goto end;
+			}
+			if (ikev2_retransmit_forced(ike_sa, message_id, is_response) != 0) {
+				goto end;
+			}
+			if (ikev2_check_message_ordering(ike_sa, message_id, is_response, local, remote) != 0) {
+				isakmp_log(ike_sa, local, remote, packet,
+					   PLOG_DEBUG, PLOGLOC,
+					   "dropping unordered message (id %d)\n",
+					   message_id);
+				++isakmpstat.unordered;
+				goto end;
+			}
+			if (ikev2_decrypt(ike_sa, packet) != 0) {
+				isakmp_log(ike_sa, local, remote, packet,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "failed to decrypt message\n");
+				++isakmpstat.fail_decrypt;
+				goto end;
+			}
 #ifdef HAVE_LIBPCAP
-		if (ike_pcap_file)
-			rc_pcap_push(remote, local, packet);
+			if (ike_pcap_file)
+				rc_pcap_push(remote, local, packet);
 #endif
-		if (ikev2_check_payloads(packet, FALSE) != 0) {
-			isakmp_log(0, local, remote, packet,
-				   PLOG_PROTOERR, PLOGLOC,
-				   "malformed payload format\n");
-			++isakmpstat.malformed_payload;
-			goto end;
+			if (ikev2_check_payloads(packet, FALSE) != 0) {
+				isakmp_log(0, local, remote, packet,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "malformed payload format\n");
+				++isakmpstat.malformed_payload;
+				goto end;
+			}
 		}
 
 		/* (draft-17)
@@ -499,6 +526,8 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 #endif
 
       end:
+	if (packet)
+		rc_vfree(packet);
 	if (conf)
 		rcf_free_remote(conf);
 	return 0;
@@ -621,11 +650,34 @@ ikev2_update_message_id(struct ikev2_sa *ike_sa, uint32_t message_id,
 /*
  * Transmit a message
  */
+
+#define IPV4_MAX_FRAGMENT_SIZE 576
+#define IPV6_MAX_FRAGMENT_SIZE 1280
+
+
 int
 ikev2_transmit(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 {
 	TRACE((PLOGLOC, "ikev2_transmit(%p, %p) len %d\n",
 	       ike_sa, packet, (int)packet->l));
+
+	if (ike_sa != NULL && ike_sa->frag_supported)
+	{
+	    if (SOCKADDR_FAMILY(ike_sa->remote) == AF_INET)
+	    {
+		if (packet->l >= IPV4_MAX_FRAGMENT_SIZE)
+		    if (ikev2_frag_send(ike_sa, &packet) == 0)
+			return 0;	/* packet was fragmented and sent */
+	    }
+	    else
+	    {
+		if (packet->l >= IPV6_MAX_FRAGMENT_SIZE)
+		    if (ikev2_frag_send(ike_sa, &packet) == 0)
+			return 0;
+	    }
+		/* fragmentation not needed or failed, send original */
+	}
+
 	if (packet->l > IKEV2_SHOULD_SUPPORT_PACKET_SIZE) {
 		isakmp_log(ike_sa, 0, 0, 0,
 			   PLOG_INFO, PLOGLOC,
@@ -645,6 +697,23 @@ ikev2_transmit_response(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 
 	TRACE((PLOGLOC, "ikev2_transmit_response(%p, %p) len %d\n",
 	       ike_sa, packet, (int)packet->l));
+
+	if (ike_sa->frag_supported) {
+	    if (SOCKADDR_FAMILY(ike_sa->remote) == AF_INET)
+	    {
+		if (packet->l >= IPV4_MAX_FRAGMENT_SIZE)
+		    if (ikev2_frag_send(ike_sa, &packet) == 0)
+			return 0;	/* packet was fragmented and sent */
+	    }
+	    else
+	    {
+		if (packet->l >= IPV6_MAX_FRAGMENT_SIZE)
+		    if (ikev2_frag_send(ike_sa, &packet) == 0)
+			return 0;
+	    }
+		/* fragmentation not needed or failed, send original */
+	}
+
 	if (packet->l > IKEV2_SHOULD_SUPPORT_PACKET_SIZE) {
 		INFO((PLOGLOC,
 		      "packet size (%zu) larger than recommended implementation minimum (%d)\n",
@@ -722,7 +791,7 @@ ikev2_set_state(struct ikev2_sa *sa, int state)
 		   "ike_sa %p state %s -> %s\n", sa, ikev2_state_str(prev_state),
 		   ikev2_state_str(state));
 
-	if (!sa->is_initiator && 
+	if (!sa->is_initiator &&
 	    prev_state != IKEV2_STATE_ESTABLISHED &&
 	    (state == IKEV2_STATE_ESTABLISHED ||
 	     state == IKEV2_STATE_DEAD)) {
@@ -1043,6 +1112,11 @@ initiator_start_after_gen(int rc, void *arg)
 	}
 #endif
 
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0,
+						 IKEV2_FRAGMENTATION_SUPPORTED,
+						 0, 0),
+			    TRUE);
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
 				     0, ike_sa, &ctx->payl);
 	if (!pkt)
@@ -1198,9 +1272,9 @@ responder_state0_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	type = ikehdr->next_payload;
 
 	/*
-	 * expect HDR, SAi1, KEi, Ni [N(NAT_DET_SRC), N(NAT_DET_DST)] 
+	 * expect HDR, SAi1, KEi, Ni [N(NAT_DET_SRC), N(NAT_DET_DST)]
 	 * or
-	 * HDR(A,0), N(COOKIE), SAi1, KEi, Ni [N(NAT_DET_SRC), N(NAT_DET_DST)] 
+	 * HDR(A,0), N(COOKIE), SAi1, KEi, Ni [N(NAT_DET_SRC), N(NAT_DET_DST)]
 	 */
 
 	if (type == IKEV2_PAYLOAD_NOTIFY
@@ -1479,6 +1553,17 @@ responder_state0_after_gen(int rc, void *arg)
 	}
 #endif
 
+	/*
+	 * [N(IKEV2_FRAGMENTATION_SUPPORTED)]
+	 */
+	if (ike_sa->frag_supported) {
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_FRAGMENTATION_SUPPORTED,
+							 0, 0),
+				    TRUE);
+	}
+
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_RESPONSE,
 				     0, ike_sa, &ctx->payl);
 	if (!pkt) {
@@ -1671,7 +1756,7 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 				   "vendor id payload ignored\n");
 			++isakmpstat.payload_ignored;
 			break;
-			
+
 		default:
 			if (payload_is_critical(payload)
 			    || ikev2_payload_type_is_critical(type)) {
@@ -2118,11 +2203,11 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 
 	/*
 	 * type 3: requesting internal address on a remote network
-	 * 
+	 *
 	 * A request for such a temporary address can be included in
 	 * any request to create a CHILD_SA (including the implicit request in
 	 * message 3) by including a CP payload.
-	 * 
+	 *
 	 * HDR, SK {IDi, [CERT,] [CERTREQ,]
 	 * [IDr,] AUTH, CP(CFG_REQUEST),
 	 * SAi2, TSi, TSr}              -->
@@ -2140,7 +2225,7 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	 * compression algorithm with a Notify payload of type IPCOMP_SUPPORTED.
 	 * These payloads MUST NOT occur messages that do not contain SA
 	 * payloads.
-	 * 
+	 *
 	 * send N(IPCOMP_SUPPORTED transfs...)
 	 */
 #endif
@@ -2303,7 +2388,7 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	}
 	if (ike_sa->id_i)
 		rc_vfree(ike_sa->id_i);
-	ike_sa->id_i = 
+	ike_sa->id_i =
 	    rc_vnew((uint8_t *)(id_i + 1), get_payload_data_length(id_i));
 
 	IF_TRACE(ikev2_id_dump("ID_i", id_i));
@@ -2334,17 +2419,17 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		id_data = ikev2_id2rct_id(id_i, &rc_id_type);
 		if (!id_data)
 			goto fail_nomem;
-		for (peers_id = ikev2_peers_id(ike_sa->rmconf); 
+		for (peers_id = ikev2_peers_id(ike_sa->rmconf);
 		     peers_id;
 		     peers_id = peers_id->next) {
 			if (ike_compare_id(rc_id_type, id_data, peers_id) == 0)
 				break;
 		}
 		if (!peers_id) {
-			isakmp_log(ike_sa, local, remote, msg, 
+			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_PROTOERR, PLOGLOC,
 				   "received ID_I (type %s [%s]) does not match peers id\n",
-				   rct2str(rc_id_type), 
+				   rct2str(rc_id_type),
 				   ike_id_str(rc_id_type, id_data));
 			++isakmpstat.authentication_failed;
 			error = IKEV2_AUTHENTICATION_FAILED;
@@ -2558,7 +2643,7 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	ikev2_update_message_id(ike_sa, message_id, FALSE);
 
 	/*
-	 * The new child_sa created by ikev2_create_child_responder()  must 
+	 * The new child_sa created by ikev2_create_child_responder()  must
 	 * have its state set to GETSPI.  When the state transits out of GETSPI,
 	 * ikev2_create_child_responder_cont() is called, and it
 	 * calls responder_state1_send()
@@ -2757,12 +2842,12 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 	 */
 #endif
 
-	/* 
+	/*
 	 * IDi
 	 */
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_R, id_r, FALSE);
 
-	/* 
+	/*
 	 * [CERT+]
 	 */
 	if (my_cert)
@@ -3201,15 +3286,15 @@ initiator_state1_send_eap()
 	 * leaving out the AUTH payload from message 3. By including an IDi
 	 * payload but not an AUTH payload, the initiator has declared an
 	 * identity but has not proven it.
-	 * 
+	 *
 	 * HDR, SK {IDi, [CERTREQ,] [IDr,]
 	 * SAi2, TSi, TSr}   -->
-	 * 
+	 *
 	 * <--    HDR, SK {IDr, [CERT,] AUTH,
 	 * EAP }
-	 * 
+	 *
 	 * HDR, SK {EAP, AUTH}     -->
-	 * 
+	 *
 	 * <--    HDR, SK {EAP, AUTH,
 	 * SAr2, TSi, TSr }
 	 */
@@ -3398,7 +3483,7 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 			goto fail;
 	}
 
-	/* 
+	/*
 	 * [N(REKEY_SA)]
 	 */
 	if (child_sa->preceding_satype != 0) {
@@ -3421,7 +3506,7 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 	 */
 #endif
 
-	/* 
+	/*
 	 * [N(USE_TRANSPORT_MODE)]
 	 */
 	if (ike_ipsec_mode(child_sa->selector->pl) == RCT_IPSM_TRANSPORT) {
@@ -3452,7 +3537,7 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 #endif
 
 	/*
-	 * SA, Ni, [KEi], TSi, TSr 
+	 * SA, Ni, [KEi], TSi, TSr
 	 */
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa, FALSE);
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NONCE, n_i, FALSE);
@@ -3499,22 +3584,22 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 #ifdef notyet
 	/*
 	 * 2.19 Requesting an internal address on a remote network
-	 * 
+	 *
 	 * Most commonly occurring in the endpoint to security gateway scenario,
 	 * an endpoint may need an IP address in the network protected by the
 	 * security gateway, and may need to have that address dynamically
 	 * assigned. A request for such a temporary address can be included in
 	 * any request to create a CHILD_SA (including the implicit request in
 	 * message 3) by including a CP payload.
-	 * 
+	 *
 	 * HDR, SK {IDi, [CERT,] [CERTREQ,]
 	 * [IDr,] AUTH, CP(CFG_REQUEST),
 	 * SAi2, TSi, TSr}              -->
-	 * 
+	 *
 	 * <--   HDR, SK {IDr, [CERT,] AUTH,
 	 * CP(CFG_REPLY), SAr2,
 	 * TSi, TSr}
-	 * 
+	 *
 	 * In all cases, the CP payload MUST be inserted before the SA payload.
 	 * In variations of the protocol where there are multiple IKE_AUTH
 	 * exchanges, the CP payloads MUST be inserted in the messages
@@ -3638,7 +3723,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	}
 
 	/* check if rekeying IKE_SA */
-	if (get_payload_data_length(sa) > sizeof(struct ikev2proposal) && 
+	if (get_payload_data_length(sa) > sizeof(struct ikev2proposal) &&
 	    ((struct ikev2proposal *)(((struct ikev2payl_sa *)sa) + 1))->protocol_id == IKEV2PROPOSAL_IKE) {
 		TRACE((PLOGLOC, "received REKEY IKE_SA request for ike_sa %p\n", ike_sa));
 		if (!(sa && nonce && ke && !(ts_i || ts_r)))
@@ -3647,7 +3732,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		ikev2_rekey_ikesa_responder(msg, remote, local, ike_sa,
 					    sa, ke, nonce);
 		goto done;
-	} 
+	}
 
 	/* otherwise, create or rekey child_sa */
 	if (!(sa && nonce && ts_i && ts_r))
@@ -3667,14 +3752,14 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 		/* (draft-eronen-ipsec-ikev2-clarifications-05.txt)
 		 * NEW-1.3.3 Rekeying CHILD_SAs with the CREATE_CHILD_SA Exchange
-		 * 
+		 *
 		 * The CREATE_CHILD_SA request for rekeying a CHILD_SA is:
-		 * 
+		 *
 		 * Initiator                                 Responder
 		 * -----------                               -----------
 		 * HDR, SK {N, SA, Ni, [KEi],
 		 * TSi, TSr}             -->
-		 * 
+		 *
 		 * The initiator sends SA offer(s) in the SA payload, a nonce in
 		 * the Ni payload, optionally a Diffie-Hellman value in the KEi
 		 * payload, and the proposed traffic selectors for the proposed
@@ -3682,17 +3767,17 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * CHILD_SA, the leading N payload of type REKEY_SA MUST be
 		 * included and MUST give the SPI (as they would be expected in
 		 * the headers of inbound packets) of the SAs being rekeyed.
-		 * 
+		 *
 		 * The CREATE_CHILD_SA response for rekeying a CHILD_SA is:
-		 * 
+		 *
 		 * <--    HDR, SK {SA, Nr, [KEr],
 		 * TSi, TSr}
-		 * 
+		 *
 		 * The responder replies (using the same Message ID to respond)
 		 * with the accepted offer in an SA payload, and a Diffie-Hellman
 		 * value in the KEr payload if KEi was included in the request and
 		 * the selected cryptographic suite includes that group.
-		 * 
+		 *
 		 * The traffic selectors for traffic to be sent on that SA are
 		 * specified in the TS payloads in the response, which may be a
 		 * subset of what the initiator of the CHILD_SA proposed.
@@ -3700,10 +3785,10 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 		/* (draft-eronen-ipsec-ikev2-clarifications-05.txt)
 		 * 5.4  SPI when rekeying a CHILD_SA
-		 * 
+		 *
 		 * Section 3.10.1 says that in REKEY_SA notifications, "The SPI field
 		 * identifies the SA being rekeyed."
-		 * 
+		 *
 		 * Since CHILD_SAs always exist in pairs, there are two different SPIs.
 		 * The SPI placed in the REKEY_SA notification is the SPI the exchange
 		 * initiator would expect in inbound ESP or AH packets (just as in
@@ -3804,7 +3889,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		goto fail;
 	}
 	if (old_child_sa && cfg) {
-		/* 
+		/*
 		 * I'm assuming that the allocated addresses are
 		 * automatically inherited to the new child_sa.
 		 */
@@ -3828,7 +3913,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	}
 
 	/*
-	 * The new child_sa created by ikev2_create_child_responder()  must 
+	 * The new child_sa created by ikev2_create_child_responder()  must
 	 * have its state set to GETSPI.  When the state transits to
 	 * GETSPI_DONE, create_child_responder_send() gets called.
 	 */
@@ -3908,7 +3993,7 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(0, 0, 0,
 							 IKEV2_INVALID_SYNTAX,
-							 0, 0), 
+							 0, 0),
 				    TRUE);
 		goto send_response;
 	}
@@ -4420,7 +4505,7 @@ ikev2_request_initiator_start(struct ikev2_sa *ike_sa,
 	child_sa->state = IKEV2_CHILD_STATE_REQUEST_PENDING;
 	child_sa->callback = callback;
 	child_sa->callback_param = callback_param;
-	sadb_request_initialize(&child_sa->sadb_request, &sadb_null_method, 
+	sadb_request_initialize(&child_sa->sadb_request, &sadb_null_method,
 				&ikev2_sadb_callback, 0, child_sa);
 
 	next_child_sa = ikev2_choose_pending_child(ike_sa, TRUE);
@@ -4542,7 +4627,7 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				++isakmpstat.payload_ignored; /* ??? */
 			} else {
 				assert(child_param.cfg_payload != NULL);
-				ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CONFIG, 
+				ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CONFIG,
 						    child_param.cfg_payload, FALSE);
 			}
 			break;
@@ -4766,7 +4851,7 @@ ikev2_respond_error(struct ikev2_sa *ike_sa,
 			    ikev2_notify_payload(notify_proto,
 						 spi, spilen,
 						 notify_type,
-						 data, datalen), 
+						 data, datalen),
 			    TRUE);
 
 	pkt = ikev2_packet_construct(ikehdr->exchange_type,
@@ -4797,7 +4882,7 @@ ikev2_respond_error(struct ikev2_sa *ike_sa,
 
 /*
  * process a DELETE payload
- * 
+ *
  * if response_payloads is non-null, this payload is a request, and a response payload must be constructed and pushed into response_payloads
  */
 static void
@@ -5139,7 +5224,7 @@ ikev2_proppair_to_isakmpsa(struct prop_pair *prop)
 			 * PRF_AES128_XCBC (AES-XCBC-PRF-128), which
 			 * is fixed (128bits) key length.
 			 */
-			/* 
+			/*
 			 * RFC4434 redefined AES-XCBC-PRF-128 with
 			 * arbitrary length key, with natural key
 			 * length of 128bits.  It is similar to HMAC
@@ -5279,8 +5364,8 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	/* (draft-17)
 	 * The responder MUST choose a single suite, which MAY be
 	 * any subset of the SA proposal following the rules below:
-	 * 
-	 * 
+	 *
+	 *
 	 * Each proposal contains one or more protocols. If a proposal is
 	 * accepted, the SA response MUST contain the same protocols in the
 	 * same order as the proposal. The responder MUST accept a single
@@ -5288,7 +5373,7 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	 * single proposal contains ESP and AH and that proposal is accepted,
 	 * both ESP and AH MUST be accepted. If ESP and AH are included in
 	 * separate proposals, the responder MUST accept only one of them).
-	 * 
+	 *
 	 * Each IPsec protocol proposal contains one or more transforms. Each
 	 * transform contains a transform type. The accepted cryptographic
 	 * suite MUST contain exactly one transform of each type included in
@@ -5450,7 +5535,7 @@ ikev2_ikesa_to_proposal(struct ikev2_isakmpsa *negotiated_sa,
  *
  * INPUT:
  *	ike_sa:	prf
- *		authenticator, encryptor 
+ *		authenticator, encryptor
  *		n_i, n_r for nonces
  *		skeyseed must be 0
  *
@@ -5730,7 +5815,7 @@ ikev2_prf_plus(struct ikev2_sa *sa, rc_vchar_t *key, rc_vchar_t *msg_bytes,
 	/*
 	 * (draft-17)
 	 prf+ (K,S) = T1 | T2 | T3 | T4 | ...
-	 
+
 	 where:
 	 T1 = prf (K, S | 0x01)
 	 T2 = prf (K, T1 | S | 0x02)

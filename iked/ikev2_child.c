@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2004-2005 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -156,7 +156,7 @@ ikev2_child_state_set(struct ikev2_child_sa *child_sa,
 	    state == IKEV2_CHILD_STATE_MATURE) {
 		ikev2_child_script_hook(child_sa,
 					(child_sa->preceding_satype != 0 ?
-					 SCRIPT_PHASE2_REKEY : 
+					 SCRIPT_PHASE2_REKEY :
 					 SCRIPT_PHASE2_UP));
 	} else if (old_state == IKEV2_CHILD_STATE_MATURE &&
 		   state != IKEV2_CHILD_STATE_MATURE) {
@@ -723,7 +723,7 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 				break;
 			}
 		}
-	} else if (!old_child_sa && 
+	} else if (!old_child_sa &&
 		   pol->peers_sa_ipaddr && rcs_is_addr_rw(pol->peers_sa_ipaddr)) {
 		IPSEC_CONF(lifetime, pol->ips, ipsec_sa_lifetime_time, 0);
 		if (ike_spmif_post_policy_add(child_sa->selector,
@@ -1048,7 +1048,7 @@ expand_addr(struct rc_addrlist *a, struct ikev2_sa *ike_sa)
 		if (rcs_getaddrlistbymacro(a->a.vstr, &addrlist) == 0) {
 			if (addrlist->next) {
 				isakmp_log(ike_sa, 0, 0, 0,
-					   PLOG_INTWARN, PLOGLOC, 
+					   PLOG_INTWARN, PLOGLOC,
 					   "macro expands to multiple addresses, only the first one is used.\n");
 			}
 
@@ -1056,7 +1056,7 @@ expand_addr(struct rc_addrlist *a, struct ikev2_sa *ike_sa)
 			rcs_free_addrlist(addrlist);
 		} else {
 			isakmp_log(ike_sa, 0, 0, 0,
-				   PLOG_INTERR, PLOGLOC, 
+				   PLOG_INTERR, PLOGLOC,
 				   "macro %.*s expansion failure\n",
 				   (int)a->a.vstr->l, a->a.vstr->s);
 			return NULL;
@@ -1309,13 +1309,13 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa,
 	 * If multiple IPsec protocols are negotiated, keying material is
 	 * taken in the order in which the protocol headers will appear in
 	 * the encapsulated packet.
-	 * 
+	 *
 	 * If a single protocol has both encryption and authentication keys,
 	 * the encryption key is taken from the first octets of KEYMAT and
 	 * the authentication key is taken from the next octets.
 	 */
 
-	/* 
+	/*
 	 * (draft-17)
 	 tunnel encapsulators and
 	 decapsulators for all tunnel-mode Security Associations (SAs) created
@@ -1893,7 +1893,7 @@ ikev2_expired(struct sadb_request *req, struct rcpfk_msg *param)
 		     proposal;
 		     proposal = proposal->next) {
 			struct isakmp_pl_p	*prop;
-			
+
 			prop = proposal->prop;
 			if (prop->proto_id == satype &&
 			    *(uint32_t *)(prop + 1) == param->spi) {
@@ -1953,7 +1953,7 @@ ikev2_expire_sa(struct ikev2_child_sa *child_sa, int expire_mode,
 #endif
 		break;
 	default:
-		plog(PLOG_INTWARN, PLOGLOC, 0, 
+		plog(PLOG_INTWARN, PLOGLOC, 0,
 		     "unexpected %d\n", expire_mode);
 		return;
 	}
@@ -2017,7 +2017,7 @@ ikev2_child_delete_outbound(struct ikev2_child_sa *child_sa)
 
 	ike_sa = child_sa->parent;
 	policy = child_sa->selector->pl;
-	local = ike_determine_sa_endpoint(&lss, 
+	local = ike_determine_sa_endpoint(&lss,
 	    policy->my_sa_ipaddr, ike_sa->local);
 	remote = ike_determine_sa_endpoint(&rss,
 	    policy->peers_sa_ipaddr, ike_sa->remote);
@@ -2047,7 +2047,7 @@ ikev2_child_delete_inbound(struct ikev2_child_sa *child_sa)
 
 	ike_sa = child_sa->parent;
 	policy = child_sa->selector->pl;
-	local = ike_determine_sa_endpoint(&lss, 
+	local = ike_determine_sa_endpoint(&lss,
 	    policy->my_sa_ipaddr, ike_sa->local);
 	remote = ike_determine_sa_endpoint(&rss,
 	    policy->peers_sa_ipaddr, ike_sa->remote);
@@ -2256,7 +2256,7 @@ compute_keymat(struct ikev2_sa *sa,
 	/*
 	 * (draft-17)
 	 KEYMAT = prf+(SK_d, Ni | Nr)
-	 
+
 	 Where Ni and Nr are the Nonces from the IKE_SA_INIT exchange if this
 	 request is the first CHILD_SA created or the fresh Ni and Nr from the
 	 CREATE_CHILD_SA exchange if this is a subsequent creation.
@@ -2269,7 +2269,7 @@ compute_keymat(struct ikev2_sa *sa,
 	/*
 	 * For CREATE_CHILD_SA exchanges including an optional Diffie-Hellman
 	 * exchange, the keying material is defined as:
-	 * 
+	 *
 	 * KEYMAT = prf+(SK_d, g^ir (new) | Ni | Nr )
 	 */
 	inputlen = n_i->l + n_r->l;

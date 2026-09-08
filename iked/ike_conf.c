@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2004 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -984,12 +984,10 @@ ike_aton(rc_vchar_t *s, int *af)
 				a = (uint8_t *)&((struct sockaddr_in *)p->ai_addr)->sin_addr;
 				alen = sizeof(struct in_addr);
 				break;
-#ifdef INET6
-			case AF_INET6:
-				a = (uint8_t *)&((struct sockaddr_in6 *)p->ai_addr)->sin6_addr;
-				alen = sizeof(struct in6_addr);
-				break;
-#endif
+		case AF_INET6:
+			a = (uint8_t *)&((struct sockaddr_in6 *)p->ai_addr)->sin6_addr;
+			alen = sizeof(struct in6_addr);
+			break;
 			default:
 				isakmp_log(0, 0, 0, 0,
 					   PLOG_INTWARN, PLOGLOC,
@@ -1044,12 +1042,10 @@ ike_identifier_data(struct rc_idlist *id, int *id_type)
 			case AF_INET:
 				*id_type = IKEV2_ID_IPV4_ADDR;
 				break;
-#ifdef INET6
-			case AF_INET6:
-				*id_type = IKEV2_ID_IPV6_ADDR;
-				break;
-#endif
-			default:	/* shouldn't happen: addrbuf must be 0 */
+		case AF_INET6:
+			*id_type = IKEV2_ID_IPV6_ADDR;
+			break;
+		default:	/* shouldn't happen: addrbuf must be 0 */
 				rc_vfree(data);
 				return 0;
 			}
@@ -1147,6 +1143,41 @@ ike_identifier_data(struct rc_idlist *id, int *id_type)
 	return data;
 }
 
+int ikev2_handle_ip_rw(rc_vchar_t *id_val, struct rc_idlist *id)
+{
+    rc_vchar_t *data, *p;
+    size_t data_size;
+
+    if (id_val == NULL || id == NULL)
+        return -1;
+
+    p = id->id;
+
+    data_size = id_val->l;
+
+    data = rc_vmalloc(sizeof(rc_vchar_t));
+
+    if (!data)
+        return -1;
+
+    data->s = rc_malloc(data_size);
+
+    if (!data->s)
+    {
+        rc_vfree(data);
+        return -1;
+    }
+
+    memcpy(data->s, id_val->s, data_size);
+    data->l = data_size;
+
+    *p = *data;
+
+    rc_vfree(data);
+
+    return 0;
+}
+
 /*
  * compare id (type id_type, value id_val) with idlist entry id
  * returns 0 if equal, non-0 otherwise
@@ -1163,8 +1194,24 @@ int
 ike_compare_id(rc_type rc_id_type, rc_vchar_t *id_val, struct rc_idlist *id)
 {
 	rc_vchar_t *data;
+    char* is_ip_rw;
 	int cmp;
 	int dummy;
+
+    is_ip_rw = (char*)rc_vmem2str(id->id);
+
+    if (is_ip_rw)
+    {
+        if (strncmp(is_ip_rw, "IP_RW", strlen(is_ip_rw)) == 0)
+        {
+            if (ikev2_handle_ip_rw(id_val, id) != 0)
+            {
+                plog(PLOG_INTERR, PLOGLOC, NULL,
+                     "could not handle IP_RW macro\n");
+                return -1;
+            }
+        }
+    }
 
 	if (rc_id_type != id->idtype)
 		return -1;
@@ -1214,9 +1261,7 @@ ikev1_id2rct_id(rc_vchar_t *id_p, rc_type *type)
 	case IPSECDOI_ID_KEY_ID:
 	case IPSECDOI_ID_DER_ASN1_DN:
 	case IPSECDOI_ID_IPV4_ADDR:
-#ifdef INET6
 	case IPSECDOI_ID_IPV6_ADDR:
-#endif
 		rc_id_type = ikev1_id_to_rc(id_b->type);
 		idbuf = rc_vnew((uint8_t *)(id_b + 1), id_len);
 		break;
@@ -1255,9 +1300,7 @@ ikev2_id2rct_id(struct ikev2_payload_header *payl, rc_type *type)
 	case IKEV2_ID_KEY_ID:
 	case IKEV2_ID_DER_ASN1_DN:
 	case IKEV2_ID_IPV4_ADDR:
-#ifdef INET6
 	case IKEV2_ID_IPV6_ADDR:
-#endif
 		rc_id_type = ikev2_id_to_rc(id->id_h.id_type);
 		idbuf = rc_vnew((uint8_t *)(id + 1), id_len);
 		break;
@@ -1415,7 +1458,7 @@ ikev2_conf_find_by_id(struct ikev2_payload_header *payl)
  *
  * Let a TS be a sequence {TSi} for i=0..N-1
  * where TSi is a tuple of {addrrange, {proto or ANYPROTO}, portrange}
- * 
+ *
  * requirements from the draft:
  *
  * 1. single range (N=1)
@@ -1516,7 +1559,6 @@ sockaddr_in_compare_with_prefix(struct sockaddr_in *addr,
 	return FALSE;
 }
 
-#ifdef INET6
 static int
 sockaddr_in6_compare_with_prefix(struct sockaddr_in6 *addr,
 				 struct sockaddr_in6 *netaddr,
@@ -1525,7 +1567,6 @@ sockaddr_in6_compare_with_prefix(struct sockaddr_in6 *addr,
 	return compare_bits(&addr->sin6_addr.s6_addr[0],
 			    &netaddr->sin6_addr.s6_addr[0], prefixlen);
 }
-#endif
 
 static int
 sockaddr_compare_with_prefix(struct sockaddr *addr,
@@ -1540,13 +1581,11 @@ sockaddr_compare_with_prefix(struct sockaddr *addr,
 						       (struct sockaddr_in *)netaddr,
 						       prefixlen);
 		break;
-#ifdef INET6
 	case AF_INET6:
 		return sockaddr_in6_compare_with_prefix((struct sockaddr_in6 *)addr,
 							(struct sockaddr_in6 *)netaddr,
 							prefixlen);
 		break;
-#endif
 	default:
 		isakmp_log(0, 0, 0, 0,
 			   PLOG_INTERR, PLOGLOC,
@@ -1580,7 +1619,6 @@ match_addr_ipv4(struct sockaddr *addr, int prefixlen,
 	return (s == (a & ~bits) && (a | bits) == e);
 }
 
-#ifdef INET6
 static int
 match_addr_ipv6(struct sockaddr *addr, int prefixlen,
 		uint8_t *start_addr, uint8_t *end_addr)
@@ -1610,7 +1648,6 @@ match_addr_ipv6(struct sockaddr *addr, int prefixlen,
 	}
 	return TRUE;
 }
-#endif
 
 static int addr_match(int, struct sockaddr *, int, uint8_t *, uint8_t *)
 	GCC_ATTRIBUTE((unused));
@@ -1622,10 +1659,8 @@ addr_match(int type, struct sockaddr *addr, int prefixlen,
 	switch (type) {
 	case IKEV2_TS_IPV4_ADDR_RANGE:
 		return match_addr_ipv4(addr, prefixlen, start_addr, end_addr);
-#ifdef INET6
 	case IKEV2_TS_IPV6_ADDR_RANGE:
 		return match_addr_ipv6(addr, prefixlen, start_addr, end_addr);
-#endif
 	default:
 		return FALSE;
 	}
@@ -1637,10 +1672,8 @@ sockaddr_port(struct sockaddr *addr)
 	switch (SOCKADDR_FAMILY(addr)) {
 	case AF_INET:
 		return ntohs(((struct sockaddr_in *)addr)->sin_port);
-#ifdef INET6
 	case AF_INET6:
 		return ntohs(((struct sockaddr_in6 *)addr)->sin6_port);
-#endif
 	default:
 		return -1;	/* shouldn't happen */
 	}
@@ -1731,7 +1764,7 @@ ts_within(struct ikev2_traffic_selector *ts0,
 	return TRUE;
 }
 
-/* 
+/*
  * returns TRUE if one TS range is within addr/prefix
  */
 static int
@@ -1802,7 +1835,7 @@ ts_is_within_addr(struct ikev2_traffic_selector *ts, int proto,
 	sport = get_uint16(&ts->start_port);
 	eport = get_uint16(&ts->end_port);
 	port = sockaddr_port(addr);
-	if (!(port == 0 || 
+	if (!(port == 0 ||
 	      (sport == port && eport == port)))
 		return FALSE;
 
@@ -1810,7 +1843,7 @@ ts_is_within_addr(struct ikev2_traffic_selector *ts, int proto,
 
 }
 
-/* 
+/*
  * returns TRUE if TS range contains addr/prefix
  */
 static int
@@ -1902,7 +1935,7 @@ ts_is_matching(struct ikev2_traffic_selector *ts0, int num_ts,
 		return FALSE;
 
 	/*
-	 * if ts[0] is specific, and it is within addr/prefix 
+	 * if ts[0] is specific, and it is within addr/prefix
 	 * or if ts[0] is not specific
 	 * then see if one of ts can be narrowed
 	 */
@@ -1962,12 +1995,10 @@ ts_match(struct ikev2payl_traffic_selector *ts, int num_ts,
 		addrptr = (uint8_t *)&((struct sockaddr_in *)addr)->sin_addr.s_addr;
 		addrsize = sizeof(struct in_addr);
 		break;
-#ifdef INET6
 	case AF_INET6:
 		addrptr = (uint8_t *)&((struct sockaddr_in6 *)addr)->sin6_addr;
 		addrsize = sizeof(struct in6_addr);
 		break;
-#endif
 	default:
 		return 0;
 	}
@@ -1990,11 +2021,9 @@ ts_match(struct ikev2payl_traffic_selector *ts, int num_ts,
 	case AF_INET:
 		r_ts->ts_type = IKEV2_TS_IPV4_ADDR_RANGE;
 		break;
-#ifdef INET6
 	case AF_INET6:
 		r_ts->ts_type = IKEV2_TS_IPV6_ADDR_RANGE;
 		break;
-#endif
 	}
 	r_ts->protocol_id = proto;
 	put_uint16(&r_ts->selector_length,
@@ -2056,12 +2085,10 @@ ts_add_return(rc_vchar_t *ptr, int proto, struct sockaddr *addr, int prefixlen)
 		addrptr = (uint8_t *)&((struct sockaddr_in *)addr)->sin_addr.s_addr;
 		addrsize = sizeof(struct in_addr);
 		break;
-#ifdef INET6
 	case AF_INET6:
 		addrptr = (uint8_t *)&((struct sockaddr_in6 *)addr)->sin6_addr;
 		addrsize = sizeof(struct in6_addr);
 		break;
-#endif
 	default:
 		return ptr;
 	}
@@ -2077,11 +2104,9 @@ ts_add_return(rc_vchar_t *ptr, int proto, struct sockaddr *addr, int prefixlen)
 	case AF_INET:
 		r_ts->ts_type = IKEV2_TS_IPV4_ADDR_RANGE;
 		break;
-#ifdef INET6
 	case AF_INET6:
 		r_ts->ts_type = IKEV2_TS_IPV6_ADDR_RANGE;
 		break;
-#endif
 	}
 	r_ts->protocol_id = proto;
 	put_uint16(&r_ts->selector_length,
@@ -2183,7 +2208,7 @@ void
 ikev2_dump_traffic_selector_h(const char *header, void *payload_data)
 {
 	struct ikev2payl_ts_h *tsh;
-	
+
 	tsh = (struct ikev2payl_ts_h *)payload_data;
 	ikev2_dump_traffic_selectors(header,
 				     tsh->num_ts,
@@ -2197,7 +2222,7 @@ void
 ikev2_dump_ts(const char *header, struct ikev2payl_traffic_selector *ts_payload)
 {
 	ikev2_dump_traffic_selectors(header,
-				     ts_payload->tsh.num_ts, 
+				     ts_payload->tsh.num_ts,
 				     (struct ikev2_traffic_selector *)(ts_payload + 1));
 }
 
@@ -2265,7 +2290,7 @@ ike_conf_find_ikev2sel_by_ts(struct ikev2_payload_header *ts_remoteside,
 			continue;
 
 #ifdef notyet
-		/* 
+		/*
 		 * if (no corresponding outbound config)
 		 *     continue;
 		 */
@@ -2321,7 +2346,7 @@ ike_conf_find_ikev2sel_by_ts(struct ikev2_payload_header *ts_remoteside,
 				goto next_selector;
 			}
 		}
-		/* 
+		/*
 		   else if (! LIST_EMPTY(&child_sa->lease_list)
 		   && ) {
 		   TRACE((PLOGLOC, "skipping non-empty dst selector\n"));
@@ -2421,7 +2446,7 @@ TSi: 0.0.0.0/0, TSr: 0.0.0.0/0
 selector: IP_ANY - 192.0.2.0/24, addrpool 192.0.2.200-192.0.2.250
 
 			*/
-			/* 
+			/*
 			 * if peer requested INTERNAL_IP*_ADDR,
 			 * confirm TS matches with allocated address,
 			 * then check if peer requests dual stack
@@ -2503,7 +2528,7 @@ selector: IP_ANY - 192.0.2.0/24, addrpool 192.0.2.200-192.0.2.250
 	 * for Bob to determine which pair of addresses should be included in
 	 * this tunnel, and he would have to make his best guess or reject the
 	 * request with a status of SINGLE_PAIR_REQUIRED.
-	 * 
+	 *
 	 * If Bob's policy does not allow him to accept the entire set of
 	 * traffic selectors in Alice's request, but does allow him to accept
 	 * the first selector of TSi and TSr, then Bob MUST narrow the traffic
@@ -2590,6 +2615,9 @@ addrlist_match(struct rc_addrlist *l, struct sockaddr *addr)
 			if (sockaddr_compare_with_prefix(addr, l->a.ipaddr, prefixlen))
 				return TRUE;
 			break;
+		case RCT_ADDR_MACRO:
+			/* IP_RW and IP_ANY wildcards match any concrete address */
+			return TRUE;
 		default:
 			isakmp_log(0, 0, 0, 0,
 				   PLOG_INTERR, PLOGLOC,
@@ -3069,7 +3097,7 @@ ikev2_conf_to_proplist(struct rcf_remote *rminfo, isakmp_cookie_t spi)
 	 */
 
 	/*
-	 * 
+	 *
 	 * #1 --- Proto IKE
 	 *          |
 	 *          Transf-Transf-Transf----Transf
@@ -3078,7 +3106,7 @@ ikev2_conf_to_proplist(struct rcf_remote *rminfo, isakmp_cookie_t spi)
 	 *          |      |       |       |
 	 *          PRF    INTEG  ENCR     DH
 	 *          SHA1   MD5    AESCBC   MODP1024
-	 * 
+	 *
 	 */
 
 	result = proplist_new();
@@ -3202,7 +3230,7 @@ ikev2_ipsec_conf_to_proplist(struct ikev2_child_sa *child_sa,
 				   "Extended Sequence Number unsupported.\n");
 		}
 #endif
-		need_pfs = (is_createchild && 
+		need_pfs = (is_createchild &&
 		    (ikev2_need_pfs(child_sa->parent->rmconf) == RCT_BOOL_ON));
 		if (conf->sa_ah) {
 			*prop_tail = ikev2_ipsec_sa_to_proplist(child_sa,
@@ -3394,7 +3422,7 @@ ikev2_proposal_to_ipsec(struct ikev2_child_sa *child_sa,
 	 * spi, satype, enctype, enckey, enckeylen, authtype, authkey, authkeylen,
 	 *
 	 * not assigned here (apply_func need to assign them if necessary):
-	 * sa_src, pref_src, sa_dst, pref_dst, 
+	 * sa_src, pref_src, sa_dst, pref_dst,
 	 * so, wsize, saflags, lft_hard_time, lft_hard_bytes, lft_soft_time, lft_soft_bytes
 	 */
 
@@ -3744,7 +3772,7 @@ ike_conf_check_ikev1(struct rcf_remote *rmconf, int *err, int *warn,
 				     enc->keylen);
 			}
 		}
-				     
+
 	}
 
 	if (!ikev1_kmp_hash_alg(rmconf)) {
@@ -4431,7 +4459,10 @@ ike_determine_sa_endpoint(struct sockaddr_storage *ss,
 		plog(PLOG_DEBUG, PLOGLOC, 0, "MACRO %.*s %s\n",
 		    (int)config_ipaddr->a.vstr->l,
 		    config_ipaddr->a.vstr->s, rcs_sa2str(actual_addr));
+
 		if (!rcs_matchaddr(addrlist, actual_addr)) {
+		    plog(PLOG_INTERR, PLOGLOC, 0,
+			    "rcs_matchaddr() failed\n");
 			return NULL;
 		}
 

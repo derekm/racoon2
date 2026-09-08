@@ -220,7 +220,7 @@ static int rcf_fix_mobility_role (struct cf_list *, void *);
 static int rcf_fix_script (struct cf_list *, void *);
 static int rcf_fix_use_addresspool (struct cf_list *, void *);
 static int rcf_fix_request (struct cf_list *, void *);
-static int rcf_fix_dns (struct cf_list *, void *); 
+static int rcf_fix_dns (struct cf_list *, void *);
 static int rcf_fix_dhcp (struct cf_list *, void *);
 static int rcf_fix_application_version (struct cf_list *, void *);
 static int rcf_fix_mip6_home_prefix (struct cf_list *, void *);
@@ -444,7 +444,7 @@ rcf_cvt_size_t(size_t *r, const struct cf_list *n)
 	return 0;
 }
 
-
+
 /*
  * fix the configuration
  * (When this function is re-invoked without rcf_clean(), the configuration
@@ -545,7 +545,7 @@ rcf_clean(void)
 	return 0;
 }
 
-
+
 /*
  * fix setval definitions
  */
@@ -604,7 +604,7 @@ rcf_clean_setval(struct rcf_setval *head)
 	rc_free(head);
 }
 
-
+
 /*
  * fix interface definitions
  */
@@ -737,7 +737,7 @@ rcf_fix_if_bypass(struct cf_list *head, void *dst0)
 	return 0;
 }
 
-
+
 /*
  * fix resolver definitions
  */
@@ -828,7 +828,7 @@ rcf_fix_resolver_enable(struct cf_list *head, void *dst0)
 	return 0;
 }
 
-
+
 /*
  * fix remote definitions
  */
@@ -908,7 +908,7 @@ rcf_deepcopy_remote(struct rcf_remote *src)
 	DEEPCOPY_KMP(src->ikev1, new->ikev1);
 	DEEPCOPY_KMP(src->ikev2, new->ikev2);
 	DEEPCOPY_KMP(src->kink, new->kink);
-	
+
 
 	return new;
 }
@@ -1740,7 +1740,7 @@ static int
 rcf_fix_request(struct cf_list *head, void *dst0)
 {
 	struct rcf_kmp	*dst = (struct rcf_kmp *)dst0;
-	
+
 	if (rcf_check_cfd(head, CFD_REQUEST))
 		return -1;
 	if (rcf_fix_number(head->nextp, &dst->config_request))
@@ -1776,7 +1776,7 @@ static int
 rcf_fix_application_version(struct cf_list *head, void *dst0)
 {
 	struct rcf_kmp	*dst = (struct rcf_kmp *)dst0;
-	
+
 	if (rcf_check_cfd(head, CFD_APPLICATION_VERSION))
 		return -1;
 	if (rcf_fix_string(head->nextp, &dst->application_version))
@@ -1796,7 +1796,7 @@ rcf_fix_mip6_home_prefix(struct cf_list *head, void *dst0)
 	return 0;
 }
 
-
+
 /*
  * fix select definitions
  */
@@ -2109,7 +2109,7 @@ rcf_fix_policy_index(struct cf_list *head, void *dst0)
 	return 0;
 }
 
-
+
 /*
  * fix policy definitions
  */
@@ -2478,7 +2478,7 @@ rcf_fix_sa_index(struct cf_list *head, void *dst0)
 	return 0;
 }
 
-
+
 /*
  * fix sa definitions
  */
@@ -2628,7 +2628,7 @@ rcf_fix_spi(struct cf_list *head, void *dst0)
 	return 0;
 }
 
-
+
 static int
 str2addr(rc_vchar_t *str, int *af, uint8_t *addr)
 {
@@ -2663,7 +2663,7 @@ str2addr(rc_vchar_t *str, int *af, uint8_t *addr)
 		return -1;
 	}
 	for (p = info; p; p = p->ai_next) {
-		if (!p->ai_addr) 
+		if (!p->ai_addr)
 			continue;
 
 		switch (p->ai_addr->sa_family) {
@@ -2672,13 +2672,11 @@ str2addr(rc_vchar_t *str, int *af, uint8_t *addr)
 			    + offsetof(struct sockaddr_in, sin_addr);
 			alen = sizeof(struct in_addr);
 			break;
-#ifdef INET6
 		case AF_INET6:
 			a = ((uint8_t *)(void *)p->ai_addr)
 			    + offsetof(struct sockaddr_in6, sin6_addr);
 			alen = sizeof(struct in6_addr);
 			break;
-#endif
 		default:
 			plog(PLOG_INTWARN, PLOGLOC, NULL,
 			     "ignoring unsupported address (family %d) returned by getaddrinfo(%s)\n",
@@ -2800,7 +2798,7 @@ rcf_clean_addresspool_list(struct rcf_addresspool *head)
 	}
 }
 
-
+
 /*
  * fix default definitions
  */
@@ -2933,7 +2931,7 @@ rcf_clean_default_list(struct rcf_default *head)
 	return;
 }
 
-
+
 static void
 rcf_clean_kmp(struct rcf_kmp *n)
 {
@@ -3651,7 +3649,7 @@ rcf_get_cf_sa(rc_vchar_t *sa_index)
 	return 0;
 }
 
-
+
 int
 rcf_get_remotebyindex(rc_vchar_t *rm_index, struct rcf_remote **dst)
 {
@@ -3735,7 +3733,7 @@ rcf_get_remotebyaddr(struct sockaddr *s, rc_type proto, struct rcf_remote **dst)
 
 int
 rcf_get_remotebypeersid(rc_type id_type, rc_vchar_t *id_val, rc_type proto,
-			int (* cmp)(rc_type, rc_vchar_t *, struct rc_idlist *), 
+			int (* cmp)(rc_type, rc_vchar_t *, struct rc_idlist *),
 			struct rcf_remote **dst)
 {
 	struct rcf_remote *src = 0, *n;
@@ -3806,7 +3804,7 @@ rcf_get_selector(const char *sl_index, struct rcf_selector **dst)
 {
 	struct rcf_selector *src = 0, *n;
 	rc_vchar_t *vsl_index = 0;
-	
+
 	if (!sl_index) {
 		goto err;
 	}
@@ -3931,7 +3929,7 @@ rcf_get_spmd_if_passwd(rc_vchar_t **dst)
 	return 0;
 }
 
-
+
 /*
  * Copy the content from a file 'path' to an allocated buffer and return it.
  * The caller must rc_vfree() the returned value.

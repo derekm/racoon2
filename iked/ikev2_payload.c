@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2004-2005 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -81,6 +81,11 @@ struct ikev2_payload_types ikev2_payload_types[] = {
 	{"ENCRYPTED", sizeof(struct ikev2_payload_header)},
 	{"CONFIG", sizeof(struct ikev2payl_config)},
 	{"EAP", sizeof(struct ikev2_payload_header)},
+	{"RESERVED", 0},	/* 49 */
+	{"RESERVED", 0},	/* 50 */
+	{"RESERVED", 0},	/* 51 */
+	{"RESERVED", 0},	/* 52 */
+	{"SKF", sizeof(struct ikev2payl_encrypted_fragment)},
 };
 
 /*
@@ -223,6 +228,15 @@ ikev2_check_payloads(rc_vchar_t *packet, int before_decrypt)
 					TRACE((PLOGLOC, "Config payload check failed\n"));
 					return -1;
 				}
+			}
+			break;
+		case IKEV2_PAYLOAD_ENCRYPTED_AND_AUTHENTICATED_FRAGMENT:
+			{
+			    struct ikev2payl_encrypted_fragment *skf =
+				(struct ikev2payl_encrypted_fragment*)p;
+
+			    if (payload_length < sizeof(struct ikev2payl_encrypted_fragment))
+				TRACE((PLOGLOC, "payload length (%d) is shorter than expected", payload_length));
 			}
 			break;
 		default:
@@ -810,7 +824,7 @@ ikev2_construct_sa(struct ikev2_child_sa *child_sa)
 /*
  * encode special upper layer protocol selector into port
  */
-enum start_end { 
+enum start_end {
 	START,
 	END
 };
@@ -972,13 +986,11 @@ ikev2_construct_ts(int proto, uint32_t uss, uint32_t use,
 				a = (uint8_t *)&((struct sockaddr_in *)sa)->sin_addr;
 				alen = sizeof(struct in_addr);
 				break;
-#ifdef INET6
-			case AF_INET6:
-				ts_type = IKEV2_TS_IPV6_ADDR_RANGE;
-				a = (uint8_t *)&((struct sockaddr_in6 *)sa)->sin6_addr;
-				alen = sizeof(struct in6_addr);
-				break;
-#endif
+		case AF_INET6:
+			ts_type = IKEV2_TS_IPV6_ADDR_RANGE;
+			a = (uint8_t *)&((struct sockaddr_in6 *)sa)->sin6_addr;
+			alen = sizeof(struct in6_addr);
+			break;
 			default:
 				plog(PLOG_INTERR, PLOGLOC, 0,
 				     "unsupported address type %d\n",
@@ -1178,13 +1190,11 @@ ikev2_confirm_ts(struct ikev2_payload_header *ts_i,
 					a = (uint8_t *)
 					    &((struct sockaddr_in *)sa)->sin_addr;
 					break;
-#ifdef INET6
 				case AF_INET6:
 					ts_type = IKEV2_TS_IPV6_ADDR_RANGE;
 					a = (uint8_t *)
 					    &((struct sockaddr_in6 *)sa)->sin6_addr;
 					break;
-#endif
 				default:
 					return -1;
 				}
@@ -1294,13 +1304,11 @@ ikev2_confirm_ts(struct ikev2_payload_header *ts_i,
 					a = (uint8_t *)
 					    &((struct sockaddr_in *)sa)->sin_addr;
 					break;
-#ifdef INET6
 				case AF_INET6:
 					ts_type = IKEV2_TS_IPV6_ADDR_RANGE;
 					a = (uint8_t *)
 					    &((struct sockaddr_in6 *)sa)->sin6_addr;
 					break;
-#endif
 				default:
 					return -2;
 				}

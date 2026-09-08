@@ -4,7 +4,7 @@
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -16,7 +16,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -37,6 +37,8 @@
 #define PORT_ISAKMP_NATT	4500
 
 #define IKEV1_DEFAULT_NONCE_SIZE	16
+#define ISAKMP_FRAG_MAXLEN 1300
+#define ISAKMP_MAX_FRAGS		64
 
 /* typedef unsigned char cookie_t[8]; */
 typedef unsigned char msgid_t[4];
@@ -80,6 +82,7 @@ extern const char *isakmp_pindex (const isakmp_index_t *, const uint32_t);
 extern int isakmp_open (void);
 extern void isakmp_close (void);
 extern int isakmp_send (struct ph1handle *, rc_vchar_t *);
+extern int isakmp_sendfrags(struct ph1handle *, rc_vchar_t*);extern void isakmp_frag_purge(struct ph1handle *);
 
 /*  extern void isakmp_ph1resend_stub (void *); */
 extern int isakmp_ph1resend (struct ph1handle *);

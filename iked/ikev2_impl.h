@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2004-2005 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -77,7 +77,7 @@ extern struct ikev2_payload_types {
 	size_t minimum_length;
 } ikev2_payload_types[];
 
-#define	IKEV2_PAYLOAD_TYPE_DEFINED(type_)	((type_) >= IKEV2_PAYLOAD_SA && (type_) <= IKEV2_PAYLOAD_EAP)
+#define	IKEV2_PAYLOAD_TYPE_DEFINED(type_)	((type_) >= IKEV2_PAYLOAD_SA && (type_) <= IKEV2_PAYLOAD_ENCRYPTED_AND_AUTHENTICATED_FRAGMENT)
 #define	IKEV2_PAYLOAD_TYPES(type_)	(ikev2_payload_types[(type_) - IKEV2_PAYLOAD_SA])
 #define	IKEV2_PAYLOAD_NAME(type_)	(IKEV2_PAYLOAD_TYPE_DEFINED(type_) ? IKEV2_PAYLOAD_TYPES(type_).name : "unknown")
 
@@ -212,6 +212,8 @@ struct ikev2_sa {
 	int behind_nat;
 	int peer_behind_nat;
 	int crypto_pending;
+	int frag_supported;		/* IKEv2 fragmentation (RFC7383) */
+	struct ikev2_frag_item *frag_chain;	/* Received fragments */
 	struct sched *natk_timer;
 #if 0	/* XXX for transport mode */
 	struct sockaddr *privaddr_p;
@@ -400,6 +402,22 @@ extern void ikev2_informational_initiator_delete(struct ikev2_sa *,
 						 struct ikev2_payloads *);
 
 extern int ikev2_send_initial_contact(struct ikev2_sa *);
+#define IKEV2_MAX_FRAGS	64
+
+struct ikev2_frag_item {
+	uint32_t msgid;
+	uint16_t total_fragments;
+	int num_received;
+	time_t timeout;
+	struct ikev2_frag_item *next;
+	rc_vchar_t *parts[IKEV2_MAX_FRAGS + 1]; /* 1-indexed */
+	size_t total_data_len;
+};
+
+extern int ikev2_frag_send(struct ikev2_sa *, rc_vchar_t **);
+extern rc_vchar_t *ikev2_frag_recv(struct ikev2_sa *, rc_vchar_t *,
+				    struct sockaddr *, struct sockaddr *);
+extern void ikev2_frag_purge(struct ikev2_sa *);
 
 extern void ikev2_sa_init(void);
 #ifdef DEBUG

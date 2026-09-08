@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2004 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -122,6 +122,33 @@ ike_spmif_post_slid(void *tag, uint32_t spid)
 static int
 ike_spmif_post_slid_callback(void *tag, const char *slid)
 {
+	struct isakmp_acquire_request *req = 0;
+
+	req = (struct isakmp_acquire_request*)tag;
+
+	if (!req)
+	    return -1;
+
+	if (slid == NULL)
+	{
+	    struct rcf_selector* selector;
+	    char* index;
+
+	    selector = ike_conf_find_selector_by_addr(req->src, req->dst);
+
+	    if (!selector)
+	    {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+			"no selector found for last fix\n");
+		return -1;
+	    }
+
+
+	    index = rc_strdup(rc_vmem2str(selector->sl_index));
+	    isakmp_initiate_cont(req, index);
+	    rc_free(index);
+	}
+
 	isakmp_initiate_cont(tag, slid);
 
 	return 0;		/* return value ignored by caller */
@@ -152,8 +179,10 @@ ike_spmif_post_policy_add(struct rcf_selector *sel, rc_type samode,
 		if (!(s->pl && rc_vmemcmp(s->pl->rm_index, rmconf->rm_index) == 0))
 			continue;
 
-		if (addrlist_equal(s->src, sel->dst) &&
-		    addrlist_equal(s->dst, sel->src)) {
+		if ((addrlist_equal(s->src, sel->dst) ||
+		     rcs_is_addr_rw(s->src) || rcs_is_addr_rw(sel->dst)) &&
+		    (addrlist_equal(s->dst, sel->src) ||
+		     rcs_is_addr_rw(s->dst) || rcs_is_addr_rw(sel->src))) {
 			sl_index_in = s->sl_index;
 			break;
 		}

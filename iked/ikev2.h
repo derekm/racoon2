@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2004 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -152,7 +152,10 @@ struct ikev2_payload_header {
 #define	IKEV2_PAYLOAD_ENCRYPTED		46
 #define	IKEV2_PAYLOAD_CONFIG		47
 #define	IKEV2_PAYLOAD_EAP		48
-/* Reserved to IANA			49 - 127 */
+/* Reserved to IANA			49 - 52 */
+#define	IKEV2_PAYLOAD_ENCRYPTED_AND_AUTHENTICATED_FRAGMENT	53	/* SKF (RFC7383) */
+/* Reserved to IANA			54 - 127 */
+
 #define	IKEV2_PAYLOAD_PRIVATE		128
 /* Private use				128 - 255 */
 
@@ -537,7 +540,8 @@ struct ikev2payl_notify {
 #define	IKEV2_TICKET_OPAQUE		16413	/* (RFC5723) */
 #define	IKEV2_LINK_ID			16414	/* (draft-ietf-ipsecme-ikev2-ipv6-config-03) */
 #define	IKEV2_USE_WESP_MODE		16415	/* (draft-ietf-ipsecme-traffic-visibility-12.txt) */
-/* RESERVED TO IANA - STATUS TYPES      16416 - 40959 */
+/* RESERVED TO IANA - STATUS TYPES      16431 - 40959 */
+#define	IKEV2_FRAGMENTATION_SUPPORTED	16430	/* (RFC7383) */
 /* Private Use - STATUS TYPES           40960 - 65535 */
 
 /*
@@ -628,6 +632,19 @@ struct ikev2_traffic_selector {
  */
 /* is a payload header followed by IV and encrypted data */
 
+/*
+ * 3.14.1 Encrypted and Authenticated Fragment Payload (RFC7383)
+ */
+/* is a payload header followed by Fragment Number, Total Fragments, IV, encrypted data */
+struct ikev2payl_encrypted_fragment {
+	struct ikev2_payload_header header;
+	uint16_t fragment_number;
+	uint16_t total_fragments;
+	/* followed by Initialization Vector */
+	/* followed by Encrypted Content */
+	/* followed by Padding */
+	/* followed by Integrity Checksum Data */
+} __attribute__((__packed__));
 /*
  * 3.15 Configuration Payload
  */

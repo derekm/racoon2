@@ -46,6 +46,11 @@
 # include <netinet6/in6_var.h>		/* for in6_ifreq */
 #endif
 
+#ifdef __linux__
+# include <ifaddrs.h>
+# include <linux/if_addr.h>
+#endif
+
 #ifdef HAVE_GETIFADDRS
 #include <ifaddrs.h>
 #endif
@@ -144,22 +149,37 @@ rcs_is_addr_any(struct rc_addrlist *al)
 int
 rcs_getaddrlistbymacro(const rc_vchar_t *m, struct rc_addrlist **al0)
 {
-	char *buf, *p, *ifname;
+	char *buf, *p, *ifname, *mname;
 	struct rcs_addrmacro *mx;
 	struct rc_addrlist *al;
 	int error = -1;
+	size_t mname_len = 0;
+	int mname_allocated = 0;
 
 	if ((buf = rc_malloc(m->l + 1)) == NULL)
 		return EAI_MEMORY;
+
 	memcpy(buf, m->v, m->l);
 	buf[m->l] = '\0';
 
 	if ((p = strrchr(buf, '%')) != NULL && *(p + 1) != '\0') {
+		mname_len = p - buf;
+
+		if ((mname = rc_malloc(mname_len + 1)) == NULL)
+		    return EAI_MEMORY;
+		mname_allocated = 1;
+
+		memcpy(mname, buf, mname_len);
+		mname[mname_len] = '\0';
+
 		*p = '\0';
 		ifname = p + 1;
 	} else
-		ifname = NULL;
-	if ((mx = find_addrmacro(buf)) == NULL) {
+	{
+	    mname = buf;
+	    ifname = NULL;
+	}
+	if ((mx = find_addrmacro(mname)) == NULL) {
 		error = EAI_NONAME;
 		goto end;
 	}
@@ -167,10 +187,14 @@ rcs_getaddrlistbymacro(const rc_vchar_t *m, struct rc_addrlist **al0)
 		error = EAI_FAIL;
 		goto end;
 	}
+
 	*al0 = al;
-	error = 0;
+
+	return 0;
 
     end:
+	if (mname_allocated)
+		rc_free(mname);
 	rc_free(buf);
 	return error;
 }
@@ -186,9 +210,8 @@ find_addrmacro(const char *buf)
 		if (len != plen)
 			continue;
 		if (memcmp(buf, rcs_addrmacro_list[i].macro, len) == 0)
-			return &rcs_addrmacro_list[i];
+		    return &rcs_addrmacro_list[i];
 	}
-
 	return NULL;
 }
 
@@ -328,7 +351,6 @@ rcs_exmacro_ip_unspecified(const char *ifname)
 	int error;
 
 	lastap = &new_head;
-
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET6;
 	hints.ai_socktype = SOCK_DGRAM;
@@ -358,7 +380,6 @@ rcs_exmacro_ip_unspecified(const char *ifname)
 		lastap = &new->next;
 	}
 	freeaddrinfo(ai);
-
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_DGRAM;
@@ -407,7 +428,11 @@ getifaddrlist(int family, const char *ifname)
 	struct ifaddrs *ifa0, *ifap;
 
 	if (getifaddrs(&ifa0))
-		return NULL;
+	{
+	    plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "getifaddrs failed\n");
+	    return NULL;
+	}
 
 	for (ifap = ifa0; ifap; ifap = ifap->ifa_next) {
 		if (!ifap->ifa_addr)
@@ -615,7 +640,54 @@ static int
 suitable_ifaddr6(const char *ifname, const struct sockaddr *ifaddr)
 {
 #ifdef __linux__
-	return 1;		/* XXX FIXME */
+
+	struct ifaddrs *ifa = 0, *ifl;
+	unsigned int suitable;
+
+	if (ifaddr == NULL || ifaddr->sa_family != AF_INET6)
+	    return 0;
+
+	if(getifaddrs(&ifl))
+	    return 0;
+
+	for (ifa = ifl; ifa != NULL; ifa = ifa->ifa_next)
+	{
+	   if (strcmp(ifa->ifa_name, ifname) != 0)
+	       continue;
+
+	   struct sockaddr_in6 *sin6_list = (struct sockaddr_in6*)ifa->ifa_addr;
+	   struct sockaddr_in6 *sin6_target = (struct sockaddr_in6*)ifaddr;
+
+	   if (ifa->ifa_addr == NULL)
+	   {
+	       plog(PLOG_DEBUG, PLOGLOC, NULL,
+		       "iface=%s (ifa_addr is NULL)\n", ifa->ifa_name);
+	       continue;
+	   }
+
+	   if (memcmp(&sin6_list->sin6_addr, &sin6_target->sin6_addr, sizeof(struct in6_addr)) == 0)
+	   {
+	       if (ifa->ifa_data)
+	       {
+		   unsigned int flags = *(unsigned int*)ifa->ifa_data;
+
+		   if (flags & IFA_F_DADFAILED || flags & IFA_F_TENTATIVE)
+		       suitable = 0;
+		   else
+		       suitable = 1;
+		   break;
+	       }
+	       else
+	       {
+		   suitable = 1;
+		   break;
+	       }
+	   }
+	}
+
+	freeifaddrs(ifl);
+
+	return suitable;
 #else
 	struct in6_ifreq ifr6;
 	int s;
@@ -1009,12 +1081,10 @@ rcs_cmpsa_wop(const struct sockaddr *addr1, const struct sockaddr *addr2)
 	sa2 = rcs_getsaaddr(addr2);
 	if (memcmp(sa1, sa2, rcs_getsaaddrlen(addr1)) != 0)
 		return 1;
-#ifdef INET6
 	if (addr1->sa_family == AF_INET6) {
 		if (*rcs_getsascopeid(addr1) != *rcs_getsascopeid(addr2))
 			return 1;
 	}
-#endif
 
 	return 0;
 }
@@ -1191,7 +1261,6 @@ rcs_getsaaddr(const struct sockaddr *sa)
 	}
 }
 
-#ifdef INET6
 /* Useful IPv6 macros and definitions (derived from NetBSD kernel) */
 #define _IN6MASK0        {{{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }}}
 #ifndef s6_addr32
@@ -1202,7 +1271,6 @@ rcs_getsaaddr(const struct sockaddr *sa)
 	(((d)->s6_addr32[1] ^ (a)->s6_addr32[1]) & (m)->s6_addr32[1]) == 0 && \
 	(((d)->s6_addr32[2] ^ (a)->s6_addr32[2]) & (m)->s6_addr32[2]) == 0 && \
 	(((d)->s6_addr32[3] ^ (a)->s6_addr32[3]) & (m)->s6_addr32[3]) == 0 )
-#endif
 int
 rcs_matchaddr(const struct rc_addrlist *addr, const struct sockaddr *si)
 {
@@ -1224,6 +1292,13 @@ rcs_matchaddr(const struct rc_addrlist *addr, const struct sockaddr *si)
 			if (san->sin_addr.s_addr == 0)
 				return 1;
 
+			if (address->prefixlen == 0)
+			{
+			    plog(PLOG_INFO, PLOGLOC, NULL,
+				    "IPv4 prefixlen=0, match ANY\n");
+			    return 1;
+			}
+
 			/* If selector's masked address matches the
 		 	 * peer's masked address, match the peer's address */
 			if (address->prefixlen > 0 && address->prefixlen < 32) {
@@ -1235,7 +1310,6 @@ rcs_matchaddr(const struct rc_addrlist *addr, const struct sockaddr *si)
 				}
 			}
 			break;
-#ifdef INET6
 		case AF_INET6:
 			if (si->sa_family != AF_INET6)
 				break;
@@ -1252,6 +1326,13 @@ rcs_matchaddr(const struct rc_addrlist *addr, const struct sockaddr *si)
 			/* If selector's masked address matches the peer's
 		 	 * masked address, match the address of the peer */
 
+			if (address->prefixlen == 0)
+			{
+			    plog(PLOG_INFO, PLOGLOC, NULL,
+				    "IPv6 prefixlen=0, match ANY\n");
+			    return 1;
+			}
+
 			if (address->prefixlen > 0 && address->prefixlen < 128) {
 				struct in6_addr mask6 = _IN6MASK0;
 				rcs_in6_prefixlen2mask(&mask6, address->prefixlen);
@@ -1261,7 +1342,6 @@ rcs_matchaddr(const struct rc_addrlist *addr, const struct sockaddr *si)
 				}
 			}
 			break;
-#endif
 		default:
 			plog(PLOG_PROTOERR, PLOGLOC, NULL,
 			   "unsupported address family (%d) for selector address\n",
@@ -1270,4 +1350,4 @@ rcs_matchaddr(const struct rc_addrlist *addr, const struct sockaddr *si)
 		}
 	}
 	return 0;
-}
+};

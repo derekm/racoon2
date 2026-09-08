@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 2005 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -129,13 +129,11 @@ natt_create_hash(struct ikev2_sa *ike_sa, struct sockaddr *addr, int use_spi_r)
 		addr_port = &((struct sockaddr_in *)addr)->sin_port;
 		break;
 
-#ifdef INET6
 	case AF_INET6:
 		addr_size = sizeof(struct in6_addr);
 		addr_ptr = &((struct sockaddr_in6 *)addr)->sin6_addr;
 		addr_port = &((struct sockaddr_in6 *)addr)->sin6_port;
 		break;
-#endif
 
 	default:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,

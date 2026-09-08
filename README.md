@@ -223,9 +223,9 @@ Currently, the system supports the following specifications:
 	          for Internet Key Exchange (IKE)
 	RFC 2367, PF_KEY Key Management API, Version 2
 
-	Incoming via the gsoc2026 stream (see "Parallel work streams"):
-	RFC 7383 IKEv2 fragmentation, IKEv1 fragmentation,
-	NAT-OA (RFC 3947 §4).
+	RFC 7383 IKEv2 fragmentation and IKEv1 fragmentation are in
+	this tree (gsoc2026). NAT-OA (RFC 3947 §4) is on the PF_KEY
+	path; Linux XFRM port is still open.
 
 	Not implemented in this tree yet: RFC 9242 (IKE_INTERMEDIATE),
 	RFC 9370 (multiple key exchanges / ADDKE), RFC 8784 PPK —
@@ -233,7 +233,6 @@ Currently, the system supports the following specifications:
 	OpenSSL 3.5+/OQS ML-KEM provider.
 
 	Partial statuses (scope beyond the supported core):
-	RFC 3947 — NAT-OA (section 4) arrives with gsoc2026.
 	RFC 7296 — IKEv2 EAP (section 2.16) absent until the AAA item;
 	          everything else exercised.
 	RFC 2409 — IKEv1 mode-config/XAuth is ENABLE_HYBRID scaffolding
@@ -243,7 +242,8 @@ Currently, the system supports the following specifications:
 	          Windows L2TP (EAP/XAuth machine auth) is out of scope
 	          until the AAA item.
 	RFC 4430 — kinkd in tree; live KDC validation pending.
-	
+
+
 The system provides three daemons: iked, kinkd and spmd.
 Each daemon manages IKE, KINK and IPsec Policy respectively.
 
@@ -280,9 +280,9 @@ You have to run "spmd" AND one protocol daemon to establish IPsec SAs.
     +--------+                            +--------+
     |  iked  |--(spmif)--+    +--(spmif)--|  kinkd |
     +--------+           |    |           +--------+
-         |             +--------+             | 
-         |             |  spmd  |             | 
-         |             +--------+             | 
+         |             +--------+             |
+         |             |  spmd  |             |
+         |             +--------+             |
          |                  |                 |
          |                  |                 |
     --(PFKEY)------------(PFKEY)-----------(PFKEY)--
@@ -344,32 +344,32 @@ in the WIDE Project.
 
 o IPR consideration
 
-The Racoon2 Project takes no position regarding the validity or scope of 
-any intellectual property rights or other rights that might be 
-claimed to pertain to the implementation or use of the technology 
-used in the Racoon2, or the extent to which any license under such rights 
-might or might not be available; nor does it represent that it has 
+The Racoon2 Project takes no position regarding the validity or scope of
+any intellectual property rights or other rights that might be
+claimed to pertain to the implementation or use of the technology
+used in the Racoon2, or the extent to which any license under such rights
+might or might not be available; nor does it represent that it has
 made any independent effort to identify any such rights.
 
-The Racoon2 Project simply reproduces the intellectual property rights 
-statements that have been submitted to the IETF at 
-<https://datatracker.ietf.org/public/ipr_disclosure.cgi> concerning 
+The Racoon2 Project simply reproduces the intellectual property rights
+statements that have been submitted to the IETF at
+<https://datatracker.ietf.org/public/ipr_disclosure.cgi> concerning
 the IETF protocols embodied in the Racoon2.
 
-Certicom's Statement About IPR Claimed in RFC 3526, RFC 2409, 
-draft-ietf-ipsec-ikev2, and Other IETF Specifications Using MODP 
-Groups: 
+Certicom's Statement About IPR Claimed in RFC 3526, RFC 2409,
+draft-ietf-ipsec-ikev2, and Other IETF Specifications Using MODP
+Groups:
 <https://datatracker.ietf.org/public/ipr_detail_show.cgi?&ipr_id=336>
 
-Internet Key Exchange (IKEv2) Protocol: 
+Internet Key Exchange (IKEv2) Protocol:
 <https://datatracker.ietf.org/public/ipr_detail_show.cgi?&ipr_id=137>
 
-Microsoft's statement about IPR claimed in 
-draft-ietf-ipsec-ikev2-08.txt: 
+Microsoft's statement about IPR claimed in
+draft-ietf-ipsec-ikev2-08.txt:
 <https://datatracker.ietf.org/public/ipr_detail_show.cgi?&ipr_id=190>
 
-If you have a concern about the possible intellectual property rights 
-associated with acquiring, compiling, modifying, or otherwise using 
+If you have a concern about the possible intellectual property rights
+associated with acquiring, compiling, modifying, or otherwise using
 the Racoon2 software, you should consult your own attorney.
 
 o Project Members

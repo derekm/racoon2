@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -515,8 +515,8 @@ keylen_ealg(unsigned int enctype, int encklen)
 }
 
 static int
-rc_convertfromipsecdoi(unsigned int proto_id, unsigned int t_id, unsigned int hashtype, 
-		       unsigned int *e_type, unsigned int *e_keylen, 
+rc_convertfromipsecdoi(unsigned int proto_id, unsigned int t_id, unsigned int hashtype,
+		       unsigned int *e_type, unsigned int *e_keylen,
 		       unsigned int *a_type, unsigned int *a_keylen, unsigned int *flags)
 {
 	*flags = 0;
@@ -896,8 +896,8 @@ pk_sendget(struct ph2handle *iph2, int dir)
 }
 
 static int
-ikev1_get_response(struct sadb_request *req, 
-		   struct sockaddr *src, struct sockaddr *dst, 
+ikev1_get_response(struct sadb_request *req,
+		   struct sockaddr *src, struct sockaddr *dst,
 		   unsigned int satype, uint32_t spi, uint64_t *bytecount)
 {
         struct ph2handle *iph2;
@@ -1055,11 +1055,30 @@ pk_sendupdate(struct ph2handle *iph2)
 		param.enckey = pr->keymat->v;
 		param.enckeylen = e_keylen;
 		param.authkey = pr->keymat->s + e_keylen;
-		param.authkeylen = a_keylen;
-		if (iph2->sadb_request.method->update_inbound(&param)) {
-			/* (*update_inbound)() logs error message */
-			return -1;
-		}
+
+#ifdef ENABLE_NATT
+        if (iph2->ph1->natt_flags & NAT_DETECTED && iph2->natoa_p)
+        {
+            struct sockaddr* sa;
+            struct sockaddr_storage *ss = &param.sa_natoa_dst_storage;
+
+            if ((sa = natoa_vbuf_to_sockaddr(ss, iph2->natoa_p)) == NULL)
+            {
+                plog(PLOG_INTERR, PLOGLOC, NULL,
+                     "could not retrieve NAT-OA\n");
+                return 0;
+            }
+
+            param.sa_natoa_dst = sa;
+        }
+#endif
+
+        param.authkeylen = a_keylen;
+        if (iph2->sadb_request.method->update_inbound(&param)) {
+            /* (*update_inbound)() logs error message */
+            return -1;
+        }
+
 #if 0
 		plog(PLOG_DEBUG, PLOGLOC, NULL, "call pfkey_send_update\n");
 		if (pfkey_send_update
@@ -1234,6 +1253,7 @@ pk_sendadd(struct ph2handle *iph2)
 	struct rcpfk_msg param;
 
 	memset(&param, 0, sizeof(param));
+	/* sanity check */
 	if (iph2->approval == NULL) {
 		plog(PLOG_INTERR, PLOGLOC, 0, "no approvaled SAs found.\n");
 		return -1;
@@ -1330,6 +1350,23 @@ pk_sendadd(struct ph2handle *iph2)
 		param.enckeylen = e_keylen;
 		param.authkey = pr->keymat_p->s + e_keylen;
 		param.authkeylen = a_keylen;
+
+#ifdef ENABLE_NATT
+        if (iph2->ph1->natt_flags & NAT_DETECTED && iph2->natoa)
+        {
+            struct sockaddr* sa;
+            struct sockaddr_storage *ss = &param.sa_natoa_src_storage;
+
+            if ((sa = natoa_vbuf_to_sockaddr(ss, iph2->natoa)) == NULL)
+            {
+                plog(PLOG_INTERR, PLOGLOC, NULL,
+                     "could not retrieve NAT-OA\n");
+                return 0;
+            }
+
+            param.sa_natoa_src = sa;
+        }
+#endif
 		if (iph2->sadb_request.method->add_outbound(&param)) {
 			/* (*update_outbound)() logs error message */
 			return -1;
@@ -1564,11 +1601,9 @@ pk_recvacquire(mhp)
 		     IN_MULTICAST(ntohl
 				  (((struct sockaddr_in *)sa)->sin_addr.
 				   s_addr)))
-#ifdef INET6
 		    || (sa->sa_family == AF_INET6
 			&& IN6_IS_ADDR_MULTICAST(&((struct sockaddr_in6 *)sa)->
 						 sin6_addr))
-#endif
 			) {
 			plog(PLOG_DEBUG, PLOGLOC, NULL,
 			     "ignore due to multicast address: %s.\n",
@@ -1918,7 +1953,7 @@ getsadbpolicy(caddr_t *policy0, int *policylen0, int type, struct ph2handle *iph
 			goto err;
 		}
 
-		/* 
+		/*
 		 * the policy level cannot be unique because the policy
 		 * is defined later than SA, so req_id cannot be bound to SA.
 		 */
@@ -2684,7 +2719,7 @@ addnewsp(caddr_t *mhp)
 
 /* proto/mode/src->dst spi */
 const char *
-sadbsecas2str(struct sockaddr *src, struct sockaddr *dst, 
+sadbsecas2str(struct sockaddr *src, struct sockaddr *dst,
 	      int proto, uint32_t spi, int mode)
 {
 	static char buf[256];

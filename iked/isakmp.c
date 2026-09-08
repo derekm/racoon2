@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 1995, 1996, 1997, 1998, and 2004 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -90,7 +90,8 @@
 # ifdef ENABLE_NATT
 #  include "ikev1/ikev1_natt.h"
 # endif
-#endif
+   extern struct rcf_remote *getrmconf(struct sockaddr *);
+# endif
 #include "crypto_impl.h"
 
 #include "ike_conf.h"
@@ -290,6 +291,10 @@ isakmp_open(void)
 			     "ignoring prefix in interface spec\n");
 #endif
 
+#ifdef ENABLE_NATT
+        isakmp_open_address(addr->a.ipaddr, RC_PORT_IKE_NATT);
+#endif
+
 		isakmp_open_address(addr->a.ipaddr, addr->port);
 	}
 
@@ -387,8 +392,11 @@ isakmp_reopen(void)
 			SOCKET_LIST_REMOVE(item);
 			SOCKET_LIST_LINK(&socket_list_head, item);
 			continue;
-		}
+        }
 
+#ifdef ENABLE_NATT
+        isakmp_open_address(addr->a.ipaddr, RC_PORT_IKE_NATT);
+#endif
 		isakmp_open_address(addr->a.ipaddr, addr->port);
 	}
 
@@ -473,7 +481,6 @@ isakmp_open_address(struct sockaddr *addr, int port)
 #endif
 		break;
 
-#ifdef INET6
 	case AF_INET6:
 		{
 			int pktinfo;
@@ -493,9 +500,10 @@ isakmp_open_address(struct sockaddr *addr, int port)
 #else				/* old adv. API */
 			pktinfo = IPV6_PKTINFO;
 #endif				/* IPV6_RECVPKTINFO */
-#else
+#elif defined(IPV6_RECVDSTADDR)
 			pktinfo = IPV6_RECVDSTADDR;
 #endif
+#if defined(ADVAPI) || defined(IPV6_RECVDSTADDR)
 			if (setsockopt(p->sock, IPPROTO_IPV6, pktinfo,
 				       (const void *)&yes, sizeof(yes)) < 0) {
 				plog(PLOG_INTERR, PLOGLOC, NULL,
@@ -503,6 +511,7 @@ isakmp_open_address(struct sockaddr *addr, int port)
 				     strerror(errno));
 				goto fail;
 			}
+#endif
 #ifdef IPV6_USE_MIN_MTU
 			if (sa->sa_family == AF_INET6 &&
 			    setsockopt(p->sock, IPPROTO_IPV6,
@@ -516,7 +525,6 @@ isakmp_open_address(struct sockaddr *addr, int port)
 #endif
 		}
 		break;
-#endif
 	default:
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "shouldn't happen: sockaddr_family %d\n",
@@ -646,6 +654,251 @@ isakmp_find_socket(struct sockaddr *sa)
 		return -1;
 	return a->sock;
 }
+/*
+ * Free a fragment context and all of the per-fragment buffers that it
+ * owns.  Safe to call with a NULL pointer.
+ */
+static void
+isakmp_frag_ctx_free(struct isakmp_frag_item *ctx)
+{
+	int i;
+	if (ctx == NULL)
+		return;
+	for (i = 1; i < ISAKMP_MAX_FRAGS; i++) {
+		if (ctx->parts[i] != NULL) {
+			rc_vfree(ctx->parts[i]);
+			ctx->parts[i] = NULL;
+		}
+	}
+	free(ctx);
+}
+
+/*
+ * Reassemble the previously received fragments into a single buffer.
+ */
+static rc_vchar_t *
+isakmp_frags_reassemble(struct isakmp_frag_item *ctx)
+{
+	rc_vchar_t *buf;
+	size_t total = 0;
+	size_t offset = 0;
+	int i;
+
+	if (ctx == NULL || ctx->last_frag <= 0)
+		return NULL;
+
+	for (i = 1; i <= ctx->last_frag; i++) {
+		if (ctx->parts[i] == NULL)
+			return NULL;
+		total += ctx->parts[i]->l;
+	}
+	if (total == 0)
+		return NULL;
+
+	buf = rc_vmalloc(total);
+	if (buf == NULL)
+		return NULL;
+
+	for (i = 1; i <= ctx->last_frag; i++) {
+		memcpy(buf->v + offset, ctx->parts[i]->v, ctx->parts[i]->l);
+		offset += ctx->parts[i]->l;
+	}
+	buf->l = total;
+	return buf;
+}
+
+/*
+ * Detach a fragment context from its anchor list.
+ */
+static struct isakmp_frag_item *
+isakmp_frag_detach(struct isakmp_frag_item *head,
+    struct isakmp_frag_item *ctx)
+{
+	struct isakmp_frag_item **pp;
+
+	for (pp = &head; *pp != NULL; pp = &(*pp)->next) {
+		if (*pp == ctx) {
+			*pp = ctx->next;
+			ctx->next = NULL;
+			break;
+		}
+	}
+	return head;
+}
+
+/*
+ * Receive a single IKEv1 fragment.
+ */
+static rc_vchar_t *
+isakmp_frag_recv(struct ph1handle *iph1, rc_vchar_t *packet)
+{
+	struct isakmp *ih;
+	struct isakmp_frag_hdr *frag;
+	struct isakmp_frag_item *ctx = NULL;
+	rc_vchar_t *assembled = NULL;
+	int frag_no, i;
+	size_t data_len;
+	uint8_t *data_buf;
+	uint32_t msgid;
+
+	if (iph1 == NULL)
+		return NULL;
+	if (packet == NULL ||
+	    packet->l < sizeof(struct isakmp) +
+	    sizeof(struct isakmp_frag_hdr)) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "IKE fragment too short (%zu)\n",
+		    packet ? packet->l : 0);
+		return NULL;
+	}
+
+	ih = (struct isakmp *)packet->v;
+	frag = (struct isakmp_frag_hdr *)((char *)packet->v +
+	    sizeof(struct isakmp));
+	msgid = ntohl(ih->msgid);
+
+	frag_no = ntohs(frag->frag_no);
+	if (frag_no <= 0 || frag_no >= ISAKMP_MAX_FRAGS) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "invalid IKE fragment number %d\n", frag_no);
+		return NULL;
+	}
+
+	if (packet->l < ntohl(ih->len)) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "IKE fragment truncated (packet %zu, header %u)\n",
+		    packet->l, (unsigned)ntohl(ih->len));
+		return NULL;
+	}
+
+	data_len = ntohs(frag->h.len);
+	if (data_len < sizeof(struct isakmp_frag_hdr)) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "IKE fragment header length too small (%zu)\n", data_len);
+		return NULL;
+	}
+	data_len -= sizeof(struct isakmp_frag_hdr);
+
+	if (packet->l < sizeof(struct isakmp) +
+	    sizeof(struct isakmp_frag_hdr) + data_len) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "IKE fragment data truncated\n");
+		return NULL;
+	}
+	data_buf = (uint8_t *)frag + sizeof(struct isakmp_frag_hdr);
+
+	for (ctx = iph1->frag_chain; ctx != NULL; ctx = ctx->next) {
+		if (ctx->frag_id == frag->frag_id && ctx->msgid == msgid)
+			break;
+	}
+
+	if (ctx == NULL) {
+		ctx = calloc(1, sizeof(*ctx));
+		if (ctx == NULL) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			    "failed to allocate IKE fragment context\n");
+			return NULL;
+		}
+		ctx->frag_id = frag->frag_id;
+		ctx->msgid = msgid;
+		ctx->last_frag = 0;
+		ctx->nfrags = 0;
+		ctx->next = iph1->frag_chain;
+		iph1->frag_chain = ctx;
+	}
+
+	if (ctx->parts[frag_no] != NULL) {
+		plog(PLOG_PROTOWARN, PLOGLOC, NULL,
+		    "duplicate IKE fragment %d (frag_id=%u msgid=%u)\n",
+		    frag_no, frag->frag_id, (unsigned)msgid);
+		return NULL;
+	}
+
+	ctx->parts[frag_no] = rc_vmalloc(data_len);
+	if (ctx->parts[frag_no] == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "failed to allocate IKE fragment buffer\n");
+		iph1->frag_chain = isakmp_frag_detach(iph1->frag_chain, ctx);
+		isakmp_frag_ctx_free(ctx);
+		return NULL;
+	}
+	memcpy(ctx->parts[frag_no]->v, data_buf, data_len);
+	ctx->parts[frag_no]->l = data_len;
+	ctx->nfrags++;
+
+	if (!(frag->flags & ISAKMP_FRAG_MORE)) {
+		if (ctx->last_frag == 0)
+			ctx->last_frag = frag_no;
+		else if (ctx->last_frag != frag_no) {
+			plog(PLOG_PROTOWARN, PLOGLOC, NULL,
+			    "inconsistent IKE last-fragment marker "
+			    "(was %d, now %d)\n",
+			    ctx->last_frag, frag_no);
+		}
+	}
+
+	if (ctx->last_frag == 0)
+		return NULL;
+
+	for (i = 1; i <= ctx->last_frag; i++) {
+		if (ctx->parts[i] == NULL)
+			return NULL;
+	}
+
+	assembled = isakmp_frags_reassemble(ctx);
+
+	iph1->frag_chain = isakmp_frag_detach(iph1->frag_chain, ctx);
+	isakmp_frag_ctx_free(ctx);
+
+	if (assembled == NULL)
+		return NULL;
+
+	{
+		rc_vchar_t *full;
+		struct isakmp *rih;
+
+		full = rc_vmalloc(sizeof(struct isakmp) + assembled->l);
+		if (full == NULL) {
+			rc_vfree(assembled);
+			return NULL;
+		}
+
+		rih = (struct isakmp *)full->v;
+
+		/*
+		 * Reconstruct the ISAKMP header from the original
+		 * fragment.  All fragments share the same cookies,
+		 * version, exchange type, flags and message ID.
+		 */
+
+		memcpy(rih, ih, sizeof(struct isakmp));
+		rih->np = frag->h.np;	/* restore original np */
+		put_uint32(&rih->len,
+		    sizeof(struct isakmp) + assembled->l);
+
+		memcpy(full->u + sizeof(struct isakmp),
+		    assembled->v, assembled->l);
+		rc_vfree(assembled);
+
+		return full;
+	}
+}
+
+/*
+ * Free all fragment contexts attached to a phase 1 handler.
+ */
+void
+isakmp_frag_purge(struct ph1handle *iph1)
+{
+	struct isakmp_frag_item *ctx, *next;
+	if (iph1 == NULL)
+		return;
+	for (ctx = iph1->frag_chain; ctx != NULL; ctx = next) {
+		next = ctx->next;
+		isakmp_frag_ctx_free(ctx);
+	}
+	iph1->frag_chain = NULL;
+}
 
 /*
  * isakmp packet handler
@@ -700,7 +953,7 @@ isakmp_handler(int so_isakmp)
 	}
 #ifdef ENABLE_NATT
 	/*
-	 * we don't know about portchange yet, 
+	 * we don't know about portchange yet,
 	 * look for non-esp marker instead
 	 */
 	if (x.non_esp[0] == 0 && x.non_esp[1] != 0) {
@@ -709,7 +962,7 @@ isakmp_handler(int so_isakmp)
 #endif
 
 	/*
-	 * now we know if there is an extra non-esp 
+	 * now we know if there is an extra non-esp
 	 * marker at the beginning or not
 	 */
 	memcpy((char *)&isakmp, x.buf + extralen, sizeof(isakmp));
@@ -800,11 +1053,9 @@ isakmp_handler(int so_isakmp)
 	case AF_INET:
 		port = ((struct sockaddr_in *)&remote)->sin_port;
 		break;
-#ifdef INET6
 	case AF_INET6:
 		port = ((struct sockaddr_in6 *)&remote)->sin6_port;
 		break;
-#endif
 	default:
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "invalid remote address family: %d\n",
@@ -820,6 +1071,95 @@ isakmp_handler(int so_isakmp)
 	}
 
 	/* Dispatch the packet to protocol handler by ISAKMP version */
+	if (ISAKMP_GETMAJORV(isakmp.v) == ISAKMP_MAJOR_VERSION &&
+	    buf->l >= sizeof(struct isakmp) &&
+	    ((struct isakmp *)buf->v)->np == ISAKMP_NPTYPE_FRAG) {
+		isakmp_index_t *index = (isakmp_index_t *)&isakmp;
+		struct ph1handle *frag_iph1 = getph1byindex(index);
+		rc_vchar_t *reassembled;
+
+		if (frag_iph1 == NULL) {
+			struct isakmp_frag_hdr *frag =
+			    (struct isakmp_frag_hdr *)
+			    ((char *)buf->v + sizeof(struct isakmp));
+			uint16_t frag_no = ntohs(frag->frag_no);
+
+			if (frag_no != 1) {
+				plog(PLOG_PROTOERR, PLOGLOC, 0,
+				     "received IKE fragment %d for "
+				     "unknown ISAKMP SA\n", frag_no);
+				++isakmpstat.malformed_message;
+				error = -1;
+				goto end;
+			}
+
+			frag_iph1 = newph1();
+			if (frag_iph1 == NULL) {
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				     "failed to allocate temporary "
+				     "IKE fragment context\n");
+				error = -1;
+				goto end;
+			}
+
+			frag_iph1->side = RESPONDER;
+			frag_iph1->etype = isakmp.etype;
+			frag_iph1->flags = isakmp.flags;
+			frag_iph1->status = PHASE1ST_START;
+			frag_iph1->rmconf = getrmconf((struct sockaddr *)&remote);
+			if (frag_iph1->rmconf != NULL)
+				frag_iph1->proposal =
+				    ikev1_conf_to_isakmpsa(frag_iph1->rmconf);
+
+			memcpy(&frag_iph1->index, index, sizeof(*index));
+
+			frag_iph1->remote = racoon_malloc(remote_len);
+			if (frag_iph1->remote == NULL) {
+				delph1(frag_iph1);
+				error = -1;
+				goto end;
+			}
+			memcpy(frag_iph1->remote, &remote, remote_len);
+
+			frag_iph1->local = racoon_malloc(local_len);
+			if (frag_iph1->local == NULL) {
+				delph1(frag_iph1);
+				error = -1;
+				goto end;
+			}
+			memcpy(frag_iph1->local, &local, local_len);
+
+			if (insph1(frag_iph1) < 0) {
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				     "failed to insert temporary "
+				     "IKE fragment SA\n");
+				delph1(frag_iph1);
+				error = -1;
+				goto end;
+			}
+
+			plog(PLOG_DEBUG, PLOGLOC, 0,
+			     "created temporary IKE fragment "
+			     "context for SPI %s\n",
+			     rcs_sa2str((struct sockaddr *)&remote));
+		}
+
+		reassembled = isakmp_frag_recv(frag_iph1, buf);
+		if (reassembled == NULL) {
+			error = 0;
+			goto end;
+		}
+
+		plog(PLOG_DEBUG, PLOGLOC, 0,
+		     "IKEv1 message reassembled from fragments\n");
+		rc_vfree(buf);
+		buf = reassembled;
+		memcpy(&isakmp, buf->v, sizeof(isakmp));
+
+		remph1(frag_iph1);
+		delph1(frag_iph1);
+		frag_iph1 = NULL;
+	}
 	switch (ISAKMP_GETMAJORV(isakmp.v)) {
 #ifdef IKEV1
 	case ISAKMP_MAJOR_VERSION:
@@ -831,6 +1171,7 @@ isakmp_handler(int so_isakmp)
 	case IKEV2_MAJOR_VERSION:
 		error = ikev2_input(buf, (struct sockaddr *)&remote,
 				    (struct sockaddr *)&local);
+		buf = NULL;	/* ikev2_input frees the packet */
 		break;
 	default:
 		plog(PLOG_PROTOERR, PLOGLOC, 0,
@@ -882,7 +1223,7 @@ isakmp_initiate(struct sadb_request_method *callback_method,
 	int err = ECONNREFUSED;
 
 	req = racoon_malloc(sizeof(*req));
-	if (!req) 
+	if (!req)
 		goto fail_nomem;
 
 	req->callback_method = callback_method;
@@ -1325,7 +1666,7 @@ isakmp_parse_proposal(struct isakmp_domain *doi, uint8_t *payload_ptr,
 			prop_array[prop->p_no] = transf_list;
 		} else {
 			struct prop_pair *q;
-			for (q = prop_array[prop->p_no]; q->next; q = q->next) 
+			for (q = prop_array[prop->p_no]; q->next; q = q->next)
 				;
 			q->next = transf_list;
 		}
@@ -1867,9 +2208,7 @@ isakmp_sendto(rc_vchar_t *pkt, struct sockaddr *remote, struct sockaddr *local)
 char *snapend;
 
 char *getname (const unsigned char *);
-#ifdef INET6
 char *getname6 (const unsigned char *);
-#endif
 int safeputchar (int);
 
 /*
@@ -1895,7 +2234,6 @@ getname(ap)
 	return ntop_buf;
 }
 
-#ifdef INET6
 /*
  * Return a name for the IP6 address pointed to by ap.  This address
  * is assumed to be in network byte order.
@@ -1918,7 +2256,6 @@ getname6(ap)
 
 	return ntop_buf;
 }
-#endif				/* INET6 */
 
 int
 safeputchar(c)

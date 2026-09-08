@@ -14,7 +14,6 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -45,6 +44,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <arpa/inet.h>
 
 #include "racoon.h"
 
@@ -443,11 +443,395 @@ natt_keepalive_remove(struct sockaddr *src, struct sockaddr *dst)
 
 			TAILQ_REMOVE(&ka_tree, ka, chain);
 			racoon_free(ka);
-			/* Should we break here? Every pair of addresses should 
-			 * be inserted only once, but who knows :-) Lets traverse 
+			/* Should we break here? Every pair of addresses should
+			 * be inserted only once, but who knows :-) Lets traverse
 			 * the whole list... */
 		}
 	}
+}
+
+/*
+ * Convert the address data of an ID payload (IPv4/IPv6 address or
+ * subnet) into a sockaddr, for logging and comparison purposes.
+ * Returns 0 on success, -1 for non-address ID types.
+ */
+int
+idpl_addr2sa(int id_type, caddr_t data, struct sockaddr_storage* ss)
+{
+    memset(ss, 0, sizeof(*ss));
+
+    switch(id_type)
+    {
+        case IPSECDOI_ID_IPV4_ADDR:
+        case IPSECDOI_ID_IPV4_ADDR_SUBNET:
+        {
+            ((struct sockaddr_in*)ss)->sin_family = AF_INET;
+            memcpy(&((struct sockaddr_in*)ss)->sin_addr, data, sizeof(struct in_addr));
+            return 0;
+        }
+        case IPSECDOI_ID_IPV6_ADDR:
+        case IPSECDOI_ID_IPV6_ADDR_SUBNET:
+        {
+            ((struct sockaddr_in6*)ss)->sin6_family = AF_INET6;
+            memcpy(&((struct sockaddr_in6*)ss)->sin6_addr, data, sizeof(struct in6_addr));
+            return 0;
+        }
+        default:
+            return -1;
+    }
+}
+
+static int switch_id_pl_addr(struct sockaddr *src, struct sockaddr *dst, int proto)
+{
+    switch(proto)
+    {
+        case IPSECDOI_ID_IPV4_ADDR:
+        case IPSECDOI_ID_IPV4_ADDR_SUBNET:
+        {
+            ((struct sockaddr_in*)dst)->sin_addr = 
+                    ((struct sockaddr_in*)src)->sin_addr;
+
+            break;
+        }
+        case IPSECDOI_ID_IPV6_ADDR:
+        case IPSECDOI_ID_IPV6_ADDR_SUBNET:
+        {
+            ((struct sockaddr_in6*)dst)->sin6_addr =
+                    ((struct sockaddr_in6*)src)->sin6_addr;
+            break;
+        }
+        default:
+            return -1;
+    }
+    return 0;
+}
+
+int
+natt_addr_substitution(struct ph2handle *iph2, int flag)
+{
+    struct ipsecdoi_id_b *id_b;
+    struct sockaddr *sa;
+    struct sockaddr *src;
+    int proto;
+
+    if (iph2 == NULL || iph2->ph1 == NULL || flag == 0)
+        return -1;
+
+    if (flag & NAT_DETECTED_PEER)
+    {
+        if (iph2->id_p == NULL
+         || iph2->id_p->l < sizeof(struct ipsecdoi_id_b))
+            return -1;
+        id_b = (struct ipsecdoi_id_b *)iph2->id_p->v;
+        src = iph2->ph1->remote;
+        sa = (struct sockaddr *)((char *)id_b + sizeof(*id_b));
+        proto = id_b->type;
+        plog(PLOG_INFO, PLOGLOC, NULL,
+             "NAT-T address substitution (IDi2) -> %s\n",
+             rcs_sa2str_wop(src));
+        if (switch_id_pl_addr(src, sa, proto) != 0)
+            return -1;
+    }
+
+    if (flag & NAT_DETECTED_ME)
+    {
+        if (iph2->id == NULL
+         || iph2->id->l < sizeof(struct ipsecdoi_id_b))
+            return -1;
+        id_b = (struct ipsecdoi_id_b *)iph2->id->v;
+        src = iph2->ph1->local;
+        sa = (struct sockaddr *)((char *)id_b + sizeof(*id_b));
+        proto = id_b->type;
+        plog(PLOG_INFO, PLOGLOC, NULL,
+             "NAT-T address substitution (IDr2) -> %s\n",
+             rcs_sa2str_wop(src));
+        if (switch_id_pl_addr(src, sa, proto) != 0)
+            return -1;
+    }
+
+    return 0;
+}
+
+static rc_vchar_t* ph2satonatoa(struct sockaddr* saddr, int prefixlen, int proto)
+{
+    rc_vchar_t* new;
+    caddr_t* sa;
+    size_t len;
+    size_t hdr_len = sizeof(struct ph2natoa);
+
+    switch(proto)
+    {
+	case IPSECDOI_ID_IPV4_ADDR:
+	    {
+		if (prefixlen != sizeof(struct in_addr) << 3)
+		{
+		    plog(PLOG_INTERR, PLOGLOC, NULL,
+			    "prefixlen is not suitable for IPv4\n");
+		    return NULL;
+		}
+
+		len = sizeof(struct in_addr);
+		sa = (caddr_t*)&((struct sockaddr_in*)(saddr))->sin_addr;
+
+		break;
+	    }
+
+	case IPSECDOI_ID_IPV6_ADDR:
+	    {
+		if (prefixlen != sizeof(struct in6_addr) << 3)
+		{
+		    plog(PLOG_INTERR, PLOGLOC, NULL,
+			    "prefixlen is not suitable for IPv6\n");
+		    return NULL;
+		}
+
+		len = sizeof(struct in6_addr);
+		sa = (caddr_t*)&((struct sockaddr_in6*)(saddr))->sin6_addr;
+		break;
+
+	    }
+	default:
+	    plog(PLOG_INTERR, PLOGLOC, NULL, "unsupported protocol family %d\n", proto);
+	    return NULL;
+    }
+
+    new = rc_vmalloc(hdr_len + len);
+
+    if (!new)
+    {
+	plog(PLOG_INTERR, PLOGLOC, NULL,
+		"failed to allocate new buffer\n");
+	return NULL;
+    }
+
+    memset(new->v, 0, new->l);
+
+    ((struct ph2natoa*)new->v)->type = proto;
+    memset(&((struct ph2natoa *)new->v)->reserved, 0, sizeof(((struct ph2natoa *)new->v)->reserved));
+    memcpy(new->u + sizeof(struct ph2natoa), sa, len);
+
+    return new;
+
+}
+
+static 
+int parse_natoa(void *packet, size_t packet_len, struct sockaddr_storage *ss)
+{
+    struct ipsecdoi_id_b *id_b;
+    int proto, retval = -1;
+    size_t plen = 0;
+    caddr_t sa;
+
+    if (packet == NULL || ss == NULL)
+        return retval;
+
+    id_b = (struct ipsecdoi_id_b*)packet;
+
+    proto = id_b->type;
+
+    memset(ss, 0, sizeof(*ss));
+
+    switch(proto)
+    {
+        case IPSECDOI_ID_IPV4_ADDR:
+        {
+            struct sockaddr_in* sin;
+
+            sin = (struct sockaddr_in*)ss;
+            
+            plen += sizeof(struct ipsecdoi_id_b);
+            plen += sizeof(struct in_addr);
+
+            if (plen > packet_len)
+            {
+                plog(PLOG_INTERR, PLOGLOC, NULL,
+                     "invalid size of packet\n");
+                return retval;
+            }
+
+            sin->sin_family = AF_INET;
+
+            sa = (caddr_t)((char *)id_b + sizeof(*id_b));
+
+            memcpy(&sin->sin_addr, (struct in_addr*)sa, sizeof(struct in_addr));
+
+            retval = 0;
+
+            break; 
+        }
+
+        case IPSECDOI_ID_IPV6_ADDR:
+        {   
+            struct sockaddr_in6* sin6;
+
+            sin6 = (struct sockaddr_in6*)ss;
+            
+            plen += sizeof(struct ipsecdoi_id_b);
+            plen += sizeof(struct in6_addr);
+
+            if (plen > packet_len)
+            {
+                plog(PLOG_INTERR, PLOGLOC, NULL,
+                     "invalid size of packet\n");
+                return retval;
+            }
+
+            sin6->sin6_family = AF_INET6;
+
+            sa = (caddr_t)((char *)id_b + sizeof(*id_b));
+
+            memcpy(&sin6->sin6_addr, (struct in6_addr *)sa, sizeof(struct in6_addr));
+
+            retval = 0;
+
+            break;   
+        }
+
+        default:
+            plog(PLOG_INTERR, PLOGLOC, NULL,
+                 "unknown address family\n");
+            return retval;
+    }
+
+    return retval;
+
+}
+
+int ph2natoa_set(struct ph2handle* iph2, int side)
+{
+    struct sockaddr *oa_i, *oa_r;
+    struct sockaddr_storage ss;
+    int proto, prefixlen;
+    int retval = -1;
+ 
+    if (side == INITIATOR)
+    {
+
+    oa_i = rcs_sadup(iph2->src);
+
+    if(parse_natoa(iph2->id_p->v, iph2->id_p->l, &ss) != 0)
+    {
+            plog(PLOG_INTERR, PLOGLOC, NULL,
+                 "failed to get NAT-OAr\n");
+            return retval;
+    }
+
+    oa_r = (struct sockaddr*)&ss;
+
+	plog(PLOG_INFO, PLOGLOC, NULL,
+		"NAT-OAi :"
+		" initiator: %s"
+		" responder: %s", rcs_sa2str(oa_i), rcs_sa2str(oa_r));
+
+    } else if (side == RESPONDER)
+    {
+
+    oa_i = rcs_sadup(iph2->dst);
+
+    if (parse_natoa(iph2->id->v, iph2->id->l, &ss) != 0)
+    {
+        plog(PLOG_INTERR, PLOGLOC, NULL,
+                "failed to get NAT-OAi: %d", side);
+        return retval;
+    }
+
+	oa_r = (struct sockaddr*)&ss;
+
+	plog(PLOG_INFO, PLOGLOC, NULL,
+		"NAT-OAr :"
+		" initiator: %s"
+		" responder: %s", rcs_sa2str(oa_i), rcs_sa2str(oa_r));
+    }
+    else
+	return retval;	
+
+    if (oa_i == NULL || oa_r == NULL)
+    {
+	plog(PLOG_INTERR, PLOGLOC, NULL,
+		"could not dup oa_i\n");
+	goto out_free;
+    }
+
+    switch(oa_i->sa_family)
+    {
+        case AF_INET:
+            {
+                proto = IPSECDOI_ID_IPV4_ADDR;
+                prefixlen = 32;
+            }
+            break;
+        case AF_INET6:
+            {
+                proto = IPSECDOI_ID_IPV6_ADDR;
+                prefixlen = 128;
+	    }
+	    break;
+	default:
+	    plog(PLOG_INTERR, PLOGLOC, NULL, "unsupported address family: %d\n", oa_i->sa_family);
+	    goto out_free;
+    }
+
+    iph2->natoa = ph2satonatoa(oa_i, prefixlen, proto);
+
+    if (iph2->natoa == NULL)
+    {
+	plog(PLOG_INTERR, PLOGLOC, NULL,
+		"failed to get NAT-OA buffer\n");
+	goto out_free;
+    }
+
+    iph2->natoa_p = ph2satonatoa(oa_r, prefixlen, proto);
+
+    if (iph2->natoa_p == NULL)
+    {
+	plog(PLOG_INTERR, PLOGLOC, NULL,
+		"failed to get NAT-OA buffer\n");
+	goto out_free;
+    }
+
+    retval = 0;
+
+out_free:
+    if (oa_i) rc_free(oa_i);
+    //if (oa_r) rc_free(oa_r);
+    return retval;
+}
+
+struct sockaddr *
+natoa_vbuf_to_sockaddr(struct sockaddr_storage *ss, rc_vchar_t *vbuf)
+{
+    if (vbuf == NULL)
+        return NULL;
+
+    struct ph2natoa *hdr = (struct ph2natoa *)vbuf->v;
+
+    if (!hdr) return NULL;
+
+    memset(ss, 0, sizeof(*ss));
+
+    switch (hdr->type) {
+    case IPSECDOI_ID_IPV4_ADDR:
+        {
+            struct sockaddr_in *sin = (struct sockaddr_in *)ss;
+            sin->sin_family = AF_INET;
+            sin->sin_port = 0;
+            memcpy(&sin->sin_addr, vbuf->v + sizeof(struct ph2natoa),
+                   sizeof(struct in_addr));
+        }
+        break;
+    case IPSECDOI_ID_IPV6_ADDR:
+        {
+            struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)ss;
+            sin6->sin6_family = AF_INET6;
+            sin6->sin6_port = 0;
+            memcpy(&sin6->sin6_addr, vbuf->v + sizeof(struct ph2natoa),
+                   sizeof(struct in6_addr));
+        }
+        break;
+    default:
+        return NULL;
+    }
+    return (struct sockaddr *)ss;
 }
 
 #ifdef notyet

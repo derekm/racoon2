@@ -3,7 +3,7 @@
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -15,7 +15,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -195,7 +195,7 @@ ipsecdoi_checkph1proposal(rc_vchar_t *sa, struct ph1handle *iph1)
 
 	/* check and get one SA for use */
 	newsa = get_ph1approval(iph1, pair);
-	
+
 	free_proppair(pair);
 
 	if (newsa == NULL)
@@ -415,7 +415,7 @@ get_ph1approvalx(struct prop_pair *p, struct isakmpsa *proposal,
 				break;
 
 			case RCT_PCT_STRICT:
-				if ((s->lifetime != 0 && 
+				if ((s->lifetime != 0 &&
 				     tsap->lifetime > s->lifetime) ||
 				    (s->lifebyte != 0 &&
 				     tsap->lifebyte > s->lifebyte))
@@ -441,7 +441,7 @@ get_ph1approvalx(struct prop_pair *p, struct isakmpsa *proposal,
 				break;
 
 			default:
-				plog(PLOG_PROTOERR, PLOGLOC, NULL, 
+				plog(PLOG_PROTOERR, PLOGLOC, NULL,
 				    "Unexpected proposal_check value\n");
 				continue;
 				break;
@@ -906,7 +906,7 @@ ipsecdoi_checkph2proposal(struct ph2handle *iph2)
 		plog(PLOG_PROTOWARN, PLOGLOC, 0,
 			"invalid proposal number:%d received.\n", i);
 	}
-	
+
 
 	if (rpair[n]->tnext != NULL) {
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
@@ -2227,7 +2227,7 @@ ahmismatch:
  				if (proto_id == IPSECDOI_PROTO_IPSEC_AH) {
  					if (trns->t_id != IPSECDOI_AH_SHA256)
  						goto ahmismatch;
- 				}	
+ 				}
  				break;
  			case IPSECDOI_ATTR_AUTH_HMAC_SHA2_384:
  				if (proto_id == IPSECDOI_PROTO_IPSEC_AH) {
@@ -2637,7 +2637,7 @@ setph1attr(struct isakmpsa *sa, caddr_t buf)
 
 	if (sa->lifebyte) {
 		uint32_t lifebyte = htonl((uint32_t)sa->lifebyte);
-		
+
 		attrlen += sizeof(struct isakmp_data)
 			+ sizeof(struct isakmp_data);
 		if (sa->lifebyte > 0xffff)
@@ -2715,7 +2715,7 @@ setph1attr(struct isakmpsa *sa, caddr_t buf)
 			plog(PLOG_DEBUG, PLOGLOC, NULL, "gss id attr: len %d, "
 			    "val '%s'\n", sa->gssid->l, sa->gssid->v);
 			p = isakmp_set_attr_v(p, OAKLEY_ATTR_GSS_ID,
-				(caddr_t)sa->gssid->v, 
+				(caddr_t)sa->gssid->v,
 				sa->gssid->l);
 		}
 	}
@@ -2775,7 +2775,7 @@ setph2proposal0(const struct ph2handle *iph2, const struct saprop *pp,
 	np_t = NULL;
 
 	for (tr = pr->head; tr; tr = tr->next) {
-	
+
 		switch (pr->proto_id) {
 		case IPSECDOI_PROTO_IPSEC_ESP:
 			/*
@@ -3172,11 +3172,9 @@ ipsecdoi_checkid1(struct ph1handle *iph1)
 				case AF_INET:
 					port = ((struct sockaddr_in *)iph1->remote)->sin_port;
 					break;
-#ifdef INET6
-				case AF_INET6:
-					port = ((struct sockaddr_in6 *)iph1->remote)->sin6_port;
-					break;
-#endif
+		case AF_INET6:
+			port = ((struct sockaddr_in6 *)iph1->remote)->sin6_port;
+			break;
 				default:
 					plog(PLOG_PROTOERR, PLOGLOC, NULL,
 						"invalid family: %d\n",
@@ -3435,7 +3433,6 @@ ipsecdoi_sockaddr2id(struct sockaddr *saddr, unsigned int prefixlen,
 		sa = (caddr_t)&((struct sockaddr_in *)(saddr))->sin_addr;
 		port = ((struct sockaddr_in *)(saddr))->sin_port;
 		break;
-#ifdef INET6
 	case AF_INET6:
 		len1 = sizeof(struct in6_addr);
 		if (prefixlen == (sizeof(struct in6_addr) << 3)) {
@@ -3448,7 +3445,6 @@ ipsecdoi_sockaddr2id(struct sockaddr *saddr, unsigned int prefixlen,
 		sa = (caddr_t)&((struct sockaddr_in6 *)(saddr))->sin6_addr;
 		port = ((struct sockaddr_in6 *)(saddr))->sin6_port;
 		break;
-#endif
 	default:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 			"invalid family: %d.\n", saddr->sa_family);
@@ -3524,14 +3520,12 @@ ipsecdoi_id2sockaddr(rc_vchar_t *buf, struct sockaddr *saddr,
 		SET_SOCKADDR_LEN(saddr, sizeof(struct sockaddr_in));
 		saddr->sa_family = AF_INET;
 		break;
-#ifdef INET6
 	case IPSECDOI_ID_IPV6_ADDR:
 	case IPSECDOI_ID_IPV6_ADDR_SUBNET:
 		SET_SOCKADDR_LEN(saddr, sizeof(struct sockaddr_in6));
 		saddr->sa_family = AF_INET6;
 		*rcs_getsascopeid(saddr) = 0;
 		break;
-#endif
 	default:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 			"unsupported ID type %d\n", id_b->type);
@@ -3548,15 +3542,11 @@ ipsecdoi_id2sockaddr(rc_vchar_t *buf, struct sockaddr *saddr,
 	case IPSECDOI_ID_IPV4_ADDR:
 		plen = sizeof(struct in_addr) << 3;
 		break;
-#ifdef INET6
 	case IPSECDOI_ID_IPV6_ADDR:
 		plen = sizeof(struct in6_addr) << 3;
 		break;
-#endif
 	case IPSECDOI_ID_IPV4_ADDR_SUBNET:
-#ifdef INET6
 	case IPSECDOI_ID_IPV6_ADDR_SUBNET:
-#endif
 	    {
 		unsigned char *p;
 		unsigned int max;
@@ -3566,11 +3556,8 @@ ipsecdoi_id2sockaddr(rc_vchar_t *buf, struct sockaddr *saddr,
 		case IPSECDOI_ID_IPV4_ADDR_SUBNET:
 			alen = sizeof(struct in_addr);
 			break;
-#ifdef INET6
 		case IPSECDOI_ID_IPV6_ADDR_SUBNET:
 			alen = sizeof(struct in6_addr);
-			break;
-#endif
 		}
 
 		/* sanity check */

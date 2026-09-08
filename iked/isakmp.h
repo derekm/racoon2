@@ -4,7 +4,7 @@
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -16,7 +16,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -110,7 +110,6 @@ struct isakmp {
 #define ISAKMP_NPTYPE_NATD_DRAFT	130	/* NAT Discovery */
 #define ISAKMP_NPTYPE_NATOA_DRAFT	131	/* NAT Original Address */
 
-/* Frag does not seems to be documented */
 #define ISAKMP_NPTYPE_FRAG	132	/* IKE fragmentation payload */
 
 /* #define ISAKMP_NPTYPE_MAX	17 */
@@ -165,6 +164,15 @@ struct isakmp_gen {
 	uint8_t reserved;	/* RESERVED, unused, must set to 0 */
 	uint16_t len;		/* Payload Length */
 } __attribute__ ((__packed__));
+
+struct isakmp_frag_hdr {
+	struct isakmp_gen h;
+	uint8_t frag_id;
+	uint8_t flags;
+	uint16_t frag_no;
+} __attribute__ ((__packed__));
+
+#define ISAKMP_FRAG_MORE	0x01
 
 /* 3.3 Data Attributes
          0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1

@@ -5,7 +5,7 @@
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -17,7 +17,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -129,6 +129,7 @@ static int rcpfk_set_sadbxtag (rc_vchar_t **, struct rcpfk_msg *);
 static int rcpfk_set_sadb_x_nattype (rc_vchar_t **, struct rcpfk_msg *);
 static int rcpfk_set_sadb_x_natport (rc_vchar_t **, struct rcpfk_msg *,
 					 int);
+static int rcpfk_set_sadb_x_natoa (rc_vchar_t **, struct rcpfk_msg*, struct sockaddr* natoa);
 #endif
 
 static int rcpfk_recv_getspi (uint8_t **, struct rcpfk_msg *);
@@ -194,7 +195,7 @@ static int
 rcpfk_samode(const void *v)
 {
 	const struct sadb_x_sa2 *sa = v;
-	
+
 	if (sa == NULL)
 		return IPSEC_MODE_ANY;
 	return sa->sadb_x_sa2_mode;
@@ -552,7 +553,7 @@ rcpfk_seterror(struct rcpfk_msg *rc, int eno, const char *fmt, ...)
 	va_end(ap);
 }
 
-
+
 /*
  * sending modules
  */
@@ -650,6 +651,12 @@ rcpfk_send_addx(struct rcpfk_msg *rc, int type)
 
 		if (rcpfk_set_sadb_x_natport(&buf, rc, SADB_X_EXT_NAT_T_DPORT))
 			goto err;
+
+		if (rcpfk_set_sadb_x_natoa(&buf, rc, rc->sa_natoa_src))
+		    goto err;
+
+        if (rcpfk_set_sadb_x_natoa(&buf, rc, rc->sa_natoa_dst))
+            goto err;
 	}
 #endif
 
@@ -691,7 +698,7 @@ rcpfk_send_delete(struct rcpfk_msg *rc)
 	}
 
 	/*
-	 * when it sends a SADB_DELETE without spi to the kernel.  This is 
+	 * when it sends a SADB_DELETE without spi to the kernel.  This is
 	 * the "delete all" request (an extension also present in Solaris)
 	 */
 	if (rc->spi != 0) {
@@ -1729,9 +1736,43 @@ rcpfk_set_sadb_x_natport(rc_vchar_t **msg, struct rcpfk_msg *rc, int type)
 	*msg = buf;
 	return 0;
 }
+
+static int
+rcpfk_set_sadb_x_natoa(rc_vchar_t **msg, struct rcpfk_msg *rc, struct sockaddr* natoa)
+{
+    rc_vchar_t* buf = NULL;
+    struct sadb_address* addr;
+    size_t prevlen, extlen, len;
+    int pref;
+
+    if (natoa == NULL)
+        return 0;
+
+    pref = (natoa->sa_family == AF_INET) ? 32 : 128;
+
+    extlen = sizeof(struct sadb_address) + PFKEY_ALIGN8(SA_LEN(natoa));
+    prevlen = (*msg)->l;
+    len = extlen + prevlen;
+
+    if ((buf = rc_vrealloc(*msg, len)) == NULL)
+	return -1;
+
+    addr = (void*)((uint8_t*)buf->v + prevlen);
+
+	addr->sadb_address_len = PFKEY_UNIT64_U16(extlen);
+    addr->sadb_address_exttype = SADB_X_EXT_NAT_T_OA;
+    addr->sadb_address_proto = rct2pfk_proto(rc->ul_proto) & 0xff;
+    addr->sadb_address_prefixlen = pref;
+    addr->sadb_address_reserved = 0;
+    memcpy(addr + 1, natoa, SA_LEN(natoa));
+
+    *msg = buf;
+
+    return 0;
+}
 #endif
 
-
+
 /*
  * receiving modules
  */
@@ -2003,10 +2044,8 @@ rcpfk_recv_acquire(uint8_t **mhp, struct rcpfk_msg *rc)
 	/* ignore it if src is multicast address */
 	if ((dst->sa_family == AF_INET &&
 	    IN_MULTICAST(ntohl(((struct in_addr *)saddr)->s_addr)))
-#ifdef INET6
 	    || (dst->sa_family == AF_INET6 &&
 	    IN6_IS_ADDR_MULTICAST(((struct in6_addr *)saddr)))
-#endif
 	) {
 		rcpfk_seterror(rc, 0, "ignore ACQUIRE message "
 		    "due to a multicast address");
@@ -2041,7 +2080,7 @@ rcpfk_recv_acquire(uint8_t **mhp, struct rcpfk_msg *rc)
 
 	if (pkt->sadb_x_packet_copylen < HRBU_MIN_LEN)
 		goto skippa;
-	if ((ip->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION) 
+	if ((ip->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		goto skippa;
 
 	/* chasing for HOA and HRBU */
@@ -2748,7 +2787,7 @@ rcpfk_recv_spddump(uint8_t **mhp, struct rcpfk_msg *rc)
 			rcpfk_seterror(rc, 0, "unknown IPsec mode");
 			return 0;
 		}
-				
+
 	}
 
 	if ( (ipsec_proto&SPDMP_PRT_A) && (ipsec_proto&SPDMP_PRT_E) && (ipsec_proto&SPDMP_PRT_C) ) {
@@ -2811,9 +2850,9 @@ rcpfk_recv_migrate(uint8_t **mhp, struct rcpfk_msg *rc)
 		rc->seq = base->sadb_msg_seq;
 		return 0;
 	}
-  
+
 	rc->seq = base->sadb_msg_seq;
-/*	rc->satype = pfk2rct_satype(base->sadb_msg_satype);	*/ 
+/*	rc->satype = pfk2rct_satype(base->sadb_msg_satype);	*/
 	rc->sp_src = (struct sockaddr *)&rc->sp_src_storage;
 	memcpy(rc->sp_src, sp_src, SA_LEN(sp_src));
 	rc->pref_src = addr_src->sadb_address_prefixlen;
@@ -2825,7 +2864,7 @@ rcpfk_recv_migrate(uint8_t **mhp, struct rcpfk_msg *rc)
 		return 0;
 	}
 	rc->ul_proto = addr_dst->sadb_address_proto;
-  
+
 	rc->slid = xpl->sadb_x_policy_id;
 	rc->pltype = app2rct_action(xpl->sadb_x_policy_type);
 	if (rc->pltype == 0) {
@@ -2836,7 +2875,7 @@ rcpfk_recv_migrate(uint8_t **mhp, struct rcpfk_msg *rc)
 
 	xisr = (struct sadb_x_ipsecrequest *)(xpl + 1);
 
-	/* 
+	/*
 	 * all policies in MIGRATE message, are always 'unique' level?
 	 */
 	switch (xisr->sadb_x_ipsecrequest_level) {
@@ -2868,7 +2907,7 @@ rcpfk_recv_migrate(uint8_t **mhp, struct rcpfk_msg *rc)
 	memcpy(rc->sa_src, old_sa_src, SA_LEN(old_sa_src));
 	rc->sa_dst = (struct sockaddr *)&rc->sa_dst_storage;
 	memcpy(rc->sa_dst, old_sa_dst, SA_LEN(old_sa_dst));
-	
+
 	new_sa_src = (struct sockaddr *)(xisr+1);
 	new_sa_dst = (struct sockaddr *)((uint8_t *)new_sa_src +
 						SA_LEN(new_sa_src));

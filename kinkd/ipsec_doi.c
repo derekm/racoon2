@@ -282,7 +282,7 @@ ipsecdoi_checkph2proposal(struct ph2handle *iph2)
 		plog(LLV_WARNING, LOCATION, NULL,
 			"invalid proposal number:%d received.\n", i);
 	}
-	
+
 
 	if (rpair[n]->tnext != NULL) {
 		plog(LLV_ERROR, LOCATION, NULL,
@@ -1987,7 +1987,6 @@ ipsecdoi_sockaddr2id(struct sockaddr *saddr, unsigned int prefixlen, unsigned in
 		sa = (caddr_t)&((struct sockaddr_in *)(saddr))->sin_addr;
 		port = ((struct sockaddr_in *)(saddr))->sin_port;
 		break;
-#ifdef INET6
 	case AF_INET6:
 		len1 = sizeof(struct in6_addr);
 		if (prefixlen == (sizeof(struct in6_addr) << 3)) {
@@ -2000,7 +1999,6 @@ ipsecdoi_sockaddr2id(struct sockaddr *saddr, unsigned int prefixlen, unsigned in
 		sa = (caddr_t)&((struct sockaddr_in6 *)(saddr))->sin6_addr;
 		port = ((struct sockaddr_in6 *)(saddr))->sin6_port;
 		break;
-#endif
 	default:
 		plog(LLV_ERROR, LOCATION, NULL,
 			"invalid family: %d.\n", saddr->sa_family);
@@ -2056,7 +2054,7 @@ ipsecdoi_sockaddr2id(struct sockaddr *saddr, unsigned int prefixlen, unsigned in
  * see, RFC2407 4.6.2.1
  */
 int
-ipsecdoi_id2sockaddr(rc_vchar_t *buf, struct sockaddr *saddr, 
+ipsecdoi_id2sockaddr(rc_vchar_t *buf, struct sockaddr *saddr,
 		     uint8_t *prefixlen, uint16_t *ul_proto)
 {
 	struct ipsecdoi_id_b *id_b = (struct ipsecdoi_id_b *)buf->v;
@@ -2078,7 +2076,6 @@ ipsecdoi_id2sockaddr(rc_vchar_t *buf, struct sockaddr *saddr,
 #endif
 		saddr->sa_family = AF_INET;
 		break;
-#ifdef INET6
 	case IPSECDOI_ID_IPV6_ADDR:
 	case IPSECDOI_ID_IPV6_ADDR_SUBNET:
 #ifdef HAVE_SA_LEN
@@ -2086,7 +2083,6 @@ ipsecdoi_id2sockaddr(rc_vchar_t *buf, struct sockaddr *saddr,
 #endif
 		saddr->sa_family = AF_INET6;
 		break;
-#endif
 	default:
 		plog(LLV_ERROR, LOCATION, NULL,
 			"unsupported ID type %d\n", id_b->type);
@@ -2102,15 +2098,11 @@ ipsecdoi_id2sockaddr(rc_vchar_t *buf, struct sockaddr *saddr,
 	case IPSECDOI_ID_IPV4_ADDR:
 		plen = sizeof(struct in_addr) << 3;
 		break;
-#ifdef INET6
 	case IPSECDOI_ID_IPV6_ADDR:
 		plen = sizeof(struct in6_addr) << 3;
 		break;
-#endif
 	case IPSECDOI_ID_IPV4_ADDR_SUBNET:
-#ifdef INET6
 	case IPSECDOI_ID_IPV6_ADDR_SUBNET:
-#endif
 	    {
 		unsigned char *p;
 		unsigned int max;
@@ -2120,11 +2112,9 @@ ipsecdoi_id2sockaddr(rc_vchar_t *buf, struct sockaddr *saddr,
 		case IPSECDOI_ID_IPV4_ADDR_SUBNET:
 			alen = sizeof(struct in_addr);
 			break;
-#ifdef INET6
 		case IPSECDOI_ID_IPV6_ADDR_SUBNET:
 			alen = sizeof(struct in6_addr);
 			break;
-#endif
 		}
 
 		/* sanity check */
