@@ -246,7 +246,6 @@ rekey_ikesa_callback(enum request_callback action,
 	}
 }
 
-static void
 static void ikev2_rekey_init_send_tail(struct ikev2_rekey_init_ctx *);
 
 /* async KEi for ikev2_rekey_ikesa_init_send (REKEY IKE_SA) */
@@ -480,7 +479,20 @@ ikev2_rekey_init_send_tail(struct ikev2_rekey_init_ctx *ctx)
 	ikev2_rekey_init_ctx_free(ctx);
 }
 /**** async DH helpers (defined below) ****/
-struct ikev2_rekey_responder_ctx;
+struct ikev2_rekey_responder_ctx {
+	struct ikev2_sa *old_sa;
+	struct ikev2_sa *new_sa;
+	struct algdef *dhdef;
+	uint32_t message_id;
+	struct sockaddr *local;
+	struct sockaddr *remote;
+	struct ikev2_payloads payl;
+	int payl_inited;
+	struct prop_pair **parsed_sa;
+	rc_vchar_t *g_ir;
+	rc_vchar_t *ke_r;
+	rc_vchar_t *pkt;
+};
 static void ikev2_rekey_responder_ctx_free(struct ikev2_rekey_responder_ctx *);
 static void ikev2_rekey_ikesa_responder_dh_done(int, void *);
 void
@@ -688,20 +700,6 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 }
 
 /* async DH for ikev2_rekey_ikesa_responder (generate+compute g^ir) */
-struct ikev2_rekey_responder_ctx {
-	struct ikev2_sa *old_sa;
-	struct ikev2_sa *new_sa;
-	struct algdef *dhdef;
-	uint32_t message_id;
-	struct sockaddr *local;
-	struct sockaddr *remote;
-	struct ikev2_payloads payl;
-	int payl_inited;
-	struct prop_pair **parsed_sa;
-	rc_vchar_t *g_ir;
-	rc_vchar_t *ke_r;
-	rc_vchar_t *pkt;
-};
 
 static void
 ikev2_rekey_responder_ctx_free(struct ikev2_rekey_responder_ctx *ctx)
