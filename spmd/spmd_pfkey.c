@@ -932,8 +932,6 @@ retry:
 	}
 #endif
 	rc->seq = ++pfkey_seq;
-	SPMD_PLOG(SPMD_L_NOTICE, "spd_update req: seq=%u slid=%.*s dir=%d urgent=%d",
-	    rc->seq, (int)sl->sl_index->l, sl->sl_index->s, rc->dir, urgent);
 #ifdef HAVE_SPDUPDATE_BUG
 	spid_data_add(rc->seq, rc_vmem2str(sl->sl_index), rc->sp_src, rc->sp_dst);
 #else
@@ -1418,7 +1416,6 @@ static int
 spmd_pfkey_spdupdate_cb(struct rcpfk_msg *rc)
 {
 	spid_data_update(rc->seq, rc->slid); /* returned rc->slid is spid */
-	SPMD_PLOG(SPMD_L_NOTICE, "spdupdate_cb: seq=%u spid=%u", rc->seq, rc->slid);
 
 #ifdef SPMD_DEBUG
 	{
