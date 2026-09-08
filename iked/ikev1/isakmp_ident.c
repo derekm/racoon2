@@ -1375,7 +1375,6 @@ ident_r2send(struct ph1handle *iph1, rc_vchar_t *msg)
 	end:
 		return error;
 }
-}
 
 /*
  * receive from initiator
