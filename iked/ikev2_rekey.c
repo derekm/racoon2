@@ -247,52 +247,63 @@ rekey_ikesa_callback(enum request_callback action,
 }
 
 static void
+static void ikev2_rekey_init_send_tail(struct ikev2_rekey_init_ctx *);
+
+/* async KEi for ikev2_rekey_ikesa_init_send (REKEY IKE_SA) */
+struct ikev2_rekey_init_ctx {
+	struct ikev2_sa *old_sa;
+	struct ikev2_sa *new_sa;
+	struct ikev2_child_sa *child_sa;
+	struct algdef *dhgrpdef;
+	struct ikev2_payloads payl;
+	int payl_inited;
+	rc_vchar_t *sa;
+	struct prop_pair **proplist;
+};
+
+static void
+ikev2_rekey_init_ctx_free(struct ikev2_rekey_init_ctx *ctx)
+{
+	if (ctx->sa)
+		rc_vfree(ctx->sa);
+	if (ctx->proplist)
+		proplist_discard(ctx->proplist);
+	if (ctx->payl_inited)
+		ikev2_payloads_destroy(&ctx->payl);
+	rc_free(ctx);
+}
+
+static void
+ikev2_rekey_ikesa_init_dh_done(int rc, void *arg)
+{
+	struct ikev2_rekey_init_ctx *ctx = arg;
+	struct ikev2_sa *old_sa = ctx->old_sa;
+	struct ikev2_child_sa *child_sa = ctx->child_sa;
+
+	old_sa->crypto_pending = 0;
+	if (old_sa->state == IKEV2_STATE_DYING ||
+	    old_sa->state == IKEV2_STATE_DEAD ||
+	    child_sa->state == IKEV2_CHILD_STATE_EXPIRED) {
+		ikev2_rekey_init_ctx_free(ctx);
+		return;
+	}
+	if (rc != 0) {
+		TRACE((PLOGLOC, "failed generating DH values\n"));
+		isakmp_log(old_sa, 0, 0, 0,
+			   PLOG_INTERR, PLOGLOC, "failed to send REKEY IKE_SA\n");
+		++isakmpstat.fail_send_packet;
+		ikev2_rekey_init_ctx_free(ctx);
+		return;
+	}
+	ikev2_rekey_init_send_tail(ctx);
+}
+static void
 ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 {
-	/* (draft-17)
-	 * To rekey an IKE_SA, establish a new
-	 * equivalent IKE_SA (see section 2.18 below) with the peer to whom the
-	 * old IKE_SA is shared using a CREATE_CHILD_SA within the existing
-	 * IKE_SA. An IKE_SA so created inherits all of the original IKE_SA's
-	 * CHILD_SAs.  Use the new IKE_SA for all control messages needed to
-	 * maintain the CHILD_SAs created by the old IKE_SA, and delete the old
-	 * IKE_SA. The Delete payload to delete itself MUST be the last request
-	 * sent over an IKE_SA.
-	 */
-	/* (draft-17)
-	 * The CREATE_CHILD_SA exchange can be used to rekey an existing IKE_SA
-	 * (see section 2.8).  New initiator and responder SPIs are supplied in
-	 * the SPI fields. The TS payloads are omitted when rekeying an IKE_SA.
-	 * SKEYSEED for the new IKE_SA is computed using SK_d from the existing
-	 * IKE_SA as follows:
-	 *
-	 * SKEYSEED = prf(SK_d (old), [g^ir (new)] | Ni | Nr)
-	 *
-	 * where g^ir (new) is the shared secret from the ephemeral Diffie-
-	 * Hellman exchange of this CREATE_CHILD_SA exchange (represented as an
-	 * octet string in big endian order padded with zeros if necessary to
-	 * make it the length of the modulus) and Ni and Nr are the two nonces
-	 * stripped of any headers.
-	 */
 	/*
-	 * The new IKE_SA MUST reset its message counters to 0.
-	 */
-
-	/* (draft-eronen-ipsec-ikev2-clarifications-05.txt)
-	 * NEW-1.3.2 Rekeying IKE_SAs with the CREATE_CHILD_SA Exchange
+	 * REKEY IKE_SA (initiator):
 	 *
-	 * The CREATE_CHILD_SA request for rekeying an IKE_SA is:
-	 *
-	 * Initiator                                 Responder
-	 * -----------                               -----------
-	 * HDR, SK {SA, Ni, KEi} -->
-	 *
-	 * The initiator sends SA offer(s) in the SA payload, a nonce in
-	 * the Ni payload, and a Diffie-Hellman value in the KEi payload.
-	 * New initiator and responder SPIs are supplied in the SPI fields.
-	 *
-	 * The CREATE_CHILD_SA response for rekeying an IKE_SA is:
-	 *
+	 * -->    HDR, SK {SA, Ni, KEi}
 	 * <--    HDR, SK {SA, Nr, KEr}
 	 *
 	 * The responder replies (using the same Message ID to respond)
@@ -314,13 +325,8 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	struct ikev2_sa *old_sa;
 	struct ikev2_sa *new_sa = 0;
 	struct prop_pair **proplist = 0;
-	struct algdef *dhgrpdef;
 	rc_vchar_t *sa = 0;
-	rc_vchar_t *ke = 0;
-	rc_vchar_t *nonce;
-	rc_vchar_t *pkt = 0;
-	struct ikev2payl_ke_h dhgrp_hdr;
-	int nonce_size;
+	struct ikev2_rekey_init_ctx *ctx;
 
 	child_sa->message_id = ikev2_request_id(child_sa->parent);
 	TRACE((PLOGLOC, "child_sa %p message_id %d\n", child_sa, child_sa->message_id));
@@ -352,15 +358,67 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 		goto fail;
 	}
 
-	/* create KE */
-	dhgrpdef = old_sa->negotiated_sa->dhdef;
-	if (oakley_dh_generate((struct dhgroup *)dhgrpdef->definition, &new_sa->dhpub,
-	     &new_sa->dhpriv) != 0) {
-		TRACE((PLOGLOC, "failed generating DH values\n"));
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx)
+		goto fail_nomem;
+	ctx->child_sa = child_sa;
+	ctx->old_sa = old_sa;
+	ctx->new_sa = new_sa;
+	ctx->dhgrpdef = old_sa->negotiated_sa->dhdef;
+	ctx->payl = payl;
+	ctx->payl_inited = 1;
+	ctx->sa = sa;
+	sa = NULL;
+	ctx->proplist = proplist;
+	proplist = NULL;
+
+	old_sa->crypto_pending = 1;
+	if (oakley_dh_generate_submit((struct dhgroup *)ctx->dhgrpdef->definition,
+	    &new_sa->dhpub, &new_sa->dhpriv,
+	    ikev2_rekey_ikesa_init_dh_done, ctx) != 0) {
+		old_sa->crypto_pending = 0;
+		TRACE((PLOGLOC, "failed dh submit\n"));
+		ikev2_rekey_init_ctx_free(ctx);
 		goto fail;
 	}
+	return;	/* resumed in ikev2_rekey_ikesa_init_dh_done */
 
-	dhgrp_hdr.dh_group_id = htons(dhgrpdef->transform_id);
+      done:
+	ikev2_payloads_destroy(&payl);
+	return;
+
+      fail_nomem:
+	isakmp_log(old_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC, "failed to allocate memory\n");
+	++isakmpstat.fail_send_packet;
+	goto done;
+
+      fail:
+	isakmp_log(old_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC, "failed to send REKEY IKE_SA\n");
+	++isakmpstat.fail_send_packet;
+	if (sa)
+		rc_vfree(sa);
+	if (proplist)
+		proplist_discard(proplist);
+	ikev2_payloads_destroy(&payl);
+	return;
+}
+
+static void
+ikev2_rekey_init_send_tail(struct ikev2_rekey_init_ctx *ctx)
+{
+	struct ikev2_sa *old_sa = ctx->old_sa;
+	struct ikev2_sa *new_sa = ctx->new_sa;
+	struct ikev2_child_sa *child_sa = ctx->child_sa;
+	rc_vchar_t *ke = 0;
+	rc_vchar_t *nonce;
+	rc_vchar_t *pkt = 0;
+	struct ikev2payl_ke_h dhgrp_hdr;
+	int nonce_size;
+
+	/* create KE */
+	dhgrp_hdr.dh_group_id = htons(ctx->dhgrpdef->transform_id);
 	dhgrp_hdr.reserved = 0;
 	ke = rc_vprepend(new_sa->dhpub, &dhgrp_hdr, sizeof(dhgrp_hdr));
 	if (!ke)
@@ -376,13 +434,14 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	/*
 	 * HDR, SK {SA, Ni, KEi}
 	 */
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NONCE, nonce, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ke, FALSE);
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_SA, ctx->sa, FALSE);
+	ctx->sa = NULL;
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NONCE, nonce, FALSE);
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_KE, ke, FALSE);
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
 				     old_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0,
-				     child_sa->message_id, old_sa, &payl);
+				     child_sa->message_id, old_sa, &ctx->payl);
 	if (!pkt) {
 		TRACE((PLOGLOC, "failed constructing packet\n"));
 		goto fail;
@@ -396,16 +455,11 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 
 	ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_REQUEST_SENT);
 
-      done:
 	if (pkt)
 		rc_vfree(pkt);
 	if (ke)
 		rc_vfree(ke);
-	if (sa)
-		rc_vfree(sa);
-	if (proplist)
-		proplist_discard(proplist);
-	ikev2_payloads_destroy(&payl);
+	ikev2_rekey_init_ctx_free(ctx);
 	return;
 
       fail_nomem:
@@ -418,9 +472,17 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	isakmp_log(old_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed to send REKEY IKE_SA\n");
 	++isakmpstat.fail_send_packet;
-	goto done;
+      done:
+	if (pkt)
+		rc_vfree(pkt);
+	if (ke)
+		rc_vfree(ke);
+	ikev2_rekey_init_ctx_free(ctx);
 }
-
+/**** async DH helpers (defined below) ****/
+struct ikev2_rekey_responder_ctx;
+static void ikev2_rekey_responder_ctx_free(struct ikev2_rekey_responder_ctx *);
+static void ikev2_rekey_ikesa_responder_dh_done(int, void *);
 void
 ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 			    struct sockaddr *remote,
@@ -445,10 +507,7 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 	struct rcf_remote *conf;
 	struct ikev2_sa *new_sa = 0;
 	struct ikev2_payloads payl;
-	struct ikev2payl_ke_h dhgrp_hdr;
-	rc_vchar_t *ke_r = 0;
-	rc_vchar_t *g_ir = 0;
-	rc_vchar_t *pkt = 0;
+	struct ikev2_rekey_responder_ctx *ctx;
 
 	ikev2_payloads_init(&payl);
 
@@ -547,97 +606,38 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 		goto fail_nomem;
 	new_sa->dhpub_p = g_i;
 
-	/* calculate new g^ir */
-	if (oakley_dh_generate((struct dhgroup *)dhdef->definition,
-			       &new_sa->dhpub, &new_sa->dhpriv) != 0) {
-		TRACE((PLOGLOC, "failed dh_generate\n"));
-		goto no_proposal_chosen;
-	}
-
-	dhgrp_hdr.dh_group_id = htons(dhdef->transform_id);
-	dhgrp_hdr.reserved = 0;
-	ke_r = rc_vprepend(new_sa->dhpub, &dhgrp_hdr, sizeof(dhgrp_hdr));
-	if (!ke_r) {
-		TRACE((PLOGLOC, "failed creating KE\n"));
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx)
+		goto fail_nomem;
+	ctx->old_sa = old_sa;
+	ctx->new_sa = new_sa;
+	ctx->dhdef = dhdef;
+	ctx->message_id = message_id;
+	ctx->local = rcs_sadup(local);
+	ctx->remote = rcs_sadup(remote);
+	if (!ctx->local || !ctx->remote) {
+		ikev2_rekey_responder_ctx_free(ctx);
 		goto fail_nomem;
 	}
+	ctx->payl = payl;
+	ctx->payl_inited = 1;
+	ctx->parsed_sa = parsed_sa;
+	parsed_sa = NULL;
 
-	/* g_ir = g^ir; */
-	if (oakley_dh_compute((struct dhgroup *)dhdef->definition,
-			      new_sa->dhpub, new_sa->dhpriv,
-			      new_sa->dhpub_p, &g_ir) == -1)
+	old_sa->crypto_pending = 1;
+	/* generate + compute g^ir as one pool job */
+	if (oakley_dh_gencmp_submit((struct dhgroup *)dhdef->definition,
+	    new_sa->dhpub_p, &new_sa->dhpub, &new_sa->dhpriv,
+	    &ctx->g_ir, ikev2_rekey_ikesa_responder_dh_done, ctx) != 0) {
+		old_sa->crypto_pending = 0;
+		TRACE((PLOGLOC, "failed dh submit\n"));
+		ikev2_rekey_responder_ctx_free(ctx);
 		goto fail;
-
-	if (rekey_skeyseed(new_sa, old_sa, g_ir) != 0)
-		goto fail;
-	if (ikev2_compute_keys(new_sa) != 0)
-		goto fail;
-	ikev2_destroy_secret(new_sa);
-
-	/* move children to new_sa */
-	if (!old_sa->rekey_duplicate) {
-		TRACE((PLOGLOC, "rekeyed ike_sa old %p new %p established\n", old_sa, new_sa));
-		ikev2_child_adopt(old_sa, new_sa);
-	} else {
-		/* need to wait to determine which ike_sa to survive */
-		TRACE((PLOGLOC, "duplicate rekeying, new ike_sa %p on hold\n",
-		       new_sa));
 	}
-
-	ikev2_set_state(new_sa, IKEV2_STATE_ESTABLISHED);
-
-	/* send response */
-	/* HDR, SA, NONCE, KE */
-	{
-		rc_vchar_t *sa;
-
-		sa = ikev2_ikesa_to_proposal(new_sa->negotiated_sa,
-					     &new_sa->index.r_ck);
-		if (!sa) {
-			TRACE((PLOGLOC, "no proposal for the peer\n"));
-			goto no_proposal_chosen;
-		}
-
-		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa, FALSE);
-		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NONCE, new_sa->n_r, FALSE);
-		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ke_r, FALSE);
-
-		pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
-					     IKEV2FLAG_RESPONSE |
-					     (old_sa->is_initiator ?
-					      IKEV2FLAG_INITIATOR : 0),
-					     message_id, old_sa, &payl);
-		if (!pkt)
-			goto fail;
-
-		if (ikev2_transmit_response(old_sa, pkt, local, remote) != 0)
-			goto fail;
-		pkt = 0;
-	}
-
-	/*
-	 * Choose pending child_sa adopted by new ike_sa, if there is no
-	 * rekey conflict. Otherwise, it would be done in
-	 * ikev2_rekey_ikesa_init_recv().
-	 */
-	if (!old_sa->rekey_duplicate) {
-	   struct ikev2_child_sa *child_sa;
-
-	   TRACE((PLOGLOC, "choose pending child_sa adopted by new ike_sa %p\n",
-		       new_sa));
-	   child_sa = ikev2_choose_pending_child(new_sa, TRUE);
-	   if (child_sa)
-		ikev2_wakeup_child_sa(child_sa);
-	}
+	return;	/* resumed in ikev2_rekey_ikesa_responder_dh_done */
 
       done:
 	ikev2_payloads_destroy(&payl);
-	if (pkt)
-		rc_vfree(pkt);
-	if (g_ir)
-		rc_vfreez(g_ir);
-	if (ke_r)
-		rc_vfree(ke_r);
 	if (n_r)
 		rc_vfree(n_r);
 	if (n_i)
@@ -685,6 +685,159 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 	 * replaced SA.
 	 */
 #endif
+}
+
+/* async DH for ikev2_rekey_ikesa_responder (generate+compute g^ir) */
+struct ikev2_rekey_responder_ctx {
+	struct ikev2_sa *old_sa;
+	struct ikev2_sa *new_sa;
+	struct algdef *dhdef;
+	uint32_t message_id;
+	struct sockaddr *local;
+	struct sockaddr *remote;
+	struct ikev2_payloads payl;
+	int payl_inited;
+	struct prop_pair **parsed_sa;
+	rc_vchar_t *g_ir;
+	rc_vchar_t *ke_r;
+	rc_vchar_t *pkt;
+};
+
+static void
+ikev2_rekey_responder_ctx_free(struct ikev2_rekey_responder_ctx *ctx)
+{
+	if (ctx->local)
+		rc_free(ctx->local);
+	if (ctx->remote)
+		rc_free(ctx->remote);
+	if (ctx->parsed_sa)
+		proplist_discard(ctx->parsed_sa);
+	if (ctx->g_ir)
+		rc_vfreez(ctx->g_ir);
+	if (ctx->ke_r)
+		rc_vfree(ctx->ke_r);
+	if (ctx->pkt)
+		rc_vfree(ctx->pkt);
+	if (ctx->payl_inited)
+		ikev2_payloads_destroy(&ctx->payl);
+	rc_free(ctx);
+}
+
+/* runs on the IKE thread after the worker finished generate+compute */
+static void
+ikev2_rekey_responder_tail(struct ikev2_rekey_responder_ctx *ctx)
+{
+	struct ikev2_sa *old_sa = ctx->old_sa;
+	struct ikev2_sa *new_sa = ctx->new_sa;
+	struct ikev2payl_ke_h dhgrp_hdr;
+
+	dhgrp_hdr.dh_group_id = htons(ctx->dhdef->transform_id);
+	dhgrp_hdr.reserved = 0;
+	ctx->ke_r = rc_vprepend(new_sa->dhpub, &dhgrp_hdr, sizeof(dhgrp_hdr));
+	if (!ctx->ke_r) {
+		TRACE((PLOGLOC, "failed creating KE\n"));
+		goto fail;
+	}
+
+	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir) != 0)
+		goto fail;
+	if (ikev2_compute_keys(new_sa) != 0)
+		goto fail;
+	ikev2_destroy_secret(new_sa);
+
+	/* move children to new_sa */
+	if (!old_sa->rekey_duplicate) {
+		TRACE((PLOGLOC, "rekeyed ike_sa old %p new %p established\n", old_sa, new_sa));
+		ikev2_child_adopt(old_sa, new_sa);
+	} else {
+		/* need to wait to determine which ike_sa to survive */
+		TRACE((PLOGLOC, "duplicate rekeying, new ike_sa %p on hold\n",
+		       new_sa));
+	}
+
+	ikev2_set_state(new_sa, IKEV2_STATE_ESTABLISHED);
+
+	/* send response */
+	/* HDR, SA, NONCE, KE */
+	{
+		rc_vchar_t *sa;
+
+		sa = ikev2_ikesa_to_proposal(new_sa->negotiated_sa,
+					     &new_sa->index.r_ck);
+		if (!sa) {
+			TRACE((PLOGLOC, "no proposal for the peer\n"));
+			goto fail;
+		}
+
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_SA, sa, FALSE);
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NONCE, new_sa->n_r, FALSE);
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_KE, ctx->ke_r, FALSE);
+
+		ctx->pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
+					     IKEV2FLAG_RESPONSE |
+					     (old_sa->is_initiator ?
+					      IKEV2FLAG_INITIATOR : 0),
+					     ctx->message_id, old_sa, &ctx->payl);
+		if (!ctx->pkt)
+			goto fail;
+
+		if (ikev2_transmit_response(old_sa, ctx->pkt,
+					    ctx->local, ctx->remote) != 0)
+			goto fail;
+		ctx->pkt = NULL;
+	}
+
+	/*
+	 * Choose pending child_sa adopted by new ike_sa, if there is no
+	 * rekey conflict. Otherwise, it would be done in
+	 * ikev2_rekey_ikesa_init_recv().
+	 */
+	if (!old_sa->rekey_duplicate) {
+	   struct ikev2_child_sa *child_sa;
+
+	   TRACE((PLOGLOC, "choose pending child_sa adopted by new ike_sa %p\n",
+		       new_sa));
+	   child_sa = ikev2_choose_pending_child(new_sa, TRUE);
+	   if (child_sa)
+		ikev2_wakeup_child_sa(child_sa);
+	}
+
+	ikev2_rekey_responder_ctx_free(ctx);
+	return;
+
+fail:
+	/* failure; internal error; unable to respond, discard request */
+	isakmp_log(old_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC,
+		   "failed processing IKE_SA rekey request\n");
+	if (new_sa)
+		ikev2_set_state(new_sa, IKEV2_STATE_DEAD);
+	ikev2_rekey_responder_ctx_free(ctx);
+}
+
+static void
+ikev2_rekey_ikesa_responder_dh_done(int rc, void *arg)
+{
+	struct ikev2_rekey_responder_ctx *ctx = arg;
+	struct ikev2_sa *old_sa = ctx->old_sa;
+
+	old_sa->crypto_pending = 0;
+	if (old_sa->state == IKEV2_STATE_DEAD ||
+	    ctx->new_sa->state == IKEV2_STATE_DEAD) {
+		ikev2_rekey_responder_ctx_free(ctx);
+		return;
+	}
+	if (rc != 0) {
+		TRACE((PLOGLOC, "failed dh_generate/compute\n"));
+		isakmp_log(old_sa, 0, 0, 0,
+			   PLOG_INTERR, PLOGLOC,
+			   "failed processing IKE_SA rekey request\n");
+		if (ctx->new_sa)
+			ikev2_set_state(ctx->new_sa, IKEV2_STATE_DEAD);
+		ikev2_rekey_responder_ctx_free(ctx);
+		return;
+	}
+	ikev2_rekey_responder_tail(ctx);
 }
 
 static void
