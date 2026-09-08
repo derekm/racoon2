@@ -623,6 +623,171 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 }
 
 /*
+ * async DH for the responder PFS path (oakley_dh_gencmp_submit).
+ */
+struct ikev2_child_responder_ctx {
+	struct ikev2_sa *ike_sa;
+	struct ikev2_child_sa *child_sa;
+	rc_vchar_t *g_i;	/* rc_vdup'd, owned */
+	rc_vchar_t *n_i;	/* rc_vdup'd, owned */
+	rc_vchar_t *dhpriv;	/* written by gencmp */
+	struct rcf_selector *sel4, *sel6;
+	struct prop_pair **my_proposal;
+	struct prop_pair **parsed_sa;
+	struct prop_pair *matching_my_proposal;
+	struct prop_pair *matching_peer_proposal;
+	struct ikev2_child_sa *old_child_sa;
+};
+
+static void
+ikev2_child_responder_ctx_free(struct ikev2_child_responder_ctx *ctx)
+{
+	if (ctx == NULL)
+		return;
+	if (ctx->g_i)
+		rc_vfreez(ctx->g_i);
+	if (ctx->n_i)
+		rc_vfreez(ctx->n_i);
+	if (ctx->dhpriv)
+		rc_vfreez(ctx->dhpriv);
+	if (ctx->my_proposal)
+		proplist_discard(ctx->my_proposal);
+	if (ctx->parsed_sa)
+		proplist_discard(ctx->parsed_sa);
+	if (ctx->matching_my_proposal)
+		proppair_discard(ctx->matching_my_proposal);
+	if (ctx->matching_peer_proposal)
+		proppair_discard(ctx->matching_peer_proposal);
+	rc_free(ctx);
+}
+
+/* runs on the IKE thread after the worker finished generate+compute */
+static void
+ikev2_child_responder_after_dh(struct ikev2_child_responder_ctx *ctx)
+{
+	struct ikev2_sa *ike_sa = ctx->ike_sa;
+	struct ikev2_child_sa *child_sa = ctx->child_sa;
+	struct rcf_selector *sel4 = ctx->sel4, *sel6 = ctx->sel6;
+	struct rcf_policy *pol = child_sa->selector->pl;
+	size_t nonce_size;
+	int lifetime;
+
+	if (ctx->n_i) {
+		child_sa->n_i = ctx->n_i;	/* ownership moves */
+		ctx->n_i = NULL;
+		nonce_size = ikev2_nonce_size(ike_sa->rmconf);
+		child_sa->n_r = random_bytes(nonce_size);
+		if (!child_sa->n_r)
+			goto fail;
+	}
+
+	/* save my proposal list to keep SPI values */
+	child_sa->my_proposal = proplist_new();
+	if (!child_sa->my_proposal)
+		goto fail;
+	child_sa->my_proposal[1] = ctx->matching_my_proposal;
+	ctx->matching_my_proposal = NULL;
+
+	child_sa->peer_proposal = ctx->matching_peer_proposal;
+	ctx->matching_peer_proposal = NULL;
+
+	/* XXX generate policy */
+	if (!LIST_EMPTY(&child_sa->lease_list)) {
+		struct rcf_address *a;
+		struct sockaddr_storage ss;
+		int prefixlen;
+		struct rc_addrlist ra;
+
+		IPSEC_CONF(lifetime, pol->ips, ipsec_sa_lifetime_time, 0);
+		for (a = LIST_FIRST(&child_sa->lease_list); a != 0;
+		     a = LIST_NEXT(a, link_sa)) {
+			ikev2_cfg_addr2sockaddr((struct sockaddr *)&ss, a,
+			    &prefixlen);
+			ra.next = NULL;
+			ra.type = RCT_ADDR_INET;
+			ra.port = 0;
+			ra.prefixlen = prefixlen;
+			ra.a.ipaddr = (struct sockaddr *)&ss;
+
+			switch (ra.a.ipaddr->sa_family) {
+			case AF_INET:
+				if (spmif_post_policy_add(ike_spmif_socket(),
+				    NULL, NULL, sel4->sl_index, lifetime,
+				    ike_ipsec_mode(pol), sel4->src, &ra,
+				    child_sa->local, child_sa->remote))
+					goto fail;
+				break;
+			case AF_INET6:
+				if (spmif_post_policy_add(ike_spmif_socket(),
+				    NULL, NULL, sel6->sl_index, lifetime,
+				    ike_ipsec_mode(pol), sel6->src, &ra,
+				    child_sa->local, child_sa->remote))
+					goto fail;
+				break;
+			}
+		}
+	} else if (!ctx->old_child_sa &&
+		   pol->peers_sa_ipaddr &&
+		   rcs_is_addr_wildcard(pol->peers_sa_ipaddr)) {
+		IPSEC_CONF(lifetime, pol->ips, ipsec_sa_lifetime_time, 0);
+		if (ike_spmif_post_policy_add(child_sa->selector,
+		    ike_ipsec_mode(pol), lifetime,
+		    child_sa->local, child_sa->remote,
+		    ike_sa->rmconf) < 0)
+			goto fail;
+		if (child_sa->selector->next) {
+			if (ike_spmif_post_policy_add(child_sa->selector->next,
+			    ike_ipsec_mode(pol), lifetime,
+			    child_sa->local, child_sa->remote,
+			    ike_sa->rmconf) < 0)
+				goto fail;
+		}
+	}
+
+	sadb_request_initialize(&child_sa->sadb_request,
+				debug_pfkey
+				? &sadb_debug_method
+				: &sadb_responder_request_method,
+				&ikev2_sadb_callback,
+				sadb_new_seq(),
+				child_sa);
+
+	TRACE((PLOGLOC, "calling getspi\n"));
+	ikev2_child_getspi(child_sa);
+	TRACE((PLOGLOC, "done\n"));
+	ikev2_child_responder_ctx_free(ctx);
+	return;
+
+fail:
+	ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_EXPIRED);
+	ikev2_child_responder_ctx_free(ctx);
+}
+
+static void
+ikev2_child_responder_dh_done(int rc, void *arg)
+{
+	struct ikev2_child_responder_ctx *ctx = arg;
+	struct ikev2_sa *ike_sa = ctx->ike_sa;
+	struct ikev2_child_sa *child_sa = ctx->child_sa;
+
+	ike_sa->crypto_pending = 0;
+	if (ike_sa->state == IKEV2_STATE_DYING ||
+	    ike_sa->state == IKEV2_STATE_DEAD ||
+	    child_sa->state == IKEV2_CHILD_STATE_EXPIRED) {
+		/* IKE or child aborted while DH ran */
+		ikev2_child_responder_ctx_free(ctx);
+		return;
+	}
+	if (rc != 0) {
+		TRACE((PLOGLOC, "failed dh_generate/compute\n"));
+		ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_EXPIRED);
+		ikev2_child_responder_ctx_free(ctx);
+		return;
+	}
+	ikev2_child_responder_after_dh(ctx);
+}
+
+/*
  * creates a responder child_sa
  * then issues GETSPI
  */
@@ -777,6 +942,8 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		struct prop_pair *prop;
 		struct ikev2transform *transf;
 		struct algdef *dhdef;
+		struct ikev2_child_responder_ctx *ctx;
+		rc_vchar_t *gi_copy, *ni_copy;
 
 		/* (draft-17)
 		 * KEYMAT = prf+(SK_d, g^ir (new) | Ni | Nr )
@@ -794,17 +961,52 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 
 		child_sa->dhgrp = dhdef;
 
-		if (oakley_dh_generate((struct dhgroup *)dhdef->definition,
-				       &child_sa->dhpub, &dhpriv) != 0) {
-			TRACE((PLOGLOC, "failed dh_generate\n"));
+		/*
+		 * Async gencmp. This function returns now; the tail
+		 * (nonce, policy, GETSPI) runs in
+		 * ikev2_child_responder_after_dh on the IKE thread.
+		 * Copy g_i/n_i — the caller frees them on return.
+		 */
+		gi_copy = rc_vdup(g_i);
+		ni_copy = n_i ? rc_vdup(n_i) : NULL;
+		ctx = calloc(1, sizeof(*ctx));
+		if (gi_copy == NULL || (n_i && ni_copy == NULL) ||
+		    ctx == NULL) {
+			if (gi_copy)
+				rc_vfreez(gi_copy);
+			if (ni_copy)
+				rc_vfreez(ni_copy);
+			if (ctx)
+				rc_free(ctx);
+			goto fail_nomem;
+		}
+		ctx->ike_sa = ike_sa;
+		ctx->child_sa = child_sa;
+		ctx->g_i = gi_copy;
+		ctx->n_i = ni_copy;
+		ctx->sel4 = sel4;
+		ctx->sel6 = sel6;
+		ctx->my_proposal = my_proposal;
+		my_proposal = NULL;
+		ctx->parsed_sa = parsed_sa;
+		parsed_sa = NULL;
+		ctx->matching_my_proposal = matching_my_proposal;
+		matching_my_proposal = NULL;
+		ctx->matching_peer_proposal = matching_peer_proposal;
+		matching_peer_proposal = NULL;
+		ctx->old_child_sa = old_child_sa;
+
+		ike_sa->crypto_pending = 1;
+		if (oakley_dh_gencmp_submit((struct dhgroup *)dhdef->definition,
+		    ctx->g_i, &child_sa->dhpub, &ctx->dhpriv,
+		    &child_sa->g_ir, ikev2_child_responder_dh_done,
+		    ctx) != 0) {
+			ike_sa->crypto_pending = 0;
+			TRACE((PLOGLOC, "failed dh submit\n"));
+			ikev2_child_responder_ctx_free(ctx);
 			goto fail_internal;
 		}
-		if (oakley_dh_compute((struct dhgroup *)dhdef->definition,
-				      child_sa->dhpub, dhpriv,
-				      g_i, &child_sa->g_ir) != 0) {
-			TRACE((PLOGLOC, "failed dh_compute\n"));
-			goto fail_internal;
-		}
+		return 0;	/* resumed in ikev2_child_responder_dh_done */
 	} else {		/* if (! g_i) */
 		if (is_createchild &&
 		    ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
