@@ -1,6 +1,5 @@
 # $Id: Makefile.in,v 1.28 2010/05/16 18:30:20 kamada Exp $
 
-ACLOCAL_AMFLAGS = -I m4
 
 SUBDIRS = @startup_scripts@ hook
 DIST_SUBDIRS = init.d rc.d systemd none hook
