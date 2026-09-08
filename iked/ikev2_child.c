@@ -628,6 +628,7 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 struct ikev2_child_responder_ctx {
 	struct ikev2_sa *ike_sa;
 	struct ikev2_child_sa *child_sa;
+	int serial;	/* ike_sa->serial_number, for liveness check */
 	rc_vchar_t *g_i;	/* rc_vdup'd, owned */
 	rc_vchar_t *n_i;	/* rc_vdup'd, owned */
 	rc_vchar_t *dhpriv;	/* written by gencmp */
@@ -767,10 +768,26 @@ static void
 ikev2_child_responder_dh_done(int rc, void *arg)
 {
 	struct ikev2_child_responder_ctx *ctx = arg;
-	struct ikev2_sa *ike_sa = ctx->ike_sa;
-	struct ikev2_child_sa *child_sa = ctx->child_sa;
+	struct ikev2_sa *ike_sa;
+	struct ikev2_child_sa *child_sa;
 
+	/*
+	 * Validate liveness before touching anything: the worker wrote
+	 * child_sa->dhpub/g_ir while ike_sa was pinned (periodic task
+	 * skips pending SAs and their children).  Release the pin as
+	 * soon as the SA validates; the child may be gone (abort).
+	 */
+	ike_sa = ikev2_find_sa_by_serial(ctx->serial);
+	if (ike_sa == NULL || ike_sa != ctx->ike_sa) {
+		ikev2_child_responder_ctx_free(ctx);
+		return;
+	}
 	ike_sa->crypto_pending = 0;
+	child_sa = ctx->child_sa;
+	if (!ikev2_child_sa_is_member(ike_sa, child_sa)) {
+		ikev2_child_responder_ctx_free(ctx);
+		return;
+	}
 	if (ike_sa->state == IKEV2_STATE_DYING ||
 	    ike_sa->state == IKEV2_STATE_DEAD ||
 	    child_sa->state == IKEV2_CHILD_STATE_EXPIRED) {
@@ -995,6 +1012,7 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		ctx->matching_peer_proposal = matching_peer_proposal;
 		matching_peer_proposal = NULL;
 		ctx->old_child_sa = old_child_sa;
+		ctx->serial = ike_sa->serial_number;
 
 		ike_sa->crypto_pending = 1;
 		if (oakley_dh_gencmp_submit((struct dhgroup *)dhdef->definition,
@@ -1325,6 +1343,27 @@ ikev2_find_child_by_id(struct ikev2_sa *ike_sa, unsigned int id)
 	     sa = IKEV2_CHILD_LIST_NEXT(sa)) {
 		if (sa->child_id == id)
 			return sa;
+	}
+	return 0;
+}
+
+/*
+ * Returns 1 if child_sa is a live member of ike_sa->children.
+ * Used by async-DH done callbacks to validate child liveness.
+ */
+int
+ikev2_child_sa_is_member(struct ikev2_sa *ike_sa,
+			 struct ikev2_child_sa *child_sa)
+{
+	struct ikev2_child_sa *sa;
+
+	if (ike_sa == NULL || child_sa == NULL)
+		return 0;
+	for (sa = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+	     !IKEV2_CHILD_LIST_END(sa);
+	     sa = IKEV2_CHILD_LIST_NEXT(sa)) {
+		if (sa == child_sa)
+			return 1;
 	}
 	return 0;
 }

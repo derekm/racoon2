@@ -3427,6 +3427,7 @@ ikev2_dead_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg, struct sockaddr *remot
 struct ikev2_child_init_ctx {
 	struct ikev2_sa *ike_sa;
 	struct ikev2_child_sa *child_sa;
+	int serial;	/* ike_sa->serial_number, for liveness check */
 	struct algdef *dhgrpdef;
 	struct ikev2_payloads payl;
 	int payl_inited;
@@ -3585,10 +3586,27 @@ static void
 ikev2_createchild_initiator_dh_done(int rc, void *arg)
 {
 	struct ikev2_child_init_ctx *ctx = arg;
-	struct ikev2_sa *ike_sa = ctx->ike_sa;
-	struct ikev2_child_sa *child_sa = ctx->child_sa;
+	struct ikev2_sa *ike_sa;
+	struct ikev2_child_sa *child_sa;
 
+	/*
+	 * Validate liveness before touching anything: the worker wrote
+	 * child_sa->dhpub/dhpriv while ike_sa was pinned (periodic task
+	 * skips pending SAs and their children).  Confirm the SA is a
+	 * live list member, release its pin either way, then confirm
+	 * the child is still a member.
+	 */
+	ike_sa = ikev2_find_sa_by_serial(ctx->serial);
+	if (ike_sa == NULL || ike_sa != ctx->ike_sa) {
+		ikev2_child_init_ctx_free(ctx);
+		return;
+	}
 	ike_sa->crypto_pending = 0;
+	child_sa = ctx->child_sa;
+	if (!ikev2_child_sa_is_member(ike_sa, child_sa)) {
+		ikev2_child_init_ctx_free(ctx);
+		return;
+	}
 	if (ike_sa->state == IKEV2_STATE_DYING ||
 	    ike_sa->state == IKEV2_STATE_DEAD ||
 	    child_sa->state == IKEV2_CHILD_STATE_EXPIRED) {
@@ -3654,6 +3672,7 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 		goto fail;
 	ctx->ike_sa = ike_sa;
 	ctx->child_sa = child_sa;
+	ctx->serial = ike_sa->serial_number;
 	ctx->sa = sa;
 	sa = NULL;
 	ctx->ts_i = ts_i;

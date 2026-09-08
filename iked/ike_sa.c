@@ -224,6 +224,19 @@ ikev2_sa_periodic_task(void)
 
 		TRACE((PLOGLOC, "ike_sa: %p state %d\n", sa, sa->state));
 		next_sa = IKEV2_SA_LIST_NEXT(sa);
+		if (sa->crypto_pending) {
+			/*
+			 * A crypto worker holds pointers into this SA
+			 * (child_sa/new_sa dhpub slots) and its done
+			 * callback will run on the next drain.  Disposing
+			 * now would free memory the worker is about to
+			 * write (and the callback about to read).  Defer
+			 * until the pending job completes.
+			 */
+			TRACE((PLOGLOC, "deferring ike_sa %p (crypto pending)\n",
+			       sa));
+			continue;
+		}
 		for (child_sa = IKEV2_CHILD_LIST_FIRST(&sa->children);
 		     !IKEV2_CHILD_LIST_END(child_sa); child_sa = next) {
 			TRACE((PLOGLOC, "child_sa: %p state %d\n", child_sa,

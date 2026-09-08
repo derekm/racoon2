@@ -472,6 +472,7 @@ extern struct ikev2_child_sa *ikev2_create_child_sa(struct ikev2_sa *, int);
 extern void ikev2_destroy_child_sa(struct ikev2_child_sa *);
 extern void ikev2_insert_child(struct ikev2_sa *, struct ikev2_child_sa *);
 extern void ikev2_remove_child(struct ikev2_child_sa *);
+extern int ikev2_child_sa_is_member(struct ikev2_sa *, struct ikev2_child_sa *);
 extern struct ikev2_child_sa *ikev2_find_child_sa_by_spi(struct ikev2_sa *,
 							 unsigned int, uint32_t,
 							 enum peer_mine);

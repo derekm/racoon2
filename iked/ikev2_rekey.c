@@ -252,6 +252,7 @@ struct ikev2_rekey_init_ctx {
 	struct ikev2_sa *old_sa;
 	struct ikev2_sa *new_sa;
 	struct ikev2_child_sa *child_sa;
+	int serial;	/* old_sa->serial_number, for liveness check */
 	struct algdef *dhgrpdef;
 	struct ikev2_payloads payl;
 	int payl_inited;
@@ -294,10 +295,30 @@ static void
 ikev2_rekey_ikesa_init_dh_done(int rc, void *arg)
 {
 	struct ikev2_rekey_init_ctx *ctx = arg;
-	struct ikev2_sa *old_sa = ctx->old_sa;
-	struct ikev2_child_sa *child_sa = ctx->child_sa;
+	struct ikev2_sa *old_sa;
+	struct ikev2_child_sa *child_sa;
 
+	/*
+	 * The worker wrote into new_sa->dhpub/dhpriv while the SA was
+	 * pinned by crypto_pending (periodic task skips pending SAs).
+	 * Confirm old_sa is still the live list member we submitted
+	 * for, release its pin either way, then confirm the new_sa
+	 * link survived.
+	 */
+	old_sa = ikev2_find_sa_by_serial(ctx->serial);
+	if (old_sa == NULL || old_sa != ctx->old_sa) {
+		/* SA disposed while DH ran; nothing to resume */
+		ikev2_rekey_init_ctx_free(ctx);
+		return;
+	}
 	old_sa->crypto_pending = 0;
+	if (old_sa->new_sa != ctx->new_sa) {
+		/* rekey was abandoned while DH ran */
+		ikev2_rekey_init_ctx_free(ctx);
+		return;
+	}
+	child_sa = ctx->child_sa;
+
 	if (old_sa->state == IKEV2_STATE_DYING ||
 	    old_sa->state == IKEV2_STATE_DEAD ||
 	    child_sa->state == IKEV2_CHILD_STATE_EXPIRED) {
@@ -382,6 +403,7 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	ctx->child_sa = child_sa;
 	ctx->old_sa = old_sa;
 	ctx->new_sa = new_sa;
+	ctx->serial = old_sa->serial_number;
 	ctx->dhgrpdef = old_sa->negotiated_sa->dhdef;
 	ctx->payl = payl;
 	ctx->payl_inited = 1;
@@ -506,6 +528,7 @@ ikev2_rekey_init_send_tail(struct ikev2_rekey_init_ctx *ctx)
 struct ikev2_rekey_responder_ctx {
 	struct ikev2_sa *old_sa;
 	struct ikev2_sa *new_sa;
+	int serial;	/* old_sa->serial_number, for liveness check */
 	struct algdef *dhdef;
 	uint32_t message_id;
 	struct sockaddr *local;
@@ -647,6 +670,7 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 		goto fail_nomem;
 	ctx->old_sa = old_sa;
 	ctx->new_sa = new_sa;
+	ctx->serial = old_sa->serial_number;
 	ctx->dhdef = dhdef;
 	ctx->message_id = message_id;
 	ctx->local = rcs_sadup(local);
@@ -660,12 +684,19 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 	ctx->parsed_sa = parsed_sa;
 	parsed_sa = NULL;
 
+	/*
+	 * Pin both SAs: old_sa is the conversation SA; new_sa is list-
+	 * inserted with its own nego timer and may be aborted+disposed
+	 * (periodic task) while the worker writes &new_sa->dhpub.
+	 */
 	old_sa->crypto_pending = 1;
+	new_sa->crypto_pending = 1;
 	/* generate + compute g^ir as one pool job */
 	if (oakley_dh_gencmp_submit((struct dhgroup *)dhdef->definition,
 	    new_sa->dhpub_p, &new_sa->dhpub, &new_sa->dhpriv,
 	    &ctx->g_ir, ikev2_rekey_ikesa_responder_dh_done, ctx) != 0) {
 		old_sa->crypto_pending = 0;
+		new_sa->crypto_pending = 0;
 		TRACE((PLOGLOC, "failed dh submit\n"));
 		ctx->payl_inited = 0;	/* done: destroys payl once */
 		ikev2_rekey_responder_ctx_free(ctx);
@@ -842,9 +873,22 @@ static void
 ikev2_rekey_ikesa_responder_dh_done(int rc, void *arg)
 {
 	struct ikev2_rekey_responder_ctx *ctx = arg;
-	struct ikev2_sa *old_sa = ctx->old_sa;
+	struct ikev2_sa *old_sa;
 
+	/*
+	 * Validate old_sa liveness before clearing either pin: the
+	 * worker wrote into new_sa->dhpub/dhpriv while both SAs were
+	 * pinned (periodic task skips pending SAs).
+	 */
+	old_sa = ikev2_find_sa_by_serial(ctx->serial);
+	if (old_sa == NULL || old_sa != ctx->old_sa) {
+		/* old SA disposed while DH ran; nothing to resume */
+		ctx->new_sa->crypto_pending = 0;
+		ikev2_rekey_responder_ctx_free(ctx);
+		return;
+	}
 	old_sa->crypto_pending = 0;
+	ctx->new_sa->crypto_pending = 0;
 	if (old_sa->state == IKEV2_STATE_DEAD ||
 	    ctx->new_sa->state == IKEV2_STATE_DEAD) {
 		ikev2_rekey_responder_ctx_free(ctx);
@@ -867,6 +911,7 @@ ikev2_rekey_ikesa_responder_dh_done(int rc, void *arg)
 struct ikev2_rekey_init_recv_ctx {
 	struct ikev2_sa *old_sa;
 	struct ikev2_sa *new_sa;
+	int serial;	/* old_sa->serial_number, for liveness check */
 	struct prop_pair **parsed_sa;
 	rc_vchar_t *g_ir;
 };
@@ -1000,6 +1045,7 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		goto fail;
 	ctx->old_sa = old_sa;
 	ctx->new_sa = new_sa;
+	ctx->serial = old_sa->serial_number;
 	ctx->parsed_sa = parsed_sa;
 	parsed_sa = NULL;
 
@@ -1154,9 +1200,27 @@ static void
 ikev2_rekey_ikesa_init_recv_dh_done(int rc, void *arg)
 {
 	struct ikev2_rekey_init_recv_ctx *ctx = arg;
-	struct ikev2_sa *old_sa = ctx->old_sa;
+	struct ikev2_sa *old_sa;
 
+	/*
+	 * Validate old_sa liveness before touching it: the worker read
+	 * new_sa->dhpub/dhpub_p while old_sa was pinned (periodic task
+	 * skips pending SAs); new_sa is reachable only via the link.
+	 * Release the pin as soon as the SA validates.
+	 */
+	old_sa = ikev2_find_sa_by_serial(ctx->serial);
+	if (old_sa == NULL || old_sa != ctx->old_sa) {
+		/* SA disposed while DH ran; nothing to resume */
+		ikev2_rekey_init_recv_ctx_free(ctx);
+		return;
+	}
 	old_sa->crypto_pending = 0;
+	if (old_sa->new_sa != ctx->new_sa) {
+		/* rekey was abandoned while DH ran */
+		ikev2_rekey_init_recv_ctx_free(ctx);
+		return;
+	}
+
 	if (old_sa->state == IKEV2_STATE_DYING ||
 	    old_sa->state == IKEV2_STATE_DEAD) {
 		ikev2_rekey_init_recv_ctx_free(ctx);
