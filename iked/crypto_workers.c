@@ -146,15 +146,26 @@ crypto_workers_fini(void)
 	}
 	free(tids);
 	tids = NULL;
-	/* Drop leftover jobs without done() — IKE state may already be gone. */
+	/*
+	 * Run the leftover done callbacks with rc=-1 instead of
+	 * dropping them: the jobs' ctx (dup'd DH buffers) is owned by
+	 * those callbacks, and every callback's failure branch only
+	 * validates liveness and frees its ctx.  Runs on the IKE
+	 * thread while the SA trees are still up (iked_exit calls us
+	 * before evloop_fini).
+	 */
 	for (j = qhead; j; j = n) {
 		n = j->next;
+		if (j->done)
+			j->done(j->arg);
 		free(j);
 	}
 	qhead = NULL;
 	qtailp = &qhead;
 	for (j = dhead; j; j = n) {
 		n = j->next;
+		if (j->done)
+			j->done(j->arg);
 		free(j);
 	}
 	dhead = NULL;

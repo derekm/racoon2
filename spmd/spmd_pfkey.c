@@ -55,6 +55,17 @@ static int spmd_nonfqdn_sp_add(struct rcf_selector *sl);
  ************************************************************************/
 static int pfkey_sock;
 static uint32_t pfkey_seq = 0;
+
+/* netlink seq must never be 0 (kernel treats 0 as the broadcast
+ * / report-all marker); skip it on wrap (m5) */
+static uint32_t
+pfkey_seq_next(void)
+{
+	uint32_t s = ++pfkey_seq;
+	if (s == 0)
+		s = ++pfkey_seq;
+	return s;
+}
 /*int spmd_spd_update(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent);*/
 static int spmd_pfkey_send_spdupdate(struct task *t);
 static int spmd_spd_delete(uint32_t spid, int urgent);
@@ -809,7 +820,7 @@ spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
 	spmd_sa_setport(b->sp_dst, dport);
 	b->pref_src = (src->sa_family == AF_INET6) ? 128 : 32;
 	b->pref_dst = (dst->sa_family == AF_INET6) ? 128 : 32;
-	b->seq = (pfkey_seq++) != 0 ? pfkey_seq : (pfkey_seq++);
+	b->seq = pfkey_seq_next();
 	ret = rcpfk_send_spdupdate(b);
 	if (ret == 0)
 		ret = rcpfk_handler(b);
@@ -941,7 +952,7 @@ retry:
 
 	}
 #endif
-	rc->seq = ++pfkey_seq;
+	rc->seq = pfkey_seq_next();
 #ifdef HAVE_SPDUPDATE_BUG
 	spid_data_add(rc->seq, rc_vmem2str(sl->sl_index), rc->sp_src, rc->sp_dst);
 #else
@@ -1052,7 +1063,7 @@ spmd_spd_delete(uint32_t spid, int urgent)
 		goto err_fin;
 	}
 
-	rc->seq = ++pfkey_seq;
+	rc->seq = pfkey_seq_next();
 	rc->slid = spid;
 
 	if (urgent) {
@@ -1148,7 +1159,7 @@ spmd_spd_match_delete(uint32_t spid, rc_type samode,
 		goto err_fin;
 	}
 
-	rc->seq = ++pfkey_seq;
+	rc->seq = pfkey_seq_next();
 	rc->slid = spid;
 
 	ret = rcpfk_send_spdget(rc);
@@ -1333,7 +1344,7 @@ spmd_migrate(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 	set_satype(sl, rc);
 	set_dir(sl, rc);
 
-	rc->seq = ++pfkey_seq;
+	rc->seq = pfkey_seq_next();
 	rc->slid = sd->spid;
 
 	if (sl->src->type != RCT_ADDR_INET ||
@@ -1530,7 +1541,7 @@ spmd_alloc_rcpfk_msg(void)
 		return NULL;
 
 	rc->so = pfkey_sock;
-	rc->seq = ++pfkey_seq;
+	rc->seq = pfkey_seq_next();
 
 	return rc;
 }
