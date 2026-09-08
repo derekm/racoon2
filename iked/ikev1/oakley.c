@@ -284,6 +284,69 @@ oakley_hash(rc_vchar_t *buf, struct ph1handle *iph1)
  * compute KEYMAT
  *   see seciton 5.5 Phase 2 - Quick Mode in isakmp-oakley-05.
  */
+struct ikev1_keymat_ctx {
+	struct ph2handle *iph2;
+	int side;
+	void (*cont)(struct ph2handle *);
+};
+
+static void
+ikev1_keymat_done(int rc, void *arg)
+{
+	struct ikev1_keymat_ctx *ctx = arg;
+	struct ph2handle *iph2 = ctx->iph2;
+
+	if (!ikev1_ph2_alive(iph2)) {
+		/* exchange deleted while the worker ran */
+		rc_free(ctx);
+		return;
+	}
+	if (rc != 0 ||
+	    oakley_compute_keymat_x(iph2, ctx->side, INBOUND_SA) < 0 ||
+	    oakley_compute_keymat_x(iph2, ctx->side, OUTBOUND_SA) < 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "KEYMAT computation failed.\n");
+		iph2->status = PHASE2ST_EXPIRED;
+		rc_free(ctx);
+		return;
+	}
+	if (ctx->cont)
+		ctx->cont(iph2);
+	rc_free(ctx);
+}
+
+int
+oakley_compute_keymat_async(struct ph2handle *iph2, int side,
+    void (*cont)(struct ph2handle *))
+{
+	struct ikev1_keymat_ctx *ctx;
+
+	/* compute sharing secret of DH when PFS (off the IKE thread) */
+	if (iph2->approval->pfs_group && iph2->dhpub_p) {
+		ctx = calloc(1, sizeof(*ctx));
+		if (ctx == NULL)
+			return -1;
+		ctx->iph2 = iph2;
+		ctx->side = side;
+		ctx->cont = cont;
+		if (oakley_dh_compute_submit(iph2->pfsgrp, iph2->dhpub,
+		    iph2->dhpriv, iph2->dhpub_p, &iph2->dhgxy,
+		    ikev1_keymat_done, ctx) != 0) {
+			rc_free(ctx);
+			return -1;
+		}
+		return 0;	/* resumed in ikev1_keymat_done */
+	}
+
+	/* compute keymat */
+	if (oakley_compute_keymat_x(iph2, side, INBOUND_SA) < 0
+	 || oakley_compute_keymat_x(iph2, side, OUTBOUND_SA) < 0)
+		return -1;
+
+	if (cont)
+		cont(iph2);
+	return 0;
+}
+
 int
 oakley_compute_keymat(struct ph2handle *iph2, int side)
 {

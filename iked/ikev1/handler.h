@@ -439,6 +439,8 @@ struct ph2handle;
 struct policyindex;
 
 extern struct ph1handle *getph1byindex (isakmp_index_t *);
+extern int ikev1_ph1_alive (const struct ph1handle *);
+extern int ikev1_ph2_alive (const struct ph2handle *);
 extern struct ph1handle *getph1byindex0 (isakmp_index_t *);
 extern struct ph1handle *getph1byaddr (struct sockaddr *,
 					   struct sockaddr *);

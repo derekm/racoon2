@@ -385,6 +385,33 @@ remph1(struct ph1handle *iph1)
 }
 
 /*
+ * liveness for async DH done-callbacks: the worker may finish after
+ * the exchange was deleted. Walk the live lists; the job is stale
+ * if its handle is not there anymore.
+ */
+int
+ikev1_ph1_alive(const struct ph1handle *p)
+{
+	const struct ph1handle *x;
+
+	for (x = LIST_FIRST(&ph1tree); x; x = LIST_NEXT(x, chain))
+		if (x == p)
+			return 1;
+	return 0;
+}
+
+int
+ikev1_ph2_alive(const struct ph2handle *p)
+{
+	const struct ph2handle *x;
+
+	for (x = LIST_FIRST(&ph2tree); x; x = LIST_NEXT(x, chain))
+		if (x == p)
+			return 1;
+	return 0;
+}
+
+/*
  * flush isakmp-sa
  */
 void

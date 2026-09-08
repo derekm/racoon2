@@ -197,6 +197,8 @@ extern rc_vchar_t *oakley_prf (rc_vchar_t *, rc_vchar_t *, struct ph1handle *);
 extern rc_vchar_t *oakley_hash (rc_vchar_t *, struct ph1handle *);
 
 extern int oakley_compute_keymat (struct ph2handle *, int);
+extern int oakley_compute_keymat_async (struct ph2handle *, int,
+    void (*)(struct ph2handle *));
 
 #if notyet
 extern rc_vchar_t *oakley_compute_hashx (void);
