@@ -70,6 +70,7 @@
 
 #include "isakmp.h"
 #include "isakmp_var.h"
+#include "isakmp_inf.h"
 #ifdef ENABLE_HYBRID
 #include "isakmp_xauth.h"
 #include "isakmp_cfg.h"
@@ -324,6 +325,9 @@ ikev1_keymat_done(int rc, void *arg)
 	if (rc != 0) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		    "PFS DH computation failed.\n");
+		/* mirror the sync quick error path: notify the peer the
+		 * exchange failed instead of expiring silently (m3) */
+		isakmp_info_send_n1(iph2->ph1, ISAKMP_INTERNAL_ERROR, NULL);
 		iph2->status = PHASE2ST_EXPIRED;
 		ikev1_keymat_ctx_free(ctx);
 		return;
@@ -334,6 +338,7 @@ ikev1_keymat_done(int rc, void *arg)
 	if (oakley_compute_keymat_x(iph2, ctx->side, INBOUND_SA) < 0 ||
 	    oakley_compute_keymat_x(iph2, ctx->side, OUTBOUND_SA) < 0) {
 		plog(PLOG_INTERR, PLOGLOC, NULL, "KEYMAT computation failed.\n");
+		isakmp_info_send_n1(iph2->ph1, ISAKMP_INTERNAL_ERROR, NULL);
 		iph2->status = PHASE2ST_EXPIRED;
 		ikev1_keymat_ctx_free(ctx);
 		return;

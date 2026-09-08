@@ -1917,7 +1917,7 @@ quick_r3prep_after_keymat(struct ph2handle *iph2)
 	struct rcf_selector *s_next;
 	if (rcf_get_selectorlist(&s)) {
 		TRACE((PLOGLOC, "rcf_get_selectorlist() failed\n"));
-		return 0;
+		return;
         }
 
 	for (; s; s_next = s->next, rcf_free_selector(s), s = s_next) {
