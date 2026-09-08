@@ -159,6 +159,10 @@ static int spid_data_dump(void);
  ************************************************************************/
 static int spmd_handle_external(struct rcpfk_msg *rc);
 
+#ifdef __linux__
+static int spmd_pfkey_spddump_cb(struct rcpfk_msg *);
+#endif
+
 
 /**********
            SUBSTANCE
@@ -190,6 +194,9 @@ spmd_pfkey_init(void)
 	pfkey_callback.cb_spddelete = &spmd_pfkey_spddelete_cb;
 	pfkey_callback.cb_spddelete2 = &spmd_pfkey_spddelete2_cb;
 	pfkey_callback.cb_spdexpire = &spmd_pfkey_spdexpire_cb;
+#ifdef __linux__
+	pfkey_callback.cb_spddump = &spmd_pfkey_spddump_cb;
+#endif
 
 	if (rcpfk_init(&pfkey_container, &pfkey_callback) < 0) {
 		SPMD_PLOG(SPMD_L_INTERR, "%s", pfkey_container.estr);
@@ -307,6 +314,21 @@ spmd_pfkey_init(void)
 			continue;
 		}
 	}
+
+#ifdef __linux__
+	/* Rebuild slid<->spid for policies a previous spmd left in the
+	 * kernel (spmd never flushes on exit). Fresh table + populated
+	 * SPD otherwise logs "No spid_data entry" for every add/delete
+	 * after a restart. */
+	{
+		struct rcpfk_msg rc;
+
+		memset(&rc, 0, sizeof(rc));
+		if (rcpfk_send_spddump(&rc) < 0)
+			SPMD_PLOG(SPMD_L_INTERR,
+			    "rsync: kernel SPD dump failed: %s", rc.estr);
+	}
+#endif
 
 	rcf_free_selector(sl_head);
 
@@ -2432,6 +2454,90 @@ spid_data_add_complete(uint32_t spid, const char *slid)
 /*
  * Delete an element from SPID<->SLID list
  */
+
+#ifdef __linux__
+/*
+ * Kernel SPD re-sync (spmd restart): map a dumped policy index back to
+ * its config slid. Match the MY_NET side: for in/fwd the kernel dst is
+ * our network, for out the kernel src is. The peer side is dynamic
+ * (CP lease or IP_RW) and never matches config. Socket/bypass and
+ * proto-specific rows never match (ul_proto != ANY, index 0).
+ */
+static int
+spmd_rsync_slid(const struct rcpfk_msg *rc, const char **slidp)
+{
+	struct rcf_selector *sl_head = NULL;
+	struct rcf_selector *sl;
+
+	if (slidp)
+		*slidp = NULL;
+	if (rc->ul_proto != RC_PROTO_ANY)
+		return -1;
+	if (rcf_get_selectorlist(&sl_head) < 0)
+		return -1;
+
+	for (sl = sl_head; sl; sl = sl->next) {
+		const struct rc_addrlist *mine;
+		uint8_t pref;
+
+		if (!sl->pl || !sl->sl_index || !sl->src || !sl->dst)
+			continue;
+		switch (rc->dir) {
+		case RCT_DIR_INBOUND:
+		case RCT_DIR_FWD:
+			if (sl->direction != RCT_DIR_INBOUND)
+				continue;
+			mine = sl->dst;
+			pref = rc->pref_dst;
+			break;
+		case RCT_DIR_OUTBOUND:
+			if (sl->direction != RCT_DIR_OUTBOUND)
+				continue;
+			mine = sl->src;
+			pref = rc->pref_src;
+			break;
+		default:
+			mine = NULL;
+			pref = 0;
+			break;
+		}
+		if (!mine || !mine->a.ipaddr)
+			continue;
+		if (mine->type != RCT_ADDR_INET && mine->type != RCT_ADDR_INET6)
+			continue;
+		if (rcs_is_addr_wildcard(mine->a.ipaddr))
+			continue;
+		if (mine->prefixlen != pref)
+			continue;
+		if (sockcmp(mine->a.ipaddr,
+		    rc->dir == RCT_DIR_OUTBOUND ? rc->sp_src : rc->sp_dst) != 0)
+			continue;
+		if (slidp)
+			*slidp = rc_vmem2str(sl->sl_index);
+		rcf_free_selector(sl_head);
+		return 0;
+	}
+	rcf_free_selector(sl_head);
+	return -1;
+}
+
+static int
+spmd_pfkey_spddump_cb(struct rcpfk_msg *rc)
+{
+	const char *slid = NULL;
+
+	if (rc->slid == 0)	/* socket / bypass rows */
+		return 0;
+	if (spmd_rsync_slid(rc, &slid) < 0 || slid == NULL)
+		return 0;
+	SPMD_PLOG(SPMD_L_NOTICE, "rsync: slid=%s spid=%u", slid, rc->slid);
+	if (spid_data_add_complete(rc->slid, slid) < 0)
+		SPMD_PLOG(SPMD_L_INTERR, "rsync: failed to bind slid=%s spid=%u",
+		    slid, rc->slid);
+	return 0;
+}
+#endif /* __linux__ */
+
 static int
 spid_data_del(struct spid_data *sd)
 {

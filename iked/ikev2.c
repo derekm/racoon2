@@ -3343,6 +3343,21 @@ ikev2_established_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	exch_type = ikehdr->exchange_type;
 	is_response = (ikehdr->flags & IKEV2FLAG_RESPONSE) != 0;
 
+	/*
+	 * RFC 4555 implicit mobility: an integrity-verified message from a
+	 * different source (ip or port) for a MOBIKE-negotiated SA is an
+	 * implicit update. Carrier CGNAT rotates the UDP port on radio
+	 * handoff without sending UPDATE_SA_ADDRESSES; without this the
+	 * kernel ESP stays pinned to the dead mapping while IKE is alive.
+	 * ikev2_mobike_apply no-ops when the endpoints are unchanged and
+	 * refuses DYING/DEAD SAs.
+	 */
+	if (ike_sa->state == IKEV2_STATE_ESTABLISHED &&
+	    ike_sa->mobike_supported && remote && ike_sa->remote &&
+	    rcs_cmpsa(remote, ike_sa->remote) != 0) {
+		ikev2_mobike_apply(ike_sa, remote, local);
+	}
+
 	TRACE((PLOGLOC, "%s exch type %d\n",
 	       (is_response ? "response" : "request"), exch_type));
 
