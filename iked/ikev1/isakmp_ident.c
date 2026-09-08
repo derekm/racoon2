@@ -1,16 +1,3 @@
-/* async DH for ident_i2send */
-struct ident_dh_ctx {
-	struct ph1handle *iph1;
-	rc_vchar_t *msg;
-};
-
-static void
-ident_dh_ctx_free(struct ident_dh_ctx *ctx)
-{
-	if (ctx->msg)
-		rc_vfree(ctx->msg);
-	rc_free(ctx);
-}
 
 /*	$KAME: isakmp_ident.c,v 1.66 2004/03/03 05:39:59 sakane Exp $	*/
 
@@ -108,6 +95,24 @@ static rc_vchar_t *ident_ir3mx (struct ph1handle *);
  * begin Identity Protection Mode as initiator.
  */
 static void
+/* async DH for ident_i2send */
+struct ident_dh_ctx {
+	struct ph1handle *iph1;
+	rc_vchar_t *msg;
+};
+
+static void
+ident_dh_ctx_free(struct ident_dh_ctx *ctx)
+{
+	if (ctx->msg)
+		rc_vfree(ctx->msg);
+	rc_free(ctx);
+}
+
+static void ident_i2send_tail(struct ph1handle *, rc_vchar_t *);
+static void ident_i3send_tail(struct ph1handle *, rc_vchar_t *);
+static void ident_r2send_tail(struct ph1handle *, rc_vchar_t *);
+
 ident_r2send_dh_done(int rc, void *arg)
 {
 	struct ident_dh_ctx *ctx = arg;
@@ -559,6 +564,9 @@ ident_i2send(struct ph1handle *iph1, rc_vchar_t *msg)
 		goto end;
 	}
 	return 0;	/* resumed in ident_i2send_dh_done */
+	end:
+		return error;
+}
 
 /*
  * receive from responder
@@ -764,6 +772,9 @@ ident_i3send(struct ph1handle *iph1, rc_vchar_t *msg0)
 		goto end;
 	}
 	return 0;	/* resumed in ident_i3send_dh_done */
+	end:
+		return error;
+}
 
 /*
  * receive from responder
@@ -1360,6 +1371,9 @@ ident_r2send(struct ph1handle *iph1, rc_vchar_t *msg)
 		goto end;
 	}
 	return 0;	/* resumed in ident_r2send_dh_done */
+	end:
+		return error;
+}
 }
 
 /*
