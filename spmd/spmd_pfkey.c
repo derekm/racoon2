@@ -1382,21 +1382,23 @@ spmd_pfkey_spdadd_cb(struct rcpfk_msg *rc)
 {
 
 
-
-	if (spid_data_update(rc->seq, rc->slid)>=0) { /* returned rc->slid is spid */
+	/* Events for other processes' policies carry their seqs; binding
+	 * them would miss and flood. Only bind seqs from our own ops. */
+	if ((rc->flags & PFK_FLAG_EVENT) == 0)
+		if (spid_data_update(rc->seq, rc->slid) >= 0) { /* returned rc->slid is spid */
 #ifdef SPMD_DEBUG
-		{
-			char *slid = NULL;
+			{
+				char *slid = NULL;
 
-			get_slid_by_spid(rc->slid, &slid); /* rc->slid is real spid */
-			if (slid) {
-				SPMD_PLOG(SPMD_L_DEBUG, "Updated: slid=%s, spid=%u", slid, rc->slid);
-				spmd_free(slid);
+				get_slid_by_spid(rc->slid, &slid); /* rc->slid is real spid */
+				if (slid) {
+					SPMD_PLOG(SPMD_L_DEBUG, "Updated: slid=%s, spid=%u", slid, rc->slid);
+					spmd_free(slid);
+				}
 			}
-		}
 #endif /* SPMD_DEBUG */
-		return 0;
-	}
+			return 0;
+		}
 
 	/* Fallback if we have not found a valid spid_data entry yet. */
 	if (spmd_handle_external(rc) == 0)
@@ -1415,7 +1417,9 @@ spmd_pfkey_spdadd_cb(struct rcpfk_msg *rc)
 static int
 spmd_pfkey_spdupdate_cb(struct rcpfk_msg *rc)
 {
-	spid_data_update(rc->seq, rc->slid); /* returned rc->slid is spid */
+	/* events carry another process's seq — skip seq bookkeeping */
+	if ((rc->flags & PFK_FLAG_EVENT) == 0)
+		spid_data_update(rc->seq, rc->slid); /* returned rc->slid is spid */
 
 #ifdef SPMD_DEBUG
 	{

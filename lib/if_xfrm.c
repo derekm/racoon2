@@ -1404,8 +1404,11 @@ handle_policy(struct xfrm_userpolicy_info *xp, struct rcpfk_msg *rc, int dumped,
 	 * Undumped arrivals are multicast EVENTS, not replies to our ops —
 	 * route by the message type, never by a stale pending_type (an
 	 * earlier op would misroute foreign events into the update
-	 * callback and spid_data misses).
+	 * callback and spid_data misses). Flag them so consumers can skip
+	 * seq bookkeeping for other processes' policies.
 	 */
+	if (!dumped)
+		rc->flags |= PFK_FLAG_EVENT;
 	if (dumped)
 		fn = cb && cb->cb_spddump ? cb->cb_spddump : NULL;
 	else if (nltype == XFRM_MSG_UPDPOLICY)
@@ -1426,6 +1429,7 @@ handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 	int ptype;
 
 	rc->seq = nlh->nlmsg_seq;
+	rc->flags = 0;	/* event flag is per-message; container is reused */
 	switch (nlh->nlmsg_type) {
 	case NLMSG_NOOP:
 		return 0;

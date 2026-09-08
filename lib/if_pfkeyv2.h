@@ -80,6 +80,7 @@ struct rcpfk_msg {
 #define PFK_FLAG_DEBUG		0x00000002
 #define PFK_FLAG_SEEADD		0x00000004
 #define PFK_FLAG_NOPORTS	0x00000008
+#define PFK_FLAG_EVENT		0x00000010
 
 	uint32_t slid;			/* "spid" in KAME impl. */
 	struct sockaddr *sp_src;
