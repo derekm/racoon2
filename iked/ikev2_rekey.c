@@ -246,7 +246,6 @@ rekey_ikesa_callback(enum request_callback action,
 	}
 }
 
-static void ikev2_rekey_init_send_tail(struct ikev2_rekey_init_ctx *);
 
 /* async KEi for ikev2_rekey_ikesa_init_send (REKEY IKE_SA) */
 struct ikev2_rekey_init_ctx {
@@ -259,6 +258,7 @@ struct ikev2_rekey_init_ctx {
 	rc_vchar_t *sa;
 	struct prop_pair **proplist;
 };
+static void ikev2_rekey_init_send_tail(struct ikev2_rekey_init_ctx *);
 
 static void
 ikev2_rekey_init_ctx_free(struct ikev2_rekey_init_ctx *ctx)
