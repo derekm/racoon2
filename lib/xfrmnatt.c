@@ -18,7 +18,6 @@
 #include <unistd.h>
 
 #include "racoon.h"
-#include "if_pfkeyv2.h"
 
 #ifndef HAVE_XFRM
 int
