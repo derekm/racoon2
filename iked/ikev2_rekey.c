@@ -374,7 +374,7 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	old_sa->crypto_pending = 1;
 	if (oakley_dh_generate_submit((struct dhgroup *)ctx->dhgrpdef->definition,
 	    &new_sa->dhpub, &new_sa->dhpriv,
-	    ikev2_rekey_ikesa_init_recv_dh_done, ctx) != 0) {
+	    ikev2_rekey_ikesa_init_dh_done, ctx) != 0) {
 		old_sa->crypto_pending = 0;
 		TRACE((PLOGLOC, "failed dh submit\n"));
 		ikev2_rekey_init_ctx_free(ctx);
