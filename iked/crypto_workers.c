@@ -41,7 +41,8 @@ static void
 notify_write(void)
 {
 	char c = 1;
-	(void)write(notify[1], &c, 1);
+	if (write(notify[1], &c, 1) < 0)
+		(void)0;	/* pipe wakeup is best-effort */
 }
 
 static void *

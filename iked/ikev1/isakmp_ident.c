@@ -228,7 +228,6 @@ ident_i1send(struct ph1handle *iph1, rc_vchar_t *msg /* must be null */)
 {
 	struct payload_list *plist = NULL;
 	int error = -1;
-	struct ident_dh_ctx *ctx;
 
 #ifdef ENABLE_NATT
 	rc_vchar_t *vid_natt[MAX_NATT_VID_COUNT] = { NULL };
