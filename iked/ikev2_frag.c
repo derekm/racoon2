@@ -88,17 +88,13 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 	struct ikev2_payload_header *payl;
 	int type;
 	uint8_t sk_next_payload;
-	uint8_t *iv_ptr;
-	uint8_t *ciphertext;
-	size_t iv_len, icv_len, block_len;
-	size_t ciphertext_len;
+	size_t iv_len, icv_len;
 	size_t decrypted_len;
 	rc_vchar_t *decrypted = NULL;
 	rc_vchar_t *ivbuf = NULL;
 	rc_vchar_t *orig = NULL;
 	rc_vchar_t *work = NULL;
 	uint8_t *d;
-	unsigned int pad_length;
 	int total_frags, frag_no;
 	size_t frag_threshold;
 	size_t chunk_max;
@@ -114,7 +110,6 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 		return -1;
 	}
 
-	block_len = encryptor_block_length(ike_sa->encryptor);
 	iv_len = encryptor_iv_length(ike_sa->encryptor);
 	if (encryptor_icv_length(ike_sa->encryptor) > 0)
 		icv_len = encryptor_icv_length(ike_sa->encryptor);
@@ -446,14 +441,12 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			    icv_ptr - (uint8_t *)packet->v);
 		if (!auth_output) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
-			     "ikev2_frag_recv: auth_calculate failed
-");
+			     "ikev2_frag_recv: auth_calculate failed\n");
 			return NULL;
 		}
 		if (memcmp(icv_ptr, auth_output->v, icv_len) != 0) {
 			TRACE((PLOGLOC,
-			       "ikev2_frag_recv: ICV check failed (frag %u/%u)
-",
+			       "ikev2_frag_recv: ICV check failed (frag %u/%u)\n",
 			       frag_no, total_frags));
 			rc_vfree(auth_output);
 			++isakmpstat.fail_integrity_check;
@@ -542,8 +535,7 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 
 	if (ciphertext_len < 1) {
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
-		     "ikev2_frag_recv: empty ciphertext (frag %u/%u)
-",
+		     "ikev2_frag_recv: empty ciphertext (frag %u/%u)\n",
 		     frag_no, total_frags);
 		goto fail;
 	}
@@ -574,8 +566,7 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	}
 	if (!decrypted) {
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
-		     "ikev2_frag_recv: decrypt failed (frag %u/%u)
-",
+		     "ikev2_frag_recv: decrypt failed (frag %u/%u)\n",
 		     frag_no, total_frags);
 		goto fail;
 	}
