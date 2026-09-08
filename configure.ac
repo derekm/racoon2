@@ -67,10 +67,7 @@ if test x"$enable_startup_scripts" = xyes; then
 	linux*)
 		startup_scripts=systemd
 		;;
-	netbsd*1.[[56]]*|netbsd*[[2-9]].*)
-		startup_scripts=rc.d
-		;;
-	freebsd[[5-9]].*)
+	netbsd*|freebsd*)
 		startup_scripts=rc.d
 		;;
 	*)
