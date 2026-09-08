@@ -21,4 +21,4 @@ install-exec-hook:
 	$(INSTALL) -d -m 700 $(DESTDIR)$(sysconfdir)/psk
 	$(INSTALL) -d -m 700 $(DESTDIR)$(sysconfdir)/cert
 
-EXTRA_DIST = upnp_portmap.py linux-matrix
+EXTRA_DIST = upnp_portmap.py linux-matrix netbsd-ci

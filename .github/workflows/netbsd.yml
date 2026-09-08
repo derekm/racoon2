@@ -1,8 +1,8 @@
 # NetBSD CI Build & Test for racoon2.
-# NetBSD 10.1 QEMU (cross-platform-actions): pfkey KM default, unit
-# suite only (lib sample+kmtest, iked eaytest/evlooptest/workerstest).
-# Live IPsec matrix is Linux-only (integration.yml) — this VM has no
-# systemd and no racoon2 rc.d smoke yet. Do not claim NetBSD tunnel CI.
+# NetBSD 10.1 QEMU (cross-platform-actions): pfkey KM default.
+# Units + make install + rc.d smoke (spmd/iked onestart, UDP 500).
+# Not a tunnel matrix: no Linux netns; npf/pf/ipf is packet filter, not
+# SAD/SPD (that is setkey/PF_KEY). Do not wrap linux-matrix here.
 #
 # Dependencies (via pkgin): autoconf automake libtool pkgconf gmake m4 bison.
 # Base system provides cc (gcc), flex, openssl, krb5 headers.
@@ -68,3 +68,16 @@ jobs:
 
             echo "=== Unit suite (iked: eaytest evlooptest workerstest) ==="
             make -C iked check TESTS="eaytest evlooptest workerstest"
+
+            echo "=== make install ==="
+            sudo make install
+            test -x /usr/local/racoon2/sbin/iked
+            test -x /usr/local/racoon2/etc/rc.d/iked
+            test -x /usr/local/racoon2/etc/rc.d/spmd
+
+            echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
+            # ASan daemons: no leak-abort on orderly stop
+            export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+            sudo -E env PREFIX=/usr/local/racoon2 SRC="$PWD" ASAN_OPTIONS="$ASAN_OPTIONS" \
+              sh samples/netbsd-ci/rc-smoke.sh
+
