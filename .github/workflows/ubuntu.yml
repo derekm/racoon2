@@ -49,6 +49,13 @@ jobs:
       - name: 'Unit suite (iked: eaytest evlooptest workerstest)'
         run: make -C iked check TESTS="eaytest evlooptest workerstest"
 
+      - name: 'Dump unit logs on failure'
+        if: failure()
+        run: |
+          for f in iked/test-suite.log iked/eaytest.log iked/evlooptest.log iked/workerstest.log; do
+            if [ -f "$f" ]; then echo "== $f =="; cat "$f"; fi
+          done
+
   build-pfkey:
     name: 'Ubuntu pfkey compat build (sanity only)'
     runs-on: ubuntu-latest
@@ -77,6 +84,13 @@ jobs:
 
       - name: 'Unit suite (iked: eaytest evlooptest workerstest)'
         run: make -C iked check TESTS="eaytest evlooptest workerstest"
+
+      - name: 'Dump unit logs on failure'
+        if: failure()
+        run: |
+          for f in iked/test-suite.log iked/eaytest.log iked/evlooptest.log iked/workerstest.log; do
+            if [ -f "$f" ]; then echo "== $f =="; cat "$f"; fi
+          done
 
   integration:
     name: 'Integration (live matrix, xfrm)'

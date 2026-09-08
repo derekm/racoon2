@@ -27,15 +27,26 @@ work(void *arg)
 {
 	int *p = arg;
 
-	*p += 1;
-	ran++;
+	/* workers run in parallel — plain ++ loses updates */
+	(void)__sync_fetch_and_add(p, 1);
+	(void)__sync_fetch_and_add(&ran, 1);
 }
 
 static void
 done_cb(void *arg)
 {
 	(void)arg;
-	donef++;
+	(void)__sync_fetch_and_add(&donef, 1);
+}
+
+static void
+barrier(void)
+{
+#if defined(__GNUC__) || defined(__clang__)
+	__sync_synchronize();
+#else
+	/* no-op on compilers without sync builtins */
+#endif
 }
 
 static int
@@ -77,7 +88,7 @@ main(void)
 		printf("inline submit failed\n");
 		return 1;
 	}
-	if (ran != 1 || donef != 1 || arg != 41) {
+	if (barrier(), ran != 1 || donef != 1 || arg != 41) {
 		printf("inline: ran=%d done=%d arg=%d\n", ran, donef, arg);
 		return 1;
 	}
@@ -111,7 +122,7 @@ main(void)
 		for (i = 0; i < 50 && donef == 0; i++)
 			wait_drain(100);
 	}
-	if (ran != 1 || donef != 1 || arg != 41) {
+	if (barrier(), ran != 1 || donef != 1 || arg != 41) {
 		printf("pool: ran=%d done=%d arg=%d\n", ran, donef, arg);
 		crypto_workers_fini();
 		return 1;
@@ -143,6 +154,7 @@ main(void)
 		}
 		for (i = 0; i < 100 && donef < 10; i++)
 			wait_drain(100);
+		barrier();
 		if (ran != 10 || donef != 10) {
 			printf("pool10: ran=%d done=%d\n", ran, donef);
 			crypto_workers_fini();
