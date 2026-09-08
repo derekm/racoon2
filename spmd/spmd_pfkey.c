@@ -2256,7 +2256,7 @@ spid_data_update(uint32_t seq, uint32_t spid)
 		return -1;
 	}
 	if (!sd) { /* NULL */
-		SPMD_PLOG(SPMD_L_INTERR, "No spid_data entry with this sequence.");
+		SPMD_PLOG(SPMD_L_INTERR, "No spid_data entry with this sequence (seq=%u, spid=%u).", seq, spid);
 		return -1;
 	}
 
