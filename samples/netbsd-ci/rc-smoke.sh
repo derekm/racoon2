@@ -55,6 +55,12 @@ if [ ! -f /var/run/spmd.pid ] || [ ! -f /var/run/iked.pid ]; then
 fi
 
 echo "=== pidfiles ==="
+if [ ! -f /var/run/spmd.pid ] || [ ! -f /var/run/iked.pid ]; then
+	echo "FAIL: pidfiles missing after rc.d + direct start"
+	ls -l /var/run/spmd.pid /var/run/iked.pid 2>&1 || true
+	ps -ax | grep -E '[s]pmd|[i]ked' || true
+	exit 1
+fi
 ls -l /var/run/spmd.pid /var/run/iked.pid
 echo "=== listeners ==="
 netstat -an -f inet | grep '\.500 ' || true

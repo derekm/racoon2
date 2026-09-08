@@ -728,9 +728,13 @@ sa_is_unspec(const struct sockaddr *sa)
 	if (sa->sa_family == AF_INET)
 		return ((const struct sockaddr_in *)sa)->sin_addr.s_addr == 0;
 #ifdef INET6
-	if (sa->sa_family == AF_INET6)
-		return IN6_IS_ADDR_UNSPECIFIED(
-		    &((const struct sockaddr_in6 *)sa)->sin6_addr);
+	if (sa->sa_family == AF_INET6) {
+		const struct sockaddr_in6 *sin6 = (const void *)sa;
+		static const uint8_t z[16];
+
+		/* memcmp — IN6_IS_ADDR_UNSPECIFIED fights linux/in.h vs glibc */
+		return memcmp(&sin6->sin6_addr, z, 16) == 0;
+	}
 #endif
 	return 1;
 }

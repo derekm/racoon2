@@ -76,8 +76,12 @@ jobs:
             test -x /usr/local/racoon2/etc/racoon2/rc.d/spmd
 
             echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
-            # ASan daemons: no leak-abort on orderly stop
+            # ASan daemons: no leak-abort on orderly stop. NetBSD gcc ASan
+            # refuses to exec under ASLR ("This sanitizer is not compatible
+            # with enabled ASLR") — drop it for the smoke only.
             export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+            sudo sysctl -w security.pax.aslr.global=0 || true
+            sudo sysctl -w security.pax.aslr.enabled=0 || true
             sudo -E env PREFIX=/usr/local/racoon2 SRC="$PWD" ASAN_OPTIONS="$ASAN_OPTIONS" \
               sh samples/netbsd-ci/rc-smoke.sh
 
