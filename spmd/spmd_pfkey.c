@@ -897,6 +897,16 @@ spmd_spd_update(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 		fwd_rc->pref_dst = rc->pref_dst;
 		fwd_rc->sa_src = rcs_sadup(rc->sa_src);
 		fwd_rc->sa_dst = rcs_sadup(rc->sa_dst);
+		if (!fwd_rc->sp_src || !fwd_rc->sp_dst ||
+		    !fwd_rc->sa_src || !fwd_rc->sa_dst) {
+			/* snapshot incomplete; skip the FWD extra but
+			 * keep the primary IN/OUT update (M5) */
+			SPMD_PLOG(SPMD_L_INTERR, "Out of memory (FWD snapshot)");
+			spmd_free_rcpfk_msg(fwd_rc);
+			fwd_rc = NULL;
+			need_fwd = 0;
+			goto retry;
+		}
 		need_fwd = 1;
 	}
 
