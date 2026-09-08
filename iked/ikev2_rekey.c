@@ -374,13 +374,13 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	old_sa->crypto_pending = 1;
 	if (oakley_dh_generate_submit((struct dhgroup *)ctx->dhgrpdef->definition,
 	    &new_sa->dhpub, &new_sa->dhpriv,
-	    ikev2_rekey_ikesa_init_dh_done, ctx) != 0) {
+	    ikev2_rekey_ikesa_init_recv_dh_done, ctx) != 0) {
 		old_sa->crypto_pending = 0;
 		TRACE((PLOGLOC, "failed dh submit\n"));
 		ikev2_rekey_init_ctx_free(ctx);
 		goto fail;
 	}
-	return;	/* resumed in ikev2_rekey_ikesa_init_dh_done */
+	return;	/* resumed in ikev2_rekey_ikesa_init_recv_dh_done */
 
       done:
 	ikev2_payloads_destroy(&payl);
@@ -847,7 +847,7 @@ struct ikev2_rekey_init_recv_ctx {
 };
 static void ikev2_rekey_init_recv_ctx_free(struct ikev2_rekey_init_recv_ctx *);
 static void ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *);
-static void ikev2_rekey_ikesa_init_dh_done(int, void *);
+static void ikev2_rekey_ikesa_init_recv_dh_done(int, void *);
 static void
 ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 {
@@ -867,6 +867,7 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 	rc_vchar_t *n_r = 0;
 	struct ikev2_sa *new_sa = 0;
 	rc_vchar_t *g_ir = 0;
+	struct ikev2_rekey_init_recv_ctx *ctx;
 
 	ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_EXPIRED);
 
@@ -981,13 +982,13 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 	if (oakley_dh_compute_submit(
 	    (struct dhgroup *)new_sa->negotiated_sa->dhdef->definition,
 	    new_sa->dhpub, new_sa->dhpriv, new_sa->dhpub_p, &ctx->g_ir,
-	    ikev2_rekey_ikesa_init_dh_done, ctx) != 0) {
+	    ikev2_rekey_ikesa_init_recv_dh_done, ctx) != 0) {
 		old_sa->crypto_pending = 0;
 		TRACE((PLOGLOC, "failed dh submit\n"));
 		ikev2_rekey_init_recv_ctx_free(ctx);
 		goto fail;
 	}
-	return;	/* resumed in ikev2_rekey_ikesa_init_dh_done */
+	return;	/* resumed in ikev2_rekey_ikesa_init_recv_dh_done */
 
       done:
 	if (g_ir)
@@ -1125,7 +1126,7 @@ fail:
 }
 
 static void
-ikev2_rekey_ikesa_init_dh_done(int rc, void *arg)
+ikev2_rekey_ikesa_init_recv_dh_done(int rc, void *arg)
 {
 	struct ikev2_rekey_init_recv_ctx *ctx = arg;
 	struct ikev2_sa *old_sa = ctx->old_sa;
