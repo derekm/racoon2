@@ -555,6 +555,13 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 		   "MOBIKE UPDATE_SA_ADDRESSES %s -> %s\n",
 		   rcs_sa2str(old_r), rcs_sa2str(remote));
 
+	/*
+	 * Collect the new endpoints / selectors first.  The kernel
+	 * migrations below must ALL succeed before any in-memory
+	 * endpoint is committed — a partial move strands the SAD and
+	 * the returned (new) ike_sa pair would describe a broken
+	 * data path (M3).
+	 */
 	for (c = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
 	     !IKEV2_CHILD_LIST_END(c);
 	     c = IKEV2_CHILD_LIST_NEXT(c)) {
@@ -573,12 +580,6 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 			inner = (struct sockaddr *)&lease_ss;
 			inner_pref = (uint8_t)plen;
 		}
-		if (c->remote)
-			rc_free(c->remote);
-		if (c->local)
-			rc_free(c->local);
-		c->remote = rcs_sadup(remote);
-		c->local = rcs_sadup(local);
 	}
 
 	if (sl) {
@@ -602,16 +603,38 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 	}
 
 	if (old_l && old_r && lan && inner) {
-		ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_OUTBOUND,
+		if (ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_OUTBOUND,
 		    old_l, old_r, local, remote,
-		    lan, inner, lan_pref, inner_pref, samode, reqid);
-		ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_INBOUND,
+		    lan, inner, lan_pref, inner_pref, samode, reqid) != 0 ||
+		    ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_INBOUND,
 		    old_r, old_l, remote, local,
-		    inner, lan, inner_pref, lan_pref, samode, reqid);
-		if (samode == RCT_IPSM_TUNNEL)
-			ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_FWD,
-			    old_r, old_l, remote, local,
-			    inner, lan, inner_pref, lan_pref, samode, reqid);
+		    inner, lan, inner_pref, lan_pref, samode, reqid) != 0 ||
+		    (samode == RCT_IPSM_TUNNEL &&
+		     ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_FWD,
+		     old_r, old_l, remote, local,
+		     inner, lan, inner_pref, lan_pref, samode, reqid) != 0)) {
+			/* each failing direction already logged its error */
+			isakmp_log(ike_sa, local, remote, 0, PLOG_INTERR,
+				   PLOGLOC,
+				   "MOBIKE migrate incomplete; keeping %s\n",
+				   rcs_sa2str(old_r));
+			return;
+		}
+	}
+
+	/*
+	 * All migrations succeeded (or there was nothing to move —
+	 * no selector / lease).  Commit the endpoints now.
+	 */
+	for (c = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+	     !IKEV2_CHILD_LIST_END(c);
+	     c = IKEV2_CHILD_LIST_NEXT(c)) {
+		if (c->remote)
+			rc_free(c->remote);
+		if (c->local)
+			rc_free(c->local);
+		c->remote = rcs_sadup(remote);
+		c->local = rcs_sadup(local);
 	}
 
 	ike_sa->remote = rcs_sadup(remote);
