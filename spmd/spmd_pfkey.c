@@ -846,7 +846,34 @@ spmd_spd_update(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 	if (rc->sa_src && rc->sa_dst)
 		spmd_ike_bypass(rc->sa_src, rc->sa_dst);
 
-	if ((rc->dir == RCT_DIR_INBOUND) &&  (rc->samode == RCT_IPSM_TUNNEL)) {
+	if ((rc->dir == RCT_DIR_INBOUND) &&  (rc->samode == RCT_IPSM_TUNNEL) &&
+	    rc->sa_src && rc->sa_dst && rc->sp_src && rc->sp_dst) {
+		/*
+		 * Snapshot before send/handler: rcpfk_handler overwrites
+		 * rc->sa_* and FWD would inherit the outbound tmpl
+		 * (local→peer). Forwarded inner packets then miss the
+		 * inbound SA (XfrmInTmplMismatch). FWD tmpl must match IN.
+		 */
+		fwd_rc = spmd_alloc_rcpfk_msg();
+		if (!fwd_rc) {
+			SPMD_PLOG(SPMD_L_INTERR, "Out of memory");
+			goto fin;
+		}
+		fwd_rc->dir = RCT_DIR_FWD;
+		fwd_rc->pltype = rc->pltype;
+		fwd_rc->satype = rc->satype;
+		fwd_rc->samode = rc->samode;
+		fwd_rc->ipsec_level = rc->ipsec_level;
+		fwd_rc->reqid = rc->reqid;
+		fwd_rc->flags = rc->flags;
+		fwd_rc->ul_proto = rc->ul_proto;
+		fwd_rc->lft_hard_time = rc->lft_hard_time;
+		fwd_rc->sp_src = rcs_sadup(rc->sp_src);
+		fwd_rc->pref_src = rc->pref_src;
+		fwd_rc->sp_dst = rcs_sadup(rc->sp_dst);
+		fwd_rc->pref_dst = rc->pref_dst;
+		fwd_rc->sa_src = rcs_sadup(rc->sa_src);
+		fwd_rc->sa_dst = rcs_sadup(rc->sa_dst);
 		need_fwd = 1;
 	}
 
@@ -905,29 +932,8 @@ retry:
 	}
 
 #ifdef __linux__
-	if (need_fwd) {
-		fwd_rc = spmd_alloc_rcpfk_msg();
-                if (!fwd_rc) {
-                        SPMD_PLOG(SPMD_L_INTERR, "Out of memory");
-                        goto fin;
-                }
-                fwd_rc->dir = RCT_DIR_FWD;
-		fwd_rc->pltype = rc->pltype;
-                fwd_rc->satype = rc->satype;
-                fwd_rc->samode = rc->samode;
-		fwd_rc->ipsec_level = rc->ipsec_level;
-		fwd_rc->reqid = rc->reqid;
-                fwd_rc->flags = rc->flags;
-                fwd_rc->ul_proto = rc->ul_proto;
-                fwd_rc->lft_hard_time = rc->lft_hard_time;
-                fwd_rc->sp_src = rcs_sadup(rc->sp_src);
-                fwd_rc->pref_src = rc->pref_src;
-                fwd_rc->sp_dst = rcs_sadup(rc->sp_dst);
-                fwd_rc->pref_dst = rc->pref_dst;
-                fwd_rc->sa_src = rcs_sadup(rc->sa_src); /* XXX NULL check */
-                fwd_rc->sa_dst = rcs_sadup(rc->sa_dst); /* XXX NULL check */
-
-		need_fwd=0;
+	if (need_fwd && fwd_rc) {
+		need_fwd = 0;
 		rc = fwd_rc;
 		goto retry;
 	}

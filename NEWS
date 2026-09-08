@@ -12,6 +12,9 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	* MOBIKE migrate uses the CP lease as the inner selector (not conf
 	  PEERS_NET), inbound+FWD tmpl peer→local, XFRMA_ENCAP new NAT-T
 	  ports. Kernel ENOENT left ESP on the old outer after roam.
+	* Linux FWD clone snapshots inbound selector+tmpl before
+	  rcpfk_handler; otherwise FWD becomes LAN→CP and SSH to other
+	  LAN hosts misses (ping to the box still works).
 	* Child PFS: oakley_dh_gencmp_submit (generate+compute one job).
 	  CREATE_CHILD still inlines until the finish callback is wired.
 	* Matrix: xfrm-tmpl-family; ikev1-strongswan unskipped (netns
