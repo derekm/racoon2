@@ -930,7 +930,7 @@ retry:
 
 	}
 #endif
-	rc->seq = (pfkey_seq++) != 0 ? pfkey_seq : (pfkey_seq++);
+	rc->seq = ++pfkey_seq;
 	SPMD_PLOG(SPMD_L_NOTICE, "spd_update req: seq=%u slid=%.*s dir=%d urgent=%d",
 	    rc->seq, (int)sl->sl_index->l, sl->sl_index->s, rc->dir, urgent);
 #ifdef HAVE_SPDUPDATE_BUG
@@ -1043,7 +1043,7 @@ spmd_spd_delete(uint32_t spid, int urgent)
 		goto err_fin;
 	}
 
-	rc->seq = (pfkey_seq++) != 0 ? pfkey_seq : (pfkey_seq++);
+	rc->seq = ++pfkey_seq;
 	rc->slid = spid;
 
 	if (urgent) {
@@ -1139,7 +1139,7 @@ spmd_spd_match_delete(uint32_t spid, rc_type samode,
 		goto err_fin;
 	}
 
-	rc->seq = (pfkey_seq++) != 0 ? pfkey_seq : (pfkey_seq++);
+	rc->seq = ++pfkey_seq;
 	rc->slid = spid;
 
 	ret = rcpfk_send_spdget(rc);
@@ -1324,7 +1324,7 @@ spmd_migrate(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 	set_satype(sl, rc);
 	set_dir(sl, rc);
 
-	rc->seq = (pfkey_seq++) != 0 ? pfkey_seq : (pfkey_seq++);
+	rc->seq = ++pfkey_seq;
 	rc->slid = sd->spid;
 
 	if (sl->src->type != RCT_ADDR_INET ||
@@ -1403,8 +1403,10 @@ spmd_pfkey_spdadd_cb(struct rcpfk_msg *rc)
 	if (spmd_handle_external(rc) == 0)
 		return 0;
 
-	SPMD_PLOG(SPMD_L_INTERR, "Failed to update slid<->spid matching");
-	return -1;
+	/* foreign policy or our op's own event: mapping is not required */
+	SPMD_PLOG(SPMD_L_NOTICE, "No slid<->spid match (seq=%u spid=%u)",
+	    rc->seq, rc->slid);
+	return 0;
 
 }
 
@@ -1516,7 +1518,7 @@ spmd_alloc_rcpfk_msg(void)
 		return NULL;
 
 	rc->so = pfkey_sock;
-	rc->seq = pfkey_seq;
+	rc->seq = ++pfkey_seq;
 
 	return rc;
 }
@@ -2259,7 +2261,7 @@ spid_data_update(uint32_t seq, uint32_t spid)
 		return -1;
 	}
 	if (!sd) { /* NULL */
-		SPMD_PLOG(SPMD_L_INTERR, "No spid_data entry with this sequence (seq=%u, spid=%u).", seq, spid);
+		SPMD_PLOG(SPMD_L_NOTICE, "No spid_data entry with this sequence (seq=%u, spid=%u).", seq, spid);
 		return -1;
 	}
 
