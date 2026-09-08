@@ -119,6 +119,12 @@ EOF
 		charon_reset
 		return 1
 	}
+	# FWD must mirror the IN tmpl (SSH-death regression, e2bd9ef)
+	if ! fwd_tmpl_check; then
+		log "FAIL: fwd tmpl != in tmpl"
+		charon_reset
+		return 1
+	fi
 	echo "$show" | grep -q "$CIP" || {
 		log "FAIL: show-sa missing $CIP"
 		charon_reset

@@ -169,3 +169,43 @@ iked_restore() {
 		done
 	fi
 }
+
+# Linux FWD regression gate (spmd snapshot, e2bd9ef): the forwarded
+# tunnel policy must carry the SAME tmpl as the matching dir-in policy.
+# An inverted FWD (LAN→CP) breaks SSH-to-LAN while ping-to-box works.
+fwd_tmpl_check() {
+	ip xfrm policy 2>/dev/null | awk '
+		function norm(s){gsub(/[ 	]+/," ",s); gsub(/^ | $/,"",s); return s}
+		function flush(){
+			if (sel != "" && tmpl != "" && isesp && mode == "tunnel") {
+				key = norm(sel) "|" dir
+				pol[key] = norm(tmpl)
+			}
+			sel=""; dir=""; tmpl=""; isesp=0; mode=""
+		}
+		/^src /{ if (sel != "") flush(); sel=$0; next }
+		/^[ 	]*dst /{ sel=sel" "$0; next }
+		/^[ 	]*dir /{ dir=$2; next }
+		/^[ 	]*tmpl /{ tmpl=$0; next }
+		/^[ 	]*proto esp /{ isesp=1; if ($0 ~ /mode tunnel/) mode="tunnel"; next }
+		/^[ 	]*$/ { flush(); next }
+		/^[ 	]*ptype /{ next }
+		/^[ 	]*priority /{ next }
+		{ next }
+		END{
+			flush()
+			fail=0
+			for (key in pol) {
+				split(key, k, "|")
+				if (k[2] != "in") continue
+				fwd = pol[k[1] "|fwd"]
+				if (fwd == "") continue
+				if (fwd != pol[key]) {
+					printf "FWD-TMPL-MISMATCH %s\n  in : %s\n  fwd: %s\n", k[1], pol[key], fwd
+					fail=1
+				}
+			}
+			exit fail
+		}
+	'
+}

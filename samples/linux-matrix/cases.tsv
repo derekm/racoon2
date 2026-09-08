@@ -2,6 +2,8 @@
 # expect: pass | skip
 # workers: - = live systemd iked; 0 = inline; N = pool
 # Adding a case is a row. Kind scripts live in kinds/<kind>.sh
+# Every ikev2/ikev1 tunnel row also runs fwd_tmpl_check: the Linux FWD
+# policy must mirror the IN tmpl (e2bd9ef) or SSH-to-LAN dies quietly.
 kmtest	unit	pass	-	lib/kmtest (userspace loopback even when KM is xfrm)
 eaytest	unit	pass	-	iked/eaytest
 evlooptest	unit	pass	-	iked/evlooptest
