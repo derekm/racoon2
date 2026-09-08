@@ -94,7 +94,6 @@ static rc_vchar_t *ident_ir3mx (struct ph1handle *);
 /* %%%
  * begin Identity Protection Mode as initiator.
  */
-static void
 /* async DH for ident_i2send */
 struct ident_dh_ctx {
 	struct ph1handle *iph1;
@@ -113,6 +112,7 @@ static void ident_i2send_tail(struct ph1handle *, rc_vchar_t *);
 static void ident_i3send_tail(struct ph1handle *, rc_vchar_t *);
 static void ident_r2send_tail(struct ph1handle *, rc_vchar_t *);
 
+static void
 ident_r2send_dh_done(int rc, void *arg)
 {
 	struct ident_dh_ctx *ctx = arg;
@@ -1346,6 +1346,7 @@ int
 ident_r2send(struct ph1handle *iph1, rc_vchar_t *msg)
 {
 	int error = -1;
+	struct ident_dh_ctx *ctx;
 
 	/* validity check */
 	if (iph1->status != PHASE1ST_MSG2RECEIVED) {
