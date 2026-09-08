@@ -126,16 +126,17 @@ stays **`linux-km`** until GitHub units+matrix on this branch stay green.
 GSoC protocol work that is **in this tree**:
 RFC 7383 SKF (AEAD AAD, ICV inside payload_length like SK), IKEv1 FRAG,
 NAT-OA on PF_KEY and Linux `XFRMA_ENCAP encap_oa` (`lib/xfrmnatt`).
-Live IKEv1 NAT-OA peer is still skip (`ikev1-strongswan`).
-`ikev2-netns-frag` is the fragmentation **knob**, not a reassembly proof.
+`ikev1-strongswan` is a netns negotiation+SAD row (not a live NAT-OA peer).
+`ikev2-netns-frag` / `ikev2-netns-mobike` are knobs, not reassembly/roam proofs.
+IP_ANY is IP_RW for SA endpoints (no mixed-family XFRM tmpl).
+MOBIKE responder: N(MOBIKE_SUPPORTED) + UPDATE_SA_ADDRESSES migrate.
 
 **Post-merge plan:**
 
-1. Fragmentation security (CVE-2016-10396 class) — timeout, max 4
-   assemblies/SA, 64k reassembly cap on IKEv2 SKF and IKEv1 FRAG.
-2. Retire `IP_ANY` XFRM template mangling (`IP_RW` is in-tree).
-3. MOBIKE (RFC 4555).
-4. Async child PFS + IKEv1 DH, then rekey stress.
+1. Fragmentation security (CVE-2016-10396 class) — 60s / 4 assemblies / 64k — started.
+2. Retire `IP_ANY` XFRM template mangling — done (`rcs_is_addr_wildcard`).
+3. MOBIKE (RFC 4555) responder — in tree; iPhone is the roaming peer.
+4. Async child PFS + IKEv1 DH (`oakley_dh_gencmp_submit` landed; CREATE_CHILD still inlines).
 5. Fuzzing (libFuzzer → OSS-Fuzz) on ikev2_input / isakmp.
 6. RFC 8784 PPK, then RFC 9242/9370 (OpenSSL 3.5/OQS).
 7. Transport-mode IKEv2 e2e + IPv6-in-IPv4; Windows/Android/macOS 27.

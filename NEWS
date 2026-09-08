@@ -2,6 +2,18 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 
 2026-09-08 Derek Moore
 
+	* IP_ANY is IP_RW for SA endpoints and SPD: skip static mixed-family
+	  tmpl (c0a8:444f::); install policy from the live IKE address.
+	  if_xfrm coerce unspecified side; refuse mixed concrete families.
+	* RFC 4555 MOBIKE responder: N(MOBIKE_SUPPORTED) in IKE_AUTH,
+	  UPDATE_SA_ADDRESSES → XFRM_MSG_MIGRATE + IKE/Child endpoints.
+	  iPhone is a roaming peer. Matrix ikev2-netns-mobike is the knob,
+	  not a roam proof.
+	* Child PFS: oakley_dh_gencmp_submit (generate+compute one job).
+	  CREATE_CHILD still inlines until the finish callback is wired.
+	* Matrix: xfrm-tmpl-family; ikev1-strongswan unskipped (netns
+	  negotiation+SAD, same shape as ikev2).
+
 	* int/gsoc2026: 3-way merge of linux-km + origin/gsoc2026.
 	  iPhone IKEv2 NAT-T ping/SSH proven on this branch
 	  (AES-CBC + hmac-sha256 ICV128, espinudp).

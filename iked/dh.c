@@ -315,3 +315,62 @@ oakley_dh_compute_submit(const struct dhgroup *dh, rc_vchar_t *pub,
 	j->arg = arg;
 	return oakley_dh_job_submit(j);
 }
+
+struct oakley_dh_gencmp {
+	const struct dhgroup *dh;
+	rc_vchar_t *g_peer;
+	rc_vchar_t **pub;
+	rc_vchar_t **priv;
+	rc_vchar_t **g_ir;
+	int rc;
+	oakley_dh_done_t done;
+	void *arg;
+};
+
+static void
+oakley_dh_gencmp_fn(void *a)
+{
+	struct oakley_dh_gencmp *j = a;
+
+	j->rc = oakley_dh_generate(j->dh, j->pub, j->priv);
+	if (j->rc == 0 && j->g_peer)
+		j->rc = oakley_dh_compute(j->dh, *j->pub, *j->priv, j->g_peer,
+		    j->g_ir);
+}
+
+static void
+oakley_dh_gencmp_done(void *a)
+{
+	struct oakley_dh_gencmp *j = a;
+	oakley_dh_done_t d = j->done;
+	void *arg = j->arg;
+	int rc = j->rc;
+
+	free(j);
+	if (d)
+		d(rc, arg);
+}
+
+int
+oakley_dh_gencmp_submit(const struct dhgroup *dh, rc_vchar_t *g_peer,
+    rc_vchar_t **pub, rc_vchar_t **priv, rc_vchar_t **g_ir,
+    oakley_dh_done_t done, void *arg)
+{
+	struct oakley_dh_gencmp *j;
+
+	j = calloc(1, sizeof(*j));
+	if (j == NULL)
+		return -1;
+	j->dh = dh;
+	j->g_peer = g_peer;
+	j->pub = pub;
+	j->priv = priv;
+	j->g_ir = g_ir;
+	j->done = done;
+	j->arg = arg;
+	if (crypto_job_submit(oakley_dh_gencmp_fn, oakley_dh_gencmp_done, j) != 0) {
+		free(j);
+		return -1;
+	}
+	return 0;
+}
