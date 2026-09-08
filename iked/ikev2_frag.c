@@ -333,6 +333,56 @@ fail:
 	     "ikev2_frag_send: fragmentation failed\n");
 	return -1;
 }
+
+static void
+ikev2_frag_item_free(struct ikev2_frag_item *item)
+{
+	int i;
+
+	if (item == NULL)
+		return;
+	for (i = 1; i <= IKEV2_MAX_FRAGS; i++) {
+		if (item->parts[i]) {
+			rc_vfree(item->parts[i]);
+			item->parts[i] = NULL;
+		}
+	}
+	racoon_free(item);
+}
+
+/* Drop timed-out assemblies (CVE-2016-10396 class: unbounded hold). */
+static void
+ikev2_frag_expire(struct ikev2_sa *ike_sa)
+{
+	struct ikev2_frag_item **pp, *item;
+	time_t now;
+
+	if (ike_sa == NULL)
+		return;
+	now = time(NULL);
+	pp = &ike_sa->frag_chain;
+	while (*pp) {
+		item = *pp;
+		if (item->timeout != 0 && item->timeout < now) {
+			*pp = item->next;
+			ikev2_frag_item_free(item);
+			continue;
+		}
+		pp = &item->next;
+	}
+}
+
+static int
+ikev2_frag_count(struct ikev2_sa *ike_sa)
+{
+	struct ikev2_frag_item *item;
+	int n = 0;
+
+	for (item = ike_sa->frag_chain; item; item = item->next)
+		n++;
+	return n;
+}
+
 /*
  * Receive and reassemble an IKEv2 fragment.
  * Called from ikev2_input() when next_payload == SKF (type 53).
@@ -368,6 +418,7 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 
 	if (ike_sa == NULL || packet == NULL)
 		return NULL;
+	ikev2_frag_expire(ike_sa);
 
 	if (packet->l < sizeof(struct ikev2_header) +
 	    sizeof(struct ikev2payl_encrypted_fragment)) {
@@ -498,10 +549,16 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			item->num_received = 0;
 			item->total_data_len = 0;
 			item->total_fragments = total_frags;
-			item->timeout = time(NULL) + 60;
+			item->timeout = time(NULL) + IKEV2_FRAG_TIMEOUT;
 		}
 	} else {
 		/* Create new assembly context */
+		while (ikev2_frag_count(ike_sa) >= IKEV2_MAX_ASSEMBLIES &&
+		    ike_sa->frag_chain) {
+			item = ike_sa->frag_chain;
+			ike_sa->frag_chain = item->next;
+			ikev2_frag_item_free(item);
+		}
 		item = racoon_calloc(1, sizeof(struct ikev2_frag_item));
 		if (!item) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
@@ -512,7 +569,7 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		item->total_fragments = total_frags;
 		item->num_received = 0;
 		item->total_data_len = 0;
-		item->timeout = time(NULL) + 60;
+		item->timeout = time(NULL) + IKEV2_FRAG_TIMEOUT;
 		memset(item->parts, 0, sizeof(item->parts));
 		item->next = NULL;
 		*prev = item;
@@ -581,6 +638,12 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		goto fail;
 	}
 	data_len = decrypted->l - pad_length - 1;
+	if (item->total_data_len + data_len > IKEV2_MAX_REASM) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "ikev2_frag_recv: reassembly exceeds %d\n",
+		     IKEV2_MAX_REASM);
+		goto fail;
+	}
 
 	TRACE((PLOGLOC,
 	       "ikev2_frag_recv: decrypted frag %u/%u: "

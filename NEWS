@@ -1,5 +1,13 @@
 $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 
+2026-09-08 Derek Moore
+
+	* int/gsoc2026: 3-way merge of linux-km + origin/gsoc2026.
+	  iPhone IKEv2 NAT-T ping/SSH proven on this branch
+	  (AES-CBC + hmac-sha256 ICV128, espinudp).
+	* Frag reassembly (CVE-2016-10396 class): 60s timeout, max 4
+	  assemblies/SA, 64k cap on IKEv2 SKF and IKEv1 FRAG.
+
 2026-09-07 Derek Moore
 
 	* nat_traversal is three-state: off / on (detect, default) /

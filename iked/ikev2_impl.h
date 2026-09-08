@@ -402,7 +402,10 @@ extern void ikev2_informational_initiator_delete(struct ikev2_sa *,
 						 struct ikev2_payloads *);
 
 extern int ikev2_send_initial_contact(struct ikev2_sa *);
-#define IKEV2_MAX_FRAGS	64
+#define IKEV2_MAX_FRAGS		64
+#define IKEV2_MAX_ASSEMBLIES	4	/* concurrent msgid assemblies / SA */
+#define IKEV2_FRAG_TIMEOUT	60	/* seconds; drop incomplete */
+#define IKEV2_MAX_REASM		65535	/* RFC 7296 max IKE datagram */
 
 struct ikev2_frag_item {
 	uint32_t msgid;

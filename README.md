@@ -6,7 +6,7 @@
 
 <p align="center">
 <strong>The Racoon2 IPsec server continuation</strong><br/>
-<em>IKEv1 + IKEv2 · Linux NETLINK_XFRM dataplane · iked / spmd / kinkd</em>
+<em>IKEv1 + IKEv2 · RFC 7383 fragmentation · NAT-T / NAT-OA · Linux NETLINK_XFRM · iked / spmd / kinkd</em>
 </p>
 
 <p align="center">
@@ -116,50 +116,35 @@ On Linux, `make install` ships systemd units under
 PrivateTmp). `systemctl enable --now racoon2.target` starts
 spmd.socket then iked. Daemons use `-F`; no init.d `sleep 1`.
 
-## Parallel work streams (gsoc2026)
+## Combined tree (`int/gsoc2026`)
 
-This branch (`linux-km`) is half of a two-front effort. The other half
-is the **GSoC 2026 branch** of the same tree, in progress upstream:
+This branch is the 3-way merge of **`linux-km`** (NETLINK_XFRM, NAT-T
+three-state, Apple/IKEv1 proofs, CI) and **`origin/gsoc2026`** (RFC 7383
+IKEv2 fragmentation, IKEv1 fragmentation, NAT-OA, `IP_RW`). Production
+stays **`linux-km`** until GitHub units+matrix on this branch stay green.
 
-- branch at the project repo: **`origin/gsoc2026`** (zoulasc/racoon2)
-- author's fork/remote:
-  **https://github.com/ssszcmawo/racoon2/tree/gsoc2026**
-  (PR series #28–#36 plus the branch history)
+GSoC protocol work that is **in this tree**:
+RFC 7383 SKF (AEAD AAD, ICV inside payload_length like SK), IKEv1 FRAG,
+NAT-OA on PF_KEY and Linux `XFRMA_ENCAP encap_oa` (`lib/xfrmnatt`).
+Live IKEv1 NAT-OA peer is still skip (`ikev1-strongswan`).
+`ikev2-netns-frag` is the fragmentation **knob**, not a reassembly proof.
 
-`gsoc2026` works the **protocol layer** where linux-km does not:
-RFC 7383 IKEv2 fragmentation, legacy IKEv1 fragmentation, NAT-OA
-substitution (RFC 3947 §4, incl. transport mode), IPv6-by-default,
-`IP_RW` road-warrior handling, plus a tail of independent fixes
-(purge_remote phase-2 cleanup, spmd NULL-deref, double-frees).
-linux-km covers the **dataplane/daemon layer**: NETLINK_XFRM first-class,
-systemd, epoll, async crypto workers, userspace KM seam, the Apple
-NAT-T + IKEv1 NAT-T proofs, and CI. Both branches modernized the same
-core (configure.ac, ikev2_*, cfparse/cfsetup), so the merge is a real
-3-way (~55 shared files) — the goal is a single tree carrying both
-halves: `int/gsoc2026` off `linux-km`, conflict resolution focused on
-those shared cores, then re-proving the iPhone + IKEv1 harnesses before
-the union is promoted.
+**Post-merge plan:**
 
-**Post-merge plan (after the union re-proves both live harnesses):**
+1. Fragmentation security (CVE-2016-10396 class) — timeout, max 4
+   assemblies/SA, 64k reassembly cap on IKEv2 SKF and IKEv1 FRAG.
+2. Retire `IP_ANY` XFRM template mangling (`IP_RW` is in-tree).
+3. MOBIKE (RFC 4555).
+4. Async child PFS + IKEv1 DH, then rekey stress.
+5. Fuzzing (libFuzzer → OSS-Fuzz) on ikev2_input / isakmp.
+6. RFC 8784 PPK, then RFC 9242/9370 (OpenSSL 3.5/OQS).
+7. Transport-mode IKEv2 e2e + IPv6-in-IPv4; Windows/Android/macOS 27.
+8. Enterprise AAA: IKEv2 EAP-MSCHAPv2 + RADIUS (AD behind RADIUS),
+   kinkd vs MIT krb5 and Samba AD DC.
 
-1. Fragmentation security review — bounds-check `ikev2_frag`/v1
-   reassembly against the racoon1 CVE-2016-10396-class issues before
-   trusting the fragment paths on the wire.
-2. NAT-OA on XFRM: `sa_natoa_*` → `XFRMA_ENCAP encap_oa`
-   (`lib/xfrmnatt`, matrix `xfrm-natt-oa`). Live IKEv1 NAT-OA
-   peer row still skip (`ikev1-strongswan`).
-3. Retire the `IP_ANY` XFRM template mangling — gsoc's `IP_RW` gives
-   the road-warrior story the dataplane fix can lean on.
-4. MOBIKE (RFC 4555) — the mobile/roaming gap iOS hits on address
-   change.
-5. Async child PFS + IKEv1 DH off the IKE thread, then rekey stress
-   at 1h lifetimes through crypto workers.
-6. Fuzzing (libFuzzer → OSS-Fuzz) on ikev2_input / isakmp parse paths.
-7. RFC 8784 (PPK), then re-open RFC 9242/9370 (OpenSSL 3.5/OQS gate).
-8. Transport-mode IKEv2 e2e + IPv6-in-IPv4 proof; Windows native /
-   Android / macOS acceptance.
-9. Enterprise AAA: IKEv2 EAP-MSCHAPv2 + RADIUS client (AD behind the
-   RADIUS server), kinkd live-tested against MIT krb5 and Samba AD DC.
+GSoC upstream: **`origin/gsoc2026`** (zoulasc/racoon2) and
+https://github.com/ssszcmawo/racoon2/tree/gsoc2026
+(PR series #28–#36).
 
 
 ikedctl is built on Linux (`--enable-admin`, default). It is a
@@ -225,8 +210,9 @@ Currently, the system supports the following specifications:
 	RFC 2367, PF_KEY Key Management API, Version 2
 
 	RFC 7383 IKEv2 fragmentation and IKEv1 fragmentation are in
-	this tree (gsoc2026). NAT-OA (RFC 3947 §4) fills PF_KEY
-	SADB_X_NAT_OA and Linux XFRMA_ENCAP encap_oa (`sa_natoa_*`).
+	this tree. Reassembly: 60s timeout, max 4 assemblies per SA,
+	64k cap (CVE-2016-10396 class). NAT-OA (RFC 3947 §4) fills
+	PF_KEY SADB_X_NAT_OA and Linux XFRMA_ENCAP encap_oa.
 	Kernel round-trip is `lib/xfrmnatt`; live IKEv1 NAT-OA peer
 	is not a matrix pass yet.
 

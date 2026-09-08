@@ -39,6 +39,9 @@
 #define IKEV1_DEFAULT_NONCE_SIZE	16
 #define ISAKMP_FRAG_MAXLEN 1300
 #define ISAKMP_MAX_FRAGS		64
+#define ISAKMP_MAX_ASSEMBLIES	4
+#define ISAKMP_FRAG_TIMEOUT	60
+#define ISAKMP_MAX_REASM		65535
 
 /* typedef unsigned char cookie_t[8]; */
 typedef unsigned char msgid_t[4];

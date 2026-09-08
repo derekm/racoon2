@@ -33,6 +33,7 @@
 #include "ike_pfkey.h"
 #include "vmbuf.h"   /* for rc_vchar_t */
 #include "isakmp_var.h"  /* for ISAKMP_MAX_FRAGS */
+#include <time.h>
 
 /* Phase 1 handler */
 /*
@@ -330,6 +331,7 @@ struct isakmp_frag_item {
 	uint32_t msgid;
 	int last_frag;
 	int nfrags;
+	time_t timeout;
 	struct isakmp_frag_item *next;
 	rc_vchar_t *parts[ISAKMP_MAX_FRAGS];
 };

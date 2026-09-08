@@ -673,6 +673,41 @@ isakmp_frag_ctx_free(struct isakmp_frag_item *ctx)
 	free(ctx);
 }
 
+
+static void
+isakmp_frag_expire(struct ph1handle *iph1)
+{
+	struct isakmp_frag_item **pp, *ctx;
+	time_t now;
+	int n;
+
+	if (iph1 == NULL)
+		return;
+	now = time(NULL);
+	pp = &iph1->frag_chain;
+	while (*pp) {
+		ctx = *pp;
+		if (ctx->timeout != 0 && ctx->timeout < now) {
+			*pp = ctx->next;
+			isakmp_frag_ctx_free(ctx);
+			continue;
+		}
+		pp = &ctx->next;
+	}
+	n = 0;
+	for (ctx = iph1->frag_chain; ctx; ctx = ctx->next)
+		n++;
+	while (n > ISAKMP_MAX_ASSEMBLIES && iph1->frag_chain) {
+		pp = &iph1->frag_chain;
+		while ((*pp)->next)
+			pp = &(*pp)->next;
+		ctx = *pp;
+		*pp = NULL;
+		isakmp_frag_ctx_free(ctx);
+		n--;
+	}
+}
+
 /*
  * Reassemble the previously received fragments into a single buffer.
  */
@@ -743,6 +778,7 @@ isakmp_frag_recv(struct ph1handle *iph1, rc_vchar_t *packet)
 
 	if (iph1 == NULL)
 		return NULL;
+	isakmp_frag_expire(iph1);
 	if (packet == NULL ||
 	    packet->l < sizeof(struct isakmp) +
 	    sizeof(struct isakmp_frag_hdr)) {
@@ -803,6 +839,7 @@ isakmp_frag_recv(struct ph1handle *iph1, rc_vchar_t *packet)
 		ctx->msgid = msgid;
 		ctx->last_frag = 0;
 		ctx->nfrags = 0;
+		ctx->timeout = time(NULL) + ISAKMP_FRAG_TIMEOUT;
 		ctx->next = iph1->frag_chain;
 		iph1->frag_chain = ctx;
 	}
@@ -821,6 +858,22 @@ isakmp_frag_recv(struct ph1handle *iph1, rc_vchar_t *packet)
 		iph1->frag_chain = isakmp_frag_detach(iph1->frag_chain, ctx);
 		isakmp_frag_ctx_free(ctx);
 		return NULL;
+	}
+	{
+		size_t held = 0;
+		int j;
+		for (j = 1; j < ISAKMP_MAX_FRAGS; j++) {
+			if (ctx->parts[j])
+				held += ctx->parts[j]->l;
+		}
+		if (held + data_len > ISAKMP_MAX_REASM) {
+			plog(PLOG_PROTOERR, PLOGLOC, NULL,
+			    "IKE fragment reassembly exceeds %d\n",
+			    ISAKMP_MAX_REASM);
+			iph1->frag_chain = isakmp_frag_detach(iph1->frag_chain, ctx);
+			isakmp_frag_ctx_free(ctx);
+			return NULL;
+		}
 	}
 	memcpy(ctx->parts[frag_no]->v, data_buf, data_len);
 	ctx->parts[frag_no]->l = data_len;
