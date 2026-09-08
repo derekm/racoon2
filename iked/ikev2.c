@@ -3406,38 +3406,49 @@ ikev2_dead_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg, struct sockaddr *remot
 		   "received a message to a dead IKE SA\n");
 	++isakmpstat.unexpected_packet;	/* ??? */
 }
-
 /*
  * IKEv2 CREATE_CHILD_SA exchange
  */
-int
-ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
-				 struct ikev2_child_sa *child_sa)
-{
-	rc_vchar_t *sa = 0;
-	rc_vchar_t *ke = 0;
-	rc_vchar_t *ts_i = 0;
-	rc_vchar_t *ts_r = 0;
-	int retval = -1;
+struct ikev2_child_init_ctx {
+	struct ikev2_sa *ike_sa;
+	struct ikev2_child_sa *child_sa;
+	struct algdef *dhgrpdef;
 	struct ikev2_payloads payl;
-	rc_vchar_t *pkt = 0;
-	size_t nonce_size;
-	rc_vchar_t *n_i;
+	int payl_inited;
+	rc_vchar_t *sa;
+	rc_vchar_t *ts_i;
+	rc_vchar_t *ts_r;
+	rc_vchar_t *ke;
+	int pfs;
+};
 
-	/*assert(child_sa->message_id == 0); */
-	ikev2_payloads_init(&payl);
-	child_sa->message_id = ikev2_request_id(ike_sa);
+static void
+ikev2_child_init_ctx_free(struct ikev2_child_init_ctx *ctx)
+{
+	if (ctx->sa)
+		rc_vfree(ctx->sa);
+	if (ctx->ts_i)
+		rc_vfree(ctx->ts_i);
+	if (ctx->ts_r)
+		rc_vfree(ctx->ts_r);
+	if (ctx->ke)
+		rc_vfree(ctx->ke);
+	if (ctx->payl_inited)
+		ikev2_payloads_destroy(&ctx->payl);
+	rc_free(ctx);
+}
+
+/* builds + transmits the CREATE_CHILD_SA request (IKE thread) */
+static void
+ikev2_createchild_initiator_send_tail(struct ikev2_child_init_ctx *ctx)
+{
+	struct ikev2_sa *ike_sa = ctx->ike_sa;
+	struct ikev2_child_sa *child_sa = ctx->child_sa;
+	rc_vchar_t *pkt = 0;
+	struct ikev2payl_ke_h dhgrp_hdr;
 
 	/*
-	 * HDR, SK {[N(REKEY_SA)],
-	 *          [N(IPCOMP_SUPPORTED)+],
-	 *          [N(USE_TRANSPORT_MODE)],
-	 *          [N(ESP_TFC_PADDING_NOT_SUPPORTED)],
-	 *          [N(NON_FIRST_FRAGMENTS_ALSO)],
-	 *          SA, Ni, [KEi], TSi, TSr}
-	 */
-
-	/* (draft-17)
+	 * (draft-17)
 	 * The initiator sends SA offer(s) in the SA payload, a nonce in the Ni
 	 * payload, optionally a Diffie-Hellman value in the KEi payload, and
 	 * the proposed traffic selectors in the TSi and TSr payloads. If this
@@ -3451,44 +3462,12 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 	 * a different KEi.
 	 */
 
-	sa = ikev2_construct_sa(child_sa);
-	if (!sa)
-		goto fail;
-
-	ts_i = ikev2_construct_ts_i(child_sa);
-	ts_r = ikev2_construct_ts_r(child_sa);
-	if (!ts_i || !ts_r)
-		goto fail;
-
-	ikev2_create_config_request(child_sa);
-
-	if (!child_sa->n_i) {
-		nonce_size = ikev2_nonce_size(ike_sa->rmconf);
-		child_sa->n_i = random_bytes(nonce_size);
-		if (!child_sa->n_i)
-			goto fail;
-	}
-	n_i = child_sa->n_i;
-
-	if (ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
-		struct algdef *dhgrpdef;
-		struct ikev2payl_ke_h dhgrp_hdr;
-
-		if (child_sa->dhgrp)
-			dhgrpdef = child_sa->dhgrp;
-		else
-			dhgrpdef = ike_sa->negotiated_sa->dhdef;	/* XXX ??? it should be from proposal */
-
-		if (oakley_dh_generate((struct dhgroup *)dhgrpdef->definition, &child_sa->dhpub,
-				       &child_sa->dhpriv) != 0) {
-			TRACE((PLOGLOC, "failed generating DH values\n"));
-			goto fail;
-		}
-
-		dhgrp_hdr.dh_group_id = htons(dhgrpdef->transform_id);
+	if (ctx->pfs) {
+		dhgrp_hdr.dh_group_id = htons(ctx->dhgrpdef->transform_id);
 		dhgrp_hdr.reserved = 0;
-		ke = rc_vprepend(child_sa->dhpub, &dhgrp_hdr, sizeof(dhgrp_hdr));
-		if (!ke)
+		ctx->ke = rc_vprepend(child_sa->dhpub, &dhgrp_hdr,
+		    sizeof(dhgrp_hdr));
+		if (!ctx->ke)
 			goto fail;
 	}
 
@@ -3499,7 +3478,7 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 		uint32_t spi;
 
 		put_uint32(&spi, child_sa->preceding_spi);
-		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload((child_sa->preceding_satype == RCT_SATYPE_ESP ?
 							  IKEV2_NOTIFY_PROTO_ESP :
 							  IKEV2_NOTIFY_PROTO_AH),
@@ -3519,7 +3498,7 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 	 * [N(USE_TRANSPORT_MODE)]
 	 */
 	if (ike_ipsec_mode(child_sa->selector->pl) == RCT_IPSM_TRANSPORT) {
-		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
 							 0, 0,
 							 IKEV2_USE_TRANSPORT_MODE,
@@ -3531,7 +3510,7 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 	 * N(ESP_TFC_PADDING_NOT_SUPPORTED)
 	 */
 	if (ikev2_esp_tfc_padding_not_supported) {
-		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
 							 0, 0,
 							 IKEV2_ESP_TFC_PADDING_NOT_SUPPORTED,
@@ -3548,73 +3527,167 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 	/*
 	 * SA, Ni, [KEi], TSi, TSr
 	 */
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NONCE, n_i, FALSE);
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_SA, ctx->sa, FALSE);
+	ctx->sa = NULL;
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NONCE,
+			    child_sa->n_i, FALSE);
 	/* if the SA offers include different  Diffie-Hellman groups */
-	if (ke)
-		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ke, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_TS_I, ts_i, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_TS_R, ts_r, FALSE);
+	if (ctx->ke)
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_KE, ctx->ke, FALSE);
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_TS_I, ctx->ts_i, FALSE);
+	ctx->ts_i = NULL;
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_TS_R, ctx->ts_r, FALSE);
+	ctx->ts_r = NULL;
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
 				     ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0,
-				     child_sa->message_id, ike_sa, &payl);
+				     child_sa->message_id, ike_sa, &ctx->payl);
 	if (!pkt)
 		goto fail;
 
 	if (ikev2_transmit(ike_sa, pkt) != 0)
 		goto fail;
 	pkt = 0;
-	retval = 0;
 
 	ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_WAIT_RESPONSE);
 
-      done:
 	if (pkt)
 		rc_vfree(pkt);
-	if (ts_r)
-		rc_vfree(ts_r);
-	if (ts_i)
-		rc_vfree(ts_i);
-	if (ke)
-		rc_vfree(ke);
-	if (sa)
-		rc_vfree(sa);
-	ikev2_payloads_destroy(&payl);
-	return retval;
+	ikev2_child_init_ctx_free(ctx);
+	return;
 
-      fail:
+fail:
+	if (pkt)
+		rc_vfree(pkt);
 	isakmp_log(ike_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC,
 		   "failed sending CREATE_CHILD_SA request for internal error\n");
 	ikev2_child_abort(child_sa, ECONNREFUSED);	/* ??? */
-	goto done;
+	ikev2_child_init_ctx_free(ctx);
+}
 
-#ifdef notyet
+static void
+ikev2_createchild_initiator_dh_done(int rc, void *arg)
+{
+	struct ikev2_child_init_ctx *ctx = arg;
+	struct ikev2_sa *ike_sa = ctx->ike_sa;
+	struct ikev2_child_sa *child_sa = ctx->child_sa;
+
+	ike_sa->crypto_pending = 0;
+	if (ike_sa->state == IKEV2_STATE_DYING ||
+	    ike_sa->state == IKEV2_STATE_DEAD ||
+	    child_sa->state == IKEV2_CHILD_STATE_EXPIRED) {
+		ikev2_child_init_ctx_free(ctx);
+		return;
+	}
+	if (rc != 0) {
+		TRACE((PLOGLOC, "failed generating DH values\n"));
+		ikev2_child_abort(child_sa, ECONNREFUSED);	/* ??? */
+		ikev2_child_init_ctx_free(ctx);
+		return;
+	}
+	ikev2_createchild_initiator_send_tail(ctx);
+}
+
+int
+ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
+				 struct ikev2_child_sa *child_sa)
+{
+	rc_vchar_t *sa = 0;
+	rc_vchar_t *ts_i = 0;
+	rc_vchar_t *ts_r = 0;
+	struct ikev2_payloads payl;
+	size_t nonce_size;
+	struct ikev2_child_init_ctx *ctx;
+	int pfs;
+
+	/*assert(child_sa->message_id == 0); */
+	ikev2_payloads_init(&payl);
+	child_sa->message_id = ikev2_request_id(ike_sa);
+
 	/*
-	 * 2.19 Requesting an internal address on a remote network
-	 *
-	 * Most commonly occurring in the endpoint to security gateway scenario,
-	 * an endpoint may need an IP address in the network protected by the
-	 * security gateway, and may need to have that address dynamically
-	 * assigned. A request for such a temporary address can be included in
-	 * any request to create a CHILD_SA (including the implicit request in
-	 * message 3) by including a CP payload.
-	 *
-	 * HDR, SK {IDi, [CERT,] [CERTREQ,]
-	 * [IDr,] AUTH, CP(CFG_REQUEST),
-	 * SAi2, TSi, TSr}              -->
-	 *
-	 * <--   HDR, SK {IDr, [CERT,] AUTH,
-	 * CP(CFG_REPLY), SAr2,
-	 * TSi, TSr}
-	 *
-	 * In all cases, the CP payload MUST be inserted before the SA payload.
-	 * In variations of the protocol where there are multiple IKE_AUTH
-	 * exchanges, the CP payloads MUST be inserted in the messages
-	 * containing the SA payloads.
+	 * HDR, SK {[N(REKEY_SA)],
+	 *          [N(IPCOMP_SUPPORTED)+],
+	 *          [N(USE_TRANSPORT_MODE)],
+	 *          [N(ESP_TFC_PADDING_NOT_SUPPORTED)],
+	 *          [N(NON_FIRST_FRAGMENTS_ALSO)],
+	 *          SA, Ni, [KEi], TSi, TSr}
 	 */
-#endif
+
+	sa = ikev2_construct_sa(child_sa);
+	if (!sa)
+		goto fail;
+
+	ts_i = ikev2_construct_ts_i(child_sa);
+	ts_r = ikev2_construct_ts_r(child_sa);
+	if (!ts_i || !ts_r)
+		goto fail;
+
+	ikev2_create_config_request(child_sa);
+
+	if (!child_sa->n_i) {
+		nonce_size = ikev2_nonce_size(ike_sa->rmconf);
+		child_sa->n_i = random_bytes(nonce_size);
+		if (!child_sa->n_i)
+			goto fail;
+	}
+
+	pfs = (ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON);
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx)
+		goto fail;
+	ctx->ike_sa = ike_sa;
+	ctx->child_sa = child_sa;
+	ctx->sa = sa;
+	sa = NULL;
+	ctx->ts_i = ts_i;
+	ts_i = NULL;
+	ctx->ts_r = ts_r;
+	ts_r = NULL;
+	ctx->payl = payl;
+	ctx->payl_inited = 1;
+	ctx->pfs = pfs;
+
+	if (pfs) {
+		struct algdef *dhgrpdef;
+
+		if (child_sa->dhgrp)
+			dhgrpdef = child_sa->dhgrp;
+		else
+			dhgrpdef = ike_sa->negotiated_sa->dhdef;
+		ctx->dhgrpdef = dhgrpdef;
+
+		ike_sa->crypto_pending = 1;
+		if (oakley_dh_generate_submit(
+		    (struct dhgroup *)dhgrpdef->definition,
+		    &child_sa->dhpub, &child_sa->dhpriv,
+		    ikev2_createchild_initiator_dh_done, ctx) != 0) {
+			ike_sa->crypto_pending = 0;
+			TRACE((PLOGLOC, "failed dh submit\n"));
+			ikev2_child_init_ctx_free(ctx);
+			goto fail;
+		}
+		return 0;	/* resumed in ikev2_createchild_initiator_dh_done */
+	}
+
+	ikev2_createchild_initiator_send_tail(ctx);
+	return 0;
+
+fail:
+	isakmp_log(ike_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC,
+		   "failed sending CREATE_CHILD_SA request for internal error\n");
+	ikev2_child_abort(child_sa, ECONNREFUSED);	/* ??? */
+	if (sa)
+		rc_vfree(sa);
+	if (ts_i)
+		rc_vfree(ts_i);
+	if (ts_r)
+		rc_vfree(ts_r);
+	ikev2_payloads_destroy(&payl);
+	return -1;
+}
 }
 
 void
