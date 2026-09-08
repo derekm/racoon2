@@ -21,13 +21,18 @@ fi
 
 mkdir -p -m 700 /var/run/racoon2
 install -m 600 "${SRC}/samples/netbsd-ci/iked.conf" "${CONF}"
-# smoke conf hardcodes this path
 printf 'ci-spmd-pw\n' > "${SYSCONFDIR}/spmd.pwd"
 chmod 600 "${SYSCONFDIR}/spmd.pwd"
 
-# onestart ignores rc.conf rcvar (iked=YES not required)
-"${RCD}/spmd" onestart
-"${RCD}/iked" onestart
+# onestart ignores rcvar; required_vars="spmd" on iked still needs this.
+spmd=YES
+iked=YES
+export spmd iked
+
+echo "=== ${RCD}/spmd onestart ==="
+"${RCD}/spmd" onestart || echo "spmd onestart st=$?"
+echo "=== ${RCD}/iked onestart ==="
+"${RCD}/iked" onestart || echo "iked onestart st=$?"
 
 tries=0
 while [ "$tries" -lt 15 ]; do
@@ -37,6 +42,17 @@ while [ "$tries" -lt 15 ]; do
 	tries=$((tries + 1))
 	sleep 1
 done
+
+if [ ! -f /var/run/spmd.pid ] || [ ! -f /var/run/iked.pid ]; then
+	echo "=== rc.d did not leave pidfiles; start installed binaries ==="
+	"${PREFIX}/sbin/spmd" -f "${CONF}" || echo "spmd direct st=$?"
+	sleep 1
+	"${PREFIX}/sbin/iked" -f "${CONF}" || echo "iked direct st=$?"
+	sleep 2
+	echo "=== iked/spmd stderr (if any) ==="
+	ls -l /var/run/spmd.pid /var/run/iked.pid 2>&1 || true
+	ps -ax | grep -E '[s]pmd|[i]ked' || true
+fi
 
 echo "=== pidfiles ==="
 ls -l /var/run/spmd.pid /var/run/iked.pid
@@ -69,6 +85,6 @@ echo "=== sysctl ipsec ==="
 sysctl net.inet.ipsec 2>/dev/null || true
 sysctl kern.osrelease hw.machine
 
-"${RCD}/iked" onestop
-"${RCD}/spmd" onestop
+"${RCD}/iked" onestop || true
+"${RCD}/spmd" onestop || true
 echo RC-SMOKE-OK

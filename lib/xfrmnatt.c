@@ -34,8 +34,8 @@ main(void)
 
 static const uint32_t k_spi = 0x0a0b0c0du;
 static const char k_oa[] = "198.51.100.99";
-static const char k_src[] = "192.0.2.1";
-static const char k_dst[] = "192.0.2.2";
+static const char k_src[] = "198.18.0.1";
+static const char k_dst[] = "198.18.0.2";
 
 static int
 xfrm_dump_has_oa(void)
@@ -43,21 +43,30 @@ xfrm_dump_has_oa(void)
 	char cmd[256];
 	FILE *fp;
 	char line[512];
-	int saw_encap = 0, saw_oa = 0;
+	int saw_spi = 0, saw_encap = 0, saw_oa = 0;
+	char spi_long[20], spi_short[20];
 
+	snprintf(spi_long, sizeof(spi_long), "spi 0x%08x", k_spi);
+	snprintf(spi_short, sizeof(spi_short), "spi 0x%x", k_spi);
 	snprintf(cmd, sizeof(cmd),
-	    "ip xfrm state src %s dst %s proto esp spi 0x%08x 2>/dev/null",
+	    "ip xfrm state get src %s dst %s proto esp spi 0x%x 2>/dev/null || ip xfrm state",
 	    k_src, k_dst, k_spi);
 	fp = popen(cmd, "r");
 	if (fp == NULL)
 		return -1;
 	while (fgets(line, sizeof(line), fp) != NULL) {
-		if (strstr(line, "encap type espinudp") != NULL)
+		if (strstr(line, spi_long) != NULL ||
+		    strstr(line, spi_short) != NULL)
+			saw_spi = 1;
+		if (saw_spi && strstr(line, "encap type espinudp") != NULL)
 			saw_encap = 1;
-		if (strstr(line, k_oa) != NULL)
+		if (saw_spi && strstr(line, k_oa) != NULL)
 			saw_oa = 1;
+		fputs(line, stdout);
 	}
 	pclose(fp);
+	if (!saw_spi)
+		return 1;
 	if (!saw_encap)
 		return 1;
 	if (!saw_oa)
