@@ -3680,6 +3680,7 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 		    ikev2_createchild_initiator_dh_done, ctx) != 0) {
 			ike_sa->crypto_pending = 0;
 			TRACE((PLOGLOC, "failed dh submit\n"));
+			ctx->payl_inited = 0;	/* fail: destroys payl once */
 			ikev2_child_init_ctx_free(ctx);
 			goto fail;
 		}

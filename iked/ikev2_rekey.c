@@ -272,6 +272,24 @@ ikev2_rekey_init_ctx_free(struct ikev2_rekey_init_ctx *ctx)
 	rc_free(ctx);
 }
 
+/*
+ * Abort an initiator-side IKE_SA rekey that failed before establishment:
+ * unlink the stub new_sa (never inserted into the SA list, so periodic
+ * disposal cannot reach it) and release the rekey lock, so the SA can be
+ * rekeyed again.  Do NOT use when old_sa itself is being torn down
+ * (DYING/DEAD): there the new_sa link must survive so ikev2_dispose_sa
+ * recurses into it.
+ */
+static void
+ikev2_rekey_init_abort(struct ikev2_sa *old_sa, struct ikev2_sa *new_sa)
+{
+	if (old_sa->new_sa == new_sa)
+		old_sa->new_sa = NULL;
+	old_sa->rekey_inprogress = FALSE;
+	if (new_sa)
+		ikev2_dispose_sa(new_sa);
+}
+
 static void
 ikev2_rekey_ikesa_init_dh_done(int rc, void *arg)
 {
@@ -291,6 +309,7 @@ ikev2_rekey_ikesa_init_dh_done(int rc, void *arg)
 		isakmp_log(old_sa, 0, 0, 0,
 			   PLOG_INTERR, PLOGLOC, "failed to send REKEY IKE_SA\n");
 		++isakmpstat.fail_send_packet;
+		ikev2_rekey_init_abort(old_sa, ctx->new_sa);
 		ikev2_rekey_init_ctx_free(ctx);
 		return;
 	}
@@ -377,6 +396,7 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	    ikev2_rekey_ikesa_init_dh_done, ctx) != 0) {
 		old_sa->crypto_pending = 0;
 		TRACE((PLOGLOC, "failed dh submit\n"));
+		ctx->payl_inited = 0;	/* caller's fail: destroys payl once */
 		ikev2_rekey_init_ctx_free(ctx);
 		goto fail;
 	}
@@ -390,6 +410,7 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	isakmp_log(old_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed to allocate memory\n");
 	++isakmpstat.fail_send_packet;
+	ikev2_rekey_init_abort(old_sa, new_sa);
 	goto done;
 
       fail:
@@ -400,6 +421,7 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 		rc_vfree(sa);
 	if (proplist)
 		proplist_discard(proplist);
+	ikev2_rekey_init_abort(old_sa, new_sa);
 	ikev2_payloads_destroy(&payl);
 	return;
 }
@@ -465,12 +487,14 @@ ikev2_rekey_init_send_tail(struct ikev2_rekey_init_ctx *ctx)
 	isakmp_log(old_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed to allocate memory\n");
 	++isakmpstat.fail_send_packet;
+	ikev2_rekey_init_abort(old_sa, new_sa);
 	goto done;
 
       fail:
 	isakmp_log(old_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed to send REKEY IKE_SA\n");
 	++isakmpstat.fail_send_packet;
+	ikev2_rekey_init_abort(old_sa, new_sa);
       done:
 	if (pkt)
 		rc_vfree(pkt);
@@ -643,6 +667,7 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 	    &ctx->g_ir, ikev2_rekey_ikesa_responder_dh_done, ctx) != 0) {
 		old_sa->crypto_pending = 0;
 		TRACE((PLOGLOC, "failed dh submit\n"));
+		ctx->payl_inited = 0;	/* done: destroys payl once */
 		ikev2_rekey_responder_ctx_free(ctx);
 		goto fail;
 	}
