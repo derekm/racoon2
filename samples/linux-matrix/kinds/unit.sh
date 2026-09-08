@@ -24,6 +24,10 @@ kind_unit() {
 		make -C "$src/lib" xfrmnatt
 		"$src/lib/xfrmnatt"
 		;;
+	xfrm-tmpl-family)
+		make -C "$src/lib" xfrmtmpl
+		"$src/lib/xfrmtmpl"
+		;;
 	*)
 		die "unknown unit case $name"
 		return 1
