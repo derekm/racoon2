@@ -3688,7 +3688,6 @@ fail:
 	ikev2_payloads_destroy(&payl);
 	return -1;
 }
-}
 
 void
 ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
