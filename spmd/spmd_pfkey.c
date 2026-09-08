@@ -324,6 +324,7 @@ spmd_pfkey_init(void)
 		struct rcpfk_msg rc;
 
 		memset(&rc, 0, sizeof(rc));
+		rc.so = pfkey_sock;
 		if (rcpfk_send_spddump(&rc) < 0)
 			SPMD_PLOG(SPMD_L_INTERR,
 			    "rsync: kernel SPD dump failed: %s", rc.estr);
