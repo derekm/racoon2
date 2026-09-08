@@ -188,19 +188,10 @@ end:
  * send to responder
  * 	HDR*, HASH(1), SA, Ni [, KE ] [, IDi2, IDr2 ] [, NAT-OAi, NAT-OAr (if NAT-T enabled)]
  */
-int
-quick_i1send(struct ph2handle *iph2, rc_vchar_t *msg /* must be null pointer */)
-{
-	rc_vchar_t *body = NULL;
-	rc_vchar_t *hash = NULL;
-	struct isakmp_gen *gen;
-	char *p;
-	int tlen;
-	int error = ISAKMP_INTERNAL_ERROR;
-	int pfsgroup, idci, idcr;
-	int np;
-	struct ipsecdoi_id_b *id, *id_p;
 /* async DH for the quick KE sends */
+static void quick_i1send_tail(struct ph2handle *, rc_vchar_t *);
+static void quick_r2send_tail(struct ph2handle *, rc_vchar_t *);
+
 static void
 quick_i1send_dh_done(int rc, void *arg)
 {
@@ -227,13 +218,78 @@ quick_r2send_dh_done(int rc, void *arg)
 	quick_r2send_tail(iph2, NULL);
 }
 
-static void quick_i1send_tail(struct ph2handle *, rc_vchar_t *);
-static void quick_r2send_tail(struct ph2handle *, rc_vchar_t *);
+int
+quick_i1send(struct ph2handle *iph2, rc_vchar_t *msg /* must be null pointer */)
+{
+	rc_vchar_t *body = NULL;
+	rc_vchar_t *hash = NULL;
+	int error = ISAKMP_INTERNAL_ERROR;
+	int pfsgroup;
+
+	/* validity check */
+	if (iph2->status != PHASE2ST_GETSPIDONE) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+			"status mismatched %d.\n", iph2->status);
+		goto end;
+	}
+
+	/* create SA payload for my proposal */
+	if (ipsecdoi_setph2proposal(iph2) < 0)
+		goto end;
+
+	/* generate NONCE value */
+	iph2->nonce = eay_set_random(ikev1_nonce_size(iph2->ph1->rmconf));
+	if (iph2->nonce == NULL)
+		goto end;
+
+	/*
+	 * DH value calculation is kicked out into cfparse.y.
+	 * because pfs group can not be negotiated, it's only to be checked
+	 * acceptable.
+	 */
+	/* generate KE value if need */
+	pfsgroup = iph2->proposal->pfs_group;
+	if (pfsgroup) {
+		/* DH group settting if PFS is required. */
+		if (oakley_setdhgroup(pfsgroup, &iph2->pfsgrp) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+				"failed to set DH value.\n");
+			goto end;
+		}
+		if (oakley_dh_generate_submit(iph2->pfsgrp,
+		    &iph2->dhpub, &iph2->dhpriv,
+		    quick_i1send_dh_done, iph2) != 0) {
+			goto end;
+		}
+		return 0;	/* resumed in quick_i1send_dh_done */
+	}
+	quick_i1send_tail(iph2, msg);
+	return 0;
+
+end:
+	if (body != NULL)
+		rc_vfree(body);
+	if (hash != NULL)
+		rc_vfree(hash);
+
+	return error;
+}
 
 /* continuation after the PFS KE generation (initiator) */
 static void
 quick_i1send_tail(struct ph2handle *iph2, rc_vchar_t *msg)
 {
+	struct isakmp_gen *gen;
+	char *p;
+	int tlen;
+	int pfsgroup, idci, idcr;
+	int np;
+	struct ipsecdoi_id_b *id, *id_p;
+#ifdef ENABLE_NATT
+	struct ph2natoa *natoa = NULL, *natoa_p = NULL;
+	int natoai = 0, natoar = 0;
+#endif
+
 	/* generate ID value */
 	if (ipsecdoi_setid2(iph2) < 0) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
@@ -404,22 +460,22 @@ quick_i1send_tail(struct ph2handle *iph2, rc_vchar_t *msg)
 	if (msg != NULL) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 			"msg has to be NULL in this function.\n");
-		goto end;
+		return;
 	}
 	if (iph2->status != PHASE2ST_GETSPIDONE) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 			"status mismatched %d.\n", iph2->status);
-		goto end;
+		return;
 	}
 
 	/* create SA payload for my proposal */
 	if (ipsecdoi_setph2proposal(iph2) < 0)
-		goto end;
+		return;
 
 	/* generate NONCE value */
 	iph2->nonce = eay_set_random(ikev1_nonce_size(iph2->ph1->rmconf));
 	if (iph2->nonce == NULL)
-		goto end;
+		return;
 
 	/*
 	 * DH value calculation is kicked out into cfparse.y.
@@ -432,25 +488,24 @@ quick_i1send_tail(struct ph2handle *iph2, rc_vchar_t *msg)
 		if (oakley_setdhgroup(pfsgroup, &iph2->pfsgrp) < 0) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 				"failed to set DH value.\n");
-			goto end;
+			return;
 		}
 		if (oakley_dh_generate_submit(iph2->pfsgrp,
 		    &iph2->dhpub, &iph2->dhpriv,
 		    quick_i1send_dh_done, iph2) != 0) {
-			goto end;
+			return;
 		}
 		return 0;	/* resumed in quick_i1send_dh_done */
 	}
 	quick_i1send_tail(iph2, msg);
 	return 0;
 
-end:
 	if (body != NULL)
 		rc_vfree(body);
 	if (hash != NULL)
 		rc_vfree(hash);
 
-	return error;
+	return;
 }
 
 
@@ -617,7 +672,6 @@ quick_i1send_tail(struct ph2handle *iph2, rc_vchar_t *msg)
 
 	return;
 }
-
 /*
  * receive from responder
  * 	HDR*, HASH(2), SA, Nr [, KE ] [, IDi2, IDr2 ] [, NAT-OAi, NAT-OAr (if NAT-T enabled)]
@@ -1175,6 +1229,19 @@ end:
 static void
 quick_r2send_tail(struct ph2handle *iph2, rc_vchar_t *msg)
 {
+	rc_vchar_t *body = NULL;
+	rc_vchar_t *hash = NULL;
+	struct isakmp_gen *gen;
+	char *p;
+	int tlen;
+	int pfsgroup;
+	uint8_t *np_p = NULL;
+#ifdef ENABLE_NATT
+	struct ph2natoa *natoa = NULL, *natoa_p = NULL;
+	int natoa_i = 0, natoa_r = 0;
+#endif
+
+	(void)msg;
 #ifdef ENABLE_NATT
     if ((iph2->ph1->natt_flags & NAT_DETECTED) != 0 &&
 		(iph2->ph1->natt_options->mode_udp_transport 
