@@ -1387,25 +1387,29 @@ have_tmpl:
 
 static int
 handle_policy(struct xfrm_userpolicy_info *xp, struct rcpfk_msg *rc, int dumped,
-    int ours)
+    int ours, uint16_t nltype)
 {
 	int (*fn)(struct rcpfk_msg *) = NULL;
 
 	userpol_to_rc(xp, rc);
 	/*
 	 * Our own op arrives twice: the ACK (NLMSG_ERROR, delivered via
-	 * pending) and the multicast NEWPOLICY event with the same seq.
-	 * The ACK fires the callback; skip our own event or spmd's
-	 * spid_data_update double-fires on a seq it already bound.
+	 * pending) and the multicast event with the same seq. The ACK fires
+	 * the callback; skip our own event or spmd's spid_data_update
+	 * double-fires on a seq it already bound.
 	 */
 	if (!dumped && ours)
 		return 0;
+	/*
+	 * Undumped arrivals are multicast EVENTS, not replies to our ops —
+	 * route by the message type, never by a stale pending_type (an
+	 * earlier op would misroute foreign events into the update
+	 * callback and spid_data misses).
+	 */
 	if (dumped)
 		fn = cb && cb->cb_spddump ? cb->cb_spddump : NULL;
-	else if (pending_type == XFRM_MSG_UPDPOLICY)
+	else if (nltype == XFRM_MSG_UPDPOLICY)
 		fn = cb && cb->cb_spdupdate ? cb->cb_spdupdate : NULL;
-	else if (pending_type == XFRM_MSG_GETPOLICY)
-		fn = cb && cb->cb_spdget ? cb->cb_spdget : NULL;
 	else
 		fn = cb && cb->cb_spdadd ? cb->cb_spdadd : NULL;
 	if (!dumped)
@@ -1509,7 +1513,8 @@ handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 		/* dumps arrive as NEWPOLICY + NLM_F_MULTI, then NLMSG_DONE */
 		return handle_policy(NLMSG_DATA(nlh), rc,
 		    pending_type == XFRM_MSG_GETPOLICY,
-		    pending_type != 0 && pending_seq == nlh->nlmsg_seq);
+		    pending_type != 0 && pending_seq == nlh->nlmsg_seq,
+		    nlh->nlmsg_type);
 	case XFRM_MSG_POLEXPIRE:
 		if (nlh->nlmsg_len < NLMSG_LENGTH(sizeof(struct xfrm_user_polexpire)))
 			goto shortmsg;
