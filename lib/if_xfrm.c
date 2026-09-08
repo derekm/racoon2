@@ -111,6 +111,7 @@ static int f_noharm;
 static uint32_t xfrm_seq;
 static int pending_type;	/* XFRM_MSG_* we last sent, or 0 */
 static uint32_t pending_seq;
+static uint32_t pending_dump_seq;	/* seq of in-flight SPD dump, or 0 */
 static uint32_t pending_spi;
 static uint8_t pending_satype;
 static uint8_t pending_samode;
@@ -1168,6 +1169,7 @@ rcpfk_send_spddump(struct rcpfk_msg *rc)
 		return -1;
 	}
 	pending_set(rc, XFRM_MSG_GETPOLICY, n->nlmsg_seq);
+	pending_dump_seq = n->nlmsg_seq;
 	return xfrm_nl_send(rc, n);
 }
 
@@ -1434,12 +1436,22 @@ handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 	case NLMSG_NOOP:
 		return 0;
 	case NLMSG_DONE:
-		pending_clear();
+		/*
+		 * Dump terminator: clear dump tracking, but only clear
+		 * the op-pending slot if it still belongs to the dump —
+		 * a live op issued mid-dump owns it now (M2).
+		 */
+		if (pending_type == XFRM_MSG_GETPOLICY
+		    && pending_seq == pending_dump_seq)
+			pending_clear();
+		pending_dump_seq = 0;
 		return 0;
 	case NLMSG_ERROR:
 		err = NLMSG_DATA(nlh);
 		rc->seq = err->msg.nlmsg_seq;
 		if (err->error != 0) {
+			if (rc->seq == pending_dump_seq)
+				pending_dump_seq = 0;
 			pending_clear();
 			xfrm_seterror(rc, -err->error, "xfrm netlink: %s",
 			    strerror(-err->error));
@@ -1514,9 +1526,11 @@ handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 	case XFRM_MSG_UPDPOLICY:
 		if (nlh->nlmsg_len < NLMSG_LENGTH(sizeof(struct xfrm_userpolicy_info)))
 			goto shortmsg;
-		/* dumps arrive as NEWPOLICY + NLM_F_MULTI, then NLMSG_DONE */
+		/* dumps arrive as NEWPOLICY + NLM_F_MULTI, then NLMSG_DONE;
+		 * classify by the dump's own seq so a live op issued
+		 * mid-dump cannot misroute the remaining frames (M2) */
 		return handle_policy(NLMSG_DATA(nlh), rc,
-		    pending_type == XFRM_MSG_GETPOLICY,
+		    pending_dump_seq != 0 && nlh->nlmsg_seq == pending_dump_seq,
 		    pending_type != 0 && pending_seq == nlh->nlmsg_seq,
 		    nlh->nlmsg_type);
 	case XFRM_MSG_POLEXPIRE:
