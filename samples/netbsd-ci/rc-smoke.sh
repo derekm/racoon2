@@ -4,7 +4,7 @@
 # Proves PF_KEY + UDP/500. Not a tunnel matrix (no netns; npf is not SAD/SPD).
 set -e
 PREFIX="${PREFIX:-/usr/local/racoon2}"
-SYSCONFDIR="${SYSCONFDIR:-${PREFIX}/etc}"
+SYSCONFDIR="${SYSCONFDIR:-${PREFIX}/etc/racoon2}"
 RCD="${SYSCONFDIR}/rc.d"
 CONF="${SYSCONFDIR}/racoon2.conf"
 SRC="${SRC:-.}"
