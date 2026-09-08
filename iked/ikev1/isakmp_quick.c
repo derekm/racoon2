@@ -451,62 +451,6 @@ quick_i1send_tail(struct ph2handle *iph2, rc_vchar_t *msg)
 }
 
 
-#ifdef ENABLE_NATT
-	int natoai = 0, natoar = 0;
-	struct ph2natoa *natoa = NULL, *natoa_p = NULL;
-#endif
-
-	/* validity check */
-	if (msg != NULL) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-			"msg has to be NULL in this function.\n");
-		return;
-	}
-	if (iph2->status != PHASE2ST_GETSPIDONE) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-			"status mismatched %d.\n", iph2->status);
-		return;
-	}
-
-	/* create SA payload for my proposal */
-	if (ipsecdoi_setph2proposal(iph2) < 0)
-		return;
-
-	/* generate NONCE value */
-	iph2->nonce = eay_set_random(ikev1_nonce_size(iph2->ph1->rmconf));
-	if (iph2->nonce == NULL)
-		return;
-
-	/*
-	 * DH value calculation is kicked out into cfparse.y.
-	 * because pfs group can not be negotiated, it's only to be checked
-	 * acceptable.
-	 */
-	pfsgroup = iph2->proposal->pfs_group;
-	if (pfsgroup) {
-		/* DH group settting if PFS is required. */
-		if (oakley_setdhgroup(pfsgroup, &iph2->pfsgrp) < 0) {
-			plog(PLOG_INTERR, PLOGLOC, NULL,
-				"failed to set DH value.\n");
-			return;
-		}
-		if (oakley_dh_generate_submit(iph2->pfsgrp,
-		    &iph2->dhpub, &iph2->dhpriv,
-		    quick_i1send_dh_done, iph2) != 0) {
-			return;
-		}
-		return 0;	/* resumed in quick_i1send_dh_done */
-	}
-	quick_i1send_tail(iph2, msg);
-	return 0;
-
-	if (body != NULL)
-		rc_vfree(body);
-	if (hash != NULL)
-		rc_vfree(hash);
-
-	return;
-}
 
 
 /* continuation after the PFS KE generation (initiator) */
