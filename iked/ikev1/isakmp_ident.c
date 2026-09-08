@@ -799,7 +799,6 @@ int
 ident_i3send(struct ph1handle *iph1, rc_vchar_t *msg0)
 {
 	int error = -1;
-	int dohash = 1;
 	struct ident_dh_ctx *ctx;
 
 	/* validity check */
