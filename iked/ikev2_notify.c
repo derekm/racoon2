@@ -115,16 +115,13 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		TRACE((PLOGLOC, "peer supports IKEv2 fragmentation\n"));
 		break;
 
+	case IKEV2_MOBIKE_SUPPORTED:
+		ike_sa->mobike_supported = 1;
+		TRACE((PLOGLOC, "peer supports MOBIKE\n"));
+		break;
+
 	default:
 		/* else, unexpected unauthenticated notify */
-		/*
-		 * if (trust_unauthenticated_notify) {
-		 *   rate-limit;
-		 *   ikev2_process_notify(notify);
-		 *   if (notify_type <= IKEV2_NOTIFYTYPE_ERROR_MAX)
-		 *   goto abort;
-		 * } else {
-		 */
 #if 1
 		isakmp_log(ike_sa, local, remote, packet,
 			   PLOG_PROTOWARN, PLOGLOC,
@@ -261,8 +258,14 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		TRACE((PLOGLOC, "peer supports IKEv2 fragmentation\n"));
 		break;
 
+	case IKEV2_MOBIKE_SUPPORTED:
+		ike_sa->mobike_supported = 1;
+		TRACE((PLOGLOC, "peer supports MOBIKE\n"));
+		break;
+
 	default:
 		/* else, unexpected unauthenticated notify */
+
 		/*
 		 * if (trust_unauthenticated_notify) {
 		 *   rate-limit;
@@ -626,14 +629,19 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 	case IKEV2_INITIAL_CONTACT:
 		flush_sa();
 		break;
-	case IKEV2_SET_WINDOW_SIZE:
-		ikev2_set_peer_window_size(...);
-		break;
-	case IKEV2_NAT_DETECTION_SOURCE_IP:
-		...;
-	case IKEV2_NAT_DETECTION_DESTINATION_IP:
-		...;
 #endif
+
+	case IKEV2_MOBIKE_SUPPORTED:
+		ike_sa->mobike_supported = 1;
+		TRACE((PLOGLOC, "peer supports MOBIKE\n"));
+		return 0;
+
+	case IKEV2_UPDATE_SA_ADDRESSES:
+		if (!is_safe)
+			return 0;
+		ike_sa->mobike_update = 1;
+		TRACE((PLOGLOC, "UPDATE_SA_ADDRESSES\n"));
+		return 0;
 
 	default:
 		if (type <= IKEV2_NOTIFYTYPE_ERROR_MAX)

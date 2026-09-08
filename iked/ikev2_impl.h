@@ -213,6 +213,8 @@ struct ikev2_sa {
 	int peer_behind_nat;
 	int crypto_pending;
 	int frag_supported;		/* IKEv2 fragmentation (RFC7383) */
+	int mobike_supported;		/* RFC 4555 */
+	int mobike_update;		/* UPDATE_SA_ADDRESSES seen */
 	struct ikev2_frag_item *frag_chain;	/* Received fragments */
 	struct sched *natk_timer;
 #if 0	/* XXX for transport mode */
@@ -449,6 +451,8 @@ extern int ikev2_create_child_responder(struct ikev2_sa *,
     struct ikev2_payload_header *, struct ikev2_payload_header *,
     rc_vchar_t *, rc_vchar_t *, struct ikev2_child_param *, int,
     struct ikev2_child_sa *);
+void ikev2_mobike_apply(struct ikev2_sa *, struct sockaddr *,
+    struct sockaddr *);
 extern int ikev2_set_negotiated_sa(struct ikev2_sa *, struct ikev2_isakmpsa *);
 extern void ikev2_set_rmconf(struct ikev2_sa *, struct rcf_remote *);
 extern struct rc_idlist *ikev2_my_id_list(struct ikev2_sa *);

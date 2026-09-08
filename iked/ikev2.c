@@ -2912,6 +2912,15 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 #endif
 
 	/*
+	 * [N(MOBIKE_SUPPORTED)] RFC 4555
+	 */
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0,
+						 IKEV2_MOBIKE_SUPPORTED,
+						 0, 0),
+			    TRUE);
+
+	/*
 	 * SA, TSi, TSr
 	 */
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa_r2, FALSE);
@@ -4648,6 +4657,11 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			++isakmpstat.payload_ignored;
 			break;
 		}
+	}
+
+	if (ike_sa->mobike_update) {
+		ike_sa->mobike_update = 0;
+		ikev2_mobike_apply(ike_sa, remote, local);
 	}
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_INFORMATIONAL,

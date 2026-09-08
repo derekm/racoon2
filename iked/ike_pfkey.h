@@ -135,6 +135,7 @@ void sadb_list_dump(void);
 #endif
 extern int sadb_socket(void);
 extern uint32_t sadb_new_seq(void);
+extern int sadb_migrate(struct rcpfk_msg *);
 extern void sadb_poll(void);
 extern void sadb_request_initialize(struct sadb_request *,
 				    struct sadb_request_method *,

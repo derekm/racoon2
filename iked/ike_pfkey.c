@@ -392,6 +392,22 @@ sadb_responder_error(struct rcpfk_msg *param)
 	return 0;
 }
 
+int
+sadb_migrate(struct rcpfk_msg *rc)
+{
+	int err;
+
+	INFO((PLOGLOC, "SADB_MIGRATE src=%s dst=%s -> %s %s\n",
+	      rcs_sa2str(rc->sa_src), rcs_sa2str(rc->sa_dst),
+	      rcs_sa2str(rc->sa2_src), rcs_sa2str(rc->sa2_dst)));
+	rc->so = pfkey_socket;
+	rc->eno = 0;
+	err = rcpfk_send_migrate(rc);
+	if (err)
+		log_rcpfk_error("sadb_migrate", rc);
+	return err;
+}
+
 /*
  * send SADB_DELETE
  */

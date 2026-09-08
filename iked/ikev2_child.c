@@ -64,6 +64,7 @@
 #include "sockmisc.h"
 #include "debug.h"
 #include "rc_net.h"
+#include "ike_pfkey.h"
 
 static int ikev2_update_response(struct sadb_request *,
 				 struct sockaddr *, struct sockaddr *,
@@ -467,6 +468,74 @@ ikev2_create_child_initiator(struct ikev2_sa *ike_sa)
 }
 
 /*
+ * RFC 4555 UPDATE_SA_ADDRESSES: move IKE + Child SA endpoints to the
+ * packet's outer address and XFRM_MSG_MIGRATE the kernel SAD/SPD.
+ */
+void
+ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
+    struct sockaddr *local)
+{
+	struct ikev2_child_sa *c;
+	struct sockaddr *old_r, *old_l;
+
+	if (!ike_sa || !ike_sa->mobike_supported || !remote || !local)
+		return;
+	if (ike_sa->remote && ike_sa->local &&
+	    rcs_cmpsa(ike_sa->remote, remote) == 0 &&
+	    rcs_cmpsa(ike_sa->local, local) == 0)
+		return;
+
+	old_r = ike_sa->remote;
+	old_l = ike_sa->local;
+	isakmp_log(ike_sa, local, remote, 0, PLOG_INFO, PLOGLOC,
+		   "MOBIKE UPDATE_SA_ADDRESSES %s -> %s\n",
+		   rcs_sa2str(old_r), rcs_sa2str(remote));
+
+	for (c = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+	     !IKEV2_CHILD_LIST_END(c);
+	     c = IKEV2_CHILD_LIST_NEXT(c)) {
+		struct rcpfk_msg rc;
+		struct rcf_selector *sl;
+
+		sl = c->selector;
+		if (!sl || !sl->pl || !sl->src || !sl->dst ||
+		    sl->src->type != RCT_ADDR_INET ||
+		    sl->dst->type != RCT_ADDR_INET)
+			continue;
+		memset(&rc, 0, sizeof(rc));
+		rc.sa_src = old_l;
+		rc.sa_dst = old_r;
+		rc.sa2_src = local;
+		rc.sa2_dst = remote;
+		rc.sp_src = sl->src->a.ipaddr;
+		rc.sp_dst = sl->dst->a.ipaddr;
+		rc.pref_src = sl->src->prefixlen;
+		rc.pref_dst = sl->dst->prefixlen;
+		rc.satype = RCT_SATYPE_ESP;
+		rc.samode = ike_ipsec_mode(sl->pl);
+		rc.reqid = sl->reqid;
+		rc.dir = sl->direction;
+		rc.ul_proto = RC_PROTO_ANY;
+		if (sadb_migrate(&rc) != 0)
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				   "MOBIKE migrate failed: %s\n", rc.estr);
+		if (c->remote)
+			rc_free(c->remote);
+		if (c->local)
+			rc_free(c->local);
+		c->remote = rcs_sadup(remote);
+		c->local = rcs_sadup(local);
+	}
+
+	ike_sa->remote = rcs_sadup(remote);
+	ike_sa->local = rcs_sadup(local);
+	if (old_r)
+		rc_free(old_r);
+	if (old_l)
+		rc_free(old_l);
+}
+
+/*
  * creates a responder child_sa
  * then issues GETSPI
  */
@@ -724,7 +793,8 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 			}
 		}
 	} else if (!old_child_sa &&
-		   pol->peers_sa_ipaddr && rcs_is_addr_rw(pol->peers_sa_ipaddr)) {
+		   pol->peers_sa_ipaddr &&
+		   rcs_is_addr_wildcard(pol->peers_sa_ipaddr)) {
 		IPSEC_CONF(lifetime, pol->ips, ipsec_sa_lifetime_time, 0);
 		if (ike_spmif_post_policy_add(child_sa->selector,
 					      ike_ipsec_mode(pol), lifetime,
