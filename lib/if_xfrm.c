@@ -303,12 +303,6 @@ xaddr_to_sa(uint16_t family, const xfrm_address_t *xa, uint16_t port,
 }
 
 static uint8_t
-full_prefix(uint16_t family)
-{
-	return family == AF_INET6 ? 128 : 32;
-}
-
-static uint8_t
 satype_to_proto(uint8_t satype)
 {
 	switch (satype) {
@@ -557,7 +551,7 @@ fill_usersa(struct xfrm_usersa_info *sa, struct rcpfk_msg *rc)
 			sa->sel.family = family;
 	} else {
 		fill_selector(&sa->sel, rc->sa_src, rc->sa_dst,
-		    full_prefix(family), full_prefix(family),
+		    rc->pref_src, rc->pref_dst,
 		    rc->ul_proto, rc->flags);
 	}
 	return 0;
