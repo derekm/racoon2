@@ -661,8 +661,6 @@ ikev2_update_message_id(struct ikev2_sa *ike_sa, uint32_t message_id,
 		}
 	}
 #endif
-	if (ike_sa->state == IKEV2_STATE_ESTABLISHED)
-		ikev2_resume_save(ike_sa);
 }
 
 /*
@@ -3727,8 +3725,14 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 
 		if (child_sa->dhgrp)
 			dhgrpdef = child_sa->dhgrp;
-		else
+		else if (ike_sa->negotiated_sa)
 			dhgrpdef = ike_sa->negotiated_sa->dhdef;
+		else
+			dhgrpdef = NULL;
+		if (!dhgrpdef) {
+			ikev2_child_init_ctx_free(ctx);
+			goto fail;
+		}
 		ctx->dhgrpdef = dhgrpdef;
 
 		ike_sa->crypto_pending = 1;
@@ -3979,18 +3983,13 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		struct algdef *dhdef;
 		uint16_t code;
 		unsigned int dhlen;
+		unsigned int peer_grp;
 
 		/* Apple sends KE on CHILD rekey even when need_pfs is off.
 		 * Ignoring it made KEYMAT diverge; phone DELETE IKE_SA. */
 
-#ifdef notyet
-		/* matching_proposal --> TRANSFORM_TYPE_DH --> transform_id */
-		/* ikev2_dhinfo(get_uint16(&transf->transform_id)); */
-		TOBEWRITTEN;
-#else
-		/* quick hack */
-		dhdef = ike_sa->negotiated_sa ? ike_sa->negotiated_sa->dhdef : NULL;
-#endif
+		peer_grp = get_uint16(&ke->ke_h.dh_group_id);
+		dhdef = ikev2_dhinfo(peer_grp);
 		if (!dhdef)
 			goto respond_invalid_syntax;
 		code = htons(dhdef->transform_id);
@@ -4025,10 +4024,10 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		dhlen = get_payload_length(&ke->header) -
 			sizeof(struct ikev2payl_ke);
 		g_i = rc_vnew((uint8_t *)(ke + 1), dhlen);
-	} else if (ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
+	} else {
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
-			   "message lacks KE payload\n");
+			   "CREATE_CHILD_SA lacks KE payload\n");
 		goto respond_invalid_syntax;
 	}
 
@@ -4403,20 +4402,18 @@ ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		goto fail;
 	child_sa->n_r = n_r;
 
-	if (ke) {
+	if (child_sa->dhpriv) {
 		struct algdef *dhdef;
 		unsigned int dhlen;
 
-		if (!ike_sa->negotiated_sa || !ike_sa->negotiated_sa->dhdef)
+		if (!ke)
+			goto malformed_message;
+		dhdef = child_sa->dhgrp;
+		if (!dhdef)
+			dhdef = ikev2_dhinfo(get_uint16(&ke->ke_h.dh_group_id));
+		if (!dhdef)
 			goto malformed_message;
 
-#ifdef notyet
-		/* matching proposal --> TRANSFORM_TYPE_DH --> transform_id */
-		/* dhdef = ikev2_dhinfo(get_uint16(transform_id); */
-#else
-		/* quick hack */
-		dhdef = ike_sa->negotiated_sa->dhdef;
-#endif
 		if (get_uint16(&ke->ke_h.dh_group_id) != dhdef->transform_id) {
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_PROTOERR, PLOGLOC,

@@ -148,17 +148,12 @@ crypto_workers_fini(void)
 	free(tids);
 	tids = NULL;
 	/*
-	 * Run the leftover done callbacks with rc=-1 instead of
-	 * dropping them: the jobs' ctx (dup'd DH buffers) is owned by
-	 * those callbacks, and every callback's failure branch only
-	 * validates liveness and frees its ctx.  Runs on the IKE
-	 * thread while the SA trees are still up (iked_exit calls us
-	 * before evloop_fini).
+	 * qhead jobs never ran fn. Calling done would look like
+	 * success (oakley job rc stays 0). Drop them; iked_exit
+	 * is tearing the process down. dhead already ran fn.
 	 */
 	for (j = qhead; j; j = n) {
 		n = j->next;
-		if (j->done)
-			j->done(j->arg);
 		free(j);
 	}
 	qhead = NULL;
