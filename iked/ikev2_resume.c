@@ -650,6 +650,7 @@ restore_one(const char *path)
 		    kernel_lost ? " (kernel ESP gone, CHILD rekey 1s)" : "");
 	}
 	ikev2_sa_start_polling_timer(sa);
+	natt_start_natk(sa);
 	ikev2_sa_insert(sa);
 	ikev2_resume_save(sa);
 

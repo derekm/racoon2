@@ -995,13 +995,17 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		prop = ikev2_prop_find(matching_my_proposal,
 				       IKEV2TRANSFORM_TYPE_DH);
 		if (!prop)
-			goto no_proposal_chosen;	/* ??? */
-		if (!prop->trns)
-			goto fail_internal;
-		transf = (struct ikev2transform *)prop->trns;
-		dhdef = ikev2_dhinfo(get_uint16(&transf->transform_id));
+			prop = ikev2_prop_find(matching_peer_proposal,
+			    IKEV2TRANSFORM_TYPE_DH);
+		if (prop && prop->trns) {
+			transf = (struct ikev2transform *)prop->trns;
+			dhdef = ikev2_dhinfo(get_uint16(&transf->transform_id));
+		} else if (ike_sa->negotiated_sa)
+			dhdef = ike_sa->negotiated_sa->dhdef;
+		else
+			dhdef = NULL;
 		if (!dhdef)
-			goto fail_internal;	/* shouldn't happen */
+			goto no_proposal_chosen;
 
 		child_sa->dhgrp = dhdef;
 

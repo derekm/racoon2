@@ -3704,7 +3704,7 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 			goto fail;
 	}
 
-	pfs = (ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON);
+	pfs = 1;	/* CREATE_CHILD always offers KE; Apple requires it */
 
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
@@ -3975,10 +3975,13 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 	}
 
-	if (ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
+	if (ke) {
 		struct algdef *dhdef;
 		uint16_t code;
 		unsigned int dhlen;
+
+		/* Apple sends KE on CHILD rekey even when need_pfs is off.
+		 * Ignoring it made KEYMAT diverge; phone DELETE IKE_SA. */
 
 #ifdef notyet
 		/* matching_proposal --> TRANSFORM_TYPE_DH --> transform_id */
@@ -3986,16 +3989,11 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		TOBEWRITTEN;
 #else
 		/* quick hack */
-		dhdef = ike_sa->negotiated_sa->dhdef;
+		dhdef = ike_sa->negotiated_sa ? ike_sa->negotiated_sa->dhdef : NULL;
 #endif
-		code = htons(dhdef->transform_id);
-
-		if (!ke) {
-			isakmp_log(ike_sa, local, remote, msg,
-				   PLOG_PROTOERR, PLOGLOC,
-				   "message lacks KE payload\n");
+		if (!dhdef)
 			goto respond_invalid_syntax;
-		}
+		code = htons(dhdef->transform_id);
 
 		if (get_uint16(&ke->ke_h.dh_group_id) != dhdef->transform_id) {
 			/* send response INVALID_KE_PAYLOAD, negotiated_sa->dhgrp->code; */
@@ -4027,11 +4025,11 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		dhlen = get_payload_length(&ke->header) -
 			sizeof(struct ikev2payl_ke);
 		g_i = rc_vnew((uint8_t *)(ke + 1), dhlen);
-	} else if (ke) {
+	} else if (ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
 		isakmp_log(ike_sa, local, remote, msg,
-			   PLOG_PROTOWARN, PLOGLOC,
-			   "unexpected KE payload, ignored\n");
-		++isakmpstat.payload_ignored;
+			   PLOG_PROTOERR, PLOGLOC,
+			   "message lacks KE payload\n");
+		goto respond_invalid_syntax;
 	}
 
 	if (! old_child_sa &&
@@ -4405,11 +4403,11 @@ ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		goto fail;
 	child_sa->n_r = n_r;
 
-	if (ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
+	if (ke) {
 		struct algdef *dhdef;
 		unsigned int dhlen;
 
-		if (!ke)
+		if (!ike_sa->negotiated_sa || !ike_sa->negotiated_sa->dhdef)
 			goto malformed_message;
 
 #ifdef notyet

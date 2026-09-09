@@ -288,6 +288,17 @@ natt_natk_callback(void *param)
 	}
 }
 
+void
+natt_start_natk(struct ikev2_sa *sa)
+{
+	if (!sa || !(sa->behind_nat || sa->peer_behind_nat))
+		return;
+	if (sa->natk_timer)
+		SCHED_KILL(sa->natk_timer);
+	sa->natk_timer = sched_new(ikev2_natk_interval(sa->rmconf),
+	    natt_natk_callback, sa);
+}
+
 rc_vchar_t *
 natt_set_non_esp_marker(rc_vchar_t *pkt)
 {
