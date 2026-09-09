@@ -69,7 +69,7 @@ Do **not** use L2TP/IPsec on 26/27 against this box. The L2TP UI may still exist
 
 - IKE AES-GCM, DH19, ML-KEM / RFC 9370
 - IPv6-in-IPv4
-- Host reboot (resume dump is tmpfs; ESP dies with the kernel). iked restart with a live IKE_SA kept the iPhone Connected 2026-09-08.
+- Host reboot not measured. Dump is StateDirectory (`/var/lib/racoon2/resume`); kernel ESP still dies. iked restart with a live IKE_SA kept the iPhone Connected 2026-09-08.
 
 ## Reachability (WSL2)
 

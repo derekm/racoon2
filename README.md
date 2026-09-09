@@ -131,9 +131,10 @@ NAT-OA on PF_KEY and Linux `XFRMA_ENCAP encap_oa` (`lib/xfrmnatt`).
 IP_ANY is IP_RW for SA endpoints (no mixed-family XFRM tmpl).
 MOBIKE responder: N(MOBIKE_SUPPORTED) + UPDATE_SA_ADDRESSES migrate.
 COOKIE2 is echoed; ADDITIONAL_* stored. QCD_TOKEN in IKE_AUTH.
-IKE_SA dump on SIGTERM (`/var/run/racoon2/resume`); 2026-09-08 bounce
-restored IKE, left ESP (same SPI), iPhone stayed Connected. Host reboot
-still drops (tmpfs dump + kernel SAD). Not RFC 5723.
+IKE_SA dump on SIGTERM (`/var/lib/racoon2/resume`, systemd StateDirectory);
+2026-09-08 bounce restored IKE, left ESP (same SPI), iPhone stayed Connected.
+Host reboot: dump survives tmpfs; kernel ESP does not — load rekeys CHILD
+if the dump predates this boot. Not RFC 5723.
 Remaining work: [doc/int-gsoc2026.md](doc/int-gsoc2026.md).
 
 GSoC upstream: **`origin/gsoc2026`** (zoulasc/racoon2) and
@@ -227,7 +228,9 @@ Currently, the system supports the following specifications:
 	Partial statuses (scope beyond the supported core):
 	RFC 7296 — IKEv2 EAP (section 2.16) absent until the AAA item;
 	          iked restart resume measured 2026-09-08 (same SPI,
-	          iPhone Connected); not host reboot, not RFC 5723.
+	          iPhone Connected); dump is StateDirectory
+	          `/var/lib/racoon2/resume`. Host reboot rekeys CHILD
+	          (no kernel ESP). Not RFC 5723.
 	RFC 2409 — IKEv1 mode-config/XAuth is ENABLE_HYBRID scaffolding
 	          only (headers referenced, no sources, no configure
 	          hook) — not buildable. L2TP/IPsec therefore holds for

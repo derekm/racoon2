@@ -158,7 +158,7 @@ EOF
 
 	case "$name" in
 	*-resume-dump)
-		dump=$(find /var/run/racoon2/resume /run/racoon2/resume -type f 2>/dev/null | head -1)
+		dump=$(find /var/lib/racoon2/resume /var/run/racoon2/resume /run/racoon2/resume -type f 2>/dev/null | head -1)
 		[ -n "$dump" ] || { log "FAIL: no resume dump after IKE_AUTH"; charon_reset; return 1; }
 		mag=$(od -An -tx1 -N4 "$dump" 2>/dev/null | tr -d ' \n')
 		echo "$mag" | grep -qi '^53523252' || {

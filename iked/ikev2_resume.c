@@ -36,8 +36,9 @@
 #define RESUME_UNIX_FLOOR	1000000000u	/* 2001-09-09 */
 
 #ifndef RESUME_DIR
-#define RESUME_DIR	"/var/run/racoon2/resume"
+#define RESUME_DIR		"/var/lib/racoon2/resume"
 #endif
+#define RESUME_DIR_LEGACY	"/var/run/racoon2/resume"
 
 #define R2RS_MAGIC	0x52325253u	/* 'R2RS' */
 #define R2RS_VERSION	1
@@ -140,6 +141,107 @@ resume_remain_from_dump(uint32_t expire_at, time_t now, time_t fallback)
 	return remaining;
 }
 
+static int
+resume_dump_predates_boot(const char *path)
+{
+	struct stat st;
+	time_t boot_time, now, up;
+	FILE *f;
+	double dup;
+
+	if (stat(path, &st) < 0)
+		return 0;
+#ifdef CLOCK_BOOTTIME
+	{
+		struct timespec ts_up, ts_now;
+
+		if (clock_gettime(CLOCK_BOOTTIME, &ts_up) == 0 &&
+		    clock_gettime(CLOCK_REALTIME, &ts_now) == 0) {
+			boot_time = ts_now.tv_sec - ts_up.tv_sec;
+			return st.st_mtime < boot_time;
+		}
+	}
+#endif
+	f = fopen("/proc/uptime", "r");
+	if (!f)
+		return 0;
+	if (fscanf(f, "%lf", &dup) != 1) {
+		fclose(f);
+		return 0;
+	}
+	fclose(f);
+	now = time(NULL);
+	up = (time_t)dup;
+	boot_time = now - up;
+	return st.st_mtime < boot_time;
+}
+
+static int
+resume_copy_file(const char *from, const char *to)
+{
+	char buf[2048];
+	int infd, outfd;
+	ssize_t n, w, off;
+
+	infd = open(from, O_RDONLY);
+	if (infd < 0)
+		return -1;
+	outfd = open(to, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	if (outfd < 0) {
+		close(infd);
+		return -1;
+	}
+	while ((n = read(infd, buf, sizeof(buf))) > 0) {
+		off = 0;
+		while (off < n) {
+			w = write(outfd, buf + off, (size_t)(n - off));
+			if (w < 0) {
+				close(infd);
+				close(outfd);
+				unlink(to);
+				return -1;
+			}
+			off += w;
+		}
+	}
+	if (n < 0 || fsync(outfd) < 0) {
+		close(infd);
+		close(outfd);
+		unlink(to);
+		return -1;
+	}
+	close(infd);
+	close(outfd);
+	return 0;
+}
+
+static void
+resume_migrate_legacy(void)
+{
+	DIR *d;
+	struct dirent *de;
+	char from[320], to[320];
+
+	(void)mkdir("/var/lib/racoon2", 0700);
+	if (mkdir(RESUME_DIR, 0700) < 0 && errno != EEXIST)
+		return;
+	d = opendir(RESUME_DIR_LEGACY);
+	if (!d)
+		return;
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(from, sizeof(from), "%s/%s", RESUME_DIR_LEGACY,
+		    de->d_name);
+		snprintf(to, sizeof(to), "%s/%s", RESUME_DIR, de->d_name);
+		if (rename(from, to) == 0)
+			continue;
+		if (errno == EXDEV && resume_copy_file(from, to) == 0)
+			unlink(from);
+	}
+	closedir(d);
+}
+
 static void
 sa_to_wire(struct sockaddr *sa, uint16_t *family, uint16_t *port,
     uint8_t addr[16])
@@ -189,16 +291,23 @@ wire_to_sa(uint16_t family, uint16_t port, const uint8_t addr[16])
 }
 
 static void
-resume_filename(char *buf, size_t buflen, const uint8_t i_ck[8],
-    const uint8_t r_ck[8])
+resume_filename_in(char *buf, size_t buflen, const char *dir,
+    const uint8_t i_ck[8], const uint8_t r_ck[8])
 {
 	snprintf(buf, buflen,
-	    RESUME_DIR
-	    "/%02x%02x%02x%02x%02x%02x%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x",
+	    "%s/%02x%02x%02x%02x%02x%02x%02x%02x-%02x%02x%02x%02x%02x%02x%02x%02x",
+	    dir,
 	    i_ck[0], i_ck[1], i_ck[2], i_ck[3],
 	    i_ck[4], i_ck[5], i_ck[6], i_ck[7],
 	    r_ck[0], r_ck[1], r_ck[2], r_ck[3],
 	    r_ck[4], r_ck[5], r_ck[6], r_ck[7]);
+}
+
+static void
+resume_filename(char *buf, size_t buflen, const uint8_t i_ck[8],
+    const uint8_t r_ck[8])
+{
+	resume_filename_in(buf, buflen, RESUME_DIR, i_ck, r_ck);
 }
 
 static struct prop_pair *
@@ -246,7 +355,11 @@ ikev2_resume_forget(struct ikev2_sa *sa)
 
 	if (!sa)
 		return;
-	resume_filename(path, sizeof(path), sa->index.i_ck, sa->index.r_ck);
+	resume_filename_in(path, sizeof(path), RESUME_DIR, sa->index.i_ck,
+	    sa->index.r_ck);
+	unlink(path);
+	resume_filename_in(path, sizeof(path), RESUME_DIR_LEGACY, sa->index.i_ck,
+	    sa->index.r_ck);
 	unlink(path);
 }
 
@@ -337,7 +450,7 @@ ikev2_resume_save(struct ikev2_sa *sa)
 	}
 	rec.nchild = (uint32_t)n;
 
-	(void)mkdir("/var/run/racoon2", 0755);
+	(void)mkdir("/var/lib/racoon2", 0700);
 	if (mkdir(RESUME_DIR, 0700) < 0 && errno != EEXIST) {
 		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "resume: mkdir %s failed\n", RESUME_DIR);
@@ -390,9 +503,10 @@ restore_one(const char *path)
 	struct ikev2_isakmpsa *nsa = NULL;
 	struct sockaddr *local = NULL, *remote = NULL;
 	rc_vchar_t *rmidx = NULL;
-	int fd, i;
+	int fd, i, kernel_lost;
 	time_t now = time(NULL);
 
+	kernel_lost = resume_dump_predates_boot(path);
 	fd = open(path, O_RDONLY);
 	if (fd < 0)
 		return -1;
@@ -514,8 +628,11 @@ restore_one(const char *path)
 			}
 		}
 		ch->state = IKEV2_CHILD_STATE_MATURE;
-		remain = resume_remain_from_dump(c->expire_at, now,
-		    IKEV2_DEFAULT_IPSEC_LIFETIME_TIME);
+		if (kernel_lost)
+			remain = 1;
+		else
+			remain = resume_remain_from_dump(c->expire_at, now,
+			    IKEV2_DEFAULT_IPSEC_LIFETIME_TIME);
 		ikev2_child_arm_expire(ch, remain);
 	}
 
@@ -527,12 +644,14 @@ restore_one(const char *path)
 
 		ikev2_sa_arm_lifetime(sa, (int)remain);
 		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-		    "resumed IKE_SA %s children=%u msgid %u/%u ike_remain=%ld\n",
+		    "resumed IKE_SA %s children=%u msgid %u/%u ike_remain=%ld%s\n",
 		    rcs_sa2str(sa->remote), rec.nchild,
-		    rec.send_message_id, rec.recv_message_id, (long)remain);
+		    rec.send_message_id, rec.recv_message_id, (long)remain,
+		    kernel_lost ? " (kernel ESP gone, CHILD rekey 1s)" : "");
 	}
 	ikev2_sa_start_polling_timer(sa);
 	ikev2_sa_insert(sa);
+	ikev2_resume_save(sa);
 
 	rc_free(local);
 	rc_free(remote);
@@ -566,9 +685,12 @@ ikev2_resume_load(void)
 	char path[320];
 	int n = 0;
 
+	resume_migrate_legacy();
 	d = opendir(RESUME_DIR);
-	if (!d)
+	if (!d) {
+		plog(PLOG_INFO, PLOGLOC, 0, "resume: no dumps loaded\n");
 		return;
+	}
 	while ((de = readdir(d)) != NULL) {
 		if (de->d_name[0] == '.')
 			continue;
