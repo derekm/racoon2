@@ -152,7 +152,8 @@ ikev2_qcd_respond(rc_vchar_t *request, struct sockaddr *remote,
 
 	n2 = (struct ikev2payl_notify *)((uint8_t *)n1 + n1_len);
 	set_payload_header(&n2->header, IKEV2_NO_NEXT_PAYLOAD, n2_len);
-	n2->nh.protocol_id = 0;
+	/* RFC 6290 §4.1: QCD_TOKEN is tied to the IKE SA, Protocol ID 1 */
+	n2->nh.protocol_id = 1;
 	n2->nh.spi_size = 0;
 	put_uint16(&n2->nh.notify_message_type, IKEV2_QCD_TOKEN);
 	memcpy(n2 + 1, tok->v, tok->l);

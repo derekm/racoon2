@@ -460,7 +460,7 @@ extern int ikev2_create_child_responder(struct ikev2_sa *,
     struct ikev2_payload_header *, struct ikev2_payload_header *,
     struct ikev2_payload_header *, struct ikev2_payload_header *,
     rc_vchar_t *, rc_vchar_t *, struct ikev2_child_param *, int,
-    struct ikev2_child_sa *);
+    unsigned int, struct ikev2_child_sa *);
 void ikev2_mobike_apply(struct ikev2_sa *, struct sockaddr *,
     struct sockaddr *);
 extern int ikev2_set_negotiated_sa(struct ikev2_sa *, struct ikev2_isakmpsa *);

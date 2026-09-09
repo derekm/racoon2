@@ -190,6 +190,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %token OUI DEFLATE LZS
 %token MODP768 MODP1024 MODP1536 EC2N155 EC2N185
 %token MODP2048 MODP3072 MODP4096 MODP6144 MODP8192
+%token ECP256
 %token PSK DSS RSASIG RSAENC RSAREV GSSAPI_KRB
        /* addresspool for IKE Config */
 %token ADDRESSPOOL
@@ -1570,6 +1571,7 @@ algorithm_type
 	|	MODP4096	{ MKRCFVAL($$, RCT_ALG_MODP4096); }
 	|	MODP6144	{ MKRCFVAL($$, RCT_ALG_MODP6144); }
 	|	MODP8192	{ MKRCFVAL($$, RCT_ALG_MODP8192); }
+	|	ECP256		{ MKRCFVAL($$, RCT_ALG_ECP256); }
 	|	PSK		{ MKRCFVAL($$, RCT_ALG_PSK); }
 	|	DSS		{ MKRCFVAL($$, RCT_ALG_DSS); }
 	|	RSASIG		{ MKRCFVAL($$, RCT_ALG_RSASIG); }
@@ -1764,6 +1766,9 @@ rcf_dhgroupnumer_fromname(const char *str)
 		break;
 	case 18:
 		type = RCT_ALG_MODP8192;
+		break;
+	case 19:
+		type = RCT_ALG_ECP256;
 		break;
 	default:
 		yyerror("illegal dh group number[%d]", n);

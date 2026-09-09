@@ -446,14 +446,25 @@ createchild_init_recv_notify(struct ikev2_sa *ike_sa,
 #endif
 
 	case IKEV2_INVALID_KE_PAYLOAD:
-		if (ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
-			child_sa->message_id = 0;
+		/*
+		 * We sent a KEi in some group, the responder rejects it.
+		 * RFC 7296 §1.3: retry with the group the responder
+		 * named (notify data = DH group code).  Gate on whether
+		 * we actually sent KE, not the need_pfs configuration
+		 * knob (default off would have made this a dead path).
+		 */
+		if (child_sa->dhgrp != 0 &&
+		    child_sa->dhgrp->transform_id !=
+		    get_uint16((uint16_t *)(notify + 1))) {
 			child_sa->dhgrp =
 				ikev2_dhinfo(get_uint16
 					     ((uint16_t *)(notify + 1)));
-			ikev2_child_state_set(child_sa,
-					      IKEV2_CHILD_STATE_GETSPI_DONE);
-			return -1;
+			if (child_sa->dhgrp) {
+				child_sa->message_id = 0;
+				ikev2_child_state_set(child_sa,
+						      IKEV2_CHILD_STATE_GETSPI_DONE);
+				return -1;
+			}
 		}
 		/* FALLTHROUGH */
 	case IKEV2_NO_PROPOSAL_CHOSEN:

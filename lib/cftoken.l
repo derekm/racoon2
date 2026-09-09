@@ -204,6 +204,7 @@ modp3072		{ DP; return(MODP3072); }
 modp4096		{ DP; return(MODP4096); }
 modp6144		{ DP; return(MODP6144); }
 modp8192		{ DP; return(MODP8192); }
+ecp256			{ DP; return(ECP256); }
 psk			{ DP; return(PSK); }
 dss			{ DP; return(DSS); }
 rsasig			{ DP; return(RSASIG); }

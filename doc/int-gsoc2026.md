@@ -11,6 +11,8 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
 ## In tree
 
 - Resume dump `/var/lib/racoon2/resume` (SR2R, StateDirectory). Wall-clock lifetime. If dump mtime predates boot, CHILD rekey in 1s (kernel ESP gone). Not proven across a host reboot.
+- Per-packet message-id fsync removed (`962a031`): on a crash between receiving a request and updating the durable message id, the resumed side may reuse an old message id — peer retransmits then dedupes; the tradeoff is one rollback window vs. a disk sync on every IKE packet. Deliberate.
+- macos client config sample now offers `ecp256` (DH19) first; responder accepts Apple KEi group 19 on CREATE_CHILD and enforces KEi == selected proposal DH (`ikev2_child.c`), replying `INVALID_KE_PAYLOAD` with our group instead of computing a divergent KEYMAT.
 - RFC 6290 QCD maker in IKE_AUTH; secret `/var/lib/racoon2/qcd.secret`. Token-taker untested.
 - RFC 4555 COOKIE2 echo (responder). Matrix `ikev2-netns-cookie2` gates `NO_ADDITIONAL_ADDRESSES`.
 - RFC 7296 IKE_SA rekey in code. Matrix row is a log grep after charon `reauth=no`.

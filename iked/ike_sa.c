@@ -313,11 +313,37 @@ void
 ikev2_child_abort(struct ikev2_child_sa *child_sa, int err)
 {
 	struct rcpfk_msg param;
+	struct ikev2_child_sa *old_child_sa;
+	unsigned int proto;
 
 	param.satype = RCT_SATYPE_ESP;	/* XXX */
 	param.seq = child_sa->sadb_request.seqno;
 	param.eno = err;
 	child_sa->sadb_request.method->acquire_error(&param);
+
+	/*
+	 * If this child was the NEW CHILD of an in-flight rekey, the
+	 * old child_sa still has rekey_inprogress set and its expire
+	 * timer was killed when the rekey started.  Leaving that alone
+	 * wedges the old CHILD_SA: it would never rekey again nor
+	 * expire at hard lifetime (both rescue paths skip when
+	 * rekey_inprogress is stuck).  Clear the flag and re-arm so
+	 * the next expire callback attempts a fresh rekey.
+	 */
+	old_child_sa = NULL;
+	if (child_sa->preceding_satype != 0 && child_sa->parent) {
+		proto = (child_sa->preceding_satype == RCT_SATYPE_ESP ?
+			 IKEV2PROPOSAL_ESP : IKEV2PROPOSAL_AH);
+		old_child_sa = ikev2_find_child_sa_by_spi(child_sa->parent,
+							  proto,
+							  child_sa->preceding_spi,
+							  MINE);
+	}
+	if (old_child_sa && old_child_sa != child_sa &&
+	    old_child_sa->rekey_inprogress) {
+		old_child_sa->rekey_inprogress = FALSE;
+		ikev2_child_arm_expire(old_child_sa, 30);
+	}
 
 	ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_EXPIRED);
 	++isakmpstat.child_abort;

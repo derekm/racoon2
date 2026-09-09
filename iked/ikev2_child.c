@@ -848,6 +848,7 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 			     rc_vchar_t *n_i,
 			     struct ikev2_child_param *child_param,
 			     int is_createchild,
+			     unsigned int peer_grp,
 			     struct ikev2_child_sa *old_child_sa)
 {
 	size_t nonce_size;
@@ -969,7 +970,16 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	}
 #endif
 
-	my_proposal = ikev2_ipsec_conf_to_proplist(child_sa, is_createchild);
+	/*
+	 * Offer DH only when the peer actually sent a KE payload.
+	 * With no KEi the exchange is permitted to be PFS-less
+	 * (RFC 7296 2.18) and `ikev2_find_match` would otherwise
+	 * fail our DH-transform proposal against a KE-less SAi2
+	 * (regression vs pre-efaf7a1 no-PFS interop).  The
+	 * need_pfs config gate remains in security contexts.
+	 */
+	my_proposal = ikev2_ipsec_conf_to_proplist(child_sa,
+	    is_createchild && g_i != NULL);
 	if (!my_proposal)
 		goto fail_create_proposal;
 
@@ -1006,6 +1016,23 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 			dhdef = NULL;
 		if (!dhdef)
 			goto no_proposal_chosen;
+
+		/*
+		 * RFC 7296 §1.3.2/§2.18: the DH group of the KEi payload
+		 * MUST be the group of the proposal we select.  Computing
+		 * DH across a group mismatch silently diverges KEYMAT
+		 * (23:12 drop) — reject instead.
+		 */
+		if (peer_grp != 0 && dhdef->transform_id != peer_grp) {
+			isakmp_log(ike_sa, local, remote, 0,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "KEi group %u does not match selected proposal DH group %u, responding INVALID_KE_PAYLOAD\n",
+				   peer_grp, dhdef->transform_id);
+			++isakmpstat.invalid_ke_payload;
+			child_param->notify_code = dhdef->transform_id;
+			err = IKEV2_INVALID_KE_PAYLOAD;
+			goto fail;
+		}
 
 		child_sa->dhgrp = dhdef;
 

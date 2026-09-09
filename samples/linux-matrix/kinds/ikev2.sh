@@ -54,12 +54,32 @@ kind_ikev2() {
 	FRAG=
 	MOBIKE=
 	IKE_LIFE='ikelifetime=1h'
+	CHILD_LIFE='keylife=1h'
 	REKEY_EXTRA=
 	case "$name" in
 	*-s384) STRONG_ESP='aes256-sha384!'; EXPECT_AUTH='auth-trunc hmac(sha384).* 192$' ;;
 	*-s512) STRONG_ESP='aes256-sha512!'; EXPECT_AUTH='auth-trunc hmac(sha512).* 256$' ;;
 	*-g8)  STRONG_ESP='aes128gcm8!';  EXPECT_AUTH='aead rfc4106(gcm(aes)).* 64$' ;;
 	*-g12) STRONG_ESP='aes128gcm12!'; EXPECT_AUTH='aead rfc4106(gcm(aes)).* 96$' ;;
+	*-dh19)
+		# ECP256 (DH group 19) in both IKE_AUTH and the CREATE_CHILD
+		# proposals; responder must accept KEi group 19 and bind it
+		# to the selected proposal DH (no INVALID_KE loop, no
+		# KEYMAT divergence).
+		STRONG_ESP='aes128gcm16-ecp256!'
+		EXPECT_AUTH='aead rfc4106(gcm(aes)).* 128$'
+		;;
+	*-childrekey)
+		# CHILD_SA rekey via CREATE_CHILD_SA + REKEY_SA at a 30s
+		# keylife (keylife=1h never fires in CI).  PFS-19: charon
+		# rekeys with KEi group 19.  Gate: SPI replaced, SA stays.
+		STRONG_ESP='aes128gcm16-ecp256!'
+		CHILD_LIFE='keylife=30s'
+		REKEY_EXTRA='reauth=no
+rekey=yes
+rekeymargin=8s
+rekeyfuzz=0%'
+		;;
 	*-frag) FRAG='fragmentation=yes' ;;
 	*-mobike|*-cookie2) MOBIKE='mobike=yes' ;;
 	*-ikesa-rekey)
@@ -104,7 +124,7 @@ conn r2macos
 	type=tunnel
 	$IKE_LIFE
 	$REKEY_EXTRA
-	keylife=1h
+	keylife=$CHILD_LIFE
 	keyingtries=1
 	$FRAG
 	$MOBIKE
@@ -189,6 +209,26 @@ EOF
 			charon_reset
 			return 1
 		}
+		;;
+	*-childrekey)
+		# CHILD_SA rekey fires at keylife=30s; assert the ESP SPI
+		# actually changed (keylife=1h never fires in CI) and the
+		# tunnel stays up afterward.
+		spi_before=$(ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
+		sleep 35
+		showr=$("$SBIN/ikedctl" show-sa isakmp) || true
+		echo "$showr" | grep -q "$CIP" || {
+			log "FAIL: IKE_SA gone after child rekey wait"
+			charon_reset
+			return 1
+		}
+		spi_after=$(ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
+		[ "$spi_before" != "$spi_after" ] || {
+			log "FAIL: ESP SPI unchanged after childrekey wait (no rekey fired)"
+			charon_reset
+			return 1
+		}
+		log "child rekey replaced SPI: $spi_before -> $spi_after"
 		;;
 	*-cookie2)
 		grep -q 'NO_ADDITIONAL_ADDRESSES' /tmp/r2-iked-matrix.log || {

@@ -2652,7 +2652,7 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 
 	error = ikev2_create_child_responder(ike_sa, local, remote, message_id,
 					     sa_i2, ts_i, ts_r, cfg, 0, 0,
-					     &child_param, FALSE, 0);
+					     &child_param, FALSE, 0, 0);
 	if (error) {
 		++isakmpstat.fail_process_packet; /* ??? */
 		goto notify;
@@ -2949,7 +2949,8 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 				   "sending QCD_TOKEN\n");
 			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
-					    ikev2_notify_payload(0, 0, 0,
+					    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_IKE,
+								 0, 0,
 								 IKEV2_QCD_TOKEN,
 								 qcd->v, qcd->l),
 					    TRUE);
@@ -3730,10 +3731,19 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 		else
 			dhgrpdef = NULL;
 		if (!dhgrpdef) {
+			ctx->payl_inited = 0;	/* fail: destroys payl once */
 			ikev2_child_init_ctx_free(ctx);
 			goto fail;
 		}
 		ctx->dhgrpdef = dhgrpdef;
+
+		/*
+		 * Remember the group we sent KEi in, so the KEr check in
+		 * ikev2_createchild_initiator_recv() compares against it
+		 * instead of the group of the KEr payload itself (which
+		 * would accept any mismatch silently).
+		 */
+		child_sa->dhgrp = dhgrpdef;
 
 		ike_sa->crypto_pending = 1;
 		if (oakley_dh_generate_submit(
@@ -3787,6 +3797,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	uint32_t rekey_spi = 0;
 	struct ikev2_child_param child_param;
 	struct ikev2_child_sa *old_child_sa = 0;
+	unsigned int peer_grp = 0;	/* DH group of the KEi payload */
 	uint32_t message_id;
 	int err;
 
@@ -3981,27 +3992,23 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 	if (ke) {
 		struct algdef *dhdef;
-		uint16_t code;
 		unsigned int dhlen;
-		unsigned int peer_grp;
-
-		/* Apple sends KE on CHILD rekey even when need_pfs is off.
-		 * Ignoring it made KEYMAT diverge; phone DELETE IKE_SA. */
 
 		peer_grp = get_uint16(&ke->ke_h.dh_group_id);
 		dhdef = ikev2_dhinfo(peer_grp);
-		if (!dhdef)
-			goto respond_invalid_syntax;
-		code = htons(dhdef->transform_id);
-
-		if (get_uint16(&ke->ke_h.dh_group_id) != dhdef->transform_id) {
-			/* send response INVALID_KE_PAYLOAD, negotiated_sa->dhgrp->code; */
+		if (!dhdef) {
+			/* Unsupported KEi group.  RFC 7296 3.3.2:
+			 * tell the peer which group we would accept. */
+			uint16_t code = 0;
+			struct algdef *pref =
+			    ike_sa->negotiated_sa ? ike_sa->negotiated_sa->dhdef : 0;
 
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_PROTOERR, PLOGLOC,
-				   "received KE type %d, expected %d\n",
-				   get_uint16(&ke->ke_h.dh_group_id),
-				   dhdef->transform_id);
+				   "KEi group %d not supported\n", peer_grp);
+			++isakmpstat.invalid_ke_payload;
+			if (pref)
+				code = htons(pref->transform_id);
 			(void)ikev2_respond_error(ike_sa, msg, remote, local,
 						  0, 0, 0,
 						  IKEV2_INVALID_KE_PAYLOAD,
@@ -4021,15 +4028,15 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			goto respond_invalid_syntax;
 		}
 
-		dhlen = get_payload_length(&ke->header) -
-			sizeof(struct ikev2payl_ke);
 		g_i = rc_vnew((uint8_t *)(ke + 1), dhlen);
-	} else {
+	} else if (ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
-			   "CREATE_CHILD_SA lacks KE payload\n");
+			   "PFS required but CREATE_CHILD_SA lacks KE payload\n");
 		goto respond_invalid_syntax;
 	}
+	/* no KEi and PFS not required: KEYMAT = prf+(SK_d, Ni|Nr)
+	 * (RFC 7296 2.17, 2.18) — dhdef binding is skipped below. */
 
 	if (! old_child_sa &&
 	    ikev2_config_required(ike_sa->rmconf) == RCT_BOOL_ON &&
@@ -4059,7 +4066,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	err = ikev2_create_child_responder(ike_sa, local, remote, message_id,
 					   sa, ts_i, ts_r, cfg, g_i, n_i,
 					   &child_param, TRUE,
-					   old_child_sa);
+					   peer_grp, old_child_sa);
 	if (err) {
 		/* ikev2_create_child_responder() increments isakmpstat */
 		goto fail;
@@ -4080,8 +4087,28 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
       fail:
 	if (err <= 0)
 		err = IKEV2_INVALID_SYNTAX;
-	(void)ikev2_respond_error(ike_sa, msg, remote, local,
-				  0, 0, 0, err, 0, 0);
+	/*
+	 * The peer's rekey request failed — clear rekey_inprogress on
+	 * the old child_sa (set in the REKEY_SA handling above), or it
+	 * would never be rekeyed again (and its expire timer rescue
+	 * paths all skip while the flag is stuck).
+	 */
+	if (old_child_sa && old_child_sa->rekey_inprogress) {
+		old_child_sa->rekey_inprogress = FALSE;
+		old_child_sa->rekey_duplicate = FALSE;
+		ikev2_child_arm_expire(old_child_sa, 30);
+	}
+	if (err == IKEV2_INVALID_KE_PAYLOAD) {
+		/*
+		 * RFC 7296 §3.14.2: INVALID_KE_PAYLOAD carries the DH
+		 * group we would accept in the Notify data.
+		 */
+		uint16_t code = htons((uint16_t)child_param.notify_code);
+		(void)ikev2_respond_error(ike_sa, msg, remote, local,
+					  0, 0, 0, err, &code, sizeof(code));
+	} else
+		(void)ikev2_respond_error(ike_sa, msg, remote, local,
+					  0, 0, 0, err, 0, 0);
 	goto done;
 
       fail_nomem:

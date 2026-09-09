@@ -56,7 +56,7 @@ Apple IKE SA payload defaults (MDM `IKESecurityAssociationParameters` when the p
 
 - Encryption: `AES-256` (CBC). `AES-256-GCM` is allowed; **iked cannot do IKE GCM** (no RFC 5282). If a profile forces IKE GCM, the SA will not match.
 - Integrity: `SHA2-256`
-- DH: `14` (modp2048). Groups `1,2,5` gone on 26+. Group **19** (ECP256) is common on some vendor “use Apple defaults” guides; **this tree has no ECP groups**. If the Mac proposes only 19, negotiation fails until the profile sets DH 14 or 15.
+- DH: `14` (modp2048). Groups `1,2,5` gone on 26+. Group **19** (ECP256) is implemented here (RFC 5903) and accepted from Apple clients — `kmp_dh_group { ecp256; ... }` in the sample config offers it first. If the Mac proposes only 19, this responder negotiates 19 instead of failing.
 - Child SA: prefer ESP AES-GCM-16 here; CBC+SHA2-256 is the fallback.
 
 macOS 26+ MDM can set `Post Quantum Key Exchange Methods` (RFC 9370 ADDKE1–7) and RFC 8784 PPK. **Not implemented** in this racoon2 tree. Leave those keys unset on the client.
@@ -67,7 +67,7 @@ Do **not** use L2TP/IPsec on 26/27 against this box. The L2TP UI may still exist
 
 ## What this first install will not do
 
-- IKE AES-GCM, DH19, ML-KEM / RFC 9370
+- IKE AES-GCM, ML-KEM / RFC 9370 (DH19/ECP256 **is** supported — RFC 5903, live since 2026-09-08)
 - IPv6-in-IPv4
 - Host reboot not measured. Dump is StateDirectory (`/var/lib/racoon2/resume`); kernel ESP still dies. iked restart with a live IKE_SA kept the iPhone Connected 2026-09-08.
 
