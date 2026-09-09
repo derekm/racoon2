@@ -447,8 +447,9 @@ extern struct ikev2_sa *ikev2_allocate_sa(isakmp_cookie_t *, struct sockaddr *,
 extern struct ikev2_sa *ikev2_create_sa(isakmp_cookie_t *, struct sockaddr *,
 					struct sockaddr *, struct rcf_remote *);
 extern void ikev2_sa_stop_timer(struct ikev2_sa *);
-extern void ikev2_sa_start_lifetime_timer(struct ikev2_sa *);
-extern void ikev2_sa_stop_grace_timer(struct ikev2_sa *);
+void ikev2_sa_start_lifetime_timer(struct ikev2_sa *);
+void ikev2_sa_arm_lifetime(struct ikev2_sa *, int);
+void ikev2_sa_stop_grace_timer(struct ikev2_sa *);
 extern void ikev2_sa_expire(struct ikev2_sa *, int);
 extern void ikev2_sa_delete(struct ikev2_sa *);
 extern void ikev2_dispose_sa(struct ikev2_sa *);

@@ -67,10 +67,9 @@ Do **not** use L2TP/IPsec on 26/27 against this box. The L2TP UI may still exist
 
 ## What this first install will not do
 
-- Inner IPv4 via IKEv2 CP: racoon2 CP is experimental; vals has a pool but the Mac may still propose `0.0.0.0/0`. Confirm traffic selectors in iked logs, not by assuming a utun address.
 - IKE AES-GCM, DH19, ML-KEM / RFC 9370
-- v6-in-v4 / Apple NAT-T as a first-class claim (needs live `ip xfrm` after CHILD_SA)
-- Socket-activated spmd: `spmd` still unlinks `/run/racoon2/spmif` before LISTEN_FDS. Test units are Type=simple `-F` without `.socket`
+- IPv6-in-IPv4
+- Connectful iked restart (resume dump exists; bounce not measured)
 
 ## Reachability (WSL2)
 

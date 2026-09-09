@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/derekm/racoon2/actions/workflows/ubuntu.yml"><img src="https://github.com/derekm/racoon2/actions/workflows/ubuntu.yml/badge.svg?branch=linux-km" alt="Ubuntu build &amp; test (xfrm + pfkey)"/></a>
-  <a href="https://github.com/derekm/racoon2/actions/workflows/netbsd.yml"><img src="https://github.com/derekm/racoon2/actions/workflows/netbsd.yml/badge.svg?branch=linux-km" alt="NetBSD build &amp; test"/></a>
+  <a href="https://github.com/derekm/racoon2/actions/workflows/ubuntu.yml"><img src="https://github.com/derekm/racoon2/actions/workflows/ubuntu.yml/badge.svg?branch=int/gsoc2026" alt="Ubuntu build &amp; test (xfrm + pfkey)"/></a>
+  <a href="https://github.com/derekm/racoon2/actions/workflows/netbsd.yml"><img src="https://github.com/derekm/racoon2/actions/workflows/netbsd.yml/badge.svg?branch=int/gsoc2026" alt="NetBSD build &amp; test"/></a>
 </p>
 
 ---
@@ -130,21 +130,9 @@ NAT-OA on PF_KEY and Linux `XFRMA_ENCAP encap_oa` (`lib/xfrmnatt`).
 `ikev2-netns-frag` / `ikev2-netns-mobike` are knobs, not reassembly/roam proofs.
 IP_ANY is IP_RW for SA endpoints (no mixed-family XFRM tmpl).
 MOBIKE responder: N(MOBIKE_SUPPORTED) + UPDATE_SA_ADDRESSES migrate.
-
-**Post-merge plan:**
-
-1. Fragmentation security (CVE-2016-10396 class) — 60s / 4 assemblies / 64k — started.
-2. Retire `IP_ANY` XFRM template mangling — done (`rcs_is_addr_wildcard`).
-3. MOBIKE (RFC 4555) responder — COOKIE2 echo + ADDITIONAL_* store;
-   iPhone is the roaming peer. UPDATE_SA_ADDRESSES migrate is live.
-4. Async child PFS + IKEv1 DH (`oakley_dh_gencmp_submit` landed; CREATE_CHILD still inlines).
-5. Fuzzing (libFuzzer → OSS-Fuzz) on ikev2_input / isakmp.
-6. RFC 8784 PPK, then RFC 9242/9370 (OpenSSL 3.5/OQS).
-7. Transport-mode IKEv2 e2e + IPv6-in-IPv4; Windows/Android/macOS 27.
-8. Enterprise AAA: IKEv2 EAP-MSCHAPv2 + RADIUS (AD behind RADIUS),
-   kinkd vs MIT krb5 and Samba AD DC.
-9. RFC 7296 §2.8 IKE_SA rekey — in tree; matrix `ikev2-netns-ikesa-rekey`.
-10. RFC 6290 QCD — in tree; maker token in AUTH; not a crash-without-dump proof.
+COOKIE2 is echoed; ADDITIONAL_* stored. QCD_TOKEN in IKE_AUTH.
+IKE_SA dump on SIGTERM (`/var/run/racoon2/resume`); load is dump-only until a bounce proof.
+Remaining work: [doc/int-gsoc2026.md](doc/int-gsoc2026.md).
 
 GSoC upstream: **`origin/gsoc2026`** (zoulasc/racoon2) and
 https://github.com/ssszcmawo/racoon2/tree/gsoc2026
@@ -177,9 +165,9 @@ Do not XOR-compile ikedctl onto `NETLINK_XFRM`.
 iked on Linux uses epoll (`--disable-epoll` for select). Optional
 crypto workers (`--with-crypto-workers=N`, default 0 = inline) drain
 on the IKE thread. OpenSSL 3 providers (`--with-openssl-provider` /
-`RACOON2_OPENSSL_PROVIDER`) and ENGINE load in `eay_init`. DH/RSA
-handshake enqueue is not wired; a provider only helps if it
-implements those methods on the calling thread.
+`RACOON2_OPENSSL_PROVIDER`) and ENGINE load in `eay_init`. IKE_SA and
+CREATE_CHILD DH go through `oakley_dh_*_submit` → `crypto_job_submit`
+(N=0 inlines on the IKE thread).
 
 Currently, the system supports the following specifications:
 
@@ -224,10 +212,10 @@ Currently, the system supports the following specifications:
 	migrate; COOKIE2 is echoed on INFORMATIONAL; ADDITIONAL_IP4/IP6
 	are stored (single-IP gateway does not advertise extras).
 	RFC 6290 QCD_TOKEN is sent in IKE_AUTH; unknown IKE_SA gets an
-	unprotected QCD+INVALID_IKE_SPI (not on a successful resume).
-	RFC 7296 §2.8 IKE_SA rekey: initiator at ~80% of
-	kmp_sa_lifetime_time (macos_rw 28800s); responder CREATE_CHILD
-	with IKE proposal.
+	unprotected QCD+INVALID_IKE_SPI. Secret is
+	`/var/lib/racoon2/qcd.secret`.
+	RFC 7296 §2.8 IKE_SA rekey is in code (soft lifetime + responder
+	CREATE_CHILD with IKE proposal). Matrix row is a log grep.
 
 	Not implemented in this tree yet: RFC 9242 (IKE_INTERMEDIATE),
 	RFC 9370 (multiple key exchanges / ADDKE), RFC 8784 PPK —
@@ -236,7 +224,8 @@ Currently, the system supports the following specifications:
 
 	Partial statuses (scope beyond the supported core):
 	RFC 7296 — IKEv2 EAP (section 2.16) absent until the AAA item;
-	          everything else exercised.
+	          IKE session resume across iked restart is dump-only
+	          until a bounce with same SPI is measured.
 	RFC 2409 — IKEv1 mode-config/XAuth is ENABLE_HYBRID scaffolding
 	          only (headers referenced, no sources, no configure
 	          hook) — not buildable. L2TP/IPsec therefore holds for
@@ -266,10 +255,8 @@ Here is the list of features that we think to implement in a future.
 This is not a complete list.  This may be changed with no announcing.
 
 	- English documentation.
-	- IKEv2: configuration payload (aka mode-config in IKEv1) in iked.
 	- MIPL support (MIP6 Implementation on Linux) in iked.
 	- SHISA support (WIDE MIP6 Implementation on *BSD) in iked.
-	- Support graceful rekeying.
 	- Configuration file converter from the "previous Racoon".
 	- Easy configuration tool.
 

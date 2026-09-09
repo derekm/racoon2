@@ -453,8 +453,12 @@ restore_one(const char *path)
 		ch->is_initiator = 0;
 		ch->local = rcs_sadup(sa->local);
 		ch->remote = rcs_sadup(sa->remote);
-		if (c->sl_index[0] &&
-		    rcf_get_selector(c->sl_index, &ch->selector) != 0) {
+		if (!c->sl_index[0]) {
+			plog(PLOG_INTERR, PLOGLOC, 0,
+			    "resume: child %d missing selector\n", i);
+			goto fail;
+		}
+		if (rcf_get_selector(c->sl_index, &ch->selector) != 0) {
 			plog(PLOG_INTERR, PLOGLOC, 0,
 			    "resume: selector %s missing\n", c->sl_index);
 			goto fail;
@@ -489,7 +493,13 @@ restore_one(const char *path)
 
 	sa->child_created = (int)rec.nchild;
 	sa->state = IKEV2_STATE_ESTABLISHED;
-	ikev2_sa_start_lifetime_timer(sa);
+	{
+		int remain = (int)((time_t)rec.ike_expire_at - now);
+
+		if (remain < 1)
+			remain = 1;
+		ikev2_sa_arm_lifetime(sa, remain);
+	}
 	ikev2_sa_start_polling_timer(sa);
 	ikev2_sa_insert(sa);
 

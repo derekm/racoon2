@@ -21,11 +21,7 @@
 #include "debug.h"
 
 #ifndef QCD_SECRET_PATH
-#ifdef SYSCONFDIR
-#define QCD_SECRET_PATH	SYSCONFDIR "/qcd.secret"
-#else
-#define QCD_SECRET_PATH	"/usr/local/racoon2/etc/racoon2/qcd.secret"
-#endif
+#define QCD_SECRET_PATH	"/var/lib/racoon2/qcd.secret"
 #endif
 
 #define QCD_SECRET_LEN	32
@@ -61,6 +57,7 @@ qcd_save_secret(void)
 
 	if (!qcd_secret || qcd_secret->l != QCD_SECRET_LEN)
 		return -1;
+	(void)mkdir("/var/lib/racoon2", 0700);
 	fd = open(QCD_SECRET_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	if (fd < 0)
 		return -1;

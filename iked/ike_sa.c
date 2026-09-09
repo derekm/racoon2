@@ -542,7 +542,6 @@ void
 ikev2_sa_start_lifetime_timer(struct ikev2_sa *sa)
 {
 	int time_limit;
-	int lifetime_soft;
 
 	time_limit = ikev2_kmp_sa_lifetime_time(sa->rmconf);
 	if (sa->due_time.tv_sec > 0) {
@@ -564,27 +563,35 @@ ikev2_sa_start_lifetime_timer(struct ikev2_sa *sa)
 			}
 		}
 	}
+	ikev2_sa_arm_lifetime(sa, time_limit);
+}
+
+void
+ikev2_sa_arm_lifetime(struct ikev2_sa *sa, int time_limit)
+{
+	int lifetime_soft;
+
+	if (sa->expire_timer)
+		SCHED_KILL(sa->expire_timer);
+	if (sa->soft_expire_timer)
+		SCHED_KILL(sa->soft_expire_timer);
 	TRACE((PLOGLOC, "lifetime: %d\n", time_limit));
 	if (time_limit > 0) {
 		sa->expire_timer =
 			sched_new(time_limit, ikev2_sa_lifetime_callback, sa);
 		if (!sa->expire_timer)
-			goto fail_nomem;
+			return;
 		lifetime_soft = time_limit * (ikev2_lifetime_soft_factor +
 					      ikev2_lifetime_soft_jitter *
 					      ((double)eay_random_uint32() /
 					       UINT32_MAX));
+		if (lifetime_soft < 1)
+			lifetime_soft = 1;
 		TRACE((PLOGLOC, "lifetime_soft: %d\n", lifetime_soft));
 		sa->soft_expire_timer =
 			sched_new(lifetime_soft,
 				  ikev2_sa_lifetime_soft_callback, sa);
-		if (!sa->soft_expire_timer)
-			goto fail_nomem;
 	}
-	return;
-
-      fail_nomem:
-	return;
 }
 
 static void

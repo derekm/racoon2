@@ -191,10 +191,11 @@ EOF
 		}
 		;;
 	*-cookie2)
-		# charon-in-netns may omit ADDITIONAL_* (single veth addr).
-		# Gate: INFORMATIONAL still works (vpn-disconnect below) and
-		# COOKIE2/ADDITIONAL handling did not abort the SA.
-		grep -E 'COOKIE2|stored additional IPv4|MOBIKE_SUPPORTED' /tmp/r2-iked-matrix.log >/dev/null || true
+		grep -q 'NO_ADDITIONAL_ADDRESSES' /tmp/r2-iked-matrix.log || {
+			log "FAIL: no NO_ADDITIONAL_ADDRESSES in log"
+			charon_reset
+			return 1
+		}
 		;;
 	esac
 

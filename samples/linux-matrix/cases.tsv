@@ -17,7 +17,7 @@ ikev2-netns-g8	ikev2	pass	0	RFC 4106: AES-GCM 8-octet ICV (aead icv 8 in SAD)
 ikev2-netns-g12	ikev2	pass	0	RFC 4106: AES-GCM 12-octet ICV (aead icv 12 in SAD)
 ikev2-netns-frag	ikev2	pass	0	RFC 7383 knob on (fragmentation=yes); IKE_SA+SAD — not a reassembly proof (PSK AUTH typically <576)
 ikev2-netns-mobike	ikev2	pass	0	RFC 4555 MOBIKE_SUPPORTED knob (charon mobike=yes); not a roam proof
-ikev2-netns-cookie2	ikev2	pass	0	RFC 4555 COOKIE2 echo + ADDITIONAL_IP4 store (charon mobike=yes)
+ikev2-netns-cookie2	ikev2	pass	0	RFC 4555 NO_ADDITIONAL_ADDRESSES processed (charon mobike=yes; COOKIE2 echo if present)
 ikev2-netns-resume-dump	ikev2	pass	0	session resume dump SR2R under /var/run/racoon2/resume after IKE_AUTH
 ikev2-netns-qcd	ikev2	pass	0	RFC 6290 QCD_TOKEN sent in IKE_AUTH (maker)
 ikev2-netns-ikesa-rekey	ikev2	pass	0	RFC 7296 §2.8 IKE_SA rekey (charon ikelifetime=30s)
