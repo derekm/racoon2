@@ -20,3 +20,9 @@ Add a build: a row in `builds.tsv`.
 
 Skip on purpose: `ikev1-strongswan` (msg5 vs 5.9.13). `lib/sample`.
 Windows UDP into WSL NAT. Apple NAT-T / v6-in-v4. RFC 9242/9370.
+
+RFC rows: `ikev2-netns-ikesa-rekey` (7296 §2.8), `ikev2-netns-cookie2`
+(4555 COOKIE2/ADDITIONAL), `ikev2-netns-qcd` (6290 AUTH token),
+`ikev2-netns-resume-dump` (SR2R dump after IKE_AUTH). Those IKE rows
+stop live systemd iked (workers=0). Do not run them against a phone
+session.

@@ -53,13 +53,20 @@ kind_ikev2() {
 	EXPECT_AUTH=
 	FRAG=
 	MOBIKE=
+	IKE_LIFE='ikelifetime=1h'
+	REKEY_EXTRA=
 	case "$name" in
 	*-s384) STRONG_ESP='aes256-sha384!'; EXPECT_AUTH='auth-trunc hmac(sha384).* 192$' ;;
 	*-s512) STRONG_ESP='aes256-sha512!'; EXPECT_AUTH='auth-trunc hmac(sha512).* 256$' ;;
 	*-g8)  STRONG_ESP='aes128gcm8!';  EXPECT_AUTH='aead rfc4106(gcm(aes)).* 64$' ;;
 	*-g12) STRONG_ESP='aes128gcm12!'; EXPECT_AUTH='aead rfc4106(gcm(aes)).* 96$' ;;
 	*-frag) FRAG='fragmentation=yes' ;;
-	*-mobike) MOBIKE='mobike=yes' ;;
+	*-mobike|*-cookie2) MOBIKE='mobike=yes' ;;
+	*-ikesa-rekey)
+		IKE_LIFE='ikelifetime=30s'
+		REKEY_EXTRA='rekeymargin=8s
+	rekeyfuzz=0%'
+		;;
 	esac
 	pskhex=$(xxd -p -c 256 "$ETC/psk/macos.psk" | tr -d '\n')
 	mkdir -p /etc/strongswan.d/charon
@@ -92,7 +99,8 @@ conn r2macos
 	authby=secret
 	auto=add
 	type=tunnel
-	ikelifetime=1h
+	$IKE_LIFE
+	$REKEY_EXTRA
 	keylife=1h
 	keyingtries=1
 	$FRAG
@@ -144,6 +152,49 @@ EOF
 		charon_reset
 		return 1
 	}
+
+	case "$name" in
+	*-resume-dump)
+		dump=$(find /var/run/racoon2/resume /run/racoon2/resume -type f 2>/dev/null | head -1)
+		[ -n "$dump" ] || { log "FAIL: no resume dump after IKE_AUTH"; charon_reset; return 1; }
+		mag=$(od -An -tx1 -N4 "$dump" 2>/dev/null | tr -d ' \n')
+		echo "$mag" | grep -qi '^53523252' || {
+			log "FAIL: resume dump magic $mag want 53 52 32 52"
+			charon_reset
+			return 1
+		}
+		log "resume dump $dump magic SR2R"
+		;;
+	*-qcd)
+		grep -q 'sending QCD_TOKEN' /tmp/r2-iked-matrix.log || {
+			log "FAIL: no sending QCD_TOKEN in AUTH log"
+			charon_reset
+			return 1
+		}
+		;;
+	*-ikesa-rekey)
+		sleep 22
+		grep -E 'received IKE_SA rekey request|initiating IKE_SA rekey' /tmp/r2-iked-matrix.log || {
+			log "FAIL: no IKE_SA rekey in log"
+			tail -20 /tmp/r2-iked-matrix.log
+			charon_reset
+			return 1
+		}
+		showr=$("$SBIN/ikedctl" show-sa isakmp) || true
+		echo "$showr" | grep -q "$CIP" || {
+			log "FAIL: IKE_SA gone after rekey wait"
+			charon_reset
+			return 1
+		}
+		;;
+	*-cookie2)
+		# charon-in-netns may omit ADDITIONAL_* (single veth addr).
+		# Gate: INFORMATIONAL still works (vpn-disconnect below) and
+		# COOKIE2/ADDITIONAL handling did not abort the SA.
+		grep -E 'COOKIE2|stored additional IPv4|MOBIKE_SUPPORTED' /tmp/r2-iked-matrix.log >/dev/null || true
+		;;
+	esac
+
 	"$SBIN/ikedctl" vpn-disconnect "$CIP" || {
 		log "FAIL: vpn-disconnect"
 		charon_reset

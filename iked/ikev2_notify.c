@@ -643,6 +643,120 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 		TRACE((PLOGLOC, "UPDATE_SA_ADDRESSES\n"));
 		return 0;
 
+	case IKEV2_COOKIE2: {
+		size_t tot, hdr, dlen;
+		uint8_t *data;
+
+		if (!is_safe)
+			return 0;
+		tot = get_payload_length(&n->header);
+		hdr = sizeof(*n) + n->nh.spi_size;
+		if (tot < hdr)
+			return 0;
+		dlen = tot - hdr;
+		if (dlen < 8 || dlen > 64)
+			return 0;
+		data = get_notify_data(n);
+		if (ike_sa->cookie2_sent) {
+			if (ike_sa->cookie2_sent->l == dlen &&
+			    memcmp(ike_sa->cookie2_sent->v, data, dlen) == 0) {
+				ike_sa->cookie2_matched = 1;
+				return 0;
+			}
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+				   "COOKIE2 mismatch\n");
+			return 1;
+		}
+		if (ike_sa->cookie2_echo)
+			rc_vfree(ike_sa->cookie2_echo);
+		ike_sa->cookie2_echo = rc_vnew(data, dlen);
+		return 0;
+	}
+
+	case IKEV2_ADDITIONAL_IP4_ADDRESS: {
+		size_t tot, hdr, dlen;
+		uint8_t *data;
+
+		if (!is_safe)
+			return 0;
+		tot = get_payload_length(&n->header);
+		hdr = sizeof(*n) + n->nh.spi_size;
+		if (tot < hdr)
+			return 0;
+		dlen = tot - hdr;
+		data = get_notify_data(n);
+		if (dlen != 4)
+			return 0;
+		if (ike_sa->n_extra_addr4 < IKEV2_MAX_EXTRA_ADDR) {
+			memcpy(ike_sa->extra_addr4[ike_sa->n_extra_addr4],
+			       data, 4);
+			ike_sa->n_extra_addr4++;
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+				   "stored additional IPv4 %u.%u.%u.%u\n",
+				   data[0], data[1], data[2], data[3]);
+		}
+		return 0;
+	}
+
+	case IKEV2_ADDITIONAL_IP6_ADDRESS: {
+		size_t tot, hdr, dlen;
+		uint8_t *data;
+
+		if (!is_safe)
+			return 0;
+		tot = get_payload_length(&n->header);
+		hdr = sizeof(*n) + n->nh.spi_size;
+		if (tot < hdr)
+			return 0;
+		dlen = tot - hdr;
+		data = get_notify_data(n);
+		if (dlen != 16)
+			return 0;
+		if (ike_sa->n_extra_addr6 < IKEV2_MAX_EXTRA_ADDR) {
+			memcpy(ike_sa->extra_addr6[ike_sa->n_extra_addr6],
+			       data, 16);
+			ike_sa->n_extra_addr6++;
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+				   "stored additional IPv6\n");
+		}
+		return 0;
+	}
+
+	case IKEV2_NO_ADDITIONAL_ADDRESSES:
+		if (!is_safe)
+			return 0;
+		ike_sa->n_extra_addr4 = 0;
+		ike_sa->n_extra_addr6 = 0;
+		return 0;
+
+	case IKEV2_QCD_TOKEN: {
+		size_t tot, hdr, dlen;
+		uint8_t *data;
+
+		tot = get_payload_length(&n->header);
+		hdr = sizeof(*n) + n->nh.spi_size;
+		if (tot < hdr)
+			return 0;
+		dlen = tot - hdr;
+		data = get_notify_data(n);
+		if (dlen < 8)
+			return 0;
+		if (!is_safe) {
+			if (ike_sa->qcd_token_peer &&
+			    ike_sa->qcd_token_peer->l == dlen &&
+			    memcmp(ike_sa->qcd_token_peer->v, data, dlen) == 0) {
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+					   "QCD_TOKEN match, deleting IKE_SA\n");
+				return 1;
+			}
+			return 0;
+		}
+		if (ike_sa->qcd_token_peer)
+			rc_vfree(ike_sa->qcd_token_peer);
+		ike_sa->qcd_token_peer = rc_vnew(data, dlen);
+		return 0;
+	}
+
 	default:
 		if (type <= IKEV2_NOTIFYTYPE_ERROR_MAX)
 			return 2;	/* unrecognized error type */
@@ -810,6 +924,7 @@ ikev2_notify_type_str(int type)
 		S(COOKIE2);
 		S(NO_NATS_ALLOWED);
 		S(AUTH_LIFETIME);
+		S(QCD_TOKEN);
 
 	default:
 		{

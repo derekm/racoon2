@@ -540,8 +540,9 @@ struct ikev2payl_notify {
 #define	IKEV2_TICKET_OPAQUE		16413	/* (RFC5723) */
 #define	IKEV2_LINK_ID			16414	/* (draft-ietf-ipsecme-ikev2-ipv6-config-03) */
 #define	IKEV2_USE_WESP_MODE		16415	/* (draft-ietf-ipsecme-traffic-visibility-12.txt) */
-/* RESERVED TO IANA - STATUS TYPES      16431 - 40959 */
+#define	IKEV2_QCD_TOKEN			16419	/* (RFC6290) */
 #define	IKEV2_FRAGMENTATION_SUPPORTED	16430	/* (RFC7383) */
+/* RESERVED TO IANA - STATUS TYPES      16431 - 40959 */
 /* Private Use - STATUS TYPES           40960 - 65535 */
 
 /*

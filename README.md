@@ -135,13 +135,16 @@ MOBIKE responder: N(MOBIKE_SUPPORTED) + UPDATE_SA_ADDRESSES migrate.
 
 1. Fragmentation security (CVE-2016-10396 class) — 60s / 4 assemblies / 64k — started.
 2. Retire `IP_ANY` XFRM template mangling — done (`rcs_is_addr_wildcard`).
-3. MOBIKE (RFC 4555) responder — in tree; iPhone is the roaming peer.
+3. MOBIKE (RFC 4555) responder — COOKIE2 echo + ADDITIONAL_* store;
+   iPhone is the roaming peer. UPDATE_SA_ADDRESSES migrate is live.
 4. Async child PFS + IKEv1 DH (`oakley_dh_gencmp_submit` landed; CREATE_CHILD still inlines).
 5. Fuzzing (libFuzzer → OSS-Fuzz) on ikev2_input / isakmp.
 6. RFC 8784 PPK, then RFC 9242/9370 (OpenSSL 3.5/OQS).
 7. Transport-mode IKEv2 e2e + IPv6-in-IPv4; Windows/Android/macOS 27.
 8. Enterprise AAA: IKEv2 EAP-MSCHAPv2 + RADIUS (AD behind RADIUS),
    kinkd vs MIT krb5 and Samba AD DC.
+9. RFC 7296 §2.8 IKE_SA rekey — in tree; matrix `ikev2-netns-ikesa-rekey`.
+10. RFC 6290 QCD — in tree; maker token in AUTH; not a crash-without-dump proof.
 
 GSoC upstream: **`origin/gsoc2026`** (zoulasc/racoon2) and
 https://github.com/ssszcmawo/racoon2/tree/gsoc2026
@@ -216,6 +219,15 @@ Currently, the system supports the following specifications:
 	PF_KEY SADB_X_NAT_OA and Linux XFRMA_ENCAP encap_oa.
 	Kernel round-trip is `lib/xfrmnatt`; live IKEv1 NAT-OA peer
 	is not a matrix pass yet.
+
+	RFC 4555 MOBIKE: N(MOBIKE_SUPPORTED) + UPDATE_SA_ADDRESSES
+	migrate; COOKIE2 is echoed on INFORMATIONAL; ADDITIONAL_IP4/IP6
+	are stored (single-IP gateway does not advertise extras).
+	RFC 6290 QCD_TOKEN is sent in IKE_AUTH; unknown IKE_SA gets an
+	unprotected QCD+INVALID_IKE_SPI (not on a successful resume).
+	RFC 7296 §2.8 IKE_SA rekey: initiator at ~80% of
+	kmp_sa_lifetime_time (macos_rw 28800s); responder CREATE_CHILD
+	with IKE proposal.
 
 	Not implemented in this tree yet: RFC 9242 (IKE_INTERMEDIATE),
 	RFC 9370 (multiple key exchanges / ADDKE), RFC 8784 PPK —

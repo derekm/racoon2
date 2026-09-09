@@ -225,6 +225,8 @@ ikev2_init(void)
 
 	if (ikev2_cookie_init() < 0)
 		return -1;
+	if (ikev2_qcd_init() < 0)
+		return -1;
 
 	ikev2_periodic_task_sched =
 		sched_new(ikev2_periodic_task_interval, ikev2_periodic_task, 0);
@@ -274,6 +276,13 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 
 	ike_sa = ikev2_find_sa(packet);
 
+	if (!ike_sa && ikehdr->exchange_type != IKEV2EXCH_IKE_SA_INIT) {
+		ikev2_qcd_respond(packet, remote, local);
+		isakmp_log(0, local, remote, packet, PLOG_PROTOWARN, PLOGLOC,
+			   "message to a nonexistent ike_sa\n");
+		++isakmpstat.invalid_ike_spi;
+		goto end;
+	}
 
 	/*
 	 * Handle IKEv2 fragment (SKF) reassembly BEFORE payload checking.
@@ -442,6 +451,13 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 		}
 	} else {
 		if (!reassembled) {
+			if (ikehdr->next_payload == IKEV2_PAYLOAD_NOTIFY &&
+			    ikehdr->exchange_type == IKEV2EXCH_INFORMATIONAL &&
+			    (ikehdr->flags & IKEV2FLAG_RESPONSE) &&
+			    ikev2_qcd_taker_recv(ike_sa, packet)) {
+				ikev2_abort(ike_sa, ECONNRESET);
+				goto end;
+			}
 			if (ikehdr->next_payload != IKEV2_PAYLOAD_ENCRYPTED
 				&& ikehdr->next_payload != IKEV2_PAYLOAD_ENCRYPTED_AND_AUTHENTICATED_FRAGMENT) {
 				isakmp_log(ike_sa, local, remote, packet,
@@ -1195,8 +1211,8 @@ ikev2_check_new_request(rc_vchar_t *packet, struct sockaddr *remote,
 	if (!(ikev2_spi_is_zero(&ikehdr->responder_spi) &&
 	      message_id == 0 &&
 	      ikehdr->exchange_type == IKEV2EXCH_IKE_SA_INIT)) {
-		/* MAY audit */
-		/* MAY send a response (INVALID_IKE_SPI) */
+		/* RFC 6290: unprotected QCD_TOKEN + INVALID_IKE_SPI */
+		ikev2_qcd_respond(packet, remote, local);
 		isakmp_log(0, local, remote, packet,
 			   PLOG_PROTOWARN, PLOGLOC,
 			   "message to a nonexistent ike_sa\n");
@@ -2925,6 +2941,25 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 			    TRUE);
 
 	/*
+	 * RFC 6290 QCD_TOKEN in IKE_AUTH (encrypted).
+	 */
+	{
+		rc_vchar_t *qcd;
+
+		qcd = ikev2_qcd_token(&ike_sa->index.i_ck, &ike_sa->index.r_ck);
+		if (qcd) {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+				   "sending QCD_TOKEN\n");
+			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+								 IKEV2_QCD_TOKEN,
+								 qcd->v, qcd->l),
+					    TRUE);
+			rc_vfree(qcd);
+		}
+	}
+
+	/*
 	 * SA, TSi, TSr
 	 */
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa_r2, FALSE);
@@ -3845,7 +3880,8 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	/* check if rekeying IKE_SA */
 	if (get_payload_data_length(sa) > sizeof(struct ikev2proposal) &&
 	    ((struct ikev2proposal *)(((struct ikev2payl_sa *)sa) + 1))->protocol_id == IKEV2PROPOSAL_IKE) {
-		TRACE((PLOGLOC, "received REKEY IKE_SA request for ike_sa %p\n", ike_sa));
+		isakmp_log(ike_sa, local, remote, msg, PLOG_INFO, PLOGLOC,
+			   "received IKE_SA rekey request\n");
 		if (!(sa && nonce && ke && !(ts_i || ts_r)))
 			goto malformed_message;
 
@@ -4773,6 +4809,16 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	if (ike_sa->mobike_update) {
 		ike_sa->mobike_update = 0;
 		ikev2_mobike_apply(ike_sa, remote, local);
+	}
+
+	if (ike_sa->cookie2_echo) {
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0, IKEV2_COOKIE2,
+							 ike_sa->cookie2_echo->v,
+							 ike_sa->cookie2_echo->l),
+				    TRUE);
+		rc_vfree(ike_sa->cookie2_echo);
+		ike_sa->cookie2_echo = 0;
 	}
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_INFORMATIONAL,

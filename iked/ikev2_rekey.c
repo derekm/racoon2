@@ -232,7 +232,8 @@ static void ikev2_child_adopt(struct ikev2_sa *old_sa, struct ikev2_sa *new_sa);
 void
 ikev2_rekey_ikesa_initiate(struct ikev2_sa *ike_sa)
 {
-	TRACE((PLOGLOC, "initiate rekey ike_sa %p\n", ike_sa));
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		   "initiating IKE_SA rekey\n");
 	ikev2_sa_stop_grace_timer(ike_sa);
 	(void) ikev2_request_initiator_start(ike_sa, rekey_ikesa_callback, 0);
 }

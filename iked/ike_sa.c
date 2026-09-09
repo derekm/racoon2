@@ -936,6 +936,13 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 	if (sa->remote)
 		rc_free(sa->remote);
 
+	if (sa->cookie2_echo)
+		rc_vfree(sa->cookie2_echo);
+	if (sa->cookie2_sent)
+		rc_vfree(sa->cookie2_sent);
+	if (sa->qcd_token_peer)
+		rc_vfree(sa->qcd_token_peer);
+
 	racoon_free(sa);
 }
 

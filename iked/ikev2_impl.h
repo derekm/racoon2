@@ -215,6 +215,15 @@ struct ikev2_sa {
 	int frag_supported;		/* IKEv2 fragmentation (RFC7383) */
 	int mobike_supported;		/* RFC 4555 */
 	int mobike_update;		/* UPDATE_SA_ADDRESSES seen */
+	rc_vchar_t *cookie2_echo;	/* RFC 4555 COOKIE2 to copy into response */
+	rc_vchar_t *cookie2_sent;	/* RFC 4555 COOKIE2 we put on a request */
+	int cookie2_matched;
+	rc_vchar_t *qcd_token_peer;	/* RFC 6290 token from peer (taker) */
+#define	IKEV2_MAX_EXTRA_ADDR	8
+	uint8_t extra_addr4[IKEV2_MAX_EXTRA_ADDR][4];
+	int n_extra_addr4;
+	uint8_t extra_addr6[IKEV2_MAX_EXTRA_ADDR][16];
+	int n_extra_addr6;
 	struct ikev2_frag_item *frag_chain;	/* Received fragments */
 	struct sched *natk_timer;
 #if 0	/* XXX for transport mode */
@@ -616,6 +625,11 @@ void ikev2_resume_forget(struct ikev2_sa *);
 void ikev2_resume_dump_all(void);
 void ikev2_resume_load(void);
 void ikev2_child_arm_expire(struct ikev2_child_sa *, time_t);
+
+int ikev2_qcd_init(void);
+rc_vchar_t *ikev2_qcd_token(isakmp_cookie_t *, isakmp_cookie_t *);
+void ikev2_qcd_respond(rc_vchar_t *, struct sockaddr *, struct sockaddr *);
+int ikev2_qcd_taker_recv(struct ikev2_sa *, rc_vchar_t *);
 
 extern struct isakmp_domain ikev2_doi;
 extern struct isakmp_domain ikev2_createchild_doi;
