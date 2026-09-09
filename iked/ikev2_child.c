@@ -77,6 +77,7 @@ static int ikev2_add_ipsec_sa(struct ikev2_child_sa *,
 			      struct prop_pair *);
 static void ikev2_child_expire_callback(void *);
 static void ikev2_child_start_lifetime_timer(struct ikev2_child_sa *);
+void ikev2_child_arm_expire(struct ikev2_child_sa *, time_t);
 static void ikev2_expire_child(struct ikev2_child_sa *);
 static void ikev2_expire_sa(struct ikev2_child_sa *child_sa,
 			    int expire_mode, rc_type satype, uint32_t spi);
@@ -2234,6 +2235,19 @@ ikev2_child_start_lifetime_timer(struct ikev2_child_sa *child_sa)
 	if (!child_sa->timer)
 		isakmp_log(child_sa->parent, 0, 0, 0,
 		    PLOG_INTERR, PLOGLOC, "failed allocating memory\n");
+}
+
+void
+ikev2_child_arm_expire(struct ikev2_child_sa *child_sa, time_t seconds)
+{
+	if (!child_sa)
+		return;
+	if (child_sa->timer)
+		SCHED_KILL(child_sa->timer);
+	if (seconds < 1)
+		seconds = 1;
+	child_sa->timer =
+	    sched_new(seconds, ikev2_child_expire_callback, child_sa);
 }
 
 static void

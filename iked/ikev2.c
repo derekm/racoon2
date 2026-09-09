@@ -645,6 +645,8 @@ ikev2_update_message_id(struct ikev2_sa *ike_sa, uint32_t message_id,
 		}
 	}
 #endif
+	if (ike_sa->state == IKEV2_STATE_ESTABLISHED)
+		ikev2_resume_save(ike_sa);
 }
 
 /*
@@ -814,9 +816,11 @@ ikev2_set_state(struct ikev2_sa *sa, int state)
 			ikev2_script_hook(sa, SCRIPT_PHASE1_REKEY);
 		else
 			ikev2_script_hook(sa, SCRIPT_PHASE1_UP);
+		ikev2_resume_save(sa);
 	}
 	if (prev_state == IKEV2_STATE_ESTABLISHED &&
 	    state != IKEV2_STATE_ESTABLISHED) {
+		ikev2_resume_forget(sa);
 		if (!sa->rekey_inprogress)
 			ikev2_script_hook(sa, SCRIPT_PHASE1_DOWN);
 	}

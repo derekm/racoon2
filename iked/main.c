@@ -420,6 +420,7 @@ main(int argc, char **argv)
 		     "failed initializing isakmp handling\n");
 		iked_exit(IKED_EXIT_FAILURE);
 	}
+	ikev2_resume_load();
 
 	if (!opt_foreground) {
 		if (daemon(0, 0) == -1) {
@@ -746,12 +747,10 @@ handle_sighup(int sig)
 static void
 terminate_iked(void)
 {
-	/* handle interrupt */
-	/* gracefully exit */
-	plog(PLOG_INFO, PLOGLOC, 0, "exiting iked\n");
-
-	/* shut down all ike_sa connection */
-	ikev2_shutdown();
+	/* Persist IKE so a restart can reattach; leave kernel ESP. */
+	ikev2_resume_dump_all();
+	plog(PLOG_INFO, PLOGLOC, 0,
+	    "exiting iked (SAD left in kernel for resume)\n");
 
 	iked_pidfile_remove();
 

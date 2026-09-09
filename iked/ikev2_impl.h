@@ -611,5 +611,11 @@ void ikev2_migrate_script_hook(struct ikev2_sa *,
 			       struct sockaddr *, struct sockaddr *,
 			       struct sockaddr *, struct sockaddr *);
 
+void ikev2_resume_save(struct ikev2_sa *);
+void ikev2_resume_forget(struct ikev2_sa *);
+void ikev2_resume_dump_all(void);
+void ikev2_resume_load(void);
+void ikev2_child_arm_expire(struct ikev2_child_sa *, time_t);
+
 extern struct isakmp_domain ikev2_doi;
 extern struct isakmp_domain ikev2_createchild_doi;
