@@ -308,26 +308,38 @@ ikev2_resume_save(struct ikev2_sa *sa)
 		n++;
 	}
 	rec.nchild = (uint32_t)n;
-	if (n == 0)
-		return;
 
 	(void)mkdir("/var/run/racoon2", 0755);
-	if (mkdir(RESUME_DIR, 0700) < 0 && errno != EEXIST)
+	if (mkdir(RESUME_DIR, 0700) < 0 && errno != EEXIST) {
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "resume: mkdir %s failed\n", RESUME_DIR);
 		return;
+	}
 	resume_filename(path, sizeof(path), rec.i_ck, rec.r_ck);
 	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
 	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-	if (fd < 0)
+	if (fd < 0) {
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "resume: open dump failed\n");
 		return;
+	}
 	wr = write(fd, &rec, sizeof(rec));
 	if (wr != sizeof(rec) || fsync(fd) < 0) {
 		close(fd);
 		unlink(tmp);
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "resume: write dump failed\n");
 		return;
 	}
 	close(fd);
-	if (rename(tmp, path) < 0)
+	if (rename(tmp, path) < 0) {
 		unlink(tmp);
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "resume: rename dump failed\n");
+		return;
+	}
+	isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		   "resume: saved children=%u\n", rec.nchild);
 }
 
 void
@@ -362,7 +374,7 @@ restore_one(const char *path)
 	close(fd);
 	if (rec.magic != R2RS_MAGIC || rec.version != R2RS_VERSION)
 		return -1;
-	if (rec.nchild == 0 || rec.nchild > R2RS_MAXCHILD)
+	if (rec.nchild > R2RS_MAXCHILD)
 		return -1;
 
 	rmidx = rc_vnew(rec.rm_index, strlen(rec.rm_index));
@@ -380,15 +392,16 @@ restore_one(const char *path)
 	if (!local || !remote)
 		goto fail;
 
-	/* initiator_spi NULL: do not bump half-open */
-	sa = ikev2_allocate_sa(NULL, local, remote, conf);
+	/* responder allocate (i_ck known), then pin r_ck from dump */
+	sa = ikev2_allocate_sa((isakmp_cookie_t *)rec.i_ck, local, remote, conf);
 	if (!sa)
 		goto fail;
 	conf = NULL;
+	if (ikev2_half_open_sa > 0)
+		--ikev2_half_open_sa;
 	ikev2_sa_stop_timer(sa);
 	sa->is_initiator = rec.is_initiator;
 	sa->verified_info.is_initiator = rec.is_initiator;
-	memcpy(sa->index.i_ck, rec.i_ck, 8);
 	memcpy(sa->index.r_ck, rec.r_ck, 8);
 	sa->send_message_id = rec.send_message_id;
 	sa->recv_message_id = rec.recv_message_id;
@@ -474,6 +487,7 @@ restore_one(const char *path)
 		ikev2_child_arm_expire(ch, remain);
 	}
 
+	sa->child_created = (int)rec.nchild;
 	sa->state = IKEV2_STATE_ESTABLISHED;
 	ikev2_sa_start_lifetime_timer(sa);
 	ikev2_sa_start_polling_timer(sa);
@@ -526,10 +540,11 @@ ikev2_resume_load(void)
 			n++;
 		else
 			plog(PLOG_INTWARN, PLOGLOC, 0,
-			    "resume: dropped %s\n", de->d_name);
-		unlink(path);
+			    "resume: load failed %s (kept)\n", de->d_name);
 	}
 	closedir(d);
 	if (n)
 		plog(PLOG_INFO, PLOGLOC, 0, "resumed %d IKE_SA(s)\n", n);
+	else
+		plog(PLOG_INFO, PLOGLOC, 0, "resume: no dumps loaded\n");
 }

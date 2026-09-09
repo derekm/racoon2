@@ -754,7 +754,7 @@ terminate_iked(void)
 
 	iked_pidfile_remove();
 
-	_exit(IKED_EXIT_TERMINATE);
+	_exit(EXIT_SUCCESS);
 }
 
 static void

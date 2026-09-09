@@ -161,6 +161,8 @@ ikev2_child_state_set(struct ikev2_child_sa *child_sa,
 					(child_sa->preceding_satype != 0 ?
 					 SCRIPT_PHASE2_REKEY :
 					 SCRIPT_PHASE2_UP));
+		if (child_sa->parent)
+			ikev2_resume_save(child_sa->parent);
 	} else if (old_state == IKEV2_CHILD_STATE_MATURE &&
 		   state != IKEV2_CHILD_STATE_MATURE) {
 		if (!child_sa->rekey_inprogress)
