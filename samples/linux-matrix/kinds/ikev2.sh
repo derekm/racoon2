@@ -63,8 +63,11 @@ kind_ikev2() {
 	*-frag) FRAG='fragmentation=yes' ;;
 	*-mobike|*-cookie2) MOBIKE='mobike=yes' ;;
 	*-ikesa-rekey)
+		# reauth=no: RFC 7296 CREATE_CHILD_SA, not DELETE+INITIAL_CONTACT
 		IKE_LIFE='ikelifetime=30s'
-		REKEY_EXTRA='rekeymargin=8s
+		REKEY_EXTRA='reauth=no
+	rekey=yes
+	rekeymargin=8s
 	rekeyfuzz=0%'
 		;;
 	esac
@@ -173,10 +176,10 @@ EOF
 		}
 		;;
 	*-ikesa-rekey)
-		sleep 22
+		sleep 28
 		grep -E 'received IKE_SA rekey request|initiating IKE_SA rekey' /tmp/r2-iked-matrix.log || {
 			log "FAIL: no IKE_SA rekey in log"
-			tail -20 /tmp/r2-iked-matrix.log
+			tail -30 /tmp/r2-iked-matrix.log
 			charon_reset
 			return 1
 		}
