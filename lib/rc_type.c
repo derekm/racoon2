@@ -446,6 +446,8 @@ rct2str(int type)
 		return "MODP6144";
 	case RCT_ALG_MODP8192:
 		return "MODP8192";
+	case RCT_ALG_ECP256:
+		return "ECP256";
 	case RCT_ALG_PSK:
 		return "PresharedKey";
 	case RCT_ALG_DSS:

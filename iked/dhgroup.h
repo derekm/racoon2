@@ -213,5 +213,6 @@ extern struct dhgroup dh_modp3072;
 extern struct dhgroup dh_modp4096;
 extern struct dhgroup dh_modp6144;
 extern struct dhgroup dh_modp8192;
+extern struct dhgroup dh_ecp256;
 
 size_t dh_value_len(struct dhgroup *dhgrp);

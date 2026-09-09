@@ -61,6 +61,9 @@
 #include "gcmalloc.h"
 
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/ec.h>
+#include <openssl/obj_mac.h>
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 #include <openssl/provider.h>
 #include <openssl/crypto.h>
@@ -3357,6 +3360,101 @@ eay_dh_compute (rc_vchar_t *prime, uint32_t gg, rc_vchar_t *pub,
 	if (v != NULL)
 		racoon_free(v);
 	return (error);
+}
+
+/* RFC 5903 group 19: P-256. KE is 64-byte x||y; shared secret is x (32). */
+int
+eay_ecp256_generate(rc_vchar_t **pub, rc_vchar_t **priv)
+{
+	EC_KEY *ec = NULL;
+	const EC_GROUP *grp;
+	const EC_POINT *pt;
+	const BIGNUM *priv_bn;
+	unsigned char buf[65];
+	size_t n;
+	int error = -1;
+
+	*pub = *priv = NULL;
+	ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+	if (!ec || !EC_KEY_generate_key(ec))
+		goto end;
+	grp = EC_KEY_get0_group(ec);
+	pt = EC_KEY_get0_public_key(ec);
+	priv_bn = EC_KEY_get0_private_key(ec);
+	if (!grp || !pt || !priv_bn)
+		goto end;
+	n = EC_POINT_point2oct(grp, pt, POINT_CONVERSION_UNCOMPRESSED,
+	    buf, sizeof(buf), NULL);
+	if (n != 65 || buf[0] != 0x04)
+		goto end;
+	*pub = rc_vnew(buf + 1, 64);
+	*priv = rc_vmalloc(32);
+	if (!*pub || !*priv)
+		goto end;
+	memset((*priv)->v, 0, 32);
+	if (BN_bn2binpad(priv_bn, (unsigned char *)(*priv)->v, 32) != 32)
+		goto end;
+	error = 0;
+      end:
+	if (error) {
+		if (*pub) {
+			rc_vfree(*pub);
+			*pub = NULL;
+		}
+		if (*priv) {
+			rc_vfree(*priv);
+			*priv = NULL;
+		}
+	}
+	if (ec)
+		EC_KEY_free(ec);
+	return error;
+}
+
+int
+eay_ecp256_compute(rc_vchar_t *pub, rc_vchar_t *priv, rc_vchar_t *pub_p,
+    rc_vchar_t **key)
+{
+	EC_KEY *ec = NULL;
+	EC_POINT *peer = NULL;
+	const EC_GROUP *grp;
+	BIGNUM *priv_bn = NULL;
+	unsigned char enc[65];
+	int xlen;
+	int error = -1;
+
+	(void)pub;
+	if (!priv || priv->l != 32 || !pub_p || pub_p->l != 64 || !key)
+		return -1;
+	ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+	if (!ec)
+		goto end;
+	grp = EC_KEY_get0_group(ec);
+	priv_bn = BN_bin2bn((unsigned char *)priv->v, 32, NULL);
+	if (!priv_bn || !EC_KEY_set_private_key(ec, priv_bn))
+		goto end;
+	enc[0] = 0x04;
+	memcpy(enc + 1, pub_p->v, 64);
+	peer = EC_POINT_new(grp);
+	if (!peer || !EC_POINT_oct2point(grp, peer, enc, 65, NULL))
+		goto end;
+	if (!*key)
+		*key = rc_vmalloc(32);
+	if (!*key)
+		goto end;
+	xlen = ECDH_compute_key((*key)->v, 32, peer, ec, NULL);
+	if (xlen != 32)
+		goto end;
+	(*key)->l = 32;
+	error = 0;
+      end:
+	if (peer)
+		EC_POINT_free(peer);
+	if (priv_bn)
+		BN_free(priv_bn);
+	if (ec)
+		EC_KEY_free(ec);
+	return error;
 }
 
 int

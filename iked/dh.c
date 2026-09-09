@@ -65,6 +65,7 @@ struct dhgroup dh_modp3072;
 struct dhgroup dh_modp4096;
 struct dhgroup dh_modp6144;
 struct dhgroup dh_modp8192;
+struct dhgroup dh_ecp256;
 
 int
 oakley_dhinit(void)
@@ -78,6 +79,11 @@ oakley_dhinit(void)
 	INITDHVAL(dh_modp4096, OAKLEY_PRIME_MODP4096, DHGROUP_TYPE_MODP);
 	INITDHVAL(dh_modp6144, OAKLEY_PRIME_MODP6144, DHGROUP_TYPE_MODP);
 	INITDHVAL(dh_modp8192, OAKLEY_PRIME_MODP8192, DHGROUP_TYPE_MODP);
+	memset(&dh_ecp256, 0, sizeof(dh_ecp256));
+	dh_ecp256.type = OAKLEY_ATTR_GRP_TYPE_ECP;
+	dh_ecp256.prime = rc_vmalloc(32);
+	if (dh_ecp256.prime)
+		memset(dh_ecp256.prime->v, 0, 32);
 
 	return 0;
 }
@@ -88,6 +94,8 @@ oakley_dhinit(void)
 size_t
 dh_value_len(struct dhgroup *dhgrp)
 {
+	if (dhgrp->type == OAKLEY_ATTR_GRP_TYPE_ECP)
+		return dhgrp->prime->l * 2;	/* RFC 5903: x||y */
 	return dhgrp->prime->l;
 }
 
@@ -155,6 +163,12 @@ oakley_dh_compute(const struct dhgroup *dh, rc_vchar_t *pub, rc_vchar_t *priv,
 		}
 		break;
 	case OAKLEY_ATTR_GRP_TYPE_ECP:
+		if (eay_ecp256_compute(pub, priv, pub_p, gxy) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "failed to compute ecp256 dh value.\n");
+			return -1;
+		}
+		break;
 	case OAKLEY_ATTR_GRP_TYPE_EC2N:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "dh type %d isn't supported.\n", dh->type);
@@ -198,6 +212,12 @@ oakley_dh_generate(const struct dhgroup *dh, rc_vchar_t **pub,
 		break;
 
 	case OAKLEY_ATTR_GRP_TYPE_ECP:
+		if (eay_ecp256_generate(pub, priv) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "failed to generate ecp256 dh value.\n");
+			return -1;
+		}
+		return 0;
 	case OAKLEY_ATTR_GRP_TYPE_EC2N:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "dh type %d isn't supported.\n", dh->type);
