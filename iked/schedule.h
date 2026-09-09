@@ -70,6 +70,7 @@ struct scheddump {
 
 struct timeval *scheduler (void);
 struct sched *sched_new (time_t, void (*func) (void *), void *);
+time_t sched_remaining (const struct sched *);
 void sched_kill (struct sched *);
 int sched_dump (caddr_t *, int *);
 void sched_init (void);

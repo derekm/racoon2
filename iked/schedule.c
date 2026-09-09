@@ -155,6 +155,21 @@ sched_new(time_t tick, void (*func) (void *), void *param)
 	return (new);
 }
 
+/*
+ * Seconds until this event. FIXY2038PROBLEM makes xtime relative to
+ * sched_init(), so callers must not treat xtime as time(3).
+ */
+time_t
+sched_remaining(const struct sched *sc)
+{
+	time_t rem;
+
+	if (!sc || sc->dead)
+		return 0;
+	rem = sc->xtime - current_time();
+	return rem < 0 ? 0 : rem;
+}
+
 /* add new schedule to schedule table */
 static void
 sched_add(struct sched *sc)

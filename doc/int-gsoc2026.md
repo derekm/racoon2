@@ -4,7 +4,7 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
 
 ## In tree, not a bounce proof
 
-- Resume dump (`/var/run/racoon2/resume`, SR2R). Load restores cookies, SK_*, selector, remaining IKE lifetime. Not proven: same SPI after iked restart, no INITIAL_CONTACT.
+- Resume dump (`/var/run/racoon2/resume`, SR2R). Load restores cookies, SK_*, selector, remaining IKE lifetime as wall-clock (not FIXY `xtime`). Not proven: same SPI after iked restart, no INITIAL_CONTACT.
 - RFC 6296 QCD maker in IKE_AUTH; secret `/var/lib/racoon2/qcd.secret` (needs `StateDirectory=racoon2`). Token-taker crash path untested.
 - RFC 4555 COOKIE2 echo (responder). Matrix `ikev2-netns-cookie2` gates `NO_ADDITIONAL_ADDRESSES`. Initiator COOKIE2 not sent.
 - RFC 7296 IKE_SA rekey in code. Matrix `ikev2-netns-ikesa-rekey` is a log grep after charon `reauth=no`.

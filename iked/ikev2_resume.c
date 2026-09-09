@@ -28,6 +28,13 @@
 #include "rc_net.h"
 #include "debug.h"
 
+/*
+ * Dump expire_at as wall-clock unix. sched.xtime under FIXY2038PROBLEM
+ * is seconds since sched_init(), not time(3). Mixing them made load
+ * clamp remaining to 1s (bounce 2026-09-08 21:59).
+ */
+#define RESUME_UNIX_FLOOR	1000000000u	/* 2001-09-09 */
+
 #ifndef RESUME_DIR
 #define RESUME_DIR	"/var/run/racoon2/resume"
 #endif
@@ -104,6 +111,33 @@ key_to_vchar(const struct r2rs_key *k)
 	if (!k->len)
 		return NULL;
 	return rc_vnew(k->data, k->len);
+}
+
+static uint32_t
+resume_wall_expire(struct sched *sc, time_t fallback)
+{
+	time_t remaining;
+
+	if (!sc || sc->dead)
+		return (uint32_t)(time(NULL) + fallback);
+	remaining = sched_remaining(sc);
+	if (remaining < 1)
+		remaining = 1;
+	return (uint32_t)(time(NULL) + remaining);
+}
+
+static time_t
+resume_remain_from_dump(uint32_t expire_at, time_t now, time_t fallback)
+{
+	time_t remaining;
+
+	/* v1 dumps stored FIXY xtime (~uptime+lifetime), not unix. */
+	if (expire_at < RESUME_UNIX_FLOOR)
+		return fallback;
+	remaining = (time_t)expire_at - now;
+	if (remaining < 1)
+		remaining = 1;
+	return remaining;
 }
 
 static void
@@ -243,10 +277,7 @@ ikev2_resume_save(struct ikev2_sa *sa)
 	rec.peer_behind_nat = sa->peer_behind_nat ? 1 : 0;
 	rec.send_message_id = sa->send_message_id;
 	rec.recv_message_id = sa->recv_message_id;
-	if (sa->expire_timer && !sa->expire_timer->dead)
-		rec.ike_expire_at = (uint32_t)sa->expire_timer->xtime;
-	else
-		rec.ike_expire_at = (uint32_t)time(NULL) + 86400;
+	rec.ike_expire_at = resume_wall_expire(sa->expire_timer, 86400);
 	rec.encr = sa->negotiated_sa->encr;
 	rec.encrklen = sa->negotiated_sa->encrklen;
 	rec.prf = sa->negotiated_sa->prf;
@@ -292,10 +323,7 @@ ikev2_resume_save(struct ikev2_sa *sa)
 		rec.child[n].in_spi = in_spi;
 		rec.child[n].out_spi = out_spi;
 		rec.child[n].satype = IKEV2PROPOSAL_ESP;
-		if (ch->timer && !ch->timer->dead)
-			rec.child[n].expire_at = (uint32_t)ch->timer->xtime;
-		else
-			rec.child[n].expire_at = (uint32_t)time(NULL) + 3600;
+		rec.child[n].expire_at = resume_wall_expire(ch->timer, 3600);
 		if (ch->selector && ch->selector->sl_index)
 			snprintf(rec.child[n].sl_index,
 			    sizeof(rec.child[n].sl_index), "%s",
@@ -339,7 +367,8 @@ ikev2_resume_save(struct ikev2_sa *sa)
 		return;
 	}
 	isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-		   "resume: saved children=%u\n", rec.nchild);
+		   "resume: saved children=%u ike_remain=%ld\n", rec.nchild,
+		   (long)(rec.ike_expire_at - (uint32_t)time(NULL)));
 }
 
 void
@@ -485,28 +514,26 @@ restore_one(const char *path)
 			}
 		}
 		ch->state = IKEV2_CHILD_STATE_MATURE;
-		remain = (time_t)c->expire_at - now;
-		if (remain < 1)
-			remain = 1;
+		remain = resume_remain_from_dump(c->expire_at, now,
+		    IKEV2_DEFAULT_IPSEC_LIFETIME_TIME);
 		ikev2_child_arm_expire(ch, remain);
 	}
 
 	sa->child_created = (int)rec.nchild;
 	sa->state = IKEV2_STATE_ESTABLISHED;
 	{
-		int remain = (int)((time_t)rec.ike_expire_at - now);
+		time_t remain = resume_remain_from_dump(rec.ike_expire_at, now,
+		    ikev2_kmp_sa_lifetime_time(sa->rmconf));
 
-		if (remain < 1)
-			remain = 1;
-		ikev2_sa_arm_lifetime(sa, remain);
+		ikev2_sa_arm_lifetime(sa, (int)remain);
+		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		    "resumed IKE_SA %s children=%u msgid %u/%u ike_remain=%ld\n",
+		    rcs_sa2str(sa->remote), rec.nchild,
+		    rec.send_message_id, rec.recv_message_id, (long)remain);
 	}
 	ikev2_sa_start_polling_timer(sa);
 	ikev2_sa_insert(sa);
 
-	isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-	    "resumed IKE_SA %s children=%u msgid %u/%u\n",
-	    rcs_sa2str(sa->remote), rec.nchild,
-	    rec.send_message_id, rec.recv_message_id);
 	rc_free(local);
 	rc_free(remote);
 	return 0;
