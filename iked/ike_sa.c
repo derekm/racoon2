@@ -271,7 +271,7 @@ ikev2_sa_periodic_task(void)
 void
 ikev2_abort(struct ikev2_sa *ike_sa, int err)
 {
-	struct ikev2_child_sa *child_sa;
+	struct ikev2_child_sa *child_sa, *next;
 
 	TRACE((PLOGLOC, "ikev2_abort(%p, %d)\n", ike_sa, err));
 	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
@@ -281,15 +281,17 @@ ikev2_abort(struct ikev2_sa *ike_sa, int err)
 
 	for (child_sa = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
 	     !IKEV2_CHILD_LIST_END(child_sa);
-	     child_sa = IKEV2_CHILD_LIST_NEXT(child_sa)) {
+	     child_sa = next) {
 		TRACE((PLOGLOC, "child_sa %p state %d\n", child_sa,
 		       child_sa->state));
+		next = IKEV2_CHILD_LIST_NEXT(child_sa);
 		switch (child_sa->state) {
 		case IKEV2_CHILD_STATE_GETSPI:
 			ikev2_child_abort(child_sa, err);
 			break;
 		case IKEV2_CHILD_STATE_MATURE:
-			ikev2_child_delete_ipsecsa(child_sa);
+			if (child_sa->selector)
+				ikev2_child_delete_ipsecsa(child_sa);
 			ikev2_child_state_set(child_sa,
 					      IKEV2_CHILD_STATE_EXPIRED);
 			break;

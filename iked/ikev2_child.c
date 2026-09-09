@@ -76,6 +76,7 @@ static int ikev2_add_ipsec_sa(struct ikev2_child_sa *,
 			      struct ikev2_child_param *, struct prop_pair *,
 			      struct prop_pair *);
 static void ikev2_child_expire_callback(void *);
+static void ikev2_child_start_lifetime_timer(struct ikev2_child_sa *);
 static void ikev2_expire_child(struct ikev2_child_sa *);
 static void ikev2_expire_sa(struct ikev2_child_sa *child_sa,
 			    int expire_mode, rc_type satype, uint32_t spi);
@@ -1243,29 +1244,7 @@ ikev2_create_child_responder_cont(struct ikev2_child_sa *child_sa)
 	ikev2_add_ipsec_sa(child_sa, &child_sa->child_param,
 			   child_sa->peer_proposal, child_sa->my_proposal[1]);
 
-	/* #if defined(__FreeBSD__) || defined(__NetBSD__) */
-	/* KAME does not generate hard lifetime expiration message */
-	/* start expiration timer */
-	{
-		struct rcf_ipsec *conf;
-		int lifetime;
-
-		conf = child_sa->selector->pl->ips;
-		IPSEC_CONF(lifetime, conf, ipsec_sa_lifetime_time, 0);
-		if (lifetime) {
-			child_sa->timer =
-				sched_new(lifetime, ikev2_child_expire_callback,
-					  child_sa);
-			if (!child_sa->timer) {
-				isakmp_log(ike_sa, 0, 0, 0,
-					   PLOG_INTERR, PLOGLOC,
-					   "failed allocating memory\n");
-				ikev2_child_state_set(child_sa,
-						      IKEV2_CHILD_STATE_EXPIRED);
-			}
-		}
-	}
-	/* #endif */
+	ikev2_child_start_lifetime_timer(child_sa);
 
 	TRACE((PLOGLOC, "ike_sa state %d\n", ike_sa->state));
 	switch (ike_sa->state) {
@@ -2158,31 +2137,7 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 
 	ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_MATURE);
 
-	/* #if defined(__FreeBSD__) || defined(__NetBSD__) */
-	/* KAME does not generate hard lifetime expiration message */
-	/* start expiration timer */
-	{
-		struct rcf_ipsec *conf;
-		unsigned int lifetime;
-
-		conf = child_sa->selector->pl->ips;
-		IPSEC_CONF(lifetime, conf, ipsec_sa_lifetime_time, 0);
-		TRACE((PLOGLOC, "lifetime: %d\n", lifetime));
-		if (child_sa->internal_address_expiry > 0 &&
-		    child_sa->internal_address_expiry < lifetime) {
-			TRACE((PLOGLOC, "internal_address_expiry is smaller: %lu\n",
-			       child_sa->internal_address_expiry));
-			lifetime = child_sa->internal_address_expiry;
-		}
-		if (lifetime) {
-			child_sa->timer =
-				sched_new(lifetime, ikev2_child_expire_callback,
-					  child_sa);
-			if (!child_sa->timer)
-				goto abort_nomem;
-		}
-	}
-	/* #endif */
+	ikev2_child_start_lifetime_timer(child_sa);
 
       done:
 	if (new_my_proposal_list)
@@ -2245,15 +2200,83 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 
 /* #if defined(__FreeBSD__) || defined(__NetBSD__) */
 /*
- * timer callback for child_sa expiration
+ * timer callback for child_sa expiration — rekey at soft lifetime
+ * instead of DELETE (Apple does not CREATE_CHILD first).
  */
+static void
+ikev2_child_start_lifetime_timer(struct ikev2_child_sa *child_sa)
+{
+	struct rcf_ipsec *conf;
+	unsigned int lifetime;
+	int soft;
+
+	if (!child_sa || !child_sa->selector || !child_sa->selector->pl)
+		return;
+	if (child_sa->timer)
+		return;
+
+	conf = child_sa->selector->pl->ips;
+	IPSEC_CONF(lifetime, conf, ipsec_sa_lifetime_time, 0);
+	if (child_sa->internal_address_expiry > 0 &&
+	    child_sa->internal_address_expiry < lifetime)
+		lifetime = child_sa->internal_address_expiry;
+	if (lifetime == 0)
+		return;
+	soft = lifetime * (ikev2_lifetime_soft_factor +
+	    ikev2_lifetime_soft_jitter *
+	    ((double)eay_random_uint32() / UINT32_MAX));
+	if (soft <= 0)
+		soft = lifetime;
+	TRACE((PLOGLOC, "child %p lifetime %u soft %d\n",
+	    child_sa, lifetime, soft));
+	child_sa->timer =
+	    sched_new(soft, ikev2_child_expire_callback, child_sa);
+	if (!child_sa->timer)
+		isakmp_log(child_sa->parent, 0, 0, 0,
+		    PLOG_INTERR, PLOGLOC, "failed allocating memory\n");
+}
+
 static void
 ikev2_child_expire_callback(void *param)
 {
 	struct ikev2_child_sa *child_sa;
+	struct prop_pair *proposal;
+	uint32_t spi = 0;
+	rc_type satype = RCT_SATYPE_ESP;
 
 	child_sa = (struct ikev2_child_sa *)param;
 	SCHED_KILL(child_sa->timer);
+	if (child_sa->state != IKEV2_CHILD_STATE_MATURE)
+		return;
+	if (child_sa->rekey_inprogress)
+		return;
+	if (!child_sa->my_proposal)
+		goto expire;
+	for (proposal = child_sa->my_proposal[1];
+	     proposal; proposal = proposal->next) {
+		struct isakmp_pl_p *prop = proposal->prop;
+
+		if (!prop)
+			continue;
+		if (prop->proto_id == IKEV2PROPOSAL_ESP) {
+			spi = get_uint32(prop + 1);
+			satype = RCT_SATYPE_ESP;
+			break;
+		}
+		if (prop->proto_id == IKEV2PROPOSAL_AH && spi == 0) {
+			spi = get_uint32(prop + 1);
+			satype = RCT_SATYPE_AH;
+		}
+	}
+	if (spi == 0)
+		goto expire;
+	isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
+	    "child_sa %p soft lifetime: rekey spi=0x%08x\n",
+	    child_sa, spi);
+	child_sa->rekey_inprogress = TRUE;
+	ikev2_rekey_childsa(child_sa, satype, spi);
+	return;
+ expire:
 	ikev2_expire_child(child_sa);
 }
 /* #endif */
@@ -2263,9 +2286,6 @@ ikev2_expired(struct sadb_request *req, struct rcpfk_msg *param)
 {
 	int satype;
 	struct ikev2_child_sa *child_sa;
-	struct rcf_policy *policy;
-	struct sockaddr *localaddr;
-	struct sockaddr *remoteaddr;
 	struct prop_pair *proposal;
 
 	switch (param->satype) {
@@ -2292,76 +2312,54 @@ ikev2_expired(struct sadb_request *req, struct rcpfk_msg *param)
 		       child_sa, child_sa->state));
 		goto done;
 	}
-	policy = child_sa->selector->pl;
-	if (policy->my_sa_ipaddr) {
-		if (policy->my_sa_ipaddr->type != RCT_ADDR_INET) {
-			TRACE((PLOGLOC, "unexpected type\n"));
-			goto done;
-		}
-		localaddr = policy->my_sa_ipaddr->a.ipaddr;
-	} else {
-		localaddr = child_sa->parent->local;
-	}
-	if (policy->peers_sa_ipaddr) {
-		if (policy->peers_sa_ipaddr->type != RCT_ADDR_INET) {
-			TRACE((PLOGLOC, "unexpected type\n"));
-			goto done;
-		}
-		remoteaddr = policy->peers_sa_ipaddr->a.ipaddr;
-	} else {
-		remoteaddr = child_sa->parent->remote;
-	}
 
-	if (rcs_cmpsa_wop(localaddr, param->sa_dst) == 0) {
+	/*
+	 * XFRM expire fills sa_dst from the tunnel selector (port 0)
+	 * and peers_sa_ipaddr may be a wildcard.  Match by SPI.
+	 */
+	if (child_sa->my_proposal) {
 		for (proposal = child_sa->my_proposal[1];
 		     proposal;
 		     proposal = proposal->next) {
-			struct isakmp_pl_p	*prop;
+			struct isakmp_pl_p *prop = proposal->prop;
 
-			prop = proposal->prop;
-			if (prop->proto_id == satype
-			    && *(uint32_t *)(prop + 1) == param->spi) {
-				ikev2_expire_sa(child_sa, param->expired, param->satype, ntohl(param->spi));
+			if (prop && prop->proto_id == satype &&
+			    *(uint32_t *)(prop + 1) == param->spi) {
+				ikev2_expire_sa(child_sa, param->expired,
+				    param->satype, ntohl(param->spi));
 				return TRUE;
 			}
 		}
-	} else if (rcs_cmpsa_wop(remoteaddr, param->sa_dst) == 0) {
-		TRACE((PLOGLOC,
-		       "expire message was for outbound ipsec_sa of child_sa %p\n",
-		       child_sa));
-
+	}
+	if (child_sa->peer_proposal) {
 		for (proposal = child_sa->peer_proposal;
 		     proposal;
 		     proposal = proposal->next) {
-			struct isakmp_pl_p	*prop;
+			struct isakmp_pl_p *prop = proposal->prop;
 
-			prop = proposal->prop;
-			if (prop->proto_id == satype &&
-			    *(uint32_t *)(prop + 1) == param->spi) {
+			if (prop && prop->proto_id == satype &&
+			    *(uint32_t *)(prop + 1) == param->spi)
 				goto found;
-			}
 		}
-		return FALSE;
+	}
+	goto done;
 
 	    found:
-		/* XXX this should be simpler since only one proposal
-		   should it exist */
-		for (proposal = child_sa->my_proposal[1];
+		for (proposal = child_sa->my_proposal
+		    ? child_sa->my_proposal[1] : NULL;
 		     proposal;
 		     proposal = proposal->next) {
-			struct isakmp_pl_p	*prop;
-			uint32_t		spi;
+			struct isakmp_pl_p *prop;
+			uint32_t spi;
 
 			prop = proposal->prop;
 			spi = get_uint32(prop + 1);
 			if (prop->proto_id == satype && spi != 0) {
-				ikev2_expire_sa(child_sa, param->expired, param->satype, spi);
+				ikev2_expire_sa(child_sa, param->expired,
+				    param->satype, spi);
 				return TRUE;
 			}
 		}
-	} else {
-		TRACE((PLOGLOC, "address doesn't match\n"));
-	}
 
  done:
 	return FALSE;
@@ -2384,15 +2382,11 @@ ikev2_expire_sa(struct ikev2_child_sa *child_sa, int expire_mode,
 		}
 		return;
 	case 2:		/* hard expired */
-#if 1
-		/*
-		 * hard expire is not used, due to difference of KAME and USAGI.
-		 * instead, use child_sa->timer
-		 */
-#else
-		ikev2_expire_child(child_sa);
-#endif
-		break;
+		if (!child_sa->rekey_inprogress) {
+			child_sa->rekey_inprogress = TRUE;
+			ikev2_rekey_childsa(child_sa, satype, spi);
+		}
+		return;
 	default:
 		plog(PLOG_INTWARN, PLOGLOC, 0,
 		     "unexpected %d\n", expire_mode);
@@ -2443,6 +2437,9 @@ ikev2_delete_sa(struct ikev2_child_sa *child_sa, int protocol_id,
 	param.sa_dst = dst;
 	param.spi = htonl(spi);
 	param.ul_proto = child_sa->selector->upper_layer_protocol;
+	if (!child_sa->sadb_request.method ||
+	    !child_sa->sadb_request.method->delete_sa)
+		return;
 	(void)child_sa->sadb_request.method->delete_sa(&param);
 }
 

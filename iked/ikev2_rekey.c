@@ -114,12 +114,11 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 		return;
 	}
 
-	if (! old_child_sa->is_initiator &&
-	    ! LIST_EMPTY(&old_child_sa->lease_list)) {
-		TRACE((PLOGLOC, "This side is the server.  Expect the client to rekey if necessary.\n"));
-		return;
-	}
-
+	/*
+	 * CP-server used to skip initiator rekey and wait for the
+	 * client.  Apple never CREATE_CHILD before the 3600s hard
+	 * lifetime, so the CHILD dies idle.  Rekey from this side.
+	 */
 	new_child_sa = ikev2_create_child_initiator(ike_sa);
 	TRACE((PLOGLOC, "new_child_sa: %p\n", new_child_sa));
 	if (!new_child_sa) {
@@ -130,33 +129,58 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 	new_child_sa->preceding_satype = satype;
 	new_child_sa->preceding_spi = spi;
 
+	{
+		struct rcf_selector *sl = old_child_sa->selector;
+
+		if (!sl)
+			goto fail;
+		/* Responder children store inbound; initiator CREATE_CHILD
+		 * needs the outbound twin. */
+		if (sl->direction == RCT_DIR_OUTBOUND) {
+			if (rcf_get_selector(rc_vmem2str(sl->sl_index),
+			    &new_child_sa->selector) != 0) {
+				TRACE((PLOGLOC, "failed rcf_get_selector()\n"));
+				goto fail;
+			}
+		} else if (rcf_get_rvrs_selector(sl,
+		    &new_child_sa->selector) != 0) {
+			TRACE((PLOGLOC, "failed rcf_get_rvrs_selector()\n"));
+			goto fail;
+		}
+		if (sl->next) {
+			if (sl->next->direction == RCT_DIR_OUTBOUND) {
+				if (rcf_get_selector(
+				    rc_vmem2str(sl->next->sl_index),
+				    &new_child_sa->selector->next) != 0) {
+					TRACE((PLOGLOC,
+					    "failed rcf_get_selector()\n"));
+					goto fail;
+				}
+			} else if (rcf_get_rvrs_selector(sl->next,
+			    &new_child_sa->selector->next) != 0) {
+				TRACE((PLOGLOC,
+				    "failed rcf_get_rvrs_selector()\n"));
+				goto fail;
+			}
+		}
+	}
+
 	new_child_sa->my_proposal =
-		ikev2_ipsec_conf_to_proplist(old_child_sa, TRUE);
+		ikev2_ipsec_conf_to_proplist(new_child_sa, TRUE);
 	if (!new_child_sa->my_proposal) {
 		TRACE((PLOGLOC,
 		       "failed creating proposal list of initiator SA\n"));
 		goto fail;
 	}
 
-	assert(old_child_sa->selector->direction == RCT_DIR_OUTBOUND);
-	/* ugly... but necessary to share primary selector updates */
-	if (rcf_get_selector(rc_vmem2str(old_child_sa->selector->sl_index),
-			     &new_child_sa->selector) != 0) {
-		TRACE((PLOGLOC, "failed rcf_get_selector()\n"));
-		goto fail;
-	}
-	if (old_child_sa->selector->next) {
-		if (rcf_get_selector(rc_vmem2str(old_child_sa->selector->next->sl_index),
-				     &new_child_sa->selector->next) != 0) {
-			TRACE((PLOGLOC, "failed rcf_get_selector()\n"));
-			goto fail;
-		}
-	}
-
 	new_child_sa->srclist = old_child_sa->srclist;
 	old_child_sa->srclist = 0;
 	new_child_sa->dstlist = old_child_sa->dstlist;
 	old_child_sa->dstlist = 0;
+
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+	    "initiating CREATE_CHILD_SA rekey child=%p spi=0x%08x\n",
+	    old_child_sa, spi);
 
 	sadb_request_initialize(&new_child_sa->sadb_request,
 				debug_pfkey ? &sadb_debug_method
@@ -169,10 +193,12 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 	return;
 
       fail_nomem:
+	old_child_sa->rekey_inprogress = FALSE;
 	isakmp_log(ike_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed allocating memory\n");
 	return;
       fail:
+	old_child_sa->rekey_inprogress = FALSE;
 	isakmp_log(ike_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed starting rekeying\n");
 	return;
