@@ -636,11 +636,13 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 	 */
 #endif
 	switch (type) {
-#ifdef notyet
 	case IKEV2_INITIAL_CONTACT:
-		flush_sa();
+		/* RFC 7296 3.10.1: peer rebooted; flush its other SAs.
+		 * Only trust an authenticated INITIAL_CONTACT (IKE_AUTH).
+		 * ikev2_initial_contact() skips the SA this notify came on. */
+		if (is_safe)
+			ikev2_initial_contact(ike_sa);
 		break;
-#endif
 
 	case IKEV2_MOBIKE_SUPPORTED:
 		ike_sa->mobike_supported = 1;

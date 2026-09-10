@@ -454,6 +454,7 @@ extern void ikev2_sa_expire(struct ikev2_sa *, int);
 extern void ikev2_sa_delete(struct ikev2_sa *);
 extern void ikev2_dispose_sa(struct ikev2_sa *);
 extern void ikev2_shutdown(void);
+extern void ikev2_initial_contact(struct ikev2_sa *);
 extern struct ikev2_child_sa *ikev2_create_child_initiator(struct ikev2_sa *);
 extern int ikev2_create_child_responder(struct ikev2_sa *,
     struct sockaddr *, struct sockaddr *, uint32_t,

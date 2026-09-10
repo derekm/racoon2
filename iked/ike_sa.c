@@ -46,6 +46,7 @@
 #include "ike_conf.h"
 #include "var.h"
 #include "crypto_impl.h"
+#include "rc_net.h"
 
 #include "debug.h"
 
@@ -852,6 +853,44 @@ ikev2_shutdown_sa(struct ikev2_sa *ike_sa)
 }
 
 static void ikev2_poll_timer_callback(void *);
+
+/*
+ * RFC 7296 3.10.1 INITIAL_CONTACT: the peer signals it has restarted
+ * and holds no other IKE_SAs with us, so every IKE_SA we still keep
+ * for that peer address is a stale zombie (e.g. a resume-restored
+ * session pinned to an obsolete NAT-T port).  Left alone, a zombie
+ * keeps NAT-keepaliving a dead port and its child-sa rekey
+ * retransmissions eventually exceed the limit; the abort then tears
+ * the whole daemon down (observed live: SIGSEGV + systemd restart =
+ * every tunnel drops).  Flush them as soon as the new SA authenticates.
+ */
+void
+ikev2_initial_contact(struct ikev2_sa *self)
+{
+	struct ikev2_sa *sa, *next;
+	int flushed = 0;
+
+	for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa; sa = next) {
+		next = IKEV2_SA_LIST_NEXT(sa);
+		if (sa == self)
+			continue;
+		if (!sa->remote || !self->remote ||
+		    rcs_cmpsa_wop(sa->remote, self->remote) != 0)
+			continue;
+		if (sa->state == IKEV2_STATE_DYING ||
+		    sa->state == IKEV2_STATE_DEAD)
+			continue;
+		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "INITIAL_CONTACT: flushing stale IKE_SA with "
+			   "same peer (state=%d)\n", sa->state);
+		ikev2_shutdown_sa(sa);
+		++flushed;
+	}
+	if (flushed)
+		isakmp_log(self, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "INITIAL_CONTACT: flushed %d stale IKE_SA(s)\n",
+			   flushed);
+}
 
 void
 ikev2_sa_start_polling_timer(struct ikev2_sa *sa)
