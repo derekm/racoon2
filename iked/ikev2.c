@@ -4761,6 +4761,7 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	int type;
 	rc_vchar_t *pkt = 0;
 	struct ikev2_child_param child_param; /* for CONFIG */
+	int nat_detect = 0;
 
 	/*
 	 * expect HDR SK { N ... }
@@ -4781,6 +4782,23 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		case IKEV2_PAYLOAD_NOTIFY:
 			if (ikev2_process_notify(ike_sa, p, TRUE) != 0)
 				goto abort;
+			/*
+			 * iOS (nwikev2) re-validates its NAT binding by
+			 * sending NAT_DETECTION notifies in an
+			 * INFORMATIONAL request on the established SA
+			 * (RFC 7296 2.23 semantics, normally used in
+			 * IKE_SA_INIT).  It expects the responder's
+			 * computed NAT_DETECTION notifies back in the
+			 * reply; an empty reply is treated as "binding
+			 * not confirmed" and iOS silently deletes the
+			 * SA a short time later.  Remember this so we
+			 * can push our NAT-DETECTION notifies below.
+			 */
+			if (get_notify_type((struct ikev2payl_notify *)p) ==
+			    IKEV2_NAT_DETECTION_SOURCE_IP ||
+			    get_notify_type((struct ikev2payl_notify *)p) ==
+			    IKEV2_NAT_DETECTION_DESTINATION_IP)
+				nat_detect = 1;
 			break;
 		case IKEV2_PAYLOAD_DELETE:
 			ikev2_process_delete(ike_sa, p, &payl);
@@ -4841,6 +4859,26 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				    TRUE);
 		rc_vfree(ike_sa->cookie2_echo);
 		ike_sa->cookie2_echo = 0;
+	}
+
+	if (nat_detect &&
+	    (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
+	     ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE)) {
+		/*
+		 * RFC 7296 2.23: NAT_DETECTION notifies confirm the
+		 * NAT bindings.  When the peer re-checks them on an
+		 * established SA (iOS nwikev2), echo our computed
+		 * NAT_DETECTION_SOURCE_IP / _DESTINATION_IP in the
+		 * response -- the same notifies we send in the
+		 * IKE_SA_INIT reply.  An empty reply leaves the peer
+		 * without binding confirmation and iOS silently drops
+		 * the SA minutes later.
+		 */
+		if (natt_create_natd(ike_sa, &payl, remote, local) < 0)
+			isakmp_log(ike_sa, 0, 0, 0,
+				   PLOG_PROTOWARN, PLOGLOC,
+				   "failed to create NAT_DETECTION notifies "
+				   "for INFORMATIONAL reply\n");
 	}
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_INFORMATIONAL,
