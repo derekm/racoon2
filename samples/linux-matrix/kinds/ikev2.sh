@@ -124,7 +124,7 @@ conn r2macos
 	type=tunnel
 	$IKE_LIFE
 	$REKEY_EXTRA
-	keylife=$CHILD_LIFE
+	$CHILD_LIFE
 	keyingtries=1
 	$FRAG
 	$MOBIKE
