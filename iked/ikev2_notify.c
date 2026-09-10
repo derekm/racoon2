@@ -642,7 +642,7 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 		 * ikev2_initial_contact() skips the SA this notify came on. */
 		if (is_safe)
 			ikev2_initial_contact(ike_sa);
-		break;
+		return 0;
 
 	case IKEV2_MOBIKE_SUPPORTED:
 		ike_sa->mobike_supported = 1;
