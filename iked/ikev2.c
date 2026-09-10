@@ -2731,6 +2731,8 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 	}
 
 	ikev2_set_state(ike_sa, IKEV2_STATE_ESTABLISHED);
+	/* NAT-T keepalive starts after the float, on the 4500 ports */
+	natt_start_natk(ike_sa);
 	/*
 	 * XXX
 	 * with current code, retransmission data may be lost if the

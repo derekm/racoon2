@@ -230,17 +230,32 @@ natt_process_natd(struct ikev2_sa *ike_sa, struct ikev2payl_notify *n,
 		if (ret != 0) {
 			ike_sa->behind_nat = TRUE;
 
-			if (ike_sa->natk_timer) {
-				SCHED_KILL(ike_sa->natk_timer);
-			}
+			/*
+			 * Start the NAT-T keepalive only once the IKE_SA
+			 * is ESTABLISHED (ports floated to 4500).  The
+			 * state0/IKE_AUTH NATD notifies arrive before the
+			 * float while sa->remote/local still point at
+			 * port 500; arming here sends 1-byte 0xff
+			 * keepalives at the unfloated port during the
+			 * handshake, which peers treat as protocol junk
+			 * mid-negotiation (observed live: iOS stalls the
+			 * IKE_SA_INIT exchange and retries on a fresh
+			 * source port -> "slow connect", the
+			 * [|isakmp] 1-byte frames on port 500).
+			 * ikev2_set_state(ESTABLISHED) starts it.
+			 */
+			if (ike_sa->state == IKEV2_STATE_ESTABLISHED) {
+				if (ike_sa->natk_timer)
+					SCHED_KILL(ike_sa->natk_timer);
 
-			ike_sa->natk_timer =
-				sched_new(ikev2_natk_interval(ike_sa->rmconf),
-					  natt_natk_callback, ike_sa);
-			if (ike_sa->natk_timer == NULL) {
-				plog(PLOG_INTERR, PLOGLOC, NULL,
-				     "failed to rc_vmalloc for natk_timer\n");
-				return -1;
+				ike_sa->natk_timer =
+					sched_new(ikev2_natk_interval(ike_sa->rmconf),
+						  natt_natk_callback, ike_sa);
+				if (ike_sa->natk_timer == NULL) {
+					plog(PLOG_INTERR, PLOGLOC, NULL,
+					     "failed to rc_vmalloc for natk_timer\n");
+					return -1;
+				}
 			}
 		} else {
 			ike_sa->behind_nat = FALSE;
