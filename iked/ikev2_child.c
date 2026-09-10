@@ -85,6 +85,24 @@ static void ikev2_expire_sa(struct ikev2_child_sa *child_sa,
 static rc_vchar_t *compute_keymat(struct ikev2_sa *, rc_vchar_t *, size_t,
 				  rc_vchar_t *, rc_vchar_t *);
 
+static int
+peer_proposal_has_dh_group(struct prop_pair *proposal, unsigned int group_id)
+{
+	struct prop_pair *transf;
+	struct prop_pair *t;
+	struct ikev2transform *trns;
+
+	for (transf = proposal->tnext; transf; transf = transf->next) {
+		for (t = transf; t; t = t->tnext) {
+			trns = (struct ikev2transform *)t->trns;
+			if (trns && trns->transform_type == IKEV2TRANSFORM_TYPE_DH &&
+			    get_uint16(&trns->transform_id) == group_id)
+				return 1;
+		}
+	}
+	return 0;
+}
+
 struct isakmp_domain ikev2_createchild_doi = {
 	ikev2_check_spi_size,	/* check_spi_size */
 	sizeof(isakmp_cookie_t),	/* ike_spi_size */
@@ -983,13 +1001,58 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	if (!my_proposal)
 		goto fail_create_proposal;
 
-	matching_peer_proposal = ikev2_find_match(my_proposal, parsed_sa, PEER);
-	if (!matching_peer_proposal)
-		goto no_proposal_chosen;
+	/*
+	 * RFC 7296 \u00a72.18: the DH group of the KEi payload MUST equal
+	 * the DH group of the selected proposal.  Peer stacks (iOS)
+	 * send a single KEi (group 19) while the CREATE_CHILD_SA
+	 * proposal list contains several DH alternatives; the generic
+	 * first-match below would pick whichever proposal pair lines
+	 * up first (often a different group) and then get rejected by
+	 * the INVALID_KE gate.  Prefer a matching pair whose DH group
+	 * equals the KEi group when one exists.
+	 */
+	if (g_i && peer_grp != 0) {
+		struct prop_pair *peer_keigrp[MAXPROPPAIRLEN];
+		int p;
 
-	/* make duplicate to allocate my SPI */
-	matching_my_proposal = ikev2_find_match(my_proposal, parsed_sa, MINE);
-	if (!matching_my_proposal)
+		memset(peer_keigrp, 0, sizeof(peer_keigrp));
+		for (p = 0; p < MAXPROPPAIRLEN; ++p) {
+			if (parsed_sa[p] &&
+			    peer_proposal_has_dh_group(parsed_sa[p], peer_grp))
+				peer_keigrp[p] = parsed_sa[p];
+		}
+		matching_peer_proposal =
+			ikev2_find_match(my_proposal, peer_keigrp, PEER);
+		matching_my_proposal =
+			ikev2_find_match(my_proposal, peer_keigrp, MINE);
+		if (!matching_peer_proposal || !matching_my_proposal) {
+			/* no KEi-group proposal matched; fall back to the
+			 * generic match so the INVALID_KE gate below can
+			 * answer with the suggested group */
+			if (matching_peer_proposal) {
+				proppair_discard(matching_peer_proposal);
+				matching_peer_proposal = 0;
+			}
+			if (matching_my_proposal) {
+				proppair_discard(matching_my_proposal);
+				matching_my_proposal = 0;
+			}
+			matching_peer_proposal =
+				ikev2_find_match(my_proposal, parsed_sa, PEER);
+			if (matching_peer_proposal)
+				matching_my_proposal =
+					ikev2_find_match(my_proposal, parsed_sa, MINE);
+		}
+	} else {
+		matching_peer_proposal =
+			ikev2_find_match(my_proposal, parsed_sa, PEER);
+		if (!matching_peer_proposal)
+			goto no_proposal_chosen;
+		/* make duplicate to allocate my SPI */
+		matching_my_proposal =
+			ikev2_find_match(my_proposal, parsed_sa, MINE);
+	}
+	if (!matching_peer_proposal || !matching_my_proposal)
 		goto no_proposal_chosen;
 
 	if (g_i) {
