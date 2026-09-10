@@ -1411,8 +1411,14 @@ handle_policy(struct xfrm_userpolicy_info *xp, struct rcpfk_msg *rc, int dumped,
 		fn = cb && cb->cb_spdupdate ? cb->cb_spdupdate : NULL;
 	else
 		fn = cb && cb->cb_spdadd ? cb->cb_spdadd : NULL;
-	if (!dumped)
-		pending_clear();
+	/*
+	 * Foreign multicast events (other processes' policy updates) and
+	 * mid-dump messages must NEVER clear the single-slot op-pending:
+	 * a concurrent ALLOCSPI/GETSA awaiting its NEWSA reply would lose
+	 * the pending match and cb_getspi would never fire (slow connect,
+	 * child stuck GETSPI until EXPIRE). Only NLMSG_DONE (M2-guarded)
+	 * may touch the op-pending slot.
+	 */
 	if (fn && fn(rc) < 0)
 		return -1;
 	return 0;
