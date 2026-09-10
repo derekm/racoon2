@@ -76,9 +76,9 @@ kind_ikev2() {
 		STRONG_ESP='aes128gcm16-ecp256!'
 		CHILD_LIFE='keylife=30s'
 		REKEY_EXTRA='reauth=no
-rekey=yes
-rekeymargin=8s
-rekeyfuzz=0%'
+		rekey=yes
+		rekeymargin=8s
+		rekeyfuzz=0%'
 		;;
 	*-frag) FRAG='fragmentation=yes' ;;
 	*-mobike|*-cookie2) MOBIKE='mobike=yes' ;;
