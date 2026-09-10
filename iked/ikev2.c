@@ -3892,6 +3892,20 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 	}
 
+	{
+		/* diagnostic: log the exact rekey request signature */
+		struct ikev2proposal *pr = 0;
+		if (sa && get_payload_data_length(sa) > sizeof(struct ikev2proposal))
+			pr = (struct ikev2proposal *)(((struct ikev2payl_sa *)sa) + 1);
+		isakmp_log(ike_sa, local, remote, msg, PLOG_INFO, PLOGLOC,
+		   "CREATE_CHILD_SA request: msgid=%u proto=%s rekey_proto=%d rekey_spi=0x%x KEi_grp=%u ts_i=%c ts_r=%c nonce=%c\n",
+		   message_id,
+		   (pr && pr->protocol_id == IKEV2PROPOSAL_IKE) ? "IKE" :
+		   (pr && pr->protocol_id == IKEV2PROPOSAL_ESP) ? "ESP" : "?",
+		   rekey_proto, rekey_spi, peer_grp,
+		   ts_i ? 'Y' : 'n', ts_r ? 'Y' : 'n', nonce ? 'Y' : 'n');
+	}
+
 	/* check if rekeying IKE_SA */
 	if (get_payload_data_length(sa) > sizeof(struct ikev2proposal) &&
 	    ((struct ikev2proposal *)(((struct ikev2payl_sa *)sa) + 1))->protocol_id == IKEV2PROPOSAL_IKE) {
@@ -4151,6 +4165,12 @@ void
 ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 				 struct ikev2_child_sa *child_sa)
 {
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+	   "CREATE_CHILD_SA response: msgid=%u child=%p dhgrp=%u dhpub=%s state=%d\n",
+	   child_sa->message_id, child_sa,
+	   child_sa->dhgrp ? child_sa->dhgrp->transform_id : 0,
+	   child_sa->dhpub ? "Y" : "n", child_sa->state);
+
 	rc_vchar_t *sa = 0;
 	rc_vchar_t *ke = 0;
 	struct ikev2_payloads payl;

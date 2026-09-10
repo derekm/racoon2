@@ -877,12 +877,12 @@ ikev2_initial_contact(struct ikev2_sa *self)
 		if (!sa->remote || !self->remote ||
 		    rcs_cmpsa_wop(sa->remote, self->remote) != 0)
 			continue;
-		if (sa->state == IKEV2_STATE_DYING ||
-		    sa->state == IKEV2_STATE_DEAD)
+		if (sa->state != IKEV2_STATE_ESTABLISHED)
 			continue;
 		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 			   "INITIAL_CONTACT: flushing stale IKE_SA with "
 			   "same peer (state=%d)\n", sa->state);
+		ikev2_stop_retransmit(sa);
 		ikev2_shutdown_sa(sa);
 		++flushed;
 	}
