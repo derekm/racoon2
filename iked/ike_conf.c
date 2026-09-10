@@ -1256,8 +1256,6 @@ int ikev2_handle_ip_rw(rc_vchar_t *id_val, struct rc_idlist *id)
 
     *p = *data;
 
-    rc_vfree(data);
-
     return 0;
 }
 
@@ -2316,7 +2314,9 @@ free_selectorlist(struct rcf_selector *s)
 
 	for (; s; s = s_next) {
 		s_next = s->next;
+        s->next = 0;
 		rcf_free_selector(s);
+
 		/* NB: rcf_clean_selector() -> rc_free(n) frees the node, so
 		 * s is gone here — do NOT touch s->next (ASan caught this
 		 * as heap-use-after-free in IKEv2 child-SA selection). */
@@ -2339,10 +2339,10 @@ int ikev2_natt_check_addrs(struct ikev2_sa *ike_sa,
     local = ike_sa->local;
     remote = ike_sa->remote;
  
-    if (rcs_cmpsa_wop(local, ts_i_saddr) != 0)
-        *flags |= NAT_DETECTED_ME;
-    if (rcs_cmpsa_wop(remote, ts_r_saddr) != 0)
+    if (rcs_cmpsa_wop(remote, ts_i_saddr) != 0)
         *flags |= NAT_DETECTED_PEER;
+    if (rcs_cmpsa_wop(local, ts_r_saddr) != 0)
+        *flags |= NAT_DETECTED_ME;
 
     retval = 0;
 
@@ -2372,7 +2372,7 @@ void switch_ts_pl_addr(struct ikev2_sa *ike_sa,
                     eaddr = (uint8_t*)(saddr + addrlen);
                     struct sockaddr_in *sin = (struct sockaddr_in*)ike_sa->local;
                     memcpy(&((struct sockaddr_in*)saddr)->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
-                    memcpy(&((struct sockaddr_in*)eaddr)->sin_addr, &sin->sin_addr, sizeof(struct in_addr));
+                    memcpy(eaddr, &sin->sin_addr, sizeof(struct in_addr));
                     break;
                 }
             case IKEV2_TS_IPV6_ADDR_RANGE:
@@ -2381,7 +2381,7 @@ void switch_ts_pl_addr(struct ikev2_sa *ike_sa,
                     eaddr = (uint8_t*)(saddr + addrlen);
                     struct sockaddr_in6 *sin6 = (struct sockaddr_in6*)ike_sa->local;
                     memcpy(&((struct sockaddr_in6*)saddr)->sin6_addr, &sin6->sin6_addr, sizeof(struct in6_addr));
-                    memcpy(&((struct sockaddr_in6*)eaddr)->sin6_addr, &sin6->sin6_addr, sizeof(struct in6_addr));
+                    memcpy(eaddr, &sin6->sin6_addr, sizeof(struct in6_addr));
                     break;
                 }
             default: return;
@@ -2407,7 +2407,7 @@ void switch_ts_pl_addr(struct ikev2_sa *ike_sa,
                     eaddr = (uint8_t*)(saddr + addrlen);
                     struct sockaddr_in6 *sin6 = (struct sockaddr_in6*)ike_sa->remote;
                     memcpy(&((struct sockaddr_in6*)saddr)->sin6_addr, &sin6->sin6_addr, sizeof(struct in6_addr));
-                    memcpy(&((struct sockaddr_in6*)eaddr)->sin6_addr, &sin6->sin6_addr, sizeof(struct in_addr));
+                    memcpy(eaddr, &sin6->sin6_addr, sizeof(struct in_addr));
                     break;
             }
             default: return;
@@ -2519,23 +2519,23 @@ int ikev2_addr_substitute(struct ikev2_sa *ike_sa,
     {
         ike_sa->oa_i = ts_i_saddr;
 
-        switch_ts_pl_addr(ike_sa, ts_i, NAT_DETECTED_ME);
+        switch_ts_pl_addr(ike_sa, ts_r, NAT_DETECTED_ME);
     }
 
     if (flags & NAT_DETECTED_PEER)
     {
         ike_sa->oa_r = ts_r_saddr;
 
-        switch_ts_pl_addr(ike_sa, ts_r, NAT_DETECTED_PEER);
+        switch_ts_pl_addr(ike_sa, ts_i, NAT_DETECTED_PEER);
     }
 
     retval = 0;
 
 out:
-    free(ts_i_saddr);
-    free(ts_i_eaddr);
-    free(ts_r_saddr);
-    free(ts_r_eaddr);
+    //free(ts_i_saddr);
+    //free(ts_i_eaddr);
+    //free(ts_r_saddr);
+    //free(ts_r_eaddr);
 
     return retval;
 }
