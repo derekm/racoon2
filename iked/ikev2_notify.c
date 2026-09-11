@@ -499,6 +499,42 @@ createchild_resp_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	       ikev2_notify_type_str(get_notify_type(notify))));
 
 	switch (get_notify_type(notify)) {
+	case IKEV2_NAT_DETECTION_SOURCE_IP:
+	case IKEV2_NAT_DETECTION_DESTINATION_IP:
+		/* iOS rides its ~10-min NAT recheck on the rekey
+		 * request (and on plain INF2s).  The digests it sends
+		 * are over ITS OWN view of the endpoints: SRC = its
+		 * source, DST = the address it dialed.  The reply must
+		 * carry the SWAP (reply SRC = request DST digest,
+		 * reply DST = request SRC digest): the peer validates
+		 * our reply's SOURCE_IP against the source of the reply
+		 * packet as it observes it (the address it dialed) and
+		 * DESTINATION_IP against itself.  Behind hairpin NAT
+		 * (phone LAN .78 -> router public .40 -> server .79)
+		 * recomputation from our socket address can never match
+		 * what iOS computes; echoing the received digests in
+		 * swapped slots always does.  (RFC 7296 2.23.) */
+		{
+			uint8_t *dn;
+			int dl = ntohs(
+			    ((struct ikev2_payload_header *)notify)->
+			    payload_length) - sizeof(struct ikev2payl_notify);
+			if (dl >= 20) {
+				dn = get_notify_data(notify);
+				if (get_notify_type(notify) ==
+				    IKEV2_NAT_DETECTION_SOURCE_IP)
+					memcpy(ike_sa->natd_dst_hash, dn, 20);
+				else {
+					memcpy(ike_sa->natd_src_hash, dn, 20);
+					ike_sa->natd_echo = 1;
+				}
+			}
+		}
+		if (natt_process_natd(ike_sa, notify, TRUE) == 0 &&
+		    ike_sa->natd_echo == 0)
+			ike_sa->natd_echo = 1;
+		break;
+
 	case IKEV2_REKEY_SA:
 		TRACE((PLOGLOC, "received Notify REKEY_SA\n"));
 
@@ -541,34 +577,6 @@ createchild_resp_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			TRACE((PLOGLOC,
 			       "rekey_proto %d rekey_spi 0x%x\n",
 			       *rekey_proto, *rekey_spi));
-			break;
-
-		case IKEV2_NAT_DETECTION_SOURCE_IP:
-		case IKEV2_NAT_DETECTION_DESTINATION_IP:
-			/* iOS rides its ~10-min NAT recheck on the rekey
-			 * request.  Capture the digest values verbatim so
-			 * the CREATE_CHILD_SA response confirms the
-			 * binding as the peer computed it (hairpin NAT
-			 * makes recomputation from our socket addresses
-			 * always mismatch; see informational path). */
-			{
-				uint8_t *dn;
-				int dl = ntohs(
-				    ((struct ikev2_payload_header *)notify)->
-				    payload_length) - sizeof(struct ikev2payl_notify);
-				if (dl >= 20) {
-					dn = get_notify_data(notify);
-					if (get_notify_type(notify) ==
-					    IKEV2_NAT_DETECTION_SOURCE_IP)
-						memcpy(ike_sa->natd_src_hash,
-						       dn, 20);
-					else
-						memcpy(ike_sa->natd_dst_hash,
-						       dn, 20);
-				}
-			}
-			if (natt_process_natd(ike_sa, notify, TRUE) == 0)
-				ike_sa->natd_echo = 1;
 			break;
 
 		default:

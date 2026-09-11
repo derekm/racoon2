@@ -4219,14 +4219,20 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 	if (ike_sa->natd_echo &&
 	    (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
 	     ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE)) {
-		ike_sa->natd_echo = 0;
-		/* RFC 7296 2.23: echo computed NAT_DETECTION hashes so
-		 * iOS's rekey-riding NAT recheck gets binding confirmation;
-		 * without it iOS drops the IKE_SA right after the rekey. */
+		/* RFC 7296 2.23: echo the exchanged NAT_DETECTION digests
+		 * (swapped) so iOS's rekey-riding NAT recheck gets binding
+		 * confirmation; without it iOS drops the IKE_SA right
+		 * after the rekey. */
 		if (ikev2_push_natd_echo(ike_sa, &payl) < 0)
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
 				   "failed to echo NAT_DETECTION notifies "
 				   "for CREATE_CHILD_SA reply\n");
+		else
+			isakmp_log(ike_sa, 0, 0, 0,
+				   PLOG_INFO, PLOGLOC,
+				   "echoed NAT_DETECTION digests in "
+				   "CREATE_CHILD_SA reply\n");
+		ike_sa->natd_echo = 0;
 	}
 
 	if (child_sa->state != IKEV2_CHILD_STATE_MATURE) {
@@ -4879,16 +4885,24 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 					if (dl >= 20) {
 						dn = get_notify_data(
 						    (struct ikev2payl_notify *)p);
+						/* swap: peer validates our
+						 * reply SRC against the reply
+						 * source it observes (the addr
+						 * it dialed = its request DST)
+						 * and reply DST against its
+						 * own source (= request SRC). */
 						if (get_notify_type(
 						    (struct ikev2payl_notify *)p) ==
 						    IKEV2_NAT_DETECTION_SOURCE_IP)
 							memcpy(
-							    ike_sa->natd_src_hash,
-							    dn, 20);
-						else
-							memcpy(
 							    ike_sa->natd_dst_hash,
 							    dn, 20);
+						else {
+							memcpy(
+							    ike_sa->natd_src_hash,
+							    dn, 20);
+							ike_sa->natd_echo = 1;
+						}
 					}
 				}
 			}
@@ -4967,12 +4981,17 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * without binding confirmation and iOS silently drops
 		 * the SA minutes later.
 		 */
-		ike_sa->natd_echo = 0;
 		if (ikev2_push_natd_echo(ike_sa, &payl) < 0)
 			isakmp_log(ike_sa, 0, 0, 0,
 				   PLOG_PROTOWARN, PLOGLOC,
 				   "failed to echo NAT_DETECTION notifies "
 				   "for INFORMATIONAL reply\n");
+		else
+			isakmp_log(ike_sa, 0, 0, 0,
+				   PLOG_INFO, PLOGLOC,
+				   "echoed NAT_DETECTION digests in "
+				   "INFORMATIONAL reply\n");
+		ike_sa->natd_echo = 0;
 	}
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_INFORMATIONAL,
