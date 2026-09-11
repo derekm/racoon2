@@ -215,6 +215,7 @@ struct ikev2_sa {
 	int frag_supported;		/* IKEv2 fragmentation (RFC7383) */
 	int mobike_supported;		/* RFC 4555 */
 	int mobike_update;		/* UPDATE_SA_ADDRESSES seen */
+	int natd_echo;			/* echo NAT_DETECTION in next reply */
 	rc_vchar_t *cookie2_echo;	/* RFC 4555 COOKIE2 to copy into response */
 	rc_vchar_t *cookie2_sent;	/* RFC 4555 COOKIE2 we put on a request */
 	int cookie2_matched;

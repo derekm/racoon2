@@ -3894,6 +3894,11 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 	}
 
+	if (ike_sa->mobike_update) {
+		ike_sa->mobike_update = 0;
+		ikev2_mobike_apply(ike_sa, remote, local);
+	}
+
 	{
 		/* diagnostic: log the exact rekey request signature */
 		struct ikev2proposal *pr = 0;
@@ -4188,6 +4193,21 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 	 */
 
 	ikev2_payloads_init(&payl);
+
+	if (ike_sa->natd_echo &&
+	    (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
+	     ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE)) {
+		ike_sa->natd_echo = 0;
+		/* RFC 7296 2.23: echo computed NAT_DETECTION hashes so
+		 * iOS's rekey-riding NAT recheck gets binding confirmation;
+		 * without it iOS drops the IKE_SA right after the rekey. */
+		if (natt_create_natd(ike_sa, &payl,
+				     child_sa->parent->remote,
+				     child_sa->parent->local) < 0)
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
+				   "failed to create NAT_DETECTION notifies "
+				   "for CREATE_CHILD_SA reply\n");
+	}
 
 	if (child_sa->state != IKEV2_CHILD_STATE_MATURE) {
 		TRACE((PLOGLOC, "child state %d, aborting exchange\n",

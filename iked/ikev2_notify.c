@@ -543,6 +543,15 @@ createchild_resp_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			       *rekey_proto, *rekey_spi));
 			break;
 
+		case IKEV2_NAT_DETECTION_SOURCE_IP:
+		case IKEV2_NAT_DETECTION_DESTINATION_IP:
+			/* iOS rides its ~10-min NAT recheck on the rekey
+			 * request; process the hashes and echo them in the
+			 * CREATE_CHILD_SA response (RFC 7296 2.23). */
+			if (natt_process_natd(ike_sa, notify, TRUE) == 0)
+				ike_sa->natd_echo = 1;
+			break;
+
 		default:
 			isakmp_log(ike_sa, 0, 0, 0,
 				   PLOG_PROTOERR, PLOGLOC,
