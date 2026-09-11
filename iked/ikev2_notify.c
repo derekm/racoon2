@@ -546,8 +546,27 @@ createchild_resp_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		case IKEV2_NAT_DETECTION_SOURCE_IP:
 		case IKEV2_NAT_DETECTION_DESTINATION_IP:
 			/* iOS rides its ~10-min NAT recheck on the rekey
-			 * request; process the hashes and echo them in the
-			 * CREATE_CHILD_SA response (RFC 7296 2.23). */
+			 * request.  Capture the digest values verbatim so
+			 * the CREATE_CHILD_SA response confirms the
+			 * binding as the peer computed it (hairpin NAT
+			 * makes recomputation from our socket addresses
+			 * always mismatch; see informational path). */
+			{
+				uint8_t *dn;
+				int dl = ntohs(
+				    ((struct ikev2_payload_header *)notify)->
+				    payload_length) - sizeof(struct ikev2payl_notify);
+				if (dl >= 20) {
+					dn = get_notify_data(notify);
+					if (get_notify_type(notify) ==
+					    IKEV2_NAT_DETECTION_SOURCE_IP)
+						memcpy(ike_sa->natd_src_hash,
+						       dn, 20);
+					else
+						memcpy(ike_sa->natd_dst_hash,
+						       dn, 20);
+				}
+			}
 			if (natt_process_natd(ike_sa, notify, TRUE) == 0)
 				ike_sa->natd_echo = 1;
 			break;

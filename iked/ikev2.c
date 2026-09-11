@@ -4168,6 +4168,28 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	goto done;
 }
 
+static int
+ikev2_push_natd_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
+{
+	rc_vchar_t *n;
+
+	if (!ike_sa->natd_echo)
+		return 0;
+	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
+				 IKEV2_NAT_DETECTION_SOURCE_IP,
+				 ike_sa->natd_src_hash, 20);
+	if (!n)
+		return -1;
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
+	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
+				 IKEV2_NAT_DETECTION_DESTINATION_IP,
+				 ike_sa->natd_dst_hash, 20);
+	if (!n)
+		return -1;
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
+	return 0;
+}
+
 void
 ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 				 struct ikev2_child_sa *child_sa)
@@ -4201,11 +4223,9 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 		/* RFC 7296 2.23: echo computed NAT_DETECTION hashes so
 		 * iOS's rekey-riding NAT recheck gets binding confirmation;
 		 * without it iOS drops the IKE_SA right after the rekey. */
-		if (natt_create_natd(ike_sa, &payl,
-				     child_sa->parent->remote,
-				     child_sa->parent->local) < 0)
+		if (ikev2_push_natd_echo(ike_sa, &payl) < 0)
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
-				   "failed to create NAT_DETECTION notifies "
+				   "failed to echo NAT_DETECTION notifies "
 				   "for CREATE_CHILD_SA reply\n");
 	}
 
@@ -4839,8 +4859,39 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			if (get_notify_type((struct ikev2payl_notify *)p) ==
 			    IKEV2_NAT_DETECTION_SOURCE_IP ||
 			    get_notify_type((struct ikev2payl_notify *)p) ==
-			    IKEV2_NAT_DETECTION_DESTINATION_IP)
+			    IKEV2_NAT_DETECTION_DESTINATION_IP) {
 				nat_detect = 1;
+				/* nwikev2 computes these digests over ITS
+				 * OWN view of the endpoints (its LAN addr
+				 * behind the home router, and the public IP
+				 * it dials).  Behind hairpin NAT our socket
+				 * addresses differ from the peer's view, so
+				 * recomputing the digests here can never
+				 * match: iOS validates the reply, rejects
+				 * it, retransmits once and silently deletes
+				 * the IKE_SA.  Echo the received hash bytes
+				 * VERBATIM instead -- that confirms the
+				 * binding exactly as the peer computed it. */
+				{
+					uint8_t *dn;
+					int dl = ntohs(((struct ikev2_payload_header *)p)->payload_length)
+					    - sizeof(struct ikev2payl_notify);
+					if (dl >= 20) {
+						dn = get_notify_data(
+						    (struct ikev2payl_notify *)p);
+						if (get_notify_type(
+						    (struct ikev2payl_notify *)p) ==
+						    IKEV2_NAT_DETECTION_SOURCE_IP)
+							memcpy(
+							    ike_sa->natd_src_hash,
+							    dn, 20);
+						else
+							memcpy(
+							    ike_sa->natd_dst_hash,
+							    dn, 20);
+					}
+				}
+			}
 			break;
 		case IKEV2_PAYLOAD_DELETE:
 			ikev2_process_delete(ike_sa, p, &payl);
@@ -4916,10 +4967,11 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * without binding confirmation and iOS silently drops
 		 * the SA minutes later.
 		 */
-		if (natt_create_natd(ike_sa, &payl, remote, local) < 0)
+		ike_sa->natd_echo = 0;
+		if (ikev2_push_natd_echo(ike_sa, &payl) < 0)
 			isakmp_log(ike_sa, 0, 0, 0,
 				   PLOG_PROTOWARN, PLOGLOC,
-				   "failed to create NAT_DETECTION notifies "
+				   "failed to echo NAT_DETECTION notifies "
 				   "for INFORMATIONAL reply\n");
 	}
 

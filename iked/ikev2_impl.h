@@ -216,6 +216,8 @@ struct ikev2_sa {
 	int mobike_supported;		/* RFC 4555 */
 	int mobike_update;		/* UPDATE_SA_ADDRESSES seen */
 	int natd_echo;			/* echo NAT_DETECTION in next reply */
+	uint8_t natd_src_hash[20];	/* verbatim NAT_DETECTION_SOURCE_IP */
+	uint8_t natd_dst_hash[20];	/* verbatim NAT_DETECTION_DESTINATION_IP */
 	rc_vchar_t *cookie2_echo;	/* RFC 4555 COOKIE2 to copy into response */
 	rc_vchar_t *cookie2_sent;	/* RFC 4555 COOKIE2 we put on a request */
 	int cookie2_matched;
