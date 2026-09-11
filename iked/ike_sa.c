@@ -864,6 +864,8 @@ static void ikev2_poll_timer_callback(void *);
  * the whole daemon down (observed live: SIGSEGV + systemd restart =
  * every tunnel drops).  Flush them as soon as the new SA authenticates.
  */
+static void ikev2_initial_contact_flush_cb(void *);
+
 void
 ikev2_initial_contact(struct ikev2_sa *self)
 {
@@ -882,14 +884,40 @@ ikev2_initial_contact(struct ikev2_sa *self)
 		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 			   "INITIAL_CONTACT: flushing stale IKE_SA with "
 			   "same peer (state=%d)\n", sa->state);
-		ikev2_stop_retransmit(sa);
-		ikev2_shutdown_sa(sa);
+		if (sched_new(0, ikev2_initial_contact_flush_cb, sa) == NULL) {
+			isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "failed to schedule INITIAL_CONTACT flush\n");
+			continue;
+		}
 		++flushed;
 	}
 	if (flushed)
 		isakmp_log(self, 0, 0, 0, PLOG_INFO, PLOGLOC,
 			   "INITIAL_CONTACT: flushed %d stale IKE_SA(s)\n",
 			   flushed);
+}
+
+/*
+ * Deferred teardown for ikev2_initial_contact().  Killing the stale
+ * SA's children and sending its DELETE exchange runs SADB and sched
+ * writes that must NOT happen nested inside another IKE_SA's
+ * processing callback (observed live: INITIAL_CONTACT inside IKE_AUTH
+ * -> ikev2_shutdown_sa(zombie) mid-exchange -> the in-flight AUTH's
+ * response was never sent and its fresh SADB registration was reaped:
+ * phone retried AUTH to exhaustion, then gave up and re-INITed on a
+ * new source port = the "slow connect" class).  sched_new(0,...)
+ * runs this at the top of the next event-loop pass, after the current
+ * exchange's callback has returned.
+ */
+static void
+ikev2_initial_contact_flush_cb(void *arg)
+{
+	struct ikev2_sa *sa = arg;
+
+	if (!sa || sa->state != IKEV2_STATE_ESTABLISHED)
+		return;
+	ikev2_stop_retransmit(sa);
+	ikev2_shutdown_sa(sa);
 }
 
 void
