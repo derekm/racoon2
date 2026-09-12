@@ -3638,6 +3638,17 @@ ikev2_createchild_initiator_send_tail(struct ikev2_child_init_ctx *ctx)
 	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_TS_R, ctx->ts_r, FALSE);
 	ctx->ts_r = NULL;
 
+	{
+		int t_i;
+		for (t_i = 0; t_i < ctx->payl.num; t_i++)
+			isakmp_log(ike_sa, 0, 0, child_sa->message_id,
+			    PLOG_INFO, PLOGLOC,
+			    "REKEY_REQ payl[%d] type=%d len=%d\n",
+			    t_i, ctx->payl.payloads[t_i].type,
+			    ctx->payl.payloads[t_i].data ?
+			    ctx->payl.payloads[t_i].data->l : -1);
+	}
+
 	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
 				     ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0,
 				     child_sa->message_id, ike_sa, &ctx->payl);
