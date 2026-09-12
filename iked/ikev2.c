@@ -2662,6 +2662,19 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	ikev2_update_message_id(ike_sa, message_id, FALSE);
 
 	/*
+	 * As the original responder we never generate requests during
+	 * the initial exchanges, so send_message_id is still 0 -- but
+	 * Message ID 0 belongs to IKE_SA_INIT and a strict peer
+	 * (iOS: INVALID_SYNTAX) rejects a later exchange reusing it.
+	 * RFC 7296 2.5 numbers post-initial-exchange requests from
+	 * both sides at n=2,3,4,... so the first request we initiate
+	 * (child rekey, informational, MOBIKE) must carry the peer's
+	 * next expected request ID, which is recv_message_id right
+	 * after IKE_AUTH.
+	 */
+	ike_sa->send_message_id = ike_sa->recv_message_id;
+
+	/*
 	 * The new child_sa created by ikev2_create_child_responder()  must
 	 * have its state set to GETSPI.  When the state transits out of GETSPI,
 	 * ikev2_create_child_responder_cont() is called, and it
