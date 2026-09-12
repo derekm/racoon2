@@ -4323,6 +4323,15 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 #endif
 
       send_response:
+	{
+		int t_i;
+		for (t_i = 0; t_i < payl.num; t_i++)
+			isakmp_log(ike_sa, child_sa->parent->local, child_sa->parent->remote,
+			    child_sa->message_id, PLOG_INFO, PLOGLOC,
+			    "CHILD_RESP payl[%d] type=%d len=%d\n",
+			    t_i, payl.payloads[t_i].type,
+			    payl.payloads[t_i].data ? payl.payloads[t_i].data->l : -1);
+	}
 	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
 				     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
 				     IKEV2FLAG_RESPONSE, child_sa->message_id,
@@ -4994,6 +5003,14 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		ike_sa->natd_echo = 0;
 	}
 
+	{
+		int t_i;
+		for (t_i = 0; t_i < payl.num; t_i++)
+			isakmp_log(ike_sa, local, remote, message_id, PLOG_INFO, PLOGLOC,
+			    "INFO_RESP payl[%d] type=%d len=%d\n",
+			    t_i, payl.payloads[t_i].type,
+			    payl.payloads[t_i].data ? payl.payloads[t_i].data->l : -1);
+	}
 	pkt = ikev2_packet_construct(IKEV2EXCH_INFORMATIONAL,
 				     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
 				     IKEV2FLAG_RESPONSE, message_id, ike_sa,
@@ -5399,6 +5416,11 @@ ikev2_process_delete(struct ikev2_sa *ike_sa, struct ikev2_payload_header *p,
 
 						inbound_spi =
 							get_uint32(prop + 1);
+						isakmp_log(ike_sa, 0, 0, 0,
+						   PLOG_INFO, PLOGLOC,
+						   "DEL_REPLY: echoing spi 0x%08x for req spi 0x%08x proto %d child_state=%d delete_sent=%d\n",
+						   inbound_spi, spi, protocol_id,
+						   child_sa->state, child_sa->delete_sent);
 						if (inbound_spi != 0) {
 							TRACE((PLOGLOC,
 							       "spi 0x%x\n",
