@@ -165,8 +165,50 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 		}
 	}
 
-	new_child_sa->my_proposal =
-		ikev2_ipsec_conf_to_proplist(new_child_sa, TRUE);
+	/*
+	 * Offer ONLY the proposal matching the child SA being rekeyed.
+	 *
+	 * ikev2_ipsec_conf_to_proplist(conf, TRUE) builds a proposal
+	 * for every configured ipsec block (here: GCM, GCM-12, GCM-8
+	 * and CBC/SHA2 = 4 proposals) with need_pfs forcing a DH
+	 * transform and an ESN pair in each.  GETSPI (via
+	 * ikev2_child_getspi_response) stamps the kernel-allocated
+	 * SPI into the FIRST matching proposal only; the remaining
+	 * proposals keep the config SPI -- 0.  RFC 7296 2.8/2.7
+	 * requires a nonzero SPI in an ESP proposal, and a strict
+	 * peer (iOS) answers such a message INVALID_SYNTAX then
+	 * deletes the IKE_SA.
+	 *
+	 * RFC 7296 2.8 also says the rekey offer should match the SA
+	 * being rekeyed.  The child we are rekeying already carries
+	 * the negotiated proposal (my_proposal[1], matched at AUTH,
+	 * currently in use), so duplicate that single proposal for
+	 * the new child instead of regenerating the whole config
+	 * matrix; GETSPI will stamp the fresh SPI into it.
+	 */
+	new_child_sa->my_proposal = proplist_new();
+	if (!new_child_sa->my_proposal)
+		goto fail_nomem;
+	if (old_child_sa->my_proposal &&
+	    old_child_sa->my_proposal[1]) {
+		/* clone the negotiated proposal: header node plus the
+		 * transform chain (tnext/next) */
+		new_child_sa->my_proposal[1] =
+		    proppair_clone(old_child_sa->my_proposal[1]);
+		if (!new_child_sa->my_proposal[1]) {
+			proplist_discard(new_child_sa->my_proposal);
+			new_child_sa->my_proposal = 0;
+			TRACE((PLOGLOC,
+			       "failed duplicating negotiated proposal "
+			       "for rekey\n"));
+			goto fail;
+		}
+	} else {
+		/* no negotiated proposal recorded: fall back to the
+		 * config-derived list (pre-existing behavior) */
+		new_child_sa->my_proposal =
+		    ikev2_ipsec_conf_to_proplist(new_child_sa, TRUE);
+	}
 	if (!new_child_sa->my_proposal) {
 		TRACE((PLOGLOC,
 		       "failed creating proposal list of initiator SA\n"));

@@ -323,6 +323,7 @@ extern void proppair_discard(struct prop_pair *);
 extern struct prop_pair **proplist_new(void);
 extern void proplist_discard(struct prop_pair **);
 extern struct prop_pair *proppair_dup(struct prop_pair *);
+extern struct prop_pair *proppair_clone(struct prop_pair *);
 
 extern int isakmp_check_proposal_syntax(struct isakmp_domain *, uint8_t *,
 					size_t);

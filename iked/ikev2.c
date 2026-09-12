@@ -3640,13 +3640,35 @@ ikev2_createchild_initiator_send_tail(struct ikev2_child_init_ctx *ctx)
 
 	{
 		int t_i;
-		for (t_i = 0; t_i < ctx->payl.num; t_i++)
+		for (t_i = 0; t_i < ctx->payl.num; t_i++) {
+			rc_vchar_t *d = ctx->payl.payloads[t_i].data;
 			isakmp_log(ike_sa, 0, 0, child_sa->message_id,
 			    PLOG_INFO, PLOGLOC,
 			    "REKEY_REQ payl[%d] type=%d len=%d\n",
 			    t_i, ctx->payl.payloads[t_i].type,
-			    ctx->payl.payloads[t_i].data ?
-			    ctx->payl.payloads[t_i].data->l : -1);
+			    d ? d->l : -1);
+			if (d && ctx->payl.payloads[t_i].type ==
+			    IKEV2_PAYLOAD_SA) {
+				/* dump proposal headers: each is
+				 * isakmp_pl_p (8B) + spi (4B); the
+				 * header length field covers proposal
+				 * + spi only, transforms follow */
+				size_t off = 0;
+				while (off + 12 <= d->l) {
+					uint8_t *p = d->v + off;
+					uint16_t phdrlen =
+					    get_uint16(p + 2);
+					isakmp_log(ike_sa, 0, 0,
+					    child_sa->message_id,
+					    PLOG_INFO, PLOGLOC,
+					    "REKEY_REQ SA prop#%u type=%u proto=%u "
+					    "spi=0x%08x hdrlen=%u\n",
+					    p[4], p[5], p[6],
+					    get_uint32(p + 8), phdrlen);
+					off += 12;
+				}
+			}
+		}
 	}
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,

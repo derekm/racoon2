@@ -1777,6 +1777,32 @@ proppair_dup(struct prop_pair *p)
 	return 0;
 }
 
+struct prop_pair *
+proppair_clone(struct prop_pair *p)
+{
+	struct prop_pair *n;
+
+	if (!p)
+		return 0;
+
+	n = proppair_dup(p);
+	if (!n)
+		return 0;
+
+	n->next = proppair_clone(p->next);
+	if (p->next && !n->next)
+		goto fail;
+	n->tnext = proppair_clone(p->tnext);
+	if (p->tnext && !n->tnext)
+		goto fail;
+
+	return n;
+
+      fail:
+	proppair_discard(n);
+	return 0;
+}
+
 void
 proppair_discard(struct prop_pair *p)
 {
