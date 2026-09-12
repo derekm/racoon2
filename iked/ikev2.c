@@ -564,9 +564,17 @@ ikev2_check_message_ordering(struct ikev2_sa *ike_sa, uint32_t message_id,
 	/* unordered with window */
 #else
 	if (is_response) {
-		if (ike_sa->send_message_id == message_id)
+		/*
+		 * A response echoes the id of a request we sent.  The
+		 * id was either reserved (send_message_id advanced past
+		 * it at mint time) or one of the protocol-fixed initial
+		 * ids (IKE_SA_INIT=0, IKE_AUTH=1) which the counter
+		 * catches up to in ikev2_update_message_id().  Accept
+		 * anything at or below our high-water mark.
+		 */
+		if (message_id <= ike_sa->send_message_id)
 			return 0;
-		TRACE((PLOGLOC, "response message_id %d expected %d\n",
+		TRACE((PLOGLOC, "response message_id %d, sent through %d\n",
 		       message_id, ike_sa->send_message_id));
 	} else {
 		if (ike_sa->recv_message_id == message_id)
@@ -613,12 +621,46 @@ ikev2_retransmit_forced(struct ikev2_sa *ike_sa, uint32_t message_id,
 uint32_t
 ikev2_request_id(struct ikev2_sa *ike_sa)
 {
-#ifdef notyet
-	/* window */
-#else
+	uint32_t id;
+
+	/*
+	 * Message IDs after the initial exchanges are numbered
+	 * 2,3,4,... from BOTH ends in the same sequence (RFC 7296
+	 * 2.5: "the nth request from the original IKE initiator, the
+	 * corresponding response, the nth request from the original
+	 * IKE responder, and the corresponding response").  IKE_SA_INIT
+	 * used 0 and IKE_AUTH 1 (from the original initiator), so our
+	 * first self-initiated request must be at least 2.
+	 *
+	 * A responder-side SA starts with send_message_id 0 -- it never
+	 * initiates during the initial exchanges -- and it may be
+	 * restored that way via resume.  Reusing 0 is a protocol
+	 * violation (a strict peer, e.g. iOS, answers INVALID_SYNTAX).
+	 * Heal here, at the single mint point, so every caller path
+	 * (fresh AUTH, resume restore, async rekey, informational,
+	 * MOBIKE) gets a valid id regardless of how the SA was born.
+	 */
+	if (ike_sa->is_initiator == FALSE && ike_sa->send_message_id == 0) {
+		ike_sa->send_message_id = ike_sa->recv_message_id;
+		if (ike_sa->send_message_id < IKEV2_MESSAGE_ID_FIRST)
+			ike_sa->send_message_id = IKEV2_MESSAGE_ID_FIRST;
+	}
+
+	/* reserve the id BEFORE handing it out so concurrent / async
+	 * mints (rekey while informational in flight, etc.) can never
+	 * collide on the same Message ID */
+	id = ike_sa->send_message_id;
+	if (id == 0xFFFFFFFF) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+		    "message_id reached 0xFFFFFFFF\n");
+		ikev2_set_state(ike_sa, IKEV2_STATE_DEAD);
+		/* continue: the SA is dying, the id is the best we have */
+		++ike_sa->request_pending;
+		return id;
+	}
+	++ike_sa->send_message_id;
 	++ike_sa->request_pending;
-	return ike_sa->send_message_id;
-#endif
+	return id;
 }
 
 void
@@ -631,21 +673,21 @@ ikev2_update_message_id(struct ikev2_sa *ike_sa, uint32_t message_id,
 	if (is_response) {
 		TRACE((PLOGLOC, "update response message_id 0x%x\n",
 		       message_id));
-		assert(ike_sa->send_message_id == message_id);
-		if (ike_sa->send_message_id == 0xFFFFFFFF) {
-			isakmp_log(ike_sa, 0, 0, 0,
-				   PLOG_PROTOERR, PLOGLOC,
-				   "message_id reached 0xFFFFFFFF\n");
-			/* ikev2_abort(ike_sa, ECONNREFUSED); */
-			ikev2_set_state(ike_sa, IKEV2_STATE_DEAD);
-		} else {
-			++ike_sa->send_message_id;
-#ifdef notyet
-			if (ike_sa->send_message_id == ikev2_message_id_limit)
-				ikev2_rekey_ikesa_initiate(ike_sa);
-#endif
+		/* a response echoes the request's id; the request was minted
+		 * by ikev2_request_id() (or was one of the hardcoded initial
+		 * ids 0/1), so the counter was already reserved.  Allow the
+		 * matching echo, and any retransmitted response of it. */
+		if (message_id >= ike_sa->send_message_id) {
+			/*
+			 * Not an id we minted.  The initial exchanges
+			 * (IKE_SA_INIT=0, IKE_AUTH=1) are the exception --
+			 * they are fixed by the protocol, not minted.
+			 * Bring the counter up so the next mint is valid.
+			 */
+			ike_sa->send_message_id = message_id + 1;
 		}
-		--ike_sa->request_pending;
+		if (ike_sa->request_pending > 0)
+			--ike_sa->request_pending;
 		ikev2_stop_retransmit(ike_sa);
 	} else {
 		TRACE((PLOGLOC, "update request message_id 0x%x\n",
@@ -653,8 +695,8 @@ ikev2_update_message_id(struct ikev2_sa *ike_sa, uint32_t message_id,
 		assert(ike_sa->recv_message_id == message_id);
 		if (ike_sa->recv_message_id == 0xFFFFFFFF) {
 			isakmp_log(ike_sa, 0, 0, 0,
-				   PLOG_PROTOERR, PLOGLOC,
-				   "message_id reached 0xFFFFFFFF\n");
+			    PLOG_PROTOERR, PLOGLOC,
+			    "message_id reached 0xFFFFFFFF\n");
 			/* ikev2_abort(ike_sa, ECONNREFUSED); */
 			ikev2_set_state(ike_sa, IKEV2_STATE_DEAD);
 		} else {
@@ -2660,19 +2702,6 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	}
 
 	ikev2_update_message_id(ike_sa, message_id, FALSE);
-
-	/*
-	 * As the original responder we never generate requests during
-	 * the initial exchanges, so send_message_id is still 0 -- but
-	 * Message ID 0 belongs to IKE_SA_INIT and a strict peer
-	 * (iOS: INVALID_SYNTAX) rejects a later exchange reusing it.
-	 * RFC 7296 2.5 numbers post-initial-exchange requests from
-	 * both sides at n=2,3,4,... so the first request we initiate
-	 * (child rekey, informational, MOBIKE) must carry the peer's
-	 * next expected request ID, which is recv_message_id right
-	 * after IKE_AUTH.
-	 */
-	ike_sa->send_message_id = ike_sa->recv_message_id;
 
 	/*
 	 * The new child_sa created by ikev2_create_child_responder()  must

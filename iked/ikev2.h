@@ -108,6 +108,14 @@ struct ikev2_header {
 #define	IKEV2FLAG_INITIATOR	0x08
 #define	IKEV2FLAG_VERSION	0x10
 #define	IKEV2FLAG_RESPONSE	0x20
+
+/*
+ * First Message ID usable for a self-initiated request: IKE_SA_INIT
+ * uses 0 and IKE_AUTH uses 1 (both from the original initiator), so
+ * both ends' post-initial-exchange requests start at 2 (RFC 7296
+ * 2.5, four-message numbering).
+ */
+#define	IKEV2_MESSAGE_ID_FIRST	2
 #define	IKEV2FLAG_RESERVED	0xC7
 
 /*
