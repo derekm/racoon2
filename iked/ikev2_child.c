@@ -2324,6 +2324,21 @@ ikev2_child_start_lifetime_timer(struct ikev2_child_sa *child_sa)
 	    ((double)eay_random_uint32() / UINT32_MAX));
 	if (soft <= 0)
 		soft = lifetime;
+
+	/*
+	 * The child SA lifetime is a local knob: IKEv2 carries no
+	 * lifetime attribute (RFC 7296 3.3.5: only Key Length exists),
+	 * so the peer's expiry is invisible to us.  Peers stop using
+	 * the child at their OWN soft expiry (iOS: ~40% of its
+	 * lifetime -- observed data-plane freeze ~9-10 min in with a
+	 * 1440s rekey), and if we never rekey they ride a stale child
+	 * until they force a rekey themselves.  Cap our rekey timer at
+	 * a floor that precedes any plausible peer soft expiry so the
+	 * child is always fresh when the peer checks; this is generic
+	 * across clients, not tuned to one vendor.
+	 */
+	if (soft > IKEV2_CHILD_REKEY_FLOOR)
+		soft = IKEV2_CHILD_REKEY_FLOOR;
 	TRACE((PLOGLOC, "child %p lifetime %u soft %d\n",
 	    child_sa, lifetime, soft));
 	child_sa->timer =

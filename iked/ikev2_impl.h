@@ -43,6 +43,21 @@
 
 #define	IKEV2_DEFAULT_LIFETIME_SOFT_FACTOR	0.8
 #define	IKEV2_DEFAULT_LIFETIME_SOFT_JITTER	0.1
+/*
+ * The child SA lifetime is a local knob: IKEv2 carries no lifetime
+ * attribute (RFC 7296 3.3.5 -- only Key Length is defined), so a
+ * peer's expiry is invisible to us.  Peers stop using the child at
+ * their OWN soft expiry and rekey at their own hard expiry; if we
+ * never rekey, the data plane rides a stale child until the peer
+ * forces a rekey itself (observed: iOS child ~1440s hard, data
+ * freeze ~576s soft, i.e. freeze ~9-10 min in).  Cap our child
+ * rekey timer at this floor so the child is rekeyed before any
+ * reasonably-provisioned peer reaches its soft expiry.  Generic
+ * across clients; not tuned to one vendor's numbers beyond the
+ * fact that 8 minutes precedes a 10-minute-per-profile-style
+ * soft expiry.
+ */
+#define	IKEV2_CHILD_REKEY_FLOOR	480
 
 extern double ikev2_lifetime_soft_factor;
 extern double ikev2_lifetime_soft_jitter;
