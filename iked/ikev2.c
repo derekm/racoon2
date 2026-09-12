@@ -4260,6 +4260,8 @@ static int
 ikev2_push_natd_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 {
 	rc_vchar_t *n;
+	rc_vchar_t *hash_dst = NULL;
+	int ret = -1;
 
 	if (!ike_sa->natd_echo)
 		return 0;
@@ -4269,13 +4271,37 @@ ikev2_push_natd_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 	if (!n)
 		return -1;
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
+
+	/*
+	 * RFC 4555 3.8: a NAT-detection DPD re-check compares our reply's
+	 * NAT_DETECTION_DESTINATION_IP against the value from the previous
+	 * UPDATE_SA_ADDRESSES response / IKE_SA_INIT response.  Echoing the
+	 * peer's own SRC digest there (iOS's private-side view) can never
+	 * equal the digest we sent at IKE_SA_INIT, so iOS re-fires
+	 * UPDATE_SA_ADDRESSES at every 10-min DPD and suspends the data
+	 * plane meanwhile.  The DST slot must be OUR computed digest over
+	 * the address the peer appears at (what we sent at IKE_SA_INIT);
+	 * the SRC slot stays an echo of the peer's own digest (that is what
+	 * it validates against the reply source it observes).
+	 */
+	if (ike_sa->remote) {
+		hash_dst = natt_create_hash(ike_sa, ike_sa->remote, TRUE);
+		if (!hash_dst)
+			goto end;
+	} else
+		goto end;
 	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
 				 IKEV2_NAT_DETECTION_DESTINATION_IP,
-				 ike_sa->natd_dst_hash, 20);
+				 hash_dst->v, 20);
 	if (!n)
-		return -1;
+		goto end;
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
-	return 0;
+	ret = 0;
+
+      end:
+	if (hash_dst)
+		rc_vfree(hash_dst);
+	return ret;
 }
 
 void
@@ -5241,7 +5267,18 @@ ikev2_info_init_notify_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 
 	/* HDR, SK {[N,] [D,] [CP], ... } */
 
+	if (child_sa == NULL || msg == NULL || msg->v == NULL) {
+		isakmp_log(0, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		    "ikev2_info_init_notify_recv: null child_sa/msg "
+		    "(16:39:50 SEGV at offset 0x40 guard)\n");
+		return;
+	}
 	ike_sa = child_sa->parent;
+	if (ike_sa == NULL) {
+		isakmp_log(0, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		    "ikev2_info_init_notify_recv: null parent\n");
+		return;
+	}
 	ikehdr = (struct ikev2_header *)msg->v;
 	p = (struct ikev2_payload_header *)(ikehdr + 1);
 	for (type = ikehdr->next_payload;

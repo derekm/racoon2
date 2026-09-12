@@ -329,6 +329,12 @@ spi_prop(int proto, uint32_t spi_host)
 	prop->p_no = 1;
 	prop->proto_id = (uint8_t)proto;
 	prop->spi_size = sizeof(uint32_t);
+	/* canonical placeholder length, same as ikev2_ipsec_conf_to_proplist:
+	 * header + SPI; transforms are linked via tnext and the packer
+	 * rewrites h.len.  Without this, a rekey of a resume-restored child
+	 * clones a proposal with h.len=0 and ikev2_child_getspi_response's
+	 * assert(1723) ABRTs the daemon on every restore. */
+	put_uint16(&prop->h.len, sizeof(struct isakmp_pl_p) + sizeof(uint32_t));
 	nspi = htonl(spi_host);
 	memcpy(prop + 1, &nspi, sizeof(nspi));
 	p->prop = prop;

@@ -279,6 +279,39 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 					memset(myp->prop + 1, 0,
 					       myp->prop->spi_size);
 		}
+		/*
+		 * A resume-restored child's my_proposal[1] is a bare
+		 * SPI marker (ikev2_resume.c spi_prop: no tnext chain);
+		 * cloning it would offer an SA with zero transforms.
+		 * Detect a transform-less clone and fall back to the
+		 * config-derived proposal list instead.
+		 */
+		if (new_child_sa->my_proposal[1]->tnext == NULL) {
+			TRACE((PLOGLOC,
+			       "negotiated proposal has no transforms "
+			       "(resume marker); using config matrix\n"));
+			proplist_discard(new_child_sa->my_proposal);
+			new_child_sa->my_proposal =
+			    ikev2_ipsec_conf_to_proplist(new_child_sa, TRUE);
+			if (!new_child_sa->my_proposal)
+				goto fail_nomem;
+			/*
+			 * The config matrix yields one proposal per
+			 * ipsec_index entry chained via ->next; GETSPI
+			 * stamps only the first (my_proposal[1]) and the
+			 * rest would go out with SPI=0 -- RFC 7296 2.8
+			 * forbids that and iOS answers INVALID_SYNTAX.
+			 * Offer only the first proposal, like the clone
+			 * path above.
+			 */
+			if (new_child_sa->my_proposal[1] &&
+			    new_child_sa->my_proposal[1]->next) {
+				struct prop_pair *rest;
+				rest = new_child_sa->my_proposal[1]->next;
+				new_child_sa->my_proposal[1]->next = NULL;
+				proppair_discard(rest);
+			}
+		}
 	} else {
 		/* no negotiated proposal recorded: fall back to the
 		 * config-derived list (pre-existing behavior) */
@@ -295,6 +328,18 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 	old_child_sa->srclist = 0;
 	new_child_sa->dstlist = old_child_sa->dstlist;
 	old_child_sa->dstlist = 0;
+
+	/*
+	 * Carry the CP lease to the rekeyed child.  The responder path
+	 * (ikev2_create_child_responder) already rc_addrpool_move()s the
+	 * lease when IT handles a peer-initiated rekey; the initiator
+	 * path (this function) must do the same, or a later
+	 * iOS-initiated rekey of THIS child finds no lease and
+	 * ike_conf_find_ikev2sel_by_ts() rejects its TSi/TSr with
+	 * "ts unacceptable" (16:39:50, spi=0xc00cc89).
+	 */
+	rc_addrpool_move(&new_child_sa->lease_list, &old_child_sa->lease_list);
+	TRACE((PLOGLOC, "moved leases to new child_sa\n"));
 
 	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 	    "initiating CREATE_CHILD_SA rekey child=%p spi=0x%08x\n",
