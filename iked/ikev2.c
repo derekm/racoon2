@@ -5288,11 +5288,25 @@ ikev2_info_init_notify_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		case IKEV2_PAYLOAD_ENCRYPTED:
 			break;
 		case IKEV2_PAYLOAD_NOTIFY:
-			if (ikev2_process_notify(ike_sa, p, TRUE) != 0)
+			if (ikev2_process_notify(ike_sa, p, TRUE) != 0) {
 				ikev2_abort(ike_sa, ECONNREFUSED);
+				/* ikev2_abort() frees the SAs; stop the
+				 * walk on freed memory. */
+				return;
+			}
 			break;
 		case IKEV2_PAYLOAD_DELETE:
 			ikev2_process_delete(ike_sa, p, 0);
+			/*
+			 * The peer's DELETE may have torn down the very
+			 * child_sa this callback is walking on (UAF: the
+			 * 17:47:04 SEGV at offset 0x40 inside
+			 * ikev2_info_init_notify_recv came from the old-child
+			 * DELETE echo racing the exchange child).  Nothing
+			 * legitimate follows a DELETE in an informational
+			 * response, so stop here.
+			 */
+			return;
 			break;
 		case IKEV2_PAYLOAD_VENDOR_ID:
 			/* A Vendor ID payload may be sent as part of any message. */
