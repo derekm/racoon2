@@ -203,6 +203,19 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 			       "for rekey\n"));
 			goto fail;
 		}
+		/* the clone carries the OLD SPI (proppair_dup memcpy's
+		 * prop including the SPI slot); a rekey MUST use a
+		 * fresh SPI, so zero it here or ikev2_child_getspi()
+		 * treats it as a user-specified SPI, skips the kernel
+		 * GETSPI, and the rekey never sends */
+		{
+			struct prop_pair *myp;
+			for (myp = new_child_sa->my_proposal[1];
+			     myp; myp = myp->next)
+				if (myp->prop && myp->prop->spi_size)
+					memset(myp->prop + 1, 0,
+					       myp->prop->spi_size);
+		}
 	} else {
 		/* no negotiated proposal recorded: fall back to the
 		 * config-derived list (pre-existing behavior) */
