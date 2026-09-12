@@ -3781,7 +3781,19 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 			goto fail;
 	}
 
-	pfs = 1;	/* CREATE_CHILD always offers KE; Apple requires it */
+	/*
+	 * Offer KEi only when the proposal actually contains a DH
+	 * transform.  Earlier code forced pfs=1 unconditionally
+	 * ("Apple requires it") and sent a KEi payload even when the
+	 * offered suite had no DH transform -- a peer (iOS) then
+	 * correctly accepted the rekey PFS-less (no KEr in the
+	 * response; RFC 7296 2.18) while our response parser
+	 * required KEr because dhpriv was set, aborted the child,
+	 * and iOS deleted the IKE_SA.  If the proposal has no DH
+	 * transform, send no KEi and expect none back.
+	 */
+	pfs = (ikev2_prop_find(child_sa->my_proposal[1],
+			       IKEV2TRANSFORM_TYPE_DH) != NULL);
 
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
