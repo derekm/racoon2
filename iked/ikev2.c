@@ -5377,8 +5377,15 @@ ikev2_process_delete(struct ikev2_sa *ike_sa, struct ikev2_payload_header *p,
 				/* return DELETE payload */
 				TRACE((PLOGLOC, "response delete payload\n"));
 
-				/* find corresponding my proposal information */
-				for (proposal = child_sa->my_proposal[1];
+				/* find corresponding peer proposal information.
+				 * RFC 7296 1.4.1: the DELETE request lists the SPI
+				 * as expected in the sender's inbound headers (our
+				 * chosen SPI).  The response must carry Delete
+				 * payloads for the paired SAs going the other
+				 * direction - i.e. the peer's chosen SPI.  Echoing
+				 * our own SPI deletes the SA direction the peer has
+				 * already closed itself (wrong-SA deletion). */
+				for (proposal = child_sa->peer_proposal;
 				     proposal;
 				     proposal = proposal->next) {
 					struct isakmp_pl_p *prop;
