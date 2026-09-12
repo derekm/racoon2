@@ -913,11 +913,28 @@ static void
 ikev2_initial_contact_flush_cb(void *arg)
 {
 	struct ikev2_sa *sa = arg;
+	struct ikev2_child_sa *child_sa;
 
 	if (!sa || sa->state != IKEV2_STATE_ESTABLISHED)
 		return;
+	/* RFC 7296 s3.10.1: INITIAL_CONTACT means the peer holds no IKE_SAs
+	 * with us, so replying with a DELETE IKE_SA exchange is pointless AND
+	 * harmful: ikev2_shutdown_sa() would send one and arm a retransmit on
+	 * a resume-restored zombie whose socket state is inconsistent,
+	 * corrupting the in-flight AUTH response of the new session.  Teardown
+	 * is silent: kill the stale IPsec SAs and mark the session DEAD. */
 	ikev2_stop_retransmit(sa);
-	ikev2_shutdown_sa(sa);
+	ikev2_set_state(sa, IKEV2_STATE_DYING);
+	for (child_sa = IKEV2_CHILD_LIST_FIRST(&sa->children);
+	     !IKEV2_CHILD_LIST_END(child_sa);
+	     child_sa = IKEV2_CHILD_LIST_NEXT(child_sa)) {
+		if (child_sa->state == IKEV2_CHILD_STATE_MATURE) {
+			ikev2_child_delete_ipsecsa(child_sa);
+			ikev2_child_state_set(child_sa,
+					      IKEV2_CHILD_STATE_EXPIRED);
+		}
+	}
+	ikev2_set_state(sa, IKEV2_STATE_DEAD);
 }
 
 void
