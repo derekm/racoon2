@@ -59,6 +59,7 @@
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 #include "ikev2_notify.h"
+#include "nattraversal.h"
 
 #include "var.h"
 #include "sockmisc.h"
@@ -5010,6 +5011,47 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			    "INFO_RESP payl[%d] type=%d len=%d\n",
 			    t_i, payl.payloads[t_i].type,
 			    payl.payloads[t_i].data ? payl.payloads[t_i].data->l : -1);
+	}
+
+	{
+		/* RFC 4555 3.3.1: responder enables/disables NAT-T per the
+		 * NATD digests; log our computed digests vs the peer's so a
+		 * drift at DPD time (the ~10-min liveness exchange) is
+		 * visible.  natd_src_hash/dst_hash hold the VERBATIM received
+		 * digests (NOT the swapped reply).  natt_create_hash() is the
+		 * same SHA1(i_ck | r_ck | addr | port) computation the
+		 * informational handler uses for its own check. */
+		rc_vchar_t *c_src = NULL, *c_dst = NULL;
+		char h_ps[64], h_pd[64], h_cs[64], h_cd[64];
+		int i;
+		for (i = 0; i < 20; i++) {
+			snprintf(&h_ps[i * 2], 3, "%02x", ike_sa->natd_src_hash[i]);
+			snprintf(&h_pd[i * 2], 3, "%02x", ike_sa->natd_dst_hash[i]);
+		}
+		h_cs[0] = '\0';
+		h_cd[0] = '\0';
+		if (ike_sa->remote && ike_sa->local) {
+			c_src = natt_create_hash(ike_sa, ike_sa->remote, TRUE);
+			c_dst = natt_create_hash(ike_sa, ike_sa->local, TRUE);
+		}
+		if (c_src && c_dst) {
+			for (i = 0; i < 20; i++) {
+				snprintf(&h_cs[i * 2], 3, "%02x",
+				    ((u_char *)c_src->v)[i]);
+				snprintf(&h_cd[i * 2], 3, "%02x",
+				    ((u_char *)c_dst->v)[i]);
+			}
+			isakmp_log(ike_sa, local, remote, message_id,
+			    PLOG_INFO, PLOGLOC,
+			    "NATD_CMP msgid=%u peer_src=%s peer_dst=%s "
+			    "computed_src=%s computed_dst=%s natd_echo=%d\n",
+			    message_id, h_ps, h_pd, h_cs, h_cd,
+			    ike_sa->natd_echo);
+		}
+		if (c_src)
+			rc_vfree(c_src);
+		if (c_dst)
+			rc_vfree(c_dst);
 	}
 	pkt = ikev2_packet_construct(IKEV2EXCH_INFORMATIONAL,
 				     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |

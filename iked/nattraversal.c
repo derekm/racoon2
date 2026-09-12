@@ -60,7 +60,6 @@
 #include "debug.h"
 #include "sockmisc.h"
 
-static rc_vchar_t *natt_create_hash(struct ikev2_sa *, struct sockaddr *, int);
 static void natt_natk_callback(void *);
 
 int
@@ -112,7 +111,7 @@ natt_create_natd(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 	return ret;
 }
 
-static rc_vchar_t *
+rc_vchar_t *
 natt_create_hash(struct ikev2_sa *ike_sa, struct sockaddr *addr, int use_spi_r)
 {
 	rc_vchar_t *hash;

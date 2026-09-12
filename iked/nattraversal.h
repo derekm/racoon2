@@ -37,6 +37,7 @@
 #define IKEV2_DEFAULT_NATK_INTERVAL	20
 
 int natt_process_natd(struct ikev2_sa *, struct ikev2payl_notify *, int);
+rc_vchar_t *natt_create_hash(struct ikev2_sa *, struct sockaddr *, int);
 int natt_check_udp_encap(struct sockaddr *, struct sockaddr *);
 int natt_float_ports(struct sockaddr *, struct sockaddr *, unsigned short);
 rc_vchar_t *natt_set_non_esp_marker(rc_vchar_t *);
