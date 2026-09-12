@@ -287,7 +287,7 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 			policy = selector->pl;
 		if (rvrs_selector)
 			rvrs_selector->next = 0;
-		if (selector->next && rvrs_selector) {
+		if (selector && selector->next && rvrs_selector) {
 			if (rcf_get_rvrs_selector(selector->next, &(rvrs_selector->next))<0) {
 				isakmp_log(0, 0, 0, 0,
 					   PLOG_INTERR, PLOGLOC,
@@ -418,7 +418,7 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 					   "failed to send delete policy request to spmd\n");
 			}
 		}
-		if (rvrs_selector->next)
+		if (rvrs_selector && rvrs_selector->next)
 			rcf_free_selector(rvrs_selector->next);
 		if (rvrs_selector)
 			rcf_free_selector(rvrs_selector);
@@ -443,7 +443,15 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 		rc_vfree(sa->ts_i);
 	if (sa->ts_r)
 		rc_vfree(sa->ts_r);
-	if (sa->selector->next)
+	/*
+	 * Informational-exchange child_sa (DPD / DELETE echo) has
+	 * selector==NULL.  offsetof(rcf_selector, next)==0x40, so
+	 * selector->next here is the 17:47:04 / 18:20:34 SEGV at 0x40
+	 * after a completed initiated rekey: 601ebc8's old-child DELETE
+	 * expires that dummy, then ikev2_sa_periodic_task (3s) destroys
+	 * it.  Guard both the twin and the primary.
+	 */
+	if (sa->selector && sa->selector->next)
 		rcf_free_selector(sa->selector->next);
 	if (sa->selector)
 		rcf_free_selector(sa->selector);
