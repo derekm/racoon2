@@ -166,6 +166,69 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 	}
 
 	/*
+	 * A CP-assigned peer (Apple client on the addresspool) has its
+	 * real inner address in lease_list; the config selector's peer
+	 * side is the placeholder (PEERS_NET, e.g. 192.0.2.2/32) that
+	 * the AUTH responder overrode at policy-install time.  The
+	 * rekey offer must carry the REAL inner address in TSr, or the
+	 * responder's echo (10.7.73.128/32) fails ikev2_confirm_ts()
+	 * against the placeholder and the rekey dies with "responder's
+	 * TSr does not match my selector".
+	 *
+	 * The rekeyed child's selector is the outbound twin (src=LAN,
+	 * dst=peer) regardless of the old child's direction, so the
+	 * lease overlays dst.  Same for a v6 twin in selector->next.
+	 */
+	if (!LIST_EMPTY(&old_child_sa->lease_list)) {
+		struct rcf_selector *seln;
+		for (seln = new_child_sa->selector;
+		     seln; seln = seln->next) {
+			struct rcf_address *la;
+			struct rc_addrlist *nld = 0, **nlt = &nld;
+			for (la = LIST_FIRST(&old_child_sa->lease_list);
+			     la; la = LIST_NEXT(la, link_sa)) {
+				struct sockaddr_storage lss;
+				struct rc_addrlist *e;
+				int lpref;
+				if (seln->dst == NULL ||
+				    (la->af == AF_INET &&
+				     seln->dst->a.ipaddr->sa_family != AF_INET) ||
+				    (la->af == AF_INET6 &&
+				     seln->dst->a.ipaddr->sa_family != AF_INET6))
+					continue;
+				ikev2_cfg_addr2sockaddr(
+				    (struct sockaddr *)&lss, la, &lpref);
+				e = racoon_calloc(1, sizeof(*e));
+				if (!e) {
+					rcs_free_addrlist(nld);
+					goto fail;
+				}
+				e->next = NULL;
+				e->type = RCT_ADDR_INET;
+				e->port = 0;
+				e->prefixlen = lpref;
+				e->a.ipaddr =
+				    rcs_sadup((struct sockaddr *)&lss);
+				if (!e->a.ipaddr) {
+					racoon_free(e);
+					rcs_free_addrlist(nld);
+					goto fail;
+				}
+				*nlt = e;
+				nlt = &e->next;
+			}
+			if (nld) {
+				rcs_free_addrlist(seln->dst);
+				seln->dst = nld;
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO,
+				    PLOGLOC,
+				    "rekey selector %s dst <- lease\n",
+				    rc_vmem2str(seln->sl_index));
+			}
+		}
+	}
+
+	/*
 	 * Offer ONLY the proposal matching the child SA being rekeyed.
 	 *
 	 * ikev2_ipsec_conf_to_proplist(conf, TRUE) builds a proposal
