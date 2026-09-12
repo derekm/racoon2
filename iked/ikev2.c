@@ -4645,11 +4645,11 @@ ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		struct ikev2_child_sa *duplicate_child_sa;
 
 		old_child_sa = ikev2_find_child_sa_by_spi(ike_sa,
-							  (child_sa->preceding_satype == RCT_SATYPE_ESP ?
-							   IKEV2PROPOSAL_ESP :
-							   IKEV2PROPOSAL_AH),
-							  child_sa->preceding_spi,
-							  MINE);
+						  (child_sa->preceding_satype == RCT_SATYPE_ESP ?
+						   IKEV2PROPOSAL_ESP :
+						   IKEV2PROPOSAL_AH),
+						  child_sa->preceding_spi,
+						  MINE);
 		if (!old_child_sa) {
 			TRACE((PLOGLOC,
 			       "can't find preceding sa satype %d spi 0x%x\n",
@@ -4692,6 +4692,23 @@ ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 					TRACE((PLOGLOC, "leave it\n"));
 				}
 			}
+		} else {
+			/*
+			 * RFC 7296 2.8: "when the new one is established,
+			 * delete the old one".  The rekey initiator
+			 * deletes the replaced child SA once the new SA is
+			 * live; ikev2_child_delete() sends the DELETE
+			 * payload (old SPI) via an Informational exchange
+			 * and removes the inbound SADB now, outbound when
+			 * the response arrives.  Skipping this left the
+			 * old SA resident and iOS deleted the IKE_SA
+			 * ~30 s after every completed rekey.
+			 */
+			isakmp_log(ike_sa, local, remote, msg, PLOG_INFO,
+			    PLOGLOC,
+			    "rekey complete: deleting old child spi=0x%08x\n",
+			    child_sa->preceding_spi);
+			ikev2_child_delete(old_child_sa);
 		}
 	}
 
