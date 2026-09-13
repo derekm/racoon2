@@ -28,6 +28,7 @@ stop live systemd iked (workers=0). Do not run them against a phone
 session.
 
 `ikev2-netns-childrekey` is charon-initiated PFS-19, no CP, no
-racoon2 msgid mint. A racoon2-as-responder initiated rekey row
-is still missing (needs charon `rekey=no` and a short racoon2
-child lifetime).
+racoon2 msgid mint. `ikev2-netns-r2rekey` is racoon2 as original
+responder initiating CHILD rekey (RFC 7296 §2.2 msgid 0, charon
+`rekey=no`, our ipsec lifetime 30s). Do not run IKE rows against
+a phone session.

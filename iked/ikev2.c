@@ -84,6 +84,11 @@ int ikev2_ipsec_window_size = IKEV2_IPSEC_WINDOW_SIZE;
 
 /* whether ESP Traffic Flow Confidentiality is not supported */
 int ikev2_esp_tfc_padding_not_supported = FALSE;
+/*
+ * 0 = no cap (default).  Set >0 to force an early initiator rekey
+ * on CP children.  Optional; not a racoon2.conf statement yet.
+ */
+int ikev2_child_rekey_floor = 0;
 
 /* for IKE DoS prevention */
 static int ikev2_under_attack = 0;
@@ -625,23 +630,12 @@ ikev2_request_id(struct ikev2_sa *ike_sa)
 
 	/*
 	 * RFC 7296 §2.2: Message IDs are independent per direction.
-	 * IKE_SA_INIT is 0 and IKE_AUTH is 1, both from the original
-	 * initiator.  The original responder's first *request* is
-	 * therefore msgid 0 under the RFC.
-	 *
-	 * iOS answered INVALID_SYNTAX to a msgid-0 CREATE_CHILD we
-	 * sent as original responder (session 11:18, before the SA
-	 * body was also fixed).  After the SA was a single negotiated
-	 * proposal, msgid 2 was accepted.  msgid 0 with a valid body
-	 * was never retested.  Keep 2 as Apple interop at this single
-	 * mint point until a charon row proves RFC-0.  Do not cite
-	 * §2.5 (that section is version numbers).
+	 * IKE_SA_INIT is 0 and IKE_AUTH is 1 from the original
+	 * initiator.  The original responder's first request is
+	 * msgid 0.  Do not heal to 2 (that was an Apple workaround
+	 * while the SA body was also malformed).  linux-matrix
+	 * ikev2-netns-r2rekey is the charon proof.
 	 */
-	if (ike_sa->is_initiator == FALSE && ike_sa->send_message_id == 0) {
-		ike_sa->send_message_id = ike_sa->recv_message_id;
-		if (ike_sa->send_message_id < IKEV2_MESSAGE_ID_FIRST)
-			ike_sa->send_message_id = IKEV2_MESSAGE_ID_FIRST;
-	}
 
 	/* reserve the id BEFORE handing it out so concurrent / async
 	 * mints (rekey while informational in flight, etc.) can never

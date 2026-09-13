@@ -9,10 +9,11 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  dummy had no selector; SEGV at offsetof next == 0x40).
 	* NAT_DETECTION replies compute SRC=local DST=remote
 	  (RFC 7296 §2.23 / 4555 §3.8), not a peer-digest echo.
-	* msgid heal as original responder is 2 (Apple interop).
-	  RFC 7296 §2.2 first request is 0; cited honestly.
-	* IKEV2_CHILD_REKEY_FLOOR 480s is CP/road-warrior only
-	  (non-empty lease_list). Site-to-site keeps configured soft.
+	* CHILD rekey floor is off by default (`ikev2_child_rekey_floor=0`)
+	  so the peer can initiate CREATE_CHILD.  Set the C global >0
+	  to cap CP children only.
+	* msgid as original responder is 0 (RFC 7296 §2.2).  linux-matrix
+	  ikev2-netns-r2rekey is the charon proof (GitHub CI).
 	* Resume dump v2 stores child ENCR/INTEGR/ESN so a restored
 	  rekey clones the live suite (RFC 7296 §2.8 SHOULD NOT
 	  change algorithms).

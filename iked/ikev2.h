@@ -110,13 +110,11 @@ struct ikev2_header {
 #define	IKEV2FLAG_RESPONSE	0x20
 
 /*
- * First Message ID we mint for a self-initiated request when we are
- * the original responder.  RFC 7296 §2.2: per-direction counters, so
- * that first request is 0.  IKEV2_MESSAGE_ID_FIRST is 2 because iOS
- * answered INVALID_SYNTAX to msgid 0 (Apple interop; see
- * ikev2_request_id).  Not RFC 7296 §2.5.
+ * RFC 7296 §2.2: per-direction counters.  The original responder's
+ * first self-initiated request is msgid 0.  Kept as a named 0 so
+ * call sites do not hard-code a magic.
  */
-#define	IKEV2_MESSAGE_ID_FIRST	2
+#define	IKEV2_MESSAGE_ID_FIRST	0
 #define	IKEV2FLAG_RESERVED	0xC7
 
 /*

@@ -44,13 +44,13 @@
 #define	IKEV2_DEFAULT_LIFETIME_SOFT_FACTOR	0.8
 #define	IKEV2_DEFAULT_LIFETIME_SOFT_JITTER	0.1
 /*
- * The child SA lifetime is a local knob: IKEv2 carries no lifetime
- * attribute (RFC 7296 3.3.5 -- only Key Length is defined), so a
- * peer's expiry is invisible to us.  IKEV2_CHILD_REKEY_FLOOR is
- * applied only to CP/road-warrior children (non-empty lease_list).
- * Site-to-site keeps the configured soft lifetime.
+ * Optional initiator CHILD rekey cap in seconds.  0 (default) = use
+ * the configured soft lifetime.  A positive value applies only to
+ * CP/road-warrior children (non-empty lease_list).  RFC 7296 3.3.5:
+ * IKEv2 has no lifetime attribute.
  */
-#define	IKEV2_CHILD_REKEY_FLOOR	480
+#define	IKEV2_CHILD_REKEY_FLOOR	0
+extern int ikev2_child_rekey_floor;
 
 extern double ikev2_lifetime_soft_factor;
 extern double ikev2_lifetime_soft_jitter;

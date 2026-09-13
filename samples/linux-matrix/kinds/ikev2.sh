@@ -20,6 +20,18 @@ kind_ikev2() {
 	systemctl stop strongswan-starter.service 2>/dev/null || true
 	ip netns exec "$NS" ip xfrm state flush || true
 	ip netns exec "$NS" ip xfrm policy flush || true
+	# racoon2-initiated CHILD rekey: shorten our ipsec lifetime so we
+	# mint CREATE_CHILD; charon rekey=no. Restore conf on EXIT.
+	case "$name" in
+	*-r2rekey)
+		if [ -f "$ETC/macos_ikev2.conf" ]; then
+			cp "$ETC/macos_ikev2.conf" /tmp/r2-macos_ikev2.conf.bak
+			sed -i 's/ipsec_sa_lifetime_time 3600 sec/ipsec_sa_lifetime_time 30 sec/' \
+				"$ETC/macos_ikev2.conf"
+			trap 'if [ -f /tmp/r2-macos_ikev2.conf.bak ]; then cp /tmp/r2-macos_ikev2.conf.bak "$ETC/macos_ikev2.conf"; rm -f /tmp/r2-macos_ikev2.conf.bak; fi' EXIT
+		fi
+		;;
+	esac
 	iked_apply_workers || return 1
 
 	# ICMP to the host's eth0 addr from the veth often fails (local-dest);
@@ -79,6 +91,14 @@ kind_ikev2() {
 		rekey=yes
 		rekeymargin=8s
 		rekeyfuzz=0%'
+		;;
+	*-r2rekey)
+		# racoon2 as original responder initiates CHILD rekey
+		# (our 30s ipsec_sa_lifetime_time).  charon rekey=no.
+		STRONG_ESP='aes128gcm16-ecp256!'
+		CHILD_LIFE='keylife=1h'
+		REKEY_EXTRA='reauth=no
+		rekey=no'
 		;;
 	*-frag) FRAG='fragmentation=yes' ;;
 	*-mobike|*-cookie2) MOBIKE='mobike=yes' ;;
@@ -229,6 +249,35 @@ EOF
 			return 1
 		}
 		log "child rekey replaced SPI: $spi_before -> $spi_after"
+		;;
+	*-r2rekey)
+		# We mint CREATE_CHILD (30s lifetime). charon rekey=no.
+		spi_before=$(ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
+		sleep 35
+		grep -q 'initiating CREATE_CHILD_SA rekey' /tmp/r2-iked-matrix.log || {
+			log "FAIL: racoon2 did not initiate CHILD rekey"
+			tail -30 /tmp/r2-iked-matrix.log
+			charon_reset
+			return 1
+		}
+		grep -q INVALID_SYNTAX /tmp/r2-iked-matrix.log && {
+			log "FAIL: peer rejected CREATE_CHILD (INVALID_SYNTAX; msgid 0?)"
+			charon_reset
+			return 1
+		}
+		showr=$("$SBIN/ikedctl" show-sa isakmp) || true
+		echo "$showr" | grep -q "$CIP" || {
+			log "FAIL: IKE_SA gone after r2 child rekey"
+			charon_reset
+			return 1
+		}
+		spi_after=$(ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
+		[ "$spi_before" != "$spi_after" ] || {
+			log "FAIL: ESP SPI unchanged after r2rekey wait"
+			charon_reset
+			return 1
+		}
+		log "r2-initiated child rekey replaced SPI: $spi_before -> $spi_after"
 		;;
 	*-cookie2)
 		grep -q 'NO_ADDITIONAL_ADDRESSES' /tmp/r2-iked-matrix.log || {

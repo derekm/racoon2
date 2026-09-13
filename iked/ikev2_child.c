@@ -2335,17 +2335,14 @@ ikev2_child_start_lifetime_timer(struct ikev2_child_sa *child_sa)
 		soft = lifetime;
 
 	/*
-	 * The child SA lifetime is a local knob: IKEv2 carries no
-	 * lifetime attribute (RFC 7296 3.3.5: only Key Length exists),
-	 * so the peer's expiry is invisible to us.  CP/road-warrior
-	 * children (non-empty lease_list) cap the rekey timer at
-	 * IKEV2_CHILD_REKEY_FLOOR so we initiate before a typical
-	 * peer soft expiry.  Site-to-site children keep the
-	 * configured soft lifetime.
+	 * Optional early initiator rekey (ikev2_child_rekey_floor).
+	 * 0 = off.  Positive: cap CP children only.  Default off so a
+	 * peer (iOS ~1440s) can initiate CREATE_CHILD as responder.
 	 */
-	if (!LIST_EMPTY(&child_sa->lease_list) &&
-	    soft > IKEV2_CHILD_REKEY_FLOOR)
-		soft = IKEV2_CHILD_REKEY_FLOOR;
+	if (ikev2_child_rekey_floor > 0 &&
+	    !LIST_EMPTY(&child_sa->lease_list) &&
+	    soft > ikev2_child_rekey_floor)
+		soft = ikev2_child_rekey_floor;
 	TRACE((PLOGLOC, "child %p lifetime %u soft %d\n",
 	    child_sa, lifetime, soft));
 	child_sa->timer =
