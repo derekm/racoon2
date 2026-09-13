@@ -4180,6 +4180,47 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	if (!n_i)
 		goto fail_nomem;
 
+	/* responder-rekey diagnostic: dump the REQUEST's traffic
+	 * selectors (SK-decrypted here) so a response TS mismatch is
+	 * visible.  iOS rekeys with the selectors of the old child;
+	 * if what we echo (lease/MY_NET) differs from what iOS asked
+	 * for, iOS drops the new SA and deletes the IKE_SA. */
+	if (ts_i && ts_r) {
+		struct ikev2_payload_header *ph;
+		uint8_t *p;
+		unsigned char hex[128];
+		size_t i, off, n;
+
+		ph = (struct ikev2_payload_header *)ts_i;
+		n = get_payload_length(ph);
+		if (n > 64)
+			n = 64;
+		for (i = 0, off = 0, p = (uint8_t *)ph; i < n; i++) {
+			if (off + 3 >= sizeof(hex))
+				break;
+			snprintf((char *)&hex[off], 4, "%02x ", p[i]);
+			off += 3;
+		}
+		hex[off] = '\0';
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_INFO, PLOGLOC,
+			   "CREATE_CHILD_SA request TSi hex=%s\n", hex);
+		ph = (struct ikev2_payload_header *)ts_r;
+		n = get_payload_length(ph);
+		if (n > 64)
+			n = 64;
+		for (i = 0, off = 0, p = (uint8_t *)ph; i < n; i++) {
+			if (off + 3 >= sizeof(hex))
+				break;
+			snprintf((char *)&hex[off], 4, "%02x ", p[i]);
+			off += 3;
+		}
+		hex[off] = '\0';
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_INFO, PLOGLOC,
+			   "CREATE_CHILD_SA request TSr hex=%s\n", hex);
+	}
+
 	err = ikev2_create_child_responder(ike_sa, local, remote, message_id,
 					   sa, ts_i, ts_r, cfg, g_i, n_i,
 					   &child_param, TRUE,
