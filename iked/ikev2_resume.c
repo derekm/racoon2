@@ -648,6 +648,40 @@ restore_one(const char *path)
 	sa->behind_nat = rec.behind_nat;
 	sa->peer_behind_nat = rec.peer_behind_nat;
 
+	/*
+	 * Re-pin the INIT binding-report digests.  The resume dump
+	 * carries cookies and endpoints but not the NATD digests we
+	 * sent in the INIT reply, so a restored SA would report 20
+	 * zero bytes at the first RFC 4555 §3.8 NATD probe.  iOS
+	 * compares our DESTINATION_IP digest against the value from
+	 * the previous response and treats a change like a NAT
+	 * re-bind - dropping the data plane while the UI still
+	 * shows Connected (observed live: ESP died 16:25:15 at the
+	 * +600s probe after a 16:22:48 resume-restored session).
+	 * Digests are a pure function of SPIs + endpoints, all of
+	 * which are restored above, so this reproduces the exact
+	 * INIT values.
+	 */
+	{
+		rc_vchar_t *hs, *hd;
+		struct rc_addrlist *pub =
+		    ikev2_natd_public_address(sa->rmconf);
+
+		if (pub && pub->a.ipaddr)
+			hs = natt_create_hash(sa, pub->a.ipaddr, TRUE);
+		else
+			hs = natt_create_hash(sa, sa->local, TRUE);
+		hd = natt_create_hash(sa, sa->remote, TRUE);
+		if (hs && hd) {
+			memcpy(sa->natd_init_src_hash, hs->v, 20);
+			memcpy(sa->natd_init_dst_hash, hd->v, 20);
+		}
+		if (hs)
+			rc_vfree(hs);
+		if (hd)
+			rc_vfree(hd);
+	}
+
 	nsa = racoon_calloc(1, sizeof(*nsa));
 	if (!nsa)
 		goto fail;
