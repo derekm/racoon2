@@ -148,6 +148,7 @@
 
 #include "isakmp.h"
 #include "ikev2.h"
+#include "ike_conf.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 
