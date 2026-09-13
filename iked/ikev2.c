@@ -4454,6 +4454,71 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 			    "CHILD_RESP payl[%d] type=%d len=%zu\n",
 			    t_i, payl.payloads[t_i].type,
 			    payl.payloads[t_i].data ? payl.payloads[t_i].data->l : 0);
+		/*
+		 * Responder-rekey diagnostics: dump the exact SA proposal
+		 * we packed (transform types/ids, DH group, SPI) and the
+		 * keymat inputs, so an iOS-instantiated rekey that ends in
+		 * DELETE IKE_SA can be compared byte-for-byte against the
+		 * request's accepted proposal.  The 07:00:40 run on
+		 * 0ead7d5 was wire-clean yet iOS tore the IKE_SA down
+		 * without ever sending ESP on the new child.
+		 */
+		if (sa) {
+			char hx[128];
+			size_t hl = sa->l < 40 ? sa->l : 40;
+			size_t i;
+			for (i = 0; i < hl && i * 2 + 2 < sizeof(hx); i++)
+				snprintf(&hx[i * 2], 3, "%02x",
+				    ((u_char *)sa->v)[i]);
+			hx[i * 2] = '\0';
+			isakmp_log(ike_sa, child_sa->parent->local, child_sa->parent->remote,
+			    0, PLOG_INFO, PLOGLOC,
+			    "CHILD_RESP SA len=%zu spi(prop+1)=0x%08x dhgrp_id=%u "
+			    "n_i.len=%zu n_r.len=%zu g_ir.len=%zu%s%s%s "
+			    "sa_hex=%s\n",
+			    sa->l,
+			    child_sa->my_proposal && child_sa->my_proposal[1] &&
+			    child_sa->my_proposal[1]->prop ?
+			    (unsigned)get_uint32(child_sa->my_proposal[1]->prop + 1) : 0,
+			    child_sa->dhgrp ? child_sa->dhgrp->transform_id : 0,
+			    child_sa->n_i ? child_sa->n_i->l : 0,
+			    child_sa->n_r ? child_sa->n_r->l : 0,
+			    child_sa->g_ir ? child_sa->g_ir->l : 0,
+			    child_sa->dhpub ? " dhpub=Y" : "",
+			    child_sa->g_ir ? " g_ir=Y" : "",
+			    child_sa->peer_proposal ? " peer_prop=Y" : "",
+			    hx);
+		}
+		if (child_sa->peer_proposal) {
+			struct prop_pair *pr;
+			unsigned pn = 0;
+			for (pr = child_sa->peer_proposal; pr;
+			     pr = pr->next, pn++) {
+				struct prop_pair *t2;
+				isakmp_log(ike_sa, child_sa->parent->local,
+				    child_sa->parent->remote, 0, PLOG_INFO,
+				    PLOGLOC,
+				    "CHILD_RESP peer_prop[%u] proto=%d "
+				    "spi_size=%d trns:",
+				    pn,
+				    pr->prop ? pr->prop->proto_id : -1,
+				    pr->prop ? pr->prop->spi_size : -1);
+				for (t2 = pr->tnext; t2; t2 = t2->next) {
+					struct ikev2transform *tr =
+					    (struct ikev2transform *)t2->trns;
+					if (!tr)
+						continue;
+					isakmp_log(ike_sa,
+					    child_sa->parent->local,
+					    child_sa->parent->remote, 0,
+					    PLOG_INFO, PLOGLOC,
+					    "  type=%u id=%u len=%u\n",
+					    tr->transform_type,
+					    get_uint16(&tr->transform_id),
+					    get_uint16(&tr->transform_length));
+				}
+			}
+		}
 	}
 	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
 				     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
