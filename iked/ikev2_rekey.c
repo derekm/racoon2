@@ -683,12 +683,12 @@ ikev2_rekey_init_send_tail(struct ikev2_rekey_init_ctx *ctx)
 	{
 		int t_i;
 		for (t_i = 0; t_i < ctx->payl.num; t_i++)
-			isakmp_log(old_sa, 0, 0, child_sa->message_id,
+			isakmp_log(old_sa, 0, 0, 0,
 			    PLOG_INFO, PLOGLOC,
-			    "REKEY_REQ payl[%d] type=%d len=%d\n",
+			    "REKEY_REQ payl[%d] type=%d len=%zu\n",
 			    t_i, ctx->payl.payloads[t_i].type,
 			    ctx->payl.payloads[t_i].data ?
-			    ctx->payl.payloads[t_i].data->l : -1);
+			    ctx->payl.payloads[t_i].data->l : 0);
 	}
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,

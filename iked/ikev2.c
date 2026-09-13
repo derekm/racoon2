@@ -3633,11 +3633,11 @@ ikev2_createchild_initiator_send_tail(struct ikev2_child_init_ctx *ctx)
 		int t_i;
 		for (t_i = 0; t_i < ctx->payl.num; t_i++) {
 			rc_vchar_t *d = ctx->payl.payloads[t_i].data;
-			isakmp_log(ike_sa, 0, 0, child_sa->message_id,
+			isakmp_log(ike_sa, 0, 0, 0,
 			    PLOG_INFO, PLOGLOC,
-			    "REKEY_REQ payl[%d] type=%d len=%d\n",
+			    "REKEY_REQ payl[%d] type=%d len=%zu\n",
 			    t_i, ctx->payl.payloads[t_i].type,
-			    d ? d->l : -1);
+			    d ? d->l : 0);
 			if (d && ctx->payl.payloads[t_i].type ==
 			    IKEV2_PAYLOAD_SA) {
 				/* dump proposal headers: each is
@@ -3649,8 +3649,7 @@ ikev2_createchild_initiator_send_tail(struct ikev2_child_init_ctx *ctx)
 					uint8_t *p = d->v + off;
 					uint16_t phdrlen =
 					    get_uint16(p + 2);
-					isakmp_log(ike_sa, 0, 0,
-					    child_sa->message_id,
+					isakmp_log(ike_sa, 0, 0, 0,
 					    PLOG_INFO, PLOGLOC,
 					    "REKEY_REQ SA prop#%u type=%u proto=%u "
 					    "spi=0x%08x hdrlen=%u\n",
@@ -4255,8 +4254,7 @@ static int
 ikev2_push_natd_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 {
 	rc_vchar_t *n;
-	rc_vchar_t *hash_src = NULL;
-	rc_vchar_t *hash_dst = NULL;
+	uint8_t *hash_src, *hash_dst;
 	int ret = -1;
 
 	if (!ike_sa->natd_echo)
@@ -4266,36 +4264,37 @@ ikev2_push_natd_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 	 * are hashes over THIS packet's source and destination.
 	 * RFC 4555 §3.8: the initiator compares our reply's
 	 * NAT_DETECTION_DESTINATION_IP to the previous INIT/UPDATE
-	 * value.  Compute both the same way IKE_SA_INIT does
-	 * (natt_create_natd: SRC=local, DST=remote).  Do not echo
-	 * the peer's digests — that is a hairpin lie and the DST
-	 * slot never matches INIT.
-	 */
-	if (!ike_sa->local || !ike_sa->remote)
-		return -1;
-	hash_src = natt_create_hash(ike_sa, ike_sa->local, TRUE);
-	hash_dst = natt_create_hash(ike_sa, ike_sa->remote, TRUE);
-	if (!hash_src || !hash_dst)
-		goto end;
+	 * value (what it dialed).  nwikev2 (iOS) validates the reply
+	 * digests against ITS OWN computed values over ITS view of the
+	 * endpoints: reply SRC must be the digest of the address it
+	 * dialed (its request DST), reply DST the digest of its own
+	 * source (its request SRC).  Behind hairpin NAT our socket
+	 * addresses differ from the peer's view, so recomputing from
+	 * ike_sa->local/remote can never match — every ~10-min NAT
+	 * recheck fails and iOS silently deletes the IKE_SA after the
+	 * second probe (04:42:52 UPDATE_SA, 04:53:00 DELETE-side
+	 * silence on a4f564d).  Echo the digests we received, in the
+	 * swapped slots: ikev2_notify.c:517 stored request-SRC into
+	 * natd_dst_hash and request-DST into natd_src_hash, so the
+	 * reply SOURCE slot carries the received DEST digest and the
+	 * reply DEST slot carries the received SRC digest. */
+	hash_src = ike_sa->natd_src_hash;
+	hash_dst = ike_sa->natd_dst_hash;
 	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
 				 IKEV2_NAT_DETECTION_SOURCE_IP,
-				 hash_src->v, 20);
+				 hash_src, 20);
 	if (!n)
 		goto end;
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
 	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
 				 IKEV2_NAT_DETECTION_DESTINATION_IP,
-				 hash_dst->v, 20);
+				 hash_dst, 20);
 	if (!n)
 		goto end;
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
 	ret = 0;
 
       end:
-	if (hash_src)
-		rc_vfree(hash_src);
-	if (hash_dst)
-		rc_vfree(hash_dst);
 	return ret;
 }
 
@@ -4434,10 +4433,10 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 		int t_i;
 		for (t_i = 0; t_i < payl.num; t_i++)
 			isakmp_log(ike_sa, child_sa->parent->local, child_sa->parent->remote,
-			    child_sa->message_id, PLOG_INFO, PLOGLOC,
-			    "CHILD_RESP payl[%d] type=%d len=%d\n",
+			    0, PLOG_INFO, PLOGLOC,
+			    "CHILD_RESP payl[%d] type=%d len=%zu\n",
 			    t_i, payl.payloads[t_i].type,
-			    payl.payloads[t_i].data ? payl.payloads[t_i].data->l : -1);
+			    payl.payloads[t_i].data ? payl.payloads[t_i].data->l : 0);
 	}
 	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
 				     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
@@ -5126,10 +5125,10 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	{
 		int t_i;
 		for (t_i = 0; t_i < payl.num; t_i++)
-			isakmp_log(ike_sa, local, remote, message_id, PLOG_INFO, PLOGLOC,
-			    "INFO_RESP payl[%d] type=%d len=%d\n",
+			isakmp_log(ike_sa, local, remote, 0, PLOG_INFO, PLOGLOC,
+			    "INFO_RESP payl[%d] type=%d len=%zu\n",
 			    t_i, payl.payloads[t_i].type,
-			    payl.payloads[t_i].data ? payl.payloads[t_i].data->l : -1);
+			    payl.payloads[t_i].data ? payl.payloads[t_i].data->l : 0);
 	}
 
 	{
@@ -5160,7 +5159,7 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				snprintf(&h_cd[i * 2], 3, "%02x",
 				    ((u_char *)c_dst->v)[i]);
 			}
-			isakmp_log(ike_sa, local, remote, message_id,
+			isakmp_log(ike_sa, local, remote, 0,
 			    PLOG_INFO, PLOGLOC,
 			    "NATD_CMP msgid=%u peer_src=%s peer_dst=%s "
 			    "computed_src=%s computed_dst=%s natd_echo=%d\n",
