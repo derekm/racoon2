@@ -15,10 +15,20 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
 - `ikev2_child_rekey_floor` default **0** (off) so iOS can initiate ~1440s. Positive value caps CP children only.
 - Resume dump v2 stores child ENCR/INTEGR/ESN.
 - Payload walk after DELETE continues unless IKE_SA aborted.
+- Shared child PFS gate `ikev2_child_dhdef()`: responder no longer
+  borrows the IKE SA's DH group for a DH-less proposal (that sent
+  KEr + g^ir for a PFS-less suite; iOS killed the IKE_SA one
+  message after the first iOS-initiated rekey, 20:01:34).  Both
+  paths gate on "proposal carries a DH transform" (RFC 7296 §2.18).
 
 ## Still this chunk (do not start EAP/8784)
 
-1. iOS-initiated CHILD rekey (~1440s). Lease move is the claimed `ts unacceptable` fix. Unproven until a session with floor=0 lives that long.
+1. iOS-initiated CHILD rekey (~1440s) with the shared PFS gate. The
+   20:01:34 attempt was the first ever to complete the exchange (no
+   `ts unacceptable`, no SEGV, old child deleted per §2.8) — iOS
+   still deleted the IKE_SA one message later; the PFS gate is the
+   fix candidate.  Unproven until a session with floor=0 lives that
+   long.
 2. One 3600s hard cycle, same pid, ESP still moving.
 3. Host reboot with a live dump. `bind 4500 already in use` on restart.
 

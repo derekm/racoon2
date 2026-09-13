@@ -2,6 +2,18 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 
 2026-09-12 Derek Moore
 
+	* IKEv2 iPhone: shared child PFS gate (initiator + responder).
+	  The responder resolved the rekey DH group from the IKE SA
+	  (ike_sa->negotiated_sa->dhdef) when the selected proposal
+	  carried no DH transform, sending KEr + g^ir KEYMAT for a
+	  PFS-less suite — iOS derives the PFS-less schedule, ESP
+	  dies, and it deletes the IKE_SA one message after the
+	  rekey.  New ikev2_child_dhdef() resolves the group from
+	  the selected proposal pair only; both paths now gate on
+	  "proposal has a DH transform" (initiator: 116bea5; RFC
+	  7296 §2.18).  CREATE_CHILD request log now prints the real
+	  KEi group (the earlier KEi_grp=0 always showed 0 because
+	  it logged before the group was parsed).
 	* IKEv2 iPhone: initiated CHILD rekey deletes the old SA
 	  (RFC 7296 §2.8). Same pid through +480s rekey and 10-min
 	  UPDATE_SA/DPD with ESP still growing (`41124dd` gate).

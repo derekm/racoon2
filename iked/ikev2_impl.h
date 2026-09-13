@@ -597,6 +597,8 @@ extern int ikev2_child_compare_transforms(struct isakmp_domain *,
 					  struct prop_pair *);
 /* struct prop_pair * ikev2_child_match_transforms(struct isakmp_domain *, struct prop_pair *, struct prop_pair *); */
 extern struct prop_pair *ikev2_prop_find(struct prop_pair *, unsigned int);
+extern struct algdef *ikev2_child_dhdef(struct prop_pair *,
+					struct prop_pair *);
 
 extern struct ikev2_isakmpsa *ikev2_find_match_ikesa(struct rcf_remote *,
 						     struct prop_pair **,

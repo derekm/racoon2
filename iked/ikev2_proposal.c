@@ -516,6 +516,31 @@ ikev2_prop_find(struct prop_pair *proposal, unsigned int type)
 }
 
 /*
+ * Resolve the DH group of an accepted proposal pair.
+ *
+ * Shared by the initiator CREATE_CHILD gate (116bea5: send KEi only
+ * when the offered suite carries a DH transform) and the responder
+ * KEr decision, so the two paths cannot diverge again.  Returns the
+ * algdef of the DH transform found in MY proposal first, else the
+ * peer's, else NULL (no PFS — RFC 7296 §2.18).
+ */
+struct algdef *
+ikev2_child_dhdef(struct prop_pair *my_proposal,
+		  struct prop_pair *peer_proposal)
+{
+	struct prop_pair *prop;
+	struct ikev2transform *transf;
+
+	prop = ikev2_prop_find(my_proposal, IKEV2TRANSFORM_TYPE_DH);
+	if (!prop)
+		prop = ikev2_prop_find(peer_proposal, IKEV2TRANSFORM_TYPE_DH);
+	if (!prop || !prop->trns)
+		return NULL;
+	transf = (struct ikev2transform *)prop->trns;
+	return ikev2_dhinfo(get_uint16(&transf->transform_id));
+}
+
+/*
  * ike_conf_proposal constructs the content of SA payload
  * (excluding SA header)
  */

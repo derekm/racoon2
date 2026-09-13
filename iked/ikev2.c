@@ -3783,8 +3783,7 @@ ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
 	 * and iOS deleted the IKE_SA.  If the proposal has no DH
 	 * transform, send no KEi and expect none back.
 	 */
-	pfs = (ikev2_prop_find(child_sa->my_proposal[1],
-			       IKEV2TRANSFORM_TYPE_DH) != NULL);
+	pfs = (ikev2_child_dhdef(child_sa->my_proposal[1], NULL) != NULL);
 
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
@@ -3979,7 +3978,11 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	}
 
 	{
-		/* diagnostic: log the exact rekey request signature */
+		/* diagnostic: log the exact rekey request signature.
+		 * peer_grp is only assigned below (in the `ke` block),
+		 * so read the KEi group straight from the payload —
+		 * printing the local here always shows 0 and has misled
+		 * every reader into thinking iOS sent no KEi. */
 		struct ikev2proposal *pr = 0;
 		if (sa && get_payload_data_length(sa) > sizeof(struct ikev2proposal))
 			pr = (struct ikev2proposal *)(((struct ikev2payl_sa *)sa) + 1);
@@ -3988,7 +3991,8 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		   message_id,
 		   (pr && pr->protocol_id == IKEV2PROPOSAL_IKE) ? "IKE" :
 		   (pr && pr->protocol_id == IKEV2PROPOSAL_ESP) ? "ESP" : "?",
-		   rekey_proto, rekey_spi, peer_grp,
+		   rekey_proto, rekey_spi,
+		   ke ? get_uint16(&ke->ke_h.dh_group_id) : 0,
 		   ts_i ? 'Y' : 'n', ts_r ? 'Y' : 'n', nonce ? 'Y' : 'n');
 	}
 

@@ -1065,29 +1065,25 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		goto no_proposal_chosen;
 
 	if (g_i) {
-		struct prop_pair *prop;
-		struct ikev2transform *transf;
 		struct algdef *dhdef;
 		struct ikev2_child_responder_ctx *ctx;
 		rc_vchar_t *gi_copy, *ni_copy;
 
-		/* (draft-17)
-		 * KEYMAT = prf+(SK_d, g^ir (new) | Ni | Nr )
+		/*
+		 * Resolve the DH group from the SELECTED proposal pair
+		 * only (shared with the initiator, 116bea5).  Never
+		 * borrow ike_sa->negotiated_sa->dhdef: that is the
+		 * IKE_SA's group, and using it for a proposal whose
+		 * transform list carries no DH silently derives g^ir
+		 * KEYMAT on our side while the peer (iOS) derives the
+		 * PFS-less schedule — first ESP dies, iOS deletes the
+		 * IKE_SA.  If no DH transform was selected, the child
+		 * is PFS-less per RFC 7296 §2.18.
 		 */
-		prop = ikev2_prop_find(matching_my_proposal,
-				       IKEV2TRANSFORM_TYPE_DH);
-		if (!prop)
-			prop = ikev2_prop_find(matching_peer_proposal,
-			    IKEV2TRANSFORM_TYPE_DH);
-		if (prop && prop->trns) {
-			transf = (struct ikev2transform *)prop->trns;
-			dhdef = ikev2_dhinfo(get_uint16(&transf->transform_id));
-		} else if (ike_sa->negotiated_sa)
-			dhdef = ike_sa->negotiated_sa->dhdef;
-		else
-			dhdef = NULL;
+		dhdef = ikev2_child_dhdef(matching_my_proposal,
+					  matching_peer_proposal);
 		if (!dhdef)
-			goto no_proposal_chosen;
+			goto no_pfs;
 
 		/*
 		 * RFC 7296 §1.3.2/§2.18: the DH group of the KEi payload
@@ -1155,15 +1151,16 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 			goto fail_internal;
 		}
 		return 0;	/* resumed in ikev2_child_responder_dh_done */
-	} else {		/* if (! g_i) */
-		if (is_createchild &&
-		    ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
-			isakmp_log(ike_sa, local, remote, 0, PLOG_INTERR,
-				   PLOGLOC, "message lacks KEi payload\n");
-			++isakmpstat.malformed_message;
-			err = IKEV2_INVALID_SYNTAX;
-			goto fail;
-		}
+	}
+
+      no_pfs:
+	if (is_createchild &&
+	    ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
+		isakmp_log(ike_sa, local, remote, 0, PLOG_INTERR,
+			   PLOGLOC, "message lacks KEi payload\n");
+		++isakmpstat.malformed_message;
+		err = IKEV2_INVALID_SYNTAX;
+		goto fail;
 	}
 
 	if (n_i) {
