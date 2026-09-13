@@ -502,18 +502,18 @@ createchild_resp_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	case IKEV2_NAT_DETECTION_SOURCE_IP:
 	case IKEV2_NAT_DETECTION_DESTINATION_IP:
 		/* iOS rides its ~10-min NAT recheck on the rekey
-		 * request (and on plain INF2s).  The digests it sends
-		 * are over ITS OWN view of the endpoints: SRC = its
-		 * source, DST = the address it dialed.  The reply must
-		 * carry the SWAP (reply SRC = request DST digest,
-		 * reply DST = request SRC digest): the peer validates
-		 * our reply's SOURCE_IP against the source of the reply
-		 * packet as it observes it (the address it dialed) and
-		 * DESTINATION_IP against itself.  Behind hairpin NAT
-		 * (phone LAN .78 -> router public .40 -> server .79)
-		 * recomputation from our socket address can never match
-		 * what iOS computes; echoing the received digests in
-		 * swapped slots always does.  (RFC 7296 2.23.) */
+		 * request (and on plain INF2s).  RFC 4555 §3.8: the
+		 * initiator compares the digests it RECEIVES in each
+		 * reply with the value from the previous response
+		 * (INIT or last UPDATE_SA_ADDRESSES) — a STABILITY
+		 * check on what the responder reports.  We replay the
+		 * INIT-pinned digests in every reply (see
+		 * ikev2_push_natd_echo), re-pinning only on
+		 * UPDATE_SA_ADDRESSES.  Here we only remember what the
+		 * peer itself computed, to warn if its own view of the
+		 * binding changes between probes (same SPIs, different
+		 * digest = unannounced binding remap, which our INIT
+		 * pin would otherwise hide).  (RFC 7296 2.23.) */
 		{
 			uint8_t *dn;
 			int dl = ntohs(
@@ -522,11 +522,32 @@ createchild_resp_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			if (dl >= 20) {
 				dn = get_notify_data(notify);
 				if (get_notify_type(notify) ==
-				    IKEV2_NAT_DETECTION_SOURCE_IP)
+				    IKEV2_NAT_DETECTION_SOURCE_IP) {
+					if (ike_sa->natd_peer_seen &&
+					    memcmp(ike_sa->natd_peer_prev_src,
+						   dn, 20) != 0)
+						plog(PLOG_INTERR, PLOGLOC,
+						     NULL,
+						     "peer NAT binding changed: "
+						     "SRC digest differs from "
+						     "previous probe\n");
+					memcpy(ike_sa->natd_peer_prev_src,
+					       dn, 20);
 					memcpy(ike_sa->natd_dst_hash, dn, 20);
-				else {
+				} else {
+					if (ike_sa->natd_peer_seen &&
+					    memcmp(ike_sa->natd_peer_prev_dst,
+						   dn, 20) != 0)
+						plog(PLOG_INTERR, PLOGLOC,
+						     NULL,
+						     "peer NAT binding changed: "
+						     "DST digest differs from "
+						     "previous probe\n");
+					memcpy(ike_sa->natd_peer_prev_dst,
+					       dn, 20);
 					memcpy(ike_sa->natd_src_hash, dn, 20);
 					ike_sa->natd_echo = 1;
+					ike_sa->natd_peer_seen = 1;
 				}
 			}
 		}

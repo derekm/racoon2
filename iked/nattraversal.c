@@ -91,6 +91,20 @@ natt_create_natd(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, nat_src, TRUE);
 
+	/*
+	 * Remember the digests for every later reply: RFC 4555 §3.8
+	 * has the initiator compare the NAT_DETECTION_DESTINATION_IP it
+	 * receives in DPD/informational replies with the value from the
+	 * INIT response (or the previous UPDATE_SA_ADDRESSES response).
+	 * The check is a STABILITY check on what the responder reports
+	 * it sees — replay the INIT values unchanged.  (Recomputing
+	 * drifts when the NAT-T ports float 500->4500; echoing the
+	 * peer's own digests also fails, since the peer compares with
+	 * our INIT values, not its own.)
+	 */
+	memcpy(ike_sa->natd_init_src_hash, hash_src->v, 20);
+	memcpy(ike_sa->natd_init_dst_hash, hash_dst->v, 20);
+
 	nat_dst = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
 				       0, 0, IKEV2_NAT_DETECTION_DESTINATION_IP,
 				       (uint8_t *)hash_dst->v, hash_dst->l);

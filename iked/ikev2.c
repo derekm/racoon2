@@ -4254,41 +4254,58 @@ static int
 ikev2_push_natd_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 {
 	rc_vchar_t *n;
-	uint8_t *hash_src, *hash_dst;
 	int ret = -1;
 
 	if (!ike_sa->natd_echo)
 		return 0;
 	/*
-	 * RFC 7296 §2.23: NAT_DETECTION_SOURCE_IP / DESTINATION_IP
-	 * are hashes over THIS packet's source and destination.
-	 * RFC 4555 §3.8: the initiator compares our reply's
-	 * NAT_DETECTION_DESTINATION_IP to the previous INIT/UPDATE
-	 * value (what it dialed).  nwikev2 (iOS) validates the reply
-	 * digests against ITS OWN computed values over ITS view of the
-	 * endpoints: reply SRC must be the digest of the address it
-	 * dialed (its request DST), reply DST the digest of its own
-	 * source (its request SRC).  Behind hairpin NAT our socket
-	 * addresses differ from the peer's view, so recomputing from
-	 * ike_sa->local/remote can never match — every ~10-min NAT
-	 * recheck fails and iOS silently deletes the IKE_SA after the
-	 * second probe (04:42:52 UPDATE_SA, 04:53:00 DELETE-side
-	 * silence on a4f564d).  Echo the digests we received, in the
-	 * swapped slots: ikev2_notify.c:517 stored request-SRC into
-	 * natd_dst_hash and request-DST into natd_src_hash, so the
-	 * reply SOURCE slot carries the received DEST digest and the
-	 * reply DEST slot carries the received SRC digest. */
-	hash_src = ike_sa->natd_src_hash;
-	hash_dst = ike_sa->natd_dst_hash;
+	 * RFC 4555 §3.8: the initiator treats our NAT_DETECTION
+	 * digests as a binding report and compares the received
+	 * DESTINATION_IP with the value from the previous response
+	 * (INIT or last UPDATE_SA_ADDRESSES).  The check is
+	 * STABILITY: replay the digests we sent in the INIT reply
+	 * unchanged, so a session that has not re-bound reports the
+	 * same binding forever.  Recomputing per packet drifts when
+	 * the NAT-T ports float 500->4500 (every probe then looks
+	 * like a binding change); echoing the peer's own digests
+	 * fails the same comparison, since the peer validates
+	 * against OUR INIT values, not its own computation.
+	 *
+	 * When the peer sent UPDATE_SA_ADDRESSES (an actual or
+	 * suspected re-bind), re-pin the digests from the current
+	 * endpoints before replaying: after a genuine address
+	 * update the new baseline must track the new binding, and
+	 * this message's reply carries the re-pinned values.
+	 */
+	if (ike_sa->mobike_update) {
+		rc_vchar_t *hs, *hd;
+
+		if (!ike_sa->local || !ike_sa->remote)
+			return -1;
+		hs = natt_create_hash(ike_sa, ike_sa->local, TRUE);
+		hd = natt_create_hash(ike_sa, ike_sa->remote, TRUE);
+		if (!hs || !hd) {
+			if (hs)
+				rc_vfree(hs);
+			if (hd)
+				rc_vfree(hd);
+			return -1;
+		}
+		memcpy(ike_sa->natd_init_src_hash, hs->v, 20);
+		memcpy(ike_sa->natd_init_dst_hash, hd->v, 20);
+		rc_vfree(hs);
+		rc_vfree(hd);
+		ike_sa->mobike_update = 0;
+	}
 	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
 				 IKEV2_NAT_DETECTION_SOURCE_IP,
-				 hash_src, 20);
+				 ike_sa->natd_init_src_hash, 20);
 	if (!n)
 		goto end;
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
 	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
 				 IKEV2_NAT_DETECTION_DESTINATION_IP,
-				 hash_dst, 20);
+				 ike_sa->natd_init_dst_hash, 20);
 	if (!n)
 		goto end;
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);

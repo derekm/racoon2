@@ -226,6 +226,12 @@ struct ikev2_sa {
 	int natd_echo;			/* echo NAT_DETECTION in next reply */
 	uint8_t natd_src_hash[20];	/* verbatim NAT_DETECTION_SOURCE_IP */
 	uint8_t natd_dst_hash[20];	/* verbatim NAT_DETECTION_DESTINATION_IP */
+	uint8_t natd_init_src_hash[20];	/* digests sent in INIT reply;
+					 * RFC 4555 §3.8 replay baseline */
+	uint8_t natd_init_dst_hash[20];	/* digests sent in INIT reply */
+	uint8_t natd_peer_prev_src[20];	/* last peer SRC digest (drift) */
+	uint8_t natd_peer_prev_dst[20];	/* last peer DST digest (drift) */
+	int natd_peer_seen;		/* peer digests recorded */
 	rc_vchar_t *cookie2_echo;	/* RFC 4555 COOKIE2 to copy into response */
 	rc_vchar_t *cookie2_sent;	/* RFC 4555 COOKIE2 we put on a request */
 	int cookie2_matched;
