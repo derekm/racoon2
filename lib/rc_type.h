@@ -281,6 +281,7 @@ struct rcf_kmp {
 	int dpd_retry;		/* in seconds */
 	int dpd_maxfails;
 	char	*script[SCRIPT_NUM];
+	struct rc_addrlist *natd_public_address;
 };
 
 /* selector info */

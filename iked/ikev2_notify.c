@@ -508,7 +508,7 @@ createchild_resp_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * (INIT or last UPDATE_SA_ADDRESSES) — a STABILITY
 		 * check on what the responder reports.  We replay the
 		 * INIT-pinned digests in every reply (see
-		 * ikev2_push_natd_echo), re-pinning only on
+		 * ikev2_push_natd_report), re-pinning only on
 		 * UPDATE_SA_ADDRESSES.  Here we only remember what the
 		 * peer itself computed, to warn if its own view of the
 		 * binding changes between probes (same SPIs, different
@@ -546,14 +546,14 @@ createchild_resp_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 					memcpy(ike_sa->natd_peer_prev_dst,
 					       dn, 20);
 					memcpy(ike_sa->natd_src_hash, dn, 20);
-					ike_sa->natd_echo = 1;
+					ike_sa->natd_report = 1;
 					ike_sa->natd_peer_seen = 1;
 				}
 			}
 		}
 		if (natt_process_natd(ike_sa, notify, TRUE) == 0 &&
-		    ike_sa->natd_echo == 0)
-			ike_sa->natd_echo = 1;
+		    ike_sa->natd_report == 0)
+			ike_sa->natd_report = 1;
 		break;
 
 	case IKEV2_REKEY_SA:

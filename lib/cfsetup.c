@@ -206,6 +206,7 @@ static int rcf_fix_my_gssapi_id (struct cf_list *, void *);
 static int rcf_fix_cookie_required (struct cf_list *, void *);
 static int rcf_fix_send_peers_id (struct cf_list *, void *);
 static int rcf_fix_nat_traversal (struct cf_list *, void *);
+static int rcf_fix_natd_public_address (struct cf_list *, void *);
 static int rcf_fix_my_principal (struct cf_list *, void *);
 static int rcf_fix_peers_principal (struct cf_list *, void *);
 static int rcf_fix_need_pfs (struct cf_list *, void *);
@@ -363,6 +364,7 @@ struct rcf_tdf_t {
 	{ CFD_COOKIE_REQUIRED,		rcf_fix_cookie_required, },
 	{ CFD_SEND_PEERS_ID,		rcf_fix_send_peers_id, },
 	{ CFD_NAT_TRAVERSAL,		rcf_fix_nat_traversal, },
+	{ CFD_NATD_PUBLIC_ADDRESS,	rcf_fix_natd_public_address, },
 	{ CFD_MY_PRINCIPAL,		rcf_fix_my_principal, },
 	{ CFD_PEERS_PRINCIPAL,		rcf_fix_peers_principal, },
 	{ CFD_NEED_PFS,			rcf_fix_need_pfs, },
@@ -1554,6 +1556,27 @@ rcf_fix_nat_traversal(struct cf_list *head, void *dst0)
 		return 0;
 	}
 	if (rcf_fix_boolean(head->nextp, &dst->nat_traversal))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_natd_public_address(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+	int flag = RCT_ADDR_INET | RCT_ADDR_FQDN;
+
+	if (rcf_check_cfd(head, CFD_NATD_PUBLIC_ADDRESS))
+		return -1;
+	/*
+	 * Externally-visible address:port for NAT_DETECTION_SOURCE_IP
+	 * digests when this responder sits behind any NAT (incl.
+	 * hairpin).  NULL default = report the socket address, which
+	 * is correct whenever the responder has a public IP.
+	 */
+	if (rcf_fix_addrlist(head->nextp, &dst->natd_public_address,
+	    RC_PORT_IKE_NATT, flag))
 		return -1;
 
 	return 0;
@@ -2939,6 +2962,7 @@ rcf_clean_kmp(struct rcf_kmp *n)
 		return;
 	rcf_clean_log(n->plog);
 	rcf_clean_addrlist(n->peers_ipaddr);
+	rcf_clean_addrlist(n->natd_public_address);
 	rcf_clean_idlist(n->my_id);
 	rcf_clean_idlist(n->peers_id);
 	rcf_clean_alglist(n->kmp_enc_alg);
@@ -3004,6 +3028,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_PKLIST(src->my_pubkey, new->my_pubkey);
 	DEEPCOPY_PKLIST(src->peers_pubkey, new->peers_pubkey);
 	DEEPCOPY_ADDRLIST(src->peers_ipaddr, new->peers_ipaddr);
+	DEEPCOPY_ADDRLIST(src->natd_public_address, new->natd_public_address);
 	DEEPCOPY_IDLIST(src->my_id, new->my_id);
 	DEEPCOPY_IDLIST(src->peers_id, new->peers_id);
 	DEEPCOPY_ALGLIST(src->kmp_enc_alg, new->kmp_enc_alg);

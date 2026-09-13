@@ -4251,25 +4251,31 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 }
 
 static int
-ikev2_push_natd_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
+ikev2_push_natd_report(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 {
 	rc_vchar_t *n;
 	int ret = -1;
 
-	if (!ike_sa->natd_echo)
+	if (!ike_sa->natd_report)
 		return 0;
 	/*
 	 * RFC 4555 §3.8: the initiator treats our NAT_DETECTION
-	 * digests as a binding report and compares the received
+	 * digests as a BINDING REPORT and compares the received
 	 * DESTINATION_IP with the value from the previous response
-	 * (INIT or last UPDATE_SA_ADDRESSES).  The check is
-	 * STABILITY: replay the digests we sent in the INIT reply
-	 * unchanged, so a session that has not re-bound reports the
-	 * same binding forever.  Recomputing per packet drifts when
-	 * the NAT-T ports float 500->4500 (every probe then looks
-	 * like a binding change); echoing the peer's own digests
-	 * fails the same comparison, since the peer validates
-	 * against OUR INIT values, not its own computation.
+	 * (INIT or last UPDATE_SA_ADDRESSES).  The check is a
+	 * stability check on what we report we see - not a value
+	 * equality check against the peer's own computation, and
+	 * certainly not an echo of the peer's digests.
+	 *
+	 * Replay the digests we sent in the INIT reply unchanged,
+	 * so a session that has not re-bound reports the same
+	 * binding forever.  Recomputing per packet drifts when the
+	 * NAT-T ports float 500->4500 (every probe then looks like
+	 * a binding change); echoing the peer's own digests fails
+	 * the same comparison, since the peer validates against OUR
+	 * INIT values, not its own computation.  Honest change
+	 * detection lives on the inbound side (peer-vs-previous-peer
+	 * drift log); the outbound report exists to be STABLE.
 	 *
 	 * When the peer sent UPDATE_SA_ADDRESSES (an actual or
 	 * suspected re-bind), re-pin the digests from the current
@@ -4279,10 +4285,15 @@ ikev2_push_natd_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 	 */
 	if (ike_sa->mobike_update) {
 		rc_vchar_t *hs, *hd;
+		struct rc_addrlist *pub =
+		    ikev2_natd_public_address(ike_sa->rmconf);
 
 		if (!ike_sa->local || !ike_sa->remote)
 			return -1;
-		hs = natt_create_hash(ike_sa, ike_sa->local, TRUE);
+		if (pub && pub->a.ipaddr)
+			hs = natt_create_hash(ike_sa, pub->a.ipaddr, TRUE);
+		else
+			hs = natt_create_hash(ike_sa, ike_sa->local, TRUE);
 		hd = natt_create_hash(ike_sa, ike_sa->remote, TRUE);
 		if (!hs || !hd) {
 			if (hs)
@@ -4341,21 +4352,21 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 
 	ikev2_payloads_init(&payl);
 
-	if (ike_sa->natd_echo &&
+	if (ike_sa->natd_report &&
 	    (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
 	     ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE)) {
 		/* RFC 7296 §2.23: NAT_DETECTION over this packet's
 		 * endpoints (SRC=local, DST=remote), same as INIT. */
-		if (ikev2_push_natd_echo(ike_sa, &payl) < 0)
+		if (ikev2_push_natd_report(ike_sa, &payl) < 0)
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
-				   "failed to echo NAT_DETECTION notifies "
-				   "for CREATE_CHILD_SA reply\n");
+				   "failed to add NAT_DETECTION "
+				   "report for CREATE_CHILD_SA reply\n");
 		else
 			isakmp_log(ike_sa, 0, 0, 0,
 				   PLOG_INFO, PLOGLOC,
-				   "echoed NAT_DETECTION digests in "
+				   "NAT_DETECTION report in "
 				   "CREATE_CHILD_SA reply\n");
-		ike_sa->natd_echo = 0;
+		ike_sa->natd_report = 0;
 	}
 
 	if (child_sa->state != IKEV2_CHILD_STATE_MATURE) {
@@ -5115,7 +5126,7 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 							memcpy(
 							    ike_sa->natd_src_hash,
 							    dn, 20);
-							ike_sa->natd_echo = 1;
+							ike_sa->natd_report = 1;
 						}
 					}
 				}
@@ -5191,7 +5202,7 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * An empty reply leaves the peer without binding
 		 * confirmation.
 		 */
-		if (ikev2_push_natd_echo(ike_sa, &payl) < 0)
+		if (ikev2_push_natd_report(ike_sa, &payl) < 0)
 			isakmp_log(ike_sa, 0, 0, 0,
 				   PLOG_PROTOWARN, PLOGLOC,
 				   "failed to add NAT_DETECTION notifies "
@@ -5201,7 +5212,7 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				   PLOG_INFO, PLOGLOC,
 				   "NAT_DETECTION digests in "
 				   "INFORMATIONAL reply\n");
-		ike_sa->natd_echo = 0;
+		ike_sa->natd_report = 0;
 	}
 
 	{
@@ -5244,9 +5255,9 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			isakmp_log(ike_sa, local, remote, 0,
 			    PLOG_INFO, PLOGLOC,
 			    "NATD_CMP msgid=%u peer_src=%s peer_dst=%s "
-			    "computed_src=%s computed_dst=%s natd_echo=%d\n",
+			    "computed_src=%s computed_dst=%s natd_report=%d\n",
 			    message_id, h_ps, h_pd, h_cs, h_cd,
-			    ike_sa->natd_echo);
+			    ike_sa->natd_report);
 		}
 		if (c_src)
 			rc_vfree(c_src);

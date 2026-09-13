@@ -261,6 +261,7 @@ initial_contact		{ DP; return(INITIAL_CONTACT); }
 support_proxy		{ DP; return(SUPPORT_PROXY); }
 
 nat_traversal		{ DP; return(NAT_TRAVERSAL); }
+natd_public_address		{ DP; return(NATD_PUBLIC_ADDRESS); }
 require_config_payload	{ DP; return(REQUIRE_CONFIG); }
 application_version	{ DP; return(APPLICATION_VERSION); }
 request			{ DP; return(REQUEST); }

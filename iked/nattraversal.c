@@ -72,7 +72,20 @@ natt_create_natd(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 	rc_vchar_t *nat_dst = NULL;
 	int ret = -1;
 
-	hash_src = natt_create_hash(ike_sa, local, TRUE);
+	struct rc_addrlist *pub = ikev2_natd_public_address(ike_sa->rmconf);
+
+	/*
+	 * NAT_DETECTION_SOURCE_IP is a claim about the address the
+	 * peer observes us at.  When this responder sits behind any
+	 * NAT (incl. hairpin) the peer sees the configured public
+	 * address, not our socket; natd_public_address makes that
+	 * claim truthful.  DST stays derived from the peer's
+	 * observed source (remote) and is never configurable.
+	 */
+	if (pub && pub->a.ipaddr)
+		hash_src = natt_create_hash(ike_sa, pub->a.ipaddr, TRUE);
+	else
+		hash_src = natt_create_hash(ike_sa, local, TRUE);
 	if (hash_src == NULL) {
 		goto end;
 	}
@@ -92,15 +105,17 @@ natt_create_natd(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, nat_src, TRUE);
 
 	/*
-	 * Remember the digests for every later reply: RFC 4555 §3.8
-	 * has the initiator compare the NAT_DETECTION_DESTINATION_IP it
+	 * Pin the digests for every later reply: RFC 4555 §3.8 has
+	 * the initiator compare the NAT_DETECTION_DESTINATION_IP it
 	 * receives in DPD/informational replies with the value from the
 	 * INIT response (or the previous UPDATE_SA_ADDRESSES response).
 	 * The check is a STABILITY check on what the responder reports
-	 * it sees — replay the INIT values unchanged.  (Recomputing
+	 * it sees, so the report is the INIT binding and stays byte-
+	 * identical unless the binding legitimately changes (peer
+	 * UPDATE_SA_ADDRESSES re-pins it).  Recomputing per packet
 	 * drifts when the NAT-T ports float 500->4500; echoing the
 	 * peer's own digests also fails, since the peer compares with
-	 * our INIT values, not its own.)
+	 * our INIT values, not its own.
 	 */
 	memcpy(ike_sa->natd_init_src_hash, hash_src->v, 20);
 	memcpy(ike_sa->natd_init_dst_hash, hash_dst->v, 20);
