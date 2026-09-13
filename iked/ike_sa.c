@@ -872,6 +872,27 @@ ikev2_initial_contact(struct ikev2_sa *self)
 	struct ikev2_sa *sa, *next;
 	int flushed = 0;
 
+	/*
+	 * Defer the flush until this (new) SA is ESTABLISHED.  The
+	 * INITIAL_CONTACT notify is part of the IKE_AUTH exchange of
+	 * the replacement SA, and the stale SA carries the SAME peer
+	 * address tuple, so tearing it down here runs
+	 * ikev2_shutdown_sa() / SADB deletes nested inside the new
+	 * exchange's processing callback.  Observed live (11:31:41
+	 * and 16:15:03 repro): the in-flight AUTH response was never
+	 * sent, its fresh SADB registration was reaped, and racoon2
+	 * then failed the AUTH retransmit with "failed to find a
+	 * socket for retransmission" -- the peer gave up after
+	 * ~7-16s and re-ran IKE_SA_INIT, i.e. the "slow connect"
+	 * class.  ikev2_set_state() re-runs us at the ESTABLISHED
+	 * transition, where sched_new(0, ...) is genuinely beyond
+	 * the exchange callback.
+	 */
+	if (self->state != IKEV2_STATE_ESTABLISHED) {
+		self->initial_contact_pending = 1;
+		return;
+	}
+
 	for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa; sa = next) {
 		next = IKEV2_SA_LIST_NEXT(sa);
 		if (sa == self)

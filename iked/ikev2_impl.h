@@ -232,6 +232,10 @@ struct ikev2_sa {
 	uint8_t natd_peer_prev_src[20];	/* last peer SRC digest (drift) */
 	uint8_t natd_peer_prev_dst[20];	/* last peer DST digest (drift) */
 	int natd_peer_seen;		/* peer digests recorded */
+	int initial_contact_pending;	/* INITIAL_CONTACT seen; flush stale
+					 * same-peer SA once we are ESTABLISHED
+					 * (RFC 7296 §1.4.1: don't tear the old
+					 * SA down inside the new exchange) */
 	rc_vchar_t *cookie2_echo;	/* RFC 4555 COOKIE2 to copy into response */
 	rc_vchar_t *cookie2_sent;	/* RFC 4555 COOKIE2 we put on a request */
 	int cookie2_matched;

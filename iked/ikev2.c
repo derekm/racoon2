@@ -865,6 +865,19 @@ ikev2_set_state(struct ikev2_sa *sa, int state)
 		else
 			ikev2_script_hook(sa, SCRIPT_PHASE1_UP);
 		ikev2_resume_save(sa);
+		/*
+		 * INITIAL_CONTACT arrived during this exchange (IKE_AUTH
+		 * of the replacement SA).  Flush the stale same-peer SA
+		 * only now: we are fully established, the AUTH response
+		 * has been sent or is about to be sent from this
+		 * callback, so the teardown can't reap the exchange that
+		 * carried the notify.  ikev2_initial_contact() schedules
+		 * its own deferred teardown past this callback.
+		 */
+		if (sa->initial_contact_pending) {
+			sa->initial_contact_pending = 0;
+			ikev2_initial_contact(sa);
+		}
 	}
 	if (prev_state == IKEV2_STATE_ESTABLISHED &&
 	    state != IKEV2_STATE_ESTABLISHED) {
