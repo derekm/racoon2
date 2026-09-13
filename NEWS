@@ -1,5 +1,22 @@
 $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 
+2026-09-12 Derek Moore
+
+	* IKEv2 iPhone: initiated CHILD rekey deletes the old SA
+	  (RFC 7296 §2.8). Same pid through +480s rekey and 10-min
+	  UPDATE_SA/DPD with ESP still growing (`41124dd` gate).
+	* ikev2_destroy_child_sa: NULL-guard selector (informational
+	  dummy had no selector; SEGV at offsetof next == 0x40).
+	* NAT_DETECTION replies compute SRC=local DST=remote
+	  (RFC 7296 §2.23 / 4555 §3.8), not a peer-digest echo.
+	* msgid heal as original responder is 2 (Apple interop).
+	  RFC 7296 §2.2 first request is 0; cited honestly.
+	* IKEV2_CHILD_REKEY_FLOOR 480s is CP/road-warrior only
+	  (non-empty lease_list). Site-to-site keeps configured soft.
+	* Resume dump v2 stores child ENCR/INTEGR/ESN so a restored
+	  rekey clones the live suite (RFC 7296 §2.8 SHOULD NOT
+	  change algorithms).
+
 2026-09-08 Derek Moore
 
 	* IP_ANY is IP_RW for SA endpoints and SPD: skip static mixed-family

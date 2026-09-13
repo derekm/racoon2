@@ -71,7 +71,7 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 		    uint32_t spi)
 {
 	struct ikev2_sa *ike_sa;
-	struct ikev2_child_sa *new_child_sa;
+	struct ikev2_child_sa *new_child_sa = 0;
 
 	/* (draft-17)
 	 *
@@ -334,9 +334,9 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 	 * (ikev2_create_child_responder) already rc_addrpool_move()s the
 	 * lease when IT handles a peer-initiated rekey; the initiator
 	 * path (this function) must do the same, or a later
-	 * iOS-initiated rekey of THIS child finds no lease and
+	 * peer-initiated rekey of THIS child finds no lease and
 	 * ike_conf_find_ikev2sel_by_ts() rejects its TSi/TSr with
-	 * "ts unacceptable" (16:39:50, spi=0xc00cc89).
+	 * "ts unacceptable".
 	 */
 	rc_addrpool_move(&new_child_sa->lease_list, &old_child_sa->lease_list);
 	TRACE((PLOGLOC, "moved leases to new child_sa\n"));
@@ -357,11 +357,19 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 
       fail_nomem:
 	old_child_sa->rekey_inprogress = FALSE;
+	if (new_child_sa) {
+		ikev2_remove_child(new_child_sa);
+		ikev2_destroy_child_sa(new_child_sa);
+	}
 	isakmp_log(ike_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed allocating memory\n");
 	return;
       fail:
 	old_child_sa->rekey_inprogress = FALSE;
+	if (new_child_sa) {
+		ikev2_remove_child(new_child_sa);
+		ikev2_destroy_child_sa(new_child_sa);
+	}
 	isakmp_log(ike_sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed starting rekeying\n");
 	return;

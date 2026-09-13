@@ -624,21 +624,18 @@ ikev2_request_id(struct ikev2_sa *ike_sa)
 	uint32_t id;
 
 	/*
-	 * Message IDs after the initial exchanges are numbered
-	 * 2,3,4,... from BOTH ends in the same sequence (RFC 7296
-	 * 2.5: "the nth request from the original IKE initiator, the
-	 * corresponding response, the nth request from the original
-	 * IKE responder, and the corresponding response").  IKE_SA_INIT
-	 * used 0 and IKE_AUTH 1 (from the original initiator), so our
-	 * first self-initiated request must be at least 2.
+	 * RFC 7296 §2.2: Message IDs are independent per direction.
+	 * IKE_SA_INIT is 0 and IKE_AUTH is 1, both from the original
+	 * initiator.  The original responder's first *request* is
+	 * therefore msgid 0 under the RFC.
 	 *
-	 * A responder-side SA starts with send_message_id 0 -- it never
-	 * initiates during the initial exchanges -- and it may be
-	 * restored that way via resume.  Reusing 0 is a protocol
-	 * violation (a strict peer, e.g. iOS, answers INVALID_SYNTAX).
-	 * Heal here, at the single mint point, so every caller path
-	 * (fresh AUTH, resume restore, async rekey, informational,
-	 * MOBIKE) gets a valid id regardless of how the SA was born.
+	 * iOS answered INVALID_SYNTAX to a msgid-0 CREATE_CHILD we
+	 * sent as original responder (session 11:18, before the SA
+	 * body was also fixed).  After the SA was a single negotiated
+	 * proposal, msgid 2 was accepted.  msgid 0 with a valid body
+	 * was never retested.  Keep 2 as Apple interop at this single
+	 * mint point until a charon row proves RFC-0.  Do not cite
+	 * §2.5 (that section is version numbers).
 	 */
 	if (ike_sa->is_initiator == FALSE && ike_sa->send_message_id == 0) {
 		ike_sa->send_message_id = ike_sa->recv_message_id;
@@ -4260,36 +4257,34 @@ static int
 ikev2_push_natd_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 {
 	rc_vchar_t *n;
+	rc_vchar_t *hash_src = NULL;
 	rc_vchar_t *hash_dst = NULL;
 	int ret = -1;
 
 	if (!ike_sa->natd_echo)
 		return 0;
+	/*
+	 * RFC 7296 §2.23: NAT_DETECTION_SOURCE_IP / DESTINATION_IP
+	 * are hashes over THIS packet's source and destination.
+	 * RFC 4555 §3.8: the initiator compares our reply's
+	 * NAT_DETECTION_DESTINATION_IP to the previous INIT/UPDATE
+	 * value.  Compute both the same way IKE_SA_INIT does
+	 * (natt_create_natd: SRC=local, DST=remote).  Do not echo
+	 * the peer's digests — that is a hairpin lie and the DST
+	 * slot never matches INIT.
+	 */
+	if (!ike_sa->local || !ike_sa->remote)
+		return -1;
+	hash_src = natt_create_hash(ike_sa, ike_sa->local, TRUE);
+	hash_dst = natt_create_hash(ike_sa, ike_sa->remote, TRUE);
+	if (!hash_src || !hash_dst)
+		goto end;
 	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
 				 IKEV2_NAT_DETECTION_SOURCE_IP,
-				 ike_sa->natd_src_hash, 20);
+				 hash_src->v, 20);
 	if (!n)
-		return -1;
-	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
-
-	/*
-	 * RFC 4555 3.8: a NAT-detection DPD re-check compares our reply's
-	 * NAT_DETECTION_DESTINATION_IP against the value from the previous
-	 * UPDATE_SA_ADDRESSES response / IKE_SA_INIT response.  Echoing the
-	 * peer's own SRC digest there (iOS's private-side view) can never
-	 * equal the digest we sent at IKE_SA_INIT, so iOS re-fires
-	 * UPDATE_SA_ADDRESSES at every 10-min DPD and suspends the data
-	 * plane meanwhile.  The DST slot must be OUR computed digest over
-	 * the address the peer appears at (what we sent at IKE_SA_INIT);
-	 * the SRC slot stays an echo of the peer's own digest (that is what
-	 * it validates against the reply source it observes).
-	 */
-	if (ike_sa->remote) {
-		hash_dst = natt_create_hash(ike_sa, ike_sa->remote, TRUE);
-		if (!hash_dst)
-			goto end;
-	} else
 		goto end;
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
 	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
 				 IKEV2_NAT_DETECTION_DESTINATION_IP,
 				 hash_dst->v, 20);
@@ -4299,6 +4294,8 @@ ikev2_push_natd_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 	ret = 0;
 
       end:
+	if (hash_src)
+		rc_vfree(hash_src);
 	if (hash_dst)
 		rc_vfree(hash_dst);
 	return ret;
@@ -4333,10 +4330,8 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 	if (ike_sa->natd_echo &&
 	    (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
 	     ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE)) {
-		/* RFC 7296 2.23: echo the exchanged NAT_DETECTION digests
-		 * (swapped) so iOS's rekey-riding NAT recheck gets binding
-		 * confirmation; without it iOS drops the IKE_SA right
-		 * after the rekey. */
+		/* RFC 7296 §2.23: NAT_DETECTION over this packet's
+		 * endpoints (SRC=local, DST=remote), same as INIT. */
 		if (ikev2_push_natd_echo(ike_sa, &payl) < 0)
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
 				   "failed to echo NAT_DETECTION notifies "
@@ -5112,24 +5107,20 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	    (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
 	     ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE)) {
 		/*
-		 * RFC 7296 2.23: NAT_DETECTION notifies confirm the
-		 * NAT bindings.  When the peer re-checks them on an
-		 * established SA (iOS nwikev2), echo our computed
-		 * NAT_DETECTION_SOURCE_IP / _DESTINATION_IP in the
-		 * response -- the same notifies we send in the
-		 * IKE_SA_INIT reply.  An empty reply leaves the peer
-		 * without binding confirmation and iOS silently drops
-		 * the SA minutes later.
+		 * RFC 7296 §2.23: NAT_DETECTION over this packet's
+		 * endpoints, same construction as IKE_SA_INIT.
+		 * An empty reply leaves the peer without binding
+		 * confirmation.
 		 */
 		if (ikev2_push_natd_echo(ike_sa, &payl) < 0)
 			isakmp_log(ike_sa, 0, 0, 0,
 				   PLOG_PROTOWARN, PLOGLOC,
-				   "failed to echo NAT_DETECTION notifies "
+				   "failed to add NAT_DETECTION notifies "
 				   "for INFORMATIONAL reply\n");
 		else
 			isakmp_log(ike_sa, 0, 0, 0,
 				   PLOG_INFO, PLOGLOC,
-				   "echoed NAT_DETECTION digests in "
+				   "NAT_DETECTION digests in "
 				   "INFORMATIONAL reply\n");
 		ike_sa->natd_echo = 0;
 	}
@@ -5269,8 +5260,7 @@ ikev2_info_init_notify_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 
 	if (child_sa == NULL || msg == NULL || msg->v == NULL) {
 		isakmp_log(0, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-		    "ikev2_info_init_notify_recv: null child_sa/msg "
-		    "(16:39:50 SEGV at offset 0x40 guard)\n");
+		    "ikev2_info_init_notify_recv: null child_sa/msg\n");
 		return;
 	}
 	ike_sa = child_sa->parent;
@@ -5298,15 +5288,13 @@ ikev2_info_init_notify_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		case IKEV2_PAYLOAD_DELETE:
 			ikev2_process_delete(ike_sa, p, 0);
 			/*
-			 * The peer's DELETE may have torn down the very
-			 * child_sa this callback is walking on (UAF: the
-			 * 17:47:04 SEGV at offset 0x40 inside
-			 * ikev2_info_init_notify_recv came from the old-child
-			 * DELETE echo racing the exchange child).  Nothing
-			 * legitimate follows a DELETE in an informational
-			 * response, so stop here.
+			 * RFC 7296 §1.4 allows {[N,] [D,] [CP,] ...};
+			 * §3.11 allows multiple Delete payloads.
+			 * Only stop if DELETE IKE_SA aborted the SA.
 			 */
-			return;
+			if (ike_sa->state == IKEV2_STATE_DYING ||
+			    ike_sa->state == IKEV2_STATE_DEAD)
+				return;
 			break;
 		case IKEV2_PAYLOAD_VENDOR_ID:
 			/* A Vendor ID payload may be sent as part of any message. */

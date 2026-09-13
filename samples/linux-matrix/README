@@ -26,3 +26,8 @@ RFC rows: `ikev2-netns-ikesa-rekey` (7296 §2.8), `ikev2-netns-cookie2`
 `ikev2-netns-resume-dump` (SR2R dump after IKE_AUTH). Those IKE rows
 stop live systemd iked (workers=0). Do not run them against a phone
 session.
+
+`ikev2-netns-childrekey` is charon-initiated PFS-19, no CP, no
+racoon2 msgid mint. A racoon2-as-responder initiated rekey row
+is still missing (needs charon `rekey=no` and a short racoon2
+child lifetime).

@@ -312,8 +312,9 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 				ra.port = 0;
 				ra.prefixlen = prefixlen;
 				ra.a.ipaddr = (struct sockaddr *)&ss;
-				if (ra.a.ipaddr->sa_family == selector->src->a.ipaddr->sa_family) {
-					if (selector && spmif_post_policy_delete(ike_spmif_socket(),
+				if (selector && selector->src && selector->src->a.ipaddr &&
+				    ra.a.ipaddr->sa_family == selector->src->a.ipaddr->sa_family) {
+					if (spmif_post_policy_delete(ike_spmif_socket(),
 								     NULL, NULL,
 								     selector->sl_index,
 								     ike_ipsec_mode(policy),
@@ -2336,16 +2337,14 @@ ikev2_child_start_lifetime_timer(struct ikev2_child_sa *child_sa)
 	/*
 	 * The child SA lifetime is a local knob: IKEv2 carries no
 	 * lifetime attribute (RFC 7296 3.3.5: only Key Length exists),
-	 * so the peer's expiry is invisible to us.  Peers stop using
-	 * the child at their OWN soft expiry (iOS: ~40% of its
-	 * lifetime -- observed data-plane freeze ~9-10 min in with a
-	 * 1440s rekey), and if we never rekey they ride a stale child
-	 * until they force a rekey themselves.  Cap our rekey timer at
-	 * a floor that precedes any plausible peer soft expiry so the
-	 * child is always fresh when the peer checks; this is generic
-	 * across clients, not tuned to one vendor.
+	 * so the peer's expiry is invisible to us.  CP/road-warrior
+	 * children (non-empty lease_list) cap the rekey timer at
+	 * IKEV2_CHILD_REKEY_FLOOR so we initiate before a typical
+	 * peer soft expiry.  Site-to-site children keep the
+	 * configured soft lifetime.
 	 */
-	if (soft > IKEV2_CHILD_REKEY_FLOOR)
+	if (!LIST_EMPTY(&child_sa->lease_list) &&
+	    soft > IKEV2_CHILD_REKEY_FLOOR)
 		soft = IKEV2_CHILD_REKEY_FLOOR;
 	TRACE((PLOGLOC, "child %p lifetime %u soft %d\n",
 	    child_sa, lifetime, soft));
@@ -2741,6 +2740,11 @@ ikev2_child_delete(struct ikev2_child_sa *child_sa)
 	    ikev2_request_initiator_start(ike_sa,
 				          ikev2_child_delete_callback,
 				          payl);
+	if (!exch_child_sa) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		    "failed starting informational DELETE exchange\n");
+		goto done;
+	}
 	exch_child_sa->deleting_child_id = child_sa->child_id;
 
 	ikev2_child_delete_inbound(child_sa);

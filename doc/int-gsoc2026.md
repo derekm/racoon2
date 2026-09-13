@@ -2,32 +2,34 @@
 
 Not a product README. Status vs HEAD. Done items stay in NEWS.
 
-## Proven 2026-09-08
+## Proven 2026-09-12 (`41124dd` live)
 
-- iked restart left kernel ESP (`0x06c8a0cd` / `0x0428aa74`). iPhone stayed Connected. `lastused` after bounce.
-- Second bounce: save/load `ike_remain=85351` (wall-clock, not 1, not 86400).
-- Dump was FIXY on the first bounce (`ike_remain=86400` fallback).
+- Initiated CHILD rekey (480s CP floor): new SAs installed, old deleted (RFC 7296 §2.8).
+- Same MainPID **1423482** through +480s rekey **and** 10-min UPDATE_SA/DPD. ESP counters grew after both. No SEGV.
+- Root of the 18:20 drop: `ikev2_destroy_child_sa` did `selector->next` on a selector-less informational dummy (offset 0x40), GC'd by the 3s periodic task.
 
-## In tree
+## In tree (not all deployed)
 
-- Resume dump `/var/lib/racoon2/resume` (SR2R, StateDirectory). Wall-clock lifetime. If dump mtime predates boot, CHILD rekey in 1s (kernel ESP gone). Not proven across a host reboot.
-- Per-packet message-id fsync removed (`962a031`): on a crash between receiving a request and updating the durable message id, the resumed side may reuse an old message id — peer retransmits then dedupes; the tradeoff is one rollback window vs. a disk sync on every IKE packet. Deliberate.
-- macos client config sample now offers `ecp256` (DH19) first; responder accepts Apple KEi group 19 on CREATE_CHILD and enforces KEi == selected proposal DH (`ikev2_child.c`), replying `INVALID_KE_PAYLOAD` with our group instead of computing a divergent KEYMAT.
-- RFC 6290 QCD maker in IKE_AUTH; secret `/var/lib/racoon2/qcd.secret`. Token-taker untested.
-- RFC 4555 COOKIE2 echo (responder). Matrix `ikev2-netns-cookie2` gates `NO_ADDITIONAL_ADDRESSES`.
-- RFC 7296 IKE_SA rekey in code. Matrix row is a log grep after charon `reauth=no`.
-- CHILD hard-expire rekey (`c1aba9d`). Live 3600s iPhone rekey not watched (ESP was gone by 22:38).
+- NATD on INFORMATIONAL/CREATE_CHILD replies: SRC=local, DST=remote (RFC 7296 §2.23 / 4555 §3.8). Not a peer-digest echo.
+- msgid mint as original responder is **2** (Apple interop). RFC 7296 §2.2 says 0. Cited honestly; charon RFC-0 untested.
+- `IKEV2_CHILD_REKEY_FLOOR` 480s applies only to CP/road-warrior (`lease_list` non-empty).
+- Resume dump v2 stores child ENCR/INTEGR/ESN so rekey clones the live suite, not config[0] GCM.
+- Payload walk after DELETE continues unless the IKE_SA was aborted.
 
-## Still open
+## Still this chunk (do not start EAP/8784)
 
-1. Host reboot with a live dump: load logs `kernel ESP gone, CHILD rekey 1s`, phone stays or briefly blips. Gap during boot still possible.
-2. Live CHILD rekey on iPhone (~48 min soft / 3600s hard).
-3. `bind 4500 already in use` on restart.
-4. RFC 8784 PPK, then 9242/9370 (OpenSSL 3.5+/OQS).
-5. IKEv2 EAP-MSCHAPv2 + RADIUS. kinkd vs a live KDC.
-6. Transport-mode IKEv2 e2e; IPv6-in-IPv4; Windows/Android/macOS 27.
-7. Fuzz `ikev2_input` / `isakmp`.
-8. Live IKEv1 NAT-OA peer.
+1. iOS-initiated CHILD rekey (~1440s after our rekey). Lease move is the claimed `ts unacceptable` fix. Unproven.
+2. One 3600s hard cycle, same pid, ESP still moving.
+3. Matrix: racoon2-initiated CHILD rekey as original responder vs charon (`rekey=no` on charon). Existing `ikev2-netns-childrekey` is charon-initiated PFS-19, no CP, no msgid mint.
+4. msgid 0 vs charon (RFC §2.2) once the SA body is known-good.
+5. Host reboot with a live dump. `bind 4500 already in use` on restart.
+
+## Later
+
+- IKEv2 EAP-MSCHAPv2 + RADIUS (next protocol-plane gap vs the vendor matrix).
+- QCD token-taker. RFC 8784 PPK after OpenSSL ≥3.5/OQS.
+- Transport-mode IKEv2 e2e; IPv6-in-IPv4; Windows/Android/macOS.
+- Fuzz `ikev2_input` / `isakmp`. Live IKEv1 NAT-OA peer.
 
 ## Do not
 
@@ -36,3 +38,4 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
 - xxd resume dumps past magic/cookies.
 - Ping the CP inner from WSL.
 - Push anywhere but `mine`.
+- Run linux-matrix IKE rows (workers=0) against a live phone session.

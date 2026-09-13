@@ -41,7 +41,7 @@
 #define RESUME_DIR_LEGACY	"/var/run/racoon2/resume"
 
 #define R2RS_MAGIC	0x52325253u	/* 'R2RS' */
-#define R2RS_VERSION	1
+#define R2RS_VERSION	2
 #define R2RS_MAXKEY	64
 #define R2RS_MAXSTR	64
 #define R2RS_MAXCHILD	8
@@ -59,6 +59,11 @@ struct r2rs_child {
 	uint8_t lease_af;
 	uint8_t lease_addr[16];
 	char sl_index[R2RS_MAXSTR];
+	uint16_t encr_id;
+	uint16_t integr_id;
+	uint16_t encr_klen;
+	uint8_t esn;
+	uint8_t pad_c;
 } __attribute__((packed));
 
 struct r2rs_sa {
@@ -341,6 +346,88 @@ spi_prop(int proto, uint32_t spi_host)
 	return p;
 }
 
+static int
+prop_add_trns(struct prop_pair *p, uint8_t type, uint16_t id, uint16_t keylen)
+{
+	struct prop_pair *t, *tail;
+	struct ikev2transform *tr;
+	size_t extra = keylen ? 4 : 0;
+
+	if (!p)
+		return -1;
+	t = racoon_calloc(1, sizeof(*t));
+	tr = racoon_calloc(1, sizeof(*tr) + extra);
+	if (!t || !tr) {
+		if (t)
+			racoon_free(t);
+		if (tr)
+			racoon_free(tr);
+		return -1;
+	}
+	tr->more = IKEV2TRANSFORM_LAST;
+	put_uint16(&tr->transform_length, (uint32_t)(sizeof(*tr) + extra));
+	tr->transform_type = type;
+	put_uint16(&tr->transform_id, id);
+	if (keylen) {
+		uint8_t *a = (uint8_t *)(tr + 1);
+		put_uint16(a, 0x8000 | 14);
+		put_uint16(a + 2, keylen);
+	}
+	t->trns = (struct isakmp_pl_t *)tr;
+	if (!p->tnext) {
+		p->tnext = t;
+		return 0;
+	}
+	tail = p->tnext;
+	while (tail->tnext)
+		tail = tail->tnext;
+	if (tail->trns)
+		((struct ikev2transform *)tail->trns)->more = IKEV2TRANSFORM_MORE;
+	tail->tnext = t;
+	return 0;
+}
+
+static void
+suite_from_prop(struct prop_pair *p, struct r2rs_child *c)
+{
+	struct prop_pair *t;
+
+	c->encr_id = 0;
+	c->integr_id = 0;
+	c->encr_klen = 0;
+	c->esn = 0;
+	if (!p)
+		return;
+	for (t = p->tnext; t; t = t->tnext) {
+		struct ikev2transform *tr;
+		uint16_t tlen;
+
+		if (!t->trns)
+			continue;
+		tr = (struct ikev2transform *)t->trns;
+		tlen = get_uint16(&tr->transform_length);
+		switch (tr->transform_type) {
+		case IKEV2TRANSFORM_TYPE_ENCR:
+			c->encr_id = get_uint16(&tr->transform_id);
+			if (tlen >= sizeof(*tr) + 4) {
+				uint16_t at = get_uint16(tr + 1);
+				if ((at & 0x7fff) == 14)
+					c->encr_klen = get_uint16(
+					    (uint8_t *)(tr + 1) + 2);
+			}
+			break;
+		case IKEV2TRANSFORM_TYPE_INTEGR:
+			c->integr_id = get_uint16(&tr->transform_id);
+			break;
+		case IKEV2TRANSFORM_TYPE_ESN:
+			c->esn = (uint8_t)get_uint16(&tr->transform_id);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
 static uint32_t
 prop_spi_host(struct prop_pair *proposal)
 {
@@ -452,6 +539,8 @@ ikev2_resume_save(struct ikev2_sa *sa)
 			rec.child[n].lease_af = (uint8_t)a->af;
 			memcpy(rec.child[n].lease_addr, a->address, 16);
 		}
+		if (ch->my_proposal && ch->my_proposal[1])
+			suite_from_prop(ch->my_proposal[1], &rec.child[n]);
 		n++;
 	}
 	rec.nchild = (uint32_t)n;
@@ -619,6 +708,19 @@ restore_one(const char *path)
 		ch->peer_proposal = spi_prop(IKEV2PROPOSAL_ESP, c->out_spi);
 		if (!ch->my_proposal[1] || !ch->peer_proposal)
 			goto fail;
+		if (c->encr_id) {
+			if (prop_add_trns(ch->my_proposal[1],
+			    IKEV2TRANSFORM_TYPE_ENCR, c->encr_id,
+			    c->encr_klen) != 0)
+				goto fail;
+			if (c->integr_id &&
+			    prop_add_trns(ch->my_proposal[1],
+			    IKEV2TRANSFORM_TYPE_INTEGR, c->integr_id, 0) != 0)
+				goto fail;
+			if (prop_add_trns(ch->my_proposal[1],
+			    IKEV2TRANSFORM_TYPE_ESN, c->esn ? 1 : 0, 0) != 0)
+				goto fail;
+		}
 		sadb_request_initialize(&ch->sadb_request,
 		    debug_pfkey ? &sadb_debug_method :
 		    &sadb_responder_request_method,
