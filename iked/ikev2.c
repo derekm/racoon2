@@ -1734,7 +1734,6 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	struct ikev2_payload_header *sa = 0;
 	struct ikev2payl_ke *ke = 0;
 	struct ikev2_payload_header *nonce = 0;
-	struct ikev2_payload_header *certreq = 0;
 	unsigned int dhlen;
 	rc_vchar_t *dhpub_p = 0;
 	rc_vchar_t *n_r = 0;
@@ -1798,7 +1797,9 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			break;
 
 		case IKEV2_PAYLOAD_CERTREQ:
-			certreq = payload;
+			/* CERTREQ: ignored; the initiator offers its own
+			 * certificate selection via the online-cert
+			 * lookup in IKE_AUTH, not by answering this. */
 			break;
 
 		case IKEV2_PAYLOAD_VENDOR_ID:
@@ -4499,6 +4500,53 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 			    child_sa->g_ir ? " g_ir=Y" : "",
 			    child_sa->peer_proposal ? " peer_prop=Y" : "",
 			    hx);
+		}
+		/*
+		 * Dump the exact bytes we are about to put on the wire
+		 * beyond the SA: KEr (dhgrp_hdr + dhpub), TSi, TSr.
+		 * These are the only remaining unlogged response fields;
+		 * a responder-rekey death (09:08 / 11:55) with clean SA
+		 * and keymat hashes makes the TS/KEr content the last
+		 * byte-level suspect.
+		 */
+		{
+			char hx[160];
+			size_t i;
+			struct {
+				const char *tag;
+				rc_vchar_t *d;
+			} dump[] = {
+				{ "KEr", ke },
+				{ "TSi", child_sa->child_param.ts_i },
+				{ "TSr", child_sa->child_param.ts_r },
+			};
+			size_t d_i;
+			for (d_i = 0; d_i < sizeof(dump) / sizeof(dump[0]);
+			    d_i++) {
+				rc_vchar_t *d = dump[d_i].d;
+				size_t hl;
+				if (!d) {
+					isakmp_log(ike_sa,
+					    child_sa->parent->local,
+					    child_sa->parent->remote, 0,
+					    PLOG_INFO, PLOGLOC,
+					    "CHILD_RESP %s=NULL\n",
+					    dump[d_i].tag);
+					continue;
+				}
+				hl = d->l < (sizeof(hx) - 1) / 2 ? d->l
+				    : (sizeof(hx) - 1) / 2;
+				for (i = 0; i < hl && i * 2 + 2 < sizeof(hx);
+				    i++)
+					snprintf(&hx[i * 2], 3, "%02x",
+					    ((u_char *)d->v)[i]);
+				hx[i * 2] = '\0';
+				isakmp_log(ike_sa, child_sa->parent->local,
+				    child_sa->parent->remote, 0, PLOG_INFO,
+				    PLOGLOC,
+				    "CHILD_RESP %s len=%zu hex(<=%zu)=%s\n",
+				    dump[d_i].tag, d->l, hl, hx);
+			}
 		}
 		if (child_sa->peer_proposal) {
 			struct prop_pair *pr;
