@@ -661,6 +661,15 @@ restore_one(const char *path)
 	 * Digests are a pure function of SPIs + endpoints, all of
 	 * which are restored above, so this reproduces the exact
 	 * INIT values.
+	 *
+	 * Edge case: this reproduces the INIT digests only when the
+	 * restored remote port still matches the port used at INIT.
+	 * If the peer re-bound without an UPDATE_SA_ADDRESSES (RFC
+	 * 4555 §3.8 requires one for address changes; a silent port
+	 * drift is a peer violation), the re-pinned digests would
+	 * differ from the INIT baseline and the next §3.8 compare
+	 * would read as a binding change.  Acceptable; the correct
+	 * signal path is the inbound peer-vs-previous-peer drift log.
 	 */
 	{
 		rc_vchar_t *hs, *hd;
@@ -675,6 +684,10 @@ restore_one(const char *path)
 		if (hs && hd) {
 			memcpy(sa->natd_init_src_hash, hs->v, 20);
 			memcpy(sa->natd_init_dst_hash, hd->v, 20);
+		} else {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			    "resume: NATD INIT-pin digest failed; "
+			    "binding report stays zeroed\n");
 		}
 		if (hs)
 			rc_vfree(hs);
