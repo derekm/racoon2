@@ -6658,6 +6658,47 @@ ikev2_prf_plus(struct ikev2_sa *sa, rc_vchar_t *key, rc_vchar_t *msg_bytes,
 		if (!prf_output)
 			goto fail;
 
+	/*
+	 * responder-rekey diagnostic: independently recompute the
+	 * first prf+ block (T1 = prf(K, S | 0x01)) via the
+	 * one-shot HMAC path and compare, so a keyed-hash
+	 * method-chain bug (key/start/update/finish wiring) in
+	 * prf+ itself is caught -- the last unexamined KEYMAT
+	 * component now that DH, nonces, SK_d and point formats
+	 * are all value-verified.  Only logs T1's first 8 bytes.
+	 */
+	if (byte_value == 1) {
+		rc_vchar_t *check = NULL;
+		rc_vchar_t *ref = NULL;
+		if (prf->method->result_len == 32) {
+			/* build S | 0x01 and recompute */
+			check = rc_vmalloc(msg_bytes->l + 1);
+			if (check) {
+				memcpy(check->v, msg_bytes->v,
+				    msg_bytes->l);
+				((u_char *)check->v)[msg_bytes->l] =
+				    byte_value;
+				check->l = msg_bytes->l + 1;
+				ref = eay_hmacsha2_256_one(key, check);
+			}
+			if (ref) {
+				int match = (ref->l == prf_output->l &&
+				    memcmp(ref->v, prf_output->v,
+				    ref->l) == 0);
+				isakmp_log(sa, 0, 0, 0,
+				    PLOG_INFO, PLOGLOC,
+				    "PRF_PLUS T1 recompute %s "
+				    "(S len=%zu keylen=%zu)\n",
+				    match ? "MATCH" : "MISMATCH",
+				    msg_bytes->l,
+				    key ? key->l : 0);
+				rc_vfreez(ref);
+			}
+			if (check)
+				rc_vfreez(check);
+		}
+	}
+
 		/*
 		 * concat prf_output to result
 		 */
