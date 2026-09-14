@@ -2174,6 +2174,43 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 			    child_sa->g_ir ? "Y" : "n", skd,
 			    child_sa->parent && child_sa->parent->prf ?
 			    child_sa->parent->prf->method->name : "?");
+			/* hashes of the two KEYMAT halves (inbound/outbound
+			 * key slices) so the pfkey install can be checked
+			 * against the kernel's actual keys via
+			 * `ip xfrm state` (which prints full key bytes). */
+			if (keymat->l >= 16) {
+				rc_vchar_t *h1 = eay_sha2_256_one(
+				    rc_vnew(keymat->v,
+				    64 < keymat->l ? 64 : keymat->l));
+				rc_vchar_t *h2 = NULL;
+				char hx1[80], hx2[80];
+				hx1[0] = '?'; hx1[1] = '\0';
+				hx2[0] = '?'; hx2[1] = '\0';
+				if (h1) {
+					for (i = 0; i < 16; i++)
+						snprintf(&hx1[i * 2], 3, "%02x",
+						    ((u_char *)h1->v)[i]);
+					hx1[32] = '\0';
+					rc_vfreez(h1);
+				}
+				if (keymat->l > 64) {
+					h2 = eay_sha2_256_one(rc_vnew(
+					    &((u_char *)keymat->v)[64],
+					    keymat->l - 64));
+					if (h2) {
+						for (i = 0; i < 16; i++)
+							snprintf(&hx2[i * 2], 3,
+							    "%02x",
+							    ((u_char *)h2->v)[i]);
+						hx2[32] = '\0';
+						rc_vfreez(h2);
+					}
+				}
+				isakmp_log(child_sa->parent, 0, 0, 0,
+				    PLOG_INFO, PLOGLOC,
+				    "CHILD_RESP keymat halves first16sha256="
+				    "%s %s\n", hx1, hx2);
+			}
 		}
 	}
 
