@@ -1877,6 +1877,25 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa,
 #define UDP_ENCAP_ESPINUDP 2
 #endif
 		param->natt_type = UDP_ENCAP_ESPINUDP;
+	} else if (child_sa->parent) {
+		/* Loud guard: a NAT-T IKE pair (both endpoints on 4500)
+		 * must leave UDP-ESP encap on the child SA.  If the
+		 * behind_nat/peer_behind_nat flags are lost (e.g. a
+		 * rekeyed IKE SA that failed to inherit them), this
+		 * child installs encap-less and the kernel's xfrm
+		 * encap check (XfrmInStateMismatch) silently drops
+		 * every ESP-in-UDP packet.  Flag it now instead of
+		 * debugging a dead data plane later. */
+		in_port_t *lp = rcs_getsaport(child_sa->parent->local);
+		in_port_t *rp = rcs_getsaport(child_sa->parent->remote);
+		if (lp && rp && lp[0] == htons(4500))
+			isakmp_log(child_sa->parent, 0, 0, 0,
+			    PLOG_INTERR, PLOGLOC,
+			    "ikev2_sadb_update: parent on 4500 but "
+			    "behind_nat=%d peer_behind_nat=%d; "
+			    "installing child WITHOUT UDP encap\n",
+			    child_sa->parent->behind_nat,
+			    child_sa->parent->peer_behind_nat);
 	}
 #endif
 
@@ -2160,24 +2179,10 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 				    "sha256=%s\n", hx);
 				rc_vfreez(dm);
 			}
-			/* FIX-TEST (reversible, env-gated): some Apple
-			 * clients derive rekey KEYMAT from the IKE_SA_INIT
-			 * nonces rather than the fresh CREATE_CHILD
-			 * nonces (RFC 7296 2.17), which makes every
-			 * RFC-correct responder-derived rekey keymat
-			 * disagree with the client's.  When set, install
-			 * the INIT-nonce keymat instead.  Log the switch
-			 * so a regression is attributable; unset to
-			 * revert to RFC behavior. */
-			if (getenv("RACOON2_REKEY_INIT_NONCES")) {
-				isakmp_log(child_sa->parent, 0, 0, 0,
-				    PLOG_INTERR, PLOGLOC,
-				    "CHILD_RESP keymat: NON-STANDARD "
-				    "INIT-nonce keymat selected "
-				    "(RACOON2_REKEY_INIT_NONCES)\n");
-				rc_vfreez(keymat);
-				keymat = rc_vdup(alt);
-			}
+			/* diagnostic only (falsified 22:31:56: both keymats
+			 * dropped identically -- the real cause was the
+			 * missing UDP-ESP encap, fixed by NAT-D flag
+			 * propagation in ikev2_rekey.c). */
 			rc_vfreez(alt);
 		}
 	}

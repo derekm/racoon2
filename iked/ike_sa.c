@@ -457,6 +457,16 @@ ikev2_allocate_sa(isakmp_cookie_t *initiator_spi, struct sockaddr *local,
 	TRACE((PLOGLOC, "sa: %p\n", sa));
 	if (!sa)
 		goto fail;
+
+	/* NAT-D state is negotiated in IKE_SA_INIT/AUTH (nattraversal.c),
+	 * restored on resume (ikev2_resume.c), and must be inherited by
+	 * any derived SA (IKE-SA rekey, ikev2_rekey.c).  SA-to-SA
+	 * inheritance goes through ikev2_sa_copy_natt_state so a future
+	 * NAT-T field addition cannot diverge across derived-SAs and
+	 * silently strip UDP-ESP encap from child SAs (the
+	 * XfrmInStateMismatch data-plane killer).  The resume site
+	 * restores from its disk record field-by-field at the
+	 * serialization boundary, which is intentionally separate. */
 	if (initiator_spi) {
 		rc_vchar_t *r;
 		memcpy(sa->index.i_ck, initiator_spi, sizeof(isakmp_cookie_t));
@@ -524,6 +534,16 @@ ikev2_allocate_sa(isakmp_cookie_t *initiator_spi, struct sockaddr *local,
 	if (sa)
 		racoon_free(sa);
 	return 0;
+}
+
+/* Copy NAT-D state between SA objects.  Single source of truth for
+ * derived-SA inheritance (rekey) and restore (resume); see the note
+ * in ikev2_allocate_sa. */
+void
+ikev2_sa_copy_natt_state(struct ikev2_sa *to, struct ikev2_sa *from)
+{
+	to->behind_nat = from->behind_nat;
+	to->peer_behind_nat = from->peer_behind_nat;
 }
 
 struct ikev2_sa *

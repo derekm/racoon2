@@ -587,9 +587,9 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	 * gates natt_type on these flags), the kernel's xfrm encap check
 	 * (xfrm_input.c, XfrmInStateMismatch) rejects every ESP-in-UDP
 	 * packet, and the data plane dies exactly at the first rekey.
-	 */
-	new_sa->behind_nat = old_sa->behind_nat;
-	new_sa->peer_behind_nat = old_sa->peer_behind_nat;
+	 * Shared helper: all derived-SA NAT-D copies go through
+	 * ikev2_sa_copy_natt_state so the fields cannot diverge. */
+	ikev2_sa_copy_natt_state(new_sa, old_sa);
 	conf = 0;
 	old_sa->new_sa = new_sa;
 

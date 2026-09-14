@@ -465,6 +465,7 @@ extern struct ikev2_sa *ikev2_find_sa_by_serial(int num);
 extern struct ikev2_sa *ikev2_allocate_sa(isakmp_cookie_t *, struct sockaddr *,
 					  struct sockaddr *,
 					  struct rcf_remote *);
+extern void ikev2_sa_copy_natt_state(struct ikev2_sa *, struct ikev2_sa *);
 extern struct ikev2_sa *ikev2_create_sa(isakmp_cookie_t *, struct sockaddr *,
 					struct sockaddr *, struct rcf_remote *);
 extern void ikev2_sa_stop_timer(struct ikev2_sa *);
