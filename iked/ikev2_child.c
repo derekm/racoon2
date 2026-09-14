@@ -2112,6 +2112,19 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
 		    "CHILD keymat nonces n_i=%s n_r=%s parent_n_i=%s "
 		    "parent_n_r=%s\n", ni_h, nr_h, pni_h, pnr_h);
+		if (child_sa->g_ir) {
+			char gir_h[70];
+			size_t l = child_sa->g_ir->l < 16 ?
+			    child_sa->g_ir->l : 16;
+			for (i = 0; i < l; i++)
+				snprintf(&gir_h[i * 2], 3, "%02x",
+				    ((u_char *)child_sa->g_ir->v)[i]);
+			gir_h[l * 2] = '\0';
+			isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO,
+			    PLOGLOC,
+			    "CHILD keymat g_ir_prefix=%s len=%zu\n",
+			    gir_h, child_sa->g_ir->l);
+		}
 	}
 	keymat = compute_keymat(child_sa->parent, child_sa->g_ir,
 				2 * required_len, child_sa->n_i, child_sa->n_r);
