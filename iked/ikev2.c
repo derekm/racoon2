@@ -4180,6 +4180,29 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	if (!n_i)
 		goto fail_nomem;
 
+	/* responder-rekey diagnostic: dump the raw request nonce bytes
+	 * so the exact Ni fed into KEYMAT (RFC 7296 2.17) is on record
+	 * next to the CHILD keymat nonces fingerprint in
+	 * ikev2_add_ipsec_sa.  A parse/length bug here would silently
+	 * diverge KEYMAT from what iOS derives while every internal
+	 * consistency check (DH recheck, nonce freshness) still
+	 * passes -- matching the observed AUTH-child-works /
+	 * every-rekey-fails signature. */
+	if (n_i) {
+		unsigned char hex[128];
+		size_t i, off, n = n_i->l < 48 ? n_i->l : 48;
+		for (i = 0, off = 0; i < n && off + 3 < sizeof(hex); i++) {
+			snprintf((char *)&hex[off], 4, "%02x ",
+			    ((u_char *)n_i->v)[i]);
+			off += 3;
+		}
+		hex[off] = '\0';
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_INFO, PLOGLOC,
+			   "CREATE_CHILD_SA request Ni len=%zu hex=%s\n",
+			   n_i->l, hex);
+	}
+
 	/* responder-rekey diagnostic: dump the REQUEST's traffic
 	 * selectors (SK-decrypted here) so a response TS mismatch is
 	 * visible.  iOS rekeys with the selectors of the old child;
