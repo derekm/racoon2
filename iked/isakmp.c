@@ -251,6 +251,31 @@ socket_list_find(struct socket_list_head *socklist, struct sockaddr *sa)
 	return 0;
 }
 
+/* find by address + explicit port (port 0 means isakmp_port).  This
+ * lets callers dedupe a wildcard NAT-T bind against an explicit
+ * "port 4500" interface entry that names the same socket. */
+static struct socket_list *
+socket_list_find_port(struct socket_list_head *socklist,
+    struct sockaddr *sa, int port)
+{
+	struct socket_list *p;
+	in_port_t want;
+
+	if (port == 0)
+		port = isakmp_port;
+	want = htons((in_port_t)port);
+	for (p = SOCKET_LIST_FIRST(socklist); p; p = SOCKET_LIST_NEXT(p)) {
+		in_port_t *got;
+
+		if (!p->addr || rcs_cmpsa_wop(sa, p->addr) != 0)
+			continue;
+		got = rcs_getsaport(p->addr);
+		if (got && *got == want)
+			return p;
+	}
+	return 0;
+}
+
 
 /* open ISAKMP sockets. */
 int
@@ -292,10 +317,15 @@ isakmp_open(void)
 #endif
 
 #ifdef ENABLE_NATT
-        isakmp_open_address(addr->a.ipaddr, RC_PORT_IKE_NATT);
+		if (!socket_list_find_port(&socket_list_head,
+		    addr->a.ipaddr, RC_PORT_IKE_NATT))
+			isakmp_open_address(addr->a.ipaddr,
+			    RC_PORT_IKE_NATT);
 #endif
 
-		isakmp_open_address(addr->a.ipaddr, addr->port);
+		if (!socket_list_find_port(&socket_list_head,
+		    addr->a.ipaddr, addr->port))
+			isakmp_open_address(addr->a.ipaddr, addr->port);
 	}
 
 	rcs_free_addrlist(ike_iflist);
