@@ -581,6 +581,15 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	if (!new_sa)
 		goto fail_nomem;
 	new_sa->is_rekeyed_sa = TRUE;
+	/* NAT-T state is negotiated in IKE_SA_INIT/AUTH, not inherited by
+	 * ikev2_allocate_sa.  Without it the child SAs installed against
+	 * this rekeyed IKE SA carry no UDP-ESP encap (ikev2_sadb_update
+	 * gates natt_type on these flags), the kernel's xfrm encap check
+	 * (xfrm_input.c, XfrmInStateMismatch) rejects every ESP-in-UDP
+	 * packet, and the data plane dies exactly at the first rekey.
+	 */
+	new_sa->behind_nat = old_sa->behind_nat;
+	new_sa->peer_behind_nat = old_sa->peer_behind_nat;
 	conf = 0;
 	old_sa->new_sa = new_sa;
 
