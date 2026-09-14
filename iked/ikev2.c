@@ -4221,6 +4221,28 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			   "CREATE_CHILD_SA request TSr hex=%s\n", hex);
 	}
 
+	/* responder-rekey diagnostic: dump the REQUEST's KEi bytes.
+	 * g^ir is the one keymat input exclusive to rekeys; the AUTH
+	 * child (which works) derives without it.  If iOS's KEi is not
+	 * a valid P-256 point (or our g_ir does not match it), the
+	 * derived ESP keys diverge -- iOS sends ESP that our kernel
+	 * drops (observed: pcap shows ESP arriving on the new SPI,
+	 * xfrm seq stays 0x0) and the data plane dies silently. */
+	if (g_i) {
+		unsigned char hex[256];
+		size_t i, off;
+		for (i = 0, off = 0; i < g_i->l && off + 3 < sizeof(hex); i++) {
+			snprintf((char *)&hex[off], 4, "%02x ",
+			    ((u_char *)g_i->v)[i]);
+			off += 3;
+		}
+		hex[off] = '\0';
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_INFO, PLOGLOC,
+			   "CREATE_CHILD_SA request KEi len=%zu hex=%s\n",
+			   g_i->l, hex);
+	}
+
 	err = ikev2_create_child_responder(ike_sa, local, remote, message_id,
 					   sa, ts_i, ts_r, cfg, g_i, n_i,
 					   &child_param, TRUE,
