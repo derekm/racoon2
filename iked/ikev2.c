@@ -3648,7 +3648,7 @@ ikev2_createchild_initiator_send_tail(struct ikev2_child_init_ctx *ctx)
 		for (t_i = 0; t_i < ctx->payl.num; t_i++) {
 			rc_vchar_t *d = ctx->payl.payloads[t_i].data;
 			isakmp_log(ike_sa, 0, 0, 0,
-			    PLOG_INFO, PLOGLOC,
+			    PLOG_DEBUG, PLOGLOC,
 			    "REKEY_REQ payl[%d] type=%d len=%zu\n",
 			    t_i, ctx->payl.payloads[t_i].type,
 			    d ? d->l : 0);
@@ -3664,7 +3664,7 @@ ikev2_createchild_initiator_send_tail(struct ikev2_child_init_ctx *ctx)
 					uint16_t phdrlen =
 					    get_uint16(p + 2);
 					isakmp_log(ike_sa, 0, 0, 0,
-					    PLOG_INFO, PLOGLOC,
+					    PLOG_DEBUG, PLOGLOC,
 					    "REKEY_REQ SA prop#%u type=%u proto=%u "
 					    "spi=0x%08x hdrlen=%u\n",
 					    p[4], p[5], p[6],
@@ -4198,7 +4198,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 		hex[off] = '\0';
 		isakmp_log(ike_sa, local, remote, msg,
-			   PLOG_INFO, PLOGLOC,
+			   PLOG_DEBUG, PLOGLOC,
 			   "CREATE_CHILD_SA request Ni len=%zu hex=%s\n",
 			   n_i->l, hex);
 	}
@@ -4226,7 +4226,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 		hex[off] = '\0';
 		isakmp_log(ike_sa, local, remote, msg,
-			   PLOG_INFO, PLOGLOC,
+			   PLOG_DEBUG, PLOGLOC,
 			   "CREATE_CHILD_SA request TSi hex=%s\n", hex);
 		ph = (struct ikev2_payload_header *)ts_r;
 		n = get_payload_length(ph);
@@ -4240,7 +4240,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 		hex[off] = '\0';
 		isakmp_log(ike_sa, local, remote, msg,
-			   PLOG_INFO, PLOGLOC,
+			   PLOG_DEBUG, PLOGLOC,
 			   "CREATE_CHILD_SA request TSr hex=%s\n", hex);
 	}
 
@@ -4261,7 +4261,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 		hex[off] = '\0';
 		isakmp_log(ike_sa, local, remote, msg,
-			   PLOG_INFO, PLOGLOC,
+			   PLOG_DEBUG, PLOGLOC,
 			   "CREATE_CHILD_SA request KEi len=%zu hex=%s\n",
 			   g_i->l, hex);
 	}
@@ -4561,7 +4561,7 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 		int t_i;
 		for (t_i = 0; t_i < payl.num; t_i++)
 			isakmp_log(ike_sa, child_sa->parent->local, child_sa->parent->remote,
-			    0, PLOG_INFO, PLOGLOC,
+			    0, PLOG_DEBUG, PLOGLOC,
 			    "CHILD_RESP payl[%d] type=%d len=%zu\n",
 			    t_i, payl.payloads[t_i].type,
 			    payl.payloads[t_i].data ? payl.payloads[t_i].data->l : 0);
@@ -4583,7 +4583,7 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 				    ((u_char *)sa->v)[i]);
 			hx[i * 2] = '\0';
 			isakmp_log(ike_sa, child_sa->parent->local, child_sa->parent->remote,
-			    0, PLOG_INFO, PLOGLOC,
+			    0, PLOG_DEBUG, PLOGLOC,
 			    "CHILD_RESP SA len=%zu spi(prop+1)=0x%08x dhgrp_id=%u "
 			    "n_i.len=%zu n_r.len=%zu g_ir.len=%zu%s%s%s "
 			    "sa_hex=%s\n",
@@ -4628,7 +4628,7 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 					isakmp_log(ike_sa,
 					    child_sa->parent->local,
 					    child_sa->parent->remote, 0,
-					    PLOG_INFO, PLOGLOC,
+					    PLOG_DEBUG, PLOGLOC,
 					    "CHILD_RESP %s=NULL\n",
 					    dump[d_i].tag);
 					continue;
@@ -4641,7 +4641,7 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 					    ((u_char *)d->v)[i]);
 				hx[i * 2] = '\0';
 				isakmp_log(ike_sa, child_sa->parent->local,
-				    child_sa->parent->remote, 0, PLOG_INFO,
+				    child_sa->parent->remote, 0, PLOG_DEBUG,
 				    PLOGLOC,
 				    "CHILD_RESP %s len=%zu hex(<=%zu)=%s\n",
 				    dump[d_i].tag, d->l, hl, hx);
@@ -4654,7 +4654,7 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 			     pr = pr->next, pn++) {
 				struct prop_pair *t2;
 				isakmp_log(ike_sa, child_sa->parent->local,
-				    child_sa->parent->remote, 0, PLOG_INFO,
+				    child_sa->parent->remote, 0, PLOG_DEBUG,
 				    PLOGLOC,
 				    "CHILD_RESP peer_prop[%u] proto=%d "
 				    "spi_size=%d trns:",
@@ -4669,7 +4669,7 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 					isakmp_log(ike_sa,
 					    child_sa->parent->local,
 					    child_sa->parent->remote, 0,
-					    PLOG_INFO, PLOGLOC,
+					    PLOG_DEBUG, PLOGLOC,
 					    "  type=%u id=%u len=%u\n",
 					    tr->transform_type,
 					    get_uint16(&tr->transform_id),
@@ -6686,7 +6686,7 @@ ikev2_prf_plus(struct ikev2_sa *sa, rc_vchar_t *key, rc_vchar_t *msg_bytes,
 				    memcmp(ref->v, prf_output->v,
 				    ref->l) == 0);
 				isakmp_log(sa, 0, 0, 0,
-				    PLOG_INFO, PLOGLOC,
+				    PLOG_DEBUG, PLOGLOC,
 				    "PRF_PLUS T1 recompute %s "
 				    "(S len=%zu keylen=%zu)\n",
 				    match ? "MATCH" : "MISMATCH",

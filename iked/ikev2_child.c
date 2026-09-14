@@ -751,13 +751,13 @@ ikev2_child_responder_after_dh(struct ikev2_child_responder_ctx *ctx)
 		    ctx->dhpriv, ctx->g_i, &re) == 0 && re) {
 			int match = (re->l == child_sa->g_ir->l &&
 			    memcmp(re->v, child_sa->g_ir->v, re->l) == 0);
-			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-			    "CHILD_RESP DH recheck %s (g_ir len=%zu "
-			    "recompute len=%zu dhpriv len=%zu KEi len=%zu)\n",
-			    match ? "MATCH" : "MISMATCH",
-			    child_sa->g_ir->l, re->l,
-			    ctx->dhpriv->l, ctx->g_i ? ctx->g_i->l : 0);
-			rc_vfree(re);
+			if (!match)
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR,
+				    PLOGLOC,
+				    "CHILD_RESP DH recheck MISMATCH "
+				    "(worker g_ir vs recompute differ; "
+				    "keypair handoff broken)\n");
+			rc_vfreez(re);
 		} else {
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			    "CHILD_RESP DH recheck: recompute failed\n");
@@ -1878,14 +1878,20 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa,
 #endif
 		param->natt_type = UDP_ENCAP_ESPINUDP;
 	} else if (child_sa->parent) {
-		/* Loud guard: a NAT-T IKE pair (both endpoints on 4500)
-		 * must leave UDP-ESP encap on the child SA.  If the
-		 * behind_nat/peer_behind_nat flags are lost (e.g. a
-		 * rekeyed IKE SA that failed to inherit them), this
-		 * child installs encap-less and the kernel's xfrm
-		 * encap check (XfrmInStateMismatch) silently drops
-		 * every ESP-in-UDP packet.  Flag it now instead of
-		 * debugging a dead data plane later. */
+		/* Loud guard (canary, not a veto): a NAT-T IKE pair
+		 * must leave UDP-ESP encap on the child SA.  The
+		 * local 4500 port is the trigger — once we're
+		 * multiplexing on 4500, NAT-T is in force regardless
+		 * of what the peer port shows (it can differ during
+		 * a MOBIKE migration), so rp is only sanity-checked.
+		 * If the behind_nat/peer_behind_nat flags are lost
+		 * (e.g. a rekeyed IKE SA that failed to inherit
+		 * them), this child installs encap-less and the
+		 * kernel's xfrm encap check (XfrmInStateMismatch)
+		 * silently drops every ESP-in-UDP packet.  We still
+		 * install -- a broken child beats killing the IKE
+		 * SA outright -- but the data-plane death is named
+		 * in the log instead of being debugged later. */
 		in_port_t *lp = rcs_getsaport(child_sa->parent->local);
 		in_port_t *rp = rcs_getsaport(child_sa->parent->remote);
 		if (lp && rp && lp[0] == htons(4500))
@@ -2128,7 +2134,7 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 		}
 		ni_h[8] = '\0'; nr_h[8] = '\0';
 		pni_h[8] = '\0'; pnr_h[8] = '\0';
-		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
 		    "CHILD keymat nonces n_i=%s n_r=%s parent_n_i=%s "
 		    "parent_n_r=%s\n", ni_h, nr_h, pni_h, pnr_h);
 		if (child_sa->g_ir) {
@@ -2139,7 +2145,7 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 				snprintf(&gir_h[i * 2], 3, "%02x",
 				    ((u_char *)child_sa->g_ir->v)[i]);
 			gir_h[l * 2] = '\0';
-			isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO,
+			isakmp_log(child_sa->parent, 0, 0, 0, PLOG_DEBUG,
 			    PLOGLOC,
 			    "CHILD keymat g_ir_prefix=%s len=%zu\n",
 			    gir_h, child_sa->g_ir->l);
@@ -2150,41 +2156,6 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 	if (!keymat) {
 		err = ISAKMP_INTERNAL_ERROR;
 		goto bailout;
-	}
-	/* responder-rekey diagnostics: also compute the keymat as iOS
-	 * would derive it IF it reuses the IKE_SA_INIT nonces for the
-	 * rekey (child_sa->n_i/n_r are the fresh CREATE_CHILD nonces;
-	 * parent->n_i/n_r are the IKE_SA_INIT nonces).  The AUTH child
-	 * (INIT nonces, works) vs every rekey (fresh nonces, dies)
-	 * signature is exactly what a nonce-reuse quirk produces, and
-	 * all our internal checks pass because we are self-consistent.
-	 * If the sha of this candidate equals the AUTH child's logged
-	 * keymat sha, iOS is provably reusing the INIT nonces. */
-	{
-		rc_vchar_t *alt = compute_keymat(child_sa->parent,
-		    child_sa->g_ir, 2 * required_len,
-		    child_sa->parent->n_i, child_sa->parent->n_r);
-		if (alt) {
-			rc_vchar_t *dm = eay_sha2_256_one(alt);
-			if (dm) {
-				char hx[64];
-				size_t i;
-				for (i = 0; i < 16; i++)
-					snprintf(&hx[i*2], 3, "%02x",
-					    ((u_char *)dm->v)[i]);
-				hx[32] = '\0';
-				isakmp_log(child_sa->parent, 0, 0, 0,
-				    PLOG_INFO, PLOGLOC,
-				    "CHILD_RESP keymat INIT-nonce-candidate "
-				    "sha256=%s\n", hx);
-				rc_vfreez(dm);
-			}
-			/* diagnostic only (falsified 22:31:56: both keymats
-			 * dropped identically -- the real cause was the
-			 * missing UDP-ESP encap, fixed by NAT-D flag
-			 * propagation in ikev2_rekey.c). */
-			rc_vfreez(alt);
-		}
 	}
 
 	/* responder-rekey diagnostics: full keymat sha-256 so the
@@ -2209,25 +2180,13 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 			hx[0] = '?';
 			hx[1] = '\0';
 		}
-		{
-			char skd[25];
-			size_t hl2;
-			hl2 = 0;
-			if (child_sa->parent && child_sa->parent->sk_d) {
-				size_t l = child_sa->parent->sk_d->l;
-				hl2 = l < 8 ? l : 8;
-				for (i = 0; i < hl2; i++)
-					snprintf(&skd[i * 2], 3, "%02x",
-					    ((u_char *)child_sa->parent->sk_d->v)[i]);
-			}
-			skd[hl2 * 2] = '\0';
-			isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
-			    "CHILD_RESP keymat len=%zu sha256=%s g_ir_present=%s "
-			    "sk_d_prefix=%s prf=%s\n",
-			    keymat->l, hx,
-			    child_sa->g_ir ? "Y" : "n", skd,
-			    child_sa->parent && child_sa->parent->prf ?
-			    child_sa->parent->prf->method->name : "?");
+		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		    "CHILD_RESP keymat len=%zu sha256=%s g_ir_present=%s "
+		    "prf=%s\n",
+		    keymat->l, hx,
+		    child_sa->g_ir ? "Y" : "n",
+		    child_sa->parent && child_sa->parent->prf ?
+		    child_sa->parent->prf->method->name : "?");
 			/* hashes of the two KEYMAT halves (inbound/outbound
 			 * key slices) so the pfkey install can be checked
 			 * against the kernel's actual keys via
@@ -2261,11 +2220,10 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 					}
 				}
 				isakmp_log(child_sa->parent, 0, 0, 0,
-				    PLOG_INFO, PLOGLOC,
-				    "CHILD_RESP keymat halves first16sha256="
-				    "%s %s\n", hx1, hx2);
+				    PLOG_DEBUG, PLOGLOC,
+				    "CHILD_RESP keymat halves sha256=%s %s\n",
+				    hx1, hx2);
 			}
-		}
 	}
 
 	/*
