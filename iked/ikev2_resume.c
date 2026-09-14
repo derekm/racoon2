@@ -671,29 +671,7 @@ restore_one(const char *path)
 	 * would read as a binding change.  Acceptable; the correct
 	 * signal path is the inbound peer-vs-previous-peer drift log.
 	 */
-	{
-		rc_vchar_t *hs, *hd;
-		struct rc_addrlist *pub =
-		    ikev2_natd_public_address(sa->rmconf);
-
-		if (pub && pub->a.ipaddr)
-			hs = natt_create_hash(sa, pub->a.ipaddr, TRUE);
-		else
-			hs = natt_create_hash(sa, sa->local, TRUE);
-		hd = natt_create_hash(sa, sa->remote, TRUE);
-		if (hs && hd) {
-			memcpy(sa->natd_init_src_hash, hs->v, 20);
-			memcpy(sa->natd_init_dst_hash, hd->v, 20);
-		} else {
-			plog(PLOG_INTERR, PLOGLOC, NULL,
-			    "resume: NATD INIT-pin digest failed; "
-			    "binding report stays zeroed\n");
-		}
-		if (hs)
-			rc_vfree(hs);
-		if (hd)
-			rc_vfree(hd);
-	}
+	ikev2_sa_repin_natd(sa);
 
 	nsa = racoon_calloc(1, sizeof(*nsa));
 	if (!nsa)
