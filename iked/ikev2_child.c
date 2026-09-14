@@ -2081,6 +2081,38 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 	}
 
 	/* then compute keymat.  "2 *" for inbound and outbound */
+	{
+		/* nonce-fingerprint: the responder rekey MUST keymat with
+		 * the fresh CREATE_CHILD nonces (RFC 7296 2.17), while
+		 * the AUTH child uses the IKE_SA_INIT nonces.  Log the
+		 * first 4 bytes of what we feed vs the parent's INIT
+		 * nonces, so a stale-nonce bug (identical observed
+		 * symptom: AUTH child works, every rekey diverges) is
+		 * visible in one line. */
+		char ni_h[12], nr_h[12], pni_h[12], pnr_h[12];
+		size_t i;
+		for (i = 0; i < 4; i++) {
+			snprintf(&ni_h[i*2], 3, "%02x",
+			    child_sa->n_i && i < child_sa->n_i->l ?
+			    ((u_char *)child_sa->n_i->v)[i] : 0);
+			snprintf(&nr_h[i*2], 3, "%02x",
+			    child_sa->n_r && i < child_sa->n_r->l ?
+			    ((u_char *)child_sa->n_r->v)[i] : 0);
+		}
+		for (i = 0; i < 4; i++) {
+			snprintf(&pni_h[i*2], 3, "%02x",
+			    child_sa->parent->n_i && i < child_sa->parent->n_i->l ?
+			    ((u_char *)child_sa->parent->n_i->v)[i] : 0);
+			snprintf(&pnr_h[i*2], 3, "%02x",
+			    child_sa->parent->n_r && i < child_sa->parent->n_r->l ?
+			    ((u_char *)child_sa->parent->n_r->v)[i] : 0);
+		}
+		ni_h[8] = '\0'; nr_h[8] = '\0';
+		pni_h[8] = '\0'; pnr_h[8] = '\0';
+		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		    "CHILD keymat nonces n_i=%s n_r=%s parent_n_i=%s "
+		    "parent_n_r=%s\n", ni_h, nr_h, pni_h, pnr_h);
+	}
 	keymat = compute_keymat(child_sa->parent, child_sa->g_ir,
 				2 * required_len, child_sa->n_i, child_sa->n_r);
 	if (!keymat) {
