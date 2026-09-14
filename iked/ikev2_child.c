@@ -683,6 +683,7 @@ struct ikev2_child_responder_ctx {
 	struct ikev2_sa *ike_sa;
 	struct ikev2_child_sa *child_sa;
 	int serial;	/* ike_sa->serial_number, for liveness check */
+	const struct dhgroup *dh;	/* group used for gencmp */
 	rc_vchar_t *g_i;	/* rc_vdup'd, owned */
 	rc_vchar_t *n_i;	/* rc_vdup'd, owned */
 	rc_vchar_t *dhpriv;	/* written by gencmp */
@@ -734,6 +735,33 @@ ikev2_child_responder_after_dh(struct ikev2_child_responder_ctx *ctx)
 		child_sa->n_r = random_bytes(nonce_size);
 		if (!child_sa->n_r)
 			goto fail;
+	}
+
+	/*
+	 * DH keypair-consistency check: the crypto worker computed
+	 * child_sa->g_ir = KEi ^ dhpriv and child_sa->dhpub from the
+	 * same keypair.  Re-derive here on the IKE thread and compare
+	 * byte-for-byte, so a stale/mismatched private key in the
+	 * async handoff (which would silently diverge KEYMAT from the
+	 * peer -- observed on iOS rekeys) is caught in the daemon.
+	 */
+	if (ctx->dh && ctx->dhpriv && child_sa->dhpub && child_sa->g_ir) {
+		rc_vchar_t *re = NULL;
+		if (oakley_dh_compute(ctx->dh, child_sa->dhpub,
+		    ctx->dhpriv, ctx->g_i, &re) == 0 && re) {
+			int match = (re->l == child_sa->g_ir->l &&
+			    memcmp(re->v, child_sa->g_ir->v, re->l) == 0);
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			    "CHILD_RESP DH recheck %s (g_ir len=%zu "
+			    "recompute len=%zu dhpriv len=%zu KEi len=%zu)\n",
+			    match ? "MATCH" : "MISMATCH",
+			    child_sa->g_ir->l, re->l,
+			    ctx->dhpriv->l, ctx->g_i ? ctx->g_i->l : 0);
+			rc_vfree(re);
+		} else {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			    "CHILD_RESP DH recheck: recompute failed\n");
+		}
 	}
 
 	/* save my proposal list to keep SPI values */
@@ -1141,6 +1169,7 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		ctx->serial = ike_sa->serial_number;
 
 		ike_sa->crypto_pending = 1;
+		ctx->dh = (const struct dhgroup *)dhdef->definition;
 		if (oakley_dh_gencmp_submit((struct dhgroup *)dhdef->definition,
 		    ctx->g_i, &child_sa->dhpub, &ctx->dhpriv,
 		    &child_sa->g_ir, ikev2_child_responder_dh_done,

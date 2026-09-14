@@ -393,10 +393,11 @@ struct isakmp_domain ikev2_rekey_doi = {
 };
 
 static void rekey_ikesa_callback(enum request_callback, struct ikev2_child_sa *,
-				 void *);
+				void *);
 static int rekey_skeyseed(struct ikev2_sa *, struct ikev2_sa *, rc_vchar_t *);
 static void ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *);
 static void ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *, rc_vchar_t *);
+static void ikev2_rekey_log_skd_prefix(struct ikev2_sa *new_sa);
 
 static void ikev2_child_adopt(struct ikev2_sa *old_sa, struct ikev2_sa *new_sa);
 
@@ -1007,6 +1008,7 @@ ikev2_rekey_responder_tail(struct ikev2_rekey_responder_ctx *ctx)
 	if (ikev2_compute_keys(new_sa) != 0)
 		goto fail;
 	ikev2_destroy_secret(new_sa);
+	ikev2_rekey_log_skd_prefix(new_sa);
 
 	/* move children to new_sa */
 	if (!old_sa->rekey_duplicate) {
@@ -1324,6 +1326,27 @@ ikev2_rekey_init_recv_ctx_free(struct ikev2_rekey_init_recv_ctx *ctx)
 	rc_free(ctx);
 }
 
+/* rekeyed-IKE-SA diagnostic: fingerprint the new SK_d so a child
+ * rekey computed against this IKE SA can be checked across runs
+ * (a wrong SK_d propagates into every child KEYMAT).  Prefix only
+ * -- never the key material itself. */
+static void
+ikev2_rekey_log_skd_prefix(struct ikev2_sa *new_sa)
+{
+	unsigned char hx[25];
+	size_t i, hl;
+
+	if (!new_sa || !new_sa->sk_d)
+		return;
+	hl = new_sa->sk_d->l < 8 ? new_sa->sk_d->l : 8;
+	for (i = 0; i < hl; i++)
+		snprintf((char *)&hx[i * 2], 3, "%02x",
+		    ((u_char *)new_sa->sk_d->v)[i]);
+	hx[hl * 2] = '\0';
+	isakmp_log(new_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+	    "IKE_SA_REKEY sk_d_prefix=%s len=%zu\n", hx, new_sa->sk_d->l);
+}
+
 /* runs on the IKE thread after the worker computed g^ir */
 static void
 ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *ctx)
@@ -1336,6 +1359,7 @@ ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *ctx)
 	if (ikev2_compute_keys(new_sa) != 0)
 		goto fail;
 	ikev2_destroy_secret(new_sa);
+	ikev2_rekey_log_skd_prefix(new_sa);
 
 	TRACE((PLOGLOC, "rekeyed ike_sa old %p new %p established\n", old_sa, new_sa));
 	old_sa->new_sa = 0;
