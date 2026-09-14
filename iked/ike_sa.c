@@ -47,6 +47,7 @@
 #include "var.h"
 #include "crypto_impl.h"
 #include "rc_net.h"
+#include "nattraversal.h"
 
 #include "debug.h"
 
@@ -458,11 +459,12 @@ ikev2_allocate_sa(isakmp_cookie_t *initiator_spi, struct sockaddr *local,
 	if (!sa)
 		goto fail;
 
-	/* NAT-D state is negotiated in IKE_SA_INIT/AUTH (nattraversal.c),
+	/* Negotiated IKE-SA state (NAT-D flags, MOBIKE, fragmentation)
+	 * is set in IKE_SA_INIT/AUTH (nattraversal.c, ikev2_notify.c),
 	 * restored on resume (ikev2_resume.c), and must be inherited by
 	 * any derived SA (IKE-SA rekey, ikev2_rekey.c).  SA-to-SA
-	 * inheritance goes through ikev2_sa_copy_natt_state so a future
-	 * NAT-T field addition cannot diverge across derived-SAs and
+	 * inheritance goes through ikev2_sa_copy_negotiated_state so a
+	 * future field addition cannot diverge across derived-SAs and
 	 * silently strip UDP-ESP encap from child SAs (the
 	 * XfrmInStateMismatch data-plane killer).  The resume site
 	 * restores from its disk record field-by-field at the
@@ -536,14 +538,51 @@ ikev2_allocate_sa(isakmp_cookie_t *initiator_spi, struct sockaddr *local,
 	return 0;
 }
 
-/* Copy NAT-D state between SA objects.  Single source of truth for
- * derived-SA inheritance (rekey) and restore (resume); see the note
- * in ikev2_allocate_sa. */
+/* Copy negotiated IKE-SA state between SA objects.  Single source of
+ * truth for derived-SA inheritance (rekey); the resume site restores
+ * from its disk record field-by-field at the serialization boundary
+ * (intentionally separate).  A zeroed allocation (racoon_calloc)
+ * otherwise silently strips NAT-T encap (the XfrmInStateMismatch
+ * data-plane killer), MOBIKE (RFC 4555) and fragmentation (RFC 7383)
+ * from every rekeyed SA. */
 void
-ikev2_sa_copy_natt_state(struct ikev2_sa *to, struct ikev2_sa *from)
+ikev2_sa_copy_negotiated_state(struct ikev2_sa *to, struct ikev2_sa *from)
 {
 	to->behind_nat = from->behind_nat;
 	to->peer_behind_nat = from->peer_behind_nat;
+	to->mobike_supported = from->mobike_supported;
+	to->frag_supported = from->frag_supported;
+}
+
+/* Re-pin the RFC 4555 §3.8 NATD binding-report digests.  They are a
+ * pure function of the SPIs + endpoints (IKE-SA rekey preserves both),
+ * so recomputing on a rekeyed SA reproduces the INIT digests; without
+ * this the first §3.8 reply on a rekeyed SA replays 20 zero bytes --
+ * the exact silent-plane failure mode the resume fix documented. */
+void
+ikev2_sa_repin_natd(struct ikev2_sa *sa)
+{
+	rc_vchar_t *hs, *hd;
+	struct rc_addrlist *pub = ikev2_natd_public_address(sa->rmconf);
+
+	if (!sa)
+		return;
+	if (pub && pub->a.ipaddr)
+		hs = natt_create_hash(sa, pub->a.ipaddr, TRUE);
+	else
+		hs = natt_create_hash(sa, sa->local, TRUE);
+	hd = natt_create_hash(sa, sa->remote, TRUE);
+	if (hs && hd) {
+		memcpy(sa->natd_init_src_hash, hs->v, 20);
+		memcpy(sa->natd_init_dst_hash, hd->v, 20);
+	} else {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "NATD INIT-pin digest failed; binding report stays zeroed\n");
+	}
+	if (hs)
+		rc_vfree(hs);
+	if (hd)
+		rc_vfree(hd);
 }
 
 struct ikev2_sa *

@@ -587,9 +587,10 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	 * gates natt_type on these flags), the kernel's xfrm encap check
 	 * (xfrm_input.c, XfrmInStateMismatch) rejects every ESP-in-UDP
 	 * packet, and the data plane dies exactly at the first rekey.
-	 * Shared helper: all derived-SA NAT-D copies go through
-	 * ikev2_sa_copy_natt_state so the fields cannot diverge. */
-	ikev2_sa_copy_natt_state(new_sa, old_sa);
+	 * Shared helper: all derived-SA negotiated-state copies go
+	 * through ikev2_sa_copy_negotiated_state so the fields cannot
+	 * diverge. */
+	ikev2_sa_copy_negotiated_state(new_sa, old_sa);
 	conf = 0;
 	old_sa->new_sa = new_sa;
 
@@ -870,9 +871,10 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 	 * kernel's xfrm encap check (xfrm_input.c, XfrmInStateMismatch)
 	 * rejects every ESP-in-UDP packet, and the data plane dies
 	 * exactly at the first child rekey.  Shared helper: all
-	 * derived-SA NAT-D copies go through ikev2_sa_copy_natt_state
-	 * so the fields cannot diverge. */
-	ikev2_sa_copy_natt_state(new_sa, old_sa);
+	 * derived-SA negotiated-state copies go through
+	 * ikev2_sa_copy_negotiated_state so the fields cannot
+	 * diverge. */
+	ikev2_sa_copy_negotiated_state(new_sa, old_sa);
 
 	if (old_sa->rekey_inprogress) {
 		TRACE((PLOGLOC, "rekey in progress already\n"));
@@ -1038,6 +1040,12 @@ ikev2_rekey_responder_tail(struct ikev2_rekey_responder_ctx *ctx)
 		TRACE((PLOGLOC, "duplicate rekeying, new ike_sa %p on hold\n",
 		       new_sa));
 	}
+
+	/* §3.8 NATD binding-report digests are not negotiated again at
+	 * IKE-SA rekey; repin them from the (unchanged) SPIs+endpoints
+	 * so the first NATD probe on this rekeyed SA doesn't reply with
+	 * 20 zero bytes. */
+	ikev2_sa_repin_natd(new_sa);
 
 	ikev2_set_state(new_sa, IKEV2_STATE_ESTABLISHED);
 
@@ -1383,6 +1391,10 @@ ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *ctx)
 	TRACE((PLOGLOC, "rekeyed ike_sa old %p new %p established\n", old_sa, new_sa));
 	old_sa->new_sa = 0;
 	ikev2_sa_insert(new_sa);
+
+	/* §3.8 NATD binding-report digests: see repin note in the
+	 * responder tail above. */
+	ikev2_sa_repin_natd(new_sa);
 	ikev2_set_state(new_sa, IKEV2_STATE_ESTABLISHED);
 
 	/* rekey conflict check */
