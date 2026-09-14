@@ -2090,7 +2090,11 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 
 	/* responder-rekey diagnostics: full keymat sha-256 so the
 	 * derived child keys of a failed iOS rekey can be compared
-	 * against a working (initiator-path) rekey of the same SA. */
+	 * against a working (initiator-path) rekey of the same SA.
+	 * Also fingerprint the SK_d and prf actually consumed, so a
+	 * child rekey computed against a rekeyed IKE SA can be
+	 * verified to use that session's own keys (not a stale
+	 * parent). */
 	{
 		rc_vchar_t *dm = eay_sha2_256_one(keymat);
 		char hx[80];
@@ -2106,10 +2110,26 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 			hx[0] = '?';
 			hx[1] = '\0';
 		}
-		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
-		    "CHILD_RESP keymat len=%zu sha256=%s g_ir_present=%s\n",
-		    keymat->l, hx,
-		    child_sa->g_ir ? "Y" : "n");
+		{
+			char skd[25];
+			size_t hl2;
+			hl2 = 0;
+			if (child_sa->parent && child_sa->parent->sk_d) {
+				size_t l = child_sa->parent->sk_d->l;
+				hl2 = l < 8 ? l : 8;
+				for (i = 0; i < hl2; i++)
+					snprintf(&skd[i * 2], 3, "%02x",
+					    ((u_char *)child_sa->parent->sk_d->v)[i]);
+			}
+			skd[hl2 * 2] = '\0';
+			isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			    "CHILD_RESP keymat len=%zu sha256=%s g_ir_present=%s "
+			    "sk_d_prefix=%s prf=%s\n",
+			    keymat->l, hx,
+			    child_sa->g_ir ? "Y" : "n", skd,
+			    child_sa->parent && child_sa->parent->prf ?
+			    child_sa->parent->prf->method->name : "?");
+		}
 	}
 
 	/*
