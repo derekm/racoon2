@@ -2132,7 +2132,7 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 		err = ISAKMP_INTERNAL_ERROR;
 		goto bailout;
 	}
-	/* responder-rekey diagnostic: also compute the keymat as iOS
+	/* responder-rekey diagnostics: also compute the keymat as iOS
 	 * would derive it IF it reuses the IKE_SA_INIT nonces for the
 	 * rekey (child_sa->n_i/n_r are the fresh CREATE_CHILD nonces;
 	 * parent->n_i/n_r are the IKE_SA_INIT nonces).  The AUTH child
@@ -2159,6 +2159,24 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 				    "CHILD_RESP keymat INIT-nonce-candidate "
 				    "sha256=%s\n", hx);
 				rc_vfreez(dm);
+			}
+			/* FIX-TEST (reversible, env-gated): some Apple
+			 * clients derive rekey KEYMAT from the IKE_SA_INIT
+			 * nonces rather than the fresh CREATE_CHILD
+			 * nonces (RFC 7296 2.17), which makes every
+			 * RFC-correct responder-derived rekey keymat
+			 * disagree with the client's.  When set, install
+			 * the INIT-nonce keymat instead.  Log the switch
+			 * so a regression is attributable; unset to
+			 * revert to RFC behavior. */
+			if (getenv("RACOON2_REKEY_INIT_NONCES")) {
+				isakmp_log(child_sa->parent, 0, 0, 0,
+				    PLOG_INTERR, PLOGLOC,
+				    "CHILD_RESP keymat: NON-STANDARD "
+				    "INIT-nonce keymat selected "
+				    "(RACOON2_REKEY_INIT_NONCES)\n");
+				rc_vfreez(keymat);
+				keymat = rc_vdup(alt);
 			}
 			rc_vfreez(alt);
 		}
