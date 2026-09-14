@@ -2129,8 +2129,39 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 	keymat = compute_keymat(child_sa->parent, child_sa->g_ir,
 				2 * required_len, child_sa->n_i, child_sa->n_r);
 	if (!keymat) {
-		err = -1;	/* ??? */
+		err = ISAKMP_INTERNAL_ERROR;
 		goto bailout;
+	}
+	/* responder-rekey diagnostic: also compute the keymat as iOS
+	 * would derive it IF it reuses the IKE_SA_INIT nonces for the
+	 * rekey (child_sa->n_i/n_r are the fresh CREATE_CHILD nonces;
+	 * parent->n_i/n_r are the IKE_SA_INIT nonces).  The AUTH child
+	 * (INIT nonces, works) vs every rekey (fresh nonces, dies)
+	 * signature is exactly what a nonce-reuse quirk produces, and
+	 * all our internal checks pass because we are self-consistent.
+	 * If the sha of this candidate equals the AUTH child's logged
+	 * keymat sha, iOS is provably reusing the INIT nonces. */
+	{
+		rc_vchar_t *alt = compute_keymat(child_sa->parent,
+		    child_sa->g_ir, 2 * required_len,
+		    child_sa->parent->n_i, child_sa->parent->n_r);
+		if (alt) {
+			rc_vchar_t *dm = eay_sha2_256_one(alt);
+			if (dm) {
+				char hx[64];
+				size_t i;
+				for (i = 0; i < 16; i++)
+					snprintf(&hx[i*2], 3, "%02x",
+					    ((u_char *)dm->v)[i]);
+				hx[32] = '\0';
+				isakmp_log(child_sa->parent, 0, 0, 0,
+				    PLOG_INFO, PLOGLOC,
+				    "CHILD_RESP keymat INIT-nonce-candidate "
+				    "sha256=%s\n", hx);
+				rc_vfreez(dm);
+			}
+			rc_vfreez(alt);
+		}
 	}
 
 	/* responder-rekey diagnostics: full keymat sha-256 so the
