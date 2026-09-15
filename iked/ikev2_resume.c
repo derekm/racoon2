@@ -478,7 +478,9 @@ restore_one(const char *path)
 	if (r2rs_validate(&rec) != 0)
 		return -1;
 
-	rmidx = rc_vnew(rec.rm_index, strlen(rec.rm_index));
+	/* validated above, but keep the bound local as a second
+	 * line of defense against an unterminated rm_index. */
+	rmidx = rc_vnew(rec.rm_index, strnlen(rec.rm_index, R2RS_MAXSTR));
 	if (!rmidx || rcf_get_remotebyindex(rmidx, &conf) != 0) {
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		    "resume: remote %s not in config\n", rec.rm_index);

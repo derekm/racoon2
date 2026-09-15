@@ -139,6 +139,13 @@ r2rs_validate(const struct r2rs_sa *rec)
 		if (c->lease_af != 0 && c->lease_af != AF_INET &&
 		    c->lease_af != AF_INET6)
 			return -1;
+		if (memchr(c->sl_index, '\0', R2RS_MAXSTR) == NULL)
+			return -1;
 	}
+	/* strings must be NUL-terminated in-place: restore_one() and
+	 * the child restore use strlen() on these fixed arrays, so an
+	 * unterminated dump would over-read past the record. */
+	if (memchr(rec->rm_index, '\0', R2RS_MAXSTR) == NULL)
+		return -1;
 	return 0;
 }

@@ -25,14 +25,16 @@
 #include "vmbuf.h"
 #include "ikev2_resume_rec.h"
 
+static int checks;
 static int failures;
 
 #define CHECK(cond, name)						\
 	do {								\
+		checks++;						\
 		if (cond)						\
-			printf("ok %s\n", (name));			\
+			printf("ok %d - %s\n", checks, (name));		\
 		else {							\
-			printf("not ok %s\n", (name));			\
+			printf("not ok %d - %s\n", checks, (name));	\
 			failures++;					\
 		}							\
 	} while (/*CONSTCOND*/0)
@@ -201,8 +203,24 @@ test_validate(void)
 
 	/* every key slot catches a corrupt length */
 	fill_rec(&rec);
-	rec.sk_pr.len = R2RS_MAXKEY + 1;
-	CHECK(r2rs_validate(&rec) != 0, "validate key len corrupt");
+	{
+		struct r2rs_key *slots[] = {
+		    &rec.sk_d, &rec.sk_ai, &rec.sk_ar, &rec.sk_ei,
+		    &rec.sk_er, &rec.sk_pi, &rec.sk_pr,
+		    &rec.n_i, &rec.n_r, &rec.id_i, &rec.id_r,
+		};
+		size_t ns = sizeof(slots) / sizeof(slots[0]);
+		size_t s;
+		int all = 1;
+		for (s = 0; s < ns; s++) {
+			uint16_t save = slots[s]->len;
+			slots[s]->len = R2RS_MAXKEY + 1;
+			if (r2rs_validate(&rec) == 0)
+				all = 0;
+			slots[s]->len = save;
+		}
+		CHECK(all, "validate key len corrupt (all 11 slots)");
+	}
 
 	/* child sanity: zero SPI, bogus lease family */
 	fill_rec(&rec);
@@ -211,6 +229,15 @@ test_validate(void)
 	fill_rec(&rec);
 	rec.child[0].lease_af = 99;
 	CHECK(r2rs_validate(&rec) != 0, "validate child bogus lease_af");
+
+	/* unterminated fixed-size strings: strlen consumers must
+	 * never see an index that fills the array with no NUL */
+	fill_rec(&rec);
+	memset(rec.rm_index, 'x', R2RS_MAXSTR);
+	CHECK(r2rs_validate(&rec) != 0, "validate rm_index unterminated");
+	fill_rec(&rec);
+	memset(rec.child[0].sl_index, 'y', R2RS_MAXSTR);
+	CHECK(r2rs_validate(&rec) != 0, "validate sl_index unterminated");
 
 	/* zero children is legal (IKE SA without matures) */
 	fill_rec(&rec);
@@ -228,10 +255,10 @@ main(void)
 	test_filename();
 	test_validate();
 
+	printf("1..%d\n", checks);
 	if (failures) {
-		printf("1..%d FAILED %d\n", 0, failures);
+		printf("# FAILED %d of %d checks\n", failures, checks);
 		return 1;
 	}
-	printf("resumetest: all checks passed\n");
 	return 0;
 }

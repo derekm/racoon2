@@ -92,8 +92,10 @@ void r2rs_filename_in(char *buf, size_t buflen, const char *dir,
  * record is structurally sound, -1 otherwise.  Checks, in order:
  * magic/version, child count against the array bound, every key
  * length against R2RS_MAXKEY (a corrupt len field would otherwise
- * make r2rs_key_to_vchar read past its fixed-size data array), and
- * address family/port plausibility.
+ * make r2rs_key_to_vchar read past its fixed-size data array),
+ * address family/port plausibility, and NUL-termination of the
+ * fixed-size rm_index/sl_index strings (strlen on an unterminated
+ * array would over-read past the record).
  */
 int r2rs_validate(const struct r2rs_sa *);
 
