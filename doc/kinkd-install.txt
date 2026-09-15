@@ -1,0 +1,207 @@
+/* This file is the English translation of kinkd-install.ja.txt. */
+
+	kinkd (of racoon2) Installation Guide
+
+
+1. Required Environment
+=============
+
+  OS (any of the following)
+	- With KAME IPsec enabled
+	  FreeBSD 4.x/5.x, NetBSD 1.6.x/2.0 (OpenBSD is not supported)
+	- With IPsec/PF_KEY enabled
+	  Debian GNU/Linux (sarge) with Linux 2.6.x kernel
+	  (Should work on other distributions as well, but unverified)
+	  (Also known to work on Red Hat)
+
+  Libraries (all of the following)
+	- Kerberos5 library (either one)
+	  (The MIT implementation has barely been tested, so Heimdal is currently recommended)
+	   + Heimdal-0.6.x
+	   + MIT libkrb5 1.3.4
+	- OpenSSL-0.9.[67]
+	- libracoon
+
+
+2. Kerberos5 Environment Setup
+=======================
+
+2.1. KDC Configuration
+===============
+
+	Omitted
+
+
+2.2. Configuration as a Kerberos client (or application client/server)
+================================================================
+  (kinkd is a kind of Kerberos client.)
+
+  Create /etc/krb5.conf
+	Example)
+		[libdefaults]
+		        default_realm = KINK.HONGO.WIDE.AD.JP
+		[realms]
+		        KINK.HONGO.WIDE.AD.JP = {
+		                kdc = styx.hongo.wide.ad.jp
+		        }
+
+	To run on private addresses / behind NAT,
+	for example,
+		[appdefaults]
+		        no-addresses = true
+
+  Assign a principal to each host and generate a shared secret key.
+	Example: on each host)
+		# kadmin -a <KDC hostname>
+		kadmin> add --random-key kink/mitana.nanohz.org
+		kadmin> ext kink/mitana.nanohz.org
+
+	Note: The add command creates the principal name and key on the KDC.
+	      The ext command exports the key to your local machine.
+
+
+3. Compiling and Configuring kinkd
+===========================
+
+3.1. Obtaining the kinkd Source Code
+===============================
+
+	Omitted
+
+
+3.2. Compiling libracoon
+===========================
+
+	If you are compiling on Linux,
+	you will be better off reading Appendix A first. <- Important
+
+	% cd racoon2/lib
+	% ./configure
+
+	Since kinkd currently links against libracoon statically,
+	there is no need to install it.
+
+
+3.3. Compiling & Installing kinkd
+======================================
+
+	% cd racoon2/kinkd
+	% ./configure
+		* If Heimdal/MIT-krb5 is installed in a non-standard location,
+		  specify --with-krb5=/path/to/krb5-prefix.
+	% make
+	# cp kinkd /path/to/somewhere
+	# cp -i example/racoon2.conf /etc
+	# $EDITOR /etc/racoon2.conf
+
+
+3.4. kinkd Configuration
+================
+
+  /etc/racoon2.conf
+	-> See the racoon2.conf section.
+
+  Mapping FQDNs to addresses
+	Specify the mappings in /etc/hosts.
+	As usual, write the entry like
+		2001:240:2:0:202:8aff:fefa:bec0		mitana.nanohz.org
+	as shown above.
+
+  To run kinkd in debug message mode,
+	add the -d option at startup.
+	Adding -F prevents it from daemonizing.
+
+
+4. racoon2.conf
+===============
+
+  Your own principal name
+	Specify your own principal name in default{remote{kink{my_principal}}}.
+	If you have set a default realm in krb5.conf,
+	the realm name may be omitted.
+
+  remote{kink{peers_principal}
+	For the responder, at present, the other party's (i.e., the initiator's)
+	principal name must be specified.
+	Also, at present, the realm name cannot be omitted.
+
+  remote{selector_index}
+	For the responder, this must currently be specified.
+
+  selector, policy, ipsec, sa
+	There should be no kinkd-specific constraints on these, so
+	write them as usual.
+
+
+5. Starting/Stopping kinkd
+====================
+
+  Starting
+	With the -d option, kinkd starts in debug message mode.
+	   (Note, however, that unless syslog is also configured to
+	   output messages at LOG_DEBUG level, the output will not change at all)
+	With the -F option, output goes to standard output instead of syslog,
+	   and kinkd does not daemonize.
+
+	Example) /usr/local/sbin/kinkd -d
+
+  Stopping
+	Terminate with SIGTERM/SIGINT.
+
+	Example) pkill kinkd
+	      or
+	    kill `cat /var/run/kinkd.pid`
+
+
+Appendix A: Hints for Linux-2.6.x + Debian sarge
+=============================================
+
+  kernel
+	- PFKEY socket
+	- AH
+	- ESP
+	- AH for IPv6
+	- ESP for IPv6
+	Build the 2.6.x kernel with these enabled.
+	(These may be enabled by default these days)
+
+  Heimdal
+	Debian: install the heimdal-dev package.
+	RedHat: ?
+
+  Compiling libracoon
+	If the required header files are not installed in /usr/include/linux,
+	after running ./configure,
+	add -I/path/to/linux-2.6.x/include to the CFLAGS in the Makefile.
+
+	If you installed Heimdal manually,
+	add -I/path/to/heimdal/include to the CFLAGS in the Makefile.
+
+  Compiling kinkd
+	If the required header files are not installed in /usr/include/linux,
+	specify, at configure time,
+		% env CPPFLAGS=-I/path/to/linux-2.6.x/include ./configure
+	like the above.
+
+  Miscellaneous
+	If you want the setkey command for configuring the SPD,
+	ipsec-tools <http://ipsec-tools.sourceforge.net/>
+	installing ipsec-tools is recommended.
+	Packages appear to be available for both Debian and RedHat.
+
+
+Appendix B: Hints for FreeBSD 4.10, NetBSD 2.0
+===========================================
+
+  kernel
+	- IPSEC
+	- IPSEC_ESP
+	- IPSEC_DEBUG
+	Rebuild with these options enabled.
+
+  Heimdal
+	On FreeBSD 4.x (and probably NetBSD 1.6.x, though unverified),
+	the bundled Heimdal version is too old,
+	so you need to install 0.6.x yourself.
+
+	On FreeBSD 5.x and NetBSD 2.0, the bundled version is fine.

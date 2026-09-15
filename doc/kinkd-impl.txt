@@ -1,0 +1,656 @@
+# English translation of kinkd-impl.ja.txt (original $Id$ header removed)
+KINKd Implementation Notes
+
+1. Implementation status
+===========
+  * Message flow
+	TGT acquisition (Kerberos)
+		ok	AS_REQ -- AS_REP
+
+	service-Ticket acquisition (Kerberos (+ KINK))
+		ok	TGS_REQ -- TGS_REP
+		NG	GETTGT -- REPLY -- TGS_REQ (with peer's TGT) -- TGS_REP
+
+			Heimdal defines the error KRB_AP_ERR_USER_TO_USER_REQUIRED,
+			so when a REPLY (KRB_AP_ERR_USER_TO_USER_REQUIRED)
+			comes back in response to CREATE, falling back to
+			GETTGT might also be possible.
+			Looking more closely, it is also defined in the
+			clarifications.
+
+	KINK
+		ok	CREATE -- REPLY
+		ok	CREATE -- REPLY -- ACK   (i.e. 3-way handshake)
+		ok	DELETE -- REPLY
+		ok	STATUS -- REPLY
+
+		<memo>
+		Currently, CREATE ignores the satype of SADB_ACQUIRE and
+		the SPD; it is hard-coded.
+
+		Currently, DELETE removes all the SPIs
+		hanging off the kink_handle.
+
+		rekeying: CREATE is issued upon receiving SADB_EXPIRE.
+		DELETE is not issued afterwards.
+		</memo>
+
+  * Error handling
+	KINK_ERROR			send	recv
+	------------------------------------------
+		KINK_OK			never	ok
+		KINK_PROTOERR		ok	ok
+		KINK_INVDOI		ok	ok
+		KINK_INVMAJ		ok	ok
+		KINK_INVMIN		ok	ok
+		KINK_INTERR		..	ok
+		KINK_BADQMVERS		ok	ok
+		Undefined			never	ok
+
+	KINK_KRB_ERROR				send	recv
+	--------------------------------------------------
+		KRB_AP_ERR_BAD_INTEGRITY	ok	ok?
+		KRB_AP_ERR_TKT_EXPIRED		ok	ok
+		KRB_AP_ERR_SKEW			ok	ok?
+		KRB_AP_ERR_NOKEY		ok	ok?
+		KRB_AP_ERR_BADKEYVER		ok	ok?
+		Others				TBD	TBD
+
+		Retry the transaction on TKT_EXPIRED	ok
+
+		Handling of ERR_SKEW
+		[kink-05 5.1.4 (page 18), 7.1 (page 27)]
+		    Put the time into ctime and return			ok
+		    Offset based on the time received in ctime	ok
+
+  * SAD, SPD
+				send	recv
+	----------------------------------
+	SADB_GETSPI		ok	ok
+	SADB_UPDATE		ok	NG
+	SADB_ADD		ok	NG
+	SADB_DELETE		ok?	ok?
+	SADB_ACQUIRE		NG	ok	# XXX satype not looked at
+	SADB_REGISTER		ok	NG
+	SADB_EXPIRE		never	ok
+	SADB_FLUSH
+	SADB_DUMP
+
+	PF_KEY message retransmission is not implemented yet. On timeout,
+	the transaction fails.
+
+	No errno is returned when ACQUIRE fails.
+
+  * ISAKMP
+	with CREATE, REPLY-to-CREATE
+		SA			ok
+		Nonce (Ni)		ok
+		Nonce (Nr, 3-way)	ok
+		[KE]			NG
+		[ID]			BROKEN (*1)
+		[Notification]		NG
+
+		/*
+		 * [kink-05 4.3 (page 7), 4.4 (page 9),...]
+		 */
+		/*
+		 * (*1) When tunneling, put the selector into the ID.
+		 * I think it is not needed for transport mode.
+		 */
+
+	with DELETE, REPLY-to-DELETE
+		Delete			ok
+		[Notification]		IN PROGRESS
+
+		/*
+		 * If the SPI specified by the received Delete is not found,
+		 * a Notification is now returned.
+		 * Can the initiator send a Notification
+		 * out of the blue?
+		 */
+
+	with STATUS, REPLY-to-STATUS
+		[Notification]		NG
+
+  * KINK misc
+	handle epoch change (DPD)			ok
+	[kink-05 4.4.2 (page 10)]
+
+	aggressive? DPD					NO IDEA
+
+	multiple KINK_ISAKMP				NG
+	[kink-05 5.1.7 (page 21)]
+
+	randomized rekeying time			NG
+	[kink-05 4.4.1 (page 9)]
+
+	replay protection (by krb)			ok
+
+	DELETE grace timer				ok
+
+  * spmd
+	LOGIN		ok
+	NS		never?
+	POLICY		IN PROGRESS
+	FQDN		ok (only QUERY subcommand)
+	SLID		ok
+	STAT		never
+	QUIT		ok
+
+  * libracoonify
+	cf		IN PROGRESS
+	if_pfkeyv2	done
+	rc_type		IN PROGRESS
+		By the way, is rc_type 8 bits (struct rcpfk_msg)?
+		Maybe rcpfk_msg should use the PF_KEY type?
+	vmbuf		done
+	plog		IN PROGRESS
+
+  * IANA considerations
+	Port number: TBD (4174 is used by default)
+		We are using the registered range without authorization.
+
+	ISAKMP payload type: TBD (BASE = 14 by default)
+		This was the number given in the i-d up to about -04.
+		It has already been taken by GDOI, so it needs to be changed.
+		Should it be moved to the private range.
+
+
+2. Operating environment
+===========
+
+2-1. OS
+=======
+	NetBSD 2.0
+	FreeBSD 4.10, 5.3
+	Debian/GNU Linux 3.0 with kernel 2.6.x
+
+2-2. Libraries
+===============
+	Kerberos libraries
+		Heimdal-0.6.x or MIT krb5-1.3.x
+	Crypto libraries
+		OpenSSL-0.9.[67]
+	libracoon
+
+	- With Heimdal-current, it will not work unless
+	  bbkk_heimdal.c is modified.
+	- MIT krb5 has not been tested much.
+
+
+3. Spec supplements
+============
+  * PRF
+	draft-ietf-krb-wg-crypto-07.txt
+	draft-raeburn-krb-rijndael-krb-06.txt
+	The PRF defined in these drafts.
+
+  * KRB-ERROR checksum [kink-06 7.1 and 5.1.4]
+	Do not attach it to KRB-ERROR. (RFC 1510 does not allow a checksum
+	to be attached in the first place)
+	Attach the KINK checksum.
+
+
+4. Implementation of KRB5KRB_AP_ERR_SKEW handling
+=======================================
+
+4-1. Policy
+=========
+
+  a. Do not touch the Kerberos library and do the work on the kinkd side.
+
+      Advantages
+	- No need to ask the end user to replace libkrb5,
+	  so it is easy to use.
+      Disadvantages
+	- It is necessary to touch private structures/functions.
+	  -> Heavily dependent on the library version.
+
+  b. Patch the library straightforwardly.
+
+      Advantages
+	- Probably straightforward to implement.
+      Disadvantages
+	- Users of kinkd must be told to replace libkrb5,
+	  put a kinkd-specific one in another path, or
+	  statically link it.
+	- As before, dependent on the library version.
+
+  c. Distribute the patched library together.
+	Ehh...
+
+	Actually, maybe this is the most reliable?
+	What about the license?
+	Which one to use? MIT, Heimdal, Shishi, ...
+
+4-2. Current implementation
+===============
+
+	We are taking the direction of "a. Do not touch the Kerberos
+	library; do the work on the kinkd side."
+
+  4-2-1. Handling when ERR_SKEW occurs
+
+	A function with a subset of the functionality of krb5_rd_req
+	retrieves the keys etc. via krb5e_force_get_key and
+	creates an auth_context.
+
+  4-2-1. Adjusting the time when creating AP_REQ
+
+    Heimdal
+	krb5_context has members named kdc_sec_offset and
+	kdc_usec_offset.
+	Use these to shift the time only at the moment krb5_mk_req_extended() is called.
+
+    MIT
+	There are (private) functions krb5_get_time_offsets() and
+	krb5_set_time_offset() that can set the time offset
+	on a krb5_context.
+	Use these to shift the time only at the moment krb5_mk_req_extended() is called.
+
+4-3. Side notes
+===========
+	clarifications-06 3.1.5 describes time adjustment using the AS.
+
+	MIT: done by default.
+	Heimdal: [libdefaults] kdc_timesync option
+	(whether it properly uses the nonce has not been confirmed)
+
+	The time-adjustment implementation described in 4-2 abuses this feature.
+
+
+5. Internal notes
+=============
+
+5-1. File layout
+=================
+	Startup, config loading
+		main.c
+	Main loop, signal, callbacks from pfkey.c
+		session.c
+	KINK message handling, event handlers
+		base.c
+	Scheduler queue management
+		scheduler.c
+	KINK packet/payload encode/decode
+		kink_fmt.c
+	KINK crypto (KEYMAT generation, PRF, checksum)
+		kink_crypto.c
+		oakley.c
+	KINK peer management
+		peer.c
+		dpd.c
+	ISAKMP payload encode/decode
+		isakmp.c (*)
+		isakmp_quick.c (*)
+		isakmp_inf.c (*)
+	Proposal generation and checking
+		ipsec_doi.c (*)
+		proposal.c (*)
+	Config file operations
+		kink_conf.c
+	Kerberos5 library
+		bbkk_heimdal.c
+		bbkk_mit.c
+	OpenSSL
+		crypto_openssl.c (*)
+	PF_KEY
+		pfkey.c (*)
+	Miscellaneous
+		algorithm.c (*)
+		etchosts.c
+		handle.c
+		sockmisc.c (*)
+		strnames.c (*)
+		utils.c
+		rct_ipsecdoi.c
+
+	Files marked (*) are derived from racoon1.
+	The scheduler is different from the one in racoon1.
+	pfkey.c was originally derived from racoon1, but because of
+	changes made when it became part of libracoon, it retains little of its original form.
+
+	The checksum computation uses libkrb5 as is.
+	OpenSSL is used for KINK_ENCRYPT and PRF computation.
+	It is also used to obtain the key lengths of the crypto/HMAC algorithms.
+	(e.g., how many bits, since it is ESP_3DES, when computing KEYMAT)
+
+5-2. Data structures
+===============
+	struct kink_global (@handle.h)
+		Holds the global state of the KINK daemon (its own principal name,
+		krb5_context, the TGT currently in use, epoch, etc.).
+		Exactly one is created per process.
+
+	struct kink_handle (@handle.h)
+		One is created for each KINK transaction and holds its state.
+		Exceptions:
+		- When retrying right after the responder returns an error,
+		  the kink_handle is reused even though it is a different transaction.
+		  (when the ticket has expired, or on SKEW)
+		- When parsing an ACK message, it is actually the same transaction,
+		  but this is not known until it is parsed, so
+		  a new kink_handle is allocated.
+
+		All kink_handles are linked into a single queue for the scheduler
+		(kink_global->schedq).
+
+	struct ph2handle (@handle.h)
+		Corresponds one-to-one with a kink_handle and holds the contents of the ISAKMP payload.
+		It is a separate structure so that racoon1 code can be reused.
+
+	struct kink_state (@handle.h)
+		Indicates the state of a KINK transaction (waiting for GETSPI,
+		waiting for REPLY, ...).
+		A fixed number of states are prepared globally and
+		pointed to from the kink_handle.
+
+		State list
+		 - Initiator states
+			I_GETSPI	Waiting for the reply after issuing SADB_GETSPI.
+			I_CREATE	Waiting for REPLY after sending CREATE.
+			I_AGING		When ACK has been sent in the 3-way exchange,
+					since the REPLY may be retransmitted,
+					the state is retained.
+			I_STALE		transaction complete.
+					Waiting in preparation for SADB_EXPIRE.
+			I_DELETE	Waiting for REPLY after sending DELETE.
+			I_DELETE_HALF	After receiving REPLY, waiting on the grace
+					timer until the inbound SA is removed.
+			I_STATUS	Waiting for REPLY after sending STATUS.
+		 - Responder states
+			R_GETSPI	Waiting for the reply after issuing SADB_GETSPI.
+			R_REPLY		After sending REPLY, waiting for ACK (when 3-way)
+			R_AGING		After sending REPLY, a retransmission of the command
+					may arrive, so the state is retained.
+			R_STALE		transaction complete.
+			R_DELETE_RECV	Immediately after receiving DELETE. It does not wait
+					for anything in particular; it immediately
+					transitions to R_DELETE_HALF. During rekeying,
+					the old handle spawns a new handle for CREATE
+					and one for DELETE, so this state is used when
+					putting one of them (the one for DELETE)
+					into the queue.
+			R_DELETE_HALF	After sending REPLY, waiting on the grace
+					timer until the inbound SA is removed.
+			I_REKEYED	Used to delete the old handle
+					later, during rekeying.
+		 - Other states
+			NONE		Immediately after a kink_handle is created.
+
+	struct kink_addr (@handle.h)
+		The addresses held by the local node.
+
+		Addresses are checked periodically, and if any address has been
+		created or deleted, the kink_addr list is updated accordingly.
+		However, since kink_addr is referenced from struct kink_handle,
+		the kink_addr may not be immediately removable even after the
+		address disappears. Therefore, it is managed with a reference count (kink_addr->ref_cnt).
+
+	struct kink_peer (@peer.h)
+		Holds information about other KINK nodes (the service ticket
+		for that node, epoch, etc.).
+		It is identified using the principal name as the key.
+
+		Every kink_peer is linked into either kink_global->peerlist or
+		kink_global->deadpeerlist.
+
+
+
+****************************************************************
+The following is probably outdated
+****************************************************************
+
+3.3. Internal processing functions
+=================
+
+* KINK message encode/decode (kink_fmt.c)
+
+  * CREATE message encoding
+    ldata *kink_encode_create(struct kink_handle *kh);
+
+    Parameters
+	kh                state of the KINK transaction
+	kh->krb_ap_req    the Kerberos AP_REQ packet
+	kh->in_isakmp     the ISAKMP payload
+	kh->auth_context  the authentication context used for packet encryption
+    Return value
+	the generated packet
+
+  * REPLY message encoding
+    ldata *kink_encode_reply(struct kink_handle *kh);
+
+  * CREATE/REPLY message decoding
+    int kink_decode_generic(struct kink_handle *kh, ldata *packet);
+
+    Parameters
+	kh
+	packet            the entire received packet
+    Output
+	kh->xid           the received XID
+	kh->flags         the received flags
+	kh->error_code    the KINK_ERROR error code (on failure)
+	kh->ap_req, kh->ap_rep, kh->krb_error,
+	kh->isakmp, kh->encrypt, kh->error
+	                  decoding results
+    Return value
+	0=success, non-0=failure
+
+  * KINK_ENCRYPT payload decoding
+    int kink_decode_kink_encrypt(struct kink_handle *kh);
+
+    Parameters
+	kh
+	kh->encrypt       the KINK_ENCRYPT payload to be decoded
+	kh->auth_context  the authentication context used for decoding
+    Output
+	kh->ap_req, kh->ap_rep, kh->krb_error,
+	kh->isakmp, kh->encrypt, kh->error
+	                  decoding results
+	kh->error_code    the KINK_ERROR error code (on failure)
+	                  (XXX FIX ME: may not be set even on failure)
+    Return value
+	0=success, non-0=failure
+    Note
+	For example, a CREATE message is handled as follows:
+	 1. Decode it with kink_decode_generic().
+	 2. Since KRB_AP_REQ is obtained, check the checksum.
+	 3. Using the KRB_AP_REQ,
+	    decode it completely with kink_decode_kink_encrypt().
+
+* KINK payload encode/decode (kink_fmt.c)
+
+  * make_kink_*
+  * read_kink_*
+
+* Scheduler (scheduler.c)
+	(different from the racoon1 scheduler)
+
+  * Invoke the callbacks of timed-out kink_handles and compute the next timeout
+    struct timeval *scheduler(struct kink_global *kg, struct timeval *tv);
+
+    Parameters
+	kg                global state of the KINK daemon
+	tv                buffer for storing the return value
+    Return value
+	the next timeout time
+
+  * Registration
+    void sched_register(struct kink_handle *kh);
+
+  * Unregistration
+    void sched_unregister(struct kink_handle *kh);
+
+  * Wait for the next timeout of a timed-out kink_handle.
+    Exponential backoff, doubling.
+    void sched_waitnext(struct kink_handle *kh);
+
+  * Reset the timeout time
+    void sched_resettimer(struct kink_handle *kh);
+
+
+3.4. Flow of operation
+=================
+
+* Main loop @session.c
+	Wait for events on the various sockets and on the next timeout
+	computed by the scheduler
+		PF_KEYv2 socket
+		racoond socket (TCP)
+		A socket prepared for each of the local node's addresses (UDP, bound)
+		+ the timeout specification
+
+	In the case of a timeout
+		Control is returned to the scheduler, and
+		the timeout handler is called from the scheduler.
+
+		scheduler() @scheduler.c
+		-> (*kink_handle->state->timeout)() @schduler.c
+		   = timeout_i_getspi() @base.c
+		or = timeout_r_create() @base.c
+		...
+		or = periodic_update_addrs() @session.c
+
+	When an event occurs on the PF_KEYv2 socket
+		handle_pfkey() @pfkey.c
+		-> (*callback_acquire)() @pfkey.c
+		   = callback_acquire() @session.c
+		     -> acquire() @base.c
+		          -> initiate1() @base.c
+		-> (*callback_expire)() @pfkey.c
+		   = callback_expire() @session.c
+		     -> expire() @base.c
+		          -> initiate1() @base.c
+		-> (*job->callback)() @pfkey.c
+		   = callback_i_getspi() @base.c
+		or = callback_r_getspi() @base.c
+
+	When an event occurs on the racoond socket
+	(so far, only replies to FQDN QUERY)
+		racoond_handler() @racoond_if.c
+		-> racoond_read() @racoond_if.c
+		     -> parse_rep_fqdn_query() @racoond_if.c
+		          -> (*job->callback)() @racoond_if.c
+		             = callback_i_racoond() @base.c
+
+	When an event occurs on a network socket
+		receive() @base.c
+		-> handle_create() @base.c
+		-> handle_reply() @base.c
+
+* When SADB_ACQUIRE is received
+	Main loop
+	-> handle_pfkey() @pfkey.c
+	    -> pk_recvacquire() @pfkey.c
+	        -> (*callback_acquire)() @pfkey.c
+	           = callback_acquire @session.c
+	            -> acquire() @base.c
+	                -> initiate1() @base.c
+	                    Creation of the kink_handle.
+	                    Take the necessary information out of SADB_ACQUIRE.
+	                    (Currently, only the address is looked at.)
+	                    To obtain the responder's principal name,
+	                    send an FQDN QUERY to racoond and return for now.
+	Main loop
+	-> racoond_handler() @racoond_if.c
+	    -> (*job->callback)() @racoond_if.c
+	       = callback_i_racoond() @base.c
+	        -> initiate2() @base.c
+	            Proposal generation.
+	            Send SADB_GETSPI to the kernel. Return for now.
+	Main loop
+	-> handle_pfkey() @pfkey.c
+	    -> pk_recvgetspi() @pfkey.c
+	        -> (*job->callback)() @pfkey.c
+	           = callback_i_getspi() @base.c
+	            -> initiate3() @base.c
+	                ISAKMP payload generation.
+	                KRB_AP_REQ generation.
+	                    Obtain a Service Ticket if none exists.
+	                    Obtain a TGT if none exists.
+			KEYMAT computation
+	                inbound SA creation.
+	                Send the CREATE command. Return for now.
+	Main loop
+	-> receive() @base.c
+	    -> read_udp_pacet() @base.c
+	    -> handle_reply() @base.c
+	        Look up the kink_handle from the received XID.
+	        Decode the REPLY.
+
+	        If the Kerberos part succeeded, an AP_REP should come back, so
+		-> initate4() @base.c
+	            epoch check.
+	            Decode the ISAKMP payload.
+	            Verify that the 1st proposal was accepted.
+	            KEYMAT computation
+	            outbound SA creation.
+	            Key exchange complete. Return.
+	If it is left alone without rekeying, it will eventually time out and
+	-> scheduler() @scheduler.c
+	    -> timeout_i_stale() @base.c
+	        -> initiate6() @base.c
+	            Release the krb authentication contexts.
+	            The kink_handle disappears.
+
+* When a CREATE message is received
+	Main loop
+	-> receive() @base.c
+	    -> read_udp_packet() @base.c
+	    -> handle_create( @base.c
+	        -> respond_to_auth_command()
+	            Decode the CREATE.
+	            A KRB_AP_REQ should be attached, so extract it and check it.
+	                The authentication context is created here.
+	            Also decode the KINK_ENCRYPT.
+	            From the cname attached to the ticket,
+	            obtain the initiator's principal name.
+	            epoch check.
+	            -> respond1() @base.c
+	                Decode the ISAKMP payload.
+	                Check the proposal.
+	                SADB_GETSPI. Return for now.
+	Main loop
+	-> handle_pfkey() @pfkey.c
+	    -> pk_recvgetspi() @pfkey.c
+	        -> (*job->callback)() @pfkey.c
+	           = callback_r_getspi() @base.c
+	            -> resopnd2() @base.c
+	                ISAKMP payload generation.
+	                KEYMAT computation.
+	                inbound SA creation.
+	                outbound SA creation.
+	                Send the REPLY message.
+	                Key exchange is tentatively complete. Return.
+	Since the REPLY message may be lost and a CREATE may be retransmitted,
+	wait for a while in the R_AGING state.
+
+	(Note: for the responder, as soon as the key exchange completes;
+	 for the initiator, once the time during which a retransmission
+	 could arrive has passed (i.e., on entering I_STALE), the auth
+	 context may be freed; the current implementation keeps it until the kink_handle is destroyed.)
+
+3.5. Sockets
+================
+	PF_KEYv2 socket
+		Held globally in the local variable fd_pfkey in session()@session.c
+		and in kink_global->fd_pfkey.
+	racoond socket
+		A PF_UNSPEC/SOCK_STREAM socket to localhost.
+
+		Held globally in the local variable fd_rcnd in session()@session.c
+		and in kink_global->fd_rcnd.
+	KINK socket
+		Create one for each address the node has, and
+		bind it to that address.
+		A SOCK_DGRAM socket.
+		For PF_INET6, set the IPV6_V6ONLY socket option.
+		No per-socket policy is set for now.
+		(-> Therefore, unless the SPD is configured so that the KINK port
+		is not IPsec-protected, you will get stuck)
+
+		Stored in struct kink_addr, and
+		linked into the static variable addrlist in session.c.
+
+	select() is used to wait for events on the sockets, but
+	poll, kqueue, /dev/poll, or epoll should all work as well.

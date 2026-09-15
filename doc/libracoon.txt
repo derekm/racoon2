@@ -1,0 +1,803 @@
+# English translation of libracoon.ja.txt (the original $Id$ CVS header is omitted).
+
+This document describes libracoon.a, the common library of racoon2.
+
+o Common library overview (libracoon)
+
+	In libracoon, common processing such as the kernel interface and the parsing of configuration
+	files is provided as library functions, in order to make the implementation of key management
+	daemons easier.
+
+	The common library is mainly divided into the following modules.
+
+		- SADB/SPDB management interface
+		- Configuration file operations
+		- spmd interface
+		- Log output
+		- Utilities for the generic buffer rbuf
+		- Networking utilities
+		- Miscellaneous utilities
+
+o RCT format
+
+	libracoon defines an intermediate format (the RCT format) in order to absorb differences
+	caused by the implementations of cryptographic algorithms and the constants of each type.
+	All constants in the library are handled in the RCT format, and the constants are converted
+	according to the input/output with the kernel and to each key management protocol.
+	The following is the list of special numbers reserved in the RCT format.
+
+	Fixed values
+		RCT_BOOL_OFF   = 0
+		RCT_BOOL_ON    = 1
+		RCT_ADDR_INET  = 0x1000
+		RCT_ADDR_FQDN  = 0x2000
+		RCT_ADDR_MACRO = 0x4000
+		RCT_ADDR_FILE  = 0x8000
+
+o SADB/SPDB management interface
+
+	libracoon provides an API for managing the SADB and the SPDB.
+	These functions use PF_KEYv2 as the interface with the kernel, and
+	functions that use them are provided.
+	Return values from the kernel are made available to the application by
+	defining callback functions corresponding to each message.
+	In addition, the struct rcpfk_msg is used to pass parameters between the application and the API.
+
+	struct rcpfk_msg {
+		int so;
+		char errstr[RCPFK_ERRSTRBUFSIZE];
+		int eno;
+
+		u_int32_t seq;
+		struct sockaddr *sa_src;
+		struct sockaddr *sa_dst;
+		u_int32_t spi;
+		u_int32_t reqid;
+		u_int8_t satype;
+		u_int8_t samode;
+		u_int8_t enctype;
+		u_int8_t authtype;
+		size_t enckeylen;
+		size_t authkeylen;
+		caddr_t enckey;
+		caddr_t authkey;
+		u_int64_t lft_hard_time;
+		u_int64_t lft_hard_bytes;
+		u_int64_t lft_soft_time;
+		u_int64_t lft_soft_bytes;
+		u_int8_t expired;
+		u_int8_t wsize;
+		u_int32_t saflags;
+		u_int32_t flags;
+
+		u_int32_t slid;
+		struct sockaddr *sp_src;
+		struct sockaddr *sp_dst;
+		u_int8_t pref_src;
+		u_int8_t pref_dst;
+		u_int8_t ul_proto;
+		u_int8_t dir;
+	};
+
+	Each parameter is described below.
+
+	so
+		Socket used with PF_KEY
+	errstr
+		String describing the error
+	eno
+		Error number
+	seq
+		Sequence number used with PF_KEY
+	sa_src
+		Source address of the SA
+	sa_dst
+		Destination address of the SA
+	spi
+		SPI (network order)
+	reqid
+		Number assigned to the SA
+	satype
+		Type of the SA
+	samode
+		Mode of the SA
+	enctype
+		Type of the encryption algorithm
+	authtype
+		Type of the authentication algorithm
+	enckeylen
+		Key length of the encryption algorithm
+	authkeylen
+		Key length of the authentication algorithm
+	enckey
+		Key of the encryption algorithm
+	authkey
+		Key of the authentication algorithm
+	lft_hard_time
+		hard lifetime of time
+	lft_hard_bytes
+		hard lifetime of bytes
+	lft_soft_time
+		soft lifetime of time
+	lft_soft_bytes
+		soft lifetime of bytes
+	expired
+		Flag indicating whether the SA has expired
+	wsize
+		Window size for the duplication check
+	saflags
+		SA flags used with PF_KEY
+	flags
+		Flags used by the API
+		Set with rcpfk_init().
+	slid
+		Selector index
+	sp_src
+		Source address selector
+	sp_dst
+		Destination address selector
+	pref_src
+		Destination prefix length
+	pref_dst
+		Source prefix length
+	ul_proto
+		Upper layer protocol number
+	dir
+		Direction of the packet
+
+	Hereafter, this structure is referred to as rc.
+
+	When values are returned to sa_src, sa_dst, sp_src, and sp_dst as the return
+	values of the PFKEY API, these pointers point to the buffers inside rcpfk_msg.
+	If you want to use the values beyond the next rcpfk call, you must
+	copy them on the calling side.
+
+	The functions of this API are shown below. Note that when there is no
+	particular need to state explicitly, the description of each parameter is omitted.
+
+	int rcpfk_init __P((struct rcpfk_msg *rc, struct rcpfk_cb *cb));
+		This function must always be called first when using this API.
+		It opens the PF_KEY socket and defines the callback function for
+		each PF_KEY message. NULL means that no callback is performed.
+
+		Callback function definition structure
+		struct rcpfk_cb {
+			int (*cb_getspi) __P((struct rcpfk_msg *));
+			int (*cb_update) __P((struct rcpfk_msg *));
+			int (*cb_add) __P((struct rcpfk_msg *));
+			int (*cb_expire) __P((struct rcpfk_msg *));
+			int (*cb_acquire) __P((struct rcpfk_msg *));
+			int (*cb_delete) __P((struct rcpfk_msg *));
+			int (*cb_spdupdate) __P((struct rcpfk_msg *));
+			int (*cb_spdadd) __P((struct rcpfk_msg *));
+			int (*cb_spddelete) __P((struct rcpfk_msg *));
+			int (*cb_spdexpire) __P((struct rcpfk_msg *));
+			int (*cb_spdget) __P((struct rcpfk_msg *));
+		};
+
+		Input:
+			rc.flags
+				PFK_FLAG_NOHARM
+				PFK_FLAG_DEBUG
+			cb with callback functions set
+
+		Return value: 0 or -1
+		Output: rc.so
+
+	int rcpfk_clean(struct rcpfk_msg *rc);
+		Cleanup processing
+
+	int rcpfk_handler(struct rcpfk_msg *rc)
+		Main routine of the PF_KEY I/F called from the protocol daemon
+
+	Send functions for each message
+		Return value:
+			 0: normal termination
+			-1: abnormal termination
+				rc->estr
+				rc->eno
+
+	int rcpfk_send_getspi(struct rcpfk_msg *rc)
+		so
+			so set by rcpfk_init()
+		seq
+			rc->seq obtained from the acquire message
+		satype
+		samode
+		reqid
+			Always 0
+		sa_src
+		pref_src
+			sa_src.sa_len
+		sa_dst
+		pref_dst
+			sa_dst.sa_len
+		ul_proto
+			Always 0
+
+	int rcpfk_send_update(struct rcpfk_msg *rc)
+		so
+			so set by rcpfk_init()
+		seq
+			rc->seq obtained from the acquire message
+		satype
+		spi
+		wsize
+		authtype
+		enctype
+		saflags
+		samode
+		reqid
+			Always 0
+		lft_soft_time
+		lft_soft_bytes
+		lft_hard_time
+		lft_hard_bytes
+		sa_src
+			Port number (sin_port, sin6_port) is normally 0.
+			The UDP port number is set only when configuring
+			UDP encapsulated ESP.
+		pref_src
+			sa_src.sa_len
+		sa_dst
+			Same as sa_src.
+		pref_dst
+			sa_dst.sa_len
+		ul_proto
+			Always 0
+		enctype
+		enckey
+		enckeylen
+		authtype
+		authkey
+		authkeylen
+
+	int rcpfk_send_add(struct rcpfk_msg *rc)
+		so
+			so set by rcpfk_init()
+		seq
+			Always 0
+		satype
+		spi
+		wsize
+		authtype
+		enctype
+		saflags
+		samode
+		reqid
+			Always 0
+		lft_soft_time
+		lft_soft_bytes
+		lft_hard_time
+		lft_hard_bytes
+		sa_src
+			Port number (sin_port, sin6_port) is normally 0.
+			The UDP port number is set only when configuring
+			UDP encapsulated ESP.
+		pref_src
+			sa_src.sa_len
+		sa_dst
+			Same as sa_src.
+		pref_dst
+			sa_dst.sa_len
+		ul_proto
+			Always 0
+		enctype
+		enckey
+		enckeylen
+		authtype
+		authkey
+		authkeylen
+
+	int rcpfk_send_delete(struct rcpfk_msg *rc)
+		so
+			so set by rcpfk_init()
+		seq
+		eno
+			Error code passed to the kernel
+		satype
+		spi
+		sa_src
+		pref_src
+		sa_dst
+		pref_dst
+
+	int rcpfk_send_acquire(struct rcpfk_msg *rc)
+		so
+			so set by rcpfk_init()
+		seq
+			Always 0
+		satype
+
+	int rcpfk_send_register(struct rcpfk_msg *rc)
+		so
+			so set by rcpfk_init()
+		satype
+
+	int rcpfk_send_spdadd(struct rcpfk_msg *rc)
+		so
+			so set by rcpfk_init()
+		slid
+			policy_id managed in the kernel
+		satype
+		samode
+		lft_hard_time
+		lft_hard_bytes
+		sa_src
+		sa_dst
+		sp_src
+		pref_src
+		sp_dst
+		pref_dst
+		ul_proto
+			Always 0
+
+	int rcpfk_send_spddelete2(struct rcpfk_msg *rc)
+		so
+			so set by rcpfk_init()
+		slid
+			policy_id managed in the kernel
+
+	int rcpfk_supported_auth(int algtype);
+	int rcpfk_supported_enc(int algtype)
+		Checks whether the kernel supports the algorithm
+		* IPCOMP cannot be checked because PF_KEY does not support it.
+
+	int rcpfk_send_spdupdate(struct rcpfk_msg *rc)
+		so
+			so set by rcpfk_init()
+		slid
+			policy_id managed in the kernel
+		satype
+		samode
+		lft_hard_time
+		lft_hard_bytes
+		sa_src
+		sa_dst
+		sp_src
+		pref_src
+		sp_dst
+		pref_dst
+		ul_proto
+			Always 0
+
+	int rcpfk_send_spdadd(struct rcpfk_msg *rc)
+	    The members of the argument rc that must be set are the following
+	    satype        : RCT_SATYPE_*
+	    policy lifetime
+	    currently 0
+	    SA src address (may be specified only in tunnel mode)
+	    SA dst address (may be specified only in tunnel mode)
+	    policy_id managed in the kernel
+	    source address of the policy
+	    prefix length of sp_src
+	    destination address of the policy
+	    prefix length of sp_dst
+	    upper layer protocol
+	    direction
+
+            In tunnel mode, the tunnel endpoint addresses are set in sa_src/sa_dst, and
+	    the address range (selector) is set in sp_src/sp_dst.
+	    In transport mode, the addresses of both endpoints are set in sp_src/sp_dst, and
+	    sa_src/sa_dst need not be set.
+
+	int rcpfk_send_spddelete(struct rcpfk_msg *rc)
+	    The members of the argument rc that must be set are the same as for rcpfk_send_spdadd().
+
+o Configuration file operations
+
+	racoon2 shares a single configuration file in order to reduce the hassle of configuration,
+	and each daemon reads the same file. For this purpose, libracoon provides an
+	API for each daemon to operate on the configuration file and to refer to the settings.
+
+	The functions of this API are shown below.
+
+	int rcf_read(const char *file, int flag)
+		Parses the configuration file and saves it in memory.
+		Each setting can be referred to by the following variable names.
+		They can also be referred to by the individual functions.
+
+		struct rcf_setval *rcf_setval_head;
+		struct rcf_default *rcf_default_head;
+		struct rcf_interface *rcf_interface_head;
+		struct rcf_resolver *rcf_resolver_head;
+		struct rcf_remote *rcf_remote_head;
+		struct rcf_selector *rcf_selector_head;
+
+		flag
+			RCF_PARSE_DEBUG
+				Set during debugging
+
+		OUT:
+			0: normal termination or -1: abnormal termination
+
+		rcf_read() can be called consecutively (without calling rcf_clean()).
+		When it is called a second time or later,
+		the settings are re-read from the configuration file.
+		- If no error occurs during parsing, the previous settings are
+		  released.
+		- If an error occurs during parsing, the previous settings are
+		  retained.
+
+	int rcf_clean(void)
+		Releases the memory in which the settings are stored.
+
+	int rcf_get_remotebyindex(vchar_t *rm_index, struct rcf_remote **rm)
+		Compares rm_index with the remote_index of the settings, and
+		returns the copy of the rcf_remote that matched.
+		To release it, rcf_free_remote() must be called.
+
+	int rcf_get_remotebyaddr(struct sockaddr *peers_ipaddr,
+	    rcf_type kmp_type, struct rcf_remote **rm)
+		Compares the peer's IP address with each peers_ipaddr of the settings, and
+		returns the copy of the rcf_remote that matched.
+		To release it, rcf_free_remote() must be called.
+
+	int rcf_get_remotebypeersid(rc_type id_type, vchar_t *id_val,
+	    rcf_type kmp_type, struct rcf_remote **rm, rc_type kmp_type)
+		Compares the peer's ID with each peers_id of the settings, and
+		returns the copy of the rcf_remote that matched.
+		To release it, rcf_free_remote() must be called.
+
+	void rcf_free_remote(struct rcf_remote *rm)
+		Releases an rcf_remote.
+
+	int rcf_get_selectorlist(struct rcf_selector **sl)
+		Returns a copy of the list of selectors.
+		To release it, rcf_free_selector() must be called.
+
+	int rcf_get_selector(int sl_index, struct rcf_selector **sl)
+		Compares sl_index with the selector_index of the settings, and
+		returns the copy of the selector list that matched.
+		To release it, rcf_free_selector() must be called.
+
+	void rcf_free_selector(struct rcf_selector *sl)
+		Releases an rcf_selector.
+
+	int rcf_spmd_resolver(void)
+		Returns resolver_enable of the settings.
+			1: runs as a resolver
+			0: does not run as a resolver
+
+	int rcf_get_resolvers(struct rc_addrlist **addrlist)
+		Returns a copy of the nameservers of the settings.
+		To release it, rcs_free_addrlist() must be called.
+
+	int rcf_get_dns_queries(struct rc_addrlist **addrlist)
+		Obtains the list of addresses that accept queries from the configuration file.
+		Returns a copy of the dns_query of the settings.
+		To release it, rcs_free_addrlist() must be called.
+
+	int rcf_get_spmd_interfaces(struct rc_addrlist **addrlist)
+		Obtains the list of addresses used for the spmd I/F.
+
+o spmd interface
+
+	In racoon2, each daemon requests spmd to set or delete security policies
+	and so on. libracoon provides this API.
+
+	When a callback function can be passed, NULL means that no callback is made.
+	Return values from the callback functions are currently ignored.
+	XXX Since file-scope static variables are currently used, multiple spmd
+	interfaces cannot be opened.
+	XXX The interface is designed on the premise that a write to spmd does not
+	block...
+
+	int spmif_init(void);
+		Initializes the internal state of the spmd interface and connects to spmd.
+		Prior to all of the spmd interface functions,
+		this function must be called.
+
+		Return value:
+			>=0: normal termination (descriptor of the spmd interface)
+			-1:  abnormal termination
+
+		XXX Obtaining the password from config is not implemented yet.
+
+	Closes the spmd interface socket given by fd, and
+		Closes the spmd interface socket given by fd, and
+		releases the internal state.
+		The QUIT command is not sent.
+
+	int spmif_post_policy_add(int fd,
+	    int (*callback)(void *, int), void *tag,
+	    uint32_t spid, time_t lifetime, rc_type samode,
+	    struct sockaddr *sp_src, struct sockaddr *sp_dst,
+	    struct sockaddr *sa_src, struct sockaddr *sa_dst);
+		Sends the POLICY ADD command to spmd.
+		sp_src/sp_dst and sa_src/sa_dst must match the direction of the
+		selector specified by spid.
+		Sets the callback function for receiving the reply.
+		callback 1st argument: tag
+			 2nd argument: success=0, failure=-1
+
+	int spmif_post_fqdn_query(int fd, int (*callback)(void *, const char *),
+	    void *tag, struct sockaddr *sa);
+		Sends the FQDN QUERY command to spmd, and
+		sets the callback function for receiving the reply.
+		callback 1st argument: tag
+			 2nd argument: FQDN string (NULL on failure)
+
+	int spmif_post_slid(int fd, int (*callback)(void *, int),
+	    void *tag, u_int32_t spid);
+		Sends the SLID command to spmd, and
+		sets the callback function for receiving the reply.
+		callback 1st argument: tag
+			 2nd argument: selector index (-1 on failure)
+
+	int spmif_post_quit(int fd);
+		Sends the QUIT command to spmd.
+		After this function is called, functions other than spmif_clean()
+		should not be called.
+
+	void spmif_cancel_callback(void *tag);
+		Of the replies not yet called back, the callbacks of those whose tag
+		matches are cancelled.
+		(The sending of the command itself is not cancelled.)
+
+	int spmif_handler(int fd);
+		Handler of the spmd interface called from the protocol
+		daemon.
+		It receives replies from spmd, and if the corresponding callback
+		function is set, it calls it.
+
+o Log output plog
+
+	libracoon provides a set of common functions, plog, for log output.
+	With plog, the specified message or a memory dump can be output using syslog(),
+	or output to a file or standard output. The output destination can also be changed individually.
+
+	Because the generic buffer rbuf (described later) is used internally,
+	rbuf_init() must be called first.
+
+	void plog_setmode(int logmode, char *logfile, char *progname,
+	    int need_output, int f_stdout)
+		logmode:  whether it is debug mode or not
+			RCT_LOGMODE_DEBUG
+			RCT_LOGMODE_NORMAL (default)
+		logfile:  specifies the log file. Can be omitted.
+			When NULL, syslog() is used. (default)
+			With syslog(), output is always made using the following flags.
+				logopt = LOG_NDELAY
+				facility = LOG_DAEMON
+		progname: name of the calling program. Can be omitted.
+		need_output: defines the behavior of plog()
+			0: only creates the message (default)
+			1: outputs to the specified destination
+		f_stdout: whether the log is also output to standard output
+			valid only when need_output == 1
+			0: not output (default)
+			1: output
+
+	const char *plog(int tag, const char *location, struct rc_log *plog,
+	    const char *msg, ...)
+	const char *plogv(int tag, const char *location, struct rc_log *plog,
+	    const char *msg, va_list)
+	const char *plogdump(int tag, const char *location, struct rc_log *plog,
+	    void *ptr, size_t len)
+		Generates and returns the message to be output to the log.
+		The behavior can be changed with the need_output of plog_init().
+
+		tag
+			RC_LOG_INFO
+				[INFO]
+				General information
+			RC_LOG_PROTO_ERR
+				[PROTO_ERR]
+				Errors of the protocols that flow on the wire, such as IKE and KINK
+					The format is wrong
+					The checksum is wrong
+					Authentication failed
+			RC_LOG_PROTO_WARN
+				[PROTO_WARN]
+				When an error in a protocol that flowed on the wire does not interrupt
+				processing
+			RC_LOG_INTERNAL_ERR
+				[INTERNAL_ERR]
+				Errors related to internal processing, such as PF_KEY and system calls
+					PF_KEY error
+					malloc failed
+					No entry in the DB
+			RC_LOG_INTERNAL_WARN
+				[INTERNAL_WARN]
+				When an error related to internal processing does not interrupt processing
+			RC_LOG_DEBUG
+				[DEBUG]
+				Debug
+			RC_LOG_CRITICAL
+				[CRITICAL]
+				A state in which exit(-1) is performed
+
+		location
+			Defines the string that follows the tag.
+			NULL means omitted.
+			The macro PLOGLOC, which indicates the location in the source code, is provided.
+
+		plog
+			Specifies the output destination of the log.
+			When NULL, plog_init() is followed.
+
+		msg
+			Defines the string.
+
+o Utilities for the generic buffer rbuf
+
+	libracoon provides the function rbuf, which sequentially uses fixedly
+	allocated buffer areas.
+	rbuf is composed of two fixed-size buffers and one variable-length buffer, and
+	their sizes and counts are set at initialization.
+	When in use, a function corresponding to the required buffer size is called, and
+	there is no need to free() after use; the buffers are sequentially reused.
+	Therefore, the number of buffers used simultaneously must be estimated in advance.
+
+	int rbuf_init(int snum, int slen, int lnum, int llen, int vnum)
+		Allocates small, large, and variable buffers
+		snum: number of small buffers
+		slen: length of small buffers
+		lnum: number of large buffers
+		llen: length of large buffers
+		vnum: number of variable-length buffers
+
+	void rbuf_clean(void)
+		Performs the cleanup processing
+
+	vchar_t *rbuf_getsb()
+		Returns a pointer to a small buffer.
+
+	vchar_t *rbuf_getlb()
+		Returns a pointer to a large buffer.
+
+	vchar_t *rbuf_getvb(int len)
+		Returns a pointer to a variable-length buffer.
+
+o Networking utilities
+
+	libracoon provides functions related to networking.
+	racoon2 provides macros that represent the addresses attached to
+	interfaces. In addition, in order to process these macros, Internet
+	addresses, and FQDNs in a unified manner, the struct rc_addrlist is used.
+
+	The struct rc_addrlist is described below.
+
+		struct rc_addrlist {
+			struct rc_addrlist *next;
+			rc_type type;
+			int port;
+			int prefixlen;
+			union {
+				struct sockaddr *ipaddr;
+				vchar_t *vstr;
+			} a;
+		};
+
+		type
+			RCT_ADDR_INET
+				IP address or network address
+			RCT_ADDR_FQDN
+				String
+			RCT_ADDR_MACRO
+				The available macros are as follows
+				MY_IP
+				MY_IPV6
+				MY_IPV6_GLOBAL
+				MY_IPV6_LINKLOCAL
+				MY_IPV4
+
+				For the above, an interface name can be specified with '%' in between
+					Example: MY_IP%(interface name)
+
+				MY_HOA: * not implemented
+				IP_ANY: :: and 0.0.0.0 are returned
+
+			RCT_ADDR_FILE
+				File name of a UNIX domain socket
+		port
+			When type == RCT_ADDR_INET, the port number of
+			a.ipaddr is copied
+
+		When RCT_ADDR_INET, it can be referred to with a.ipaddr.
+		When type is other than that, it can be referred to with a.vstr.
+
+	int rcs_is_addrmacro(vchar_t *macro);
+		Checks whether macro is an IP address macro.
+		Returns 1 if it is an IP address macro.
+
+	int rcs_getaddrlistbymacro(vchar_t *macro, struct rc_addrlist **alist);
+		Expands macro and returns the list of IP addresses.
+
+	void rcs_free_addrlist(struct rc_addrlist *alist);
+		Releases an rc_addrlist.
+
+	int rcs_getifaddrlist(struct rc_addrlist **alist);
+		Obtains all of the usable addresses attached to interfaces.
+
+		Usable addresses are those with the following flags not set:
+			IN6_IFF_DUPLICATED
+			IN6_IFF_DETACHED
+			IN6_IFF_ANYCAST
+
+	int rcs_getaddrlist(char *addr, char *port, rc_type flag,
+	    struct rc_addrlist **alist);
+		flag =:
+			RCT_ADDR_INET or 0
+				Expands into addresses and returns the addrlist.
+			RCT_ADDR_FQDN
+				Sets addr without expanding it and returns the addrlist.
+			RCT_ADDR_MACRO
+				Sets addr without expanding it and returns the addrlist.
+				Returns an error if it is not a MACRO.
+
+	int rcs_extend_addrlist(struct rc_addrlist *src, struct rc_addrlist *dst);
+		If src contains a MACRO, it is expanded and then copied to dst.
+
+	struct sockaddr *rcs_sadup(struct sockaddr *);
+		Returns a copy of the sockaddr *
+
+	int rcs_getsaport(struct sockaddr *);
+		Extracts the port number from the sockaddr * in host byte order.
+
+	int rcs_getsalen(struct sockaddr *);
+		Extracts the value corresponding to sa_len from the sockaddr *.
+
+		#ifdef HAVE_SA_LEN
+		#define SA_LEN(sa) ((sa)->sa_len)
+		#else
+		#define SA_LEN(sa) (rcs_getsalen(sa))
+		#endif
+
+	const char *rcs_sa2str(struct sockaddr *);
+		Converts the sockaddr * into an "ipaddress[port]" string.
+		There is no need to free the returned string.
+
+	int rcs_cmpsa_wop(struct sockaddr *, struct sockaddr *);
+		Compares the sockaddr * values except the port number, and returns 1 if they match.
+
+	int rcs_cmpsa(struct sockaddr *, struct sockaddr *);
+		Compares the sockaddr * values, and returns 1 if they match.
+
+	int ike_rcfpolicy2sapayload(struct rcf_policy *pl, vchar_t **)
+		Creates an IKE SA payload from the struct rcf_policy.
+		* Not implemented
+
+	int ike_sapayload2rcfpolicy(vchar_t *, struct rcf_policy **pl)
+		Creates a struct rcf_policy from the IKE SA payload.
+		* Not implemented
+
+	int ike_checksapayload(struct rcf_policy *pl1, struct rcf_policy *pl2)
+		Compares two rcf_policy values.
+		* Not implemented
+
+o pidfile operation utilities
+
+	int rc_make_pidfile(const char *filename)
+		Creates a pidfile named filename; if it can flock(), it writes
+		the pid at that point and returns 0.
+		If flock() fails, it considers that another instance is running, and
+		returns -1, failing.
+
+	int rc_make_pidfile_on_dir(const char *dirname, const char *progname)
+		Same as rc_make_pidfile(), except that it creates a pidfile named
+		dirname/progname.pid.
+
+	void rc_cleanup_pidfile(void)
+		Deletes the pidfile created by rc_make_pidfile().
+
+	int rc_read_pidfile(pid_t *pid, const char *filename);
+		Reads the pid from the pidfile specified by filename.
+
+o Miscellaneous utilities
+
+	const char *rc_version(void)
+		Returns the version of racoon2 as a string.
+
+	const char *rc_startmsg(void)
+		Returns the message used at startup as a string.
+
+	int rc_pcap_init(char *fname, char *fmode)
+		Specifies the file in which the dump is written in pcap format.
+		If fmode[0] == 'w', the file is initialized.
+
+	void rc_pcap_push(struct sockaddr *src, struct sockaddr *dst,
+	    vchar_t *data)
+		Writes to the file specified by rc_pcap_init() in pcap format.
+		data->v is the pointer to the UDP payload.

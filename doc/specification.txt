@@ -1,0 +1,670 @@
+; English translation of specification.ja.txt
+
+Racoon2 Specification
+
++ Overview
++ Policy management daemon (spmd)
++ IKEv1/v2 daemon (iked)
++ KINK daemon (kinkd)
++ Configuration file (racoon.conf)
++ Common library (libracoon.a)
+
+
++ Overview
+
+o racoon2 overview
+	racoon2 is a framework for running multiple key exchange protocols
+	simultaneously on a single platform.
+	racoon2 consists of a policy management daemon and per-protocol daemons,
+	and provides the common library necessary for key management.
+
+	At startup, the policy management daemon reads the configuration file
+	and, if necessary, installs the filters written in it into the kernel.
+	These filters have the role of generating requests from the kernel
+	in order to start up each protocol daemon.
+	Also, when an application resolves a name, the name and selector are
+	cached if necessary, and a filter is installed into the kernel.
+	PF_KEY version 2 [RFC2367] and its extensions are used as the
+	interface to the kernel. When a new version of PF_KEY or PF_POLICY
+	appears, a migration will be made.
+
+	Each protocol daemon on the Initiator side receives the SA setup
+	request event from the kernel and starts the key exchange.
+	The Responder starts the key exchange if necessary, triggered by the
+	key exchange request event from the Initiator side.
+	The following key exchange protocols are supported over IPv4 and IPv6.
+
+		IKE version 1 [RFC2409, RFC2407, RFC2408]
+		IKE version 2 [draft-ietf-ipsec-ikev2-17.txt]
+		KINK [draft-ietf-kink-kink-06.txt]
+
+	The common library provides the kernel interface, configuration file
+	manipulation, and other utilities.
+
+o Terminology
+	filter
+		The definition of the processing for an arbitrary packet.
+		It consists of a selector and a rule.
+		It is synonymous with policy.
+
+	policy
+		It is synonymous with filter.
+
+	selector
+		The comparison elements for applying a filter to a packet.
+			IP address
+			prefix length
+			protocol number
+			ICMP type
+			ICMP code
+			port number
+		It consists of these elements.
+
+	rule
+		It describes the processing of packets that match the filter.
+		In the case of IPsec, the following three kinds exist.
+			discard the packet
+			bypass the IPsec stack
+			pass through the IPsec stack
+		In the case of passing through the IPsec stack, the security
+		protocol and mode are also defined.
+
+	selector index
+		A string that uniquely identifies a selector.
+		selector_index is unique across the entire configuration file.
+
+o Operating environment
+	Development is done on the following platforms:
+		NetBSD 2.0
+		Linux 2.6.0
+
+	The goal is to run on the following platforms:
+		NetBSD 2.0
+		FreeBSD 4.x
+		Linux 2.6.0
+
+	The required kernel interfaces are as follows:
+		Socket API
+		Advanced API[]
+		PF_KEY [RFC2367]
+		PF_KEY extension or filter operation interface
+
+	- PF_KEY [RFC2367]
+		At least the following messages must be supported:
+		GETSPI
+		UPDATE
+		ADD
+		DELETE
+		EXPIRE
+		ACQUIRE
+
+	- PF_KEY extension or filter operation interface
+		An interface for operating the security policy database (SPD) or
+		an equivalent filter database must exist.
+
+	- Regarding the initiation of key exchange
+		When the kernel transmits a packet, it evaluates the filter, and
+		if IPsec is to be applied, it checks whether a corresponding SA
+		exists; if not, it can notify the filter identifier to user space.
+		In racoon2, the identifier of a filter is called the filter ID.
+		Also, the evaluation order of filters can be specified by the user.
+
+	- Requirements for Kerberos
+		One principal must be defined per A record.
+
+o Configuration
+	XXX Relationship with manually configured SAs
+
+o Configurable SAs and IPsec modes
+	IKEv1/IKEv2
+		ESP with transport mode
+			IP|ESP|ULP
+		AH with transport mode
+			IP|AH|ULP
+		IPCOMP with transport mode
+			IP|IPCOMP|ULP
+		AH+ESP with transport mode
+			IP|AH|ESP|ULP
+		AH+IPCOMP with transport mode
+			IP|AH|IPCOMP|ULP
+		ESP+IPCOMP with transport mode
+			IP|ESP|IPCOMP|ULP
+		AH+ESP+IPCOMP with transport mode
+			IP|AH|ESP|IPCOMP|ULP
+		ESP with tunnel mode
+			IP2|ESP|IP1|ULP
+		AH with tunnel mode
+			IP2|AH|IP1|ULP
+		IPCOMP with tunnel mode
+			IP2|IPCOMP|IP1|ULP
+		AH+ESP with tunnel mode
+			IP2|AH|ESP|IP1|ULP
+		AH+IPCOMP with tunnel mode
+			IP2|AH|IPCOMP|IP1|ULP
+		ESP+IPCOMP with tunnel mode
+			IP2|ESP|IPCOMP|IP1|ULP
+		AH+ESP+IPCOMP with tunnel mode
+			IP2|AH|ESP|IPCOMP|IP1|ULP
+
+	KINK
+		ESP with transport mode
+			IP|ESP|ULP
+
+o Startup and shutdown
+	First, spmd is started; next, the protocol daemons (iked, kinkd) are started.
+	iked and kinkd are started individually.
+	When spmd terminates, each protocol daemon also terminates.
+
+
++ Policy management daemon (spmd)
+
+o Policy management daemon overview
+	The policy management daemon is divided into the following processes:
+		the process of installing filters into the kernel
+		the name resolution process
+		the reverse address resolution process
+		the mapping of selector indexes and SPIDs
+
+	At startup, the filters written in the configuration file are installed
+	into the kernel. If the selector contains an FQDN, the IP address at the
+	time of installation is used. Thereafter, when an application resolves
+	names, the kernel filter is replaced using the IP address at that time.
+	Therefore, to use an FQDN in a selector, the application's resolver
+	must be replaced by the policy management daemon.
+
+	When a filter is installed into the kernel, the kernel returns the
+	allocated SPID, and the correspondence between it and the selector index is managed.
+
+	Upon receiving a reverse address resolution request from a protocol
+	daemon, the cached FQDN is returned.
+	Upon receiving a policy setup request from a protocol daemon, the
+	corresponding filter is installed into the kernel. Since the policy
+	setup request specifies the selector index, the corresponding
+
+o Startup options
+	See commandline-options.txt.
+
+o spmd interface
+	TCP port number 9555 (tentative) on localhost is used.
+	It is implemented so that debugging with telnet(1) is possible.
+	The challenge and response method is used for authentication.
+	The password is written in the configuration file.
+	Be careful about the permissions of the configuration file.
+	Normalization of IP addresses is not particularly necessary.
+
+o Initialization process
+	Reading of the configuration file
+	Argument processing
+	Duplicate startup check
+	Logging initialization
+	Initialization of each socket
+	PF_KEY initialization
+	PF_POLICY initialization
+	FQDN cache initialization
+	Event wait
+
+o Name resolution process
+	Since the resolver is replaced, normal name resolution requests from
+	applications must be answered.
+	Port 53 of 127.0.0.1 and ::1 is used.
+	If the requested FQDN is in the configuration file, it is expanded,
+	and filters are installed into the kernel for all addresses; the
+	pairs of FQDN and IP address are cached.
+	If a filter has already been installed, it is overwritten.
+
+	P.HOGE CNAME Z.HOGE
+	Q.HOGE CNAME Z.HOGE
+	R.HOGE CNAME Z.HOGE
+
+	P.HOGE A     Z.HOGE
+	Q.HOGE A     Z.HOGE
+	R.HOGE A     Z.HOGE
+
+o Cache
+	All FQDNs written in racoon.conf are subject to caching.
+	All A records are expanded and cached.
+	Records are not deleted, but the cache is updated at name resolution.
+	Upon receiving SIGUSR2, the cache is purged.
+
+o Reverse address resolution process
+	Upon receiving a reverse address resolution request from a protocol
+	daemon, one arbitrary corresponding A record is returned.
+
+o Policy setup request processing
+	Upon receiving a policy setup request from a protocol daemon, the
+	corresponding selector is installed into the kernel. This is a
+	request from a daemon operating as the Responder side.
+
+	selector INDEX
+	address of the peer
+
+o Writing out the current configuration
+	Upon receiving a notification from the user, the current SPD is written out to a file.
+
+o Termination events
+	Upon receiving a termination event from the administrative user, the daemon terminates normally.
+	The processing at termination is as follows:
+	- Discard of key exchange requests
+	- Closing of sockets
+	- Deletion, if necessary, of the IPsec policies set in the kernel or
+	  the SAs associated with them.
+	- Closing of the PF_KEY and PF_POLICY sockets
+	- Closing of log files
+	- Release of the duplicate startup prevention
+
+o Abnormal termination
+	For example, when an unrecoverable condition such as memory
+	exhaustion is reached, the daemon terminates abnormally, dumping a memory image.
+
+o Regarding rekey
+	Although it is conceivable that the daemon initiates rekey,
+	since there is no need to rekey when there are no packets to send,
+	initiation of rekey is left to the kernel.
+
+
++ IKEv1/v2 daemon (iked)
+
+o IKEv1/v2 daemon overview
+	This daemon supports IKE version 1 and IKE version 2.
+	It can communicate over IPv4 and IPv6.
+	The port number used for key exchange is 500, but it can be changed per peer in the configuration.
+	The functions defined in section 4, "Conformance Requirements," of
+	draft-ietf-ipsec-ikev2-10.txt are supported.
+	iked also supports configuration described with FQDNs.
+
+o Specifications regarding IKEv1
+	Main mode and Aggressive mode are supported.
+	Pre-share Key and RSA Signature in PKCS#1 are supported as authentication methods.
+	For Main mode with Pre-share Key, the ID is the IP address; in other
+	combinations, an IP address, FQDN, or E-mail address can be used.
+	Oakley groups 1, 2, and 5 are supported.
+
+o IKEv1 payload parsing
+	Among the payloads defined in RFC2408, the following payloads are supported.
+	ISAKMP Header
+	Security Association Payload
+	Proposal Payload
+	Transform Payload
+	Key Exchange Payload
+	Identification Payload
+	Certificate Payload
+	Certificate Request Payload
+	Hash Payload
+	Signature Payload
+	Nonce Payload
+	Notification Payload
+	    Notify Message Types
+	Delete Payload
+	Vendor ID Payload
+
+o Regarding SA lifetimes in IKEv1
+	The lifetime of the IKE-SA and the lifetime of the IPsec-SA are independent.
+
+	For the proposal of the IKE-SA initiator, the responder selects one of
+	the following behaviors:
+
+	OBEY
+		Always obeys the lifetime presented by the initiator.
+
+	STRICT
+		If the lifetime presented by the initiator is shorter than or equal
+		to the responder's, it obeys the initiator. Otherwise, the message is discarded.
+
+	CLAIM
+		If the lifetime presented by the initiator is shorter than or equal
+		to the responder's, it obeys the initiator. Otherwise, it returns a
+		RESPONDER-LIFETIME Notify message and uses the responder's own lifetime.
+
+	EXACT
+		If the lifetime presented by the initiator is not equal to the
+		responder's, the message is discarded.
+
+o IKEv1 Initiator
+	Upon receiving an SA setup request event from the kernel, the filter
+	ID contained in it is passed to the policy lookup function to obtain
+	the policy. If key exchange is necessary, the definition of the peer
+	for the key exchange is obtained from the selector INDEX, and the key
+	exchange is started. After the key exchange completes, the SA is set
+	in the kernel, and a wait for SADB_EXPIRE messages from the kernel is entered.
+
+o IKEv1 Responder
+	Upon receiving a key exchange request message from the Initiator side,
+	in main mode, the source IP address is passed to the peer lookup
+	function to obtain information about the peer.
+	in aggressive mode, the ID contained in the ID payload is passed to
+	the peer lookup function to obtain information that identifies the peer.
+	For tunnel mode key exchanges, the SA selector contained in the
+	Phase 2 ID payload is passed to the selector lookup function to
+	obtain the selector and the policy. After the key exchange, the SA
+	is set in the kernel, a policy setup request is sent to the policy management daemon, and a wait for SADB_EXPIRE messages from the kernel is entered.
+
+	Also, in the case of Roadworror...
+	selector_info is looked up from the phase 1 ID;
+	if it is not found, the lookup is performed using the ID payload.
+	When selector_info is looked up from the ID, the phase 2 ID payload
+	is not checked.
+
+o Specifications regarding IKEv2
+	The following features are not supported:
+		Communication across NAT using a UDP-ESP tunnel (nat-t)
+		Acquisition of temporary IP addresses for tunnel endpoints (mode-cfg)
+		Legacy authentication (xauth)
+		Window size of 1 or more
+		The capability to set up multiple SAs from a single IKE_SA
+		However, SA bundles are not subject to this.
+
+	According to the configuration file, the daemon acts as the Initiator
+	side, the Responder side, or both.
+	To change the behavior, restart the daemon.
+
+o IKEv2 messages
+	IKE_SA_INIT, IKE_AUTH, CREATE_CHILD_SA, and INFORMATIONAL defined in
+	the IKEv2 specification must be processed appropriately.
+	It is permitted to return an empty Informational message in response
+	to an Informational message, but iked shall return an appropriate message.
+
+o IKEv2 payload parsing
+	The following payloads are supported:
+		The IKE Header
+		Security Association Payload
+		Key Exchange Payload
+		Identification Payloads
+		Certificate Payload
+		Certificate Request Payload
+		Authentication Payload
+		Nonce Payload
+		Notify Payload
+		Delete Payload
+		Vendor ID Payload
+		Traffic Selector Payload
+		Encrypted Payload
+
+	For any other payload, the processing differs depending on whether the critical bit is set.
+	If the critical bit is set, the entire packet is discarded.
+	If the critical bit is not set, only that payload is ignored.
+	In either case, the type and whether the critical bit is set are output to the log.
+
+o IKEv2 TS Payload
+	In the case of an Initiator
+		The TS payload is generated from the selector information.
+		The SADB_ACQUIRE message that iked receives from the kernel
+		contains a selector ID; along with the configuration file loaded
+		at startup, iked can refer to the selector information from this.
+
+	In the case of a Responder
+		The TS payload is determined from the selector information.
+		Based on the IDi payload contained in the received IKE_AUTH
+		message, iked refers to the remote information. Next, the selector
+		information is looked up from the TS payload. From the looked-up
+		selector information, the remote information can be referred to via the policy information, and the remote information is checked by this.
+
+		* The method of searching (matching) the selector information:
+		if the TS payload starts with a specific TS and that TS is
+		contained in the selectors of one's own configuration, or
+		if the first TS of the TS payload is not a specific
+		TS,
+		and at the same time,
+		any TS in the TS payload contains the selectors of one's own
+		configuration,
+		then it is considered a match.
+		(requires further study)
+
+		The TS payload that the responder returns to the initiator is
+		always generated from the selectors of its own configuration.
+		That is, when the peer's TS is broader, it is narrowed to one's
+		own selectors.
+
+
+o IKEv2 Initiator
+	Upon receiving an SA setup request event from the kernel, the
+	selector index contained in it is passed to the policy lookup
+	function to obtain the policy. If key exchange is necessary, the
+	peer information for the key exchange is obtained from the selector index, and the key exchange is started.
+
+	After the key exchange completes, the SA is set in the kernel, and
+	a wait for SADB_EXPIRE messages from the kernel is entered.
+	XXX Does it enter [the wait]? Or does it do it independently?
+
+	+ IKE_SA_INIT
+	HDR, SAi1, KEi, Ni
+
+	+ IKE_AUTH
+	HDR, SK {IDi, [CERT,] [CERTREQ,] [IDr,] AUTH, SAi2, TSi, TSr}
+
+	+ CREATE_CHILD_SA
+	HDR, SK {[N], SA, Ni, [KEi], [TSi, TSr]}
+
+o IKEv2 Responder
+	The method of searching for remote_info is adopted in the following order:
+		IP address and the peers_ipaddr of each remote_info
+		ID and the peers_id of remote_info
+		default
+	in that order.
+	Upon receiving a key exchange request message from the Initiator
+	side, in the case of a tunnel mode key exchange, the SA selector
+	contained in the TS payload is passed to the selector lookup
+	function to obtain the selector and the policy. After the key
+	exchange, the SA is set in the kernel, a policy setup request is sent to the policy management daemon, and a wait for SADB_EXPIRE messages from the kernel is entered.
+	Also, in the case of Roadworror...
+
+	+ IKE_SA_INIT
+	HDR, SAr1, KEr, Nr, [CERTREQ]
+
+	+ IKE_AUTH
+	HDR, SK {IDr, [CERT,] AUTH, SAr2, TSi, TSr}
+
+	+ CREATE_CHILD_SA
+	HDR, SK {SA, Nr, [KEr], [TSi, TSr]}
+
+o INFORMATIONAL in IKEv2
+	HDR, SK {[N,] [D,] [CP,] ...} -->
+	                             <-- HDR, SK {[N,] [D,] [CP], ...}
+
+o IKEv2 with cookies
+       Initiator                          Responder
+       -----------                        -----------
+       HDR(A,0), SAi1, KEi, Ni   -->
+
+                                 <-- HDR(A,0), N(COOKIE)
+
+       HDR(A,0), N(COOKIE), SAi1, KEi, Ni   -->
+
+                                 <-- HDR(A,B), SAr1, KEr, Nr, [CERTREQ]
+
+       HDR(A,B), SK {IDi, [CERT,] [CERTREQ,] [IDr,]
+           AUTH, SAi2, TSi, TSr} -->
+
+                                 <-- HDR(A,B), SK {IDr, [CERT,] AUTH,
+                                                SAr2, TSi, TSr}
+
+      Cookie = <VersionIDofSecret> | Hash(Ni | IPi | SPIi | <secret>)
+
+
+o SA Lifetime
+	In accordance with the IKEv2 specification, the lifetimes of both
+	the IKE-SA and the AH/ESP-SA are not negotiated. rekey occurs from
+	both the Initiator and the Responder at the configured lifetime.
+	jitter is added to avoid simultaneous occurrence. jitter is configurable.
+	Depending on the configuration, it is also possible that it does not occur.
+
+	- When the IKE-SA expires before the AH/ESP-SA
+	The IKE-SA is rekeyed, and the Child-SA is taken over by the new IKE-SA.
+
+	- End of rekey
+	soft/hard expiration times are set for the lifetime.
+	If an ACQUIRE is received before the hard expiration time, a rekey is performed.
+	Both soft and hard are set in the kernel.
+
+	- Behavior expected of the kernel during rekey
+	If an SA is needed, one or more ACQUIRE messages are sent by the
+	hard expiration time. It is desirable that no ACQUIRE be sent until
+	the soft expiration time arrives. When the soft expiration time
+	arrives, one ACQUIRE is sent. Thereafter, an ACQUIRE is sent each
+	time the SA lookup fails. It is desirable that two or more ACQUIRE messages not be sent within one second.
+
+o DH key exchange
+	- Using the parameters defined in the DH group, the values used
+	  for the DH key exchange are generated.
+	- Library functions are used for the generation, but since they
+	  are not included in the distribution kit, they must be linked at compile time or at run time.
+	- The functions used are the key pair generation function and the shared key generation function.
+	- The inputs to the library functions are p and g in Y = g^X mod p.
+	  Here, p and g are defined in the IKE specification; p is a
+	  sufficiently large prime, and g is 2.
+	  The outputs of the library functions are Y and X.
+	- DH groups used
+		1,2 (ikev2-17.txt, Appendix B)
+		5,14,15,16,17,18 (RFC3526)
+		elliptic curve groups are not considered
+	- OpenSSL can be used as the library.
+	- If groups other than these are defined, they can be made usable
+	  by recompiling.
+	- The DH public information is sent to the peer using the KE payload.
+
+
++ KINK daemon (kinkd)
+
+o KINK daemon overview
+	This daemon supports KINK (draft-ietf-kink-kink-05.txt).
+	The port number used for key exchange is <IANA consideration>.
+
+o Operating environment
+	The operating environment basically follows racoon2, but the following additional environment is required.
+
+	- PF_KEY extension interface
+		The PF_KEY interface must provide
+		a function for rewriting the IPsec SA parameters
+		without changing the SPI.
+		If the 3-way handshake is not performed, this function is not necessary.
+
+	- Kerberos V5 library
+		The supported Kerberos 5 libraries are as follows:
+			Heimdal-0.6
+
+		XXX
+		Because the export regulations have been relaxed, the Kerberos
+		library from MIT has become obtainable since 2003-10-24;
+			MIT krb5
+		may be supported in the future.
+
+	- Cryptographic library
+		OpenSSL ???
+
+o KINK messages
+	Among the messages defined in draft-ietf-kink-kink-05.txt, the following
+		CREATE
+		DELETE
+		REPLY
+		GETTGT
+		ACK
+		STATUS
+	are supported.
+
+o KINK payloads
+	The payload numbers are currently <IANA consideration>.
+	All the payloads defined in draft-ietf-kink-kink-05.txt
+	are supported.
+		KINK_AP_REQ
+		KINK_AP_REP
+		KINK_KRB_ERROR
+		KINK_TGT_REQ
+		KINK_TGT_REP
+		KINK_ISAKMP
+		KINK_ENCRYPT
+		KINK_ERROR
+
+o ISAKMP payloads
+	Among the payloads defined in RFC2408, the following payloads are supported.
+		Security Association Payload
+		Proposal Payload
+		Transform Payload
+		Nonce Payload
+		Delete Payload
+
+	XXX
+	key exchange
+	identification
+	notification
+
+o Initialization process
+	Argument processing
+	Reading of the configuration file
+	Logging initialization
+	Internal state initialization
+	Acquisition of the Kerberos TGT
+	Duplicate startup prevention processing
+	Signal configuration
+	KINK socket initialization
+	PF_KEY initialization
+	Connection and login processing to spmd
+	Event wait
+
+o Acquisition of Kerberos tickets
+	The initial TGT is acquired at startup.
+	Service Tickets are acquired when a key exchange request occurs.
+	Both TGT and Service Tickets are cached.
+	If, as a result of the key exchange, the Service Ticket has expired,
+	a reissue of the Service Ticket is obtained.
+	If the TGT has expired when a Service Ticket is obtained,
+	a reissue of the TGT is obtained.
+
+o Termination event processing
+	The following normal termination processing is performed by SIGTERM or SIGINT.
+	- Closing of the KINK socket
+	- Closing of the PF_KEY and PF_POLICY sockets
+	- Sending of a QUIT message to spmd
+	- Closing of the spmd socket
+	- Closing of log files
+	- Release of the duplicate startup prevention
+	???- At termination, the SAs that this daemon set up are deleted.
+
+o Abnormal termination
+	When a fatal condition such as memory exhaustion or an inconsistency
+	in the internal state is reached, a memory image is output and the daemon terminates. ???
+
+o Other event processing
+	The configuration file is reloaded by SIGHUP.
+	Also, if the connection to spmd is severed, reconnection is attempted.
+
+o KINK Initiator
+        Upon receiving a SADB_ACQUIRE message from the kernel,
+	the selector ID contained in it is passed to the policy lookup function to obtain the policy.
+        If key exchange is necessary, the definition of the peer for
+        the key exchange is obtained from the selector INDEX, and the key exchange is started.
+	In order to obtain the FQDN contained in the principal name of the peer,
+	a reverse address resolution request (FQDN QUERY message) is sent
+	to spmd.
+	After setting the inbound SA in the kernel, the key exchange is started;
+	after the key exchange completes, the outbound SA is set.
+	When a SADB_EXPIRE message is obtained from the kernel, the key update work is performed.
+
+	XXX description of 3-way
+	XXX user-to-user
+
+o KINK Responder
+	Upon receiving a key exchange request message from the Initiator,
+	the key exchange is started using the source and destination IP
+	addresses, the principal name contained in the KINK_AP_REQ payload,
+	and the parameters contained in the KINK_ISAKMP payload.
+	At the time of the key exchange, the SA is set in the kernel, and a policy setup request is sent to spmd.
+	Since the Responder does not perform key updates, SADB_EXPIRE messages are ignored.
+
+	XXX description of 3-way
+
+
++ Configuration file (racoon.conf)
+
+	See racoon2-config.txt.
+
+
++ Common library (libracoon.a)
+
+	See racoon2-lib.txt.
+
+
++ Logging
+	An output file can be defined with a startup option; if it is not defined,
+	output is written to syslog().
+	An output file can be defined for each key exchange protocol of each
+	peer defined by remote, and output is written independently of other options.
+	It is also possible, with a startup option, to output independently to standard output.

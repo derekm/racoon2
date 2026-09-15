@@ -1,0 +1,178 @@
+$Id: iked-memo.ja.txt,v 1.13 2007/05/16 08:26:24 fukumoto Exp $
+
+racoon2 iked implementation status
+
+
+Regarding the IKEv2 specification
+- CERT and CERTREQ payload handling not implemented (ignored or an error when received)
+   Implementations MUST be capable of being configured to send and
+   accept up to four X.509 certificates in support of authentication,
+   and also MUST be capable of being configured to send and accept the
+   first two Hash and URL formats (with HTTP URLs).  Implementations
+   SHOULD be capable of being configured to send and accept Raw RSA
+   keys.  If multiple certificates are sent, the first certificate MUST
+   contain the public key used to sign the AUTH payload. The other
+   certificates may be sent in any order.
+- HTTP_CERT_LOOKUP_SUPPORTED and NON_FIRST_FRAGMENTS_ALSO not supported (ignored when received)
+- RSASIG hash is SHA1
+- In CREATE_CHILD_SA, a DH different from that of the IKE SA cannot be handled correctly in DH negotiation (bug)
+- Optional features not supported / only minimally supported by iked
+	- No EAP (likewise)
+	- window is minimum (1)
+- No handling when the peer returns NO_ADDITIONAL_SAS
+- No support for transform ID=0 in transform negotiation
+      If the
+      initiator wishes to make use of the transform optional to
+      the responder, it includes a transform substructure with
+      transform ID = 0 as one of the options.
+- No handling of IPCOMP_SUPPORTED (the SADB_REGISTER return value must be made
+  visible to iked)
+
+
+
+Regarding the racoon2 specification
+- proposal_check not implemented (obey regardless of the setting)
+- selector_check is not reflected in the selection of ID. TS selection is exact only (this is per the spec)
+	racoon2-spec.txt says:
+			iked supports only exactly match for TS
+	racoon2-config.txt says:
+			selector_check (obey|exact) ;
+			Defines the comparison processing of the responder-side ID and TS.
+			The default is obey for interoperability.
+
+
+- The behavior of padlen_random and max_padlen has been changed from racoon1
+	max_padlen == 0, random_padlen == false:	minimum padding
+	max_padlen != 0, random_padlen == true:		random length of 0..max_padlen
+	max_padlen == 0, random_padlen == true:		same as max_padlen = 255, random_padlen=true
+	max_padlen != 0, random_padlen == false:	maximum padding of at most max_padlen
+
+
+- Handling of the TS payload
+
+
+
+- Details of optional payloads
+
+IKE_SA_INIT request
+HDR, SAi1, KEi, Ni [N(NAT_DET_SRC), N(NAT_DET_DST)]
+
+     request send (initiator)
+     [N(NAT_DETE_SRC), N(NAT_DET_DST)] sent if nat_traversal is on (default)
+
+     request recv (responder)
+     [N(NAT_DETE_SRC), N(NAT_DET_DST)] processed as specified
+
+
+IKE_SA_INIT response
+HDR, SAr1, KEr, Nr, [N(NAT_DET_SRC), N(NAT_DET_DST),] [CERTREQ]
+
+     response send (responder)
+     [N(NAT_DETE_SRC), N(NAT_DET_DST)] sent if nat_traversal is on (default)
+     [CERTREQ]  not sent
+     N(COOKIE)  returned when cookie_required is set, or when the half open sa count exceeds a certain value
+
+
+     response recv (initiator)
+     [CERTREQ]  ignored
+     N(COOKIE)  processed as specified
+     N(INVALID_KE_PAYLOAD)  processed as specified
+
+
+IKE_AUTH request
+HDR, SK {IDi, [CERT,] [CERTREQ,] [IDr,], AUTH, SAi2, TSi, TSr}
+
+     request send (initiator)
+     [CERT]  not sent
+     [CERTREQ]  not sent
+     [IDr]  sent if peer_id is specified
+     [N(INITIAL_CONTACT)]  attached if the remote is used for the first time
+     [N(IPCOMP_SUPPORTED)]  not attached
+     [N(SET_WINDOW_SIZE)]  not attached
+     [N(USE_TRANSPORT_MODE)]  attached in transport mode
+     [N(HTTP_CERT_LOOKUP_SUPPORTED)]  not attached
+     [N(ESP_TFC_PADDING_NOT_SUPPORTED)]  not attached
+
+     No support for the message format used with EAP
+
+
+     request recv (responder)
+     [CERT]  ignored
+     [CERTREQ]  ignored
+     [IDr]  if present, check that it matches my_id; if not, AUTHENTICATION_FAILED
+     [N(INITIAL_CONTACT)]  ignored
+     [N(IPCOMP_SUPPORTED)]  ignored
+     [N(SET_WINDOW_SIZE)]  ignored
+     [N(USE_TRANSPORT_MODE)]  if present, set the SA to transport mode. (Note: the SPI in the Notify payload is ignored)
+     [N(HTTP_CERT_LOOKUP_SUPPORTED)]  ignored
+     [N(ESP_TFC_PADDING_NOT_SUPPORTED)]  ignored
+
+     No support for EAP and IRAS messages
+
+
+IKE_AUTH response
+HDR, SK {IDr, [CERT,] AUTH, SAr2, TSi, TSr}
+
+     response send (responder)
+     [CERT]  not sent
+     [N(INITIAL_CONTACT)]  attached if the remote is used for the first time
+     [N(IPCOMP_SUPPORTED)]  not attached
+     [N(SET_WINDOW_SIZE)]  not attached
+     [N(USE_TRANSPORT_MODE)]  attached in transport mode
+     [N(HTTP_CERT_LOOKUP_SUPPORTED)]  not attached
+     [N(ESP_TFC_PADDING_NOT_SUPPORTED)]  not attached
+
+
+     response recv (initiator)
+     [CERT]  ignored
+     [N(SINGLE_PAIR_REQUIRED)]  ignored
+     [N(NO_PROPOSAL_CHOSEN)]  the child sa is aborted and the ike sa is established (clarification draft)
+     [N(INTERNAL_ADDRESS_FAILURE)]  the child sa is aborted and the ike sa is established (clarification draft)
+     [N(FAILED_CP_REQUIRED)]  the child sa is aborted and the ike sa is established (clarification draft)
+     [N(TS_UNACCEPTABLE)]  the child sa is aborted and the ike sa is established (clarification draft)
+
+
+CREATE_CHILD_SA request
+HDR, SK {SA, Ni, [KEi], TSi, TSr}
+or (rekey IKE_SA)
+HDR, SK {SA(proposal proto=IKE), Ni, KEi}
+or (rekey CHILD_SA)
+HDR, SK {N(REKEY_SA), SA, Ni, [KEi]}
+
+     request send (initiator)
+     [N(REKEY)]  attached when rekeying the child sa
+     [KEi]  attached when need_pfs is specified at child sa creation; mandatory when rekeying ikesa
+     [N(USE_TRANSPORT_MODE)]  attached in transport mode
+     [N(ESP_TFC_PADDING_NOT_SUPPORTED)]  always attached
+     [N(IPCOMP_SUPPORTED)]  not attached
+
+
+     request recv (responder)
+     [KEi]
+     [N(USE_TRANSPORT_MODE)]  if present, set the SA to transport mode. (Note: the SPI in the Notify payload is ignored)
+     [N(ESP_TFC_PADDING_NOT_SUPPORTED)]  ignored
+     [N(IPCOMP_SUPPORTED)]  ignored
+
+
+CREATE_CHILD_SA response
+HDR, SK {SA, Nr, [KEr], TSi, TSr}
+or (rekey IKE_SA)
+HDR, SK {SA, Nr, KEr}
+
+     response send (responder)
+     [KEr]  attached when need_pfs; mandatory when rekeying ike_sa.
+     [N(SINGLE_PAIR_REQUIRED),]  not attached
+     [N(ADDITIONAL_TS_POSSIBLE)]  not attached
+     [N(USE_TRANSPORT_MODE)]  attached in transport mode
+     [N(ESP_TFC_PADDING_NOT_SUPPORTED)]  always attached
+     [N(IPCOMP_SUPPORTED)]  not attached
+
+
+     response recv (initiator)
+     [N(ADDITIONAL_TS_POSSIBLE)]  ignored
+     [N(SINGLE_PAIR_REQUIRED)]  abort the child_sa. (Ideally this should be handled properly)
+     [N(NO_ADDITIONAL_SAS)]  abort the child_sa. (Ideally this should be handled properly)
+     [N(INVALID_KE_PAYLOAD)]  if need_pfs, re-execute createchild with the specified dh group; otherwise abort the child_sa as an error
+     [N(NO_PROPOSAL_CHOSEN)]  abort the child_sa
+     [N(FAILED_CP_REQUIRED)]  abort the child_sa
+     [N(TS_UNACCEPTABLE)]  abort the child_sa
