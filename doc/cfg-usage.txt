@@ -17,7 +17,7 @@ This memo describes how to use it with iked.
    The Configuration payload has two types of exchange. one is
    request/reply and the other is set/ack. The current specification
    only defines the request/reply usage. The iked support only request/reply
-   exchange accrodingly.
+   exchange accordingly.
 
 2. How iked works.
 
