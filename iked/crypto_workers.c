@@ -212,6 +212,22 @@ crypto_workers_drain(void)
 				j->done(j->arg);
 			free(j);
 		}
+		/*
+		 * Re-arm: workers may have appended jobs between the
+		 * detach above and now; their 1-byte notify write can
+		 * race a just-emptied pipe, leaving the main loop
+		 * asleep with dhead non-empty.  Level-trip the pipe
+		 * again so the next drain sees them.  The decision is
+		 * made under the lock but the write itself is done
+		 * unlocked: a blocking write into a full pipe must not
+		 * hold qlock (that would deadlock workers and the
+		 * next drain, which need the same mutex).
+		 */
+		pthread_mutex_lock(&qlock);
+		j = dhead;
+		pthread_mutex_unlock(&qlock);
+		if (j != NULL)
+			notify_write();
 	}
 	return 0;
 #endif
