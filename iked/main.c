@@ -304,7 +304,8 @@ main(int argc, char **argv)
 		fatal("rbuf init failed");
 
 	plog_setmode((opt_debug ? RCT_LOGMODE_DEBUG : RCT_LOGMODE_NORMAL),
-		     default_log_file, getprogname(), TRUE, TRUE);
+		     default_log_file, getprogname(), TRUE,
+		     opt_foreground ? TRUE : FALSE);
 	INFO((PLOGLOC, "starting %s for racoon2 %s\n", getprogname(),
 	      rc_version()));
 
@@ -475,7 +476,8 @@ main(int argc, char **argv)
 #endif
 
 	plog_setmode((opt_debug ? RCT_LOGMODE_DEBUG : RCT_LOGMODE_NORMAL),
-		     default_log_file, getprogname(), TRUE, opt_verbose);
+		     default_log_file, getprogname(), TRUE,
+		     opt_foreground ? TRUE : opt_verbose);
 	INFO((PLOGLOC, "starting %s for racoon2 %s\n", getprogname(),
 	      rc_version()));
 

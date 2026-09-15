@@ -170,16 +170,24 @@ plog_output(int tag, struct rc_log *plg, const char *msg)
 	if (strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %T", tm) == 0)
 		timestamp[0] = '\0';
 
-	if (output_stdout)
+	if (output_stdout) {
 		fprintf(stdout, "%s %s", timestamp, msg);
+		/* stdout is a socket under systemd (not a tty), so
+		 * glibc full-buffers it and journal lines would land
+		 * in delayed batches with stale event times. */
+		fflush(stdout);
+	}
 
 	if (plg && plg->logfile)
 		(void)plog_fprint(plg->logfile->v, "%s %s", timestamp, msg);
 
-	/* toggle printing to either log_fname or syslog() */
+	/* toggle printing to either log_fname or syslog(),
+	 * but skip the syslog() fallback when stdout is the active
+	 * sink: running foreground under systemd, stdout is captured
+	 * by journald and a syslog() copy would duplicate every line */
 	if (default_logfile)
 		(void)plog_fprint(default_logfile, "%s %s", timestamp, msg);
-	else {
+	else if (!output_stdout) {
 		found = 0;
 		pri = LOG_NOTICE;
 		for (i = 0; i < ARRAYLEN(ptab); i++) {
@@ -337,10 +345,18 @@ plog_setmode(int logmode, const char *logfile, const char *pname,
 		progname = strdup("");
 
 	if (need_output)
-		do_output++;
+		do_output = 1;
+	else
+		do_output = 0;
 
-	if (f_stdout)
-		output_stdout++;
+	/*
+	 * stdout is a sink of its own (foreground / journald capture).
+	 * Assign, never increment: main.c calls plog_setmode() twice
+	 * (once before config parse, once after) and incremental
+	 * semantics left stdout on forever, spraying every line to
+	 * both stdout and syslog() and doubling the journal.
+	 */
+	output_stdout = f_stdout ? 1 : 0;
 }
 
 void
