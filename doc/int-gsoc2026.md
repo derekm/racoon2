@@ -21,6 +21,23 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
   message after the first iOS-initiated rekey, 20:01:34).  Both
   paths gate on "proposal carries a DH transform" (RFC 7296 §2.18).
 
+## Build & deploy
+
+- Top-level `make install` (after `./configure && make`) is the only
+  documented path: it recurses through `SUBDIRS = lib spmd kinkd iked
+  ...`, installing `libracoon` before `iked`.
+- Per-directory installs are off the documented path. `make -C iked
+  install` alone leaves a stale `/usr/local/racoon2/lib/libracoon.so`
+  behind and the new iked silently links the old library at runtime
+  (2026-09-14: 10:50 lib + 21:17 iked, duplicate journal lines until
+  lib was reinstalled). If a per-dir install is ever done, `lib` must
+  go first: `make -C lib install && make -C iked install`.
+- Restart the service after install: `systemctl restart racoon2-iked`.
+- Verify the running binary actually has the change:
+  `md5sum /usr/local/racoon2/lib/libracoon.so.0.0.0
+  /mnt/.../racoon2/lib/.libs/libracoon.so.0.0.0` must match (same for
+  `sbin/iked` vs `iked/.libs/iked`).
+
 ## Still this chunk (do not start EAP/8784)
 
 1. iOS-initiated CHILD rekey (~1440s) with the shared PFS gate. The
