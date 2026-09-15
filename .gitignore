@@ -33,6 +33,14 @@ autom4te.cache/
 iked/iked
 iked/iked.8
 iked/ikedctl
+# check_PROGRAM binaries + automake test artifacts
+iked/eaytest
+iked/evlooptest
+iked/workerstest
+iked/resumetest
+*.trs
+iked/*.log
+iked/test-suite.log
 kinkd/kinkd
 kinkd/kinkd.8
 pskgen/pskgen
