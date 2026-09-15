@@ -41,12 +41,16 @@ else
 sbin_PROGRAMS = iked
 endif
 
-TESTS = eaytest evlooptest workerstest resumetest
-check_PROGRAMS = eaytest evlooptest workerstest resumetest
+TESTS = eaytest evlooptest workerstest resumetest fragtest
+check_PROGRAMS = eaytest evlooptest workerstest resumetest fragtest
 eaytest_SOURCES = eaytest.c crypto_openssl.c str2val.c
 workerstest_SOURCES = workerstest.c crypto_workers.c
 # resume-dump record layer is pure libracoon; test it standalone.
 resumetest_SOURCES = resumetest.c ikev2_resume_rec.c
+# IKEv2 fragment reassembler (RFC 7383 SKF) tested standalone with real
+# crypto; isakmpstat/debug/plog/byte-order stubs live in fragtest.c.
+fragtest_SOURCES = fragtest.c ikev2_frag.c encryptor.c authenticator.c \
+	keyed_hash.c crypto_openssl.c str2val.c
 
 LIBS = @LIBS@
 

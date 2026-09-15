@@ -38,6 +38,7 @@ iked/eaytest
 iked/evlooptest
 iked/workerstest
 iked/resumetest
+iked/fragtest
 *.trs
 iked/*.log
 iked/test-suite.log
