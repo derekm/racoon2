@@ -772,11 +772,31 @@ ikev2_transmit_response(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 
 	info = &ike_sa->response_info;
 	info->packet = packet;
-	info->src = local;
-	info->dest = remote;
+	/* response_info outlives the transmit path (peer may retransmit
+	 * the request and force a replay), so own private copies of the
+	 * endpoints instead of borrowing the caller's.  The IKE_SA rekey
+	 * responder hands over ctx->local/ctx->remote which it frees on
+	 * completion; borrowing them left a use-after-free that made
+	 * isakmp_find_socket() read garbage on the first forced
+	 * retransmit after an address change (LTE->WiFi transition). */
+	if (info->src)
+		rc_free(info->src);
+	if (info->dest)
+		rc_free(info->dest);
+	info->src = rcs_sadup(local);
+	info->dest = rcs_sadup(remote);
+	if (!info->src || !info->dest) {
+		if (info->src)
+			rc_free(info->src);
+		if (info->dest)
+			rc_free(info->dest);
+		info->src = info->dest = NULL;
+		info->packet = NULL;
+		return -1;
+	}
 
-	isakmp_transmit_noretry(&ike_sa->response_info, packet, local,
-				remote);
+	isakmp_transmit_noretry(&ike_sa->response_info, packet, info->src,
+				info->dest);
 	return 0;
 }
 

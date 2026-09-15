@@ -2198,6 +2198,41 @@ isakmp_transmit_noretry(struct transmit_info *info, rc_vchar_t *pkt,
 	return;
 }
 
+/* Resolve the socket to retransmit from.  The cached src was captured
+ * when the response was minted; after a peer-address change (e.g. an
+ * IKE_SA rekey riding an LTE -> Wi-Fi transition) it may no longer
+ * match any bound socket.  Fall back to the local interface for the
+ * recorded destination, the same way the initiation path resolves its
+ * source (isakmp_initiate -> getlocaladdr). */
+static int
+isakmp_retransmit_socket(struct transmit_info *info)
+{
+	struct sockaddr *local;
+	in_port_t *destport;
+	int lport;
+	int sock;
+
+	sock = isakmp_find_socket(info->src);
+	if (sock != -1)
+		return sock;
+
+	if (!info->dest)
+		return -1;
+
+	destport = rcs_getsaport(info->dest);
+	if (destport && *destport == htons(RC_PORT_IKE_NATT))
+		lport = RC_PORT_IKE_NATT;
+	else
+		lport = isakmp_port;
+
+	local = getlocaladdr(info->dest, NULL, lport);
+	if (!local)
+		return -1;
+	sock = isakmp_find_socket(local);
+	rc_free(local);
+	return sock;
+}
+
 void
 isakmp_force_retransmit(struct transmit_info *info)
 {
@@ -2215,7 +2250,7 @@ isakmp_force_retransmit(struct transmit_info *info)
 	TRACE((PLOGLOC, "count %d\n", info->retry_count));
 	++info->retry_count;
 
-	sock = isakmp_find_socket(info->src);
+	sock = isakmp_retransmit_socket(info);
 	if (sock == -1) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "failed to find a socket for retransmission\n");
@@ -2268,7 +2303,7 @@ isakmp_retransmit(struct transmit_info *info)
 		return;
 	}
 
-	sock = isakmp_find_socket(info->src);
+	sock = isakmp_retransmit_socket(info);
 	if (sock == -1) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "failed to find a socket for retransmission\n");
