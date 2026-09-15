@@ -57,6 +57,7 @@ extern char *plog (int, const char *, struct rc_log *, const char *, ...)
 extern char *plogv (int , const char *, struct rc_log *, const char *, va_list)
     __attribute__((__format__ (__printf__, 4, 0)));
 extern char *plogdump (int, const char *, struct rc_log *, const void *, size_t);
+extern int plog_need_logging (int, struct rc_log *);
 extern void plog_setmode (int, const char *, const char *, int, int);
 extern void plog_clean (void);
 extern const char *plog_location (const char *, int , const char *);

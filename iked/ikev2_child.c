@@ -2164,29 +2164,39 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 	 * Also fingerprint the SK_d and prf actually consumed, so a
 	 * child rekey computed against a rekeyed IKE SA can be
 	 * verified to use that session's own keys (not a stale
-	 * parent). */
+	 * parent).
+	 *
+	 * Gate the whole block on the same rc_log the isakmp_log()
+	 * calls below resolve to: the hashing is pure diagnostic
+	 * overhead on the rekey hot path, and the digests are
+	 * key-material-derived, so neither should run when debug
+	 * logging is off. */
 	{
-		rc_vchar_t *dm = eay_sha2_256_one(keymat);
-		char hx[80];
-		size_t i;
-		if (dm) {
-			size_t hl = dm->l < 32 ? dm->l : 32;
-			for (i = 0; i < hl && i * 2 + 2 < sizeof(hx); i++)
-				snprintf(&hx[i * 2], 3, "%02x",
-				    ((u_char *)dm->v)[i]);
-			hx[i * 2] = '\0';
-			rc_vfree(dm);
-		} else {
-			hx[0] = '?';
-			hx[1] = '\0';
-		}
-		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-		    "CHILD_RESP keymat len=%zu sha256=%s g_ir_present=%s "
-		    "prf=%s\n",
-		    keymat->l, hx,
-		    child_sa->g_ir ? "Y" : "n",
-		    child_sa->parent && child_sa->parent->prf ?
-		    child_sa->parent->prf->method->name : "?");
+		struct rc_log *log = 0;
+		if (child_sa->parent)
+			log = ikev2_plog(child_sa->parent->rmconf);
+		if (plog_need_logging(PLOG_DEBUG, log)) {
+			rc_vchar_t *dm = eay_sha2_256_one(keymat);
+			char hx[80];
+			size_t i;
+			if (dm) {
+				size_t hl = dm->l < 32 ? dm->l : 32;
+				for (i = 0; i < hl && i * 2 + 2 < sizeof(hx); i++)
+					snprintf(&hx[i * 2], 3, "%02x",
+					    ((u_char *)dm->v)[i]);
+				hx[i * 2] = '\0';
+				rc_vfree(dm);
+			} else {
+				hx[0] = '?';
+				hx[1] = '\0';
+			}
+			isakmp_log(child_sa->parent, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			    "CHILD_RESP keymat len=%zu sha256=%s g_ir_present=%s "
+			    "prf=%s\n",
+			    keymat->l, hx,
+			    child_sa->g_ir ? "Y" : "n",
+			    child_sa->parent && child_sa->parent->prf ?
+			    child_sa->parent->prf->method->name : "?");
 			/* hashes of the two KEYMAT halves (inbound/outbound
 			 * key slices) so the pfkey install can be checked
 			 * against the kernel's actual keys via
@@ -2224,6 +2234,7 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 				    "CHILD_RESP keymat halves sha256=%s %s\n",
 				    hx1, hx2);
 			}
+		}
 	}
 
 	/*

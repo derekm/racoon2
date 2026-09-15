@@ -120,7 +120,7 @@ plog_getheader(int tag, const char *location)
 	return buf;
 }
 
-static int
+int
 plog_need_logging(int tag, struct rc_log *plg)
 {
 	rc_type base;
