@@ -68,7 +68,6 @@ static int do_output = 0;
 static int output_stdout = 0;
 
 static char *plog_getheader (int, const char *);
-static int plog_need_logging (int, struct rc_log *);
 static int plog_fprint (const char *, const char *, ...);
 static void plog_output (int, struct rc_log *, const char *);
 
