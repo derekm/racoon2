@@ -371,7 +371,7 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 				}
 			}
 		} else if (policy && policy->peers_sa_ipaddr &&
-			   rcs_is_addr_rw(policy->peers_sa_ipaddr)) {
+			   rcs_is_addr_wildcard(policy->peers_sa_ipaddr)) {
 			if (selector && spmif_post_policy_delete(ike_spmif_socket(),
 						     NULL, NULL,
 						     selector->sl_index,
