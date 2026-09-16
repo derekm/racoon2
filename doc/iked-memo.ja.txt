@@ -4,7 +4,7 @@ racoon2 iked 実装現況について
 
 
 IKEv2スペックに対して
-‐CERT、 CERTREQ ペイロード取扱の未実装（受信すると無視またはエラー）
+‐CERT ペイロード取扱の未実装（受信すると無視またはエラー）、CERTREQ は解析されマッチされる（位置づけられた証明書タイプの要求には応答し、それ以外は無視）
    Implementations MUST be capable of being configured to send and
    accept up to four X.509 certificates in support of authentication,
    and also MUST be capable of being configured to send and accept the
@@ -32,7 +32,7 @@ IKEv2スペックに対して
 
 racoon2スペックに対して
 ‐proposal_check 未実装（指定にかかわらず obey）
-‐selector_check が IDの選択に反映されない。TSの選択は exact のみ（これはスペックどおり）
+‐selector_check は ID・TS の選択に反映される（ikev2_child.c の“ikev2_selector_check()”で obey/exact を分かつ、デフォルトは exact）
 	racoon2-spec.txt では：
 			ikedは、TSはexactly matchしかサポートしない
 	racoon2-config.txtでは：

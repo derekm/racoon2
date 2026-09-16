@@ -103,7 +103,7 @@ o Representation of IP addresses
 		e.g. ::1/0
 
 	A range of addresses is represented by IP addresses delimited by a
-	hyphen (-).  NOTE THAT IT IS NOT IMPLEMENTED YET.
+	hyphen (-).
 		e.g. 10.0.0.0-10.1.255.255
 
 	Some reserved strings can be used.
@@ -567,7 +567,6 @@ remote
 		default is off.
 
 	selector_check (obey|exact) ;
-		IT IS NOT IMPLEMENTED YET.
 		It is valid for the ikev2 directive.
 		It defines the way to compare the ID and the TS value.
 

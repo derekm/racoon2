@@ -4,7 +4,9 @@ racoon2 iked implementation status
 
 
 Regarding the IKEv2 specification
-- CERT and CERTREQ payload handling not implemented (ignored or an error when received)
+- CERT payload handling not implemented (ignored or an error when received);
+  CERTREQ is parsed and matched (a request for the locally configured
+  certificate type is answered; other types are ignored)
    Implementations MUST be capable of being configured to send and
    accept up to four X.509 certificates in support of authentication,
    and also MUST be capable of being configured to send and accept the
@@ -32,7 +34,8 @@ Regarding the IKEv2 specification
 
 Regarding the racoon2 specification
 - proposal_check not implemented (obey regardless of the setting)
-- selector_check is not reflected in the selection of ID. TS selection is exact only (this is per the spec)
+- selector_check is reflected in the selection of ID and TS (ikev2_child.c
+  branches obey/exact on ikev2_selector_check(); exact is the default)
 	racoon2-spec.txt says:
 			iked supports only exactly match for TS
 	racoon2-config.txt says:
