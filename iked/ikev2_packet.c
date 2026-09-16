@@ -228,14 +228,19 @@ ikev2_packet_construct(int exch_type, int flags, uint32_t message_id,
 	hdr.length = htonl(packet_len);
 
 #ifdef HAVE_LIBPCAP
-	IF_TRACE({
-		if (ike_pcap_file) {
-			rc_vchar_t *debug_buf =
-			    rc_vprepend(payloads, &hdr, sizeof(hdr));
-			rc_pcap_push(ike_sa->local, ike_sa->remote, debug_buf);
-			rc_vfree(debug_buf);
-		}
-	});
+	/*
+	 * Record the outbound message in the pcap, decrypted, regardless
+	 * of debug_trace: the inbound side is pushed unconditionally
+	 * (ikev2_input), and a one-direction capture makes exchange
+	 * forensics impossible (the peer's "unexpected response" errors
+	 * only make sense with both halves of the conversation).
+	 */
+	if (ike_pcap_file) {
+		rc_vchar_t *debug_buf =
+		    rc_vprepend(payloads, &hdr, sizeof(hdr));
+		rc_pcap_push(ike_sa->local, ike_sa->remote, debug_buf);
+		rc_vfree(debug_buf);
+	}
 #endif
 
 	if (ike_sa->encryptor) {

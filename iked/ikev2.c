@@ -5480,9 +5480,25 @@ informational_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	ikev2_update_message_id(ike_sa, message_id, TRUE);
 	child_sa = ikev2_find_request(ike_sa, message_id);
 	if (!child_sa || child_sa->state != IKEV2_CHILD_STATE_REQUEST_SENT) {
+		struct ikev2_child_sa *s;
+
+		/* In-flight request untracked: enumerate children so the
+		 * next occurrence shows which state/msgid the exchange
+		 * actually died in (a REQUEST_SENT child is removed by
+		 * expiry/abort while the peer's response is in flight). */
+		plog(PLOG_DEBUG, PLOGLOC, NULL, "tracked children after miss:\n");
+		for (s = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+		     !IKEV2_CHILD_LIST_END(s);
+		     s = IKEV2_CHILD_LIST_NEXT(s)) {
+			plog(PLOG_DEBUG, PLOGLOC, NULL,
+			     "  child %p ini=%d state=%d msgid=0x%08x\n",
+			     (void *)s, s->is_initiator,
+			     s->state, s->message_id);
+		}
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
-			   "unexpected response (message_id 0x%08x)\n",
+			   "unexpected response (message_id 0x%08x) "
+			   "-- no request in REQUEST_SENT/WAIT_RESPONSE\n",
 			   message_id);
 		++isakmpstat.unexpected_packet;
 		goto done;
