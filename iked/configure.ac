@@ -200,13 +200,21 @@ AC_SEARCH_LIBS(dlopen, dl)
 RC_WITH_OPENSSL_LIB
 
 # check Engine interface
-AC_MSG_CHECKING(--enable-engine)
-engine='yes'
+# OpenSSL 3.5 (Fedora 44) removed <openssl/engine.h>; default to auto:
+# enable ENGINE only when the header exists.  --enable-engine /
+# --disable-engine remain explicit overrides.
+engine='auto'
 AC_ARG_ENABLE(engine,
-	[  --enable-engine         enable OpenSSL ENGINE (default)],
+	[  --enable-engine         enable OpenSSL ENGINE (default: auto)],
 	[engine=$enableval])
+if test x"$engine" = xauto; then
+	AC_CHECK_HEADER([openssl/engine.h], [engine='yes'], [engine='no'])
+fi
+AC_MSG_CHECKING(--enable-engine)
 AC_MSG_RESULT($engine)
-if test $engine = "yes"; then
+if test x"$engine" = xyes; then
+	AC_CHECK_HEADER([openssl/engine.h], [],
+		[AC_MSG_ERROR([openssl/engine.h not found: your OpenSSL removed the ENGINE API (3.5+); build with --disable-engine])])
 	AC_DEFINE(WITH_OPENSSL_ENGINE, 1, [define to use OpenSSL ENGINE])
 fi
 

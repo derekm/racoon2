@@ -107,6 +107,19 @@ eay_init(void)
 			plog(PLOG_INFO, PLOGLOC, NULL,
 			    "OpenSSL provider '%s' loaded\n",
 			    eay_provider_name);
+	} else if (eay_engine_id && *eay_engine_id) {
+		/* OpenSSL 3.x folded ENGINEs into the provider model;
+		 * map the legacy RACOON2_OPENSSL_ENGINE knob onto
+		 * provider loading so existing configs keep working
+		 * (OpenSSL 3.5 removed <openssl/engine.h> entirely). */
+		if (OSSL_PROVIDER_load(NULL, eay_engine_id) == NULL)
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			    "OpenSSL provider '%s' (from engine setting) "
+			    "failed to load\n", eay_engine_id);
+		else
+			plog(PLOG_INFO, PLOGLOC, NULL,
+			    "OpenSSL provider '%s' (from engine setting) "
+			    "loaded\n", eay_engine_id);
 	}
 #else
 	ERR_load_crypto_strings();
