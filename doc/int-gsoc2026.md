@@ -22,7 +22,6 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
   paths gate on "proposal carries a DH transform" (RFC 7296 §2.18).
 
 ## Build & deploy
-
 - Top-level `make install` (after `./configure && make`) is the only
   documented path: it recurses through `SUBDIRS = lib spmd kinkd iked
   ...`, installing `libracoon` before `iked`.
@@ -37,6 +36,21 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
   `md5sum /usr/local/racoon2/lib/libracoon.so.0.0.0
   /mnt/.../racoon2/lib/.libs/libracoon.so.0.0.0` must match (same for
   `sbin/iked` vs `iked/.libs/iked`).
+
+## Proven by the 2026-09-14/15 13h session (journal-verified)
+
+Phone (67.37.10.151, LTE) ESTABLISHED 19:32:21 → 08:29:07 (13h), across
+**four iked restarts** (21:17 maintenance bounce + 3 rebounces, 01:03):
+every restart was a clean SIGTERM with resume save/restore of the same
+IKE_SA (`restore_one ... 67.37.10.151[6688]`, declining ike_remain); only
+**2 INITIAL_CONTACT** in 13h = iOS never re-authenticated, tunnel stayed
+continuous through daemon restarts. **110 IKE_SA rekeys + 110 ESP rekey
+pairs** (3600s hard cycle + iOS-initiated ~1440s cadence) ran repeatedly
+on the same PID. Plan items "show a 3600s cycle, same pid, ESP moving"
+and "host reboot with live dump" are covered — **except** the PFS-gate
+rekey confirmation on the current (post-`f7f3b8a`) binary, which still
+needs its own live session. Note: this session predates today's fixes;
+re-verify on the new Fedora server.
 
 ## Still this chunk (do not start EAP/8784)
 
