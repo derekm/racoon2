@@ -1280,6 +1280,7 @@ addr_range_list
 	;
 addr_range
 	:	string '-' string EOS	{ $1->nexts = $3; $$ = $1; }
+	|	string EOS		{ $$ = $1; }
 	;
 
 	/* default */

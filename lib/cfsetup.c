@@ -2724,6 +2724,158 @@ str2addr(rc_vchar_t *str, int *af, uint8_t *addr)
 }
 
 /*
+ * expand a CIDR form "addr/prefix" in an addresspool entry into the
+ * inclusive usable host range.  The configured pool item stores
+ * start/end byte arrays, so on success the network and broadcast
+ * addresses of the prefix are omitted (usable hosts only):
+ *   IPv4 /24: 10.0.0.1 - 10.0.0.254
+ *   IPv6 /64: fd01::1 - fd01::ffff:ffff:ffff:fffe
+ * /31 and /32 (or /127,/128) expand to the literal address itself.
+ * Returns 0 on success, -1 on malformed input.
+ */
+static int
+addrpool_cidr_expand(const char *s, int *af,
+		     uint8_t *start, uint8_t *end)
+{
+	char *copy, *slash, *p;
+	struct addrinfo hint, *info = 0, *ai;
+	int err, bits, prefix, hostbits, alen = 0, i;
+	size_t slen;
+	void *a;
+	size_t alen2;
+	uint8_t nc[MAX_ADDRESS_LENGTH];
+	uint8_t bc[MAX_ADDRESS_LENGTH];
+
+	slen = strlen(s);
+	if ((copy = rc_malloc(slen + 1)) == 0)
+		return -1;
+	memcpy(copy, s, slen);
+	copy[slen] = '\0';
+
+	slash = strchr(copy, '/');
+	if (slash == 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "addresspool entry %s: expected CIDR (addr/prefix)\n", s);
+		rc_free(copy);
+		return -1;
+	}
+	*slash++ = '\0';
+	for (p = slash; *p; p++) {
+		if (*p < '0' || *p > '9') {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "addresspool entry %s: bad prefix\n", copy);
+			rc_free(copy);
+			return -1;
+		}
+	}
+	prefix = atoi(slash);
+
+	memset(&hint, 0, sizeof(hint));
+	hint.ai_flags = AI_NUMERICHOST;
+	hint.ai_family = PF_UNSPEC;
+	hint.ai_socktype = SOCK_DGRAM;
+	hint.ai_protocol = IPPROTO_UDP;
+	err = getaddrinfo(copy, 0, &hint, &info);
+	rc_free(copy);
+	if (err) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "getaddrinfo(%s): %s\n", s, gai_strerror(err));
+		return -1;
+	}
+	if (info == 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "getaddrinfo(%s) returned null list\n", s);
+		freeaddrinfo(info);
+		return -1;
+	}
+
+	for (ai = info; ai; ai = ai->ai_next) {
+		if (!ai->ai_addr)
+			continue;
+		switch (ai->ai_addr->sa_family) {
+		case AF_INET:
+			a = ((uint8_t *)(void *)ai->ai_addr)
+			    + offsetof(struct sockaddr_in, sin_addr);
+			alen2 = sizeof(struct in_addr);
+			break;
+		case AF_INET6:
+			a = ((uint8_t *)(void *)ai->ai_addr)
+			    + offsetof(struct sockaddr_in6, sin6_addr);
+			alen2 = sizeof(struct in6_addr);
+			break;
+		default:
+			continue;
+		}
+		if (ai->ai_next) {
+			plog(PLOG_INTWARN, PLOGLOC, NULL,
+			     "ignoring extraneous values returned by "
+			     "getaddrinfo(%s)\n", s);
+		}
+		*af = ai->ai_addr->sa_family;
+		alen = alen2;
+		memcpy(start, a, alen);
+		break;
+	}
+	freeaddrinfo(info);
+	if (alen == 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "addresspool entry %s: no usable address\n", s);
+		return -1;
+	}
+
+	bits = (*af == AF_INET) ? 32 : 128;
+	if (prefix < 0 || prefix > bits) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "addresspool entry %s: prefix %d out of range 0..%d\n",
+		     s, prefix, bits);
+		return -1;
+	}
+	hostbits = bits - prefix;
+	if (hostbits == 0) {
+		/* /32 (or /128): the single address itself */
+		memcpy(end, start, alen);
+		return 0;
+	}
+
+	/* network = address masked to prefix; broadcast = network | ~mask */
+	memcpy(nc, start, alen);
+	memcpy(bc, start, alen);
+	for (i = 0; i < alen; i++) {
+		int used = prefix - i * 8;
+		uint8_t mask;
+
+		if (used >= 8)
+			mask = 0xff;
+		else if (used <= 0)
+			mask = 0x00;
+		else
+			mask = (uint8_t)(0xff << (8 - used));
+		nc[i] &= mask;
+		bc[i] |= (uint8_t)~mask;
+	}
+
+	if (hostbits == 1) {
+		/* /31 (or /127, RFC 3021/6164): both endpoints usable */
+		memcpy(start, nc, alen);
+		memcpy(end, bc, alen);
+		return 0;
+	}
+
+	/* usable hosts: network+1 .. broadcast-1 */
+	for (i = alen - 1; i >= 0; i--) {
+		if (++nc[i] != 0)
+			break;
+	}
+	for (i = alen - 1; i >= 0; i--) {
+		if (bc[i]-- != 0)
+			break;
+	}
+	memcpy(start, nc, alen);
+	memcpy(end, bc, alen);
+	return 0;
+}
+
+/*
  * fix addresspool
  */
 static int
@@ -2734,8 +2886,8 @@ rcf_fix_addresspool(struct rcf_addresspool **dst0)
 	struct rcf_addresspool	*pool;
 	struct cf_list  *n;
 	struct cf_list	*range;
-	rc_vchar_t	*start_str;
-	rc_vchar_t	*end_str;
+	rc_vchar_t	*start_str = 0;
+	rc_vchar_t	*end_str = 0;
 	int	start_af;
 	int	end_af;
 	struct rcf_address_pool_item	*r;
@@ -2758,21 +2910,33 @@ rcf_fix_addresspool(struct rcf_addresspool **dst0)
 		for (range = n->nextp; range; range = range->nextp) {
 			if (rcf_fix_string(range, &start_str))
 				goto err;
-			if (rcf_fix_string(range->nexts, &end_str))
-				goto err;
+			if (range->nexts) {
+				if (rcf_fix_string(range->nexts, &end_str))
+					goto err;
+			}
 
 			r = rc_addrpool_item_new();
 			if (! r)
 				goto err;
 
-			if (str2addr(start_str, &start_af, r->start) ||
-			    str2addr(end_str, &end_af, r->end))
-				goto err;
-			if (start_af != end_af) {
-				plog(PLOG_CRITICAL, PLOGLOC, NULL,
-				     "range start and end are incompatible, line %d in %s\n",
-				     n->lineno, n->file);
-				goto err;
+			if (range->nexts == NULL) {
+				/* CIDR form: "addr/prefix" expands to a
+				 * usable host range (network and broadcast
+				 * addresses omitted). */
+				if (addrpool_cidr_expand(
+				    rc_vmem2str(start_str),
+				    &start_af, r->start, r->end) != 0)
+					goto err;
+			} else {
+				if (str2addr(start_str, &start_af, r->start) ||
+				    str2addr(end_str, &end_af, r->end))
+					goto err;
+				if (start_af != end_af) {
+					plog(PLOG_CRITICAL, PLOGLOC, NULL,
+					     "range start and end are incompatible, line %d in %s\n",
+					     n->lineno, n->file);
+					goto err;
+				}
 			}
 			r->af = start_af;
 			LIST_INSERT_HEAD(&pool->pool_list, r, link);
