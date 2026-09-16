@@ -6,6 +6,8 @@ SUBDIRS = child-down.d child-up.d ikesa-up.d
 install-exec-hook:
 	$(INSTALL) -d $(DESTDIR)$(sysconfdir)/hook
 	$(INSTALL_DATA) functions $(DESTDIR)$(sysconfdir)/hook
+	$(INSTALL_SCRIPT) iked-pre.sh $(DESTDIR)$(sysconfdir)/hook
+	$(INSTALL_SCRIPT) fwd-nat.sh $(DESTDIR)$(sysconfdir)/hook
 	$(INSTALL) -d $(DESTDIR)$(sysconfdir)/hook/ikesa-up.d
 	$(INSTALL_SCRIPT) ikesa-up $(DESTDIR)$(sysconfdir)/hook
 	$(INSTALL) -d $(DESTDIR)$(sysconfdir)/hook/ikesa-down.d

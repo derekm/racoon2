@@ -98,9 +98,15 @@ racoon_sysconfdir=$sysconfdir
 case $racoon_sysconfdir in
 	*'${prefix}'*) racoon_sysconfdir=${racoon_prefix}${racoon_sysconfdir#'${prefix}'} ;;
 esac
+racoon_libdir=$libdir
+case $racoon_libdir in
+	*'${exec_prefix}'*) racoon_libdir=${racoon_exec_prefix}${racoon_libdir#'${exec_prefix}'} ;;
+	*'${prefix}'*) racoon_libdir=${racoon_prefix}${racoon_libdir#'${prefix}'} ;;
+esac
 systemd_unit_files_have_no_variables=1
 AC_SUBST(racoon_sbindir)
 AC_SUBST(racoon_sysconfdir)
+AC_SUBST(racoon_libdir)
 
 AC_MSG_CHECKING([systemd unit directory])
 AC_ARG_WITH(systemdsystemunitdir,
@@ -150,6 +156,10 @@ AC_CONFIG_FILES([Makefile pskgen/Makefile
 	samples/systemd/spmd.socket
 	samples/systemd/iked.service
 	samples/systemd/iked.socket
+	samples/systemd/iked.service.d/core.conf
+	samples/systemd/iked.service.d/capture.conf
+	samples/systemd/iked.service.d/xfrm-crypto.conf
+	samples/systemd/fwd-nat.service
 	samples/systemd/kinkd.service
 	samples/systemd/racoon2.target
 	samples/none/Makefile

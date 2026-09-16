@@ -1,0 +1,14 @@
+#!/bin/sh
+# systemd ExecStopPost — log why iked died; gdb any core we just saved.
+logger -t iked-core "stop result=${SERVICE_RESULT:-?} exit=${EXIT_STATUS:-?} code=${EXIT_CODE:-?}"
+core=$(ls -t /var/crash/r2core.iked.* 2>/dev/null | head -1)
+if [ -n "$core" ] && [ -x /usr/bin/gdb ]; then
+	# only dump if core is newer than 30s
+	now=$(date +%s)
+	mt=$(stat -c %Y "$core" 2>/dev/null || echo 0)
+	if [ $((now - mt)) -le 30 ]; then
+		gdb -batch -ex "set pagination off" -ex "thread apply all bt 40" \
+			/usr/local/racoon2/sbin/iked "$core" 2>&1 | logger -t iked-core
+	fi
+fi
+exit 0

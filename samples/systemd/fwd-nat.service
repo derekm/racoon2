@@ -1,0 +1,10 @@
+[Unit]
+Description=racoon2 VPN forward+SNAT rules for CP pools
+After=network-online.target
+Before=iked.service spmd.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/racoon2/etc/racoon2/hook/fwd-nat.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

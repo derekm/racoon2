@@ -1,0 +1,5 @@
+[Service]
+# -P: native pcap (decrypted inbound IKE) for protocol forensics
+# -D 0x0001: DEBUG_FLAG_DEBUG (ikev2_config lease logs etc.)
+ExecStart=
+ExecStart=@racoon_sbindir@/iked -F -f @racoon_sysconfdir@/racoon2.conf -P /tmp/iked-native.pcap -D 0x0001

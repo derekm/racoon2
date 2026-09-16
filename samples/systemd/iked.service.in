@@ -1,43 +1,21 @@
 [Unit]
-Description=Racoon2 IKE daemon (iked)
-Documentation=man:iked(8)
+Description=racoon2 iked (foreground, 10 crypto workers)
 After=network-online.target spmd.socket spmd.service
-Wants=network-online.target
-Requires=spmd.socket
-# spmd.service starts on first spmif connect if socket-activated.
+Requires=spmd.service
 
 [Service]
 Type=simple
-ExecStart=@racoon_sbindir@/iked -F
+Environment=RACOON2_CRYPTO_WORKERS=10
+Environment=LD_LIBRARY_PATH=@racoon_libdir@
+ExecStart=@racoon_sbindir@/iked -F -f @racoon_sysconfdir@/racoon2.conf
 Restart=on-failure
 RestartSec=2s
-RuntimeDirectory=racoon2
-RuntimeDirectoryMode=0700
 WorkingDirectory=@racoon_sysconfdir@
 StandardOutput=journal
 StandardError=journal
-
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-ProtectClock=true
-ProtectHostname=true
-LockPersonality=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-MemoryDenyWriteExecute=true
-RestrictNamespaces=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_KEY
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-SystemCallArchitectures=native
-ReadOnlyPaths=@racoon_sysconfdir@
-ReadWritePaths=/run/racoon2 /var/run/racoon2 /run
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_KEY
 
 [Install]
 WantedBy=multi-user.target
-Also=iked.socket

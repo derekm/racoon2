@@ -1,0 +1,2 @@
+[Service]
+ExecStartPre=@racoon_sysconfdir@/hook/iked-pre.sh

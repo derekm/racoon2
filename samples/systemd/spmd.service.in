@@ -1,14 +1,12 @@
 [Unit]
-Description=Racoon2 security policy manager (spmd)
-Documentation=man:spmd(8)
+Description=racoon2 spmd (foreground, no socket activation)
 After=network-online.target
 Wants=network-online.target
-Requires=spmd.socket
 Before=iked.service kinkd.service
 
 [Service]
 Type=simple
-ExecStart=@racoon_sbindir@/spmd -F
+ExecStart=@racoon_sbindir@/spmd -F -f @racoon_sysconfdir@/racoon2.conf
 Restart=on-failure
 RestartSec=2s
 RuntimeDirectory=racoon2
@@ -16,29 +14,9 @@ RuntimeDirectoryMode=0700
 WorkingDirectory=@racoon_sysconfdir@
 StandardOutput=journal
 StandardError=journal
-
-# Sandbox. Root, CAP_NET_ADMIN: PF_KEY / NETLINK_XFRM.
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-ProtectClock=true
-ProtectHostname=true
-LockPersonality=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-MemoryDenyWriteExecute=true
-RestrictNamespaces=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_KEY
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-SystemCallArchitectures=native
-ReadOnlyPaths=@racoon_sysconfdir@
-ReadWritePaths=/run/racoon2 /var/run/racoon2
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_KEY
 
 [Install]
 WantedBy=multi-user.target
-Also=spmd.socket
