@@ -549,6 +549,23 @@ ikev1_initiate(struct isakmp_acquire_request *req,
 	struct sockaddr *peer = 0;
 
 	TRACE((PLOGLOC, "processing acquire for IKEv1\n"));
+	/* Reject acquire requests whose selector addresses carry a
+	 * degenerate family.  A PF_KEY acquire with a zeroed or garbage
+	 * sockaddr (seen from stale XFRM policies after reconfig) used
+	 * to flow through rcs_sadup()/extract_port() and fault on a
+	 * zero-length sockaddr; drop the request at the door instead. */
+	if (!req->src || !req->dst ||
+	    (SOCKADDR_FAMILY(req->src) != AF_INET &&
+	     SOCKADDR_FAMILY(req->src) != AF_INET6) ||
+	    (SOCKADDR_FAMILY(req->dst) != AF_INET &&
+	     SOCKADDR_FAMILY(req->dst) != AF_INET6)) {
+		isakmp_log(0, req->src, req->dst, 0, PLOG_INTERR, PLOGLOC,
+			   "acquire request with invalid address family "
+			   "(src AF %d, dst AF %d); dropping\n",
+			   req->src ? SOCKADDR_FAMILY(req->src) : -1,
+			   req->dst ? SOCKADDR_FAMILY(req->dst) : -1);
+		return;
+	}
 	if (ikev1_passive(rm_info) == RCT_BOOL_ON) {
 		isakmp_log(0, req->src, req->dst, 0, PLOG_INFO, PLOGLOC,	/* ??? */
 			   "remote %s passive mode specified for IKEv1, dropping acquire request\n",
