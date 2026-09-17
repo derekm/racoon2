@@ -335,6 +335,34 @@ ikev2_compare_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 		;
 	}
 	/* there were matching transform for all of my transform types */
+
+	/*
+	 * RFC 9370 (ADDKE): if the peer's proposal contains a transform
+	 * type we have no counterpart for (e.g. Transform Type 6 ADDKE),
+	 * we must NOT select this proposal and silently drop that type.
+	 * The initiator treats such a response as a failed exchange and
+	 * MAY delete the IKE SA (observed live: iOS DELETE IKE_SA ~400ms
+	 * after our rekey response stripped its ADDKE ML-KEM-768 offer).
+	 * Reject any proposal whose transform types are not a subset of
+	 * ours so the generic matcher moves on to the next peer proposal
+	 * (peer offered non-ADDKE alternatives in the same SA payload).
+	 */
+	my_transforms = mine->tnext;
+	for (p = peer_transforms; p; p = p->next) {
+		peer_transf = (struct ikev2transform *)p->trns;
+		for (m = my_transforms; m; m = m->next) {
+			my_transf = (struct ikev2transform *)m->trns;
+			if (peer_transf->transform_type == my_transf->transform_type)
+				break;
+		}
+		if (!m) {
+			TRACE((PLOGLOC,
+			       "peer proposal has transform type %d we lack; skipping proposal\n",
+			       peer_transf->transform_type));
+			return -1;
+		}
+	}
+
 	TRACE((PLOGLOC, "success\n"));
 	return 0;		/* success */
 }
