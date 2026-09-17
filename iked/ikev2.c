@@ -4029,6 +4029,23 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		   ts_i ? 'Y' : 'n', ts_r ? 'Y' : 'n', nonce ? 'Y' : 'n');
 	}
 
+	if (sa) {
+		/* Request-side mirror of the response sa_hex diagnostic:
+		 * the peer's exact proposal, so the next teardown can be
+		 * diffed request vs response without reconstructing it
+		 * from the pcap. */
+		char hx[160];
+		size_t hlen = get_payload_data_length(sa);
+		size_t hl = hlen < 48 ? hlen : 48;
+		size_t i;
+		const u_char *dp = (const u_char *)(sa + 1);
+		for (i = 0; i < hl && i * 2 + 2 < sizeof(hx); i++)
+			snprintf(&hx[i * 2], 3, "%02x", dp[i]);
+		hx[i * 2] = '\0';
+		isakmp_log(ike_sa, local, remote, msg, PLOG_INFO, PLOGLOC,
+			   "CREATE_CHILD_SA request SA_hex=%s\n", hx);
+	}
+
 	/* check if rekeying IKE_SA */
 	if (get_payload_data_length(sa) > sizeof(struct ikev2proposal) &&
 	    ((struct ikev2proposal *)(((struct ikev2payl_sa *)sa) + 1))->protocol_id == IKEV2PROPOSAL_IKE) {
