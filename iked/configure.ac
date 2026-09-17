@@ -218,6 +218,25 @@ if test x"$engine" = xyes; then
 	AC_DEFINE(WITH_OPENSSL_ENGINE, 1, [define to use OpenSSL ENGINE])
 fi
 
+# RFC 9370 Additional Key Exchange (ADDKE) with ML-KEM-768.
+# <openssl/ml_kem.h> first shipped in OpenSSL 3.5 (Fedora 44); Ubuntu's
+# OpenSSL 3.0 lacks it.  A configure-time capability probe keeps the
+# PQC path conditional on the crypto backend, not on a distro string.
+addke='auto'
+AC_ARG_ENABLE(addke,
+	[  --enable-addke          enable RFC 9370 ADDKE/ML-KEM (default: auto)],
+	[addke=$enableval])
+if test x"$addke" = xauto; then
+	AC_CHECK_HEADER([openssl/ml_kem.h], [addke='yes'], [addke='no'])
+fi
+AC_MSG_CHECKING(--enable-addke)
+AC_MSG_RESULT($addke)
+if test x"$addke" = xyes; then
+	AC_CHECK_HEADER([openssl/ml_kem.h], [],
+		[AC_MSG_ERROR([openssl/ml_kem.h not found: ADDKE/ML-KEM needs OpenSSL 3.5+; build with --disable-addke])])
+	AC_DEFINE(WITH_ADDKE, 1, [define to use RFC 9370 ADDKE/ML-KEM-768])
+fi
+
 AC_ARG_WITH(openssl-provider,
 	[  --with-openssl-provider=NAME
                           OpenSSL 3 provider (e.g. qatprovider)],

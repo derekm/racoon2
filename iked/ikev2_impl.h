@@ -409,8 +409,13 @@ extern void ikev2_createchild_responder_recv(struct ikev2_sa *, rc_vchar_t *,
 extern void ikev2_createchild_responder_send(struct ikev2_sa *,
 					     struct ikev2_child_sa *);
 extern void ikev2_createchild_initiator_recv(struct ikev2_sa *, rc_vchar_t *,
-					     struct sockaddr *,
-					     struct sockaddr *);
+				     struct sockaddr *,
+				     struct sockaddr *);
+
+#ifdef WITH_ADDKE
+extern void ikev2_followup_ke_recv(struct ikev2_sa *, rc_vchar_t *,
+				   struct sockaddr *, struct sockaddr *);
+#endif
 
 extern int ikev2_noncecmp(rc_vchar_t *, rc_vchar_t *);
 

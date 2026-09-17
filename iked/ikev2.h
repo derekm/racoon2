@@ -100,7 +100,10 @@ struct ikev2_header {
 #define IKEV2EXCH_CREATE_CHILD_SA	36
 #define IKEV2EXCH_INFORMATIONAL		37
 #define	IKEV2EXCH_IKE_SESSION_RESUME	38	/* (RFC5723) */
-/* 	Reserved for IKEv2+		39-239 */
+/* RFC 9370: carries additional key exchange data that follows a
+ * CREATE_CHILD_SA when the initiator included ADDKE transforms. */
+#define	IKEV2EXCH_IKE_FOLLOWUP_KE	44
+/*	Reserved for IKEv2+		39-43, 45-239 */
 #define	IKEV2EXCH_PRIVATE 240
 /* 	Reserved for private use	240-255 */
 
@@ -219,9 +222,12 @@ struct ikev2transform {
 #define IKEV2TRANSFORM_TYPE_ENCR	1
 #define	IKEV2TRANSFORM_TYPE_PRF		2
 #define	IKEV2TRANSFORM_TYPE_INTEGR	3	/* Integrity Algorithm */
-#define	IKEV2TRANSFORM_TYPE_DH		4	/* Diffie-Hellman Group */
+#define IKEV2TRANSFORM_TYPE_DH		4	/* Diffie-Hellman Group */
 #define	IKEV2TRANSFORM_TYPE_ESN		5	/* Extended Sequence Numbers */
-/* 	Reserved to IANA		6-240 */
+/* RFC 9370: Additional Key Exchange.  Transform IDs share the
+ * Transform Type 4 (Key Exchange Method) IANA registry (rfc9370 s1.3). */
+#define	IKEV2TRANSFORM_TYPE_ADDKE	6
+/*	Reserved to IANA		7-240 */
 #define	IKEV2TRANSFORM_TYPE_PRIVATE	241
 /* 	Private use			241-255 */
 
@@ -314,8 +320,16 @@ struct ikev2transform {
 #define	IKEV2TRANSF_DH_ECP192		25	/* (RFC5114) */
 #define	IKEV2TRANSF_DH_ECP224		26	/* (RFC5114) */
 /*	Reserved			27-1023 */
+/* Transform IDs for Transform Type 4 (Key Exchange Method).  RFC 9370
+ * s1.3: ADDKE (Transform Type 6) transform IDs share this registry. */
 #define	IKEV2TRANSF_DH_PRIVATE		1024
 /*	Private use			1024-65535 */
+
+/* Transform IDs for Transform Type 6 (Additional Key Exchange, rfc9370) */
+#define	IKEV2TRANSF_ADDKE_X25519_MLKEM768	36	/* IANA KE 36;
+							 * observed live from
+							 * iOS (2026-09) */
+/*	(others TBD at PQC milestone) */
 
 /* Transform IDs for Transform Type 5 (Extended Sequence Numbers) */
 #define	IKEV2TRANSF_ESN_NO			0
@@ -549,6 +563,9 @@ struct ikev2payl_notify {
 #define	IKEV2_USE_WESP_MODE		16415	/* (draft-ietf-ipsecme-traffic-visibility-12.txt) */
 #define	IKEV2_QCD_TOKEN			16419	/* (RFC6290) */
 #define	IKEV2_FRAGMENTATION_SUPPORTED	16430	/* (RFC7383) */
+/* RFC 9370: links IKE_FOLLOWUP_KE exchanges to the CREATE_CHILD_SA
+ * that started the additional key exchanges (status type). */
+#define	IKEV2_ADDITIONAL_KEY_EXCHANGE	16441
 /* RESERVED TO IANA - STATUS TYPES      16431 - 40959 */
 /* Private Use - STATUS TYPES           40960 - 65535 */
 

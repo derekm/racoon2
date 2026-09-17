@@ -3489,6 +3489,35 @@ ikev2_established_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 						     local);
 		}
 		break;
+	case IKEV2EXCH_IKE_FOLLOWUP_KE:
+#ifdef WITH_ADDKE
+		/* RFC 9370 s2.2.4: additional key exchange data follows
+		 * a CREATE_CHILD_SA that negotiated ADDKE.  The response
+		 * must echo the ADDITIONAL_KEY_EXCHANGE notification
+		 * (16441) that links back to the CREATE_CHILD_SA. */
+		ikev2_followup_ke_recv(ike_sa, msg, remote, local);
+#else
+		/* No ADDKE support compiled in: an IKE_FOLLOWUP_KE must
+		 * never arrive, because we never accept ADDKE proposals
+		 * (ikev2_compare_transforms rejects type-6). */
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "unexpected IKE_FOLLOWUP_KE without ADDKE "
+			   "negotiation\n");
+		++isakmpstat.unexpected_exchange_type;
+		if (!is_response) {
+			int err;
+			uint32_t message_id;
+			message_id = get_uint32(&ikehdr->message_id);
+			err = ikev2_respond_error(ike_sa, msg, remote, local,
+						  0, 0, 0,
+						  IKEV2_INVALID_SYNTAX, 0, 0);
+			if (!err)
+				ikev2_update_message_id(ike_sa, message_id,
+							FALSE);
+		}
+#endif
+		break;
 	default:
 		/* unexpected message type */
 		/* should respond with error message */
