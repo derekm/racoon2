@@ -1,0 +1,88 @@
+# Fedora 44 CI Build & Test for racoon2 (OpenSSL 3.5 target).
+#
+# Fedora 44 ships OpenSSL 3.5 (the first release with ML-KEM on board),
+# so this job is the continuous-compile proof of the OpenSSL 3.5 port:
+#   - headers/APIs used by the crypto layer must keep compiling against
+#     the 3.5 headers, which removed <openssl/engine.h> entirely
+#   - libcrypto must still be found by RC_WITH_OPENSSL_LIB (configure
+#     probes for libcrypto.a; openssl-devel provides it)
+#   - the same unit suite as the Ubuntu job runs on this build.
+#
+# There is no native Fedora hosted runner, so the job runs in the
+# Fedora 44 container image on an ubuntu-latest host. All steps run
+# as root inside the container (image default), so dnf needs no sudo.
+#
+# Post-quantum note: when ADDKE (RFC 9370, Transform Type 6) /
+# ML-KEM-768 support lands, it must be gated on a configure-time
+# OpenSSL capability probe (e.g. OPENSSL_VERSION_NUMBER >= 0x30500000L
+# or an AC_CHECK for the ML-KEM EVP API), because Ubuntu's OpenSSL 3.0
+# does not provide ML-KEM while Fedora 44's OpenSSL 3.5 does. The
+# Fedora job then exercises the PQC-enabled path and Ubuntu (ubuntu.yml)
+# continues to build the pre-PQC path.
+
+name: Fedora 44 build & test (OpenSSL 3.5)
+
+on:
+  push:
+    branches: [linux-km, int/gsoc2026]
+  pull_request:
+    branches: [linux-km, int/gsoc2026]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-fedora44:
+    name: 'Fedora 44 NETLINK_XFRM build (OpenSSL 3.5)'
+    runs-on: ubuntu-latest
+    container: fedora:44
+
+    steps:
+      - name: Install build dependencies (dnf, incl. git for checkout)
+        run: |
+          dnf install -y -q \
+            autoconf automake libtool pkgconf-pkg-config gcc make \
+            openssl-devel libpcap-devel krb5-devel bison flex \
+            git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify OpenSSL 3.5 toolchain
+        run: |
+          openssl version
+          pkg-config --modversion openssl
+          test -f /usr/include/openssl/opensslv.h
+          grep -E "OPENSSL_VERSION_(TEXT|MAJOR|MINOR)" /usr/include/openssl/opensslv.h | head -4
+          # OpenSSL 3.5 removed <openssl/engine.h>; the racoon2 port
+          # guards ENGINE use on OPENSSL_VERSION_NUMBER, so a rebuild
+          # here is the real assertion. Report header presence either
+          # way (some vendors ship a compat stub).
+          if [ -f /usr/include/openssl/engine.h ]; then
+            echo "engine.h present (compat stub — version guard still applies)"
+          else
+            echo "engine.h removed (3.5) as expected"
+          fi
+
+      - name: Bootstrap
+        run: autoreconf -fi
+
+      - name: Configure
+        run: ./configure --prefix=/usr/local/racoon2
+
+      - name: Build
+        run: make -j2
+
+      - name: 'Unit suite (lib: make check)'
+        run: make -C lib check
+
+      - name: 'Unit suite (iked: eaytest evlooptest workerstest fragtest)'
+        run: make -C iked check TESTS="eaytest evlooptest workerstest fragtest"
+
+      - name: 'Dump unit logs on failure'
+        if: failure()
+        run: |
+          for f in lib/test-suite.log iked/test-suite.log iked/eaytest.log iked/evlooptest.log iked/workerstest.log iked/fragtest.log; do
+            if [ -f "$f" ]; then echo "== $f =="; cat "$f"; fi
+          done
