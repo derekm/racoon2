@@ -329,6 +329,13 @@ struct ikev2_child_sa {
 
 	int delete_sent;
 
+	/* RFC 9370 ADDKE (stage 2): while this child is waiting for
+	 * its IKE_FOLLOWUP_KE exchange, the CREATE_CHILD_SA response
+	 * has been sent but the keymat/XFRM install is deferred. */
+	int addke_pending;	/* followup exchange expected */
+	rc_vchar_t *addke_link;	/* link data echoed in N(16441) */
+	rc_vchar_t *addke_sk;	/* additional shared secret SK(1) */
+
 	/* for informational exchange */
 	void (*callback) (enum request_callback, struct ikev2_child_sa *, void *);
 	void *callback_param;
@@ -417,6 +424,7 @@ extern void ikev2_followup_ke_recv(struct ikev2_sa *, rc_vchar_t *,
 				   struct sockaddr *, struct sockaddr *);
 extern int ikev2_addke_selectable(void);
 extern int ikev2_addke_selftest(void);
+extern int ikev2_child_addke_install(struct ikev2_child_sa *);
 #endif
 
 extern int ikev2_noncecmp(rc_vchar_t *, rc_vchar_t *);

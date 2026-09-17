@@ -326,9 +326,9 @@ struct ikev2transform {
 /*	Private use			1024-65535 */
 
 /* Transform IDs for Transform Type 6 (Additional Key Exchange, rfc9370) */
-#define	IKEV2TRANSF_ADDKE_X25519_MLKEM768	36	/* IANA KE 36;
-							 * observed live from
-							 * iOS (2026-09) */
+/* IANA KE method registry: 34=ML-KEM-512, 36=ML-KEM-768, 37=ML-KEM-1024
+ * (draft-ietf-ipsecme-ikev2-mlkem-09); observed id 36 live from iOS. */
+#define	IKEV2TRANSF_ADDKE_MLKEM768		36
 /*	(others TBD at PQC milestone) */
 
 /* Transform IDs for Transform Type 5 (Extended Sequence Numbers) */
@@ -566,6 +566,10 @@ struct ikev2payl_notify {
 /* RFC 9370: links IKE_FOLLOWUP_KE exchanges to the CREATE_CHILD_SA
  * that started the additional key exchanges (status type). */
 #define	IKEV2_ADDITIONAL_KEY_EXCHANGE	16441
+/* RFC 9370 s2.2.4: error notification, not fatal to the IKE SA.
+ * Sent in response to an IKE_FOLLOWUP_KE message for which the
+ * responder has no key exchange state. */
+#define	IKEV2_STATE_NOT_FOUND		47
 /* RESERVED TO IANA - STATUS TYPES      16431 - 40959 */
 /* Private Use - STATUS TYPES           40960 - 65535 */
 

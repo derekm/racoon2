@@ -4604,6 +4604,27 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 #endif
 
 	/*
+	 * RFC 9370 s2.2.4: when the CREATE_CHILD_SA selected an ADDKE
+	 * transform, the response MUST carry the ADDITIONAL_KEY_EXCHANGE
+	 * notification (16441) with responder-chosen link data; the
+	 * initiator echoes it in the IKE_FOLLOWUP_KE request so we can
+	 * associate the followup with this child.
+	 */
+	if (child_sa->addke_pending && child_sa->addke_link) {
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
+							 0, 0,
+							 IKEV2_ADDITIONAL_KEY_EXCHANGE,
+							 child_sa->addke_link->v,
+							 child_sa->addke_link->l),
+				    TRUE);
+		TRACE((PLOGLOC,
+		       "ADDKE: attached ADDITIONAL_KEY_EXCHANGE link "
+		       "(%zu bytes) to CREATE_CHILD_SA response\n",
+		       child_sa->addke_link->l));
+	}
+
+	/*
 	 * SA, Nr, [KEr], TSi, TSr
 	 */
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa, FALSE);

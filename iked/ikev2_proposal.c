@@ -356,27 +356,6 @@ ikev2_compare_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 				break;
 		}
 		if (!m) {
-			/*
-			 * No counterpart.  RFC 9370 ADDKE (transform
-			 * type 6) may only be selected when the full
-			 * IKE_FOLLOWUP_KE machinery exists; the gate
-			 * is off until then, so a WITH_ADDKE build
-			 * keeps skipping to the peer's non-ADDKE
-			 * proposals just like the pre-ADDKE build.
-			 */
-#ifdef WITH_ADDKE
-			if (peer_transf->transform_type ==
-			    IKEV2TRANSFORM_TYPE_ADDKE &&
-			    ikev2_addke_selectable()) {
-				TRACE((PLOGLOC,
-				       "peer proposal has ADDKE transform "
-				       "type %d id %d; selectable, keeping "
-				       "proposal in play\n",
-				       peer_transf->transform_type,
-				       peer_transf->transform_id));
-				continue;
-			}
-#endif
 			TRACE((PLOGLOC,
 			       "peer proposal has transform type %d we lack; skipping proposal\n",
 			       peer_transf->transform_type));

@@ -3343,6 +3343,26 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 		tail = &(*tail)->next;
 	}
 
+#ifdef WITH_ADDKE
+	/*
+	 * RFC 9370 ADDKE (ML-KEM-768): when enabled, our own proposal
+	 * carries the additional key exchange transform, positioned
+	 * like the peers we interoperate with (here: straight after
+	 * INTEG, before the DH group).  With the transform in MINE the
+	 * generic matcher selects it and echoes it back in the response
+	 * SA; there is no special-casing in ikev2_compare/match_
+	 * transforms.
+	 */
+	if (ikev2_addke_selectable()) {
+		*tail = transform_new(IKEV2TRANSFORM_TYPE_ADDKE,
+				      IKEV2TRANSF_ADDKE_MLKEM768, 0,
+				      IKEV2TRANSFORM_MORE);
+		if (!*tail)
+			goto fail_nomem;
+		tail = &(*tail)->next;
+	}
+#endif
+
 	if (need_pfs) {
 		*tail = alglist_to_proppair(ike_conf_dhgrp(child_sa->parent->rmconf,
 							   IKEV2_MAJOR_VERSION),

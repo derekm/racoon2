@@ -76,13 +76,16 @@
 
 /*
  * Gate: may ikev2_compare_transforms select an ADDKE-bearing proposal?
- * False until the IKE_FOLLOWUP_KE responder state machine exists.
+ * True now that the IKE_FOLLOWUP_KE responder state machine (stage 2)
+ * exists: selecting ADDKE in the CREATE_CHILD_SA response commits us
+ * to the followup exchanges, and the responder arms addke_pending on
+ * the child + includes the ADDITIONAL_KEY_EXCHANGE notification in the
+ * response (rfc9370 s2.2.4).
  */
 int
 ikev2_addke_selectable(void)
 {
-	/* STAGE 2 (IKE_FOLLOWUP_KE + GSKM_seed) not yet implemented. */
-	return 0;
+	return 1;
 }
 
 /*
@@ -255,47 +258,250 @@ ikev2_addke_selftest(void)
 }
 
 /*
- * RFC 9370 s2.2.4: ADDITIONAL_KEY_EXCHANGE notification (16441)
- * carries the message ID of the CREATE_CHILD_SA request that the
- * ADDKE exchange is linked to.  The heartbeat of STAGE 2.
+ * RFC 9370 s2.2.4 + draft-ietf-ipsecme-ikev2-mlkem-09:
+ *
+ * After a CREATE_CHILD_SA that selected an ADDKE transform, the
+ * initiator sends IKE_FOLLOWUP_KE (exch 44) requests:
+ *
+ *   HDR(IKE_FOLLOWUP_KE), SK { KEi(1), N(ADDITIONAL_KEY_EXCHANGE)(link) }
+ *
+ * where KEi(1) is a KE payload whose Key Exchange Method field equals
+ * the negotiated ADDKE transform ID (36 = ML-KEM-768) carrying the
+ * initiator's raw ML-KEM-768 public key (1184 bytes, FIPS 203), and
+ * the ADDITIONAL_KEY_EXCHANGE notification (16441) echoes the link
+ * data from our CREATE_CHILD_SA response.  The responder encapsulates
+ * against that public key and replies:
+ *
+ *   HDR(IKE_FOLLOWUP_KE), SK { KEr(1) }
+ *
+ * with KEr(1) carrying the 1088-byte ciphertext (same method field).
+ * Both sides now share the 32-byte ML-KEM-768 shared secret, which
+ * appends to the child KEYMAT input after Nr (rfc9370 s2.2.4).
  */
-static int
-followup_ke_link_msgid(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
-		       uint32_t *link_msgid)
+
+/*
+ * Find the pending child_sa whose addke_link matches the
+ * ADDITIONAL_KEY_EXCHANGE notification data (the listener state for
+ * this followup).  Per rfc9370 s2.2.4 the link data is opaque to the
+ * initiator and meaningful only to the responder.
+ */
+static struct ikev2_child_sa *
+followup_ke_find_child(struct ikev2_sa *ike_sa, rc_vchar_t *link)
 {
-	(void)ike_sa;
-	(void)msg;
-	(void)link_msgid;
-	return -1;	/* STAGE 2: not implemented */
+	struct ikev2_child_sa *sa;
+
+	if (link == NULL)
+		return NULL;
+	for (sa = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+	     !IKEV2_CHILD_LIST_END(sa);
+	     sa = IKEV2_CHILD_LIST_NEXT(sa)) {
+		if (sa->addke_pending && sa->addke_link &&
+		    sa->addke_link->l == link->l &&
+		    memcmp(sa->addke_link->v, link->v, link->l) == 0)
+			return sa;
+	}
+	return NULL;
 }
 
 void
 ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		       struct sockaddr *remote, struct sockaddr *local)
 {
-	uint32_t link_msgid;
 	struct ikev2_header *ikehdr;
-	/* STAGE 2: allocate followup state per CREATE_CHILD_SA. */
+	struct ikev2_payload_header *p;
+	struct ikev2payl_ke *ke = 0;
+	struct ikev2_payload_header *link_notify = 0;
+	struct ikev2_child_sa *child_sa = 0;
+	rc_vchar_t *peer_ke = 0;
+	rc_vchar_t *link = 0;
+	rc_vchar_t *ct = 0, *ss = 0;
+	uint16_t ke_method;
 	int is_response;
+	int type;
 
 	ikehdr = (struct ikev2_header *)msg->v;
 	is_response = (ikehdr->flags & IKEV2FLAG_RESPONSE) != 0;
 
-	/* We never select ADDKE proposals (ikev2_addke_selectable()=0),
-	 * so an incoming IKE_FOLLOWUP_KE is a protocol anomaly. */
-	isakmp_log(ike_sa, local, remote, msg,
-		   PLOG_PROTOERR, PLOGLOC,
-		   "IKE_FOLLOWUP_KE received without negotiated ADDKE "
-		   "(addke selectable gate is off)\n");
-	++isakmpstat.unexpected_exchange_type;
-	if (!is_response) {
+	/* We are always the responder for ADDKE at this stage. */
+	if (is_response) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOWARN, PLOGLOC,
+			   "unexpected IKE_FOLLOWUP_KE response\n");
+		return;
+	}
+
+	/* parse: SK { KEi(1), N(ADDITIONAL_KEY_EXCHANGE)(link) } */
+	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	for (type = ikehdr->next_payload;
+	     type != IKEV2_NO_NEXT_PAYLOAD;
+	     POINT_NEXT_PAYLOAD(p, type)) {
+		switch (type) {
+		case IKEV2_PAYLOAD_KE:
+			if (ke) {
+				isakmp_log(ike_sa, local, remote, msg,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "duplicate KE payload\n");
+				goto invalid;
+			}
+			ke = (struct ikev2payl_ke *)p;
+			break;
+		case IKEV2_PAYLOAD_NOTIFY: {
+			struct ikev2payl_notify *nt =
+			    (struct ikev2payl_notify *)p;
+			if (get_notify_type(nt) ==
+			    IKEV2_ADDITIONAL_KEY_EXCHANGE) {
+				if (link_notify) {
+					isakmp_log(ike_sa, local, remote,
+						   msg, PLOG_PROTOERR,
+						   PLOGLOC,
+						   "duplicate "
+						   "ADDITIONAL_KEY_EXCHANGE\n");
+					goto invalid;
+				}
+				link_notify = p;
+			}
+			break;
+		}
+		default:
+			break;
+		}
+	}
+
+	if (!ke || !link_notify) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "IKE_FOLLOWUP_KE missing KE or "
+			   "ADDITIONAL_KEY_EXCHANGE payload\n");
+		goto invalid;
+	}
+
+	/* the link data is the notification's SPI-less data */
+	link = rc_vnew(get_notify_data((struct ikev2payl_notify *)link_notify),
+		       get_payload_data_length(link_notify) -
+		       ((struct ikev2payl_notify *)link_notify)->nh.spi_size);
+	if (!link)
+		goto nomem;
+
+	/* KE payload must reference the negotiated ADDKE method */
+	ke_method = get_uint16(&ke->ke_h.dh_group_id);
+	if (ke_method != IKEV2TRANSF_ADDKE_MLKEM768) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "IKE_FOLLOWUP_KE method %u != ML-KEM-768 (%u)\n",
+			   ke_method, IKEV2TRANSF_ADDKE_MLKEM768);
+		goto invalid;
+	}
+
+	/* the KE payload carries the initiator's ML-KEM-768 public key */
+	peer_ke = rc_vnew((const u_char *)(ke + 1),
+			  get_payload_data_length(&ke->header) -
+			  sizeof(ke->ke_h));
+	if (!peer_ke)
+		goto nomem;
+	if (peer_ke->l != OSSL_ML_KEM_768_PUBLIC_KEY_BYTES) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "IKE_FOLLOWUP_KE KEi length %zu != %d\n",
+			   peer_ke->l, OSSL_ML_KEM_768_PUBLIC_KEY_BYTES);
+		goto invalid;
+	}
+
+	/* find the pending child this followup links to */
+	child_sa = followup_ke_find_child(ike_sa, link);
+	if (!child_sa) {
+		/* rfc9370 s2.2.4: no key exchange state -> STATE_NOT_FOUND */
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOWARN, PLOGLOC,
+			   "IKE_FOLLOWUP_KE: no pending ADDKE state for link\n");
 		errno = 0;
 		(void)ikev2_respond_error(ike_sa, msg, remote, local,
 					  0, 0, 0,
-					  IKEV2_INVALID_SYNTAX, 0, 0);
+					  IKEV2_STATE_NOT_FOUND, 0, 0);
+		goto done;
 	}
-	(void)link_msgid;
-	(void)followup_ke_link_msgid;
+
+	/* responder encapsulates against the initiator's public key */
+	if (ikev2_addke_mlkem_encap(peer_ke, &ct, &ss) < 0) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_INTERR, PLOGLOC,
+			   "ML-KEM-768 encapsulate failed\n");
+		goto invalid;
+	}
+	if (ct->l != OSSL_ML_KEM_768_CIPHERTEXT_BYTES ||
+	    ss->l != OSSL_ML_KEM_SHARED_SECRET_BYTES) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_INTERR, PLOGLOC,
+			   "ML-KEM-768 sizes ct=%zu ss=%zu\n",
+			   ct->l, ss->l);
+		goto invalid;
+	}
+
+	/* SK(1) now known; install the child with the ADDKE keymat */
+	child_sa->addke_sk = ss;
+	ss = 0;
+	if (ikev2_child_addke_install(child_sa) < 0) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_INTERR, PLOGLOC,
+			   "failed to install ADDKE child\n");
+		child_sa->addke_sk = 0;
+		goto invalid;
+	}
+
+	/* reply with the ciphertext: HDR(IKE_FOLLOWUP_KE), SK { KEr } */
+	{
+		struct ikev2_payloads payl;
+		struct ikev2payl_ke_h keh;
+		rc_vchar_t *ker = 0;
+		rc_vchar_t *pkt;
+
+		ikev2_payloads_init(&payl);
+		memset(&keh, 0, sizeof(keh));
+		keh.dh_group_id =
+		    htons((uint16_t)IKEV2TRANSF_ADDKE_MLKEM768);
+		ker = rc_vprepend(ct, &keh, sizeof(keh));
+		if (!ker) {
+			ikev2_payloads_destroy(&payl);
+			goto nomem;
+		}
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ker, FALSE);
+		pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
+					     IKEV2FLAG_RESPONSE,
+					     get_uint32(&ikehdr->message_id),
+					     ike_sa, &payl);
+		rc_vfree(ker);
+		if (!pkt) {
+			ikev2_payloads_destroy(&payl);
+			goto nomem;
+		}
+		if (ikev2_transmit_response(ike_sa, pkt, local, remote) != 0)
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed sending IKE_FOLLOWUP_KE response\n");
+		ikev2_payloads_destroy(&payl);
+	}
+	goto done;
+
+      invalid:
+	/* The CREATE_CHILD_SA already succeeded; a broken followup
+	 * must not tear the IKE_SA down.  Per rfc9370 s2.2.4 ask the
+	 * initiator to cancel the series (non-fatal). */
+	if (!is_response)
+		(void)ikev2_respond_error(ike_sa, msg, remote, local,
+					  0, 0, 0,
+					  IKEV2_STATE_NOT_FOUND, 0, 0);
+	goto done;
+
+      nomem:
+	++isakmpstat.fail_process_packet;
+      done:
+	if (peer_ke)
+		rc_vfree(peer_ke);
+	if (link)
+		rc_vfree(link);
+	if (ct)
+		rc_vfree(ct);
+	if (ss)
+		rc_vfree(ss);
 }
 
 #endif	/* WITH_ADDKE */

@@ -83,7 +83,8 @@ static void ikev2_expire_sa(struct ikev2_child_sa *child_sa,
 			    int expire_mode, rc_type satype, uint32_t spi);
 
 static rc_vchar_t *compute_keymat(struct ikev2_sa *, rc_vchar_t *, size_t,
-				  rc_vchar_t *, rc_vchar_t *);
+				  rc_vchar_t *, rc_vchar_t *,
+				  rc_vchar_t *addke_sk);
 
 static int
 peer_proposal_has_dh_group(struct prop_pair *proposal, unsigned int group_id)
@@ -1358,6 +1359,73 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	goto fail;
 }
 
+static void
+ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
+{
+	struct prop_pair *tr;
+
+	/* Did the matched peer proposal carry an ADDKE (type 6) transform?
+	 * If so the responder selected ADDKE and must follow up with the
+	 * IKE_FOLLOWUP_KE exchange (rfc9370 s2.2.4).  The response SA
+	 * echoes the peer's ADDKE transform (rfc9370 s1.3), so no extra
+	 * negotiation state is needed here. */
+	if (child_sa->peer_proposal == NULL)
+		return;
+	for (tr = child_sa->peer_proposal->tnext; tr; tr = tr->next) {
+		struct ikev2transform *t = (struct ikev2transform *)tr->trns;
+		if (t && t->transform_type == IKEV2TRANSFORM_TYPE_ADDKE) {
+			child_sa->addke_pending = 1;
+			child_sa->addke_link = random_bytes(16);
+			TRACE((PLOGLOC, "child_sa %p marked ADDKE pending\n",
+			       child_sa));
+			return;
+		}
+	}
+}
+
+/*
+ * Complete the deferred install of an ADDKE child once the
+ * IKE_FOLLOWUP_KE exchange supplied SK(1): run the shared keymat+XFRM
+ * path (ikev2_add_ipsec_sa reads child_sa->addke_sk).  Called from
+ * ikev2_followup_ke_recv().  Returns 0 on success, -1 on failure.
+ */
+int
+ikev2_child_addke_install(struct ikev2_child_sa *child_sa)
+{
+	if (!child_sa || !child_sa->addke_pending) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "ikev2_child_addke_install: child not ADDKE pending\n");
+		return -1;
+	}
+	if (child_sa->addke_sk == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "ikev2_child_addke_install: no SK(1)\n");
+		return -1;
+	}
+
+	if (ikev2_add_ipsec_sa(child_sa, &child_sa->child_param,
+			       child_sa->peer_proposal,
+			       child_sa->my_proposal[1]) != 0)
+		return -1;
+	child_sa->addke_pending = 0;
+	ikev2_child_start_lifetime_timer(child_sa);
+	return 0;
+}
+
+static void
+ikev2_addke_wait_timeout(void *param)
+{
+	struct ikev2_child_sa *child_sa = param;
+
+	/* rfc9370 s2.2.4: if the initiator never starts the
+	 * IKE_FOLLOWUP_KE exchanges, the responder MUST delete the
+	 * associated state after a reasonable period (5-20s). */
+	isakmp_log(child_sa->parent, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
+		   "ADDKE followup timeout; aborting pending child %p\n",
+		   child_sa);
+	ikev2_child_abort(child_sa, ETIMEDOUT);
+}
+
 /*
  * ikev2_create_child_responder_cont:
  *     called when child_sa state transits from GETSPI to MATURE
@@ -1372,6 +1440,22 @@ ikev2_create_child_responder_cont(struct ikev2_child_sa *child_sa)
 	assert(!child_sa->is_initiator);
 	assert(child_sa->parent != 0);
 	ike_sa = child_sa->parent;
+
+	/*
+	 * RFC 9370 ADDKE: the CREATE_CHILD_SA response is sent before
+	 * the followup exchange completes — SK(1) is not known yet, so
+	 * the keymat+XFRM install is deferred to ikev2_child_addke_install()
+	 * (called from ikev2_followup_ke_recv).  In the meantime arm the
+	 * followup-wait timeout (rfc9370 s2.2.4: 5-20s).
+	 */
+	if (child_sa->addke_pending) {
+		if (child_sa->timer)
+			SCHED_KILL(child_sa->timer);
+		child_sa->timer =
+		    sched_new(10, ikev2_addke_wait_timeout, child_sa);
+		ikev2_createchild_responder_send(ike_sa, child_sa);
+		return;
+	}
 
 	ikev2_add_ipsec_sa(child_sa, &child_sa->child_param,
 			   child_sa->peer_proposal, child_sa->my_proposal[1]);
@@ -2152,7 +2236,8 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 		}
 	}
 	keymat = compute_keymat(child_sa->parent, child_sa->g_ir,
-				2 * required_len, child_sa->n_i, child_sa->n_r);
+				2 * required_len, child_sa->n_i, child_sa->n_r,
+				child_sa->addke_sk);
 	if (!keymat) {
 		err = ISAKMP_INTERNAL_ERROR;
 		goto bailout;
@@ -2993,7 +3078,8 @@ ikev2_child_delete_callback(enum request_callback action,
  */
 static rc_vchar_t *
 compute_keymat(struct ikev2_sa *sa,
-	       rc_vchar_t *g_ir, size_t required_len, rc_vchar_t *n_i, rc_vchar_t *n_r)
+	       rc_vchar_t *g_ir, size_t required_len, rc_vchar_t *n_i, rc_vchar_t *n_r,
+	       rc_vchar_t *addke_sk)
 {
 	rc_vchar_t *nonces = 0;
 	int inputlen;
@@ -3018,10 +3104,20 @@ compute_keymat(struct ikev2_sa *sa,
 	 * exchange, the keying material is defined as:
 	 *
 	 * KEYMAT = prf+(SK_d, g^ir (new) | Ni | Nr )
+	 *
+	 * RFC 9370 s2.2.4: with ADDKE exchanges, the shared secret from
+	 * each additional key exchange appends after Nr:
+	 *
+	 * KEYMAT = prf+(SK_d, SK(0) | Ni | Nr | SK(1) | ... SK(n))
+	 *
+	 * where SK(0) is g^ir (or nothing when no DH) and SK(1)..SK(n)
+	 * are the ADDKE shared secrets, in order of ADDKE Transform Type.
 	 */
 	inputlen = n_i->l + n_r->l;
 	if (g_ir)
 		inputlen += g_ir->l;
+	if (addke_sk)
+		inputlen += addke_sk->l;
 	nonces = rc_vmalloc(inputlen);
 	if (!nonces)
 		goto fail;
@@ -3030,6 +3126,8 @@ compute_keymat(struct ikev2_sa *sa,
 		VCONCAT(nonces, p, g_ir);
 	VCONCAT(nonces, p, n_i);
 	VCONCAT(nonces, p, n_r);
+	if (addke_sk)
+		VCONCAT(nonces, p, addke_sk);
 
 	keymat = ikev2_prf_plus(sa, sa->sk_d, nonces, required_len);
 

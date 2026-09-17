@@ -80,6 +80,67 @@ ikev2_respond_error(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	return -1;
 }
 
+/* iked-side packet machinery referenced by ikev2_addke.c's followup
+ * handler but never invoked by the crypto self-test; stubs so the TU
+ * links standalone (same rationale as above). */
+uint16_t
+get_uint16(const void *ptr)
+{
+	const uint8_t *p = ptr;
+	return ((uint16_t)p[0] << 8) + ((uint16_t)p[1] << 0);
+}
+
+uint32_t
+get_uint32(const void *ptr)
+{
+	const uint8_t *p = ptr;
+	return ((uint32_t)p[0] << 24) + ((uint32_t)p[1] << 16) +
+	       ((uint32_t)p[2] << 8) + ((uint32_t)p[3] << 0);
+}
+
+void
+ikev2_payloads_init(struct ikev2_payloads *p)
+{
+	(void)p;
+}
+
+void
+ikev2_payloads_push(struct ikev2_payloads *p, int type, rc_vchar_t *v,
+		    int critical)
+{
+	(void)p; (void)type; (void)v; (void)critical;
+}
+
+void
+ikev2_payloads_destroy(struct ikev2_payloads *p)
+{
+	(void)p;
+}
+
+rc_vchar_t *
+ikev2_packet_construct(int exch_type, int flags, uint32_t message_id,
+		       struct ikev2_sa *sa, struct ikev2_payloads *payl)
+{
+	(void)exch_type; (void)flags; (void)message_id;
+	(void)sa; (void)payl;
+	return NULL;
+}
+
+int
+ikev2_transmit_response(struct ikev2_sa *sa, rc_vchar_t *pkt,
+			struct sockaddr *local, struct sockaddr *remote)
+{
+	(void)sa; (void)pkt; (void)local; (void)remote;
+	return -1;
+}
+
+int
+ikev2_child_addke_install(struct ikev2_child_sa *child_sa)
+{
+	(void)child_sa;
+	return -1;
+}
+
 static int fail;
 
 #define CHECK(cond, what)						\
@@ -142,6 +203,81 @@ cli_encap(const char *pubfile, const char *secretfile,
 		execl(prog, prog, "pkeyutl", "-encap",
 		      "-pubin", "-inkey", pubfile,
 		      "-secret", secretfile, "-out", ctfile,
+		      (char *)NULL);
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) < 0)
+		return -1;
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+/* pkeyutl -decapsulate using a private key file.
+ * Returns 0 on success; secret written to secretfile. */
+static int
+cli_decap(const char *privfile, const char *ctfile,
+	  const char *secretfile)
+{
+	pid_t pid;
+	int status;
+
+	pid = fork();
+	if (pid < 0)
+		return -1;
+	if (pid == 0) {
+		int devnull = open("/dev/null", O_WRONLY);
+		if (devnull >= 0) {
+			dup2(devnull, 1);
+			dup2(devnull, 2);
+		}
+		execl(prog, prog, "pkeyutl", "-decap",
+		      "-inkey", privfile,
+		      "-in", ctfile,
+		      "-secret", secretfile,
+		      (char *)NULL);
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) < 0)
+		return -1;
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+/* openssl genpkey -algorithm ML-KEM-768 -out privfile,
+ * then pkey -pubout (DER) to pubfile.  Returns 0 on success. */
+static int
+cli_keygen(const char *privfile, const char *pubfile)
+{
+	pid_t pid;
+	int status;
+
+	pid = fork();
+	if (pid < 0)
+		return -1;
+	if (pid == 0) {
+		int devnull = open("/dev/null", O_WRONLY);
+		if (devnull >= 0) {
+			dup2(devnull, 1);
+			dup2(devnull, 2);
+		}
+		execl(prog, prog, "genpkey", "-algorithm", "ML-KEM-768",
+		      "-out", privfile, (char *)NULL);
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) < 0)
+		return -1;
+	if (!(WIFEXITED(status) && WEXITSTATUS(status) == 0))
+		return -1;
+
+	pid = fork();
+	if (pid < 0)
+		return -1;
+	if (pid == 0) {
+		int devnull = open("/dev/null", O_WRONLY);
+		if (devnull >= 0) {
+			dup2(devnull, 1);
+			dup2(devnull, 2);
+		}
+		execl(prog, prog, "pkey", "-in", privfile,
+		      "-pubout", "-outform", "DER", "-out", pubfile,
 		      (char *)NULL);
 		_exit(127);
 	}
@@ -227,10 +363,97 @@ main(void)
 			      "shared secret matches cli");
 		}
 
-		/* our encap must be decap-able by CLI (find cli decap)
-		 * -- requires a private key file, which pkeyutl needs
-		 * DER/PEM; skip: the round-trip + cli-encap direction
-		 * already pins both paths against the provider. */
+		/* our encap must be decap-able by the CLI -- the
+		 * responder-direction pin: the CLI (as initiator)
+		 * generates the ML-KEM-768 keypair, our encap runs
+		 * against its public key, the CLI decapsulates our
+		 * ciphertext and must recover the same 32-byte secret
+		 * (this is exactly the IKE_FOLLOWUP_KE responder role). */
+		{
+			char *clipriv = NULL, *clipub = NULL, *ourct = NULL;
+			char *clisec = NULL;
+			rc_vchar_t *cli_pub = NULL, *our_ct = NULL;
+			rc_vchar_t *our_ss = NULL, *cli_ss = NULL;
+			int k_ok;
+
+			clipriv = tmp_path("addke-clipriv", "", 0);
+			clipub = tmp_path("addke-clipub", "", 0);
+			ourct = tmp_path("addke-ourct", "", 0);
+			clisec = tmp_path("addke-clisec", "", 0);
+			CHECK(clipriv && clipub && ourct && clisec,
+			      "tmpfiles (responder dir)");
+			fs = fopen(clipriv, "wb"); if (fs) fclose(fs);
+			fs = fopen(clipub, "wb"); if (fs) fclose(fs);
+			fs = fopen(ourct, "wb"); if (fs) fclose(fs);
+			fs = fopen(clisec, "wb"); if (fs) fclose(fs);
+
+			k_ok = (cli_keygen(clipriv, clipub) == 0);
+			CHECK(k_ok, "cli genpkey ML-KEM-768");
+
+			if (k_ok) {
+				EVP_PKEY *cli_pkey = NULL;
+				unsigned char rawpub[
+				    OSSL_ML_KEM_768_PUBLIC_KEY_BYTES];
+				size_t rawlen = sizeof(rawpub);
+				const unsigned char *derp;
+				FILE *pf;
+
+				/* the CLI's DER SPKI -> raw 1184-byte
+				 * ML-KEM-768 public key (what the KE
+				 * payload carries, FIPS 203) */
+				pf = fopen(clipub, "rb");
+				if (pf) {
+					unsigned char buf[4096];
+					size_t n = fread(buf, 1, sizeof(buf), pf);
+					fclose(pf);
+					derp = buf;
+					cli_pkey = d2i_PUBKEY(NULL, &derp,
+							      (long)n);
+				}
+				CHECK(cli_pkey != NULL,
+				      "cli pubkey parses as SPKI");
+				if (cli_pkey) {
+					CHECK(EVP_PKEY_get_raw_public_key(
+						  cli_pkey, rawpub,
+						  &rawlen) > 0 &&
+					      rawlen == sizeof(rawpub),
+					      "cli raw pubkey is 1184 bytes");
+				}
+
+				/* our encap against the CLI pubkey */
+				cli_pub = rc_vnew(rawpub, rawlen);
+				CHECK(cli_pub->l ==
+				      OSSL_ML_KEM_768_PUBLIC_KEY_BYTES,
+				      "cli pubkey is 1184 bytes");
+				CHECK(ikev2_addke_mlkem_encap(
+					  cli_pub, &our_ct, &our_ss) == 0,
+				      "our encapsulate");
+				CHECK(our_ct && our_ss &&
+				      our_ct->l ==
+				      OSSL_ML_KEM_768_CIPHERTEXT_BYTES &&
+				      our_ss->l ==
+				      OSSL_ML_KEM_SHARED_SECRET_BYTES,
+				      "our ct/ss sizes");
+
+				/* CLI decapsulates our ciphertext */
+				fs = fopen(ourct, "wb");
+				if (fs) { fwrite(our_ct->v, 1, our_ct->l, fs); fclose(fs); }
+				CHECK(cli_decap(clipriv, ourct, clisec) == 0,
+				      "cli pkeyutl -decapsulate");
+				cli_ss = read_file_rc(clisec);
+				CHECK(cli_ss != NULL &&
+				      cli_ss->l == our_ss->l &&
+				      memcmp(cli_ss->v, our_ss->v,
+					     our_ss->l) == 0,
+				      "responder-direction secret matches cli");
+
+				EVP_PKEY_free(cli_pkey);
+			}
+
+			free(clipriv); free(clipub); free(ourct); free(clisec);
+			rc_vfree(cli_pub); rc_vfree(our_ct);
+			rc_vfree(our_ss); rc_vfree(cli_ss);
+		}
 	} else {
 		printf("skip: openssl CLI unavailable (continuing)\n");
 	}
