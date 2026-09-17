@@ -4036,7 +4036,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * from the pcap. */
 		char hx[160];
 		size_t hlen = get_payload_data_length(sa);
-		size_t hl = hlen < 48 ? hlen : 48;
+		size_t hl = hlen < 64 ? hlen : 64;
 		size_t i;
 		const u_char *dp = (const u_char *)(sa + 1);
 		for (i = 0; i < hl && i * 2 + 2 < sizeof(hx); i++)
