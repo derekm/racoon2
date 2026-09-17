@@ -52,6 +52,14 @@ resumetest_SOURCES = resumetest.c ikev2_resume_rec.c
 fragtest_SOURCES = fragtest.c ikev2_frag.c encryptor.c authenticator.c \
 	keyed_hash.c crypto_openssl.c str2val.c
 
+# RFC 9370 ADDKE ML-KEM-768 crypto (configure --enable-addke auto):
+# exercised only on OpenSSL >= 3.5 builds that actually have the code.
+if ADDKE
+TESTS += addketest
+check_PROGRAMS += addketest
+addketest_SOURCES = addketest.c ikev2_addke.c
+endif
+
 LIBS = @LIBS@
 
 man_MANS = iked.8

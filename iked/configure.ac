@@ -236,6 +236,7 @@ if test x"$addke" = xyes; then
 		[AC_MSG_ERROR([openssl/ml_kem.h not found: ADDKE/ML-KEM needs OpenSSL 3.5+; build with --disable-addke])])
 	AC_DEFINE(WITH_ADDKE, 1, [define to use RFC 9370 ADDKE/ML-KEM-768])
 fi
+AM_CONDITIONAL([ADDKE], [test x"$addke" = xyes])
 
 AC_ARG_WITH(openssl-provider,
 	[  --with-openssl-provider=NAME
