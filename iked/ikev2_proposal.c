@@ -652,7 +652,21 @@ ikev2_pack_proposal_sub(rc_vchar_t *buf, struct prop_pair **proposal)
 				    ISAKMP_NPTYPE_NONE;
 				prophdr->h.reserved = 0;
 				/* len is set later */
-				prophdr->p_no = prop_num;
+				/*
+				 * Emit the proposal number stored in the
+				 * prop_pair, not our config array index:
+				 * the responder's SA must reference the
+				 * ACCEPTED peer proposal (RFC 7296 3.3
+				 * numbers proposals 1..N by position).
+				 * ikev2_find_match(MINE) stamps the peer's
+				 * p_no onto the copied proposal; initiator
+				 * config proposals carry p_no=1 already
+				 * (ike_conf.c), so both paths agree.
+				 */
+				if (prop->prop)
+					prophdr->p_no = prop->prop->p_no;
+				else
+					prophdr->p_no = prop_num;
 			}
 			bufptr += sizeof(struct isakmp_pl_p);
 			if (prop->prop)

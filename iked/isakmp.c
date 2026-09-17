@@ -1999,6 +1999,18 @@ isakmp_find_match(struct isakmp_domain *doi, struct prop_pair **my_proposal,
 			    peer_proto->prop->spi_size)
 				goto fail;
 			memcpy(tail->prop, my_proto->prop, prop_len);
+			/* The response SA must reference the proposal
+			 * number of the ACCEPTED peer proposal, not our
+			 * config array index: RFC 7296 3.3 numbers
+			 * proposals 1..N by position, and the responder
+			 * "MUST accept a single proposal" (2.7).  When
+			 * we skip earlier peer proposals (e.g. RFC 9370
+			 * ADDKE-bearing ones we cannot honor) but still
+			 * answer proposal #1, the initiator reads back a
+			 * proposal number whose transform set we did not
+			 * select -- observed live as iOS DELETE IKE_SA
+			 * ~150ms after our rekey response. */
+			tail->prop->p_no = peer_proto->prop->p_no;
 			break;
 		case PEER:
 			memcpy(tail->prop, peer_proto->prop, prop_len);
