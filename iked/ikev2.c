@@ -1038,10 +1038,19 @@ ikev2_initiate(struct isakmp_acquire_request *req,
 		goto fail;
 	}
 
+	/* The GETSPI sent by ikev2_child_getspi() must carry its OWN unique
+	 * request sequence for response correlation.  req->request_msg_seq is
+	 * the ACQUIRE's seq — which the netlink XFRM backend never sets, so
+	 * after the sadb_poll memset it is 0; if_xfrm.c then invents a
+	 * netlink seq (++xfrm_seq) for the GETSPI and the reply never matches
+	 * this request ("SADB_GETSPI ... does not have corresponding
+	 * request"), stalling the initiator child before IKE_AUTH.  Mint a
+	 * fresh seq here, exactly like the responder/initiator-rekey child
+	 * paths do (ikev2_child.c ikev2_child_getspi callers). */
 	sadb_request_initialize(&child_sa->sadb_request,
 				req->callback_method,
 				&ikev2_sadb_callback,
-				req->request_msg_seq,
+				sadb_new_seq(),
 				child_sa);
 
 	ikev2_child_getspi(child_sa);
