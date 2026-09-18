@@ -4162,6 +4162,37 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				    "(unknown)"),
 				   rekey_spi);
 		} else {
+			/*
+			 * RFC 9370 s2.2.4: if WE already rekeyed this
+			 * child (CREATE_CHILD_SA completed) and our
+			 * IKE_FOLLOWUP_KE series is still in progress,
+			 * a concurrent peer rekey of the same SA must be
+			 * answered with TEMPORARY_FAILURE (MUST).
+			 */
+			struct ikev2_child_sa *pending;
+
+			for (pending = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+			     !IKEV2_CHILD_LIST_END(pending);
+			     pending = IKEV2_CHILD_LIST_NEXT(pending)) {
+#ifdef WITH_ADDKE
+				if (pending->is_initiator &&
+				    pending->addke_pending &&
+				    pending->preceding_satype != 0 &&
+				    pending->preceding_spi == rekey_spi) {
+					isakmp_log(ike_sa, local, remote, msg,
+					    PLOG_PROTOWARN, PLOGLOC,
+					    "rekey collision: our ADDKE "
+					    "rekey followup in progress for "
+					    "spi 0x%x; TEMPORARY_FAILURE\n",
+					    rekey_spi);
+					(void)ikev2_respond_error(
+					    ike_sa, msg, remote, local,
+					    0, 0, 0,
+					    IKEV2_TEMPORARY_FAILURE, 0, 0);
+					goto done;
+				}
+#endif
+			}
 			TRACE((PLOGLOC, "rekey request for child_sa %p\n",
 			       old_child_sa));
 			if (old_child_sa->rekey_inprogress) {

@@ -86,7 +86,7 @@ static rc_vchar_t *compute_keymat(struct ikev2_sa *, rc_vchar_t *, size_t,
 				  rc_vchar_t *, rc_vchar_t *,
 				  rc_vchar_t *addke_sk);
 
-static void ikev2_child_addke_mark(struct ikev2_child_sa *);
+static int ikev2_child_addke_mark(struct ikev2_child_sa *);
 static int
 peer_proposal_has_dh_group(struct prop_pair *proposal, unsigned int group_id)
 {
@@ -780,7 +780,10 @@ ikev2_child_responder_after_dh(struct ikev2_child_responder_ctx *ctx)
 	 * pending state + link so the CREATE_CHILD_SA response includes
 	 * the ADDITIONAL_KEY_EXCHANGE notification (16441) and the
 	 * subsequent IKE_FOLLOWUP_KE is associated with this child. */
-	ikev2_child_addke_mark(child_sa);
+#ifdef WITH_ADDKE
+	if (ikev2_child_addke_mark(child_sa) < 0)
+		goto fail;
+#endif
 
 	/* XXX generate policy */
 	if (!LIST_EMPTY(&child_sa->lease_list)) {
@@ -1222,7 +1225,8 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	 * pending state + link so the CREATE_CHILD_SA response includes
 	 * the ADDITIONAL_KEY_EXCHANGE notification (16441) and the
 	 * subsequent IKE_FOLLOWUP_KE is associated with this child. */
-	ikev2_child_addke_mark(child_sa);
+	if (ikev2_child_addke_mark(child_sa) < 0)
+		goto no_proposal_chosen;
 
 	/* XXX generate policy */
 	if (!LIST_EMPTY(&child_sa->lease_list)) {
@@ -1372,28 +1376,77 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	goto fail;
 }
 
-static void
+/*
+ * RFC 9370 ADDKE negotiation on the matched child proposal.
+ * Returns 0 when acceptable, -1 when the remote's downgrade policy
+ * (addke_required) forbids a plain (non-ADDKE) match.
+ */
+static int
 ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 {
 	struct prop_pair *tr;
+	int peer_addke = 0;
+	int nrounds = 0;
 
-	/* Did the matched peer proposal carry an ADDKE (type 6) transform?
-	 * If so the responder selected ADDKE and must follow up with the
-	 * IKE_FOLLOWUP_KE exchange (rfc9370 s2.2.4).  The response SA
-	 * echoes the peer's ADDKE transform (rfc9370 s1.3), so no extra
-	 * negotiation state is needed here. */
-	if (child_sa->peer_proposal == NULL)
-		return;
-	for (tr = child_sa->peer_proposal->tnext; tr; tr = tr->next) {
-		struct ikev2transform *t = (struct ikev2transform *)tr->trns;
-		if (t && t->transform_type == IKEV2TRANSFORM_TYPE_ADDKE) {
-			child_sa->addke_pending = 1;
-			child_sa->addke_link = random_bytes(16);
-			TRACE((PLOGLOC, "child_sa %p marked ADDKE pending\n",
-			       child_sa));
-			return;
+	/*
+	 * Collect every ADDKE transform in the matched proposal, in
+	 * wire order.  RFC 9370 s2.2.1: additional key exchanges run in
+	 * order of their Transform Type values (ADDKE1=6 first); the
+	 * per-round KE method must match the nth negotiated method
+	 * (s2.2.4).  Our proposal carries only type 6 today, so a
+	 * single round is the common case; the array generalizes it.
+	 */
+	if (child_sa->peer_proposal != NULL) {
+		struct prop_pair *ptype;
+		int type;
+
+		for (type = IKEV2TRANSFORM_TYPE_ADDKE;
+		     type <= IKEV2TRANSFORM_TYPE_ADDKE + 6; ++type) {
+			for (ptype = child_sa->peer_proposal->tnext;
+			     ptype; ptype = ptype->next) {
+				struct ikev2transform *t =
+				    (struct ikev2transform *)ptype->trns;
+				if (t &&
+				    t->transform_type == (unsigned)type) {
+					/* first transform of this type wins */
+					if (nrounds < 8)
+						child_sa->addke_methods[nrounds] =
+						    get_uint16(&t->transform_id);
+					++nrounds;
+					peer_addke = 1;
+					break;
+				}
+			}
+		}
+		child_sa->addke_nrounds = nrounds;
+		child_sa->addke_round = 0;
+		if (nrounds > 0)
+			child_sa->addke_method = child_sa->addke_methods[0];
+	}
+
+	/* required: the peer MUST offer ADDKE, or refuse the child. */
+	if (child_sa->parent && child_sa->parent->rmconf &&
+	    ikev2_addke_required(child_sa->parent->rmconf) == RCT_BOOL_ON) {
+#ifdef WITH_ADDKE
+		if (!peer_addke || ikev2_addke_selectable() == 0) {
+#else
+		if (1) {
+#endif
+			isakmp_log(child_sa->parent, 0, 0, 0,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "addke_required on but peer proposal "
+				   "lacks ADDKE; refusing child\n");
+			return -1;
 		}
 	}
+
+	if (peer_addke) {
+		child_sa->addke_pending = 1;
+		child_sa->addke_link = random_bytes(16);
+		TRACE((PLOGLOC, "child_sa %p marked ADDKE pending\n",
+		       child_sa));
+	}
+	return 0;
 }
 
 /*

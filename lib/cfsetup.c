@@ -204,6 +204,7 @@ static int rcf_fix_kmp_dh_group (struct cf_list *, void *);
 static int rcf_fix_exchange_mode (struct cf_list *, void *);
 static int rcf_fix_my_gssapi_id (struct cf_list *, void *);
 static int rcf_fix_cookie_required (struct cf_list *, void *);
+static int rcf_fix_addke_required (struct cf_list *, void *);
 static int rcf_fix_send_peers_id (struct cf_list *, void *);
 static int rcf_fix_nat_traversal (struct cf_list *, void *);
 static int rcf_fix_natd_public_address (struct cf_list *, void *);
@@ -364,6 +365,7 @@ struct rcf_tdf_t {
 	{ CFD_EXCHANGE_MODE,		rcf_fix_exchange_mode, },
 	{ CFD_MY_GSSAPI_ID,		rcf_fix_my_gssapi_id, },
 	{ CFD_COOKIE_REQUIRED,		rcf_fix_cookie_required, },
+	{ CFD_ADDKE_REQUIRED,		rcf_fix_addke_required, },
 	{ CFD_SEND_PEERS_ID,		rcf_fix_send_peers_id, },
 	{ CFD_NAT_TRAVERSAL,		rcf_fix_nat_traversal, },
 	{ CFD_NATD_PUBLIC_ADDRESS,	rcf_fix_natd_public_address, },
@@ -1528,6 +1530,19 @@ rcf_fix_cookie_required(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_COOKIE_REQUIRED))
 		return -1;
 	if (rcf_fix_boolean(head->nextp, &dst->cookie_required))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_addke_required(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ADDKE_REQUIRED))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->addke_required))
 		return -1;
 
 	return 0;

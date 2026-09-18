@@ -350,6 +350,13 @@ struct ikev2_child_sa {
 	rc_vchar_t *addke_sk;	/* additional shared secret SK(1) */
 	unsigned int addke_method; /* negotiated ADDKE KE method id */
 	uint32_t addke_followup_msgid; /* initiator: followup request msgid */
+	/* RFC 9370 multi-round: ordered negotiated ADDKE methods plus the
+	 * round cursor.  Rounds run in transform-type order; each round
+	 * consumes one IKE_FOLLOWUP_KE exchange whose KE method must
+	 * equal methods[round]. */
+	unsigned int addke_methods[8];	/* ADDKE1..ADDKE7 + NONE, type order */
+	int addke_nrounds;
+	int addke_round;	/* next round to expect/perform */
 #ifdef WITH_ADDKE
 	void *addke_priv;	/* initiator: ML-KEM private key (EVP_PKEY *)
 				 * held until the followup response decaps */

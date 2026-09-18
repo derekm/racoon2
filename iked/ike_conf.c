@@ -207,6 +207,7 @@ struct rcf_kmp ikev2_default_values = {
 	0,			/* dpd_maxfails */
 	{ NULL },		/* script */
 	NULL,			/* natd_public_address */
+	RCT_BOOL_OFF,		/* addke_required (RFC 9370 downgrade gate) */
 };
 
 #ifdef IKEV1
@@ -427,6 +428,7 @@ IKEV2_CONF_ATTR(rc_type, cookie_required)
 IKEV2_CONF_ATTR(rc_type, send_peers_id)
 IKEV2_CONF_ATTR(rc_type, nat_traversal)
 IKEV2_CONF_ATTR(int, natk_interval)
+IKEV2_CONF_ATTR(rc_type, addke_required)
 IKEV2_CONF_ATTR(struct rc_addrlist *, natd_public_address)
 IKEV2_CONF_ATTR(rc_type, need_pfs)
 IKEV2_CONF_ATTR(rc_vchar_t *, application_version)

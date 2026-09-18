@@ -286,6 +286,10 @@ struct rcf_kmp {
 	int dpd_maxfails;
 	char	*script[SCRIPT_NUM];
 	struct rc_addrlist *natd_public_address;
+	/* RFC 9370: require the peer's proposals to carry an ADDKE
+	 * transform (downgrade protection).  OFF = ADDKE optional
+	 * (peer without type-6 negotiates plain IKEv2). */
+	rc_type addke_required;
 };
 
 /* selector info */

@@ -749,18 +749,51 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		goto done;
 	}
 
-	/* install the child with the ADDKE keymat */
-	child_sa->addke_sk = ss;
-	ss = 0;
-	if (ikev2_child_addke_install(child_sa) < 0) {
+	/*
+	 * Multi-round check (rfc9370 s2.2.4): the KE method field of
+	 * this followup MUST match the n-th negotiated ADDKE method.
+	 * Round cursor starts at 0; advance after each completed round.
+	 */
+	if (child_sa->addke_nrounds > 0 &&
+	    child_sa->addke_round < child_sa->addke_nrounds &&
+	    ke_method !=
+		child_sa->addke_methods[child_sa->addke_round]) {
 		isakmp_log(ike_sa, local, remote, msg,
-			   PLOG_INTERR, PLOGLOC,
-			   "failed to install ADDKE child\n");
-		child_sa->addke_sk = 0;
+			   PLOG_PROTOERR, PLOGLOC,
+			   "IKE_FOLLOWUP_KE method %u != round %d method %u\n",
+			   ke_method, child_sa->addke_round,
+			   child_sa->addke_methods[child_sa->addke_round]);
 		goto invalid;
 	}
 
-	/* reply with the ciphertext: HDR(IKE_FOLLOWUP_KE), SK { KEr } */
+	/* append this round's shared secret to SK(1)..SK(n), in order */
+	{
+		rc_vchar_t *acc;
+
+		acc = rc_vmalloc((child_sa->addke_sk ?
+				  child_sa->addke_sk->l : 0) + ss->l);
+		if (!acc) {
+			rc_vfree(ss);
+			ss = 0;
+			goto nomem;
+		}
+		if (child_sa->addke_sk) {
+			memcpy(acc->v, child_sa->addke_sk->v,
+			       child_sa->addke_sk->l);
+			rc_vfree(child_sa->addke_sk);
+			child_sa->addke_sk = 0;
+		}
+		memcpy(acc->v + acc->l - ss->l, ss->v, ss->l);
+		child_sa->addke_sk = acc;
+		rc_vfree(ss);
+		ss = 0;
+	}
+
+	/*
+	 * Reply the ciphertext BEFORE finishing: the peer needs KEr(n)
+	 * for this round before it sends the next followup, and if
+	 * more rounds remain the child must stay pending.
+	 */
 	{
 		struct ikev2_payloads payl;
 		struct ikev2payl_ke_h keh;
@@ -790,6 +823,31 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				   PLOG_INTERR, PLOGLOC,
 				   "failed sending IKE_FOLLOWUP_KE response\n");
 		ikev2_payloads_destroy(&payl);
+	}
+
+	/* advance the round cursor; install only after the last round */
+	++child_sa->addke_round;
+	if (child_sa->addke_round < child_sa->addke_nrounds) {
+		/* more rounds: re-arm the followup-wait timeout, stay pending */
+		if (child_sa->timer)
+			SCHED_KILL(child_sa->timer);
+		child_sa->timer =
+		    sched_new(10, ikev2_addke_wait_timeout, child_sa);
+		TRACE((PLOGLOC,
+		       "ADDKE round %d/%d done; waiting for next followup\n",
+		       child_sa->addke_round, child_sa->addke_nrounds));
+		goto done;
+	}
+
+	/* final round: install the child with the accumulated SK(1..n) */
+	child_sa->addke_round = 0;
+	child_sa->addke_nrounds = 0;
+	if (ikev2_child_addke_install(child_sa) < 0) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_INTERR, PLOGLOC,
+			   "failed to install ADDKE child\n");
+		child_sa->addke_sk = 0;
+		goto invalid;
 	}
 	goto done;
 

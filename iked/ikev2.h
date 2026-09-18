@@ -522,7 +522,10 @@ struct ikev2payl_notify {
 #define	IKEV2_UNACCEPTABLE_ADDRESSES	40	/* (RFC4555) */
 #define	IKEV2_UNEXPECTED_NAT_DETECTED	41	/* (RFC4555) */
 #define	IKEV2_USE_ASSIGNED_HoA		42	/* (RFC5026) */
-/*	RESERVED TO IANA - Error types         43 - 8191 */
+#define	IKEV2_TEMPORARY_FAILURE		43	/* (RFC7296); also rfc9370
+						 * s2.2.4 rekey-collision
+						 * MUST reply */
+/*	RESERVED TO IANA - Error types         44 - 8191 */
 /*	Private Use - Errors                8192 - 16383 */
 #define	IKEV2_NOTIFYTYPE_ERROR_MAX	16383
 #define	IKEV2_INITIAL_CONTACT		16384
