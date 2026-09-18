@@ -41,6 +41,33 @@
 #endif
 #define RESUME_DIR_LEGACY	"/var/run/racoon2/resume"
 
+/*
+ * Runtime override of the resume directory (RACOON2_RESUME_DIR), mirroring the
+ * RACOON2_ADMIN_SOCK pattern: lets an isolated test harness steer its resume
+ * dumps into a private dir so N test ikeds never read/write production's
+ * /var/lib/racoon2/resume (a stale shared dump made a test responder skip a
+ * fresh child with "pending ADDKE followup; skipped, will rekey").  When the
+ * override is set, the shared legacy dir is likewise not touched.
+ */
+static int
+r2_resume_override(void)
+{
+	const char *e = getenv("RACOON2_RESUME_DIR");
+	return e && *e;
+}
+static const char *
+r2_resume_dir(void)
+{
+	const char *e = getenv("RACOON2_RESUME_DIR");
+	return (e && *e) ? e : RESUME_DIR;
+}
+static const char *
+r2_resume_dir_legacy(void)
+{
+	const char *e = getenv("RACOON2_RESUME_DIR");
+	return (e && *e) ? e : RESUME_DIR_LEGACY;
+}
+
 static time_t
 resume_remain_from_dump(uint32_t expire_at, time_t now, time_t fallback)
 {
@@ -149,18 +176,22 @@ resume_migrate_legacy(void)
 	struct dirent *de;
 	char from[320], to[320];
 
-	(void)mkdir("/var/lib/racoon2", 0700);
-	if (mkdir(RESUME_DIR, 0700) < 0 && errno != EEXIST)
+	/* An explicit RACOON2_RESUME_DIR means a private/isolated set: never
+	 * migrate from (or mkdir into) the shared production dirs. */
+	if (r2_resume_override())
 		return;
-	d = opendir(RESUME_DIR_LEGACY);
+	(void)mkdir("/var/lib/racoon2", 0700);
+	if (mkdir(r2_resume_dir(), 0700) < 0 && errno != EEXIST)
+		return;
+	d = opendir(r2_resume_dir_legacy());
 	if (!d)
 		return;
 	while ((de = readdir(d)) != NULL) {
 		if (de->d_name[0] == '.')
 			continue;
-		snprintf(from, sizeof(from), "%s/%s", RESUME_DIR_LEGACY,
+		snprintf(from, sizeof(from), "%s/%s", r2_resume_dir_legacy(),
 		    de->d_name);
-		snprintf(to, sizeof(to), "%s/%s", RESUME_DIR, de->d_name);
+		snprintf(to, sizeof(to), "%s/%s", r2_resume_dir(), de->d_name);
 		if (rename(from, to) == 0)
 			continue;
 		if (errno == EXDEV && resume_copy_file(from, to) == 0)
@@ -173,7 +204,7 @@ static void
 resume_filename(char *buf, size_t buflen, const uint8_t i_ck[8],
     const uint8_t r_ck[8])
 {
-	r2rs_filename_in(buf, buflen, RESUME_DIR, i_ck, r_ck);
+	r2rs_filename_in(buf, buflen, r2_resume_dir(), i_ck, r_ck);
 }
 
 static struct prop_pair *
@@ -309,10 +340,10 @@ ikev2_resume_forget(struct ikev2_sa *sa)
 
 	if (!sa)
 		return;
-	r2rs_filename_in(path, sizeof(path), RESUME_DIR, sa->index.i_ck,
+	r2rs_filename_in(path, sizeof(path), r2_resume_dir(), sa->index.i_ck,
 	    sa->index.r_ck);
 	unlink(path);
-	r2rs_filename_in(path, sizeof(path), RESUME_DIR_LEGACY, sa->index.i_ck,
+	r2rs_filename_in(path, sizeof(path), r2_resume_dir_legacy(), sa->index.i_ck,
 	    sa->index.r_ck);
 	unlink(path);
 }
@@ -421,9 +452,9 @@ ikev2_resume_save(struct ikev2_sa *sa)
 	rec.nchild = (uint32_t)n;
 
 	(void)mkdir("/var/lib/racoon2", 0700);
-	if (mkdir(RESUME_DIR, 0700) < 0 && errno != EEXIST) {
+	if (mkdir(r2_resume_dir(), 0700) < 0 && errno != EEXIST) {
 		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-			   "resume: mkdir %s failed\n", RESUME_DIR);
+			   "resume: mkdir %s failed\n", r2_resume_dir());
 		return;
 	}
 	resume_filename(path, sizeof(path), rec.i_ck, rec.r_ck);
@@ -715,7 +746,7 @@ ikev2_resume_load(void)
 	int n = 0;
 
 	resume_migrate_legacy();
-	d = opendir(RESUME_DIR);
+	d = opendir(r2_resume_dir());
 	if (!d) {
 		plog(PLOG_INFO, PLOGLOC, 0, "resume: no dumps loaded\n");
 		return;
@@ -723,7 +754,8 @@ ikev2_resume_load(void)
 	while ((de = readdir(d)) != NULL) {
 		if (de->d_name[0] == '.')
 			continue;
-		snprintf(path, sizeof(path), RESUME_DIR "/%s", de->d_name);
+		snprintf(path, sizeof(path), "%s/%s", r2_resume_dir(),
+		    de->d_name);
 		if (restore_one(path) == 0)
 			n++;
 		else
