@@ -68,7 +68,16 @@ done
 sleep 2
 echo "=== ikedctl establish-sa (initiator) ==="
 "$SBIN/ikedctl" -s /tmp/iked.sock-i2i establish-sa isakmp inet "$CIP" "$HIP" sel_out 2>&1 | head -5 || true
-sleep 5
+# give the exchange time to complete (DH + IKE_AUTH + child GETSPI/ADDKE); poll
+# up to 40s for ESP SAD on BOTH sides.
+i=0
+while [ "$i" -lt 40 ]; do
+	he=$(ip xfrm state 2>/dev/null | grep -c 'proto esp' || true)
+	ne=$(ip netns exec "$NS" ip xfrm state 2>/dev/null | grep -c 'proto esp' || true)
+	[ "$he" -ge 2 ] && [ "$ne" -ge 2 ] && { echo "CHILD UP: host esp=$he netns esp=$ne after ${i}s"; break; }
+	i=$((i+1)); sleep 1
+done
+[ "$he" -ge 2 ] && [ "$ne" -ge 2 ] || echo "NOT UP after ${i}s: host esp=${he:-0} netns esp=${ne:-0}"
 echo "=== responder esp/policy ==="
 ip xfrm state 2>/dev/null | grep -c 'proto esp' || true
 ip xfrm policy 2>/dev/null | grep -E 'src |dir (in|out|fwd)' | head -8
