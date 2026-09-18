@@ -1449,6 +1449,21 @@ ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 	return 0;
 }
 
+static void ikev2_addke_wait_timeout(void *);
+
+/*
+ * Arm (or re-arm) the followup-wait timeout on a pending ADDKE child.
+ * Exported: the multi-round followup handler re-arms between rounds.
+ */
+void
+ikev2_child_addke_arm_timeout(struct ikev2_child_sa *child_sa)
+{
+	if (child_sa->timer)
+		SCHED_KILL(child_sa->timer);
+	child_sa->timer =
+	    sched_new(10, ikev2_addke_wait_timeout, child_sa);
+}
+
 /*
  * Complete the deferred install of an ADDKE child once the
  * IKE_FOLLOWUP_KE exchange supplied SK(1): run the shared keymat+XFRM
@@ -1515,10 +1530,7 @@ ikev2_create_child_responder_cont(struct ikev2_child_sa *child_sa)
 	 * followup-wait timeout (rfc9370 s2.2.4: 5-20s).
 	 */
 	if (child_sa->addke_pending) {
-		if (child_sa->timer)
-			SCHED_KILL(child_sa->timer);
-		child_sa->timer =
-		    sched_new(10, ikev2_addke_wait_timeout, child_sa);
+		ikev2_child_addke_arm_timeout(child_sa);
 		ikev2_createchild_responder_send(ike_sa, child_sa);
 		return;
 	}
@@ -2613,11 +2625,7 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 				}
 				rc_vfree(pub);
 				/* arm the followup-wait timeout */
-				if (child_sa->timer)
-					SCHED_KILL(child_sa->timer);
-				child_sa->timer =
-				    sched_new(10, ikev2_addke_wait_timeout,
-					      child_sa);
+				ikev2_child_addke_arm_timeout(child_sa);
 				/* child stays pending; keys land via
 				 * ikev2_initiator_followup_complete() */
 				ikev2_child_state_set(child_sa,

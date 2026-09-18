@@ -831,11 +831,10 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		/* more rounds: re-arm the followup-wait timeout, stay pending */
 		if (child_sa->timer)
 			SCHED_KILL(child_sa->timer);
-		child_sa->timer =
-		    sched_new(10, ikev2_addke_wait_timeout, child_sa);
-		TRACE((PLOGLOC,
-		       "ADDKE round %d/%d done; waiting for next followup\n",
-		       child_sa->addke_round, child_sa->addke_nrounds));
+		ikev2_child_addke_arm_timeout(child_sa);
+		isakmp_log(ike_sa, local, remote, msg, PLOG_DEBUG, PLOGLOC,
+			   "ADDKE round %d/%d done; waiting for next followup\n",
+			   child_sa->addke_round, child_sa->addke_nrounds);
 		goto done;
 	}
 
