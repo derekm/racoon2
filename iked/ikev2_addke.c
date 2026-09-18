@@ -366,16 +366,43 @@ static struct ikev2_child_sa *
 followup_ke_find_child(struct ikev2_sa *ike_sa, rc_vchar_t *link)
 {
 	struct ikev2_child_sa *sa;
+	struct ikev2_child_sa *pending = NULL;
+	int n_pending = 0;
 
 	if (link == NULL)
 		return NULL;
 	for (sa = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
 	     !IKEV2_CHILD_LIST_END(sa);
 	     sa = IKEV2_CHILD_LIST_NEXT(sa)) {
-		if (sa->addke_pending && sa->addke_link &&
-		    sa->addke_link->l == link->l &&
+		if (!sa->addke_pending)
+			continue;
+		n_pending++;
+		pending = sa;
+		if (sa->addke_link && sa->addke_link->l == link->l &&
 		    memcmp(sa->addke_link->v, link->v, link->l) == 0)
-			return sa;
+			return sa;	/* pre-bound: exact match (rekey path) */
+	}
+	/*
+	 * RFC 9370 s2.2.4: the ADDKE link is chosen by the peer that sent the
+	 * CREATE_CHILD_SA and echoed/indexed by the other side.  For a child
+	 * created in the IKE_AUTH exchange the responder never transmitted a
+	 * link beforehand (kev2_responder_state1_send does not carry the
+	 * ADDKE notify for the initial child), so the first IKE_FOLLOWUP_KE
+	 * arrives with the INITIATOR's link.  Bind it to the single
+	 * unambiguous pending ADDKE child; refuse only when the link would be
+	 * ambiguous (multiple unbound pending children).
+	 */
+	if (n_pending == 1 && pending->addke_link &&
+	    (pending->addke_link->l != link->l ||
+	     memcmp(pending->addke_link->v, link->v, link->l) != 0)) {
+		rc_vfreez(pending->addke_link);
+		pending->addke_link = NULL;
+	}
+	if (n_pending == 1 && pending->addke_link == NULL) {
+		pending->addke_link = rc_vnew(link->v, link->l);
+		if (!pending->addke_link)
+			return NULL;
+		return pending;
 	}
 	return NULL;
 }
