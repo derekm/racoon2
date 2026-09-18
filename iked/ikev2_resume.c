@@ -391,6 +391,20 @@ ikev2_resume_save(struct ikev2_sa *sa)
 		rec.child[n].out_spi = out_spi;
 		rec.child[n].satype = IKEV2PROPOSAL_ESP;
 		rec.child[n].expire_at = resume_wall_expire(ch->timer, 3600);
+		/* RFC 9370 ADDKE: persist the pending followup state so a
+		 * restart mid-PQC-rekey is recognizable on restore.  The
+		 * keymat for such a child is incomplete (SK(1) pending), so
+		 * restore must skip it; recording the link/method keeps the
+		 * dump truthful for debugging. */
+		rec.child[n].addke_pending = (ch->addke_pending ? 1 : 0);
+		rec.child[n].addke_method = (uint16_t)ch->addke_method;
+		if (ch->addke_pending && ch->addke_link &&
+		    ch->addke_link->l <= sizeof(rec.child[n].addke_link)) {
+			rec.child[n].addke_link_len =
+			    (uint8_t)ch->addke_link->l;
+			memcpy(rec.child[n].addke_link,
+			       ch->addke_link->v, ch->addke_link->l);
+		}
 		if (ch->selector && ch->selector->sl_index)
 			snprintf(rec.child[n].sl_index,
 			    sizeof(rec.child[n].sl_index), "%s",
@@ -574,6 +588,22 @@ restore_one(const char *path)
 		time_t remain;
 		struct rcf_addresspool *pool;
 		struct rcf_address *addr;
+
+		/*
+		 * RFC 9370 ADDKE: a child whose keymat+install was
+		 * deferred to the (unfinished) IKE_FOLLOWUP_KE cannot be
+		 * restored — SK(1) is missing, so installing it would
+		 * silently produce keys that diverge from the peer.
+		 * The IKE_SA survives; the child rekeys fresh (RFC 9370
+		 * optionality lets the peer offer ADDKE again, or plain).
+		 */
+		if (c->addke_pending) {
+			isakmp_log(sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
+			    "resume: child %d pending ADDKE followup "
+			    "(method %u); skipped, will rekey\n",
+			    i, c->addke_method);
+			continue;
+		}
 
 		ch = ikev2_create_child_sa(sa, TRUE);
 		if (!ch)

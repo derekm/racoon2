@@ -239,6 +239,26 @@ test_validate(void)
 	memset(rec.child[0].sl_index, 'y', R2RS_MAXSTR);
 	CHECK(r2rs_validate(&rec) != 0, "validate sl_index unterminated");
 
+	/* RFC 9370 ADDKE (v3): pending flag with sane link passes;
+	 * pending with zero method / oversized link is rejected. */
+	fill_rec(&rec);
+	rec.child[0].addke_pending = 1;
+	rec.child[0].addke_method = 36;
+	rec.child[0].addke_link_len = 16;
+	memcpy(rec.child[0].addke_link, "0123456789abcdef", 16);
+	CHECK(r2rs_validate(&rec) == 0, "validate pending ADDKE child");
+	fill_rec(&rec);
+	rec.child[0].addke_pending = 1;
+	rec.child[0].addke_method = 0;
+	rec.child[0].addke_link_len = 16;
+	memcpy(rec.child[0].addke_link, "0123456789abcdef", 16);
+	CHECK(r2rs_validate(&rec) != 0, "validate pending ADDKE no method");
+	fill_rec(&rec);
+	rec.child[0].addke_pending = 1;
+	rec.child[0].addke_method = 36;
+	rec.child[0].addke_link_len = R2RS_MAXSTR + 1;
+	CHECK(r2rs_validate(&rec) != 0, "validate pending ADDKE bad link len");
+
 	/* zero children is legal (IKE SA without matures) */
 	fill_rec(&rec);
 	rec.nchild = 0;

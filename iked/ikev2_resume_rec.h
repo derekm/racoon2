@@ -21,7 +21,12 @@ extern "C" {
 #include "vmbuf.h"	/* rc_vchar_t */
 
 #define R2RS_MAGIC	0x52325253u	/* 'R2RS' */
-#define R2RS_VERSION	2
+/* v3: per-child ADDKE pending state (addke_pending/method/link) so a
+ * restart during a PQC child rekey does not break the followup link.
+ * The initiator-side ML-KEM private key is NOT persisted (EVP_PKEY is
+ * not serializable here) -- an initiator restart mid-followup falls
+ * back to plain IKEv2 on the next rekey (RFC optionality). */
+#define R2RS_VERSION	3
 #define R2RS_MAXKEY	64
 #define R2RS_MAXSTR	64
 #define R2RS_MAXCHILD	8
@@ -44,6 +49,12 @@ struct r2rs_child {
 	uint16_t encr_klen;
 	uint8_t esn;
 	uint8_t pad_c;
+	/* RFC 9370 ADDKE (v3): pending followup state for this child.
+	 * addke_link is the opaque 16441 link data (max 64). */
+	uint8_t addke_pending;
+	uint8_t addke_link_len;
+	uint16_t addke_method;
+	char addke_link[R2RS_MAXSTR];
 } __attribute__((packed));
 
 struct r2rs_sa {

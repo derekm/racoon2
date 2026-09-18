@@ -141,6 +141,14 @@ r2rs_validate(const struct r2rs_sa *rec)
 			return -1;
 		if (memchr(c->sl_index, '\0', R2RS_MAXSTR) == NULL)
 			return -1;
+		/* RFC 9370 ADDKE (v3): pending flag implies sane link */
+		if (c->addke_pending &&
+		    (c->addke_method == 0 ||
+		     c->addke_link_len == 0 ||
+		     c->addke_link_len > sizeof(c->addke_link)))
+			return -1;
+		if (c->addke_link_len > sizeof(c->addke_link))
+			return -1;
 	}
 	/* strings must be NUL-terminated in-place: restore_one() and
 	 * the child restore use strlen() on these fixed arrays, so an

@@ -664,9 +664,19 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	{
 		struct ikev2payl_notify *ln =
 		    (struct ikev2payl_notify *)link_notify;
-		size_t ln_len = get_payload_length(link_notify) -
-				sizeof(struct ikev2payl_notify) -
-				ln->nh.spi_size;
+		size_t ln_len;
+
+		if (get_payload_length(link_notify) <
+		    sizeof(struct ikev2payl_notify) + ln->nh.spi_size) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "IKE_FOLLOWUP_KE truncated "
+				   "ADDITIONAL_KEY_EXCHANGE notify\n");
+			goto invalid;
+		}
+		ln_len = get_payload_length(link_notify) -
+			 sizeof(struct ikev2payl_notify) -
+			 ln->nh.spi_size;
 
 		link = rc_vnew(get_notify_data(ln), ln_len);
 	}
