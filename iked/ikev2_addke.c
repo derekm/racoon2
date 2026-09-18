@@ -518,9 +518,22 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 	}
 
-	/* find the pending child this followup links to */
-	child_sa = followup_ke_find_child(ike_sa, link);
-	if (!child_sa) {
+	/* find the pending state this followup links to: either a child
+	 * (child-SA ADDKE rekey) or a deferred IKE-SA rekey */
+	if (ike_sa->addke_rekey_pending &&
+	    ike_sa->addke_rekey_link && link &&
+	    ike_sa->addke_rekey_link->l == link->l &&
+	    memcmp(ike_sa->addke_rekey_link->v, link->v, link->l) == 0) {
+		/*
+		 * IKE-SA rekey path: child_sa stays NULL; the deferred
+		 * completion uses ike_sa state.  Fall through to the
+		 * encapsulate step below.
+		 */
+		child_sa = NULL;
+	} else {
+		child_sa = followup_ke_find_child(ike_sa, link);
+	}
+	if (!child_sa && !ike_sa->addke_rekey_pending) {
 		/* rfc9370 s2.2.4: no key exchange state -> STATE_NOT_FOUND */
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOWARN, PLOGLOC,
@@ -554,7 +567,24 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 	}
 
-	/* SK(1) now known; install the child with the ADDKE keymat */
+	/* SK(1) now known: complete the deferred exchange. */
+	if (ike_sa->addke_rekey_pending) {
+		/* ADDKE IKE-SA rekey: finish SKEYSEED + keys with SK(1),
+		 * reply KEr(1) inside the completion. */
+		if (ikev2_rekey_responder_addke_complete(ike_sa, ss) < 0) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed to complete ADDKE IKE-SA rekey\n");
+			rc_vfree(ss);
+			ss = 0;
+			goto invalid;
+		}
+		rc_vfree(ss);
+		ss = 0;
+		goto done;
+	}
+
+	/* install the child with the ADDKE keymat */
 	child_sa->addke_sk = ss;
 	ss = 0;
 	if (ikev2_child_addke_install(child_sa) < 0) {

@@ -6143,6 +6143,11 @@ ikev2_proppair_to_isakmpsa(struct prop_pair *prop)
 			s->dhdef =
 				ikev2_dhinfo(get_uint16(&transf->transform_id));
 			break;
+		case IKEV2TRANSFORM_TYPE_ADDKE:
+			/* RFC 9370: remember which ADDKE method the peer
+			 * proposed so the IKE-rekey response can echo it. */
+			s->addke = get_uint16(&transf->transform_id);
+			break;
 		default:
 			isakmp_log(0, 0, 0, 0,
 				   PLOG_PROTOERR, PLOGLOC,
@@ -6251,6 +6256,36 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	}
 
 	result = ikev2_proppair_to_isakmpsa(matched_proposal);
+
+#ifdef WITH_ADDKE
+	/*
+	 * The isakmpsa above was built from the MINE-side copy, which
+	 * never carries ADDKE (our IKE proposal has no type-6).  If the
+	 * peer offered ADDKE in this proposal, record the method so the
+	 * IKE-rekey response echoes it and the SKEYSEED deferral arms.
+	 */
+	if (result) {
+		struct prop_pair **pp;
+
+		for (pp = peer_proposal; pp && *pp; ++pp) {
+			struct prop_pair *tr;
+
+			for (tr = (*pp)->tnext; tr; tr = tr->next) {
+				struct ikev2transform *t =
+				    (struct ikev2transform *)tr->trns;
+				if (t &&
+				    t->transform_type ==
+				    IKEV2TRANSFORM_TYPE_ADDKE) {
+					result->addke =
+					    get_uint16(&t->transform_id);
+					break;
+				}
+			}
+			if (result->addke != 0)
+				break;
+		}
+	}
+#endif
 
       done:
 	if (matched_proposal)
@@ -6374,6 +6409,18 @@ ikev2_ikesa_to_proposal_sub(rc_vchar_t *buf, struct ikev2_isakmpsa *sa,
 						      sizeof(struct ikev2transform),
 						      IKEV2TRANSFORM_TYPE_DH,
 						      sa->dhdef->transform_id);
+		p += sizeof(struct ikev2transform);
+		++num_transf;
+	}
+
+	/* RFC 9370: echo the negotiated ADDKE method in the response
+	 * SA (only present when the peer proposed type-6). */
+	if (sa->addke != 0) {
+		if (buf)
+			prev = ikev2_transform_header(p, prev,
+						      sizeof(struct ikev2transform),
+						      IKEV2TRANSFORM_TYPE_ADDKE,
+						      sa->addke);
 		p += sizeof(struct ikev2transform);
 		++num_transf;
 	}

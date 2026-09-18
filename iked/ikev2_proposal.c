@@ -372,6 +372,23 @@ ikev2_compare_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 				break;
 		}
 		if (!m) {
+			/*
+			 * Peer offers a transform type we have no
+			 * counterpart for.  RFC 9370 ADDKE is optional in
+			 * this direction too: when compiled WITH_ADDKE the
+			 * responder can honor a peer's type-6 proposal via
+			 * the IKE_FOLLOWUP_KE deferral (child SA and
+			 * IKE-SA rekey paths), so accept it rather than
+			 * rejecting the proposal.
+			 */
+#ifdef WITH_ADDKE
+			if (peer_transf->transform_type ==
+			    IKEV2TRANSFORM_TYPE_ADDKE) {
+				TRACE((PLOGLOC,
+				       "peer offers optional ADDKE; keeping proposal\n"));
+				continue;
+			}
+#endif
 			TRACE((PLOGLOC,
 			       "peer proposal has transform type %d we lack; skipping proposal\n",
 			       peer_transf->transform_type));

@@ -394,7 +394,8 @@ struct isakmp_domain ikev2_rekey_doi = {
 
 static void rekey_ikesa_callback(enum request_callback, struct ikev2_child_sa *,
 				void *);
-static int rekey_skeyseed(struct ikev2_sa *, struct ikev2_sa *, rc_vchar_t *);
+static int rekey_skeyseed(struct ikev2_sa *, struct ikev2_sa *, rc_vchar_t *,
+			  rc_vchar_t *addke_sk);
 static void ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *);
 static void ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *, rc_vchar_t *);
 
@@ -758,6 +759,7 @@ struct ikev2_rekey_responder_ctx {
 	rc_vchar_t *g_ir;
 	rc_vchar_t *ke_r;
 	rc_vchar_t *pkt;
+	int addke_deferred;	/* SKEYSEED pending the IKE_FOLLOWUP_KE */
 };
 static void ikev2_rekey_responder_ctx_free(struct ikev2_rekey_responder_ctx *);
 static void ikev2_rekey_ikesa_responder_dh_done(int, void *);
@@ -1007,6 +1009,40 @@ ikev2_rekey_responder_ctx_free(struct ikev2_rekey_responder_ctx *ctx)
 	rc_free(ctx);
 }
 
+/*
+ * Finish an IKE-SA rekey: derive the new SA's keys (SKEYSEED already
+ * computed by the caller), move children, repin NATD, ESTABLISHED.
+ * Shared by the normal tail and the ADDKE deferred completion.
+ */
+static int
+ikev2_rekey_responder_finish(struct ikev2_rekey_responder_ctx *ctx)
+{
+	struct ikev2_sa *old_sa = ctx->old_sa;
+	struct ikev2_sa *new_sa = ctx->new_sa;
+
+	if (ikev2_compute_keys(new_sa) != 0)
+		return -1;
+	ikev2_destroy_secret(new_sa);
+
+	/* move children to new_sa */
+	if (!old_sa->rekey_duplicate) {
+		TRACE((PLOGLOC, "rekeyed ike_sa old %p new %p established\n",
+		       old_sa, new_sa));
+		ikev2_child_adopt(old_sa, new_sa);
+	} else {
+		/* need to wait to determine which ike_sa to survive */
+		TRACE((PLOGLOC, "duplicate rekeying, new ike_sa %p on hold\n",
+		       new_sa));
+	}
+
+	/* §3.8 NATD binding-report digests are not negotiated again at
+	 * IKE-SA rekey; repin them. */
+	ikev2_sa_repin_natd(new_sa);
+
+	ikev2_set_state(new_sa, IKEV2_STATE_ESTABLISHED);
+	return 0;
+}
+
 /* runs on the IKE thread after the worker finished generate+compute */
 static void
 ikev2_rekey_responder_tail(struct ikev2_rekey_responder_ctx *ctx)
@@ -1023,29 +1059,82 @@ ikev2_rekey_responder_tail(struct ikev2_rekey_responder_ctx *ctx)
 		goto fail;
 	}
 
-	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir) != 0)
-		goto fail;
-	if (ikev2_compute_keys(new_sa) != 0)
-		goto fail;
-	ikev2_destroy_secret(new_sa);
+	/*
+	 * RFC 9370 ADDKE on IKE-SA rekey: when the negotiated IKE
+	 * proposal carries an ADDKE transform (we are compiled with
+	 * ADDKE and the peer offered type-6), SKEYSEED must include
+	 * SK(1) from the IKE_FOLLOWUP_KE exchange.  Send the rekey
+	 * response now (with the ADDITIONAL_KEY_EXCHANGE link notify),
+	 * defer SKEYSEED/keys/adoption until the followup lands, and
+	 * arm a followup-wait timeout.  rfc9370 s2.2.4 requires the
+	 * responder to delete the associated state if the followup
+	 * never arrives.
+	 */
+#ifdef WITH_ADDKE
+	if (new_sa->negotiated_sa && new_sa->negotiated_sa->addke != 0) {
+		old_sa->addke_rekey_pending = 1;
+		old_sa->addke_rekey_link = random_bytes(16);
+		if (!old_sa->addke_rekey_link)
+			goto fail;
+		old_sa->new_sa = new_sa;
+		TRACE((PLOGLOC,
+		       "IKE-SA rekey negotiated ADDKE (id %u); "
+		       "deferring SKEYSEED to followup\n",
+		       new_sa->negotiated_sa->addke));
 
-	/* move children to new_sa */
-	if (!old_sa->rekey_duplicate) {
-		TRACE((PLOGLOC, "rekeyed ike_sa old %p new %p established\n", old_sa, new_sa));
-		ikev2_child_adopt(old_sa, new_sa);
-	} else {
-		/* need to wait to determine which ike_sa to survive */
-		TRACE((PLOGLOC, "duplicate rekeying, new ike_sa %p on hold\n",
-		       new_sa));
+		/* response: HDR, SA, Nr, KEr, N(ADDITIONAL_KEY_EXCHANGE) */
+		{
+			rc_vchar_t *sa;
+
+			sa = ikev2_ikesa_to_proposal(new_sa->negotiated_sa,
+						     &new_sa->index.r_ck);
+			if (!sa) {
+				TRACE((PLOGLOC, "no proposal for the peer\n"));
+				goto fail;
+			}
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_SA, sa,
+					    FALSE);
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NONCE,
+					    new_sa->n_r, FALSE);
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_KE,
+					    ctx->ke_r, FALSE);
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(
+						IKEV2_NOTIFY_PROTO_NONE,
+						0, 0,
+						IKEV2_ADDITIONAL_KEY_EXCHANGE,
+						old_sa->addke_rekey_link->v,
+						old_sa->addke_rekey_link->l),
+					    TRUE);
+			ctx->pkt = ikev2_packet_construct(
+						IKEV2EXCH_CREATE_CHILD_SA,
+						IKEV2FLAG_RESPONSE |
+						(old_sa->is_initiator ?
+						 IKEV2FLAG_INITIATOR : 0),
+						ctx->message_id, old_sa,
+						&ctx->payl);
+			if (!ctx->pkt)
+				goto fail;
+			(void)ikev2_transmit_response(old_sa, ctx->pkt,
+						      ctx->local, ctx->remote);
+			ctx->pkt = NULL;
+		}
+
+		/* keep the ctx alive for the followup completion */
+		old_sa->addke_rekey_complete = ctx;
+		ctx->addke_deferred = 1;
+		if (old_sa->addke_rekey_timer)
+			SCHED_KILL(old_sa->addke_rekey_timer);
+		old_sa->addke_rekey_timer =
+		    sched_new(10, ikev2_addke_rekey_timeout, old_sa);
+		return;
 	}
+#endif
 
-	/* §3.8 NATD binding-report digests are not negotiated again at
-	 * IKE-SA rekey; repin them from the (unchanged) SPIs+endpoints
-	 * so the first NATD probe on this rekeyed SA doesn't reply with
-	 * 20 zero bytes. */
-	ikev2_sa_repin_natd(new_sa);
-
-	ikev2_set_state(new_sa, IKEV2_STATE_ESTABLISHED);
+	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir, NULL) != 0)
+		goto fail;
+	if (ikev2_rekey_responder_finish(ctx) != 0)
+		goto fail;
 
 	/* send response */
 	/* HDR, SA, NONCE, KE */
@@ -1103,6 +1192,111 @@ fail:
 	if (new_sa)
 		ikev2_set_state(new_sa, IKEV2_STATE_DEAD);
 	ikev2_rekey_responder_ctx_free(ctx);
+}
+
+/* RFC 9370: followup-wait timeout for a deferred ADDKE IKE-SA rekey. */
+static void
+ikev2_addke_rekey_timeout(void *param)
+{
+	struct ikev2_sa *old_sa = param;
+	struct ikev2_rekey_responder_ctx *ctx;
+
+	old_sa->addke_rekey_timer = NULL;
+	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
+	old_sa->addke_rekey_complete = NULL;
+	old_sa->addke_rekey_pending = 0;
+	old_sa->new_sa = NULL;
+
+	if (ctx) {
+		isakmp_log(old_sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
+			   "ADDKE IKE-SA rekey followup timeout; aborting\n");
+		if (ctx->new_sa)
+			ikev2_set_state(ctx->new_sa, IKEV2_STATE_DEAD);
+		ikev2_rekey_responder_ctx_free(ctx);
+	}
+	old_sa->rekey_inprogress = FALSE;
+}
+
+/*
+ * Complete a deferred ADDKE IKE-SA rekey once the IKE_FOLLOWUP_KE
+ * supplied SK(1): SKEYSEED = prf(SK_d, g^ir | Ni | Nr | SK(1))
+ * (rfc9370 s2.2.4), then keys/adopt/establish.  Called from
+ * ikev2_followup_ke_recv() on the IKE thread.
+ */
+int
+ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
+				     rc_vchar_t *addke_sk)
+{
+	struct ikev2_rekey_responder_ctx *ctx;
+	struct ikev2_sa *new_sa;
+
+	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
+	old_sa->addke_rekey_complete = NULL;
+	if (!ctx || !ctx->new_sa) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "addke rekey complete: no parked ctx\n");
+		return -1;
+	}
+	new_sa = ctx->new_sa;
+
+	if (old_sa->addke_rekey_timer) {
+		SCHED_KILL(old_sa->addke_rekey_timer);
+		old_sa->addke_rekey_timer = NULL;
+	}
+	old_sa->addke_rekey_pending = 0;
+
+	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir, addke_sk) != 0)
+		goto fail;
+	if (ikev2_rekey_responder_finish(ctx) != 0)
+		goto fail;
+
+	/*
+	 * Reply with the followup's KEr(1): HDR(IKE_FOLLOWUP_KE),
+	 * SK { KE } where KE = method+SK(1) ciphertext.  The SK(1)
+	 * ciphertext and method are carried in the KE payload; the
+	 * method equals the negotiated ADDKE id.
+	 */
+	{
+		struct ikev2_payloads payl;
+		struct ikev2payl_ke_h keh;
+		rc_vchar_t *ker = 0;
+		rc_vchar_t *pkt = 0;
+
+		ikev2_payloads_init(&payl);
+		memset(&keh, 0, sizeof(keh));
+		keh.dh_group_id =
+		    htons((uint16_t)new_sa->negotiated_sa->addke);
+		ker = rc_vprepend(addke_sk, &keh, sizeof(keh));
+		if (!ker) {
+			ikev2_payloads_destroy(&payl);
+			goto fail;
+		}
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ker, FALSE);
+		/* the followup request's message id (ctx message via old_sa) */
+		pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
+					     IKEV2FLAG_RESPONSE,
+					     ctx->message_id, old_sa, &payl);
+		rc_vfree(ker);
+		if (!pkt) {
+			ikev2_payloads_destroy(&payl);
+			goto fail;
+		}
+		(void)ikev2_transmit_response(old_sa, pkt, ctx->local,
+					      ctx->remote);
+		ikev2_payloads_destroy(&payl);
+	}
+
+	ikev2_rekey_responder_ctx_free(ctx);
+	return 0;
+
+      fail:
+	isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		   "failed completing ADDKE IKE-SA rekey\n");
+	if (new_sa)
+		ikev2_set_state(new_sa, IKEV2_STATE_DEAD);
+	ikev2_rekey_responder_ctx_free(ctx);
+	old_sa->rekey_inprogress = FALSE;
+	return -1;
 }
 
 static void
@@ -1358,7 +1552,7 @@ ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *ctx)
 	struct ikev2_sa *old_sa = ctx->old_sa;
 	struct ikev2_sa *new_sa = ctx->new_sa;
 
-	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir) != 0)
+	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir, NULL) != 0)
 		goto fail;
 	if (ikev2_compute_keys(new_sa) != 0)
 		goto fail;
@@ -1510,17 +1704,27 @@ ikev2_child_adopt(struct ikev2_sa *old_sa, struct ikev2_sa *new_sa)
  *
  * 	      SKEYSEED = prf(SK_d (old), [g^ir (new)] | Ni | Nr)
  *
+ * RFC 9370 s2.2.4: when additional key exchanges were negotiated, each
+ * additional shared secret appends after Nr:
+ *
+ * 	      SKEYSEED = prf(SK_d, SK(0) | Ni | Nr | SK(1) | ... SK(n))
+ *
+ * where SK(0) is g^ir (or absent when no KE payload) and SK(1)..SK(n)
+ * are the ADDKE shared secrets in transform-type order.
+ *
  * INPUT:
  *	new_sa:	new_sa->n_i, new_sa->n_r contains nonces from CREATE_CHID_SA
  *	old_sa:	old_sa->prf, old_sa->sk_d are used for calculation
  *	g_ir:	(g^i)^r if CREATE_CHILD_SA request had KE payload
+ *	addke_sk: SK(1) from the IKE_FOLLOWUP_KE exchange (may be NULL)
  *
  * OUTPUT:
  *	returns 0 if successful, non-0 if fails
  *	if successful, new_sa->skeyseed holds new SKEYSEED
  */
 static int
-rekey_skeyseed(struct ikev2_sa *new_sa, struct ikev2_sa *old_sa, rc_vchar_t *g_ir)
+rekey_skeyseed(struct ikev2_sa *new_sa, struct ikev2_sa *old_sa, rc_vchar_t *g_ir,
+	       rc_vchar_t *addke_sk)
 {
 	/* (draft-eronen-ipsec-ikev2-clarifications-09.txt)
 	 * 5.5.  Changing PRFs when rekeying the IKE_SA
@@ -1561,6 +1765,8 @@ rekey_skeyseed(struct ikev2_sa *new_sa, struct ikev2_sa *old_sa, rc_vchar_t *g_i
 	hash_input_len = new_sa->n_i->l + new_sa->n_r->l;
 	if (g_ir)
 		hash_input_len += g_ir->l;
+	if (addke_sk)
+		hash_input_len += addke_sk->l;
 
 	hash_input = rc_vmalloc(hash_input_len);
 	if (!hash_input)
@@ -1571,6 +1777,8 @@ rekey_skeyseed(struct ikev2_sa *new_sa, struct ikev2_sa *old_sa, rc_vchar_t *g_i
 		VCONCAT(hash_input, p, g_ir);
 	VCONCAT(hash_input, p, new_sa->n_i);
 	VCONCAT(hash_input, p, new_sa->n_r);
+	if (addke_sk)
+		VCONCAT(hash_input, p, addke_sk);
 
 	new_sa->skeyseed = keyed_hash(old_sa->prf, old_sa->sk_d, hash_input);
 	if (!new_sa->skeyseed)

@@ -221,6 +221,15 @@ struct ikev2_sa {
 	int rekey_duplicate_serial;
 	struct ikev2_sa *new_sa;	/* rekeyed IKE_SA */
 
+	/* RFC 9370 ADDKE (IKE-SA rekey): while this SA's rekey is waiting
+	 * for its IKE_FOLLOWUP_KE exchange, the rekey response has been
+	 * sent but SKEYSEED derivation is deferred. */
+	int addke_rekey_pending;	/* IKE-rekey followup expected */
+	rc_vchar_t *addke_rekey_link;	/* link echoed in N(16441) */
+	rc_vchar_t *addke_rekey_sk;	/* SK(1) once the followup lands */
+	void *addke_rekey_complete;	/* parked rekey ctx (rekey.c) */
+	struct sched *addke_rekey_timer;
+
 	int behind_nat;
 	int peer_behind_nat;
 	int crypto_pending;
@@ -435,6 +444,8 @@ extern int ikev2_addke_mlkem_encap(unsigned int, rc_vchar_t *,
 extern int ikev2_addke_mlkem_decap(EVP_PKEY *, rc_vchar_t *,
 				   rc_vchar_t **);
 extern int ikev2_child_addke_install(struct ikev2_child_sa *);
+extern int ikev2_rekey_responder_addke_complete(struct ikev2_sa *,
+						rc_vchar_t *);
 #endif
 
 extern int ikev2_noncecmp(rc_vchar_t *, rc_vchar_t *);

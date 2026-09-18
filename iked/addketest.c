@@ -147,6 +147,13 @@ ikev2_child_addke_install(struct ikev2_child_sa *child_sa)
 	return -1;
 }
 
+int
+ikev2_rekey_responder_addke_complete(struct ikev2_sa *sa, rc_vchar_t *sk)
+{
+	(void)sa; (void)sk;
+	return -1;
+}
+
 static int fail;
 
 #define CHECK(cond, what)						\

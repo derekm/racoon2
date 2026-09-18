@@ -261,6 +261,8 @@ struct ikev2_isakmpsa {
 	/* rc_vchar_t *gssid; */
 #endif
 	struct algdef *dhdef;
+	/* RFC 9370 ADDKE: negotiated additional key exchange method (0 = none) */
+	int addke;
 
 	struct ikev2_isakmpsa *next;	/* next transform */
 	/* struct remoteconf *rmconf; *//* backpointer to remoteconf */
