@@ -14,3 +14,7 @@ configure   text eol=lf
 # `git archive`, or the regenerated .y.c rule fails with CRLF errors.
 ylwrap      text eol=lf
 test-driver text eol=lf
+# NIST FIPS 203 .rsp vectors are raw data: must stay byte-identical to the
+# official file (and CRLF in the blame/file would not match a `git archive`
+# build).  autocrlf must never touch them.
+*.rsp       text eol=lf

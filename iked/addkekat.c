@@ -78,7 +78,6 @@ kat_field(const char *line, const char *key, unsigned char *out,
 	return 1;
 }
 
-#define KAT_MAXVEC	20	/* shipped sample has 20 vectors */
 #define KAT_MAXLINE	16384
 
 struct katvec {
@@ -138,6 +137,8 @@ kat_run(const struct katvec *v, int idx)
 		fprintf(stderr, "  vector %d: cannot import KAT sk\n", idx);
 		goto done;
 	}
+	/* free the step-2 ctx before it is overwritten (longer full-file runs) */
+	EVP_PKEY_CTX_free(dctx);
 	dctx = EVP_PKEY_CTX_new(kat_kp, NULL);
 	if (dctx == NULL ||
 	    EVP_PKEY_decapsulate_init(dctx, NULL) <= 0 ||
@@ -165,10 +166,9 @@ main(void)
 	const char *path = "kat_MLKEM_768.rsp";
 	FILE *f;
 	char line[KAT_MAXLINE];
-	struct katvec vec[KAT_MAXVEC];
-	int nvec = 0;
-	int i;
-	int ok = 1;
+	struct katvec cur;
+	int have = 0;		/* a "count = " line seen: an open vector */
+	int nvec = 0, passed = 0;
 
 	f = fopen(path, "r");
 	if (f == NULL) {
@@ -180,61 +180,66 @@ main(void)
 		return 77;	/* SKIP: file absent */
 	}
 
-	memset(vec, 0, sizeof(vec));
-	/* nvec is already 1 past "count = " (0-indexed), so the loop must
-	 * admit nvec == KAT_MAXVEC or the last vector's fields are never
-	 * read and it runs against all-zero seeds. */
-	while (nvec <= KAT_MAXVEC && fgets(line, sizeof(line), f)) {
+	memset(&cur, 0, sizeof(cur));
+	/* Streaming: run each vector as the next "count = " arrives (or the
+	 * first one at EOF).  This handles any file size, not just the shipped
+	 * 20-vector sample, and the reported total is exact — the old buffered
+	 * loop capped at KAT_MAXVEC (silently running only the first 20 of the
+	 * full 1000-vector file) and printed an nvec off-by-one total. */
+	while (fgets(line, sizeof(line), f)) {
 		size_t ll = strlen(line);
 		size_t len;
-		unsigned char *p;
 		if (ll && line[ll-1] == '\n') line[--ll] = '\0';
 		if (ll && line[ll-1] == '\r') line[--ll] = '\0';
 
 		if (strncmp(line, "count = ", 8) == 0) {
-			if (nvec > 0) {
-				/* previous vector complete?  Run it. */
-				if (kat_run(&vec[nvec-1], nvec-1) < 0)
-					ok = 0;
+			if (have) {
+				if (kat_run(&cur, nvec) == 0)
+					passed++;
+				nvec++;
 			}
-			nvec++;
-			if (nvec > KAT_MAXVEC)
-				break;
-			memset(&vec[nvec-1], 0, sizeof(vec[0]));
+			memset(&cur, 0, sizeof(cur));
+			have = 1;
 			continue;
 		}
-		if (nvec == 0 || nvec > KAT_MAXVEC)
+		if (!have)
 			continue;
-
-		p = NULL;
-		if (kat_field(line, "z", vec[nvec-1].z, 32, &len)) p = NULL;
-		else if (kat_field(line, "d", vec[nvec-1].d, 32, &len)) p = NULL;
-		else if (kat_field(line, "pk", vec[nvec-1].pk,
-				   sizeof(vec[0].pk), &len)) p = NULL;
-		else if (kat_field(line, "sk", vec[nvec-1].sk,
-				   sizeof(vec[0].sk), &len)) p = NULL;
 		/* longest first: ct_n/ss_n precede ct/ss in the .rsp */
-		else if (kat_field(line, "ct_n", vec[nvec-1].ct_n,
-				   sizeof(vec[0].ct_n), &len)) p = NULL;
-		else if (kat_field(line, "ss_n", vec[nvec-1].ss_n,
-				   sizeof(vec[0].ss_n), &len)) p = NULL;
-		else if (kat_field(line, "ct", vec[nvec-1].ct,
-				   sizeof(vec[0].ct), &len)) p = NULL;
-		else if (kat_field(line, "ss", vec[nvec-1].ss,
-				   sizeof(vec[0].ss), &len)) p = NULL;
+		if (kat_field(line, "z", cur.z, 32, &len)) {
+		} else if (kat_field(line, "d", cur.d, 32, &len)) {
+		} else if (kat_field(line, "pk", cur.pk,
+				     sizeof(cur.pk), &len)) {
+		} else if (kat_field(line, "sk", cur.sk,
+				     sizeof(cur.sk), &len)) {
+		} else if (kat_field(line, "ct_n", cur.ct_n,
+				     sizeof(cur.ct_n), &len)) {
+		} else if (kat_field(line, "ss_n", cur.ss_n,
+				     sizeof(cur.ss_n), &len)) {
+		} else if (kat_field(line, "ct", cur.ct,
+				     sizeof(cur.ct), &len)) {
+		} else if (kat_field(line, "ss", cur.ss,
+				     sizeof(cur.ss), &len)) {
+		}
 	}
 	/* final vector */
-	if (nvec > 0 && nvec <= KAT_MAXVEC)
-		if (kat_run(&vec[nvec-1], nvec-1) < 0)
-			ok = 0;
+	if (have) {
+		if (kat_run(&cur, nvec) == 0)
+			passed++;
+		nvec++;
+	}
 	fclose(f);
 
-	if (ok) {
+	if (nvec == 0) {
+		fprintf(stderr, "addkekat: no vectors parsed from %s\n", path);
+		return 1;
+	}
+	if (passed == nvec) {
 		printf("addkekat: %d/%d ML-KEM-768 KAT vectors passed\n",
-		       nvec, nvec);
+		       passed, nvec);
 		return 0;
 	}
-	fprintf(stderr, "addkekat: %d vectors, FAILURES\n", nvec);
+	fprintf(stderr, "addkekat: %d/%d vectors passed, FAILURES\n",
+		passed, nvec);
 	return 1;
 }
 
