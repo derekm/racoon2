@@ -65,6 +65,15 @@ int
 admin_open(void)
 {
 	int flags;
+	const char *envsock;
+
+	/* Multi-instance (iked<->iked netns matrix): the admin socket path is
+	 * a fixed compile-time path (ADMINSOCK_PATH), but two ikeds on one
+	 * host (shared /var/run) collide on it and the second to bind dies.
+	 * Allow an env override so each instance takes its own socket. */
+	envsock = getenv("RACOON2_ADMIN_SOCK");
+	if (envsock && *envsock)
+		adminsock_path = envsock;
 
 	if (adminsock_path == NULL) {
 		sock_admin = -1;
