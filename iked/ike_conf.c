@@ -3384,7 +3384,7 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 	 * in ikev2_compare/match_transforms.
 	 */
 	SA_CONF(addke_alg, proto_info, addke_alg, 0);
-	if (proto_info->addke_alg) {
+	if (proto_info->addke_alg && !child_sa->in_ike_auth) {
 		*tail = alglist_to_proppair(proto_info->addke_alg,
 					    IKEV2TRANSFORM_TYPE_ADDKE,
 					    &ikev2_transf_addke[0]);

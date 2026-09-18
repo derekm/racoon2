@@ -346,6 +346,7 @@ struct ikev2_child_sa {
 	 * its IKE_FOLLOWUP_KE exchange, the CREATE_CHILD_SA response
 	 * has been sent but the keymat/XFRM install is deferred. */
 	int addke_pending;	/* followup exchange expected */
+	int in_ike_auth;	/* child negotiated inside IKE_AUTH: no ADDKE (rfc9370 s2.2; type-6 is CREATE_CHILD only) */
 	rc_vchar_t *addke_link;	/* link data echoed in N(16441) */
 	rc_vchar_t *addke_sk;	/* additional shared secret SK(1) */
 	unsigned int addke_method; /* negotiated ADDKE KE method id */
