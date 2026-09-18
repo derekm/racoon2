@@ -2115,6 +2115,8 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 
 	ikev2_create_config_request(child_sa);
 
+	/* initial IKE_AUTH child: no ADDKE/type-6 (RFC 9370 s2.2; CREATE_CHILD only) */
+	child_sa->in_ike_auth = 1;
 	sa_i2 = ikev2_construct_sa(child_sa);
 	ts_i = ikev2_construct_ts_i(child_sa);
 	ts_r = ikev2_construct_ts_r(child_sa);
@@ -2892,15 +2894,17 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 				     "failed validating my certificate (%s)\n",
 				     filename);
 				rc_vfree(my_cert);
-				goto fail_no_my_cert;
-			}
-		}
-		kmp_auth_method = kmp_auth_method->next;
-	}
+					goto fail_no_my_cert;
+				}
+				}
+				kmp_auth_method = kmp_auth_method->next;
+				}
 
-	sa_r2 = ikev2_construct_sa(child_sa);
-	if (!sa_r2)
-		goto fail_create_sa;
+				/* initial IKE_AUTH child: no ADDKE/type-6 (RFC 9370 s2.2; CREATE_CHILD only) */
+				child_sa->in_ike_auth = 1;
+				sa_r2 = ikev2_construct_sa(child_sa);
+				if (!sa_r2)
+				goto fail_create_sa;
 
 	/* ts_i, ts_r are passed through child_param */
 	if (!child_sa->child_param.ts_i || !child_sa->child_param.ts_r)
