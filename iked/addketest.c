@@ -126,11 +126,47 @@ ikev2_packet_construct(int exch_type, int flags, uint32_t message_id,
 	return NULL;
 }
 
+uint32_t
+ikev2_request_id(struct ikev2_sa *sa)
+{
+	(void)sa;
+	return 1;
+}
+
+rc_vchar_t *
+ikev2_notify_payload(int proto, uint8_t *spi, int spi_size, int type,
+		     uint8_t *data, size_t data_size)
+{
+	(void)proto; (void)spi; (void)spi_size; (void)type;
+	(void)data; (void)data_size;
+	return NULL;
+}
+
+struct sched *
+sched_new(time_t tick, void (*func)(void *), void *param)
+{
+	(void)tick; (void)func; (void)param;
+	return NULL;
+}
+
+void
+sched_kill(struct sched *sc)
+{
+	(void)sc;
+}
+
 int
 ikev2_transmit_response(struct ikev2_sa *sa, rc_vchar_t *pkt,
 			struct sockaddr *local, struct sockaddr *remote)
 {
 	(void)sa; (void)pkt; (void)local; (void)remote;
+	return -1;
+}
+
+int
+ikev2_transmit(struct ikev2_sa *sa, rc_vchar_t *pkt)
+{
+	(void)sa; (void)pkt;
 	return -1;
 }
 
@@ -157,20 +193,6 @@ int
 ikev2_rekey_responder_addke_complete(struct ikev2_sa *sa, rc_vchar_t *sk)
 {
 	(void)sa; (void)sk;
-	return -1;
-}
-
-int
-ikev2_initiator_followup_send(struct ikev2_child_sa *cs, rc_vchar_t *pk)
-{
-	(void)cs; (void)pk;
-	return -1;
-}
-
-int
-ikev2_initiator_followup_complete(struct ikev2_child_sa *cs, rc_vchar_t *ct)
-{
-	(void)cs; (void)ct;
 	return -1;
 }
 
