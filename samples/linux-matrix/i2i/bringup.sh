@@ -4,7 +4,10 @@
 # two stacks (test prefix /usr/local/racoon2-i2i), triggers establish-sa.
 # See README.md for the current blockers and every learned gotcha.
 set -u
-pkill -9 -f 'r2i2i_boot' 2>/dev/null
+# kill *daemons* only — never pkill a pattern present in this script's own
+# /tmp/r2i2i_boot path or the invoking ssh line (it SIGKILLs the runner).
+PATT="/usr/local/racoon2-i2i/sbin/"
+pkill -9 -f "$PATT" 2>/dev/null
 sleep 1
 NS="${R2_NS:-r2c2}"; VH=r2h2; VC=r2n2; HIP=192.0.2.1; CIP=192.0.2.2
 D=/tmp/r2i2i; PREFIX="${R2_I2I_PREFIX:-/usr/local/racoon2-i2i}"
@@ -15,7 +18,7 @@ cleanup() {
 	for p in "$INIT_PID" "$RESP_PID" "$INIT_SPMD" "$RESP_SPMD"; do
 		[ -n "$p" ] && kill "$p" 2>/dev/null
 	done
-	pkill -9 -f 'r2i2i_boot' 2>/dev/null
+	pkill -9 -f "/usr/local/racoon2-i2i/sbin/" 2>/dev/null
 	systemctl start iked spmd 2>/dev/null || true
 	ip netns del "$NS" 2>/dev/null || true
 	ip link del "$VH" 2>/dev/null || true
@@ -38,15 +41,6 @@ ip netns exec "$NS" ip link set "$VC" up
 ip netns exec "$NS" ip link set lo up
 ip netns exec "$NS" ip route add default via "$HIP"
 echo 1 >/proc/sys/net/ipv4/ip_forward
-# IKE UDP must bypass the auto_ipsec SPD on both sides.
-for p in 500 4500; do
-	ip netns exec "$NS" ip xfrm policy add src "$HIP"/32 dst "$CIP"/32 proto udp sport "$p" dport "$p" dir in  ptype main action allow 2>/dev/null || true
-	ip netns exec "$NS" ip xfrm policy add src "$CIP"/32 dst "$HIP"/32 proto udp sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
-	ip netns exec "$NS" ip xfrm policy add src "$HIP"/32 dst "$CIP"/32 proto udp sport "$p" dport "$p" dir fwd ptype main action allow 2>/dev/null || true
-	ip xfrm policy add src "$CIP"/32 dst "$HIP"/32 proto udp sport "$p" dport "$p" dir in  ptype main action allow 2>/dev/null || true
-	ip xfrm policy add src "$HIP"/32 dst "$CIP"/32 proto udp sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
-	ip xfrm policy add src "$CIP"/32 dst "$HIP"/32 proto udp sport "$p" dport "$p" dir fwd ptype main action allow 2>/dev/null || true
-done
 
 echo "=== host responder spmd+iked ==="
 (cd "$D" && "$SBIN/spmd" -F -f "$CONF/responder.conf") >"$D/resp-spmd.log" 2>&1 &
@@ -60,6 +54,17 @@ INIT_SPMD=$!
 i=0; while [ ! -S /tmp/spmif-i2i ]; do i=$((i+1)); [ "$i" -gt 15 ] && { echo "FAIL: no init spmif"; break; }; sleep 1; done
 ip netns exec "$NS" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2i "$SBIN/iked" -F -f "$CONF/initiator.conf" -D 0x0001 -l "$D/init-iked.log" >"$D/init-iked.out" 2>&1 &
 INIT_PID=$!
+# IKE UDP must bypass the auto_ipsec SPD — but only AFTER spmd has finished
+# its startup policy flush (spmd flushes all xfrm policies at boot, wiping any
+# rows added before it).  Add the 500/4500 allow rows on both sides now.
+for p in 500 4500; do
+	ip netns exec "$NS" ip xfrm policy add src "$HIP"/32 dst "$CIP"/32 proto udp sport "$p" dport "$p" dir in  ptype main action allow 2>/dev/null || true
+	ip netns exec "$NS" ip xfrm policy add src "$CIP"/32 dst "$HIP"/32 proto udp sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
+	ip netns exec "$NS" ip xfrm policy add src "$HIP"/32 dst "$CIP"/32 proto udp sport "$p" dport "$p" dir fwd ptype main action allow 2>/dev/null || true
+	ip xfrm policy add src "$CIP"/32 dst "$HIP"/32 proto udp sport "$p" dport "$p" dir in  ptype main action allow 2>/dev/null || true
+	ip xfrm policy add src "$HIP"/32 dst "$CIP"/32 proto udp sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
+	ip xfrm policy add src "$CIP"/32 dst "$HIP"/32 proto udp sport "$p" dport "$p" dir fwd ptype main action allow 2>/dev/null || true
+done
 sleep 2
 echo "=== ikedctl establish-sa (initiator) ==="
 "$SBIN/ikedctl" -s /tmp/iked.sock-i2i establish-sa isakmp inet "$CIP" "$HIP" sel_out 2>&1 | head -5 || true

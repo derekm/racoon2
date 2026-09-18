@@ -6,11 +6,27 @@ exposes mlkem768; only other WITH_ADDKE racoon2 can offer/select type-6).
 So the initiator is itself a racoon2, running in the netns, offering
 esp_addke_alg; the responder is a passive racoon2 in the host namespace.
 
-## Status (2026-09-18): baseline not yet green — initiator SEGVs mid-exchange
+## Status (2026-09-18): past IKE_SA_INIT; child GETSPI seq tracking in netns
 
-Built `/usr/local/racoon2-i2i` (WITH_ADDKE + admin-sock env override, from
-`c4a32d4`).  Conditions that must hold (all learned empirically, each was a
-separate bug):
+Two real bugs fixed (committed):
+- `RACOON2_ADMIN_SOCK` env override (iked/admin.c) — two ikeds on one host
+  collide on the fixed ADMINSOCK_PATH; the second to bind dies.
+- `memset(&rcpfk_msg,0,...)` in `ike_pfkey.c sadb_poll` — the stack msg was
+  only partially set, so an unset `sa2_src` was garbage; `sadb_acquire_callback`
+  passed it non-NULL to `isakmp_initiate` → `rcs_getsalen` SEGV.  That was THE
+  iked-as-initiator-in-netns crash (never exercised by the matrix before).
+
+The harness now: starts both stacks, `IKE_SA_INIT` completes (initiator stops
+retransmitting, gets the 248 B response), and the initiator proceeds to mint
+its child inbound SPI.  Current blocker: the initiator's `SADB_GETSPI` response
+comes back `does not have corresponding request (ignored)` + `sadb_poll:
+unknown error`, so the child can't be installed and IKE_AUTH never fires (ESP 0
+on the responder).  That is the netns PFKEY seq tracking between the initiator
+iked's GETSPI and the netns spmd's reply — next focused debug.  (Backtrace for
+the crash was captured via core_pattern=/tmp/r2core-%e-%p + gdb: the frame was
+rcs_getsalen<-rcs_sadup<-isakmp_initiate<-sadb_acquire_callback.)
+
+## Gotchas (all learned empirically, each was a separate bug)
 
 - **Two ikeds on one host collide on the fixed ADMINSOCK_PATH**
   (/var/run/iked.sock) and the second dies.  Run each with a distinct
@@ -28,6 +44,10 @@ separate bug):
 - The initiator netns SPD (auto_ipsec) drops inbound IKE UDP before iked sees
   it; install explicit 500/4500 UDP allow rows in the netns (in/out/fwd) and
   on the host, mirroring kinds/ikev2.sh.
+- Those UDP-allow rows must be added AFTER spmd finishes — spmd flushes ALL
+  xfrm policies at startup, wiping rows installed before it.  Add them after
+  both stacks are up.  (No rows at all → IKE_SA_INIT retransmits forever;
+  rows too early → same, because spmd flushed them.)
 
 ## Blocker (next focused debug)
 
