@@ -55,9 +55,10 @@ fragtest_SOURCES = fragtest.c ikev2_frag.c encryptor.c authenticator.c \
 # RFC 9370 ADDKE ML-KEM-768 crypto (configure --enable-addke auto):
 # exercised only on OpenSSL >= 3.5 builds that actually have the code.
 if ADDKE
-TESTS += addketest
-check_PROGRAMS += addketest
+TESTS += addketest addkekat
+check_PROGRAMS += addketest addkekat
 addketest_SOURCES = addketest.c ikev2_addke.c
+addkekat_SOURCES = addkekat.c
 endif
 
 LIBS = @LIBS@
