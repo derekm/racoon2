@@ -6,44 +6,52 @@ exposes mlkem768; only other WITH_ADDKE racoon2 can offer/select type-6).
 So the initiator is itself a racoon2, running in the netns, offering
 esp_addke_alg; the responder is a passive racoon2 in the host namespace.
 
-## Status (2026-09-18): 3 real fixes landed; netns initiator still not green
+## Status (2026-09-18): ISOLATED matrix up; IKE_SA ESTABLISHED w/ ADDKE; followup-reassembly is the current lead
 
-Three real bug fixes committed:
-- `RACOON2_ADMIN_SOCK` env override (iked/admin.c, `c4a32d4`) — two ikeds on one
-  host collide on the fixed ADMINSOCK_PATH; the second to bind dies (a
-  bind-fail, NOT the SEGV — keep the two distinct).
-- `memset(&rcpfk_msg,0,...)` in `ike_pfkey.c sadb_poll` (`71a6a5b`) — fixed the
-  iked-as-initiator-in-netns SEGV (unset `sa2_src` was garbage; `isakmp_initiate`
-  passed it non-NULL through `if (src2)` → `rcs_getsalen`).  Verified by core
-  backtrace.
-- minting a fresh `sadb_new_seq()` for the acquire-initiated child GETSPI
-  (`ikev2.c`, `75de6ee`) — the acquire's seq is 0 (netlink backend never sets
-  it), so if_xfrm invented an unmatchable netlink seq; the child now issues a
-  proper GETSPI request ("SADB_GETSPI ... no corresponding request" is gone).
+**The matrix is now fully isolated from production** (`bringup-isolated.sh`):
+- Both test peers run in their OWN netns on a P2P veth (initiator `192.0.2.2`,
+  responder `192.0.2.1`).  Each netns is a separate socket + XFRM stack, so the
+  matrix NEVER stops production iked/spmd, never binds host 500/4500, never
+  mutates host `ip xfrm`.  Verified: production iked+spmd stay `active` before
+  and after every run.
+- **Private resume dir per run** (`RACOON2_RESUME_DIR=/tmp/r2i2i-resume`, new
+  env override mirroring `RACOON2_ADMIN_SOCK`): test dump state can never
+  overlap production's `/var/lib/racoon2/resume` (a stale shared dump made a
+  test responder skip a fresh child with "pending ADDKE followup; skipped,
+  will rekey").  Verified: test dumps land in /tmp/r2i2i-resume, production
+  resume dir untouched.
+- Stale `/tmp/spmif-*` + `iked.sock-*` purged each run (a dead listener made
+  `-S` pass and the next iked die `SPMIF: Connection refused`).
 
-Live harness state: both stacks start, `IKE_SA_INIT` is sent/received on both
-sides (`INI_`/`RES_IKE_SA_INIT_SENT`) — but the initiator's netns still does
-not reliably receive the responder's 248-byte reply and advance to IKE_AUTH;
-ESP SAD stays 0 on both sides (the `bringup.sh` 40s gate reports NOT UP).  The
-GETSPI-seq bug is fixed in code; the remaining live blocker is the netns
-initiator's inbound IKE reception/advance, not yet root-caused.
+Real code fixes landed (all on `int/gsoc2026`):
+- `ee01010` responder: an ADDKE (type-6) child negotiated on the INITIAL IKE_AUTH
+  child was answered with a bare CREATE_CHILD_SA response missing IDr+AUTH (RFC
+  7296 violation) -> initiator aborted "message lacks IDr".  `ikev2_responder_
+  state1_send` is now used for a `RES_IKE_AUTH_RCVD` addke child; a genuine rekey
+  (`ESTABLISHED`) still gets the child-only form.  IKE_SA now reaches ESTABLISHED.
+- `aa9faa5` initiator: `ikev2_initiator_followup_send` double-freed the
+  transmit-owned pkt.  gdb backtrace: `rc_vfree:436 <- followup_send <-
+  update_child:2644` — `ikev2_transmit` owns/frees pkt, so the manual free was a
+  double-free (`free(): invalid pointer`).  Removed it.
+- Earlier: `f23b468` RACOON2_RESUME_DIR; `75de6ee` GETSPI seq; `b246678` OOM
+  NULL-deref; `c4a32d4` RACOON2_ADMIN_SOCK; `71a6a5b` sadb_poll memset.
 
-### GETSPI diagnosis (review-refined, next focused debug)
+Live state: both sides reach IKE_SA **ESTABLISHED** with type-6 (mlkem768) on
+the initial child, then both arm the ADDKE followup timeout (~10s) which expires:
+the initiator's ~1200-byte IKE_FOLLOWUP_KE (KEi = 4 + 1184-byte ML-KEM-768 pub,
++ 16-byte ADDKE link) is **always fragmented** — RFC 7383 fragmentation is
+unconditional here — sent as 2 × ~564 B datagrams, and the receiver never
+completes the fragmented-followup REASSEMBLY, so no KEr comes back.
 
-`sadb_getspi_callback` matches `param->seq` against the `sadb_request` list.
-But racoon2-as-initiator mints the child GETSPI with `req->request_msg_seq`
-**taken from the kernel ACQUIRE** (`ikev2.c:1044`), and a netlink ACQUIRE often
-carries **seq 0**.  `lib/if_xfrm.c` (`nlmsg_seq = rc->seq ? rc->seq : ++xfrm_seq`,
-comment "iked matches replies by param->seq (0x4000000+). Do not invent one.")
-only invents a seq when rc->seq is 0 — and `sadb_new_seq()` starts at
-`0x4000000`.  So if the acquire arrived with seq 0, netlink invents a seq and
-the callback can never match the request.  Also the single-slot `pending_*`
-means a second GETSPI (acquire-vs-ikedctl) can drop the real reply.
+### Current lead: fragmented IKE_FOLLOWUP_KE reassembly
 
-Plan: log the acquire seq, the GETSPI send seq, `nlmsg_seq`, and the
-`sadb_find_by_seq` argument on the initiator child path; if the acquire seq is
-0, assign `sadb_new_seq()` on that path before touching spmd, and check the
-single-slot pending vs a second acquire.
+The followup is ~1200 B and `ikev2_transmit` fragments it (576-byte frag size)
+because `frag_supported` is unconditional.  The responder must reassemble the
+two `.564`-fragments of exch 44 — the generic RFC 7383 reassembly path may not
+be keying/retaining a pending assembly for the new `IKEV2EXCH_IKE_FOLLOWUP_KE`
+exchange type.  Next focused pass: trace `ikev2_frag` reassembly handling of
+exch 44 on the receiver (message-id/SPI window), fix it, then the child XFRM
+install (`ikev2_child_addke_install`) lands and the addke assertion is green.
 
 ## Gotchas (each empirically learned, a separate bug)
 
