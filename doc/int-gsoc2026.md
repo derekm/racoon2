@@ -52,6 +52,41 @@ rekey confirmation on the current (post-`f7f3b8a`) binary, which still
 needs its own live session. Note: this session predates today's fixes;
 re-verify on the new Fedora server.
 
+## RFC 9370 ADDKE / ML-KEM — landed 2026-09-18
+
+- Responder **child** rekey ADDKE (type-6 in MINE → echo + 16441 → responder
+  IKE_FOLLOWUP_KE → deferred child install) and **IKE_SA-rekey** responder feed;
+  initiator **child** ADDKE; reverse-pass proposal skip; resume skips
+  incomplete-keymat children; teardown zeroizes keymat. Config
+  `esp_addke_alg { mlkem768; };`, `--enable-addke` (OpenSSL ≥3.5), live on Fedora
+  `16372b2` (NRestarts=0).
+- Independent pin: `addkekat` replays NIST FIPS 203 KATs — **20/20** shipped,
+  **1000/1000** full file, suite **7/7**; log in `doc/kattest-results.txt`.
+- Full write-up: `doc/addke-design.md` (inventory, gaps, decision criteria).
+
+**Still open within 9370:** initiator IKE_SA-rekey ADDKE feed; outbound
+fragmentation of our IKE_FOLLOWUP_KE (KE ≈1192 B can exceed a small MTU in the
+initiator role); and the **live completed ADDKE child rekey** on a crash-free
+daemon — the `iked-addke-watch` cron reports the first one automatically.
+
+## Begin — RFC 9242 IKE_INTERMEDIATE, then RFC 8784 PPK
+
+Order decided 2026-09-18 (supersedes the old "8784 first", which predates 9370):
+**9242 before 8784** — 9242 is the init-time PQC carrier that pairs with the
+landed ML-KEM and iOS implements it (live-testable against the phone), whereas
+8784 PPK needs a PSK-provisioning story first.
+
+- **RFC 9242 (IKE_INTERMEDIATE, exch 43):** split after IKE_SA_INIT and before
+  IKE_AUTH; one or more rounds, each carrying a NONCE (type 40); each round's
+  secret feeds SKEYSEED so a store-now-decrypt-later attacker can't start on the
+  DH until all rounds complete. Entry: new exchange-type dispatch in
+  `iked/ikev2_established_recv` (as ADDKE's IKE_FOLLOWUP_KE), responder + initiator,
+  new `iked/ikev2_intermediate.c`, gate `--enable-intermediate` (auto, empty TU
+  off-path), SKEYSEED feed near `ikev2_prf_plus` / `compute_keymat`.
+- **RFC 8784 (PPK):** PPK_ID notify + quantum-resistant pre-shared mixing into
+  SK_PRF/SKEYSEED + sequential counter to prevent reuse. New PPK config +
+  notify handling + key feed; needs a PSK source. After 9242.
+
 ## Still this chunk (do not start EAP/8784)
 
 1. iOS-initiated CHILD rekey (~1440s) with the shared PFS gate. The
@@ -66,7 +101,7 @@ re-verify on the new Fedora server.
 ## Later
 
 - IKEv2 EAP-MSCHAPv2 + RADIUS.
-- QCD token-taker. RFC 8784 PPK after OpenSSL ≥3.5/OQS.
+- QCD token-taker. RFC 8784 PPK — **now ordered after RFC 9242** (see Begin section above); needs a PSK source.
 - Transport-mode IKEv2 e2e; IPv6-in-IPv4; Windows/Android/macOS.
 - Fuzz `ikev2_input` / `isakmp`. Live IKEv1 NAT-OA peer.
 
