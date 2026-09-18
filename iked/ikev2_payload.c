@@ -511,8 +511,9 @@ ikev2_check_icv(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
  * packet buffer length is adjusted to the tail of decrypted data.
  * returns 0 if successful, non-zero if fails
  */
-int
-ikev2_decrypt(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
+static int
+ikev2_decrypt_internal(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
+		       int use_send_key)
 {
 	struct ikev2_header *ikehdr;
 	struct ikev2_payload_header *p;
@@ -583,12 +584,18 @@ ikev2_decrypt(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 		if (!aad)
 			goto fail_nomem;
 		decrypted = encryptor_decrypt_aead(ike_sa->encryptor, orig,
-		    ike_sa->is_initiator ? ike_sa->sk_e_r : ike_sa->sk_e_i,
+		    use_send_key ? (ike_sa->is_initiator ? ike_sa->sk_e_i
+					  : ike_sa->sk_e_r)
+			 : (ike_sa->is_initiator ? ike_sa->sk_e_r
+					  : ike_sa->sk_e_i),
 		    ivbuf, aad);
 		rc_vfree(aad);
 	} else {
 		decrypted = encryptor_decrypt(ike_sa->encryptor, orig,
-		    ike_sa->is_initiator ? ike_sa->sk_e_r : ike_sa->sk_e_i,
+		    use_send_key ? (ike_sa->is_initiator ? ike_sa->sk_e_i
+					  : ike_sa->sk_e_r)
+			 : (ike_sa->is_initiator ? ike_sa->sk_e_r
+					  : ike_sa->sk_e_i),
 		    ivbuf);
 	}
 	if (!decrypted)
@@ -627,6 +634,26 @@ ikev2_decrypt(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
       fail:
 	retval = -1;
 	goto end;
+}
+
+/* Decrypt a message received from the peer (uses the RECEIVE-direction key). */
+int
+ikev2_decrypt(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
+{
+	return ikev2_decrypt_internal(ike_sa, packet, 0);
+}
+
+/*
+ * Decrypt a message we built and encrypted ourselves in this process (uses the
+ * SEND-direction key).  ikev2_frag_send() needs this to re-extract the inner
+ * payloads of its own just-encrypted packet before chunking them into SKF
+ * fragments — a RECEIVE-direction decrypt there decodes with the wrong key and
+ * yields garbage inner payloads (the iked<->iked matrix observed this).
+ */
+int
+ikev2_decrypt_local(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
+{
+	return ikev2_decrypt_internal(ike_sa, packet, 1);
 }
 
 /*

@@ -613,6 +613,7 @@ void ikev2_print_ts(struct ikev2_traffic_selector *);
 int ikev2_check_ts_payload(struct ikev2_payload_header *);
 int ikev2_check_icv(struct ikev2_sa *, rc_vchar_t *);
 int ikev2_decrypt(struct ikev2_sa *, rc_vchar_t *);
+int ikev2_decrypt_local(struct ikev2_sa *, rc_vchar_t *);
 
 int ikev2_cookie_init(void);
 rc_vchar_t *ikev2_cookie(struct sockaddr *, isakmp_cookie_t *);

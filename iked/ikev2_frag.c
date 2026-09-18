@@ -140,7 +140,11 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 	work = rc_vdup(*packet);
 	if (!work)
 		return -1;
-	if (ikev2_decrypt(ike_sa, work) != 0)
+	/* This is OUR OWN just-encrypted message: decrypt with the SEND-direction
+	 * key (ikev2_decrypt_local).  A receive-direction ikev2_decrypt() here
+	 * decodes with the peer's key and yields garbage inner payloads to
+	 * chunk. */
+	if (ikev2_decrypt_local(ike_sa, work) != 0)
 		goto fail;
 
 	orig_hdr = (struct ikev2_header *)work->v;
