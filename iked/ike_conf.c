@@ -3370,7 +3370,7 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 #ifdef WITH_ADDKE
 	/*
 	 * RFC 9370 ADDKE: when the sa block configures an addke
-	 * algorithm (esp_addke_alg { ml_kem_768; }), our own proposal
+	 * algorithm (esp_addke_alg { mlkem768; }), our own proposal
 	 * carries the additional key exchange transform.  Neither RFC
 	 * 7296 (which says receivers MUST NOT reject on payload order,
 	 * s2.5) nor RFC 9370 mandates a position for the ADDKE type

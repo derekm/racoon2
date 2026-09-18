@@ -181,7 +181,10 @@ main(void)
 	}
 
 	memset(vec, 0, sizeof(vec));
-	while (nvec < KAT_MAXVEC && fgets(line, sizeof(line), f)) {
+	/* nvec is already 1 past "count = " (0-indexed), so the loop must
+	 * admit nvec == KAT_MAXVEC or the last vector's fields are never
+	 * read and it runs against all-zero seeds. */
+	while (nvec <= KAT_MAXVEC && fgets(line, sizeof(line), f)) {
 		size_t ll = strlen(line);
 		size_t len;
 		unsigned char *p;
@@ -210,14 +213,15 @@ main(void)
 				   sizeof(vec[0].pk), &len)) p = NULL;
 		else if (kat_field(line, "sk", vec[nvec-1].sk,
 				   sizeof(vec[0].sk), &len)) p = NULL;
-		else if (kat_field(line, "ct", vec[nvec-1].ct,
-				   sizeof(vec[0].ct), &len)) p = NULL;
-		else if (kat_field(line, "ss", vec[nvec-1].ss,
-				   sizeof(vec[0].ss), &len)) p = NULL;
+		/* longest first: ct_n/ss_n precede ct/ss in the .rsp */
 		else if (kat_field(line, "ct_n", vec[nvec-1].ct_n,
 				   sizeof(vec[0].ct_n), &len)) p = NULL;
 		else if (kat_field(line, "ss_n", vec[nvec-1].ss_n,
 				   sizeof(vec[0].ss_n), &len)) p = NULL;
+		else if (kat_field(line, "ct", vec[nvec-1].ct,
+				   sizeof(vec[0].ct), &len)) p = NULL;
+		else if (kat_field(line, "ss", vec[nvec-1].ss,
+				   sizeof(vec[0].ss), &len)) p = NULL;
 	}
 	/* final vector */
 	if (nvec > 0 && nvec <= KAT_MAXVEC)
