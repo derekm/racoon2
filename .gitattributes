@@ -13,3 +13,4 @@ configure   text eol=lf
 # automake aux script (extensionless): must stay LF in the tree and in
 # `git archive`, or the regenerated .y.c rule fails with CRLF errors.
 ylwrap      text eol=lf
+test-driver text eol=lf
