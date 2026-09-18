@@ -228,6 +228,15 @@ sadb_poll(void)
 {
 	struct rcpfk_msg rcpfk_param;
 
+	/* rcpfk_msg is stack-allocated and the backend only fills a subset of
+	 * fields per message type (e.g. handle_acquire sets sa_src/sa_dst/sp
+	 * but never sa2_src).  Without a zero-init, an unset pointer field is
+	 * garbage: sadb_acquire_callback then passes a non-NULL-but-bogus
+	 * sa2_src to isakmp_initiate, whose `if (src2)` guard can't tell NULL
+	 * from junk, and rcs_getsalen() deref's it (SEGV on the iked-as-
+	 * initiator netns path).  Zero the whole struct so unset pointers are
+	 * NULL. */
+	memset(&rcpfk_param, 0, sizeof(rcpfk_param));
 	rcpfk_param.so = pfkey_socket;
 	rcpfk_param.flags = 0;
 	if (rcpfk_handler(&rcpfk_param) != 0) {
