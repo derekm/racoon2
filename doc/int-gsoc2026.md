@@ -106,6 +106,14 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   kinds/ikev2.sh is charon-centric). Fedora strongSwan 6.0.7 RPM stays useful
   for the non-PQC rows; 9242/IKE_INTERMEDIATE has the same peer problem — an
   iked↔iked `ikev2-netns-int` row reuses the harness once 9242 lands.
+- **iked↔iked harness live (2026-09-18): `samples/linux-matrix/i2i/`.** Three
+  real racoon2-as-initiator-in-netns bugs found & fixed (never exercised
+  before): multi-instance admin-socket collision (`RACOON2_ADMIN_SOCK` env),
+  the `sadb_poll` uninitialized-`rcpfk_msg` SEGV (memset), and the
+  acquire-initiated child GETSPI using the acquire's seq-0
+  (mint `sadb_new_seq()`).  Live state: IKE_SA_INIT sent/received both sides
+  but the netns initiator still doesn't reliably advance to IKE_AUTH (ESP 0).
+  iPhone stays last until the baseline child is green via this matrix.
 - **RFC 9242 (IKE_INTERMEDIATE, exch 43):** negotiated by the
   `INTERMEDIATE_EXCHANGE_SUPPORTED` notify (16438) in IKE_SA_INIT; IKE_INTERMEDIATE
   exchanges run sequentially between IKE_SA_INIT and IKE_AUTH (msgid 1,2,…), each
