@@ -67,18 +67,21 @@ Not implemented (honest list — do not claim these):
 ## Independent test vector pin (roadmap item 7)
 
 `addkekat` replays the official NIST FIPS 203 known-answer vectors from
-`post-quantum-cryptography/KAT` (`kat_MLKEM_768.rsp`, first 20 shipped; the full
-1000-vector file can be dropped in for exhaustive runs). This is the independent
-pin the OpenSSL-vs-OpenSSL CLI cross-check in `addketest` cannot provide — it
-catches a shared provider bug. Checks per vector:
+`post-quantum-cryptography/KAT` (`kat_MLKEM_768.rsp`, first 20 shipped; the
+harness streams any file size, so the full 1000-vector file runs exhaustively).
+This is the independent pin the OpenSSL-vs-OpenSSL CLI cross-check in
+`addketest` cannot provide — it catches a shared provider bug. Checks per
+vector:
 
 1. **Deterministic keygen** from seed `d‖z` must reproduce the NIST `pk`.
 2. **Decapsulation** of the NIST `ct` with our deterministic keypair ⇒ NIST `ss`.
 3. **Implicit rejection**: import the NIST `sk`, decap `ct_n` ⇒ `ss_n`.
 
-Result on the LIVE OpenSSL 3.5.8: all 1000 vectors pass (keygen + decap +
-implicit-reject). The 20-vector shipped sample is **20/20** on the Fedora
-`WITH_ADDKE` build. Two harness bugs found & fixed before this was green:
+Result, reproduced on a fresh `git archive` build on the LIVE OpenSSL 3.5.8:
+the full **1000/1000** vectors pass (keygen + decap + implicit-reject) and the
+shipped 20-vector sample is **20/20**; iked suite **7/7 PASS**.  Run log with
+provenance/repro steps: `doc/kattest-results.txt`.  Harness bugs found & fixed
+during this:
 
 - `ct_n`/`ss_n` matched **after** `ct`/`ss` (strncmp prefix) — the implicit-reject
   fields never landed; fixed by longest-prefix-first.

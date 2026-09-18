@@ -1,0 +1,23 @@
+addkekat — ML-KEM-768 NIST FIPS 203 known-answer verification
+=============================================================
+Data source: official post-quantum-cryptography/KAT
+  iked/kat_MLKEM_768.rsp (shipped) = first 20 vectors of kat_MLKEM_768.rsp
+  (full-file run uses the complete 1000-vector official file, byte-identical)
+Build: Fedora 44, OpenSSL 3.5, `./configure --enable-addke` (WITH_ADDKE),
+  fresh `git archive` of the commit tree, `make -C lib` then `make -C iked
+  addkekat`; full-file run uses iked/.libs/addkekat + build-tree libracoon.
+Reproduce: scp the archive + the 1000-vector .rsp to the box, rebuild, and run
+  `iked/.libs/addkekat` from a cwd holding `kat_MLKEM_768.rsp`.
+Run date: 2026-09-18
+
+=== SHIPPED 20-vector sample (ik/ addkekat libtool wrapper) ===
+addkekat: 20/20 ML-KEM-768 KAT vectors passed
+rc=0
+
+=== FULL 1000-vector official file ===
+addkekat: 1000/1000 ML-KEM-768 KAT vectors passed
+rc=0
+
+=== iked suite ===
+# PASS:  7
+# FAIL:  0
