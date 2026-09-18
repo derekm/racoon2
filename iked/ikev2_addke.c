@@ -497,9 +497,29 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	 * ikev2_createchild_responder_recv): the followup is an
 	 * independent exchange and its id must advance the window, or
 	 * the peer's next request arrives "unordered" and is dropped.
+	 *
+	 * The ack must be conditional: ikev2_input validates/advances
+	 * recv_message_id only on NON-fragmented messages.  Our
+	 * followup routinely carries an 1184-byte ML-KEM public key, so
+	 * it arrives IKE-fragmented (RFC 7383) and the ordering check
+	 * never ran -- blindly asserting equality here aborts the daemon
+	 * (observed live: __assert_fail in ikev2_update_message_id on
+	 * the ADDKE rekey followup).  Only advance when the window
+	 * actually matches; otherwise log and continue (the fragment
+	 * path already established authenticity).
 	 */
-	ikev2_update_message_id(ike_sa, get_uint32(&ikehdr->message_id),
-				FALSE);
+	{
+		uint32_t fid = get_uint32(&ikehdr->message_id);
+
+		if (ike_sa->recv_message_id == fid)
+			ikev2_update_message_id(ike_sa, fid, FALSE);
+		else
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_DEBUG, PLOGLOC,
+				   "IKE_FOLLOWUP_KE msgid %u (window at %u); "
+				   "not advancing (fragmented path)\n",
+				   fid, ike_sa->recv_message_id);
+	}
 
 	/* We are always the responder for ADDKE at this stage. */
 	if (is_response) {
