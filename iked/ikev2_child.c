@@ -1546,7 +1546,21 @@ ikev2_create_child_responder_cont(struct ikev2_child_sa *child_sa)
 	 */
 	if (child_sa->addke_pending) {
 		ikev2_child_addke_arm_timeout(child_sa);
-		ikev2_createchild_responder_send(ike_sa, child_sa);
+		/*
+		 * RFC 9370 ADDKE on the INITIAL IKE_AUTH child must NOT be answered
+		 * with a bare CREATE_CHILD_SA response — an IKE_AUTH response MUST
+		 * carry IDr and AUTH (RFC 7296 s1.2 #2, s2.15); a child-only reply
+		 * makes the initiator abort "message lacks IDr" (the WITH_ADDKE
+		 * matrix exposed exactly this).  Only the rekey case
+		 * (STATE_ESTABLISHED) is a genuine CREATE_CHILD_SA and sends the
+		 * child-only form.  For the initial child answer via
+		 * ikev2_responder_state1_send(); the keymat+XFRM install stays
+		 * deferred to ikev2_child_addke_install() from the FOLLOWUP_KE.
+		 */
+		if (ike_sa->state == IKEV2_STATE_RES_IKE_AUTH_RCVD)
+			ikev2_responder_state1_send(ike_sa, child_sa);
+		else
+			ikev2_createchild_responder_send(ike_sa, child_sa);
 		return;
 	}
 
