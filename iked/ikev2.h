@@ -100,10 +100,17 @@ struct ikev2_header {
 #define IKEV2EXCH_CREATE_CHILD_SA	36
 #define IKEV2EXCH_INFORMATIONAL		37
 #define	IKEV2EXCH_IKE_SESSION_RESUME	38	/* (RFC5723) */
+/* RFC 9242: IKE_INTERMEDIATE, run sequentially between IKE_SA_INIT and
+ * IKE_AUTH (msgid 1,2,…), each carrying an Encrypted payload.  Carrier for
+ * additional key exchange; the rounds are bound into AUTH via the chained
+ * IntAuth PRF + IKE_AUTH_MID appended to each peer's signed/mac'd blob.  Do
+ * NOT echo INTERMEDIATE_EXCHANGE_SUPPORTED (16438) in the IKE_SA_INIT
+ * response until the exchange is handled, or we advertise support we lack. */
+#define	IKEV2EXCH_IKE_INTERMEDIATE	43
 /* RFC 9370: carries additional key exchange data that follows a
  * CREATE_CHILD_SA when the initiator included ADDKE transforms. */
 #define	IKEV2EXCH_IKE_FOLLOWUP_KE	44
-/*	Reserved for IKEv2+		39-43, 45-239 */
+/*	Reserved for IKEv2+		39-42, 45-239 */
 #define	IKEV2EXCH_PRIVATE 240
 /* 	Reserved for private use	240-255 */
 
@@ -568,6 +575,9 @@ struct ikev2payl_notify {
 #define	IKEV2_USE_WESP_MODE		16415	/* (draft-ietf-ipsecme-traffic-visibility-12.txt) */
 #define	IKEV2_QCD_TOKEN			16419	/* (RFC6290) */
 #define	IKEV2_FRAGMENTATION_SUPPORTED	16430	/* (RFC7383) */
+/* RFC 9242: negotiated in IKE_SA_INIT (request + response) before any
+ * IKE_INTERMEDIATE (exch 43) exchange runs.  Status type; Proto/SPI 0. */
+#define	IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED	16438
 /* RFC 9370: links IKE_FOLLOWUP_KE exchanges to the CREATE_CHILD_SA
  * that started the additional key exchanges (status type). */
 #define	IKEV2_ADDITIONAL_KEY_EXCHANGE	16441
