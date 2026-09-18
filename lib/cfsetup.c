@@ -268,7 +268,9 @@ static struct rcf_sa *rcf_deepcopy_sa (struct rcf_sa *);
 static int rcf_fix_sa_protocol (struct cf_list *, void *);
 static int rcf_fix_esp_enc_alg (struct cf_list *, void *);
 static int rcf_fix_esp_auth_alg (struct cf_list *, void *);
+static int rcf_fix_esp_addke_alg (struct cf_list *, void *);
 static int rcf_fix_ah_auth_alg (struct cf_list *, void *);
+static int rcf_fix_ah_addke_alg (struct cf_list *, void *);
 static int rcf_fix_ipcomp_alg (struct cf_list *, void *);
 static int rcf_fix_spi (struct cf_list *, void *);
 	/* default */
@@ -411,7 +413,9 @@ struct rcf_tdf_t {
 	{ CFD_SA_PROTOCOL,		rcf_fix_sa_protocol, },
 	{ CFD_ESP_ENC_ALG,		rcf_fix_esp_enc_alg, },
 	{ CFD_ESP_AUTH_ALG,		rcf_fix_esp_auth_alg, },
+	{ CFD_ESP_ADDKE_ALG,		rcf_fix_esp_addke_alg, },
 	{ CFD_AH_AUTH_ALG,		rcf_fix_ah_auth_alg, },
+	{ CFD_AH_ADDKE_ALG,		rcf_fix_ah_addke_alg, },
 	{ CFD_IPCOMP_ALG,		rcf_fix_ipcomp_alg, },
 	{ CFD_SPI,			rcf_fix_spi, },
 };
@@ -2543,6 +2547,7 @@ rcf_clean_sa(struct rcf_sa *n)
 	rcf_clean_alglist(n->enc_alg);
 	rcf_clean_alglist(n->auth_alg);
 	rcf_clean_alglist(n->comp_alg);
+	rcf_clean_alglist(n->addke_alg);
 	rc_free(n);
 }
 
@@ -2563,6 +2568,7 @@ rcf_deepcopy_sa(struct rcf_sa *src)
 	DEEPCOPY_ALGLIST(src->enc_alg, new->enc_alg);
 	DEEPCOPY_ALGLIST(src->auth_alg, new->auth_alg);
 	DEEPCOPY_ALGLIST(src->comp_alg, new->comp_alg);
+	DEEPCOPY_ALGLIST(src->addke_alg, new->addke_alg);
 
 	return new;
 }
@@ -2601,6 +2607,32 @@ rcf_fix_esp_auth_alg(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_ESP_AUTH_ALG))
 		return -1;
 	if (rcf_fix_alglist(head->nextp, &dst->auth_alg))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_esp_addke_alg(struct cf_list *head, void *dst0)
+{
+	struct rcf_sa *dst = (struct rcf_sa *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ESP_ADDKE_ALG))
+		return -1;
+	if (rcf_fix_alglist(head->nextp, &dst->addke_alg))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_ah_addke_alg(struct cf_list *head, void *dst0)
+{
+	struct rcf_sa *dst = (struct rcf_sa *)dst0;
+
+	if (rcf_check_cfd(head, CFD_AH_ADDKE_ALG))
+		return -1;
+	if (rcf_fix_alglist(head->nextp, &dst->addke_alg))
 		return -1;
 
 	return 0;

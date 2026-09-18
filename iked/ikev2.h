@@ -326,9 +326,11 @@ struct ikev2transform {
 /*	Private use			1024-65535 */
 
 /* Transform IDs for Transform Type 6 (Additional Key Exchange, rfc9370) */
-/* IANA KE method registry: 34=ML-KEM-512, 36=ML-KEM-768, 37=ML-KEM-1024
+/* IANA KE method registry: 35=ML-KEM-512, 36=ML-KEM-768, 37=ML-KEM-1024
  * (draft-ietf-ipsecme-ikev2-mlkem-09); observed id 36 live from iOS. */
+#define	IKEV2TRANSF_ADDKE_MLKEM512		35
 #define	IKEV2TRANSF_ADDKE_MLKEM768		36
+#define	IKEV2TRANSF_ADDKE_MLKEM1024		37
 /*	(others TBD at PQC milestone) */
 
 /* Transform IDs for Transform Type 5 (Extended Sequence Numbers) */

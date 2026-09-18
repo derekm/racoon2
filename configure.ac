@@ -43,6 +43,7 @@ AC_ARG_ENABLE(pcap,
 	[  --enable-pcap           use libpcap to capture decoded packets [no]],
 	, [enable_pcap=no])
 AC_MSG_RESULT($enable_pcap)
+AM_CONDITIONAL([PCAP], [test x"$enable_pcap" = xyes])
 
 dnl check --enable-pedant
 AC_MSG_CHECKING(if --enable-pedant option is specified)

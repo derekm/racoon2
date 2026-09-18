@@ -2770,6 +2770,27 @@ static struct algdef ikev2_transf_dh[] = {
 	{0}
 };
 
+/*
+ * RFC 9370 ADDKE (Transform Type 6).  Transform IDs share the IANA
+ * Transform Type 4 / Key Exchange Method registry: 35=ML-KEM-512,
+ * 36=ML-KEM-768, 37=ML-KEM-1024 (draft-ietf-ipsecme-ikev2-mlkem-09).
+ * No generator/definition: the additional exchange is ML-KEM, handled
+ * by ikev2_addke_mlkem_* (EVP) in the IKE_FOLLOWUP_KE exchange, not
+ * by the DH machinery.
+ *
+ * Only the three ML-KEM parameter sets are listed; the followup
+ * crypto (ikev2_addke.c) and the IKE_FOLLOWUP_KE sizes support all
+ * three (35=512, 36=768, 37=1024 per draft-ietf-ipsecme-ikev2-mlkem-09).
+ */
+#define	ALG_ADDKE(rc, id)		{ (rc), (id), 0, 0, 0, 0, 0 }
+
+static struct algdef ikev2_transf_addke[] = {
+	ALG_ADDKE(RCT_ALG_MLKEM512, IKEV2TRANSF_ADDKE_MLKEM512),
+	ALG_ADDKE(RCT_ALG_MLKEM768, IKEV2TRANSF_ADDKE_MLKEM768),
+	ALG_ADDKE(RCT_ALG_MLKEM1024, IKEV2TRANSF_ADDKE_MLKEM1024),
+	{0}
+};
+
 static int
 is_alg_supported(rc_type alg, int keylen, struct algdef *def)
 {
@@ -3294,6 +3315,7 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 	struct prop_pair **tail;
 	struct rc_alglist *enc_alg;
 	struct rc_alglist *auth_alg;
+	struct rc_alglist *addke_alg;
 	/* struct rc_alglist * comp_alg; */
 
 	prop_head = proppair_new();
@@ -3345,20 +3367,31 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 
 #ifdef WITH_ADDKE
 	/*
-	 * RFC 9370 ADDKE (ML-KEM-768): when enabled, our own proposal
-	 * carries the additional key exchange transform, positioned
-	 * like the peers we interoperate with (here: straight after
-	 * INTEG, before the DH group).  With the transform in MINE the
-	 * generic matcher selects it and echoes it back in the response
-	 * SA; there is no special-casing in ikev2_compare/match_
-	 * transforms.
+	 * RFC 9370 ADDKE: when the sa block configures an addke
+	 * algorithm (esp_addke_alg { ml_kem_768; }), our own proposal
+	 * carries the additional key exchange transform.  Neither RFC
+	 * 7296 (which says receivers MUST NOT reject on payload order,
+	 * s2.5) nor RFC 9370 mandates a position for the ADDKE type
+	 * within a proposal -- the only ordering requirement is that
+	 * the ADDKE exchanges themselves run in Transform Type order
+	 * (rfc9370 s2.2.1).  We place it after INTEG, before the DH
+	 * group, matching the peers we interoperate with (iOS);
+	 * matchers are type-keyed so any position would work.  With
+	 * the transform in MINE the generic matcher selects it and
+	 * echoes it back in the response SA; there is no special-casing
+	 * in ikev2_compare/match_transforms.
 	 */
-	if (ikev2_addke_selectable()) {
-		*tail = transform_new(IKEV2TRANSFORM_TYPE_ADDKE,
-				      IKEV2TRANSF_ADDKE_MLKEM768, 0,
-				      IKEV2TRANSFORM_MORE);
-		if (!*tail)
-			goto fail_nomem;
+	SA_CONF(addke_alg, proto_info, addke_alg, 0);
+	if (proto_info->addke_alg) {
+		*tail = alglist_to_proppair(proto_info->addke_alg,
+					    IKEV2TRANSFORM_TYPE_ADDKE,
+					    &ikev2_transf_addke[0]);
+		if (!*tail) {
+			isakmp_log(0, 0, 0, 0,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed converting addke_alg to proposal\n");
+			goto fail;
+		}
 		tail = &(*tail)->next;
 	}
 #endif

@@ -170,7 +170,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %token SA_INDEX
 	/* sa */
 %token SA SPI
-%token ESP_ENC_ALG ESP_AUTH_ALG AH_AUTH_ALG IPCOMP_ALG
+%token ESP_ENC_ALG ESP_AUTH_ALG ESP_ADDKE_ALG AH_AUTH_ALG AH_ADDKE_ALG IPCOMP_ALG
 %token SA_PROTOCOL ESP AH IPCOMP
 	/* common */
 %token BOOL_ON BOOL_OFF FORCE STRING
@@ -191,6 +191,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %token MODP768 MODP1024 MODP1536 EC2N155 EC2N185
 %token MODP2048 MODP3072 MODP4096 MODP6144 MODP8192
 %token ECP256
+%token MLKEM512 MLKEM768 MLKEM1024
 %token PSK DSS RSASIG RSAENC RSAREV GSSAPI_KRB
        /* addresspool for IKE Config */
 %token ADDRESSPOOL
@@ -1226,9 +1227,19 @@ sa_spec
 			MKRCFDIR($$, CFD_ESP_AUTH_ALG);
 			$$->nextp = $2;
 		}
+	|	ESP_ADDKE_ALG algorithm_list_spec
+		{
+			MKRCFDIR($$, CFD_ESP_ADDKE_ALG);
+			$$->nextp = $2;
+		}
 	|	AH_AUTH_ALG algorithm_list_spec
 		{
 			MKRCFDIR($$, CFD_AH_AUTH_ALG);
+			$$->nextp = $2;
+		}
+	|	AH_ADDKE_ALG algorithm_list_spec
+		{
+			MKRCFDIR($$, CFD_AH_ADDKE_ALG);
 			$$->nextp = $2;
 		}
 	|	IPCOMP_ALG algorithm_list_spec
@@ -1578,6 +1589,9 @@ algorithm_type
 	|	MODP6144	{ MKRCFVAL($$, RCT_ALG_MODP6144); }
 	|	MODP8192	{ MKRCFVAL($$, RCT_ALG_MODP8192); }
 	|	ECP256		{ MKRCFVAL($$, RCT_ALG_ECP256); }
+	|	MLKEM512	{ MKRCFVAL($$, RCT_ALG_MLKEM512); }
+	|	MLKEM768	{ MKRCFVAL($$, RCT_ALG_MLKEM768); }
+	|	MLKEM1024	{ MKRCFVAL($$, RCT_ALG_MLKEM1024); }
 	|	PSK		{ MKRCFVAL($$, RCT_ALG_PSK); }
 	|	DSS		{ MKRCFVAL($$, RCT_ALG_DSS); }
 	|	RSASIG		{ MKRCFVAL($$, RCT_ALG_RSASIG); }

@@ -194,10 +194,12 @@ o 時間の表記方法
 	時間 0 は infiniteを意味する。
 
 o アルゴリズムの表記方法
-	kmp_enc_alg
+	esp_enc_alg
 	esp_enc_alg
 	esp_auth_alg
+	esp_addke_alg
 	ah_auth_alg
+	ah_addke_alg
 	は以下のように鍵長と鍵を定義できる。
 
 		(algorithm名)[,(鍵長)[,(鍵)]]
@@ -288,6 +290,13 @@ o アルゴリズムの表記方法
 		hmac_sha2_512
 		kpdk_md5
 		non_auth
+
+	esp_addke_alg, ah_addke_alg  (RFC 9370 ADDKE)
+		mlkem512
+		mlkem768
+		mlkem1024
+		ADDKEはML-KEMバックエンド付きビルドでのみ利用できる。
+		(configure --enable-addke, OpenSSL >= 3.5)
 
 	ipcomp_alg
 		oui

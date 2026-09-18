@@ -205,6 +205,9 @@ modp4096		{ DP; return(MODP4096); }
 modp6144		{ DP; return(MODP6144); }
 modp8192		{ DP; return(MODP8192); }
 ecp256			{ DP; return(ECP256); }
+mlkem512		{ DP; return(MLKEM512); }
+mlkem768		{ DP; return(MLKEM768); }
+mlkem1024		{ DP; return(MLKEM1024); }
 psk			{ DP; return(PSK); }
 dss			{ DP; return(DSS); }
 rsasig			{ DP; return(RSASIG); }
@@ -408,7 +411,9 @@ use			{ DP; return(USE); }
 sa			{ DP; return(SA); }
 esp_enc_alg		{ DP; return(ESP_ENC_ALG); }
 esp_auth_alg		{ DP; return(ESP_AUTH_ALG); }
+esp_addke_alg		{ DP; return(ESP_ADDKE_ALG); }
 ah_auth_alg		{ DP; return(AH_AUTH_ALG); }
+ah_addke_alg		{ DP; return(AH_ADDKE_ALG); }
 ipcomp_alg		{ DP; return(IPCOMP_ALG); }
 spi			{ DP; return(SPI); }
 	/* sa protocol */

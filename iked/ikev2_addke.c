@@ -28,9 +28,10 @@
 /*
  * RFC 9370 Additional Key Exchange (ADDKE) support.
  *
- * STAGE 1: real ML-KEM-768 crypto (EVP_PKEY_ML_KEM768), negotiation
- * plumbing, and the matcher gate.  The responder-side followup state
- * machine and GSKM_seed keymat feed are STAGE 2 (IKE_FOLLOWUP_KE).
+ * STAGE 1: real ML-KEM-768 crypto (EVP_PKEY ML-KEM-768 / NID_ML_KEM_768),
+ * negotiation plumbing, and the matcher gate.  The responder-side
+ * followup state machine and GSKM_seed keymat feed are STAGE 2
+ * (IKE_FOLLOWUP_KE).
  *
  * Selection policy (rfc9370 s2.2.4): selecting an ADDKE proposal in the
  * CREATE_CHILD_SA response commits us to the IKE_FOLLOWUP_KE series.
@@ -75,37 +76,88 @@
  */
 
 /*
- * Gate: may ikev2_compare_transforms select an ADDKE-bearing proposal?
- * True now that the IKE_FOLLOWUP_KE responder state machine (stage 2)
- * exists: selecting ADDKE in the CREATE_CHILD_SA response commits us
- * to the followup exchanges, and the responder arms addke_pending on
- * the child + includes the ADDITIONAL_KEY_EXCHANGE notification in the
- * response (rfc9370 s2.2.4).
+ * Capability probe: does this build have the crypto backend for RFC
+ * 9370 ADDKE?  True when compiled WITH_ADDKE (configure --enable-addke
+ * auto: <openssl/ml_kem.h> present, i.e. OpenSSL >= 3.5).
+ *
+ * Whether a child SA actually NEGOTIATES ADDKE is a config decision:
+ * the sa block's addke_alg list (esp_addke_alg { ml_kem_768; }).
+ * ikev2_ipsec_sa_to_proplist emits the type-6 transform only when the
+ * policy lists one; the generic matcher then selects/echoes it with no
+ * further gating here.
  */
 int
 ikev2_addke_selectable(void)
 {
+#ifdef WITH_ADDKE
 	return 1;
+#else
+	return 0;
+#endif
 }
 
 /*
- * Generate an ML-KEM-768 keypair.  Public key is written to *pub
- * (caller frees); key returned via **pkey (EVP_PKEY_free).
- * Returns 0 on success, -1 on failure.
+ * ML-KEM parameter sets (FIPS 203), indexed by IKEv2 transform id
+ * (IANA Transform Type 4 / KE method registry: 35=512, 36=768,
+ * 37=1024; draft-ietf-ipsecme-ikev2-mlkem-09).
+ */
+struct ikev2_addke_mlkem_param {
+	unsigned int transform_id;
+	const char *evp_name;		/* EVP_PKEY_CTX_new_from_name */
+	int nid;			/* EVP_PKEY_new_raw_public_key */
+	size_t pub_len;
+	size_t ct_len;
+};
+
+static const struct ikev2_addke_mlkem_param ikev2_addke_mlkem_params[] = {
+	{ IKEV2TRANSF_ADDKE_MLKEM512, "ML-KEM-512", NID_ML_KEM_512,
+	  OSSL_ML_KEM_512_PUBLIC_KEY_BYTES, OSSL_ML_KEM_512_CIPHERTEXT_BYTES },
+	{ IKEV2TRANSF_ADDKE_MLKEM768, "ML-KEM-768", NID_ML_KEM_768,
+	  OSSL_ML_KEM_768_PUBLIC_KEY_BYTES, OSSL_ML_KEM_768_CIPHERTEXT_BYTES },
+	{ IKEV2TRANSF_ADDKE_MLKEM1024, "ML-KEM-1024", NID_ML_KEM_1024,
+	  OSSL_ML_KEM_1024_PUBLIC_KEY_BYTES, OSSL_ML_KEM_1024_CIPHERTEXT_BYTES },
+	{ 0, NULL, 0, 0, 0 }
+};
+
+static const struct ikev2_addke_mlkem_param *
+ikev2_addke_mlkem_param(unsigned int transform_id)
+{
+	const struct ikev2_addke_mlkem_param *p;
+
+	for (p = ikev2_addke_mlkem_params; p->transform_id != 0; ++p)
+		if (p->transform_id == transform_id)
+			return p;
+	return NULL;
+}
+
+/*
+ * Generate an ML-KEM keypair for the given transform id.  Public key
+ * is written to *pub (caller frees); key returned via **pkey
+ * (EVP_PKEY_free).  Returns 0 on success, -1 on failure.
  */
 int
-ikev2_addke_mlkem_keygen(rc_vchar_t **pub, EVP_PKEY **pkey)
+ikev2_addke_mlkem_keygen(unsigned int transform_id, rc_vchar_t **pub,
+			 EVP_PKEY **pkey)
 {
+	const struct ikev2_addke_mlkem_param *param;
 	EVP_PKEY_CTX *ctx = NULL;
 	EVP_PKEY *kp = NULL;
-	unsigned char buf[OSSL_ML_KEM_768_PUBLIC_KEY_BYTES];
-	size_t publen = sizeof(buf);
+	unsigned char *buf;
+	size_t publen;
 	int r = -1;
 
 	*pub = NULL;
 	*pkey = NULL;
 
-	ctx = EVP_PKEY_CTX_new_from_name(NULL, "ML-KEM-768", NULL);
+	param = ikev2_addke_mlkem_param(transform_id);
+	if (param == NULL)
+		return -1;
+	buf = racoon_malloc(param->pub_len);
+	if (buf == NULL)
+		return -1;
+	publen = param->pub_len;
+
+	ctx = EVP_PKEY_CTX_new_from_name(NULL, param->evp_name, NULL);
 	if (ctx == NULL)
 		goto done;
 	if (EVP_PKEY_keygen_init(ctx) <= 0)
@@ -120,6 +172,7 @@ ikev2_addke_mlkem_keygen(rc_vchar_t **pub, EVP_PKEY **pkey)
 	r = 0;
       done:
 	EVP_PKEY_CTX_free(ctx);
+	racoon_free(buf);
 	if (r < 0)
 		EVP_PKEY_free(kp);
 	return r;
@@ -130,27 +183,34 @@ ikev2_addke_mlkem_keygen(rc_vchar_t **pub, EVP_PKEY **pkey)
  * 32-byte shared secret.  Returns 0 / -1.
  */
 int
-ikev2_addke_mlkem_encap(rc_vchar_t *peer_pub, rc_vchar_t **ct,
-			rc_vchar_t **shared)
+ikev2_addke_mlkem_encap(unsigned int transform_id, rc_vchar_t *peer_pub,
+			rc_vchar_t **ct, rc_vchar_t **shared)
 {
+	const struct ikev2_addke_mlkem_param *param;
 	EVP_PKEY_CTX *ctx = NULL;
 	EVP_PKEY *peer = NULL;
-	unsigned char ctbuf[OSSL_ML_KEM_768_CIPHERTEXT_BYTES];
+	unsigned char *ctbuf;
 	unsigned char ssbuf[OSSL_ML_KEM_SHARED_SECRET_BYTES];
-	size_t ctlen = sizeof(ctbuf), sslen = sizeof(ssbuf);
+	size_t ctlen, sslen = sizeof(ssbuf);
 	int r = -1;
 
 	*ct = NULL;
 	*shared = NULL;
 
-	if (peer_pub == NULL || peer_pub->l != OSSL_ML_KEM_768_PUBLIC_KEY_BYTES)
+	param = ikev2_addke_mlkem_param(transform_id);
+	if (param == NULL || peer_pub == NULL ||
+	    peer_pub->l != param->pub_len)
 		return -1;
+	ctbuf = racoon_malloc(param->ct_len);
+	if (ctbuf == NULL)
+		return -1;
+	ctlen = param->ct_len;
 
-	peer = EVP_PKEY_new_raw_public_key(NID_ML_KEM_768, NULL,
+	peer = EVP_PKEY_new_raw_public_key(param->nid, NULL,
 					   peer_pub->v,
 					   peer_pub->l);
 	if (peer == NULL)
-		return -1;
+		goto done;
 	ctx = EVP_PKEY_CTX_new(peer, NULL);
 	if (ctx == NULL)
 		goto done;
@@ -167,6 +227,7 @@ ikev2_addke_mlkem_encap(rc_vchar_t *peer_pub, rc_vchar_t **ct,
       done:
 	EVP_PKEY_CTX_free(ctx);
 	EVP_PKEY_free(peer);
+	racoon_free(ctbuf);
 	if (r < 0) {
 		rc_vfree(*ct);
 		*ct = NULL;
@@ -214,46 +275,61 @@ ikev2_addke_mlkem_decap(EVP_PKEY *pkey, rc_vchar_t *ct, rc_vchar_t **shared)
 }
 
 /*
- * Self-test: keygen -> encap -> decap and check both sides derive the
- * same 32-byte shared secret.  Returns 0 on success.
- * Exposed for the "addketest" check target (WITH_ADDKE builds only).
+ * Self-test: for each ML-KEM parameter set, keygen -> encap -> decap
+ * and check both sides derive the same 32-byte shared secret.
+ * Returns 0 on success.  Exposed for the "addketest" check target
+ * (WITH_ADDKE builds only).
  */
 int
 ikev2_addke_selftest(void)
 {
-	rc_vchar_t *pub = NULL, *ct = NULL, *ss1 = NULL, *ss2 = NULL;
-	EVP_PKEY *kp = NULL;
+	const struct ikev2_addke_mlkem_param *param;
 	int r = -1;
 
-	if (ikev2_addke_mlkem_keygen(&pub, &kp) < 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		     "addke selftest: keygen failed\n");
-		goto done;
+	for (param = ikev2_addke_mlkem_params; param->transform_id != 0;
+	     ++param) {
+		rc_vchar_t *pub = NULL, *ct = NULL, *ss1 = NULL, *ss2 = NULL;
+		EVP_PKEY *kp = NULL;
+
+		if (ikev2_addke_mlkem_keygen(param->transform_id, &pub, &kp)
+		    < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "addke selftest: keygen(%s) failed\n",
+			     param->evp_name);
+			goto next;
+		}
+		if (ikev2_addke_mlkem_encap(param->transform_id, pub, &ct,
+					    &ss1) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "addke selftest: encapsulate(%s) failed\n",
+			     param->evp_name);
+			goto next;
+		}
+		if (ikev2_addke_mlkem_decap(kp, ct, &ss2) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "addke selftest: decapsulate(%s) failed\n",
+			     param->evp_name);
+			goto next;
+		}
+		if (ss1->l != OSSL_ML_KEM_SHARED_SECRET_BYTES ||
+		    ss2->l != OSSL_ML_KEM_SHARED_SECRET_BYTES ||
+		    memcmp(ss1->v, ss2->v, OSSL_ML_KEM_SHARED_SECRET_BYTES)
+		    != 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "addke selftest: shared secrets differ (%s)\n",
+			     param->evp_name);
+			goto next;
+		}
+		r = 0;	/* this parameter set passed */
+	      next:
+		rc_vfree(pub);
+		rc_vfree(ct);
+		rc_vfree(ss1);
+		rc_vfree(ss2);
+		EVP_PKEY_free(kp);
+		if (r < 0)
+			break;
 	}
-	if (ikev2_addke_mlkem_encap(pub, &ct, &ss1) < 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		     "addke selftest: encapsulate failed\n");
-		goto done;
-	}
-	if (ikev2_addke_mlkem_decap(kp, ct, &ss2) < 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		     "addke selftest: decapsulate failed\n");
-		goto done;
-	}
-	if (ss1->l != OSSL_ML_KEM_SHARED_SECRET_BYTES ||
-	    ss2->l != OSSL_ML_KEM_SHARED_SECRET_BYTES ||
-	    memcmp(ss1->v, ss2->v, OSSL_ML_KEM_SHARED_SECRET_BYTES) != 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		     "addke selftest: shared secrets differ\n");
-		goto done;
-	}
-	r = 0;
-      done:
-	rc_vfree(pub);
-	rc_vfree(ct);
-	rc_vfree(ss1);
-	rc_vfree(ss2);
-	EVP_PKEY_free(kp);
 	return r;
 }
 
@@ -322,6 +398,15 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	ikehdr = (struct ikev2_header *)msg->v;
 	is_response = (ikehdr->flags & IKEV2FLAG_RESPONSE) != 0;
 
+	/*
+	 * Ack the request's message id in our window (same as
+	 * ikev2_createchild_responder_recv): the followup is an
+	 * independent exchange and its id must advance the window, or
+	 * the peer's next request arrives "unordered" and is dropped.
+	 */
+	ikev2_update_message_id(ike_sa, get_uint32(&ikehdr->message_id),
+				FALSE);
+
 	/* We are always the responder for ADDKE at this stage. */
 	if (is_response) {
 		isakmp_log(ike_sa, local, remote, msg,
@@ -382,28 +467,34 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	if (!link)
 		goto nomem;
 
-	/* KE payload must reference the negotiated ADDKE method */
+	/* KE payload must reference a supported ADDKE method */
 	ke_method = get_uint16(&ke->ke_h.dh_group_id);
-	if (ke_method != IKEV2TRANSF_ADDKE_MLKEM768) {
+	if (ikev2_addke_mlkem_param(ke_method) == NULL) {
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
-			   "IKE_FOLLOWUP_KE method %u != ML-KEM-768 (%u)\n",
-			   ke_method, IKEV2TRANSF_ADDKE_MLKEM768);
+			   "IKE_FOLLOWUP_KE method %u unsupported\n",
+			   ke_method);
 		goto invalid;
 	}
 
-	/* the KE payload carries the initiator's ML-KEM-768 public key */
+	/* the KE payload carries the initiator's ML-KEM public key */
 	peer_ke = rc_vnew((const u_char *)(ke + 1),
 			  get_payload_data_length(&ke->header) -
 			  sizeof(ke->ke_h));
 	if (!peer_ke)
 		goto nomem;
-	if (peer_ke->l != OSSL_ML_KEM_768_PUBLIC_KEY_BYTES) {
-		isakmp_log(ike_sa, local, remote, msg,
-			   PLOG_PROTOERR, PLOGLOC,
-			   "IKE_FOLLOWUP_KE KEi length %zu != %d\n",
-			   peer_ke->l, OSSL_ML_KEM_768_PUBLIC_KEY_BYTES);
-		goto invalid;
+	{
+		const struct ikev2_addke_mlkem_param *param =
+		    ikev2_addke_mlkem_param(ke_method);
+
+		if (peer_ke->l != param->pub_len) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "IKE_FOLLOWUP_KE KEi length %zu != %zu "
+				   "(method %u)\n",
+				   peer_ke->l, param->pub_len, ke_method);
+			goto invalid;
+		}
 	}
 
 	/* find the pending child this followup links to */
@@ -421,19 +512,25 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	}
 
 	/* responder encapsulates against the initiator's public key */
-	if (ikev2_addke_mlkem_encap(peer_ke, &ct, &ss) < 0) {
+	if (ikev2_addke_mlkem_encap(ke_method, peer_ke, &ct, &ss) < 0) {
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_INTERR, PLOGLOC,
-			   "ML-KEM-768 encapsulate failed\n");
+			   "ML-KEM encapsulate failed (method %u)\n",
+			   ke_method);
 		goto invalid;
 	}
-	if (ct->l != OSSL_ML_KEM_768_CIPHERTEXT_BYTES ||
-	    ss->l != OSSL_ML_KEM_SHARED_SECRET_BYTES) {
-		isakmp_log(ike_sa, local, remote, msg,
-			   PLOG_INTERR, PLOGLOC,
-			   "ML-KEM-768 sizes ct=%zu ss=%zu\n",
-			   ct->l, ss->l);
-		goto invalid;
+	{
+		const struct ikev2_addke_mlkem_param *param =
+		    ikev2_addke_mlkem_param(ke_method);
+
+		if (ct->l != param->ct_len ||
+		    ss->l != OSSL_ML_KEM_SHARED_SECRET_BYTES) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "ML-KEM sizes ct=%zu ss=%zu (method %u)\n",
+				   ct->l, ss->l, ke_method);
+			goto invalid;
+		}
 	}
 
 	/* SK(1) now known; install the child with the ADDKE keymat */
@@ -456,8 +553,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 		ikev2_payloads_init(&payl);
 		memset(&keh, 0, sizeof(keh));
-		keh.dh_group_id =
-		    htons((uint16_t)IKEV2TRANSF_ADDKE_MLKEM768);
+		keh.dh_group_id = htons((uint16_t)ke_method);
 		ker = rc_vprepend(ct, &keh, sizeof(keh));
 		if (!ker) {
 			ikev2_payloads_destroy(&payl);

@@ -32,6 +32,10 @@
 #include "nattraversal.h"
 #include "addresspool.h"
 
+#ifdef WITH_ADDKE
+#include <openssl/evp.h>	/* EVP_PKEY in the ML-KEM prototypes */
+#endif
+
 #define	IKEV2_DEFAULT_RETRY	10
 #define	IKEV2_DEFAULT_NEGOTIATION_TIMEOUT	600	/* ??? */
 #define	IKEV2_DEFAULT_LIFETIME_TIME	86400	/* 1day */
@@ -424,6 +428,12 @@ extern void ikev2_followup_ke_recv(struct ikev2_sa *, rc_vchar_t *,
 				   struct sockaddr *, struct sockaddr *);
 extern int ikev2_addke_selectable(void);
 extern int ikev2_addke_selftest(void);
+extern int ikev2_addke_mlkem_keygen(unsigned int, rc_vchar_t **,
+				    EVP_PKEY **);
+extern int ikev2_addke_mlkem_encap(unsigned int, rc_vchar_t *,
+				   rc_vchar_t **, rc_vchar_t **);
+extern int ikev2_addke_mlkem_decap(EVP_PKEY *, rc_vchar_t *,
+				   rc_vchar_t **);
 extern int ikev2_child_addke_install(struct ikev2_child_sa *);
 #endif
 

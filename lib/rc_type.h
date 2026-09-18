@@ -56,6 +56,10 @@ typedef enum {
 	RCT_ALG_MODP768, RCT_ALG_MODP1024, RCT_ALG_MODP1536, RCT_ALG_EC2N155,
 	RCT_ALG_EC2N185, RCT_ALG_MODP2048, RCT_ALG_MODP3072, RCT_ALG_MODP4096,
 	RCT_ALG_MODP6144, RCT_ALG_MODP8192, RCT_ALG_ECP256,
+	/* RFC 9370 Additional Key Exchange (ADDKE): ML-KEM parameter sets.
+	 * rc_alg names map to the IANA Transform Type 4 / KE method
+	 * registry ids 35/36/37 (draft-ietf-ipsecme-ikev2-mlkem-09). */
+	RCT_ALG_MLKEM512, RCT_ALG_MLKEM768, RCT_ALG_MLKEM1024,
 	RCT_ALG_PSK, RCT_ALG_DSS, RCT_ALG_RSASIG, RCT_ALG_RSAENC,
 	RCT_ALG_RSAREV, RCT_ALG_GSSAPI_KRB,
 
@@ -334,6 +338,7 @@ struct rcf_sa {
 	struct rc_alglist *enc_alg;
 	struct rc_alglist *auth_alg;
 	struct rc_alglist *comp_alg;
+	struct rc_alglist *addke_alg;	/* RFC 9370 ADDKE (PQC) */
 	uint32_t spi;
 };
 

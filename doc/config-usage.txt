@@ -189,7 +189,9 @@ o Cryptographic algorithm and its representation
 		kmp_enc_alg
 		esp_enc_alg
 		esp_auth_alg
+		esp_addke_alg
 		ah_auth_alg
+		ah_addke_alg
 
 	All of them are sent as a proposal, and a receiver evaluates
 	the proposal with logical OR.
@@ -313,6 +315,20 @@ o Cryptographic algorithm and its representation
 		hmac_sha2_512
 		kpdk_md5
 		non_auth
+
+	esp_addke_alg and ah_addke_alg directive can have one of the
+	following algorithm types (RFC 9370 Additional Key Exchange).
+
+		mlkem512
+		mlkem768
+		mlkem1024
+
+	ADDKE is only available when the build has the ML-KEM backend
+	(configure --enable-addke, i.e. OpenSSL >= 3.5); on such builds a
+	sa with a non-empty addke_alg list proposes the additional key
+	exchange transform and follows up the CREATE_CHILD_SA with the
+	IKE_FOLLOWUP_KE exchange carrying the ML-KEM public key /
+	ciphertext.
 
 	ipcomp_alg directive can have one of the following algorithm types.
 

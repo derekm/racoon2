@@ -43,7 +43,7 @@ jobs:
         run: |
           dnf install -y -q \
             autoconf automake libtool pkgconf-pkg-config gcc make \
-            openssl-devel libpcap-devel krb5-devel bison flex \
+            openssl openssl-devel libpcap-devel krb5-devel bison flex \
             git
 
       - name: Checkout repository
@@ -77,12 +77,12 @@ jobs:
       - name: 'Unit suite (lib: make check)'
         run: make -C lib check
 
-      - name: 'Unit suite (iked: eaytest evlooptest workerstest fragtest)'
-        run: make -C iked check TESTS="eaytest evlooptest workerstest fragtest"
+      - name: 'Unit suite (iked: full TESTS, incl. resumetest + addketest)'
+        run: make -C iked check
 
       - name: 'Dump unit logs on failure'
         if: failure()
         run: |
-          for f in lib/test-suite.log iked/test-suite.log iked/eaytest.log iked/evlooptest.log iked/workerstest.log iked/fragtest.log; do
+          for f in lib/test-suite.log iked/test-suite.log iked/*.log; do
             if [ -f "$f" ]; then echo "== $f =="; cat "$f"; fi
           done
