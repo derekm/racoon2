@@ -11,8 +11,14 @@ NS="r2c2"; VH=r2h2; VC=r2n2; HIP=192.0.2.1; CIP=192.0.2.2
 D=/tmp/r2diag; PREFIX=/usr/local/racoon2-i2i; SBIN=$PREFIX/sbin
 CONF=/tmp/r2i2i_boot
 mkdir -p "$D"
-ip netns del "$NS" 2>/dev/null; ip link del "$VH" 2>/dev/null
+# MUST stop the production iked+spmd first: they hold UDP 500/4500 and `ip xfrm
+# policy flush || leave` their production SPD (real-phone peers), which both
+# blocks the test responder's bind and floods host xfrm drop counters.
 systemctl stop iked spmd 2>/dev/null
+# flush leftover production SPD/SAD so host counters reflect THIS run only
+ip xfrm state flush; ip xfrm policy flush
+sleep 1
+ip netns del "$NS" 2>/dev/null; ip link del "$VH" 2>/dev/null
 ip netns add "$NS"
 ip link add "$VH" type veth peer name "$VC"
 ip link set "$VC" netns "$NS"
