@@ -1304,6 +1304,10 @@ isakmp_initiate(struct sadb_request_method *callback_method,
 {
 	struct isakmp_acquire_request *req;
 	int err = ECONNREFUSED;
+	/* capture early: fail_nomem runs with req still NULL and must not
+	 * deref req->request_msg_seq (a malloc-failure NULL-deref on the
+	 * acquire path). */
+	uint32_t req_seq = request_msg_seq;
 
 	req = racoon_malloc(sizeof(*req));
 	if (!req)
@@ -1332,11 +1336,13 @@ isakmp_initiate(struct sadb_request_method *callback_method,
 	{
 		struct rcpfk_msg param;
 
-		param.seq = req->request_msg_seq;
+		/* req is NULL here (goto fail_nomem from a failed malloc); use the
+		 * captured seq and the callback_method param, never deref req. */
+		param.seq = req_seq;
 		param.eno = err;
 		/* rcpfk_send_acquire() requires satype eventhough kernel doesn't use it */
 		param.satype = RCT_SATYPE_ESP;	/* XXX */
-		req->callback_method->acquire_error(&param);
+		callback_method->acquire_error(&param);
 	}
 	return;
 }
