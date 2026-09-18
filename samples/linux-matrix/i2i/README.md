@@ -43,30 +43,37 @@ the initiator's ~1200-byte IKE_FOLLOWUP_KE (KEi = 4 + 1184-byte ML-KEM-768 pub,
 unconditional here — sent as 2 × ~564 B datagrams, and the receiver never
 completes the fragmented-followup REASSEMBLY, so no KEr comes back.
 
-### Current lead: fragmented IKE_FOLLOWUP_KE reassembly (chunk/padding boundary)
+### SOLVED: fragmented-followup corruption was a key-direction bug in frag_send
 
-pcap measurement (capture-followup.sh / capture-key.sh) — established keyless +
-with keys:
-- The initiator sends **3** well-formed SKF fragments (1/3 2/3 3/3, msgid=2,
-  payload_len 536/536/264, recovered inner KE=0x22), NOT a lost-fragment bug.
-- They carry the **same ISPI/RSIPI as the IKE_AUTH** (ae44c6cc.../c374a296...), so
-  same IKE_SA.
-- `sk_e_i` (32B, AES-256-CBC) dumped live via gdb and **validated**: the IKE_AUTH
-  SK decrypts perfectly to `macos.client` IDi + valid PKCS7 pad.  The fragment
-  frames do NOT decode with sk_e_i or sk_e_r under any iv/icv framing (CBC, icv
-  16/32, iv shift 0..39) — yet frag_recv's own decrypt path demonstrably succeeds
-  (it reaches reassembly + check_payloads).  So a one-byte framing difference
-  between the SK (IKE_AUTH) and SKF (fragment) layouts is the wedge: frag_send
-  builds `skf+encrypted+icv` with `encrypted = iv+ct` (496B), and only the
-  responder's own handling of that exact framing is correct.
-- The responder then reassembles and `ikev2_check_payloads(packet, TRUE)` fails
-  ("malformed payload format") -> the merged inner chain is byte-corrupt.
+Root-caused with pcap + live gdb (no source instrumentation at first):
+`ikev2_frag_send()` re-extracted its OWN just-encrypted message's inner payloads
+by calling `ikev2_decrypt()`, which decrypts with the RECEIVE-direction key
+(`is_initiator ? sk_e_r : sk_e_i`).  The initiator encrypted with sk_e_i, so it
+"decrypted" with sk_e_r -> garbage inner payloads, and every SKF fragment
+carried garbage.  The receiver decrypted them correctly (valid per-fragment
+pads, byte-identical to the initiator's garbage inner) -> check_payloads()
+"malformed payload format", followup never processed.
 
-Definitive next measurement (no source change): gdb-break `ikev2_frag_recv` on
-the responder and dump its own `decrypted` vchar per fragment (the actual bytes
-frag_recv strips + merges), plus the reassembled `full_pkt`.  That removes all
-offline framing guesswork and pins the exact ±N byte error, then the child XFRM
-install (ikev2_child_addke_install) lands.
+Fix (`00d671d`): refactored ikev2_decrypt into an internal core with a
+key-direction flag; receive path keeps `ikev2_decrypt()`, and fragmentation
+now uses the new `ikev2_decrypt_local()` (SEND-direction key).  Verified live:
+the followup now parses and reaches ikev2_followup_ke_recv on both sides (no
+more malformed-payload).
+
+### Current lead: ADDKE link matching on the mutated fragmented followup
+
+With the corruption fixed, the exchange reaches the RFC 9370 ADDKE state
+machine, which now shows the next distinct blocker:
+- responder `ikev2_followup_ke_recv: no pending ADDKE state for link` — its
+  pending ADDKE child's `addke_link` does not match the link the initiator sent
+  (initiator picks its own random 16-byte link; the two sides must agree for
+  followup_ke_find_child to map the followup to the child);
+- initiator `IKE_FOLLOWUP_KE response missing KE` + `not advancing (fragmented
+  path)`.
+
+Next focused pass: reconcile the ADDKE link between initiator and responder
+(RFC 9370 link semantics on the initial-child followup), then the child XFRM
+install (ikev2_child_addke_install) lands and the ADDKE assertion is green.
 
 ## Gotchas (each empirically learned, a separate bug)
 
