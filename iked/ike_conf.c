@@ -3384,7 +3384,12 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 	 * in ikev2_compare/match_transforms.
 	 */
 	SA_CONF(addke_alg, proto_info, addke_alg, 0);
-	if (proto_info->addke_alg && !child_sa->in_ike_auth) {
+	/* RFC 9370 s2.2: type-6 (ADDKE) is a CREATE_CHILD exchange over an
+	 * ESTABLISHED IKE_SA only — never offered on the initial IKE_AUTH child
+	 * (parent state INI_/RES_IKE_AUTH_*, pre-ESTABLISHED). */
+	if (proto_info->addke_alg &&
+	    child_sa->parent &&
+	    child_sa->parent->state == IKEV2_STATE_ESTABLISHED) {
 		*tail = alglist_to_proppair(proto_info->addke_alg,
 					    IKEV2TRANSFORM_TYPE_ADDKE,
 					    &ikev2_transf_addke[0]);
