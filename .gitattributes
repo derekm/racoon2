@@ -1,5 +1,7 @@
 # Autotools / POSIX scripts must be LF. Windows core.autocrlf=true
-# otherwise emits `pskgen/Makefile\r.in` from AC_CONFIG_FILES.
+# otherwise emits `pskgen/Makefile\r.in` from AC_CONFIG_FILES, and
+# `git archive` carries CRLF into build trees (ylwrap then fails:
+# "$'\r': command not found" from the yacc rebuild rule).
 *.ac        text eol=lf
 *.am        text eol=lf
 *.m4        text eol=lf
@@ -8,3 +10,6 @@ configure   text eol=lf
 *.sh        text eol=lf
 *.py        text eol=lf
 *.tsv       text eol=lf
+# automake aux script (extensionless): must stay LF in the tree and in
+# `git archive`, or the regenerated .y.c rule fails with CRLF errors.
+ylwrap      text eol=lf
