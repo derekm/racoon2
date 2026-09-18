@@ -1007,9 +1007,20 @@ sa
 		It defines authentication algorithms to be used.
 		It is valid when the sa_protocol is esp.
 
+	esp_addke_alg (algorithm) ;
+		It defines RFC 9370 Additional Key Exchange (ADDKE)
+		algorithms to be proposed (mlkem512, mlkem768, mlkem1024).
+		It is valid when the sa_protocol is esp.  Only available
+		on builds with the ML-KEM backend (--enable-addke).
+
 	ah_auth_alg (algorithm) ;
 		It defines authentication algorithms to be used.
 		It is valid when the sa_protocol is ah.
+
+	ah_addke_alg (algorithm) ;
+		It defines RFC 9370 ADDKE algorithms to be proposed.
+		It is valid when the sa_protocol is ah.  Only available
+		on builds with the ML-KEM backend (--enable-addke).
 
 	ipcomp_alg (algorithm) ;
 		It defines compression algorithms to be used.

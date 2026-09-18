@@ -447,6 +447,22 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 	if (sa->ts_r)
 		rc_vfree(sa->ts_r);
 	/*
+	 * RFC 9370 ADDKE state: the shared secret is key material and
+	 * the initiator holds an ML-KEM private key -- zeroize both.
+	 * addke_sk is the accumulated SK(1)..SK(n) concat; the link
+	 * blob is opaque but still must not linger in the heap.
+	 */
+	if (sa->addke_sk)
+		rc_vfreez(sa->addke_sk);
+	if (sa->addke_link)
+		rc_vfreez(sa->addke_link);
+#ifdef WITH_ADDKE
+	if (sa->addke_priv) {
+		EVP_PKEY_free((EVP_PKEY *)sa->addke_priv);
+		sa->addke_priv = NULL;
+	}
+#endif
+	/*
 	 * Informational-exchange child_sa (DPD / DELETE echo) has
 	 * selector==NULL.  offsetof(rcf_selector, next)==0x40, so
 	 * selector->next here is the 17:47:04 / 18:20:34 SEGV at 0x40
@@ -1384,7 +1400,6 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 static int
 ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 {
-	struct prop_pair *tr;
 	int peer_addke = 0;
 	int nrounds = 0;
 

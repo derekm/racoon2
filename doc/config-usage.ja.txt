@@ -194,7 +194,7 @@ o 時間の表記方法
 	時間 0 は infiniteを意味する。
 
 o アルゴリズムの表記方法
-	esp_enc_alg
+	kmp_enc_alg
 	esp_enc_alg
 	esp_auth_alg
 	esp_addke_alg

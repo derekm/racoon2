@@ -1219,6 +1219,35 @@ ikev2_addke_rekey_timeout(void *param)
 }
 
 /*
+ * Abandon a parked ADDKE rekey ctx without waiting for the timeout.
+ * Called from ikev2_dispose_sa: the SA is going away, so release the
+ * parked responder ctx (owns new_sa, g_ir, ke_r, payloads) the same
+ * way the timeout does.
+ */
+void
+ikev2_rekey_abandon_parked(struct ikev2_sa *old_sa)
+{
+	struct ikev2_rekey_responder_ctx *ctx;
+
+	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
+	old_sa->addke_rekey_complete = NULL;
+	old_sa->addke_rekey_pending = 0;
+	if (old_sa->addke_rekey_timer) {
+		SCHED_KILL(old_sa->addke_rekey_timer);
+		old_sa->addke_rekey_timer = NULL;
+	}
+	if (ctx) {
+		isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "abandoning parked ADDKE IKE-SA rekey\n");
+		if (ctx->new_sa)
+			ikev2_set_state(ctx->new_sa, IKEV2_STATE_DEAD);
+		ikev2_rekey_responder_ctx_free(ctx);
+	}
+	old_sa->new_sa = NULL;
+	old_sa->rekey_inprogress = FALSE;
+}
+
+/*
  * Complete a deferred ADDKE IKE-SA rekey once the IKE_FOLLOWUP_KE
  * supplied SK(1): SKEYSEED = prf(SK_d, g^ir | Ni | Nr | SK(1))
  * (rfc9370 s2.2.4), then keys/adopt/establish.  Called from

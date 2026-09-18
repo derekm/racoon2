@@ -1067,6 +1067,15 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		SCHED_KILL(sa->polling_timer);
 	if (sa->natk_timer)
 		SCHED_KILL(sa->natk_timer);
+	/* RFC 9370: deferred ADDKE rekey state — kill the followup-wait
+	 * timer and release the parked responder ctx (which owns
+	 * new_sa, g_ir, ke_r and the payload list). */
+	if (sa->addke_rekey_timer) {
+		SCHED_KILL(sa->addke_rekey_timer);
+		sa->addke_rekey_timer = NULL;
+	}
+	if (sa->addke_rekey_complete)
+		ikev2_rekey_abandon_parked(sa);
 
 	if (sa->rmconf)
 		rcf_free_remote(sa->rmconf);
@@ -1107,6 +1116,11 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		rc_vfree(sa->id_i);
 	if (sa->id_r)
 		rc_vfree(sa->id_r);
+	/* RFC 9370 ADDKE rekey state (deferred IKE-SA rekey): zeroized */
+	if (sa->addke_rekey_link)
+		rc_vfreez(sa->addke_rekey_link);
+	if (sa->addke_rekey_sk)
+		rc_vfreez(sa->addke_rekey_sk);
 	if (sa->my_first_message)
 		rc_vfree(sa->my_first_message);
 	if (sa->peer_first_message)

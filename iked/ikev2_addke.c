@@ -28,18 +28,15 @@
 /*
  * RFC 9370 Additional Key Exchange (ADDKE) support.
  *
- * STAGE 1: real ML-KEM-768 crypto (EVP_PKEY ML-KEM-768 / NID_ML_KEM_768),
- * negotiation plumbing, and the matcher gate.  The responder-side
- * followup state machine and GSKM_seed keymat feed are STAGE 2
- * (IKE_FOLLOWUP_KE).
+ * STAGE 2 complete: ML-KEM-512/768/1024 crypto (EVP_PKEY), config-driven
+ * negotiation (esp_addke_alg / ah_addke_alg), the responder-side
+ * IKE_FOLLOWUP_KE state machine, initiator-side followup, the
+ * IKE-SA-rekey SKEYSEED feed, multi-round sequential ADDKE, rekey
+ * collision TEMPORARY_FAILURE, and the addke_required downgrade gate.
  *
- * Selection policy (rfc9370 s2.2.4): selecting an ADDKE proposal in the
- * CREATE_CHILD_SA response commits us to the IKE_FOLLOWUP_KE series.
- * ikev2_addke_selectable() gates ACCEPTING ADDKE proposals in
- * ikev2_compare_transforms: it stays false until the followup exchange
- * machinery exists, so a WITH_ADDKE build keeps matching the peer's
- * non-ADDKE proposals (the behaviour live-verified on iOS) instead of
- * selecting ADDKE and then failing the followup series.
+ * Whether a child actually negotiates ADDKE is a config decision (the
+ * sa block's addke_alg list); ikev2_addke_selectable() is now only a
+ * capability probe for builds with the ML-KEM backend.
  *
  * Build gate: WITH_ADDKE is set by configure when <openssl/ml_kem.h>
  * exists (OpenSSL >= 3.5).  Without it the whole file compiles to
@@ -81,7 +78,7 @@
  * auto: <openssl/ml_kem.h> present, i.e. OpenSSL >= 3.5).
  *
  * Whether a child SA actually NEGOTIATES ADDKE is a config decision:
- * the sa block's addke_alg list (esp_addke_alg { ml_kem_768; }).
+ * the sa block's addke_alg list (esp_addke_alg { mlkem768; }).
  * ikev2_ipsec_sa_to_proplist emits the type-6 transform only when the
  * policy lists one; the generic matcher then selects/echoes it with no
  * further gating here.
@@ -290,6 +287,10 @@ ikev2_addke_selftest(void)
 	     ++param) {
 		rc_vchar_t *pub = NULL, *ct = NULL, *ss1 = NULL, *ss2 = NULL;
 		EVP_PKEY *kp = NULL;
+
+		/* per-iteration verdict; a pass in an earlier set must
+		 * not mask a failure in this one */
+		r = -1;
 
 		if (ikev2_addke_mlkem_keygen(param->transform_id, &pub, &kp)
 		    < 0) {
