@@ -56,9 +56,12 @@ Done and verified (Fedora 44, OpenSSL 3.5, `WITH_ADDKE`):
 
 Not implemented (honest list — do not claim these):
 
-- **Outbound** IKE fragmentation of our IKE_FOLLOWUP_KE (we reassemble/decap the
-  peer's **fragmented** followup fine; our own followup is sent unfragmented, so
-  an ML-KEM-768 KE ≈ 1192 B can exceed a small MTU in the initiator role).
+- **Outbound** fragmentation of our own IKE_FOLLOWUP_KE is **NOT a gap**: the
+  followup is sent through `ikev2_transmit`/`ikev2_transmit_response`, which
+  already call `ikev2_frag_send` on any packet ≥576 B (IPv4) / 1280 B (IPv6)
+  when RFC 7383 fragmentation is negotiated (`ike_sa->frag_supported`, set on
+  the FRAGMENTATION_SUPPORTED (16430) notify).  A fragmented followup over a
+  small MTU is already handled.  Removed as a gap on 2026-09-18 after code check.
 - **IKE_INTERMEDIATE** (RFC 9242) and INIT-time PQC — no IKE_AUTH early keys,
   no hybrid at IKE_SA_INIT. PQC today rides only on CREATE_CHILD / child rekey.
 - **Initiator IKE_SA-rekey ADDKE** (racoon2 as initiator driving an IKE_SA rekey

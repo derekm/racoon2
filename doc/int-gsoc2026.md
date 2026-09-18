@@ -64,10 +64,12 @@ re-verify on the new Fedora server.
   **1000/1000** full file, suite **7/7**; log in `doc/kattest-results.txt`.
 - Full write-up: `doc/addke-design.md` (inventory, gaps, decision criteria).
 
-**Still open within 9370:** initiator IKE_SA-rekey ADDKE feed; outbound
-fragmentation of our IKE_FOLLOWUP_KE (KE ≈1192 B can exceed a small MTU in the
-initiator role); and the **live completed ADDKE child rekey** on a crash-free
-daemon — the `iked-addke-watch` cron reports the first one automatically.
+**Still open within 9370:** initiator IKE_SA-rekey ADDKE feed; and the **live
+completed ADDKE child rekey** on a crash-free daemon — the `iked-addke-watch`
+cron reports the first one automatically.  (Outbound fragmentation of our
+IKE_FOLLOWUP_KE was listed here before a 2026-09-18 code check showed it is
+already handled by `ikev2_transmit`/`ikev2_transmit_response` →
+`ikev2_frag_send` when RFC 7383 is negotiated; not a gap.)
 
 ## Begin — RFC 9242 IKE_INTERMEDIATE, then RFC 8784 PPK
 
