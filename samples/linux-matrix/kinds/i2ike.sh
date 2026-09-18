@@ -128,8 +128,10 @@ sa esp_e {
 };
 EOF
 
-	pkill -9 -f "$SBIN/iked .*matrix_(resp|init)" 2>/dev/null || true
-	pkill -9 -f "$SBIN/spmd .*matrix_(resp|init)" 2>/dev/null || true
+	# kill daemons by the unique per-run conf dir (it IS in their argv);
+	# a pkill on the conf-internal remote name matches nothing and leaks
+	# up to 4 daemons holding the netns.
+	pkill -9 -f "$C/" 2>/dev/null || true
 	rm -f /tmp/spmif-i2ike-r /tmp/spmif-i2ike-i /tmp/iked.sock-i2ike-r /tmp/iked.sock-i2ike-i
 
 	for NS in "$NSR" "$NSI"; do
@@ -183,8 +185,10 @@ EOF
 		i=$((i+1)); sleep 1
 	done
 
-	pkill -9 -f "$SBIN/iked .*matrix_(resp|init)" 2>/dev/null || true
-	pkill -9 -f "$SBIN/spmd .*matrix_(resp|init)" 2>/dev/null || true
+	# kill daemons by the unique per-run conf dir (it IS in their argv);
+	# a pkill on the conf-internal remote name matches nothing and leaks
+	# up to 4 daemons holding the netns.
+	pkill -9 -f "$C/" 2>/dev/null || true
 	sleep 1
 	ip netns del "$NSR" 2>/dev/null || true
 	ip netns del "$NSI" 2>/dev/null || true

@@ -64,12 +64,25 @@ re-verify on the new Fedora server.
   **1000/1000** full file, suite **7/7**; log in `doc/kattest-results.txt`.
 - Full write-up: `doc/addke-design.md` (inventory, gaps, decision criteria).
 
-**Still open within 9370:** initiator IKE_SA-rekey ADDKE feed; and the **live
-completed ADDKE child rekey** on a crash-free daemon — the `iked-addke-watch`
-cron reports the first one automatically.  (Outbound fragmentation of our
+**Still open within 9370:** the **live completed-ADDKE child REEKAY** is the open
+piece — fixed the initial-child false positive (below) but the 60s rekey that
+fires clones the (now-plain) initial proposal and does NOT re-offer type-6, so
+the CREATE_CHILD rekey is plain (SA_hex shows aes-gcm+DH, no type 6).  The
+ML-KEM-into-keymat ADDKE rekey is therefore NOT yet proven.  Initiator
+IKE_SA-rekey ADDKE feed also open.  (Outbound fragmentation of our
 IKE_FOLLOWUP_KE was listed here before a 2026-09-18 code check showed it is
 already handled by `ikev2_transmit`/`ikev2_transmit_response` →
 `ikev2_frag_send` when RFC 7383 is negotiated; not a gap.)
+
+**IKE_AUTH initial-child ADDKE false positive — fixed 2026-09-18 (f3ad6e0).**
+The initial "CHILD UP" from the isolated ring was a plain ESP install: with
+`esp_addke_alg` on the sa, `ikev2_construct_sa` offered type-6 on the IKE_AUTH
+child too, `ikev2_proposal_to_ipsec` skipped it with `unexpected transform
+type (6)`, and the armed IKE_FOLLOWUP_KE could never complete → a 10s timeout
+aborted the child.  Fix: `ikev2_ipsec_sa_to_proplist` emits type-6 only when
+the parent IKE_SA is ESTABLISHED (CREATE_CHILD / rekey), so the initial child
+is plain and stable.  This is the documented design ("IKE_AUTH still has no
+type-6"); the false-positive "CHILD UP" proof was withdrawn.
 
 ## Begin — RFC 9242 IKE_INTERMEDIATE, then RFC 8784 PPK
 
@@ -111,9 +124,13 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   before): multi-instance admin-socket collision (`RACOON2_ADMIN_SOCK` env),
   the `sadb_poll` uninitialized-`rcpfk_msg` SEGV (memset), and the
   acquire-initiated child GETSPI using the acquire's seq-0
-  (mint `sadb_new_seq()`).  Live state: IKE_SA_INIT sent/received both sides
-  but the netns initiator still doesn't reliably advance to IKE_AUTH (ESP 0).
-  iPhone stays last until the baseline child is green via this matrix.
+  (mint `sadb_new_seq()`).  Plus `ikev2_frag_send` used a RECEIVE-direction
+  key to re-extract its own message's inner (garbage fragments →
+  `ikev2_decrypt_local`, key-direction fix `00d671d`) and the ADDKE link
+  mismatch (`followup_ke_find_child`, `ee81c53`).  Baseline: initial IKE_AUTH
+  child now PLAIN + stable (type-6 gated to ESTABLISHED); the ML-KEM rekey
+  is the open item (see above).  iPhone stays last until the PQC rekey is
+  green; today's iPhone connect against prod verified the plain-IKE_AUTH path.
 - **RFC 9242 (IKE_INTERMEDIATE, exch 43):** negotiated by the
   `INTERMEDIATE_EXCHANGE_SUPPORTED` notify (16438) in IKE_SA_INIT; IKE_INTERMEDIATE
   exchanges run sequentially between IKE_SA_INIT and IKE_AUTH (msgid 1,2,…), each

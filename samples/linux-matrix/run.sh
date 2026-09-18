@@ -58,7 +58,8 @@ addke_ok() {
 	no)  return 1 ;;
 	esac
 	[ -x "$SBIN/iked" ] && grep -q ikev2_followup_ke_recv "$SBIN/iked" 2>/dev/null && return 0
-	[ -f "$R2_SRC/config.h" ] && grep -qE 'WITH_ADDKE' "$R2_SRC/config.h" 2>/dev/null
+	# configure defines WITH_ADDKE in the subdir-local iked/config.h
+	[ -f "$R2_SRC/iked/config.h" ] && grep -qE 'WITH_ADDKE' "$R2_SRC/iked/config.h" 2>/dev/null
 }
 
 

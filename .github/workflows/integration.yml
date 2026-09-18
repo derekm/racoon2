@@ -115,7 +115,11 @@ jobs:
   fedora-pqc-matrix:
     name: 'Fedora PQC matrix (ADDKE, gated to Fedora)'
     runs-on: ubuntu-latest
-    container: fedora:44
+    # netns/xfrm in the matrix (ip netns add, ip xfrm policy) need CAP_SYS_ADMIN
+    # + CAP_NET_ADMIN, which GH container jobs drop by default.
+    container:
+      image: fedora:44
+      options: --cap-add=NET_ADMIN --cap-add=SYS_ADMIN
     if: inputs.dist == 'fedora'
 
     steps:
@@ -141,6 +145,17 @@ jobs:
           export R2_ADDKE=yes R2_PREFIX=/usr/local/racoon2
           bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
             --rebuild xfrm-addke --cases 'a^'
+        env:
+          R2_PREFIX: /usr/local/racoon2
+
+      - name: Stage test secrets/config (container has no systemd units)
+        run: |
+          E="$R2_PREFIX/etc/racoon2"
+          mkdir -p "$E/psk"
+          printf 'racoon2-ci-psk-0123456789abcdef' > "$E/psk/macos.psk"
+          printf 'racoon2-ci-pwd\n' > "$E/spmd.pwd"
+          chmod 600 "$E/psk/macos.psk" "$E/spmd.pwd"
+          ls -la "$E" | head -8
         env:
           R2_PREFIX: /usr/local/racoon2
 
