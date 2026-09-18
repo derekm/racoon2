@@ -40,6 +40,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <assert.h>
 #include <unistd.h>
 #include <openssl/sha.h>
@@ -1226,37 +1227,31 @@ ike_identifier_data(struct rc_idlist *id, int *id_type)
 	return data;
 }
 
-int ikev2_handle_ip_rw(rc_vchar_t *id_val, struct rc_idlist *id)
+static 
+void ikev2_handle_ip_any(rc_vchar_t *id_val, struct rc_idlist *id)
 {
-    rc_vchar_t *data, *p;
-    size_t data_size;
+    char addrstr[INET6_ADDRSTRLEN];
+    const char* ip;
 
-    if (id_val == NULL || id == NULL)
-        return -1;
+    if (id_val == NULL || id == NULL || id->id == NULL)
+        return; 
 
-    p = id->id;
-
-    data_size = id_val->l;
-
-    data = rc_vmalloc(sizeof(rc_vchar_t));
-
-    if (!data)
-        return -1;
-
-    data->s = rc_malloc(data_size);
-
-    if (!data->s)
+    switch(id_val->l)
     {
-        rc_vfree(data);
-        return -1;
+        case sizeof(struct in_addr):
+            ip = inet_ntop(AF_INET, id_val->v, addrstr, sizeof(addrstr));
+            break;
+        case sizeof(struct in6_addr):
+            ip = inet_ntop(AF_INET6, id_val->v, addrstr, sizeof(addrstr));
+            break;
+        default: return;
     }
 
-    memcpy(data->s, id_val->s, data_size);
-    data->l = data_size;
+    if (ip == NULL)
+        return;
 
-    *p = *data;
-
-    return 0;
+    rc_vfree(id->id);
+    id->id = rc_str2vmem(addrstr);
 }
 
 /*
@@ -1275,27 +1270,21 @@ int
 ike_compare_id(rc_type rc_id_type, rc_vchar_t *id_val, struct rc_idlist *id)
 {
 	rc_vchar_t *data;
-    char* is_ip_rw;
 	int cmp;
 	int dummy;
 
-    is_ip_rw = (char*)rc_vmem2str(id->id);
-
-    if (is_ip_rw)
-    {
-        if (strncmp(is_ip_rw, "IP_RW", strlen(is_ip_rw)) == 0)
-        {
-            if (ikev2_handle_ip_rw(id_val, id) != 0)
-            {
-                plog(PLOG_INTERR, PLOGLOC, NULL,
-                     "could not handle IP_RW macro\n");
-                return -1;
-            }
-        }
-    }
-
 	if (rc_id_type != id->idtype)
 		return -1;
+
+    /* IP_ANY / IP_RW: pin the wildcard id to the peer's address
+     * (RFC 7296 s2.23.1 style substitution at the ID level; IP_RW is
+     * the historic racoon2 synonym retained for old configs). */
+    if (rc_id_type == RCT_IDT_IPADDR && id->id != NULL &&
+        ((id->id->l == 6 && memcmp(id->id->v, "IP_ANY", 6) == 0) ||
+         (id->id->l == 5 && memcmp(id->id->v, "IP_RW", 5) == 0)))
+    {
+        ikev2_handle_ip_any(id_val, id);
+    }
 
 	data = ike_identifier_data(id, &dummy);
 	if (!data)
@@ -2380,7 +2369,7 @@ static int ikev2_retreive_ts_addr(struct ikev2_traffic_selector* ts,
 }
 
 static 
-int ts_substitute(struct ikev2_traffic_selector *ts, struct sockaddr *sub)
+int ikev2_ts_substitute(struct ikev2_traffic_selector *ts, struct sockaddr *sub)
 {
     struct sockaddr *curr_saddr, *curr_eaddr;
     uint8_t *addr, *saddr;
@@ -2468,10 +2457,10 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     sub_i = ike_sa->is_initiator ? ike_sa->local : ike_sa->remote;
     sub_r = ike_sa->is_initiator ? ike_sa->remote : ike_sa->local; 
 
-    err = ts_substitute(ts_i, sub_i);
+    err = ikev2_ts_substitute(ts_i, sub_i);
 
     if (err == 0)
-        err = ts_substitute(ts_r, sub_r);
+        err = ikev2_ts_substitute(ts_r, sub_r);
 
     return err;
 }
@@ -2856,7 +2845,7 @@ addrlist_match(struct rc_addrlist *l, struct sockaddr *addr)
 				return TRUE;
 			break;
 		case RCT_ADDR_MACRO:
-			/* IP_RW and IP_ANY wildcards match any concrete address */
+			/* IP_ANY wildcard matches any concrete address */
 			return TRUE;
 		default:
 			isakmp_log(0, 0, 0, 0,
