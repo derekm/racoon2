@@ -290,6 +290,22 @@ ikev2_compare_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 				break;
 		}
 		if (!p) {
+			/*
+			 * Peer proposal lacks a transform type we carry.
+			 * RFC 9370 s1.3 makes ADDKE types OPTIONAL: the
+			 * responder that configured addke_alg must still
+			 * accept a peer proposal without type-6 (the
+			 * peer simply negotiates plain IKEv2 -- no
+			 * ADDKE echo, no followup).  Only when the peer
+			 * DOES offer ADDKE do we select/echo it.  Any
+			 * other missing type stays a hard failure.
+			 */
+			if (type == IKEV2TRANSFORM_TYPE_ADDKE) {
+				TRACE((PLOGLOC,
+				       "peer proposal lacks ADDKE; "
+				       "treating as optional\n"));
+				continue;
+			}
 			TRACE((PLOGLOC,
 			       "there weren't same type of transform in peer transforms list\n"));
 			return -1;
@@ -474,8 +490,18 @@ ikev2_match_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 			if (type == peer_transf->transform_type)
 				break;
 		}
-		if (!p)
+		if (!p) {
+			/* ADDKE is optional (rfc9370 s1.3): a peer without
+			 * type-6 negotiates plain IKEv2 -- omit it from
+			 * the response, no followup. */
+			if (type == IKEV2TRANSFORM_TYPE_ADDKE) {
+				TRACE((PLOGLOC,
+				       "omit optional ADDKE transform from "
+				       "response (peer lacks type-6)\n"));
+				continue;
+			}
 			goto fail;
+		}
 
 		/* find the matching transform */
 		for (m = my_transforms; m; m = m->tnext) {
