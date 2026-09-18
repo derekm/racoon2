@@ -2506,6 +2506,77 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 	child_sa->peer_proposal = matching_proposal;
 	matching_proposal = 0;
 
+#ifdef WITH_ADDKE
+	/*
+	 * RFC 9370 initiator side: we proposed ADDKE (type-6 transform
+	 * in MINE via esp_addke_alg); if the peer response echoes it,
+	 * the child keys must wait for the IKE_FOLLOWUP_KE exchange.
+	 * Generate the ML-KEM keypair now, send the followup request
+	 * carrying our public key, and defer ikev2_add_ipsec_sa until
+	 * the followup response supplies SK(1) (decapsulated from the
+	 * peer's KEr(1) ciphertext).
+	 */
+	if (child_sa->my_proposal && child_sa->my_proposal[1]) {
+		struct prop_pair *peer_tr;
+		int peer_addke_id = 0;
+
+		for (peer_tr = child_sa->peer_proposal ?
+		     child_sa->peer_proposal->tnext : NULL;
+		     peer_tr; peer_tr = peer_tr->next) {
+			struct ikev2transform *t =
+			    (struct ikev2transform *)peer_tr->trns;
+			if (t &&
+			    t->transform_type == IKEV2TRANSFORM_TYPE_ADDKE) {
+				peer_addke_id =
+				    get_uint16(&t->transform_id);
+				break;
+			}
+		}
+		if (peer_addke_id != 0) {
+			rc_vchar_t *pub = NULL;
+			EVP_PKEY *kp = NULL;
+
+			if (ikev2_addke_mlkem_keygen(peer_addke_id, &pub,
+						     &kp) == 0 &&
+			    pub && kp) {
+				child_sa->addke_pending = 1;
+				child_sa->addke_link = random_bytes(16);
+				child_sa->addke_priv = kp;
+				child_sa->addke_method = peer_addke_id;
+				TRACE((PLOGLOC,
+				       "initiator: negotiated ADDKE id %u; "
+				       "sending IKE_FOLLOWUP_KE\n",
+				       peer_addke_id));
+				if (ikev2_initiator_followup_send(child_sa,
+								   pub) != 0) {
+					isakmp_log(child_sa->parent, 0, 0, 0,
+					    PLOG_INTERR, PLOGLOC,
+					    "failed sending IKE_FOLLOWUP_KE\n");
+					rc_vfree(pub);
+					EVP_PKEY_free(kp);
+					child_sa->addke_priv = NULL;
+					child_sa->addke_pending = 0;
+					goto abort;
+				}
+				rc_vfree(pub);
+				/* arm the followup-wait timeout */
+				if (child_sa->timer)
+					SCHED_KILL(child_sa->timer);
+				child_sa->timer =
+				    sched_new(10, ikev2_addke_wait_timeout,
+					      child_sa);
+				/* child stays pending; keys land via
+				 * ikev2_initiator_followup_complete() */
+				ikev2_child_state_set(child_sa,
+						IKEV2_CHILD_STATE_WAIT_RESPONSE);
+				goto done;
+			}
+			rc_vfree(pub);
+			EVP_PKEY_free(kp);
+		}
+	}
+#endif
+
 	err = ikev2_add_ipsec_sa(child_sa, param, child_sa->peer_proposal,
 				 child_sa->my_proposal[1]);
 	if (err) {

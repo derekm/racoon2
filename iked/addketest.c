@@ -154,6 +154,20 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *sa, rc_vchar_t *sk)
 	return -1;
 }
 
+int
+ikev2_initiator_followup_send(struct ikev2_child_sa *cs, rc_vchar_t *pk)
+{
+	(void)cs; (void)pk;
+	return -1;
+}
+
+int
+ikev2_initiator_followup_complete(struct ikev2_child_sa *cs, rc_vchar_t *ct)
+{
+	(void)cs; (void)ct;
+	return -1;
+}
+
 static int fail;
 
 #define CHECK(cond, what)						\

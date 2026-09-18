@@ -398,6 +398,7 @@ static int rekey_skeyseed(struct ikev2_sa *, struct ikev2_sa *, rc_vchar_t *,
 			  rc_vchar_t *addke_sk);
 static void ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *);
 static void ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *, rc_vchar_t *);
+static void ikev2_addke_rekey_timeout(void *);
 
 static void ikev2_child_adopt(struct ikev2_sa *old_sa, struct ikev2_sa *new_sa);
 

@@ -379,6 +379,100 @@ followup_ke_find_child(struct ikev2_sa *ike_sa, rc_vchar_t *link)
 	return NULL;
 }
 
+/*
+ * Initiator side: send the IKE_FOLLOWUP_KE request carrying our
+ * ML-KEM public key and the link that ties it to the CREATE_CHILD_SA:
+ *
+ *   HDR(IKE_FOLLOWUP_KE), SK { KEi(1), N(ADDITIONAL_KEY_EXCHANGE)(link) }
+ *
+ * The KE payload method equals the negotiated ADDKE id.  Requires a
+ * fresh message id (the exchange is independent of the CREATE_CHILD_SA).
+ */
+int
+ikev2_initiator_followup_send(struct ikev2_child_sa *child_sa,
+			      rc_vchar_t *pubkey)
+{
+	struct ikev2_sa *ike_sa = child_sa->parent;
+	struct ikev2_payloads payl;
+	struct ikev2payl_ke_h keh;
+	rc_vchar_t *kei = 0;
+	rc_vchar_t *pkt = 0;
+	uint32_t message_id;
+
+	if (!child_sa->addke_link || !pubkey)
+		return -1;
+
+	ikev2_payloads_init(&payl);
+	memset(&keh, 0, sizeof(keh));
+	keh.dh_group_id = htons((uint16_t)child_sa->addke_method);
+	kei = rc_vprepend(pubkey, &keh, sizeof(keh));
+	if (!kei) {
+		ikev2_payloads_destroy(&payl);
+		return -1;
+	}
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, kei, FALSE);
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
+						 0, 0,
+						 IKEV2_ADDITIONAL_KEY_EXCHANGE,
+						 child_sa->addke_link->v,
+						 child_sa->addke_link->l),
+			    TRUE);
+
+	message_id = ikev2_request_id(ike_sa);
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
+				     IKEV2FLAG_INITIATOR,
+				     message_id, ike_sa, &payl);
+	rc_vfree(kei);
+	ikev2_payloads_destroy(&payl);
+	if (!pkt)
+		return -1;
+
+	if (ikev2_transmit(ike_sa, pkt) != 0) {
+		rc_vfree(pkt);
+		return -1;
+	}
+	rc_vfree(pkt);
+	child_sa->addke_followup_msgid = message_id;
+	return 0;
+}
+
+/*
+ * Initiator side: complete the ADDKE child once the followup response
+ * carried the peer's KEr(1) ciphertext.  Decapsulate to SK(1), then
+ * install the child with the ADDKE keymat (same path as the
+ * responder's deferred install).
+ */
+int
+ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
+				  rc_vchar_t *ciphertext)
+{
+	EVP_PKEY *kp;
+	rc_vchar_t *ss = NULL;
+
+	kp = (EVP_PKEY *)child_sa->addke_priv;
+	child_sa->addke_priv = NULL;
+	if (!kp || !ciphertext)
+		return -1;
+
+	if (ikev2_addke_mlkem_decap(kp, ciphertext, &ss) < 0 ||
+	    ss == NULL ||
+	    ss->l != OSSL_ML_KEM_SHARED_SECRET_BYTES) {
+		rc_vfree(ss);
+		EVP_PKEY_free(kp);
+		return -1;
+	}
+	EVP_PKEY_free(kp);
+
+	child_sa->addke_sk = ss;
+	if (ikev2_child_addke_install(child_sa) < 0) {
+		child_sa->addke_sk = NULL;
+		rc_vfree(ss);
+		return -1;
+	}
+	return 0;
+}
+
 void
 ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		       struct sockaddr *remote, struct sockaddr *local)
@@ -409,9 +503,72 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 	/* We are always the responder for ADDKE at this stage. */
 	if (is_response) {
-		isakmp_log(ike_sa, local, remote, msg,
-			   PLOG_PROTOWARN, PLOGLOC,
-			   "unexpected IKE_FOLLOWUP_KE response\n");
+		struct ikev2_payload_header *rp;
+		struct ikev2payl_ke *rke = 0;
+		struct ikev2_child_sa *rchild = 0;
+		rc_vchar_t *rct = 0;
+		int rtype;
+		uint32_t rmsgid;
+
+		/*
+		 * Initiator side: our IKE_FOLLOWUP_KE request got a
+		 * response.  Find the pending child by the message id
+		 * we used for the request, parse the KEr(1) ciphertext,
+		 * decapsulate to SK(1), and complete the deferred
+		 * keymat install.
+		 */
+		rmsgid = get_uint32(&ikehdr->message_id);
+		for (rchild = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+		     !IKEV2_CHILD_LIST_END(rchild);
+		     rchild = IKEV2_CHILD_LIST_NEXT(rchild)) {
+			if (rchild->addke_pending &&
+			    rchild->addke_followup_msgid == rmsgid)
+				break;
+		}
+		if (IKEV2_CHILD_LIST_END(rchild))
+			rchild = NULL;
+		if (!rchild) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOWARN, PLOGLOC,
+				   "IKE_FOLLOWUP_KE response for unknown "
+				   "pending child (msgid %u)\n", rmsgid);
+			return;
+		}
+
+		/* parse: SK { KEr(1) } */
+		rp = (struct ikev2_payload_header *)(ikehdr + 1);
+		for (rtype = ikehdr->next_payload;
+		     rtype != IKEV2_NO_NEXT_PAYLOAD;
+		     POINT_NEXT_PAYLOAD(rp, rtype)) {
+			if (rtype == IKEV2_PAYLOAD_KE) {
+				if (rke) {
+					isakmp_log(ike_sa, local, remote, msg,
+						   PLOG_PROTOERR, PLOGLOC,
+						   "duplicate KE payload\n");
+					return;
+				}
+				rke = (struct ikev2payl_ke *)rp;
+			}
+		}
+		if (!rke) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "IKE_FOLLOWUP_KE response missing KE\n");
+			return;
+		}
+		rct = rc_vnew((const u_char *)(rke + 1),
+			      get_payload_data_length(&rke->header) -
+			      sizeof(rke->ke_h));
+		if (!rct)
+			return;
+		if (ikev2_initiator_followup_complete(rchild, rct) < 0) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed completing initiator ADDKE\n");
+			rc_vfree(rct);
+			return;
+		}
+		rc_vfree(rct);
 		return;
 	}
 

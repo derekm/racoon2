@@ -348,6 +348,12 @@ struct ikev2_child_sa {
 	int addke_pending;	/* followup exchange expected */
 	rc_vchar_t *addke_link;	/* link data echoed in N(16441) */
 	rc_vchar_t *addke_sk;	/* additional shared secret SK(1) */
+	unsigned int addke_method; /* negotiated ADDKE KE method id */
+	uint32_t addke_followup_msgid; /* initiator: followup request msgid */
+#ifdef WITH_ADDKE
+	void *addke_priv;	/* initiator: ML-KEM private key (EVP_PKEY *)
+				 * held until the followup response decaps */
+#endif
 
 	/* for informational exchange */
 	void (*callback) (enum request_callback, struct ikev2_child_sa *, void *);
@@ -446,6 +452,10 @@ extern int ikev2_addke_mlkem_decap(EVP_PKEY *, rc_vchar_t *,
 extern int ikev2_child_addke_install(struct ikev2_child_sa *);
 extern int ikev2_rekey_responder_addke_complete(struct ikev2_sa *,
 						rc_vchar_t *);
+extern int ikev2_initiator_followup_send(struct ikev2_child_sa *,
+					 rc_vchar_t *);
+extern int ikev2_initiator_followup_complete(struct ikev2_child_sa *,
+					     rc_vchar_t *);
 #endif
 
 extern int ikev2_noncecmp(rc_vchar_t *, rc_vchar_t *);
