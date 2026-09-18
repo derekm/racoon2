@@ -94,6 +94,18 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   3. Add matrix rows: `ikev2-netns-addke` (charon mlkem768 vs racoon2
      `esp_addke_alg` responder, child-rekey ADDKE e2e), then `ikev2-netns-int`
      once 9242 lands.
+- **ADDKE matrix peer decision (2026-09-18): iked↔iked, not charon.** Every
+  available strongSwan lacks ML-KEM: WSL Ubuntu charon 5.9.13 (no ML-KEM), and
+  Fedora RPM strongSwan 6.0.7 (`/usr/libexec/strongswan/charon` has zero
+  `mlkem768` strings — built on OpenSSL 3.5.8 but the spec didn't enable it).
+  Neither can offer type-6 ADDKE. So the `ikev2-netns-addke` peer is a second
+  racoon2 WITH_ADDKE: **racoon2-as-initiator (offers type-6 on child / IKE_SA)
+  ↔ racoon2-with-ADDKE responder** in two netns on Fedora (host ns + one netns,
+  or two netns). Self-contained; verifies the exact initiator-ADDKE code we
+  need continuously. Requires a new iked↔iked 2-namespace harness (the current
+  kinds/ikev2.sh is charon-centric). Fedora strongSwan 6.0.7 RPM stays useful
+  for the non-PQC rows; 9242/IKE_INTERMEDIATE has the same peer problem — an
+  iked↔iked `ikev2-netns-int` row reuses the harness once 9242 lands.
 - **RFC 9242 (IKE_INTERMEDIATE, exch 43):** negotiated by the
   `INTERMEDIATE_EXCHANGE_SUPPORTED` notify (16438) in IKE_SA_INIT; IKE_INTERMEDIATE
   exchanges run sequentially between IKE_SA_INIT and IKE_AUTH (msgid 1,2,…), each
