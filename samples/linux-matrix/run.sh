@@ -13,6 +13,7 @@ HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/kinds/admin.sh"
 . "$HERE/kinds/ikev2.sh"
 . "$HERE/kinds/ikev1.sh"
+. "$HERE/kinds/i2ike.sh"
 
 FILTER=
 REBUILD=
@@ -23,8 +24,14 @@ crstrip() { printf '%s' "$1" | tr -d '\r'; }
 usage() {
 	cat <<EOF
 usage: run.sh [--cases REGEX] [--rebuild BUILD] [--src DIR] [--prefix DIR]
-builds.tsv names: xfrm (Linux default), pfkey
-cases.tsv kinds: unit admin ikev2 ikev1
+builds.tsv names: xfrm (Linux default), pfkey, xfrm-addke (RFC 9370 PQC)
+cases.tsv kinds: unit admin ikev2 ikev1 i2ike
+cases.tsv gate: rows with gate=addke run ONLY when ADDKE is available (see
+                 R2_ADDKE below); they are auto-skipped otherwise so the PQC
+                 matrix does not run on an OpenSSL 3.0/Ubuntu build.
+env: R2_ADDKE=yes|auto  force the ADDKE gate (default auto: detect WITH_ADDKE
+     in the installed iked).  CI sets it explicitly per target: yes for
+     Fedora 44 (OpenSSL 3.5), unset/auto for Ubuntu (OpenSSL 3.0).
 EOF
 }
 
@@ -39,6 +46,21 @@ while [ $# -gt 0 ]; do
 	esac
 done
 export R2_SRC PREFIX ETC SBIN
+
+# RFC 9370 ADDKE availability gate (env/configure-specific).
+# R2_ADDKE=yes|no forces; 'auto'/unset detects WITH_ADDKE in the installed iked
+# (the followup symbol is compiled in only under WITH_ADDKE, i.e. OpenSSL 3.5 /
+# Fedora 44).  This is what keeps the PQC matrix off the OpenSSL 3.0 Ubuntu
+# build and on Fedora.
+addke_ok() {
+	case ${R2_ADDKE:-auto} in
+	yes) return 0 ;;
+	no)  return 1 ;;
+	esac
+	[ -x "$SBIN/iked" ] && grep -q ikev2_followup_ke_recv "$SBIN/iked" 2>/dev/null && return 0
+	[ -f "$R2_SRC/config.h" ] && grep -qE 'WITH_ADDKE' "$R2_SRC/config.h" 2>/dev/null
+}
+
 
 rebuild() {
 	b=$1
@@ -73,18 +95,24 @@ pass=0
 fail=0
 skip=0
 trap iked_restore EXIT
-while IFS="$(printf '\t')" read -r name kind expect workers note || [ -n "$name" ]; do
+while IFS="$(printf '	')" read -r name kind expect workers note gate || [ -n "$name" ]; do
 	name=$(crstrip "$name")
 	kind=$(crstrip "$kind")
 	expect=$(crstrip "$expect")
 	workers=$(crstrip "$workers")
 	note=$(crstrip "$note")
+	gate=$(crstrip "$gate")
 	case $name in ''|\#*) continue ;; esac
 	if [ -n "$FILTER" ]; then
 		echo "$name $kind" | grep -Eq "$FILTER" || continue
 	fi
 	if [ "$expect" = skip ]; then
 		log "SKIP $name ($note)"
+		skip=$((skip + 1))
+		continue
+	fi
+	if [ "$gate" = addke ] && ! addke_ok; then
+		log "SKIP $name (ADDKE gate off: R2_ADDKE=${R2_ADDKE:-auto})"
 		skip=$((skip + 1))
 		continue
 	fi

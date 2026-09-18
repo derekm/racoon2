@@ -4,13 +4,17 @@
 # Called from ubuntu.yml after the NETLINK_XFRM build succeeds. The pfkey
 # Linux build is a compile sanity check only and never triggers this.
 #
-# Designed so a NetBSD integration run can reuse this workflow later:
-#   - caller passes inputs.os
-#   - the run body is one command sequence (the `run` script below),
-#     which a NetBSD job would execute inside the QEMU VM the same way
-#   - the Linux job asserts os == 'linux' today; the NetBSD path needs
-#     rc.d-equivalent daemon start (systemctl does not exist) and will
-#     be added when the init-script integration lands. See netbsd.yml.
+# inputs.dist selects which job:
+#   - 'linux'  (default): Ubuntu host with systemd, runs the full matrix. The
+#     PQC rows (gate=addke in cases.tsv) are SKIPPED because the OpenSSL 3.0
+#     build has no ADDKE (run.sh's R2_ADDKE gate).  This is what the user asked
+#     for: the PQC matrix does NOT run on Ubuntu.
+#   - 'fedora': Fedora 44 container (OpenSSL 3.5), builds xfrm-addke
+#     (--enable-addke, R2_ADDKE=yes) and runs the ADDKE-gated PQC case(s) plus
+#     the systemd-free unit cases inline.  The PQC matrix RUNS here.
+#
+# A NetBSD integration run can reuse this workflow later via inputs.os; see
+# netbsd.yml.
 
 name: Integration (live matrix)
 
@@ -19,6 +23,11 @@ on:
     inputs:
       os:
         description: 'Target OS family for the integration run'
+        required: false
+        default: 'linux'
+        type: string
+      dist:
+        description: 'linux (Ubuntu host, full matrix, PQC skipped) | fedora (Fedora 44 container, PQC matrix)'
         required: false
         default: 'linux'
         type: string
@@ -39,7 +48,7 @@ jobs:
   linux-matrix:
     name: 'Linux matrix (${{ inputs.cases || ''all cases'' }})'
     runs-on: ubuntu-latest
-    if: inputs.os == 'linux'
+    if: inputs.os == 'linux' && inputs.dist != 'fedora'
 
     steps:
       - name: Checkout repository
@@ -97,4 +106,60 @@ jobs:
             /tmp/r2-diag.txt
             /tmp/*.log
             /tmp/r2_*.txt
+          if-no-files-found: warn
+
+  # Fedora 44 PQC matrix. Runs in the fedora:44 container (root, no systemd),
+  # so it builds the ADDKE path and only executes the self-contained cases that
+  # do not need systemd units: the unit suite plus the i2ike PQC ADDKE case.
+  # run.sh's gate=addke keeps the PQC rows OFF the Ubuntu job above.
+  fedora-pqc-matrix:
+    name: 'Fedora PQC matrix (ADDKE, gated to Fedora)'
+    runs-on: ubuntu-latest
+    container: fedora:44
+    if: inputs.dist == 'fedora'
+
+    steps:
+      - name: Install deps (dnf, incl. git for checkout)
+        run: |
+          dnf install -y -q \
+            autoconf automake libtool pkgconf-pkg-config gcc make \
+            openssl openssl-devel libpcap-devel krb5-devel bison flex git \
+            iproute iproute-tc strongswan
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify OpenSSL 3.5 (ML-KEM available -> ADDKE build)
+        run: |
+          openssl version
+          pkg-config --modversion openssl
+          test -f /usr/include/openssl/ml_kem.h && echo "ml_kem.h present (ADDKE buildable)" \
+            || { echo "WARNING: no /usr/include/openssl/ml_kem.h"; }
+
+      - name: Build + install (xfrm + --enable-addke)
+        run: |
+          export R2_ADDKE=yes R2_PREFIX=/usr/local/racoon2
+          bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            --rebuild xfrm-addke --cases 'a^'
+        env:
+          R2_PREFIX: /usr/local/racoon2
+
+      - name: Run the PQC matrix (ADDKE + systemd-free cases)
+        run: |
+          export R2_ADDKE=yes
+          CASES=${{ inputs.cases }}
+          [ -n "$CASES" ] || CASES='unit|i2ike'
+          ARGS="--src $GITHUB_WORKSPACE --cases $CASES"
+          bash samples/linux-matrix/run.sh $ARGS
+        env:
+          R2_PREFIX: /usr/local/racoon2
+
+      - name: Upload matrix logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedora-pqc-matrix-logs
+          path: |
+            /tmp/r2-i2ike/*.log
+            /tmp/*.log
           if-no-files-found: warn

@@ -98,3 +98,4 @@ jobs:
     uses: ./.github/workflows/integration.yml
     with:
       os: linux
+      dist: linux

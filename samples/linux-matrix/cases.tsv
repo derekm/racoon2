@@ -1,6 +1,10 @@
-# name	kind	expect	workers	note
+# name	kind	expect	workers	note	gate
 # expect: pass | skip
 # workers: - = live systemd iked; 0 = inline; N = pool
+# gate: (empty) | addke  — gate=addke rows run only when the build supports
+#   RFC 9370 ADDKE (R2_ADDKE=yes, i.e. the xfrm-addke build / OpenSSL 3.5 /
+#   Fedora 44); they auto-SKIP on an OpenSSL 3.0 Ubuntu build.  This is what
+#   keeps the PQC matrix off Ubuntu and on Fedora.
 # Adding a case is a row. Kind scripts live in kinds/<kind>.sh
 # Every ikev2/ikev1 tunnel row also runs fwd_tmpl_check: the Linux FWD
 # policy must mirror the IN tmpl (e2bd9ef) or SSH-to-LAN dies quietly.
@@ -26,4 +30,5 @@ ikev2-netns-qcd	ikev2	pass	0	RFC 6290 QCD_TOKEN sent in IKE_AUTH (maker)
 ikev2-netns-ikesa-rekey	ikev2	pass	0	RFC 7296 §2.8 IKE_SA rekey (charon ikelifetime=30s)
 xfrm-natt-oa	unit	pass	-	RFC 3947 NAT-OA via rcpfk → XFRMA_ENCAP encap_oa (root, ip xfrm)
 xfrm-tmpl-family	unit	pass	-	IP_ANY mixed-family tmpl coerce (v4 local + :: → proto esp, no c0a8:444f)
-ikev1-strongswan	ikev1	pass	0	IKEv1 netns vs ikev1_nat.conf (IP IDs, whole-file PSK, hmac-sha1); not a live NAT-OA peer
+ikev1-strongswan	ikev1	pass	0	IKEv1 netns vs ikev1_nat.conf (IP IDs, whole-file PSK, hmac-sha1); not a live NAT-OA peer	
+i2ike-addke	i2ike	pass	0	PQC: iked<->iked ADDKE, mlkem768 on the initial IKE_AUTH child + IKE_FOLLOWUP_KE; child XFRM install (ESP both netns) is the green gate	addke

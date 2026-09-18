@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/derekm/racoon2/actions/workflows/ubuntu.yml"><img src="https://github.com/derekm/racoon2/actions/workflows/ubuntu.yml/badge.svg?branch=int/gsoc2026" alt="Ubuntu build &amp; test (xfrm + pfkey)"/></a>
+  <a href="https://github.com/derekm/racoon2/actions/workflows/fedora44.yml"><img src="https://github.com/derekm/racoon2/actions/workflows/fedora44.yml/badge.svg?branch=int/gsoc2026" alt="Fedora 44 build &amp; test (OpenSSL 3.5, PQC matrix)"/></a>
   <a href="https://github.com/derekm/racoon2/actions/workflows/netbsd.yml"><img src="https://github.com/derekm/racoon2/actions/workflows/netbsd.yml/badge.svg?branch=int/gsoc2026" alt="NetBSD build &amp; test"/></a>
 </p>
 

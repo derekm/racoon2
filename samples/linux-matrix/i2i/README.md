@@ -62,18 +62,23 @@ more malformed-payload).
 
 ### Current lead: ADDKE link matching on the mutated fragmented followup
 
-With the corruption fixed, the exchange reaches the RFC 9370 ADDKE state
-machine, which now shows the next distinct blocker:
-- responder `ikev2_followup_ke_recv: no pending ADDKE state for link` — its
-  pending ADDKE child's `addke_link` does not match the link the initiator sent
-  (initiator picks its own random 16-byte link; the two sides must agree for
-  followup_ke_find_child to map the followup to the child);
-- initiator `IKE_FOLLOWUP_KE response missing KE` + `not advancing (fragmented
-  path)`.
+SOLVED — the PQC ADDKE child is now GREEN in the isolated ring:
+`CHILD UP: resp_esp=2 init_esp=3` (IKE_AUTH -> ESTABLISHED -> IKE_FOLLOWUP_KE ->
+child XFRM install on both sides).  Root cause (`ee81c53`): the responder marked
+its ADDKE child with ITS OWN random addke_link (ikev2_child.c:1460), but for a
+child created in the IKE_AUTH exchange ikev2_responder_state1_send never carries
+the ADDITIONAL_KEY_EXCHANGE notify, so the initiator sends ITS OWN random link.
+followup_ke_find_child (which required an exact pre-bound match) failed
+('no pending ADDKE state for link'), the responder aborted with STATE_NOT_FOUND,
+and the initiator saw 'response missing KE'.  Fix: exact-match a pre-bound link
+first (rekey path), else adopt the received link on the single unambiguous
+pending ADDKE child (initial-child path).
 
-Next focused pass: reconcile the ADDKE link between initiator and responder
-(RFC 9370 link semantics on the initial-child followup), then the child XFRM
-install (ikev2_child_addke_install) lands and the ADDKE assertion is green.
+CI wiring: the Fedora 44 job now runs the PQC matrix (integration.yml
+dist=fedora: builds xfrm-addke --enable-addke with R2_ADDKE=yes and runs the
+new i2ike ADDKE case in its own netnss).  The PQC matrix is gated to Fedora via
+run.sh's R2_ADDKE/gate=addke: on an OpenSSL 3.0 Ubuntu build the rows
+auto-SKIP.  Fedora badge added to README.
 
 ## Gotchas (each empirically learned, a separate bug)
 
