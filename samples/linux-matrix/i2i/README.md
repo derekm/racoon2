@@ -43,15 +43,31 @@ the initiator's ~1200-byte IKE_FOLLOWUP_KE (KEi = 4 + 1184-byte ML-KEM-768 pub,
 unconditional here — sent as 2 × ~564 B datagrams, and the receiver never
 completes the fragmented-followup REASSEMBLY, so no KEr comes back.
 
-### Current lead: fragmented IKE_FOLLOWUP_KE reassembly
+### Current lead: fragmented IKE_FOLLOWUP_KE reassembly (chunk/padding boundary)
 
-The followup is ~1200 B and `ikev2_transmit` fragments it (576-byte frag size)
-because `frag_supported` is unconditional.  The responder must reassemble the
-two `.564`-fragments of exch 44 — the generic RFC 7383 reassembly path may not
-be keying/retaining a pending assembly for the new `IKEV2EXCH_IKE_FOLLOWUP_KE`
-exchange type.  Next focused pass: trace `ikev2_frag` reassembly handling of
-exch 44 on the receiver (message-id/SPI window), fix it, then the child XFRM
-install (`ikev2_child_addke_install`) lands and the addke assertion is green.
+The followup is ~1200 B and `ikev2_transmit` fragments it (IPv4 576-byte frag
+size, RFC 7383) because `frag_supported` is unconditional, sent as 2 × ~564 B.
+The receiver's `ikev2_frag_recv` DOES complete reassembly (all fragments merge
+and a packet is returned), but the merged inner payload chain then fails
+`ikev2_check_payloads(packet, TRUE)` at ikev2_input.c:316 ("malformed payload
+format"), so `ikev2_followup_ke_recv` is never reached.
+
+Byte-boundary suspicion (frag_send vs frag_recv padding math):
+- `ikev2_frag_send` decrypts the whole message, chunks `decrypted_len` into
+  `chunk_max = frag_threshold - (sizeof(IKE hdr)+sizeof(SKF)+iv+icv+16)`, and
+  encrypts each chunk as its own fragment payload.
+- `ikev2_frag_recv` decrypts each fragment and strips its OWN padding
+  (`data_len = decrypted->l - pad_length - 1`) before appending to the merged
+  buffer.
+If the two padding/overhead conventions disagree (the `+16`, and whether the
+pad byte accounts for the SKF-vs-SK header), the merged content gains/drops a
+few bytes between fragments, corrupting the next inner payload's `length` -> the
+reassembler returns a syntactically-invalid packet and check_payloads rejects it.
+
+Next step: byte-diff the two fragments (data_len per fragment, and the merged
+buffer offset vs the pre-fragment decrypted payloads) — print the original
+inner payload lengths and the merged output on the responder; the ±N on the
+fragment boundary is the bug.  Then the child XFRM install lands.
 
 ## Gotchas (each empirically learned, a separate bug)
 
