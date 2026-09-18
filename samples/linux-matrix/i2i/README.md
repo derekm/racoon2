@@ -45,29 +45,28 @@ completes the fragmented-followup REASSEMBLY, so no KEr comes back.
 
 ### Current lead: fragmented IKE_FOLLOWUP_KE reassembly (chunk/padding boundary)
 
-The followup is ~1200 B and `ikev2_transmit` fragments it (IPv4 576-byte frag
-size, RFC 7383) because `frag_supported` is unconditional, sent as 2 × ~564 B.
-The receiver's `ikev2_frag_recv` DOES complete reassembly (all fragments merge
-and a packet is returned), but the merged inner payload chain then fails
-`ikev2_check_payloads(packet, TRUE)` at ikev2_input.c:316 ("malformed payload
-format"), so `ikev2_followup_ke_recv` is never reached.
+pcap measurement (capture-followup.sh / capture-key.sh) — established keyless +
+with keys:
+- The initiator sends **3** well-formed SKF fragments (1/3 2/3 3/3, msgid=2,
+  payload_len 536/536/264, recovered inner KE=0x22), NOT a lost-fragment bug.
+- They carry the **same ISPI/RSIPI as the IKE_AUTH** (ae44c6cc.../c374a296...), so
+  same IKE_SA.
+- `sk_e_i` (32B, AES-256-CBC) dumped live via gdb and **validated**: the IKE_AUTH
+  SK decrypts perfectly to `macos.client` IDi + valid PKCS7 pad.  The fragment
+  frames do NOT decode with sk_e_i or sk_e_r under any iv/icv framing (CBC, icv
+  16/32, iv shift 0..39) — yet frag_recv's own decrypt path demonstrably succeeds
+  (it reaches reassembly + check_payloads).  So a one-byte framing difference
+  between the SK (IKE_AUTH) and SKF (fragment) layouts is the wedge: frag_send
+  builds `skf+encrypted+icv` with `encrypted = iv+ct` (496B), and only the
+  responder's own handling of that exact framing is correct.
+- The responder then reassembles and `ikev2_check_payloads(packet, TRUE)` fails
+  ("malformed payload format") -> the merged inner chain is byte-corrupt.
 
-Byte-boundary suspicion (frag_send vs frag_recv padding math):
-- `ikev2_frag_send` decrypts the whole message, chunks `decrypted_len` into
-  `chunk_max = frag_threshold - (sizeof(IKE hdr)+sizeof(SKF)+iv+icv+16)`, and
-  encrypts each chunk as its own fragment payload.
-- `ikev2_frag_recv` decrypts each fragment and strips its OWN padding
-  (`data_len = decrypted->l - pad_length - 1`) before appending to the merged
-  buffer.
-If the two padding/overhead conventions disagree (the `+16`, and whether the
-pad byte accounts for the SKF-vs-SK header), the merged content gains/drops a
-few bytes between fragments, corrupting the next inner payload's `length` -> the
-reassembler returns a syntactically-invalid packet and check_payloads rejects it.
-
-Next step: byte-diff the two fragments (data_len per fragment, and the merged
-buffer offset vs the pre-fragment decrypted payloads) — print the original
-inner payload lengths and the merged output on the responder; the ±N on the
-fragment boundary is the bug.  Then the child XFRM install lands.
+Definitive next measurement (no source change): gdb-break `ikev2_frag_recv` on
+the responder and dump its own `decrypted` vchar per fragment (the actual bytes
+frag_recv strips + merges), plus the reassembled `full_pkt`.  That removes all
+offline framing guesswork and pins the exact ±N byte error, then the child XFRM
+install (ikev2_child_addke_install) lands.
 
 ## Gotchas (each empirically learned, a separate bug)
 
