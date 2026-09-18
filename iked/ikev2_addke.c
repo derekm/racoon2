@@ -638,10 +638,18 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		goto invalid;
 	}
 
-	/* the link data is the notification's SPI-less data */
-	link = rc_vnew(get_notify_data((struct ikev2payl_notify *)link_notify),
-		       get_payload_data_length(link_notify) -
-		       ((struct ikev2payl_notify *)link_notify)->nh.spi_size);
+	/* the link data is the notification's SPI-less data
+	 * (payload minus generic header minus notify header minus SPI,
+	 * same accounting as the notify walkers in ikev2_notify.c) */
+	{
+		struct ikev2payl_notify *ln =
+		    (struct ikev2payl_notify *)link_notify;
+		size_t ln_len = get_payload_length(link_notify) -
+				sizeof(struct ikev2payl_notify) -
+				ln->nh.spi_size;
+
+		link = rc_vnew(get_notify_data(ln), ln_len);
+	}
 	if (!link)
 		goto nomem;
 
