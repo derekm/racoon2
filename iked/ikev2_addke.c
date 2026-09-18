@@ -429,11 +429,13 @@ ikev2_initiator_followup_send(struct ikev2_child_sa *child_sa,
 	if (!pkt)
 		return -1;
 
-	if (ikev2_transmit(ike_sa, pkt) != 0) {
-		rc_vfree(pkt);
+	if (ikev2_transmit(ike_sa, pkt) != 0)
 		return -1;
-	}
-	rc_vfree(pkt);
+	/* ikev2_transmit() takes ownership of and frees pkt (same convention as
+	 * ikev2.c:1226 — callers never rc_vfree it again).  The old `rc_vfree(pkt)`
+	 * here double-freed the transmit-owned buffer: the iked<->iked isolated
+	 * matrix hit `free(): invalid pointer` on the initiator's IKE_FOLLOWUP_KE
+	 * exactly at this line. */
 	child_sa->addke_followup_msgid = message_id;
 	return 0;
 }
