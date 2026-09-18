@@ -86,6 +86,7 @@ static rc_vchar_t *compute_keymat(struct ikev2_sa *, rc_vchar_t *, size_t,
 				  rc_vchar_t *, rc_vchar_t *,
 				  rc_vchar_t *addke_sk);
 
+static void ikev2_child_addke_mark(struct ikev2_child_sa *);
 static int
 peer_proposal_has_dh_group(struct prop_pair *proposal, unsigned int group_id)
 {
