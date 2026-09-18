@@ -73,11 +73,27 @@ already handled by `ikev2_transmit`/`ikev2_transmit_response` →
 
 ## Begin — RFC 9242 IKE_INTERMEDIATE, then RFC 8784 PPK
 
-Order decided 2026-09-18 (supersedes the old "8784 first", which predates 9370):
+**Priority change 2026-09-18 (iPhone cannot hold a session to the ~1440s rekey —
+two consecutive err=110 DPD-timeout deaths: 06:39→07:02, 07:04→07:19, no DELETE,
+no CREATE_CHILD. So phone-driven PQC rekey validation self-blocks; the Linux
+matrix now carries the PQC e2e proof, and the iPhone is only the final interop
+check.)**
+
+Order of execution decided 2026-09-18 (supersedes the old "8784 first", which predates 9370):
 **9242 before 8784** — 9242 is the init-time PQC carrier that pairs with the
 landed ML-KEM and iOS implements it (live-testable against the phone), whereas
 8784 PPK needs a PSK-provisioning story first.
 
+- **Matrix-first PQC e2e, then 9242 rows, then iPhone:**
+  1. Standing up the matrix under **WSL NAT** — `.wslconfig` switched back to
+     `networkingMode=nat` on 2026-09-18 (mirrored left eth0 DOWN and broke the
+     netns matrix). WSL verified: root netns ok, strongSwan charon U5.9.13
+     (ML-KEM-capable) present, r2 build tree at `/home/derek/src/racoon2`.
+  2. Fedora must be able to run the matrix: it has `~/src/racoon2` but **no
+     strongSwan/charon** — install it, or add iked↔iked (charonless) rows.
+  3. Add matrix rows: `ikev2-netns-addke` (charon mlkem768 vs racoon2
+     `esp_addke_alg` responder, child-rekey ADDKE e2e), then `ikev2-netns-int`
+     once 9242 lands.
 - **RFC 9242 (IKE_INTERMEDIATE, exch 43):** negotiated by the
   `INTERMEDIATE_EXCHANGE_SUPPORTED` notify (16438) in IKE_SA_INIT; IKE_INTERMEDIATE
   exchanges run sequentially between IKE_SA_INIT and IKE_AUTH (msgid 1,2,…), each
