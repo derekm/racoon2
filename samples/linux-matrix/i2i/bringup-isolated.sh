@@ -21,6 +21,8 @@ CONF="${R2_CONF:-/tmp/r2i2i_boot}"
 NSI="r2i"; NSR="r2r"; VI=veth-i2i; VR=veth-r2r
 HI=192.0.2.2; HR=192.0.2.1      # HI initiator, HR responder
 mkdir -p "$D"
+# fresh logs each run; a stale file otherwise hides a failed launch
+rm -f "$D"/*.log "$D"/*.out "$D"/resp-spmd.log "$D"/init-spmd.log 2>/dev/null
 for NS in "$NSI" "$NSR"; do
     ip netns del "$NS" 2>/dev/null || true
     ip netns add "$NS"
@@ -28,10 +30,15 @@ for NS in "$NSI" "$NSR"; do
 done
 # P2P veth: one end in each netns (crossover), both on 192.0.2.0/24
 ip link add "$VI" type veth peer name "$VR"
-ip link set "$VI" netns "$NSI"; ip link set "$VI" up
+# each end must be brought UP inside its own netns (once moved, the host no
+# longer sees the device — a host-side `ip link set ... up` fails "not found")
+ip link set "$VI" netns "$NSI"
+ip netns exec "$NSI" ip link set "$VI" up
 ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"
-ip link set "$VR" netns "$NSR"; ip link set "$VR" up
+ip link set "$VR" netns "$NSR"
+ip netns exec "$NSR" ip link set "$VR" up
 ip netns exec "$NSR" ip addr add "$HR/24" dev "$VR"
+ip netns exec "$NSR" ip link | grep -E 'veth|LOWER_UP' && ip netns exec "$NSI" ip link | grep -E 'veth|LOWER_UP'
 
 # udp-allow rows BEFORE any spmd in each netns (first-in-bucket at prio 0)
 add_allow () { # $1=ns  $2=local  $3=peer
@@ -48,6 +55,7 @@ add_allow "$NSI" "$HI" "$HR"
 (ip netns exec "$NSR" "$SBIN/spmd" -F -f "$CONF/responder.conf") >"$D/resp-spmd.log" 2>&1 &
 RSPMD=$!
 i=0; until [ -S /tmp/spmif-r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+[ -S /tmp/spmif-r2i2 ] || { echo "FAIL: responder spmif missing; last stderr:"; tail -5 "$D/resp-spmd.log"; }
 (ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-r2r \
     "$SBIN/iked" -F -f "$CONF/responder.conf" -D 0x0001 -l "$D/resp-iked.log") >"$D/resp-iked.out" 2>&1 &
 RPIKED=$!
@@ -56,6 +64,7 @@ RPIKED=$!
 (ip netns exec "$NSI" "$SBIN/spmd" -F -f "$CONF/initiator.conf") >"$D/init-spmd.log" 2>&1 &
 ISPMD=$!
 i=0; until [ -S /tmp/spmif-i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+[ -S /tmp/spmif-i2i ] || { echo "FAIL: initiator spmif missing; last stderr:"; tail -5 "$D/init-spmd.log"; }
 (ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2i \
     "$SBIN/iked" -F -f "$CONF/initiator.conf" -D 0x0001 -l "$D/init-iked.log") >"$D/init-iked.out" 2>&1 &
 IIKED=$!
