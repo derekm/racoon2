@@ -775,6 +775,12 @@ ikev2_child_responder_after_dh(struct ikev2_child_responder_ctx *ctx)
 	child_sa->peer_proposal = ctx->matching_peer_proposal;
 	ctx->matching_peer_proposal = NULL;
 
+	/* RFC 9370: if the matched peer proposal carries ADDKE, arm the
+	 * pending state + link so the CREATE_CHILD_SA response includes
+	 * the ADDITIONAL_KEY_EXCHANGE notification (16441) and the
+	 * subsequent IKE_FOLLOWUP_KE is associated with this child. */
+	ikev2_child_addke_mark(child_sa);
+
 	/* XXX generate policy */
 	if (!LIST_EMPTY(&child_sa->lease_list)) {
 		struct rcf_address *a;
@@ -1210,6 +1216,12 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 
 	child_sa->peer_proposal = matching_peer_proposal;
 	matching_peer_proposal = 0;
+
+	/* RFC 9370: if the matched peer proposal carries ADDKE, arm the
+	 * pending state + link so the CREATE_CHILD_SA response includes
+	 * the ADDITIONAL_KEY_EXCHANGE notification (16441) and the
+	 * subsequent IKE_FOLLOWUP_KE is associated with this child. */
+	ikev2_child_addke_mark(child_sa);
 
 	/* XXX generate policy */
 	if (!LIST_EMPTY(&child_sa->lease_list)) {

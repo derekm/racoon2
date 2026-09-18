@@ -453,10 +453,31 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	}
 
 	if (!ke || !link_notify) {
+		/*
+		 * Dump the payload chain we actually received so a
+		 * followup mismatch is diagnosable at the wire level
+		 * (observed live: iOS rekey selected ADDKE, our
+		 * response carried the type-6 echo, but the followup
+		 * rejected here — need the real payload types/hex).
+		 */
+		char chain[128];
+		size_t coff = 0;
+		struct ikev2_payload_header *cp;
+
+		chain[0] = '\0';
+		cp = (struct ikev2_payload_header *)(ikehdr + 1);
+		for (type = ikehdr->next_payload;
+		     type != IKEV2_NO_NEXT_PAYLOAD && coff < sizeof(chain) - 8;
+		     POINT_NEXT_PAYLOAD(cp, type)) {
+			coff += snprintf(&chain[coff], sizeof(chain) - coff,
+					 " %d(%u)", type,
+					 get_payload_length(cp));
+		}
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
 			   "IKE_FOLLOWUP_KE missing KE or "
-			   "ADDITIONAL_KEY_EXCHANGE payload\n");
+			   "ADDITIONAL_KEY_EXCHANGE payload; chain:%s\n",
+			   chain);
 		goto invalid;
 	}
 
