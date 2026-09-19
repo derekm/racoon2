@@ -80,6 +80,23 @@ ikev2_respond_error(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	return -1;
 }
 
+/* iked child/socket machinery referenced by ikev2_addke.c's followup
+ * handler but never invoked by the crypto self-test; stubs so the TU
+ * links standalone (same rationale as the symbols above). */
+struct ikev2_child_sa *
+ikev2_find_child_sa_by_spi(struct ikev2_sa *ike_sa, unsigned int proto,
+			   uint32_t spi, enum peer_mine mine)
+{
+	(void)ike_sa; (void)proto; (void)spi; (void)mine;
+	return NULL;
+}
+
+void
+ikev2_child_delete(struct ikev2_child_sa *child_sa)
+{
+	(void)child_sa;
+}
+
 /* iked-side packet machinery referenced by ikev2_addke.c's followup
  * handler but never invoked by the crypto self-test; stubs so the TU
  * links standalone (same rationale as above). */
