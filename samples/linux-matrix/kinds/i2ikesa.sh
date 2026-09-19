@@ -40,7 +40,6 @@ remote matrix_resp {
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
-		addke_unrequested on;
 		kmp_sa_lifetime_time 30 sec;
 	};
 	selector_index sel_in;
@@ -96,7 +95,6 @@ remote matrix_init {
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
-		addke_unrequested on;
 		kmp_sa_lifetime_time 30 sec;
 	};
 	selector_index sel_in;

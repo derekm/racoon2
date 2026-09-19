@@ -611,12 +611,19 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 		goto fail;
 	}
 #ifdef WITH_ADDKE
-	/* Offer RFC 9370 ADDKE (type-6) on the rekeyed IKE_SA when the
-	 * remote drives ADDKE: the responder then parks and keys the
-	 * rekeyed IKE_SA with ML-KEM via the IKE_FOLLOWUP_KE exchange
-	 * (we complete SK(1) once its KEr ciphertext lands). */
-	if (ikev2_addke_unrequested(new_sa->rmconf) == RCT_BOOL_ON)
-		(void)ikev2_maybe_offer_ikesa_addke(proplist);
+	/* Offer RFC 9370 ADDKE (type-6) on the rekeyed IKE_SA when we are
+	 * compiled with ADDKE: a peer that negotiates it keys the rekeyed
+	 * IKE_SA with ML-KEM via the IKE_FOLLOWUP_KE exchange (we complete
+	 * SK(1) once its KEr ciphertext lands).  If the peer does not select
+	 * it, the proposal is simply accepted without ADDKE. */
+	{
+		int oa = ikev2_maybe_offer_ikesa_addke(proplist);
+
+		isakmp_log(old_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		    "IKE_SA rekey offer type-6 ADDKE: rc=%d proplist=%p[1]=%p\n",
+		    oa, (void *)proplist,
+		    proplist ? (void *)proplist[1] : NULL);
+	}
 #endif
 	sa = ikev2_pack_proposal(proplist);
 	if (!sa) {

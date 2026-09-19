@@ -3398,8 +3398,11 @@ ikev2_maybe_offer_ikesa_addke(struct prop_pair **proplist)
 	struct prop_pair *tail, *p6;
 	struct rc_alglist def;
 
-	if (!proplist || !proplist[1])
+	if (!proplist || !proplist[1]) {
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		     "ikesa-addke offer: no proplist[1]\n");
 		return 0;
+	}
 	for (tail = proplist[1]->tnext; tail; tail = tail->next)
 		if (tail->trns &&
 		    ((struct ikev2transform *)tail->trns)->transform_type ==
@@ -3409,14 +3412,20 @@ ikev2_maybe_offer_ikesa_addke(struct prop_pair **proplist)
 	def.algtype = RCT_ALG_MLKEM768;
 	p6 = alglist_to_proppair(&def, IKEV2TRANSFORM_TYPE_ADDKE,
 				 &ikev2_transf_addke[0]);
-	if (!p6)
+	if (!p6) {
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		     "ikesa-addke offer: alglist_to_proppair failed\n");
 		return 0;
+	}
 	if (proplist[1]->tnext) {
 		for (tail = proplist[1]->tnext; tail && tail->next; tail = tail->next)
 			;
 		tail->next = p6;
 	} else
 		proplist[1]->tnext = p6;
+	plog(PLOG_DEBUG, PLOGLOC, NULL,
+	     "ikesa-addke offer: appended type-6 (prop %p tnext %p)\n",
+	     (void *)proplist[1], (void *)proplist[1]->tnext);
 	return 1;
 }
 #endif
