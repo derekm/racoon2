@@ -206,21 +206,22 @@ EOF
 	# PQC proof — a NEW SPI alone is not ML-KEM (a plain rekey passes that).
 	# The rekey must (a) offer type-06 ADDKE (0x24 = mlkem768) in its
 	# CREATE_CHILD SA, (b) derive ML-KEM keymat on BOTH sides — the ADDKE
-	# install logs 'g_ir_present=n' (no per-child DH in the KEM keymat; plain
-	# installs are g_ir_present=Y) and the initiator/responder keymat
-	# sha256 must MATCH (both decapsulate the same SK(1)) — and (c) not abort
-	# the pending rekey child to a followup timeout.
+	# install logs 'sha256=<hash> g_ir_present=n' (no per-child DH in the
+	# KEM keymat), and the LAST such line on each side must MATCH (both
+	# decapsulate the same SK(1)).  Using tail -1 (not sort|head) so a
+	# no-PFS AUTH child that also logs g_ir_present=n cannot be mistaken
+	# for the rekey.  (c) not abort the pending rekey child.
 	t6=$(grep -c '06000024' "$D/init-iked.log" 2>/dev/null || true)
 	abt=$(grep -cE 'ADDKE followup timeout; abort' "$D/resp-iked.log" 2>/dev/null || true)
 	kh_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/init-iked.log" 2>/dev/null \
-		| grep -oE 'sha256=[0-9a-f]+' | sort -u | head -1)
+		| grep -oE 'sha256=[0-9a-f]+' | tail -1)
 	kh_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/resp-iked.log" 2>/dev/null \
-		| grep -oE 'sha256=[0-9a-f]+' | sort -u | head -1)
+		| grep -oE 'sha256=[0-9a-f]+' | tail -1)
 	pqc=0
 	if [ "${t6:-0}" -ge 1 ] && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
 	   && [ "${abt:-0}" -eq 0 ]; then
 		pqc=1
-		log "PQC rekey: type-6 offered (x$t6), KEM keymat sha256=$kh_i on both sides, no followup abort"
+		log "PQC rekey: type-6 offered (x$t6), last KEM keymat sha256=$kh_i matches both sides, no followup abort"
 	else
 		log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
 	fi

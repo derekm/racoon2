@@ -95,6 +95,10 @@ static int ikev2_under_attack = 0;
 int ikev2_half_open_sa = 0;
 int ikev2_attack_threshold = IKED_MAX_HALF_OPEN_SA;
 
+/* map a child's preceding_satype to its rekey proposal protocol id;
+ * used before ikev2_child_rekey_proto's definition */
+static unsigned int ikev2_child_rekey_proto(struct ikev2_child_sa *);
+
 /*
  * forward declarations
  */
@@ -4188,21 +4192,41 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			     !IKEV2_CHILD_LIST_END(pending);
 			     pending = IKEV2_CHILD_LIST_NEXT(pending)) {
 #ifdef WITH_ADDKE
-				if (pending->is_initiator &&
-				    pending->addke_pending &&
-				    pending->preceding_satype != 0 &&
-				    pending->preceding_spi == rekey_spi) {
-					isakmp_log(ike_sa, local, remote, msg,
-					    PLOG_PROTOWARN, PLOGLOC,
-					    "rekey collision: our ADDKE "
-					    "rekey followup in progress for "
-					    "spi 0x%x; TEMPORARY_FAILURE\n",
-					    rekey_spi);
-					(void)ikev2_respond_error(
-					    ike_sa, msg, remote, local,
-					    0, 0, 0,
-					    IKEV2_TEMPORARY_FAILURE, 0, 0);
-					goto done;
+				{
+					unsigned int rekey_proto;
+
+					if (!pending->is_initiator ||
+					    !pending->addke_pending)
+						continue;
+					/* RFC 9370 s2.2.4 MUST: if WE already
+					 * rekeyed this child and our
+					 * IKE_FOLLOWUP_KE series is still in
+					 * progress, a concurrent peer rekey of
+					 * the same SA must be answered
+					 * TEMPORARY_FAILURE.  preceding_spi is
+					 * OUR (MINE) inbound SPI; compare it in
+					 * the same namespace by re-locking up
+					 * the SA it replaces and testing it IS
+					 * the child the peer rekey matched. */
+					rekey_proto =
+					    ikev2_child_rekey_proto(pending);
+					if (rekey_proto != 0 &&
+					    ikev2_find_child_sa_by_spi(ike_sa,
+						rekey_proto,
+						pending->preceding_spi,
+						MINE) == old_child_sa) {
+						isakmp_log(ike_sa, local, remote, msg,
+						    PLOG_PROTOWARN, PLOGLOC,
+						    "rekey collision: our ADDKE "
+						    "rekey followup in progress for "
+						    "spi 0x%x; TEMPORARY_FAILURE\n",
+						    rekey_spi);
+						(void)ikev2_respond_error(
+						    ike_sa, msg, remote, local,
+						    0, 0, 0,
+						    IKEV2_TEMPORARY_FAILURE, 0, 0);
+						goto done;
+					}
 				}
 #endif
 			}
@@ -4864,6 +4888,21 @@ ikev2_noncecmp(rc_vchar_t *n1, rc_vchar_t *n2)
 }
 
 /*
+ * Map a child's preceding_satype (the SA it is rekeying) to the IKE v2
+ * proposal protocol id used to look that SA up.  0 when the child is not a
+ * rekey.  Shared by ikev2_initiator_rekey_finalize() and the RFC 9370
+ * §2.2.4 rekey-collision check so the two never drift.
+ */
+static unsigned int
+ikev2_child_rekey_proto(struct ikev2_child_sa *child_sa)
+{
+	if (child_sa->preceding_satype == 0)
+		return 0;
+	return (child_sa->preceding_satype == RCT_SATYPE_ESP ?
+		IKEV2PROPOSAL_ESP : IKEV2PROPOSAL_AH);
+}
+
+/*
  * RFC 7296 §2.8 initiator rekey finalize, shared by the plain CREATE_CHILD
  * finalize path (ikev2_createchild_initiator_recv) and the ADDKE completion
  * (ikev2_initiator_followup_complete, after the IKE_FOLLOWUP_KE installs the
@@ -4883,12 +4922,11 @@ ikev2_initiator_rekey_finalize(struct ikev2_sa *ike_sa,
 	struct ikev2_child_sa *old_child_sa;
 	struct ikev2_child_sa *duplicate_child_sa;
 
-	if (child_sa->preceding_satype == 0)
+	if (ikev2_child_rekey_proto(child_sa) == 0)
 		return;
 
 	old_child_sa = ikev2_find_child_sa_by_spi(ike_sa,
-	    (child_sa->preceding_satype == RCT_SATYPE_ESP ?
-	     IKEV2PROPOSAL_ESP : IKEV2PROPOSAL_AH),
+	    ikev2_child_rekey_proto(child_sa),
 	    child_sa->preceding_spi, MINE);
 	if (old_child_sa == NULL) {
 		TRACE((PLOGLOC,
