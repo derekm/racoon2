@@ -100,18 +100,24 @@ EOF
 	# path that fails, not the tree). The netns rows prove negotiation +
 	# the responder SAD/SPD with exact auth/trunc content.
 	if [ -n "$EXPECT_AUTH" ]; then
-		ip xfrm state | grep -q "$EXPECT_AUTH" || {
+		_sadpat="$EXPECT_AUTH"
+	else
+		_sadpat='aead rfc4106(gcm(aes))'
+	fi
+	_sad_ok=0
+	for _ in $(seq 1 30); do
+		ip xfrm state | grep -q "$_sadpat" && { _sad_ok=1; break; }
+		sleep 1
+	done
+	if [ "$_sad_ok" != 1 ]; then
+		if [ -n "$EXPECT_AUTH" ]; then
 			log "FAIL: SAD missing $EXPECT_AUTH"
 			ip xfrm state | grep -E 'auth|aead' | head -6
-			charon_reset
-			return 1
-		}
-	else
-		ip xfrm state | grep -q 'aead rfc4106(gcm(aes))' || {
+		else
 			log "FAIL: no GCM SAD"
-			charon_reset
-			return 1
-		}
+		fi
+		charon_reset
+		return 1
 	fi
 
 	show=$("$SBIN/ikedctl" show-sa isakmp) || {
