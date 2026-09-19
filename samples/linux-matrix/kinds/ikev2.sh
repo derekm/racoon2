@@ -158,6 +158,11 @@ EOF
 	sleep 2
 	# ipsec up can hang after the Child SA is already in; ping is the gate.
 	timeout 25 ip netns exec "$NS" ipsec up r2macos || true
+	# NB: no inner-ping gate on the netns rows — charon-in-netns cannot
+	# install its side of the SAs on these kernels (mirrored WSL2 and
+	# GH-hosted; manual netns xfrm adds work, so it is charon's netlink
+	# path that fails, not the tree). The netns rows prove negotiation +
+	# the responder SAD/SPD with exact auth/trunc content.
 	# Poll for the responder SAD instead of one-shot-after-sleep: on the
 	# loaded GH-hosted runner the iked installs the SAD a moment after the
 	# first grep and a single check races it (observed: the debug dump a

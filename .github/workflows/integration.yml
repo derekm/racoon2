@@ -115,11 +115,14 @@ jobs:
   fedora-pqc-matrix:
     name: 'Fedora PQC matrix (ADDKE, gated to Fedora)'
     runs-on: ubuntu-latest
-    # netns/xfrm in the matrix (ip netns add, ip xfrm policy) need CAP_SYS_ADMIN
-    # + CAP_NET_ADMIN, which GH container jobs drop by default.
+    # netns/xfrm in the matrix (ip netns add, ip xfrm policy, and the
+    # i2ike bringup `mount --make-shared /var/run/netns`) need full mount +
+    # netlink capability.  cap-add=NET_ADMIN/SYS_ADMIN alone is not enough:
+    # GH container jobs still deny the --make-shared remount propagation.
+    # --privileged lifts it so the PQC matrix can set up the veth netns.
     container:
       image: fedora:44
-      options: --cap-add=NET_ADMIN --cap-add=SYS_ADMIN
+      options: --privileged
     if: inputs.dist == 'fedora'
 
     steps:
