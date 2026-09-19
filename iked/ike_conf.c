@@ -3384,6 +3384,43 @@ ikev2_child_maybe_reoffer_addke(struct ikev2_child_sa *child_sa)
 	}
 }
 
+#ifdef WITH_ADDKE
+/*
+ * RFC 9370 ADDKE offer on an IKE_SA-rekey CREATE_CHILD request: append a
+ * type-6 ML-KEM768 transform to proplist[1].  The IKE_SA proposal is built by
+ * ikev2_conf_to_proplist (not child_sa->my_proposal), so this reuses that
+ * shape; ikev2_transf_addke lives here.  Returns 1 if the type-6 is present
+ * (appended or already there), 0 on missing proposal / nomem.
+ */
+int
+ikev2_maybe_offer_ikesa_addke(struct prop_pair **proplist)
+{
+	struct prop_pair *tail, *p6;
+	struct rc_alglist def;
+
+	if (!proplist || !proplist[1])
+		return 0;
+	for (tail = proplist[1]->tnext; tail; tail = tail->next)
+		if (tail->trns &&
+		    ((struct ikev2transform *)tail->trns)->transform_type ==
+		    IKEV2TRANSFORM_TYPE_ADDKE)
+			return 1;
+	memset(&def, 0, sizeof(def));
+	def.algtype = RCT_ALG_MLKEM768;
+	p6 = alglist_to_proppair(&def, IKEV2TRANSFORM_TYPE_ADDKE,
+				 &ikev2_transf_addke[0]);
+	if (!p6)
+		return 0;
+	if (proplist[1]->tnext) {
+		for (tail = proplist[1]->tnext; tail && tail->next; tail = tail->next)
+			;
+		tail->next = p6;
+	} else
+		proplist[1]->tnext = p6;
+	return 1;
+}
+#endif
+
 static struct prop_pair *
 ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 			   int proposal_number,

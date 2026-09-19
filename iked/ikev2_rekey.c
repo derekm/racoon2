@@ -403,6 +403,11 @@ static int rekey_skeyseed(struct ikev2_sa *, struct ikev2_sa *, rc_vchar_t *,
 static void ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *);
 static void ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *, rc_vchar_t *);
 static void ikev2_addke_rekey_timeout(void *);
+static void ikev2_rekey_ikesa_init_abandon(struct ikev2_sa *);
+struct ikev2_rekey_init_recv_ctx;
+static int ikev2_rekey_ikesa_init_followup_send(struct ikev2_sa *,
+					struct ikev2_rekey_init_recv_ctx *,
+					rc_vchar_t *);
 
 static void ikev2_child_adopt(struct ikev2_sa *old_sa, struct ikev2_sa *new_sa);
 
@@ -605,6 +610,14 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 		TRACE((PLOGLOC, "failed creating proplist\n"));
 		goto fail;
 	}
+#ifdef WITH_ADDKE
+	/* Offer RFC 9370 ADDKE (type-6) on the rekeyed IKE_SA when the
+	 * remote drives ADDKE: the responder then parks and keys the
+	 * rekeyed IKE_SA with ML-KEM via the IKE_FOLLOWUP_KE exchange
+	 * (we complete SK(1) once its KEr ciphertext lands). */
+	if (ikev2_addke_unrequested(new_sa->rmconf) == RCT_BOOL_ON)
+		(void)ikev2_maybe_offer_ikesa_addke(proplist);
+#endif
 	sa = ikev2_pack_proposal(proplist);
 	if (!sa) {
 		TRACE((PLOGLOC, "failed creating SA payload\n"));
@@ -1207,9 +1220,15 @@ ikev2_addke_rekey_timeout(void *param)
 	struct ikev2_rekey_responder_ctx *ctx;
 
 	old_sa->addke_rekey_timer = NULL;
+	old_sa->addke_rekey_pending = 0;
+#ifdef WITH_ADDKE
+	if (old_sa->addke_rekey_init != NULL) {
+		ikev2_rekey_ikesa_init_abandon(old_sa);
+		return;
+	}
+#endif
 	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
 	old_sa->addke_rekey_complete = NULL;
-	old_sa->addke_rekey_pending = 0;
 	old_sa->new_sa = NULL;
 
 	if (ctx) {
@@ -1233,6 +1252,12 @@ ikev2_rekey_abandon_parked(struct ikev2_sa *old_sa)
 {
 	struct ikev2_rekey_responder_ctx *ctx;
 
+#ifdef WITH_ADDKE
+	if (old_sa->addke_rekey_pending && old_sa->addke_rekey_init) {
+		ikev2_rekey_ikesa_init_abandon(old_sa);
+		return;
+	}
+#endif
 	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
 	old_sa->addke_rekey_complete = NULL;
 	old_sa->addke_rekey_pending = 0;
@@ -1381,6 +1406,17 @@ struct ikev2_rekey_init_recv_ctx {
 	int serial;	/* old_sa->serial_number, for liveness check */
 	struct prop_pair **parsed_sa;
 	rc_vchar_t *g_ir;
+	/* RFC 9370 ADDKE (initiator IKE_SA-rekey): the rekeyed IKE_SA
+	 * offered type-6, so SKEYSEED is deferred until the IKE_FOLLOWUP_KE
+	 * response supplies SK(1).  g_ir (DH) and the followup response both
+	 * arrive async; install only when both are present. */
+	int addke_deferred;	/* defer SKEYSEED pending the followup */
+	void *addke_priv;	/* EVP_PKEY * (ML-KEM private key) */
+	int addke_method;	/* negotiated ADDKE method id */
+	rc_vchar_t *addke_link;	/* link echoed in N(16441) */
+	uint32_t addke_followup_msgid;
+	rc_vchar_t *addke_sk;	/* SK(1) once the followup response lands */
+	int addke_g_ir_ready;	/* DH g_ir computed (async) */
 };
 static void ikev2_rekey_init_recv_ctx_free(struct ikev2_rekey_init_recv_ctx *);
 static void ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *);
@@ -1516,12 +1552,75 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 	ctx->parsed_sa = parsed_sa;
 	parsed_sa = NULL;
 
+#ifdef WITH_ADDKE
+	if (new_sa->negotiated_sa &&
+	    new_sa->negotiated_sa->addke != 0) {
+		/*
+		 * RFC 9370 ADDKE on IKE-SA rekey (initiator): the rekeyed
+		 * IKE_SA carried type-6, so SKEYSEED needs SK(1) from the
+		 * IKE_FOLLOWUP_KE exchange.  Generate our ML-KEM keypair,
+		 * send the followup request with our public key now, park
+		 * this ctx on old_sa, and defer the install until the
+		 * followup response supplies SK(1) (g_ir is computed
+		 * async below; install only when both are present).
+		 */
+		rc_vchar_t *pub = NULL;
+		EVP_PKEY *kp = NULL;
+
+		if (ikev2_addke_mlkem_keygen(new_sa->negotiated_sa->addke,
+					     &pub, &kp) != 0 || !pub || !kp) {
+			rc_vfree(pub);
+			EVP_PKEY_free(kp);
+			ikev2_rekey_init_recv_ctx_free(ctx);
+			TRACE((PLOGLOC, "ADDKE keygen failed (IKE-SA rekey)\n"));
+			goto fail;
+		}
+		ctx->addke_deferred = 1;
+		ctx->addke_priv = kp;
+		ctx->addke_method = new_sa->negotiated_sa->addke;
+		ctx->addke_link = random_bytes(16);
+		if (!ctx->addke_link) {
+			rc_vfree(pub);
+			ikev2_rekey_init_recv_ctx_free(ctx);
+			goto fail;
+		}
+		old_sa->addke_rekey_init = ctx;
+		old_sa->addke_rekey_pending = 1;
+		if (ikev2_rekey_ikesa_init_followup_send(old_sa, ctx,
+							 pub) != 0) {
+			old_sa->addke_rekey_init = NULL;
+			old_sa->addke_rekey_pending = 0;
+			rc_vfree(pub);
+			ikev2_rekey_init_recv_ctx_free(ctx);
+			TRACE((PLOGLOC,
+			       "failed sending ADDKE IKE-SA-rekey followup\n"));
+			goto fail;
+		}
+		rc_vfree(pub);
+		/* The followup-wait timeout is armed in
+		 * ikev2_rekey_ikesa_init_recv_tail once g_ir is ready and the
+		 * ctx is parked -- NOT here, so a slow DH compute can never
+		 * race it into a use-after-free (the async dh_done holds
+		 * this same ctx). */
+	}
+#endif
+
 	old_sa->crypto_pending = 1;
 	if (oakley_dh_compute_submit(
 	    (struct dhgroup *)new_sa->negotiated_sa->dhdef->definition,
 	    new_sa->dhpub, new_sa->dhpriv, new_sa->dhpub_p, &ctx->g_ir,
 	    ikev2_rekey_ikesa_init_recv_dh_done, ctx) != 0) {
 		old_sa->crypto_pending = 0;
+		#ifdef WITH_ADDKE
+		if (ctx->addke_deferred) {
+			old_sa->addke_rekey_init = NULL;
+			old_sa->addke_rekey_pending = 0;
+			if (old_sa->addke_rekey_timer) {
+				SCHED_KILL(old_sa->addke_rekey_timer);
+				old_sa->addke_rekey_timer = NULL;
+			}
+		}
+		#endif
 		TRACE((PLOGLOC, "failed dh submit\n"));
 		ikev2_rekey_init_recv_ctx_free(ctx);
 		goto fail;
@@ -1579,8 +1678,141 @@ ikev2_rekey_init_recv_ctx_free(struct ikev2_rekey_init_recv_ctx *ctx)
 		proplist_discard(ctx->parsed_sa);
 	if (ctx->g_ir)
 		rc_vfreez(ctx->g_ir);
+#ifdef WITH_ADDKE
+	if (ctx->addke_priv)
+		EVP_PKEY_free((EVP_PKEY *)ctx->addke_priv);
+	if (ctx->addke_link)
+		rc_vfreez(ctx->addke_link);
+	if (ctx->addke_sk)
+		rc_vfreez(ctx->addke_sk);
+#endif
 	rc_free(ctx);
 }
+
+#ifdef WITH_ADDKE
+/*
+ * Initiator IKE_SA-rekey ADDKE followup request:
+ *   HDR(IKE_FOLLOWUP_KE), SK { KEi(1)=method+pub, N(ADDITIONAL_KEY_EXCHANGE)(link) }
+ * Fresh message id; recorded for the response correlation.
+ */
+static int
+ikev2_rekey_ikesa_init_followup_send(struct ikev2_sa *old_sa,
+				     struct ikev2_rekey_init_recv_ctx *ctx,
+				     rc_vchar_t *pubkey)
+{
+	struct ikev2_payloads payl;
+	struct ikev2payl_ke_h keh;
+	rc_vchar_t *kei = 0;
+	rc_vchar_t *pkt = 0;
+	uint32_t message_id;
+
+	if (!ctx->addke_link || !pubkey)
+		return -1;
+
+	ikev2_payloads_init(&payl);
+	memset(&keh, 0, sizeof(keh));
+	keh.dh_group_id = htons((uint16_t)ctx->addke_method);
+	kei = rc_vprepend(pubkey, &keh, sizeof(keh));
+	if (!kei) {
+		ikev2_payloads_destroy(&payl);
+		return -1;
+	}
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, kei, FALSE);
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
+						IKEV2_ADDITIONAL_KEY_EXCHANGE,
+						ctx->addke_link->v,
+						ctx->addke_link->l),
+			    TRUE);
+	message_id = ikev2_request_id(old_sa);
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
+				     IKEV2FLAG_INITIATOR,
+				     message_id, old_sa, &payl);
+	rc_vfree(kei);
+	ikev2_payloads_destroy(&payl);
+	if (!pkt)
+		return -1;
+	if (ikev2_transmit(old_sa, pkt) != 0)
+		return -1;
+	ctx->addke_followup_msgid = message_id;
+	return 0;
+}
+
+/*
+ * Complete the initiator IKE_SA-rekey ADDKE once the followup response lands
+ * with the peer's KEr(1) ciphertext: decapsulate to SK(1), then finish the
+ * rekey (SKEYSEED with SK(1), keys, adopt) once the async g_ir is ready.
+ */
+int
+ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *old_sa,
+				      rc_vchar_t *ct)
+{
+	struct ikev2_rekey_init_recv_ctx *ctx;
+	EVP_PKEY *kp;
+	rc_vchar_t *ss = NULL;
+
+	ctx = (struct ikev2_rekey_init_recv_ctx *)old_sa->addke_rekey_init;
+	if (!ctx || !ctx->addke_deferred)
+		return -1;
+	if (old_sa->addke_rekey_timer) {
+		SCHED_KILL(old_sa->addke_rekey_timer);
+		old_sa->addke_rekey_timer = NULL;
+	}
+	kp = (EVP_PKEY *)ctx->addke_priv;
+	ctx->addke_priv = NULL;
+	if (!kp || !ct) {
+		EVP_PKEY_free(kp);
+		return -1;
+	}
+	if (ikev2_addke_mlkem_decap(kp, ct, &ss) < 0 || ss == NULL) {
+		EVP_PKEY_free(kp);
+		return -1;
+	}
+	EVP_PKEY_free(kp);
+	ctx->addke_sk = ss;
+	if (!ctx->addke_g_ir_ready)
+		return 0;	/* g_ir not computed yet; the tail finishes */
+	ctx->addke_followup_msgid = 0;
+	ikev2_rekey_ikesa_init_recv_tail(ctx);
+	return 0;
+}
+
+/* Followup request msgid of a parked initiator IKE_SA-rekey ADDKE (0 if
+ * none) — lets ikev2_addke.c correlate the followup response. */
+uint32_t
+ikev2_rekey_ikesa_init_followup_msgid(struct ikev2_sa *old_sa)
+{
+	struct ikev2_rekey_init_recv_ctx *ctx;
+
+	ctx = (struct ikev2_rekey_init_recv_ctx *)old_sa->addke_rekey_init;
+	return (ctx && ctx->addke_deferred) ?
+	    ctx->addke_followup_msgid : 0;
+}
+
+/* Abandon a parked initiator IKE_SA-rekey ADDKE (timeout / dispose). */
+static void
+ikev2_rekey_ikesa_init_abandon(struct ikev2_sa *old_sa)
+{
+	struct ikev2_rekey_init_recv_ctx *ctx;
+
+	ctx = (struct ikev2_rekey_init_recv_ctx *)old_sa->addke_rekey_init;
+	old_sa->addke_rekey_init = NULL;
+	old_sa->addke_rekey_pending = 0;
+	if (old_sa->addke_rekey_timer) {
+		SCHED_KILL(old_sa->addke_rekey_timer);
+		old_sa->addke_rekey_timer = NULL;
+	}
+	if (ctx) {
+		isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "abandoning parked ADDKE initiator IKE-SA rekey\n");
+		old_sa->new_sa = NULL;
+		if (ctx->new_sa)
+			ikev2_set_state(ctx->new_sa, IKEV2_STATE_DEAD);
+		ikev2_rekey_init_recv_ctx_free(ctx);
+	}
+	old_sa->rekey_inprogress = FALSE;
+}
+#endif
 
 /* runs on the IKE thread after the worker computed g^ir */
 static void
@@ -1589,7 +1821,30 @@ ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *ctx)
 	struct ikev2_sa *old_sa = ctx->old_sa;
 	struct ikev2_sa *new_sa = ctx->new_sa;
 
-	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir, NULL) != 0)
+#ifdef WITH_ADDKE
+	if (ctx->addke_deferred) {
+		/* g_ir is ready but the ADDKE followup response has not
+		 * landed SK(1) yet: stay parked (ctx is on old_sa) and arm
+		 * the followup-wait timeout NOW that g_ir is done (the ctx
+		 * is stable; dh_done no longer holds it). */
+		ctx->addke_g_ir_ready = 1;
+		if (!ctx->addke_sk) {
+			if (!old_sa->addke_rekey_timer)
+				old_sa->addke_rekey_timer =
+				    sched_new(10, ikev2_addke_rekey_timeout,
+					      old_sa);
+			return;
+		}
+		old_sa->addke_rekey_init = NULL;
+		if (old_sa->addke_rekey_timer) {
+			SCHED_KILL(old_sa->addke_rekey_timer);
+			old_sa->addke_rekey_timer = NULL;
+		}
+		old_sa->addke_rekey_pending = 0;
+	}
+#endif
+	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir,
+			   ctx->addke_deferred ? ctx->addke_sk : NULL) != 0)
 		goto fail;
 	if (ikev2_compute_keys(new_sa) != 0)
 		goto fail;

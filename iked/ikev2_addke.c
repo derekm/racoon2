@@ -591,29 +591,11 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 		/*
 		 * Initiator side: our IKE_FOLLOWUP_KE request got a
-		 * response.  Find the pending child by the message id
-		 * we used for the request, parse the KEr(1) ciphertext,
-		 * decapsulate to SK(1), and complete the deferred
-		 * keymat install.
+		 * response.  Find the pending child (or the initiator
+		 * IKE_SA-rekey ADDKE) by the message id we used for the
+		 * request, parse the KEr(1) ciphertext, decapsulate to
+		 * SK(1), and complete the deferred keymat install.
 		 */
-		rmsgid = get_uint32(&ikehdr->message_id);
-		for (rchild = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
-		     !IKEV2_CHILD_LIST_END(rchild);
-		     rchild = IKEV2_CHILD_LIST_NEXT(rchild)) {
-			if (rchild->addke_pending &&
-			    rchild->addke_followup_msgid == rmsgid)
-				break;
-		}
-		if (IKEV2_CHILD_LIST_END(rchild))
-			rchild = NULL;
-		if (!rchild) {
-			isakmp_log(ike_sa, local, remote, msg,
-				   PLOG_PROTOWARN, PLOGLOC,
-				   "IKE_FOLLOWUP_KE response for unknown "
-				   "pending child (msgid %u)\n", rmsgid);
-			return;
-		}
-
 		/* parse: SK { KEr(1) } */
 		rp = (struct ikev2_payload_header *)(ikehdr + 1);
 		for (rtype = ikehdr->next_payload;
@@ -635,6 +617,48 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				   "IKE_FOLLOWUP_KE response missing KE\n");
 			return;
 		}
+		rmsgid = get_uint32(&ikehdr->message_id);
+		for (rchild = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+		     !IKEV2_CHILD_LIST_END(rchild);
+		     rchild = IKEV2_CHILD_LIST_NEXT(rchild)) {
+			if (rchild->addke_pending &&
+			    rchild->addke_followup_msgid == rmsgid)
+				break;
+		}
+		if (IKEV2_CHILD_LIST_END(rchild))
+			rchild = NULL;
+		if (!rchild) {
+#ifdef WITH_ADDKE
+			/* not a pending child: an initiator IKE_SA-rekey
+			 * ADDKE whose followup request we sent. */
+			if (ike_sa->addke_rekey_pending &&
+			    ike_sa->addke_rekey_init &&
+			    ikev2_rekey_ikesa_init_followup_msgid(ike_sa) ==
+				rmsgid) {
+				rct = rc_vnew((const u_char *)(rke + 1),
+					      get_payload_data_length(&rke->header) -
+					      sizeof(rke->ke_h));
+				if (!rct)
+					return;
+				if (ikev2_rekey_ikesa_init_addke_complete(
+						ike_sa, rct) < 0)
+					isakmp_log(ike_sa, local,
+					    remote, msg, PLOG_INTERR,
+					    PLOGLOC,
+					    "failed completing "
+					    "initiator IKE_SA-rekey "
+					    "ADDKE\n");
+				rc_vfree(rct);
+				return;
+			}
+#endif
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOWARN, PLOGLOC,
+				   "IKE_FOLLOWUP_KE response for unknown "
+				   "pending child (msgid %u)\n", rmsgid);
+			return;
+		}
+
 		rct = rc_vnew((const u_char *)(rke + 1),
 			      get_payload_data_length(&rke->header) -
 			      sizeof(rke->ke_h));

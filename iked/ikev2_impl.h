@@ -228,6 +228,7 @@ struct ikev2_sa {
 	rc_vchar_t *addke_rekey_link;	/* link echoed in N(16441) */
 	rc_vchar_t *addke_rekey_sk;	/* SK(1) once the followup lands */
 	void *addke_rekey_complete;	/* parked rekey ctx (rekey.c) */
+	void *addke_rekey_init;	/* initiator parked rekey ctx (rekey.c) */
 	struct sched *addke_rekey_timer;
 
 	int behind_nat;
@@ -462,6 +463,9 @@ extern int ikev2_child_addke_install(struct ikev2_child_sa *);
 extern void ikev2_child_addke_arm_timeout(struct ikev2_child_sa *);
 extern int ikev2_rekey_responder_addke_complete(struct ikev2_sa *,
 						rc_vchar_t *, rc_vchar_t *);
+extern int ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *,
+						 rc_vchar_t *);
+extern uint32_t ikev2_rekey_ikesa_init_followup_msgid(struct ikev2_sa *);
 extern void ikev2_rekey_abandon_parked(struct ikev2_sa *);
 extern int ikev2_initiator_followup_send(struct ikev2_child_sa *,
 					 rc_vchar_t *);
