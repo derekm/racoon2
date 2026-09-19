@@ -363,11 +363,14 @@ ikev2_addke_selftest(void)
  * initiator and meaningful only to the responder.
  */
 static struct ikev2_child_sa *
-followup_ke_find_child(struct ikev2_sa *ike_sa, rc_vchar_t *link)
+followup_ke_find_child(struct ikev2_sa *ike_sa, rc_vchar_t *link,
+		       uint16_t ke_method)
 {
 	struct ikev2_child_sa *sa;
 	struct ikev2_child_sa *pending = NULL;
+	struct ikev2_child_sa *method_hit = NULL;
 	int n_pending = 0;
+	int n_method = 0;
 
 	if (link == NULL)
 		return NULL;
@@ -378,33 +381,48 @@ followup_ke_find_child(struct ikev2_sa *ike_sa, rc_vchar_t *link)
 			continue;
 		n_pending++;
 		pending = sa;
+		if (sa->addke_method == ke_method) {
+			n_method++;
+			method_hit = sa;
+		}
 		if (sa->addke_link && sa->addke_link->l == link->l &&
 		    memcmp(sa->addke_link->v, link->v, link->l) == 0)
-			return sa;	/* pre-bound: exact match (rekey path) */
+			return sa;	/* pre-bound link: exact match */
 	}
 	/*
-	 * RFC 9370 s2.2.4: the ADDKE link is chosen by the peer that sent the
-	 * CREATE_CHILD_SA and echoed/indexed by the other side.  For a child
-	 * created in the IKE_AUTH exchange the responder never transmitted a
-	 * link beforehand (kev2_responder_state1_send does not carry the
-	 * ADDKE notify for the initial child), so the first IKE_FOLLOWUP_KE
-	 * arrives with the INITIATOR's link.  Bind it to the single
-	 * unambiguous pending ADDKE child; refuse only when the link would be
-	 * ambiguous (multiple unbound pending children).
+	 * RFC 9370 s2.2.4: the ADDKE link is chosen by the CREATE_CHILD
+	 * initiator and signalled to the peer; the peer (this responder, for
+	 * a peer-driven child rekey) must correlate the IKE_FOLLOWUP_KE to
+	 * the SA.  A child the responder did not itself create carries a
+	 * responder-side link that was never signalled, so the followup
+	 * arrives with the peer's link and no exact match is possible.
+	 * Correlate by the identifiers that do bind the SA: the sole pending
+	 * child, else the sole pending child of this KE method.  Refuse
+	 * (STATE_NOT_FOUND) only when genuinely ambiguous — several pending
+	 * children of the same method — never guess.
 	 */
-	if (n_pending == 1 && pending->addke_link &&
+	if (n_pending == 1)
+		/* pending already names the sole child */;
+	else if (n_method == 1)
+		pending = method_hit;	/* unique method disambiguates */
+	else
+		pending = NULL;		/* ambiguous across the SA */
+	if (!pending)
+		return NULL;
+	if (pending->addke_link &&
 	    (pending->addke_link->l != link->l ||
 	     memcmp(pending->addke_link->v, link->v, link->l) != 0)) {
+		/* responder-side random link was never signalled: drop it and
+		 * adopt the peer's link so the completion is correlated */
 		rc_vfreez(pending->addke_link);
 		pending->addke_link = NULL;
 	}
-	if (n_pending == 1 && pending->addke_link == NULL) {
+	if (!pending->addke_link) {
 		pending->addke_link = rc_vnew(link->v, link->l);
 		if (!pending->addke_link)
 			return NULL;
-		return pending;
 	}
-	return NULL;
+	return pending;
 }
 
 /*
@@ -756,7 +774,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 */
 		child_sa = NULL;
 	} else {
-		child_sa = followup_ke_find_child(ike_sa, link);
+		child_sa = followup_ke_find_child(ike_sa, link, ke_method);
 	}
 	if (!child_sa && !ike_sa->addke_rekey_pending) {
 		/* rfc9370 s2.2.4: no key exchange state -> STATE_NOT_FOUND */
