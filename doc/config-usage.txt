@@ -675,6 +675,29 @@ remote
 		It controls whether the responder requires the cookie.
 		default is off.
 
+	addke_required (on|off) ;
+		It is valid for the ikev2 directive.
+		It is the RFC 9370 Additional Key Exchange (ADDKE) downgrade
+		gate.  When on, the peer's proposals for a child MUST carry
+		an ADDKE (type-6) transform or the child is refused; this
+		prevents a downgrade to plain IKEv2.  Only available on
+		builds with the ML-KEM backend (--enable-addke).
+		default is off (ADDKE optional; a peer without type-6
+		negotiates plain IKEv2).
+
+	addke_unrequested (on|off) ;
+		It is valid for the ikev2 directive.
+		It controls responder-driven ADDKE (RFC 9370).  When on, the
+		responder offers a type-6 ADDKE transform in a CREATE_CHILD /
+		child-rekey response even when the initiator never requested
+		one (a classical-only peer such as iOS still drives the
+		IKE_FOLLOWUP_KE when the response carries type-6) and then
+		completes the resulting ML-KEM key exchange.  This forces
+		ADDKE on child rekey for the peer.  Only available on builds
+		with the ML-KEM backend (--enable-addke).
+		default is off (a peer that never offered ADDKE gets a plain
+		response and no followup).
+
 	need_pfs (on|off) ;
 		It is valid for both directives of the ikev1 and ikev2.
 		It controls to enable PFS or not.

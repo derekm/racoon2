@@ -526,7 +526,25 @@ o remote
 			responder時にcookieを要求するかどうかのフラグ
 			デフォルト off
 
-		need_pfs (on|off) ;
+	"	addke_required (on|off) ;
+		これは ikev2 ディレクティブで有効です。
+		RFC 9370 追加鍵交換 (ADDKE) のダウングレード防止ゲートです。on の場合、
+		子 SA に対するピアの提案は ADDKE (type-6) トランスフォームを含まなければ
+		ならず、含まない場合は子 SA は拒否されます。
+		ML-KEM バックエンド (--enable-addke) でビルドされた場合のみ利用可能。
+		デフォルトは off (ADDKE は任意。type-6 を持たないピアは通常の IKEv2 で交渉)。
+
+	addke_unrequested (on|off) ;
+		これは ikev2 ディレクティブで有効です。
+		レスポンダ駆動の ADDKE (RFC 9370) を制御します。on の場合、
+		イニシエータが type-6 を要求しなくても CREATE_CHILD / 子リキー応答に
+		type-6 を提示し、結果の ML-KEM 鍵交換を完了します (iOS のような古典的
+		なピアでも応答に type-6 が含まれると IKE_FOLLOWUP_KE を駆動します)。
+		子リキーで ADDKE を強制します。ML-KEM バックエンド (--enable-addke) で
+		ビルドされた場合のみ利用可能。デフォルトは off (ADDKE を要求しない
+		ピアには通常の応答のみ)。
+
+	need_pfs (on|off) ;
 			ikev1,ikev2でのみ有効なディレクティブ
 			PFSを有効にするかどうかを定義する。
 			IKEv1ではphase2でKEを再送する。
