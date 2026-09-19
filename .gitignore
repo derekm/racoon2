@@ -76,3 +76,7 @@ samples/systemd/kinkd.service
 samples/systemd/racoon2.target
 samples/systemd/spmd.service
 samples/systemd/spmd.socket
+
+# python bytecode
+__pycache__/
+*.py[cod]
