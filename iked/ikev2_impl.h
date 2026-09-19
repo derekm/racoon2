@@ -470,6 +470,8 @@ extern int ikev2_initiator_followup_complete(struct ikev2_child_sa *,
 #endif
 
 extern int ikev2_noncecmp(rc_vchar_t *, rc_vchar_t *);
+extern void ikev2_initiator_rekey_finalize(struct ikev2_sa *,
+					   struct ikev2_child_sa *);
 
 extern int ikev2_input(rc_vchar_t *, struct sockaddr *, struct sockaddr *);
 extern void ikev2_initiate(struct isakmp_acquire_request *,

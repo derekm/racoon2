@@ -4863,6 +4863,95 @@ ikev2_noncecmp(rc_vchar_t *n1, rc_vchar_t *n2)
 	return 0;
 }
 
+/*
+ * RFC 7296 §2.8 initiator rekey finalize, shared by the plain CREATE_CHILD
+ * finalize path (ikev2_createchild_initiator_recv) and the ADDKE completion
+ * (ikev2_initiator_followup_complete, after the IKE_FOLLOWUP_KE installs the
+ * rekeyed child with the KEM keymat).  The replaced (preceding) SA is cleared
+ * once the new child is live.  On a rekey collision it follows the draft-17
+ * rule: keep both NEW SAs briefly and the one created with the lowest of the
+ * four nonces is closed by the endpoint that created it — here we close our
+ * just-rekeyed child if it loses, otherwise leave both (the duplicate's
+ * creator clears its own).  The caller decides whether to call us at all:
+ * the plain path defers while addke_pending so the followup can install the
+ * KEM child first.
+ */
+void
+ikev2_initiator_rekey_finalize(struct ikev2_sa *ike_sa,
+			       struct ikev2_child_sa *child_sa)
+{
+	struct ikev2_child_sa *old_child_sa;
+	struct ikev2_child_sa *duplicate_child_sa;
+
+	if (child_sa->preceding_satype == 0)
+		return;
+
+	old_child_sa = ikev2_find_child_sa_by_spi(ike_sa,
+	    (child_sa->preceding_satype == RCT_SATYPE_ESP ?
+	     IKEV2PROPOSAL_ESP : IKEV2PROPOSAL_AH),
+	    child_sa->preceding_spi, MINE);
+	if (old_child_sa == NULL) {
+		TRACE((PLOGLOC,
+		       "can't find preceding sa satype %d spi 0x%x\n",
+		       child_sa->preceding_satype,
+		       child_sa->preceding_spi));
+		return;
+	}
+
+	if (old_child_sa->rekey_duplicate) {
+		/*
+		 * (draft-17) A rekey collision may temporarily create two
+		 * similar SAs; accept packets through either, and the SA
+		 * created with the lowest of the four nonces used in the two
+		 * exchanges SHOULD be closed by the endpoint that created it.
+		 */
+		duplicate_child_sa =
+		    ikev2_find_child_sa(ike_sa,
+					TRUE,
+					old_child_sa->rekey_duplicate_message_id);
+		if (duplicate_child_sa == NULL) {
+			TRACE((PLOGLOC,
+			       "can't find duplicate child_sa (message_id 0x%08x\n",
+			       old_child_sa->rekey_duplicate_message_id));
+		} else {
+			rc_vchar_t *n1;
+			rc_vchar_t *n2;
+
+			TRACE((PLOGLOC, "checking duplicate...\n"));
+			n1 = (ikev2_noncecmp(child_sa->n_i, child_sa->n_r) < 0) ?
+			    child_sa->n_i :
+			    child_sa->n_r;
+			n2 = (ikev2_noncecmp(duplicate_child_sa->n_i,
+					     duplicate_child_sa->n_r) < 0) ?
+			    duplicate_child_sa->n_i :
+			    duplicate_child_sa->n_r;
+			if (ikev2_noncecmp(n1, n2) < 0) {
+				/* our just-rekeyed child has the lowest
+				 * nonce: close it (RFC 7296 §2.8.2) */
+				TRACE((PLOGLOC, "need initiating delete\n"));
+				ikev2_child_delete(child_sa);
+			} else {
+				TRACE((PLOGLOC, "leave it\n"));
+			}
+		}
+		return;
+	}
+
+	/*
+	 * RFC 7296 2.8: "when the new one is established, delete the old
+	 * one".  The rekey initiator deletes the replaced child SA once the
+	 * new SA is live; ikev2_child_delete() sends the DELETE payload (old
+	 * SPI) via an Informational exchange and removes the inbound SADB
+	 * now, outbound when the response arrives.  Skipping this left the
+	 * old SA resident and iOS deleted the IKE_SA ~30 s after every
+	 * completed rekey.
+	 */
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+	    "rekey complete: deleting old child spi=0x%08x\n",
+	    child_sa->preceding_spi);
+	ikev2_child_delete(old_child_sa);
+}
+
 void
 ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				 struct sockaddr *remote,
@@ -5046,77 +5135,8 @@ ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	 * "rekey complete" are deferred to the ADDKE completion
 	 * (ikev2_initiator_followup_complete).
 	 */
-	if (child_sa->preceding_satype != 0 && !child_sa->addke_pending) {
-		struct ikev2_child_sa *old_child_sa;
-		struct ikev2_child_sa *duplicate_child_sa;
-
-		old_child_sa = ikev2_find_child_sa_by_spi(ike_sa,
-						  (child_sa->preceding_satype == RCT_SATYPE_ESP ?
-						   IKEV2PROPOSAL_ESP :
-						   IKEV2PROPOSAL_AH),
-						  child_sa->preceding_spi,
-						  MINE);
-		if (!old_child_sa) {
-			TRACE((PLOGLOC,
-			       "can't find preceding sa satype %d spi 0x%x\n",
-			       child_sa->preceding_satype,
-			       child_sa->preceding_spi));
-		} else if (old_child_sa->rekey_duplicate) {
-			/* (draft-17)
-			 * This form of rekeying may temporarily result in multiple similar SAs
-			 * between the same pairs of nodes. When there are two SAs eligible to
-			 * receive packets, a node MUST accept incoming packets through either
-			 * SA. If redundant SAs are created though such a collision, the SA
-			 * created with the lowest of the four nonces used in the two exchanges
-			 * SHOULD be closed by the endpoint that created it.
-			 */
-			duplicate_child_sa =
-				ikev2_find_child_sa(ike_sa, TRUE,
-						    old_child_sa->rekey_duplicate_message_id);
-			if (!duplicate_child_sa) {
-				TRACE((PLOGLOC,
-				       "can't find duplicate child_sa (message_id 0x%08x\n",
-				       old_child_sa->rekey_duplicate_message_id));
-			} else {
-				rc_vchar_t *n1;
-				rc_vchar_t *n2;
-
-				TRACE((PLOGLOC, "checking duplicate...\n"));
-				n1 = (ikev2_noncecmp(child_sa->n_i, child_sa->n_r) < 0) ?
-				    child_sa->n_i :
-				    child_sa->n_r;
-				n2 = (ikev2_noncecmp(duplicate_child_sa->n_i,
-					       duplicate_child_sa->n_r) < 0) ?
-				    duplicate_child_sa->n_i :
-				    duplicate_child_sa->n_r;
-				if (ikev2_noncecmp(n1, n2) < 0) {
-					/* then I have to initiate delete */
-					TRACE((PLOGLOC,
-					       "need initiating delete\n"));
-					ikev2_child_delete(child_sa);
-				} else {
-					TRACE((PLOGLOC, "leave it\n"));
-				}
-			}
-		} else {
-			/*
-			 * RFC 7296 2.8: "when the new one is established,
-			 * delete the old one".  The rekey initiator
-			 * deletes the replaced child SA once the new SA is
-			 * live; ikev2_child_delete() sends the DELETE
-			 * payload (old SPI) via an Informational exchange
-			 * and removes the inbound SADB now, outbound when
-			 * the response arrives.  Skipping this left the
-			 * old SA resident and iOS deleted the IKE_SA
-			 * ~30 s after every completed rekey.
-			 */
-			isakmp_log(ike_sa, local, remote, msg, PLOG_INFO,
-			    PLOGLOC,
-			    "rekey complete: deleting old child spi=0x%08x\n",
-			    child_sa->preceding_spi);
-			ikev2_child_delete(old_child_sa);
-		}
-	}
+	if (child_sa->preceding_satype != 0 && !child_sa->addke_pending)
+		ikev2_initiator_rekey_finalize(ike_sa, child_sa);
 
       done:
 	if (g_r)

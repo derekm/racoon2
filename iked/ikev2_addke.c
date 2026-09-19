@@ -523,22 +523,12 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 	 * CREATE_CHILD_SA response path defers the rekey-finalize for an
 	 * addke_pending child (see ikev2_createchild_initiator_recv), so
 	 * now that the ADDKE child is installed with the KEM keymat,
-	 * finish it: delete the old child and record the rekey complete.
+	 * finish it via the shared RFC 7296 §2.8 finalize: deletes the old
+	 * child, or on a rekey collision applies the RFC 7296 nonce rule
+	 * instead of unconditionally deleting the preceded SA.
 	 */
-	if (child_sa->preceding_satype != 0) {
-		struct ikev2_child_sa *old;
-		old = ikev2_find_child_sa_by_spi(child_sa->parent,
-		    (child_sa->preceding_satype == RCT_SATYPE_ESP ?
-		     IKEV2PROPOSAL_ESP : IKEV2PROPOSAL_AH),
-		    child_sa->preceding_spi, MINE);
-		if (old) {
-			isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO,
-			    PLOGLOC,
-			    "rekey complete: deleting old child spi=0x%08x\n",
-			    child_sa->preceding_spi);
-			ikev2_child_delete(old);
-		}
-	}
+	if (child_sa->preceding_satype != 0)
+		ikev2_initiator_rekey_finalize(child_sa->parent, child_sa);
 	return 0;
 }
 
