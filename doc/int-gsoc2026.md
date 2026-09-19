@@ -136,13 +136,17 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   exchanges run sequentially between IKE_SA_INIT and IKE_AUTH (msgid 1,2,…), each
   carrying an Encrypted payload. It is a **carrier** for additional key exchange
   (e.g. ADDKE/ML-KEM) that updates SK_e/SK_a per the applying spec; the rounds are
-  bound into AUTH via the **chained IntAuth PRF** (`IntAuth_i/rN`) + `IKE_AUTH_MID`
-  chunk appended to each peer's signed/mac'd blob. iOS sends 16438 today (racoon2
-  currently ignores it) — the phone is the live interop target. New exchange-type
-  dispatch in `iked/ikev2_established_recv`, responder + initiator, new
-  `iked/ikev2_intermediate.c`, gate `--enable-intermediate` (auto, empty TU
-  off-path); do NOT echo 16438 in the response until the exchange is wired (else
-  we advertise support we don't implement).
+ bound into AUTH via the **chained IntAuth PRF** (`IntAuth_i/rN`) + `IKE_AUTH_MID`
+ chunk appended to each peer's signed/mac'd blob. iOS sends 16438 today (racoon2
+ currently ignores it) — the phone is the live interop target. New exchange-type
+ dispatch in **`iked/ikev2.c` pre-AUTH receive path** (IKE_INTERMEDIATE runs
+ BEFORE IKE_AUTH; the IKE SA MUST NOT be considered established until IKE_AUTH
+ completes — RFC 9242 s3.2 — so it is NOT `ikev2_established_recv`, which is the
+ post-AUTH CREATE_CHILD/INFORMATIONAL/IKE_FOLLOWUP_KE switch), responder +
+ initiator, new `iked/ikev2_intermediate.c` (CRLF), gate `--enable-intermediate`
+ in **`iked/configure.ac`** (auto, empty TU off-path); do NOT echo 16438 in the
+ response until exch-43 + IntAuth are wired (else we advertise support we don't
+ implement).
 - **RFC 8784 (PPK):** PPK_ID notify + quantum-resistant pre-shared mixing into
   SK_PRF/SKEYSEED + sequential counter to prevent reuse. New PPK config +
   notify handling + key feed; needs a PSK source. After 9242.
