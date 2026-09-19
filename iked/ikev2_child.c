@@ -1464,7 +1464,8 @@ ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 
 	/* Apple responder-driven ADDKE: the peer initiates a classical-only
 	 * CREATE_CHILD but, when our response carries a type-6 (enabled via
-	 * RACOON2_ADDKE_UNREQUESTED), it drives the IKE_FOLLOWUP_KE anyway.
+	 * the addke_unrequested remote config keyword), it drives the
+	 * IKE_FOLLOWUP_KE anyway.
 	 * Peer offered no ADDKE transform, so bind the method we offered and
 	 * keep the child pending so the followup correlates and completes.
 	 */

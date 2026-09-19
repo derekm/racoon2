@@ -15,9 +15,9 @@ kind_i2ike() {
 
 	NSR=i2ike-r; NSI=i2ike-i; VR=i2v-r; VI=i2v-i
 	HR=192.0.4.1; HI=192.0.4.2
-	PRIVRES=/tmp/r2-i2ike-resume
+	PRIVRES_R=/tmp/r2-i2ike-resume-r; PRIVRES_I=/tmp/r2-i2ike-resume-i
 	D=/tmp/r2-i2ike; C=/tmp/r2-i2ike-conf
-	rm -rf "$PRIVRES" "$D" "$C"; mkdir -p "$PRIVRES" "$D" "$C"
+	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
 	cat > "$C/responder.conf" <<EOF
 interface {
@@ -160,13 +160,13 @@ EOF
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	RSPMD=$!
 	i=0; until [ -S /tmp/spmif-i2ike-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ike-r RACOON2_RESUME_DIR="$PRIVRES" \
+	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ike-r RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
 	ISPMD=$!
 	i=0; until [ -S /tmp/spmif-i2ike-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ike-i RACOON2_RESUME_DIR="$PRIVRES" \
+	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ike-i RACOON2_RESUME_DIR="$PRIVRES_I" \
 	    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 
 	sleep 2
@@ -204,21 +204,25 @@ EOF
 	[ "$rekeyed" -eq 1 ] || log "FAIL: child-SA rekey not seen in 120s; resp SPIs now: $(spi "$NSR" | tr '\n' ' ')"
 
 	# PQC proof — a NEW SPI alone is not ML-KEM (a plain rekey passes that).
-	# The initiator-side rekey must have (a) offered type-06 ADDKE (0x24 =
-	# mlkem768) in its CREATE_CHILD SA, (b) started an IKE_FOLLOWUP_KE, and
-	# (c) NOT aborted the pending rekey child to a followup timeout.  The
-	# first (classical) child's expected responder-driven 'installing plain
-	# child' downgrade is NOT a failure; only the peer-offered-ADDKE rekey
-	# abort means the ML-KEM completion was not achieved.
+	# The rekey must (a) offer type-06 ADDKE (0x24 = mlkem768) in its
+	# CREATE_CHILD SA, (b) derive ML-KEM keymat on BOTH sides — the ADDKE
+	# install logs 'g_ir_present=n' (no per-child DH in the KEM keymat; plain
+	# installs are g_ir_present=Y) and the initiator/responder keymat
+	# sha256 must MATCH (both decapsulate the same SK(1)) — and (c) not abort
+	# the pending rekey child to a followup timeout.
 	t6=$(grep -c '06000024' "$D/init-iked.log" 2>/dev/null || true)
-	fup=$(grep -ciE 'IKE_FOLLOWUP_KE' "$D/init-iked.log" 2>/dev/null || true)
 	abt=$(grep -cE 'ADDKE followup timeout; abort' "$D/resp-iked.log" 2>/dev/null || true)
+	kh_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/init-iked.log" 2>/dev/null \
+		| grep -oE 'sha256=[0-9a-f]+' | sort -u | head -1)
+	kh_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/resp-iked.log" 2>/dev/null \
+		| grep -oE 'sha256=[0-9a-f]+' | sort -u | head -1)
 	pqc=0
-	if [ "${t6:-0}" -ge 1 ] && [ "${fup:-0}" -ge 1 ] && [ "${abt:-0}" -eq 0 ]; then
+	if [ "${t6:-0}" -ge 1 ] && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
+	   && [ "${abt:-0}" -eq 0 ]; then
 		pqc=1
-		log "PQC rekey: type-6 offered (x$t6), FOLLOWUP_KE started (x$fup), no followup abort"
+		log "PQC rekey: type-6 offered (x$t6), KEM keymat sha256=$kh_i on both sides, no followup abort"
 	else
-		log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 followup=$fup abort=$abt)"
+		log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
 	fi
 
 	# kill daemons by the unique per-run conf dir (it IS in their argv);
@@ -229,7 +233,7 @@ EOF
 	ip netns del "$NSR" 2>/dev/null || true
 	ip netns del "$NSI" 2>/dev/null || true
 	ip link del "$VR" 2>/dev/null || true
-	rm -rf "$PRIVRES"
+	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
 	if [ "$up" -ne 1 ] || [ "${rekeyed:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; then
 		log "FAIL: PQC init-SA + child-SA rekey incomplete (up=${up:-0} rekeyed=${rekeyed:-0} pqc=${pqc:-0})"

@@ -174,11 +174,12 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   kinkd-impl/install, libracoon, specification, system-message) plus EN
   README/INSTALL/USAGE and our `addke-design.md` / `int-gsoc2026.md`.
   `config-usage.txt` documents `addke_required`/`addke_unrequested`.
-- **Easy configuration tool — adopted, spec at `doc/config-tool.md`.** New:
+- **Easy configuration tool — adopted (goal), spec only, not yet in tree.**
+  Spec at `doc/config-tool.md`.  The pending deliverable is
   `samples/racoon2-schema.json` (JSON Schema payload) +
   `utils/racoon2-config.py` (validate/generate), gated by the real parser
-  (`iked -F -f generated.conf` → no `syntax error`). Schema derived from
-  `cfparse.y`/`cftoken.l`, not hand-maintained.
+  (`iked -F -f generated.conf` → no `syntax error`).  Schema derived from
+  `cfparse.y`/`cftoken.l`, not hand-maintained.  **Neither file exists yet.**
 - **MIPL / SHISA — superseded by existing MOBIKE (RFC 4555).** Legacy
   kernel-Level MIPv6 (mobile IPv6 binding / HA forwarding) never stabilized
   in modern kernels. The modern IKE-level analog — network mobility without a
