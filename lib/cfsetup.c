@@ -3262,6 +3262,8 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_ALGLIST(src->kmp_prf_alg, new->kmp_prf_alg);
 	DEEPCOPY_ALGLIST(src->kmp_dh_group, new->kmp_dh_group);
 	DEEPCOPY_ALGLIST(src->kmp_auth_method, new->kmp_auth_method);
+	new->addke_required = src->addke_required;
+	new->addke_unrequested = src->addke_unrequested;
 	DEEPCOPY_VDUP(src->addresspool, new->addresspool);
 	new->config_request = src->config_request;
 	DEEPCOPY_ADDRLIST(src->cfg_dns, new->cfg_dns);
