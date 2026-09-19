@@ -203,6 +203,24 @@ EOF
 	done
 	[ "$rekeyed" -eq 1 ] || log "FAIL: child-SA rekey not seen in 120s; resp SPIs now: $(spi "$NSR" | tr '\n' ' ')"
 
+	# PQC proof — a NEW SPI alone is not ML-KEM (a plain rekey passes that).
+	# The initiator-side rekey must have (a) offered type-06 ADDKE (0x24 =
+	# mlkem768) in its CREATE_CHILD SA, (b) started an IKE_FOLLOWUP_KE, and
+	# (c) NOT aborted the pending rekey child to a followup timeout.  The
+	# first (classical) child's expected responder-driven 'installing plain
+	# child' downgrade is NOT a failure; only the peer-offered-ADDKE rekey
+	# abort means the ML-KEM completion was not achieved.
+	t6=$(grep -c '06000024' "$D/init-iked.log" 2>/dev/null || true)
+	fup=$(grep -ciE 'IKE_FOLLOWUP_KE' "$D/init-iked.log" 2>/dev/null || true)
+	abt=$(grep -cE 'ADDKE followup timeout; abort' "$D/resp-iked.log" 2>/dev/null || true)
+	pqc=0
+	if [ "${t6:-0}" -ge 1 ] && [ "${fup:-0}" -ge 1 ] && [ "${abt:-0}" -eq 0 ]; then
+		pqc=1
+		log "PQC rekey: type-6 offered (x$t6), FOLLOWUP_KE started (x$fup), no followup abort"
+	else
+		log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 followup=$fup abort=$abt)"
+	fi
+
 	# kill daemons by the unique per-run conf dir (it IS in their argv);
 	# a pkill on the conf-internal remote name matches nothing and leaks
 	# up to 4 daemons holding the netns.
@@ -213,8 +231,8 @@ EOF
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES"
 
-	if [ "$up" -ne 1 ] || [ "${rekeyed:-0}" -ne 1 ]; then
-		log "FAIL: PQC init-SA + child-SA rekey incomplete (up=${up:-0} rekeyed=${rekeyed:-0})"
+	if [ "$up" -ne 1 ] || [ "${rekeyed:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; then
+		log "FAIL: PQC init-SA + child-SA rekey incomplete (up=${up:-0} rekeyed=${rekeyed:-0} pqc=${pqc:-0})"
 		log "--- init-iked.log (followup/ESTABLISHED) ---"
 		sed -n 's/.*\(ESTABLISHED\|FOLLOWUP\|ADDKE\|abort\|err=\|GETSPI\).*/\1: &/p' \
 			"$D/init-iked.log" 2>/dev/null | tail -6
