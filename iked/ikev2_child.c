@@ -1461,7 +1461,9 @@ ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 	 * Peer offered no ADDKE transform, so bind the method we offered and
 	 * keep the child pending so the followup correlates and completes.
 	 */
-	if (!peer_addke && ikev2_addke_unrequested()) {
+	if (!peer_addke && child_sa->parent &&
+	    child_sa->parent->rmconf &&
+	    ikev2_addke_unrequested(child_sa->parent->rmconf) == RCT_BOOL_ON) {
 		child_sa->addke_nrounds = 1;
 		child_sa->addke_round = 0;
 		child_sa->addke_methods[0] = IKEV2TRANSF_ADDKE_MLKEM768;

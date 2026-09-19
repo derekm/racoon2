@@ -290,6 +290,12 @@ struct rcf_kmp {
 	 * transform (downgrade protection).  OFF = ADDKE optional
 	 * (peer without type-6 negotiates plain IKEv2). */
 	rc_type addke_required;
+	/* RFC 9370 responder-driven ADDKE: force/offer a type-6 transform in a
+	 * CREATE_CHILD response even when the initiator never requested it (a
+	 * classical-only peer like iOS still drives IKE_FOLLOWUP_KE when the
+	 * response carries type-6) and complete the resulting ML-KEM exchange.
+	 * OFF (default) = classical peer gets a plain response, no followup. */
+	rc_type addke_unrequested;
 };
 
 /* selector info */
