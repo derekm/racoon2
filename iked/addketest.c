@@ -221,6 +221,20 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *sa, rc_vchar_t *sk,
 	return -1;
 }
 
+uint32_t
+ikev2_rekey_ikesa_init_followup_msgid(struct ikev2_sa *sa)
+{
+	(void)sa;
+	return 0;
+}
+
+int
+ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *sa, rc_vchar_t *ct)
+{
+	(void)sa; (void)ct;
+	return -1;
+}
+
 void
 ikev2_rekey_abandon_parked(struct ikev2_sa *sa)
 {
