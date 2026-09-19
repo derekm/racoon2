@@ -3305,6 +3305,22 @@ auth_alg_is_none(struct rc_alglist *auth_alg)
 	return 1;
 }
 
+/*
+ * RACOON2_ADDKE_UNREQUESTED=1 (default OFF): responder-driven ADDKE.
+ * When set, the responder may offer a type-6 ADDKE transform in a
+ * CREATE_CHILD response even when the initiator did not request it, and
+ * then completes the peer's IKE_FOLLOWUP_KE.  The peer here is Apple iOS:
+ * it never puts type-6 in its own CREATE_CHILD request, but when the
+ * response carries a type-6 it drives the full ML-KEM exchange.  Off by
+ * default (a classical-only peer stays plain; on it would otherwise get
+ * a followup we refuse, as STATE_NOT_FOUND -> DELETE IKE_SA).
+ */
+int
+ikev2_addke_unrequested(void)
+{
+	return getenv("RACOON2_ADDKE_UNREQUESTED") != NULL;
+}
+
 static struct prop_pair *
 ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 			   int proposal_number,
@@ -3398,7 +3414,8 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 	    child_sa->parent &&
 	    child_sa->parent->state == IKEV2_STATE_ESTABLISHED &&
 	    (child_sa->is_initiator ||
-	     child_sa->addke_nrounds > 0)) {
+	     child_sa->addke_nrounds > 0 ||
+	     ikev2_addke_unrequested())) {
 		*tail = alglist_to_proppair(proto_info->addke_alg,
 					    IKEV2TRANSFORM_TYPE_ADDKE,
 					    &ikev2_transf_addke[0]);

@@ -1455,6 +1455,25 @@ ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 		}
 	}
 
+	/* Apple responder-driven ADDKE: the peer initiates a classical-only
+	 * CREATE_CHILD but, when our response carries a type-6 (enabled via
+	 * RACOON2_ADDKE_UNREQUESTED), it drives the IKE_FOLLOWUP_KE anyway.
+	 * Peer offered no ADDKE transform, so bind the method we offered and
+	 * keep the child pending so the followup correlates and completes.
+	 */
+	if (!peer_addke && ikev2_addke_unrequested()) {
+		child_sa->addke_nrounds = 1;
+		child_sa->addke_round = 0;
+		child_sa->addke_methods[0] = IKEV2TRANSF_ADDKE_MLKEM768;
+		child_sa->addke_method = child_sa->addke_methods[0];
+		peer_addke = 1;
+		isakmp_log(child_sa->parent, 0, 0, 0,
+			   PLOG_INFONF, PLOGLOC,
+			   "responder-driven ADDKE: peer offered none; "
+			   "offering type-6 %u and holding pending\n",
+			   child_sa->addke_method);
+	}
+
 	if (peer_addke) {
 		child_sa->addke_pending = 1;
 		child_sa->addke_link = random_bytes(16);

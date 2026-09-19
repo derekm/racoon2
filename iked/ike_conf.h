@@ -186,6 +186,7 @@ extern rc_type ikev2_send_peers_id(struct rcf_remote *);
 extern rc_type ikev2_need_pfs(struct rcf_remote *);
 extern rc_type ikev2_nat_traversal(struct rcf_remote *);
 extern rc_type ikev2_addke_required(struct rcf_remote *);
+extern int ikev2_addke_unrequested(void);
 extern int ikev2_natk_interval(struct rcf_remote *);
 extern struct rc_addrlist *ikev2_natd_public_address(struct rcf_remote *);
 extern rc_type ikev2_dpd(struct rcf_remote *);
