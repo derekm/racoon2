@@ -1503,6 +1503,14 @@ ikev2_child_addke_install(struct ikev2_child_sa *child_sa)
 			       child_sa->peer_proposal,
 			       child_sa->my_proposal[1]) != 0)
 		return -1;
+	/* The IKE_FOLLOWUP_KE completed: cancel the 10s ADDKE arm-wait timer so
+	 * it cannot fire later and abort the just-installed child.  Async-init
+	 * completion MUST cancel the async wait — otherwise every successful
+	 * init/rekey ADDKE child is torn down at the 10s mark by the stale arm
+	 * timer (observed live: install succeeded but 'ADDKE followup timeout'
+	 * aborted it on both sides). */
+	if (child_sa->timer)
+		SCHED_KILL(child_sa->timer);
 	child_sa->addke_pending = 0;
 	ikev2_child_start_lifetime_timer(child_sa);
 	return 0;
@@ -1512,6 +1520,11 @@ static void
 ikev2_addke_wait_timeout(void *param)
 {
 	struct ikev2_child_sa *child_sa = param;
+
+	/* The child may have completed (followup done, install ran) with a
+	 * stale arm timer still pending — never abort a non-pending child. */
+	if (!child_sa || !child_sa->addke_pending)
+		return;
 
 	/* rfc9370 s2.2.4: if the initiator never starts the
 	 * IKE_FOLLOWUP_KE exchanges, the responder MUST delete the
