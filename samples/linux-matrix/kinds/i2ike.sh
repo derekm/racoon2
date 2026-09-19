@@ -185,6 +185,24 @@ EOF
 		i=$((i+1)); sleep 1
 	done
 
+	# INIT SA is up.  Now exercise the CREATE_CHILD child-SA rekey (ADDKE):
+	# the 60s ipsec lifetime soft boundary fires a child rekey shortly after
+	# init, so assert a NEW ESP SPI (init-child SPI replaced) on BOTH netnss.
+	spi(){ ip netns exec "$1" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort; }
+	SR0=$(spi "$NSR"); SI0=$(spi "$NSI")
+	rekeyed=0; i=0
+	while [ "$i" -lt 120 ]; do
+		SRn=$(spi "$NSR"); SIn=$(spi "$NSI")
+		nr=$(comm -13 <(printf '%s\n' "$SR0") <(printf '%s\n' "$SRn") | grep -c spi)
+		ni=$(comm -13 <(printf '%s\n' "$SI0") <(printf '%s\n' "$SIn") | grep -c spi)
+		if [ "${nr:-0}" -ge 1 ] && [ "${ni:-0}" -ge 1 ]; then
+			log "INIT SA -> child-SA rekey: new SPI both sides at ${i}s (old: $(echo $SR0 | tr '\n' ' '))"
+			rekeyed=1; break
+		fi
+		i=$((i+1)); sleep 1
+	done
+	[ "$rekeyed" -eq 1 ] || log "FAIL: child-SA rekey not seen in 120s; resp SPIs now: $(spi "$NSR" | tr '\n' ' ')"
+
 	# kill daemons by the unique per-run conf dir (it IS in their argv);
 	# a pkill on the conf-internal remote name matches nothing and leaks
 	# up to 4 daemons holding the netns.
@@ -195,8 +213,8 @@ EOF
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES"
 
-	if [ "$up" -ne 1 ]; then
-		log "FAIL: PQC ADDKE child NOT up (resp esp=${re:-0} init esp=${ie:-0})"
+	if [ "$up" -ne 1 ] || [ "${rekeyed:-0}" -ne 1 ]; then
+		log "FAIL: PQC init-SA + child-SA rekey incomplete (up=${up:-0} rekeyed=${rekeyed:-0})"
 		log "--- init-iked.log (followup/ESTABLISHED) ---"
 		sed -n 's/.*\(ESTABLISHED\|FOLLOWUP\|ADDKE\|abort\|err=\|GETSPI\).*/\1: &/p' \
 			"$D/init-iked.log" 2>/dev/null | tail -6
