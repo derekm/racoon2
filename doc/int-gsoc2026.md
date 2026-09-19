@@ -64,15 +64,20 @@ re-verify on the new Fedora server.
   **1000/1000** full file, suite **7/7**; log in `doc/kattest-results.txt`.
 - Full write-up: `doc/addke-design.md` (inventory, gaps, decision criteria).
 
-**Still open within 9370:** the **live completed-ADDKE child REEKAY** is the open
-piece — fixed the initial-child false positive (below) but the 60s rekey that
-fires clones the (now-plain) initial proposal and does NOT re-offer type-6, so
-the CREATE_CHILD rekey is plain (SA_hex shows aes-gcm+DH, no type 6).  The
-ML-KEM-into-keymat ADDKE rekey is therefore NOT yet proven.  Initiator
-IKE_SA-rekey ADDKE feed also open.  (Outbound fragmentation of our
-IKE_FOLLOWUP_KE was listed here before a 2026-09-18 code check showed it is
-already handled by `ikev2_transmit`/`ikev2_transmit_response` →
-`ikev2_frag_send` when RFC 7383 is negotiated; not a gap.)
+**Child-rekey ADDKE — proven 2026-09-19 (netns i2i matrix).** The CREATE_CHILD
+rekey re-offers type-6 (initiator + responder), the responder marks the rekey
+child pending (`peer_type6=1`) and `ikev2_create_child_responder_cont` defers
+the install + arms the 10s wait; the IKE_FOLLOWUP_KE exchange then completes
+and **both** sides install the rekey child with ML-KEM-derived keymat
+(`addke_sk` = SK(1), 32 B, appended to KEYMAT after Nr per rfc9370 s2.2.4) —
+new SPI takes packets, `REKEY_SOAK_RESULT=0`.  Net fix: `ikev2_createchild_
+initiator_recv` no longer finalizes the rekey (deleting the old child / logging
+"rekey complete") while the ADDKE child is still `addke_pending`; the old-child
+delete is deferred to `ikev2_initiator_followup_complete` once the KEM child is
+installed.  **Still open:** the initiator IKE_SA-rekey ADDKE feed.  (Outbound
+fragmentation of our IKE_FOLLOWUP_KE was listed here before a 2026-09-18 code
+check showed it is already handled by `ikev2_transmit`/`ikev2_transmit_response`
+→ `ikev2_frag_send` when RFC 7383 is negotiated; not a gap.)
 
 **IKE_AUTH initial-child ADDKE false positive — fixed 2026-09-18 (f3ad6e0).**
 The initial "CHILD UP" from the isolated ring was a plain ESP install: with

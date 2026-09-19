@@ -5035,7 +5035,18 @@ ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 	ikev2_update_child(child_sa, sa, ts_i, ts_r, &child_param);
 
-	if (child_sa->preceding_satype != 0) {
+	/*
+	 * RFC 9370 s2.2.4: an ADDKE child rekey defers the keymat/XFRM
+	 * install inside ikev2_update_child() until the IKE_FOLLOWUP_KE
+	 * supplies SK(1).  The rekey must NOT be finalized here while
+	 * the child is still addke_pending: deleting the old child now
+	 * would tear down the live SA before the followup installs the
+	 * rekeyed one (SA interruption; and if the followup were lost
+	 * the child would be left dead).  The old-child delete and
+	 * "rekey complete" are deferred to the ADDKE completion
+	 * (ikev2_initiator_followup_complete).
+	 */
+	if (child_sa->preceding_satype != 0 && !child_sa->addke_pending) {
 		struct ikev2_child_sa *old_child_sa;
 		struct ikev2_child_sa *duplicate_child_sa;
 
