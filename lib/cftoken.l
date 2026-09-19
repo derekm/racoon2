@@ -346,6 +346,7 @@ dpd_maxfail		{ DP; return(DPD_MAXFAIL); }
 	/* valid for ikev2 */
 cookie_required		{ DP; return(COOKIE_REQUIRED); }
 addke_required		{ DP; return(ADDKE_REQUIRED); }
+addke_unrequested	{ DP; return(ADDKE_UNREQUESTED); }
 send_peers_id		{ DP; return(SEND_PEERS_ID); }
 	/* valid for kink */
 my_principal		{ DP; return(MY_PRINCIPAL); }
