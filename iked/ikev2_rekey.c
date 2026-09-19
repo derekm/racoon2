@@ -1259,7 +1259,8 @@ ikev2_rekey_abandon_parked(struct ikev2_sa *old_sa)
  */
 int
 ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
-				     rc_vchar_t *addke_sk)
+				     rc_vchar_t *addke_sk,
+				     rc_vchar_t *ct)
 {
 	struct ikev2_rekey_responder_ctx *ctx;
 	struct ikev2_sa *new_sa;
@@ -1287,8 +1288,10 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 	/*
 	 * Reply with the followup's KEr(1): HDR(IKE_FOLLOWUP_KE),
 	 * SK { KE } where KE = method+SK(1) ciphertext.  The SK(1)
-	 * ciphertext and method are carried in the KE payload; the
-	 * method equals the negotiated ADDKE id.
+	 * ciphertext (ct, freshly encapsulated against the initiator's
+	 * public key) and method are carried in the KE payload; the
+	 * method equals the negotiated ADDKE id.  The shared secret
+	 * addke_sk is used only in the SKEYSEED above, never sent.
 	 */
 	{
 		struct ikev2_payloads payl;
@@ -1300,7 +1303,7 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 		memset(&keh, 0, sizeof(keh));
 		keh.dh_group_id =
 		    htons((uint16_t)new_sa->negotiated_sa->addke);
-		ker = rc_vprepend(addke_sk, &keh, sizeof(keh));
+		ker = rc_vprepend(ct, &keh, sizeof(keh));
 		if (!ker) {
 			ikev2_payloads_destroy(&payl);
 			goto fail;

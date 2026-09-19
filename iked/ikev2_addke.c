@@ -825,7 +825,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	if (ike_sa->addke_rekey_pending) {
 		/* ADDKE IKE-SA rekey: finish SKEYSEED + keys with SK(1),
 		 * reply KEr(1) inside the completion. */
-		if (ikev2_rekey_responder_addke_complete(ike_sa, ss) < 0) {
+		if (ikev2_rekey_responder_addke_complete(ike_sa, ss, ct) < 0) {
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_INTERR, PLOGLOC,
 				   "failed to complete ADDKE IKE-SA rekey\n");
