@@ -97,6 +97,13 @@ ikev2_child_delete(struct ikev2_child_sa *child_sa)
 	(void)child_sa;
 }
 
+void
+ikev2_initiator_rekey_finalize(struct ikev2_sa *ike_sa,
+			       struct ikev2_child_sa *child_sa)
+{
+	(void)ike_sa; (void)child_sa;
+}
+
 /* iked-side packet machinery referenced by ikev2_addke.c's followup
  * handler but never invoked by the crypto self-test; stubs so the TU
  * links standalone (same rationale as above). */
