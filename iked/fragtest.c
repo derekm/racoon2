@@ -174,6 +174,17 @@ plog_location(const char *file, int line, const char *func)
 	return "fragtest";
 }
 
+/* iked-side logging wrapper referenced by ikev2_decrypt_internal(); the
+ * test never needs real logging, so no-op like addketest.c. */
+void
+isakmp_log(struct ikev2_sa *ike_sa, struct sockaddr *local,
+	   struct sockaddr *remote, rc_vchar_t *msg, int query,
+	   const char *loc, const char *fmt, ...)
+{
+	(void)ike_sa; (void)local; (void)remote; (void)msg;
+	(void)query; (void)loc; (void)fmt;
+}
+
 /*
  * ------------------------------------------------------------------
  * test scaffolding
