@@ -59,13 +59,14 @@ re-verify on the new Fedora server.
   reverse-pass proposal skip; resume skips incomplete-keymat children;
   teardown zeroizes keymat. Config `esp_addke_alg { mlkem768; };`,
   `--enable-addke` (OpenSSL ≥3.5), live on Fedora (NRestarts=0).
-- **Known defect — responder IKE_SA-rekey ADDKE feed is NOT complete:**
-  `ikev2_rekey_responder_addke_complete` answers the IKE_FOLLOWUP_KE with
-  `addke_sk` (the 32-byte shared secret) in the KE payload; RFC 9370 s2.2.4
-  requires the responder's KEr **ciphertext** (it must re-encapsulate to the
-  peer's public key).  A real initiator would fail ML-KEM decap on that reply.
-  Not treated as done; it needs the responder ciphertext + matrix proof, and
-  the initiator IKE_SA-rekey feed is likewise open (below).
+- **Responder IKE_SA-rekey ADDKE feed — KEr-ct bug fixed (`0bc1149`), not yet
+  matrix-tested.** `ikev2_rekey_responder_addke_complete` now answers the
+  IKE_FOLLOWUP_KE with the freshly-encapsulated responder **ciphertext** (RFC
+  9370 s2.2.4), not the 32-byte shared secret.  Exercising it end-to-end needs
+  an initiator that rekeys the IKE_SA offering ADDKE + a followup, and the
+  **initiator IKE_SA-rekey ADDKE feed is still open** (offers no type-6 on the
+  IKE_SA-rekey SA payload); until it lands, no racoon2↔racoon2 matrix row can
+  reach this completion, so it is deliberately not claimed as proven.
 - Independent pin: `addkekat` replays NIST FIPS 203 KATs — **20/20** shipped,
   **1000/1000** full file, suite **7/7**; log in `doc/kattest-results.txt`.
 - Full write-up: `doc/addke-design.md` (inventory, gaps, decision criteria).
