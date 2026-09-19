@@ -85,14 +85,6 @@ ikev2_encrypt(struct ikev2_sa *ike_sa, rc_vchar_t *payloads,
 }
 
 int
-ikev2_decrypt(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
-{
-	(void)ike_sa;
-	(void)packet;
-	return -1;
-}
-
-int
 isakmp_find_socket(struct sockaddr *addr)
 {
 	(void)addr;
