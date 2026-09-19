@@ -583,6 +583,8 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 
 	/* create new ike_sa */
 	old_sa = child_sa->parent;
+	isakmp_log(old_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+	    "IKESA-rekey-init-send entered\n");
 	conf = rcf_deepcopy_remote(old_sa->rmconf);
 	if (!conf)
 		goto fail_nomem;
