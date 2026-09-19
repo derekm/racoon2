@@ -3307,6 +3307,83 @@ auth_alg_is_none(struct rc_alglist *auth_alg)
 	return 1;
 }
 
+/*
+ * RFC 9370 ADDKE re-offer on a CREATE_CHILD rekey SA.  The initial IKE_AUTH
+ * child is plain (type-6 is CREATE_CHILD-only), so a rekey that clones it
+ * would carry no type-6 even to a peer that offered ADDKE; likewise the
+ * responder's response echoes the peer's minimal proposal.  Both SAs are
+ * packed by ikev2_construct_sa() straight from child_sa->my_proposal, so a
+ * rekey never reaches the type-6 offer logic inside
+ * ikev2_ipsec_sa_to_proplist().  Re-offer it here when this side is the
+ * initiator or addke_unrequested is on (responder-driven), appending the
+ * configured esp_addke_alg ADDKE transform to the finalized proposal.
+ */
+void
+ikev2_child_maybe_reoffer_addke(struct ikev2_child_sa *child_sa)
+{
+	struct rcf_ipsec *conf;
+	struct rcf_sa *proto_info;
+	struct rc_alglist *addke_alg;
+	struct prop_pair *tail, *p;
+
+	if (!child_sa || !child_sa->my_proposal ||
+	    !child_sa->my_proposal[1])
+		return;
+	if (!child_sa->parent ||
+	    child_sa->parent->state != IKEV2_STATE_ESTABLISHED)
+		return;
+	/* gate: offer a type-6 when this side is the initiator of-record, when
+	 * the peer actually offered ADDKE (ikev2_child_addke_mark populated
+	 * addke_nrounds from its proposal), or when this sa explicitly drives
+	 * responder-side ADDKE (addke_unrequested on). */
+	if (!child_sa->is_initiator &&
+	    !child_sa->addke_nrounds &&
+	    !(child_sa->parent->rmconf &&
+	      ikev2_addke_unrequested(child_sa->parent->rmconf) ==
+	      RCT_BOOL_ON)) {
+		isakmp_log(child_sa->parent, 0, 0, 0,
+		    PLOG_DEBUG, PLOGLOC,
+		    "reoffer-ADDKE: gate off (ini=%d nrounds=%d)\n",
+		    child_sa->is_initiator, child_sa->addke_nrounds);
+		return;
+	}
+	/* already carrying an ADDKE transform? */
+	for (p = child_sa->my_proposal[1]->tnext; p; p = p->next)
+		if (p->trns &&
+		    ((struct ikev2transform *)p->trns)->transform_type ==
+		    IKEV2TRANSFORM_TYPE_ADDKE)
+			return;
+	/* find the sa block's esp_addke_alg and append it as type-6 */
+	for (conf = (child_sa->selector && child_sa->selector->pl)
+		    ? child_sa->selector->pl->ips : NULL;
+	     conf; conf = conf->next) {
+		proto_info = conf->sa_esp;
+		if (!proto_info)
+			continue;
+		SA_CONF(addke_alg, proto_info, addke_alg, 0);
+		if (!addke_alg)
+			continue;
+		for (tail = child_sa->my_proposal[1]->tnext;
+		     tail && tail->next; tail = tail->next)
+			/* find end of the transform chain */;
+		if (!tail)
+			child_sa->my_proposal[1]->tnext =
+			    alglist_to_proppair(addke_alg,
+					    IKEV2TRANSFORM_TYPE_ADDKE,
+					    &ikev2_transf_addke[0]);
+		else
+			tail->next =
+			    alglist_to_proppair(addke_alg,
+					    IKEV2TRANSFORM_TYPE_ADDKE,
+					    &ikev2_transf_addke[0]);
+		isakmp_log(child_sa->parent, 0, 0, 0,
+		    PLOG_DEBUG, PLOGLOC,
+		    "reoffer-ADDKE: appended type-6 after %p (ini=%d)\n",
+		    (void *)tail, child_sa->is_initiator);
+		return;
+	}
+}
+
 static struct prop_pair *
 ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 			   int proposal_number,

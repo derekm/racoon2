@@ -1237,6 +1237,12 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	child_sa->peer_proposal = matching_peer_proposal;
 	matching_peer_proposal = 0;
 
+	/* re-offer ADDKE (type-6) in the rekey/response proposal: the
+	 * peer's CREATE_CHILD request may a offer it (or addke_unrequested
+	 * drives it); the response is packed straight from my_proposal, so
+	 * append the type-6 here for ikev2_construct_sa() to carry. */
+	ikev2_child_maybe_reoffer_addke(child_sa);
+
 	/* RFC 9370: if the matched peer proposal carries ADDKE, arm the
 	 * pending state + link so the CREATE_CHILD_SA response includes
 	 * the ADDITIONAL_KEY_EXCHANGE notification (16441) and the
@@ -1435,6 +1441,7 @@ ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 		}
 		child_sa->addke_nrounds = nrounds;
 		child_sa->addke_round = 0;
+		child_sa->addke_peer_offer = (nrounds > 0);
 		if (nrounds > 0)
 			child_sa->addke_method = child_sa->addke_methods[0];
 	}
@@ -1549,7 +1556,31 @@ ikev2_addke_wait_timeout(void *param)
 
 	/* rfc9370 s2.2.4: if the initiator never starts the
 	 * IKE_FOLLOWUP_KE exchanges, the responder MUST delete the
-	 * associated state after a reasonable period (5-20s). */
+	 * associated state after a reasonable period (5-20s).
+	 *
+	 * But when WE forced type-6 on a classical peer (addke_unrequested,
+	 * responder-driven), a missing followup is expected — the peer never
+	 * offered ADDKE and may just ignore the type-6 we injected.  Aborting
+	 * would destroy a perfectly good classical SA.  Downgrade: install the
+	 * negotiated plain ESP instead of tearing the child down. */
+	if (!child_sa->addke_peer_offer) {
+		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "responder-driven ADDKE: no followup from a "
+			   "classical initiator; installing plain child %p\n",
+			   child_sa);
+		if (child_sa->timer)
+			SCHED_KILL(child_sa->timer);
+		child_sa->addke_pending = 0;
+		if (ikev2_add_ipsec_sa(child_sa, &child_sa->child_param,
+				       child_sa->peer_proposal,
+				       child_sa->my_proposal[1]) != 0) {
+			ikev2_child_abort(child_sa, ETIMEDOUT);
+			return;
+		}
+		ikev2_child_start_lifetime_timer(child_sa);
+		return;
+	}
+
 	isakmp_log(child_sa->parent, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
 		   "ADDKE followup timeout; aborting pending child %p\n",
 		   child_sa);

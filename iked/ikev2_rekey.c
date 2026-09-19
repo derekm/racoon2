@@ -324,6 +324,10 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 		goto fail;
 	}
 
+	/* the clone/config proposal is plain (initial IKE_AUTH child has no
+	 * type-6); re-offer ADDKE so this CREATE_CHILD rekey can negotiate it */
+	ikev2_child_maybe_reoffer_addke(new_child_sa);
+
 	new_child_sa->srclist = old_child_sa->srclist;
 	old_child_sa->srclist = 0;
 	new_child_sa->dstlist = old_child_sa->dstlist;

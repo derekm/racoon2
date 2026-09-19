@@ -4590,6 +4590,12 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 		goto send_response;
 	}
 
+	/* re-offer ADDKE (type-6) in the CREATE_CHILD response: the response
+	 * SA is packed straight from my_proposal, and the rekey branch may not
+	 * reach ikev2_create_child_responder's own reoffer; cover it here so a
+	 * peer that offered ADDKE (or addke_unrequested) gets type-6 echoed. */
+	ikev2_child_maybe_reoffer_addke(child_sa);
+
 	sa = ikev2_construct_sa(child_sa);
 	if (!sa)
 		goto fail;

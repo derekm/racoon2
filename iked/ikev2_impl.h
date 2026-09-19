@@ -358,6 +358,7 @@ struct ikev2_child_sa {
 	unsigned int addke_methods[8];	/* ADDKE1..ADDKE7 + NONE, type order */
 	int addke_nrounds;
 	int addke_round;	/* next round to expect/perform */
+	int addke_peer_offer;	/* the peer actually offered an ADDKE transform */
 #ifdef WITH_ADDKE
 	void *addke_priv;	/* initiator: ML-KEM private key (EVP_PKEY *)
 				 * held until the followup response decaps */
