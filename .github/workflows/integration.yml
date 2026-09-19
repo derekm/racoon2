@@ -162,11 +162,17 @@ jobs:
         env:
           R2_PREFIX: /usr/local/racoon2
 
-      - name: Run the PQC matrix (ADDKE + systemd-free cases)
+      - name: Run the PQC matrix (ADDKE i2ike)
         run: |
           export R2_ADDKE=yes
           CASES=${{ inputs.cases }}
-          [ -n "$CASES" ] || CASES='unit|i2ike'
+          # Only the i2ike PQC proof runs here.  The unit/kind tests
+          # (eaytest/evlooptest/workerstest/kmtest) are already proven by
+          # this job's 'Fedora 44 NETLINK_XFRM build' `make check`, and the
+          # lib kernel-netlink cases (xfrmtmpl/xfrmnatt) do not verify
+          # inside a GH container (SPDADD errno=0) — those run in the
+          # Ubuntu host Linux-matrix job.
+          [ -n "$CASES" ] || CASES='i2ike'
           ARGS="--src $GITHUB_WORKSPACE --cases $CASES"
           bash samples/linux-matrix/run.sh $ARGS
         env:
