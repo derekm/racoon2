@@ -1686,6 +1686,7 @@ ikev2_find_request(struct ikev2_sa *ike_sa, uint32_t id)
 		if (sa->is_initiator
 		    && sa->message_id == id
 		    && (sa->state == IKEV2_CHILD_STATE_WAIT_RESPONSE
+			|| sa->state == IKEV2_CHILD_STATE_REQUEST_PENDING
 			|| sa->state == IKEV2_CHILD_STATE_REQUEST_SENT))
 			return sa;
 	}
