@@ -1564,19 +1564,6 @@ rcf_fix_addke_unrequested(struct cf_list *head, void *dst0)
 }
 
 static int
-rcf_fix_cookie_required(struct cf_list *head, void *dst0)
-{
-	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
-
-	if (rcf_check_cfd(head, CFD_COOKIE_REQUIRED))
-		return -1;
-	if (rcf_fix_boolean(head->nextp, &dst->cookie_required))
-		return -1;
-
-	return 0;
-}
-
-static int
 rcf_fix_send_peers_id(struct cf_list *head, void *dst0)
 {
 	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
