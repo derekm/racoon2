@@ -32,3 +32,4 @@ xfrm-natt-oa	unit	pass	-	RFC 3947 NAT-OA via rcpfk → XFRMA_ENCAP encap_oa (roo
 xfrm-tmpl-family	unit	pass	-	IP_ANY mixed-family tmpl coerce (v4 local + :: → proto esp, no c0a8:444f)
 ikev1-strongswan	ikev1	pass	0	IKEv1 netns vs ikev1_nat.conf (IP IDs, whole-file PSK, hmac-sha1); not a live NAT-OA peer	
 i2ike-addke	i2ike	pass	0	PQC: iked<->iked, mlkem768. Initial IKE_AUTH child is plain (type-6 is CREATE_CHILD-only); the 60s child-SA rekey offers type-06 ADDKE + IKE_FOLLOWUP_KE + ML-KEM keymat, new SPI both netns; kind asserts type-06 offer + the same ML-KEM keymat hash on BOTH sides + no followup abort (not just a new SPI)	addke
+i2ikesa-addke	i2ikesa	pass	0	PQC iked<->iked: initiator IKE_SA rekey (addke_unrequested + kmp_sa_lifetime_time 30s) offers type-06 ADDKE; both sides complete SK(1) via IKE_FOLLOWUP_KE and rekey_skeyseed logs the SAME ADDKE SKEYSEED (a plain IKE_SA rekey logs no such line -> fail)	addke

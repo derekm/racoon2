@@ -2075,6 +2075,23 @@ rekey_skeyseed(struct ikev2_sa *new_sa, struct ikev2_sa *old_sa, rc_vchar_t *g_i
 	new_sa->skeyseed = keyed_hash(old_sa->prf, old_sa->sk_d, hash_input);
 	if (!new_sa->skeyseed)
 		goto fail;
+#ifdef WITH_ADDKE
+	if (addke_sk != NULL) {
+		/* Both sides derive the SAME SKEYSEED (sharing old SK_d,
+		 * g_ir, Ni, Nr and ADDKE SK(1)): log it so a matrix case can
+		 * prove the IKE_SA rekey actually used ML-KEM keymat. */
+		char hexv[2 * new_sa->skeyseed->l + 1];
+		int k;
+
+		for (k = 0; k < new_sa->skeyseed->l; k++)
+			snprintf(hexv + k * 2, 3, "%02x",
+				 ((uint8_t *)new_sa->skeyseed->v)[k]);
+		hexv[2 * new_sa->skeyseed->l] = 0;
+		isakmp_log(new_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		    "IKE_SA rekey ADDKE SK(1) %zu bytes: SKEYSEED=%s\n",
+		    addke_sk->l, hexv);
+	}
+#endif
 	retval = 0;
       done:
 	if (hash_input)
