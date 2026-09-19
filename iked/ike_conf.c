@@ -3386,10 +3386,19 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 	SA_CONF(addke_alg, proto_info, addke_alg, 0);
 	/* RFC 9370 s2.2: type-6 (ADDKE) is a CREATE_CHILD exchange over an
 	 * ESTABLISHED IKE_SA only — never offered on the initial IKE_AUTH child
-	 * (parent state INI_/RES_IKE_AUTH_*, pre-ESTABLISHED). */
+	 * (parent state INI_/RES_IKE_AUTH_*, pre-ESTABLISHED).  And the responder
+	 * MUST NOT emit a type-6 the peer never offered: RFC 9370 selects ADDKE
+	 * by the INITIATOR including the transform; echoing it into the response
+	 * when the request lacked it makes a peer that *does* read type-6 reply
+	 * with IKE_FOLLOWUP_KE for which we have no pending ADDKE state ->
+	 * STATE_NOT_FOUND -> peer DELETE IKE_SA.  Offer it only when this side is
+	 * the initiator (its own request carries it) or the peer offered ADDKE
+	 * (ikev2_child_addke_mark populated addke_nrounds from the offer). */
 	if (proto_info->addke_alg &&
 	    child_sa->parent &&
-	    child_sa->parent->state == IKEV2_STATE_ESTABLISHED) {
+	    child_sa->parent->state == IKEV2_STATE_ESTABLISHED &&
+	    (child_sa->is_initiator ||
+	     child_sa->addke_nrounds > 0)) {
 		*tail = alglist_to_proppair(proto_info->addke_alg,
 					    IKEV2TRANSFORM_TYPE_ADDKE,
 					    &ikev2_transf_addke[0]);
