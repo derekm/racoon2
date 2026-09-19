@@ -49,8 +49,10 @@ workerstest_SOURCES = workerstest.c crypto_workers.c
 resumetest_SOURCES = resumetest.c ikev2_resume_rec.c
 # IKEv2 fragment reassembler (RFC 7383 SKF) tested standalone with real
 # crypto; isakmpstat/debug/plog/byte-order stubs live in fragtest.c.
-fragtest_SOURCES = fragtest.c ikev2_frag.c encryptor.c authenticator.c \
-	keyed_hash.c crypto_openssl.c str2val.c
+# ikev2_payload.c defines ikev2_decrypt_local(), which ikev2_frag_send
+# uses for its send-direction decrypt (RFC 7383 window re-check).
+fragtest_SOURCES = fragtest.c ikev2_frag.c ikev2_payload.c \
+	encryptor.c authenticator.c keyed_hash.c crypto_openssl.c str2val.c
 
 # RFC 9370 ADDKE ML-KEM-768 crypto (configure --enable-addke auto):
 # exercised only on OpenSSL >= 3.5 builds that actually have the code.
