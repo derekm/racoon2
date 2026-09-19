@@ -1468,7 +1468,7 @@ ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 		child_sa->addke_method = child_sa->addke_methods[0];
 		peer_addke = 1;
 		isakmp_log(child_sa->parent, 0, 0, 0,
-			   PLOG_INFONF, PLOGLOC,
+			   PLOG_INFO, PLOGLOC,
 			   "responder-driven ADDKE: peer offered none; "
 			   "offering type-6 %u and holding pending\n",
 			   child_sa->addke_method);
