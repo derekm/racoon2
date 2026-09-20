@@ -116,6 +116,9 @@ static void responder_ike_sa_auth_recv0(struct ikev2_sa *, rc_vchar_t *,
 #ifdef WITH_INTERMEDIATE
 static void initiator_ike_intermediate_recv(struct ikev2_sa *, rc_vchar_t *,
 					   struct sockaddr *, struct sockaddr *);
+static void initiator_ike_intermediate_send(struct ikev2_sa *);
+static void responder_ike_intermediate_recv(struct ikev2_sa *, rc_vchar_t *,
+					   struct sockaddr *, struct sockaddr *);
 #endif
 static void initiator_ike_sa_auth_cont(struct ikev2_sa *, int, rc_vchar_t *,
 				       struct sockaddr *, struct sockaddr *);
@@ -7331,7 +7334,7 @@ intermediate_ke_body(struct ikev2payl_ke *ke)
 
 	if (!ke)
 		return 0;
-	l = get_payload_length(&ke->nh);
+	l = get_payload_length(&ke->header);
 	if (l <= sizeof(struct ikev2_payload_header)
 	    + sizeof(struct ikev2payl_ke_h))
 		return 0;
@@ -7472,10 +7475,10 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	}
 	if (!ke)
 		goto malformed;
-	if (ntohs(ke->dh_group_id) != sa->negotiated_sa->addke) {
+	if (ntohs(ke->ke_h.dh_group_id) != sa->negotiated_sa->addke) {
 		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
 			   "IKE_INTERMEDIATE: round KE method %u != negotiated %u\n",
-			   ntohs(ke->dh_group_id), sa->negotiated_sa->addke);
+			   ntohs(ke->ke_h.dh_group_id), sa->negotiated_sa->addke);
 		goto malformed;
 	}
 	body = intermediate_ke_body(ke);
@@ -7562,7 +7565,7 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 			ke = (struct ikev2payl_ke *)p;
 		}
 	}
-	if (!ke || (uint32_t)ntohs(ke->dh_group_id) != sa->negotiated_sa->addke)
+	if (!ke || (uint32_t)ntohs(ke->ke_h.dh_group_id) != sa->negotiated_sa->addke)
 		goto drop;
 	body = intermediate_ke_body(ke);
 	if (!body)
