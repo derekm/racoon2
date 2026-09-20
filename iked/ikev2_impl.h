@@ -105,6 +105,9 @@ enum ikev2_state {
 	IKEV2_STATE_ESTABLISHED = 6,
 	IKEV2_STATE_DYING = 7,
 	IKEV2_STATE_DEAD = 8
+#ifdef WITH_INTERMEDIATE
+	, IKEV2_STATE_INI_IKE_INTERMEDIATE_SENT = 9
+#endif
 	/* IKEV2_STATE_EAP  = 9 */
 
 	/* IKEV2_STATE_ESTABLISHED_WAIT_INITIATOR, */
@@ -230,6 +233,22 @@ struct ikev2_sa {
 	void *addke_rekey_complete;	/* parked rekey ctx (rekey.c) */
 	void *addke_rekey_init;	/* initiator parked rekey ctx (rekey.c) */
 	struct sched *addke_rekey_timer;
+
+	/* RFC 9242 IKE_INTERMEDIATE on the INITIAL IKE_SA (RFC 9370 s2.2:
+	 * extra key exchange rounds between IKE_SA_INIT and IKE_AUTH). Active
+	 * only when 16438 was negotiated by BOTH peers and an ADDKE round is
+	 * selected; each round updates SKEYSEED and the IntAuth chain is bound
+	 * into IKE_AUTH. */
+#ifdef WITH_INTERMEDIATE
+	int intermediate_negotiated;	/* both peers sent N(16438) */
+	int intermediate_rounds;	/* completed intermediate KE rounds */
+	uint32_t intermediate_msgid;	/* msgid for the next intermediate */
+	rc_vchar_t *intauth_i;		/* chained IntAuth_iN */
+	rc_vchar_t *intauth_r;		/* chained IntAuth_rN */
+	rc_vchar_t *intermediate_req;	/* current round's request content (IntAuth) */
+	rc_vchar_t *intermediate_resp;	/* current round's response content (IntAuth) */
+	void *intermediate_priv;	/* initiator ML-KEM priv (EVP_PKEY *) */
+#endif
 
 	int behind_nat;
 	int peer_behind_nat;
