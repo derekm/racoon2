@@ -2115,6 +2115,13 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	rc_vchar_t *pkt = 0;
 #ifdef WITH_INTERMEDIATE
 	uint32_t auth_msgid = (uint32_t)(1 + ike_sa->intermediate_rounds);
+	{
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "AUTH-SEND rounds=%u intermsgid=%u authmsgid=%u send_mid=%u\n",
+			   ike_sa->intermediate_rounds,
+			   ike_sa->intermediate_msgid, auth_msgid,
+			   ike_sa->send_message_id);
+	}
 #else
 	uint32_t auth_msgid = 1;
 #endif
