@@ -462,7 +462,8 @@ extern int ikev2_addke_mlkem_decap(EVP_PKEY *, rc_vchar_t *,
 extern int ikev2_child_addke_install(struct ikev2_child_sa *);
 extern void ikev2_child_addke_arm_timeout(struct ikev2_child_sa *);
 extern int ikev2_rekey_responder_addke_complete(struct ikev2_sa *,
-						rc_vchar_t *, rc_vchar_t *);
+						rc_vchar_t *, rc_vchar_t *,
+						uint32_t);
 extern int ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *,
 						 rc_vchar_t *);
 extern uint32_t ikev2_rekey_ikesa_init_followup_msgid(struct ikev2_sa *);

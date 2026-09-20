@@ -1294,7 +1294,8 @@ ikev2_rekey_abandon_parked(struct ikev2_sa *old_sa)
 int
 ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 				     rc_vchar_t *addke_sk,
-				     rc_vchar_t *ct)
+				     rc_vchar_t *ct,
+				     uint32_t followup_msgid)
 {
 	struct ikev2_rekey_responder_ctx *ctx;
 	struct ikev2_sa *new_sa;
@@ -1343,10 +1344,13 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 			goto fail;
 		}
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ker, FALSE);
-		/* the followup request's message id (ctx message via old_sa) */
+		/* rfc9370: the followup response echoes the INITIATOR's
+		 * followup REQUEST message id (the responder's rekey ctx
+		 * carries the CREATE_CHILD id, which differs once the
+		 * followup runs as its own exchange). */
 		pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
 					     IKEV2FLAG_RESPONSE,
-					     ctx->message_id, old_sa, &payl);
+					     followup_msgid, old_sa, &payl);
 		rc_vfree(ker);
 		if (!pkt) {
 			ikev2_payloads_destroy(&payl);

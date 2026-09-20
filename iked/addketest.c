@@ -215,9 +215,9 @@ ikev2_child_addke_arm_timeout(struct ikev2_child_sa *child_sa)
 
 int
 ikev2_rekey_responder_addke_complete(struct ikev2_sa *sa, rc_vchar_t *sk,
-				     rc_vchar_t *ct)
+				     rc_vchar_t *ct, uint32_t followup_msgid)
 {
-	(void)sa; (void)sk; (void)ct;
+	(void)sa; (void)sk; (void)ct; (void)followup_msgid;
 	return -1;
 }
 
