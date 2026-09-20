@@ -7341,8 +7341,11 @@ intermediate_content_a(struct ikev2_sa *sa, struct ikev2_header *hdr,
 
 	iv_len = sa->encryptor ? encryptor_iv_length(sa->encryptor) : 0;
 	tag_len = sa->encryptor ? encryptor_icv_length(sa->encryptor) : 0;
+	/* RFC 7296 s3.14: the Encrypted payload content is IV + ciphertext +
+	 * AEAD tag, where the plaintext is payloads + (pad=0) + 1 pad-length
+	 * byte -- ikev2_packet_construct uses inner = payloads->l + 1. */
 	enc_len = sizeof(struct ikev2_payload_header) + iv_len
-		+ (uint32_t)inner_len + (uint32_t)tag_len;
+		+ (uint32_t)inner_len + 1 + (uint32_t)tag_len;
 	c = rc_vmalloc(hdr_len + sizeof(struct ikev2_payload_header));
 	if (!c)
 		return 0;
