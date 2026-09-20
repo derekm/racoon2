@@ -7358,7 +7358,9 @@ intermediate_content_a(struct ikev2_sa *sa, struct ikev2_header *hdr,
 		return 0;
 	p = (uint8_t *)c->v;
 	memcpy(p, hdr, hdr_len);
-	p[0] = IKEV2_PAYLOAD_ENCRYPTED;	/* normalize the header next_payload */
+	/* normalize the header next_payload (byte offset 16 is next_payload,
+	 * byte 0 is the first octet of the initiator SPI -- do not touch it) */
+	((struct ikev2_header *)p)->next_payload = IKEV2_PAYLOAD_ENCRYPTED;
 	/* IKE header Length field is bytes 24-27: the UNfragmented full size */
 	put_uint32(p + 24, (uint32_t)(hdr_len + enc_len));
 	p += hdr_len;
