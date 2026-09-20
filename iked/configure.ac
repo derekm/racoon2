@@ -238,6 +238,19 @@ if test x"$addke" = xyes; then
 fi
 AM_CONDITIONAL([ADDKE], [test x"$addke" = xyes])
 
+AC_ARG_ENABLE(intermediate,
+	[  --enable-intermediate  enable RFC 9242 IKE_INTERMEDIATE exchange (default: auto)],
+	[intermediate=$enableval])
+if test x"$intermediate" = xauto; then
+	intermediate='yes'
+fi
+AC_MSG_CHECKING(--enable-intermediate)
+AC_MSG_RESULT($intermediate)
+if test x"$intermediate" = xyes; then
+	AC_DEFINE(WITH_INTERMEDIATE, 1, [define to use RFC 9242 IKE_INTERMEDIATE])
+fi
+AM_CONDITIONAL([INTERMEDIATE], [test x"$intermediate" = xyes])
+
 AC_ARG_WITH(openssl-provider,
 	[  --with-openssl-provider=NAME
                           OpenSSL 3 provider (e.g. qatprovider)],
