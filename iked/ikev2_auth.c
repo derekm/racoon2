@@ -234,6 +234,16 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 			 * be a new pointer); octets aliases grown -- do NOT free
 			 * octets separately or we double-free. */
 			grown = rc_vconcat(octets, ia->v, ia->l);
+			{
+				char hexv[2 * ia->l + 1];
+				int k;
+				for (k = 0; k < (int)ia->l; k++)
+					snprintf(hexv + k * 2, 3, "%02x",
+						 ((uint8_t *)ia->v)[k]);
+				hexv[2 * ia->l] = 0;
+				isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+					   "AUTH_INTAPPEND=%s\n", hexv);
+			}
 			rc_vfree(ia);
 			if (grown)
 				octets = grown;

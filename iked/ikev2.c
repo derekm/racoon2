@@ -7455,6 +7455,26 @@ intermediate_finish_round(struct ikev2_sa *sa)
 		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 			   "IKE_INTERMEDIATE ADDKE SK(1) SKEYSEED=%s\n", hexv);
 	}
+	if (sa->intauth_i && sa->intauth_i->v) {
+		char hexv[2 * sa->intauth_i->l + 1];
+		int k;
+		for (k = 0; k < sa->intauth_i->l; k++)
+			snprintf(hexv + k * 2, 3, "%02x",
+				 ((uint8_t *)sa->intauth_i->v)[k]);
+		hexv[2 * sa->intauth_i->l] = 0;
+		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "INT_IAUTH_I=%s\n", hexv);
+	}
+	if (sa->intauth_r && sa->intauth_r->v) {
+		char hexv[2 * sa->intauth_r->l + 1];
+		int k;
+		for (k = 0; k < sa->intauth_r->l; k++)
+			snprintf(hexv + k * 2, 3, "%02x",
+				 ((uint8_t *)sa->intauth_r->v)[k]);
+		hexv[2 * sa->intauth_r->l] = 0;
+		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "INT_IAUTH_R=%s\n", hexv);
+	}
 }
 
 /* --------------------------------------------------------------- initiator
