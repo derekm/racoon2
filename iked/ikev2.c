@@ -7683,6 +7683,10 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	}
 	rc_vfree(ss);
 	intermediate_finish_round(sa);
+	/* RFC 9242 s3.2: AUTH msgid = last intermediate + 1.  The responder
+	 * accepted the intermediate (recv_message_id == rmsgid); advance it so
+	 * the IKE_AUTH request (rmsgid+1) is not dropped as unordered. */
+	ikev2_update_message_id(ike_sa, rmsgid, FALSE);
 	return;
 
 drop2:
