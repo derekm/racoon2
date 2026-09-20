@@ -7369,6 +7369,46 @@ intermediate_ke_body(struct ikev2payl_ke *ke)
 		       - sizeof(struct ikev2payl_ke_h));
 }
 
+/* Shared bounded walker used by BOTH intermediate mirrors: find the KE
+ * payload in a decrypted/reassembled IKE_INTERMEDIATE message.  Every step
+ * is bounds-checked against packet->l, so a malformed/reassembled inner
+ * chain cannot run off the buffer (returns NULL instead of crashing). */
+static struct ikev2payl_ke *
+intermediate_find_ke(rc_vchar_t *packet)
+{
+	struct ikev2_header *ikehdr = (struct ikev2_header *)packet->v;
+	struct ikev2_payload_header *p;
+	uint8_t *end, *base;
+	unsigned int type;
+
+	if (packet->l < sizeof(*ikehdr))
+		return NULL;
+	base = (uint8_t *)packet->v;
+	end = base + packet->l;
+	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	type = ikehdr->next_payload;
+	while (type != IKEV2_NO_NEXT_PAYLOAD) {
+		uint32_t plen;
+
+		if ((uint8_t *)p < base || (uint8_t *)p + sizeof(*p) > end)
+			return NULL;
+		plen = get_payload_length(p);
+		if (type == IKEV2_PAYLOAD_ENCRYPTED) {
+			/* decrypted-inline content follows the enc header */
+		} else if (type == IKEV2_PAYLOAD_KE) {
+			if (plen < sizeof(*p) ||
+			    (uint8_t *)p + plen > end)
+				return NULL;
+			return (struct ikev2payl_ke *)p;
+		}
+		if (plen < sizeof(*p) || (uint8_t *)p + plen > end)
+			return NULL;
+		type = p->next_payload;
+		p = (struct ikev2_payload_header *)((uint8_t *)p + plen);
+	}
+	return NULL;
+}
+
 /* both sides have completed round N: chain both IntAuth derivations from the
  * held request/response contents (sk_p now holds the post-update keys). */
 static void
@@ -7477,8 +7517,6 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 				struct sockaddr *local, struct sockaddr *remote)
 {
 	struct ikev2_header *ikehdr = (struct ikev2_header *)packet->v;
-	struct ikev2_payload_header *p;
-	unsigned int type;
 	struct ikev2payl_ke *ke = 0;
 	rc_vchar_t *body = 0, *ss = 0, *cA = 0, *ib = 0, *resp = 0;
 
@@ -7498,17 +7536,7 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 		return;
 	}
 
-	for (type = ikehdr->next_payload;
-	     type != IKEV2_NO_NEXT_PAYLOAD;
-	     POINT_NEXT_PAYLOAD(p, type)) {
-		if (type == IKEV2_PAYLOAD_ENCRYPTED)
-			continue;
-		if (type == IKEV2_PAYLOAD_KE) {
-			if (ke)
-				goto malformed;
-			ke = (struct ikev2payl_ke *)p;
-		}
-	}
+	ke = intermediate_find_ke(packet);
 	if (!ke)
 		goto malformed;
 	if (ntohs(ke->ke_h.dh_group_id) != sa->negotiated_sa->addke) {
@@ -7574,8 +7602,6 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 				struct sockaddr *src, struct sockaddr *dst)
 {
 	struct ikev2_header *ikehdr = (struct ikev2_header *)packet->v;
-	struct ikev2_payload_header *p;
-	unsigned int type;
 	struct ikev2payl_ke *ke = 0;
 	rc_vchar_t *body = 0, *ct = 0, *ss = 0, *kep = 0, *pkt = 0;
 	rc_vchar_t *cA = 0, *cAreq = 0, *iblob = 0, *req = 0, *resp = 0;
@@ -7595,17 +7621,7 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	}
 	rmsgid = get_uint32(&ikehdr->message_id);
 
-	for (type = ikehdr->next_payload;
-	     type != IKEV2_NO_NEXT_PAYLOAD;
-	     POINT_NEXT_PAYLOAD(p, type)) {
-		if (type == IKEV2_PAYLOAD_ENCRYPTED)
-			continue;
-		if (type == IKEV2_PAYLOAD_KE) {
-			if (ke)
-				goto drop;
-			ke = (struct ikev2payl_ke *)p;
-		}
-	}
+	ke = intermediate_find_ke(packet);
 	isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
 		   "responder-inter walked ke=%p\n", (void *)ke);
 	if (!ke || (uint32_t)ntohs(ke->ke_h.dh_group_id) != sa->negotiated_sa->addke)
