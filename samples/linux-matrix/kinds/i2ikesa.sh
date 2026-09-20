@@ -196,18 +196,18 @@ EOF
 	# SKEYSEED; a plain (non-ADDKE) IKE_SA rekey logs no such line -> fail.
 	ikesa=0; i=0
 	while [ "$i" -lt 110 ]; do
-		s_i=$(grep -c 'IKE_SA rekey ADDKE SK(1)' "$D/init-iked.log" 2>/dev/null || true)
-		s_r=$(grep -c 'IKE_SA rekey ADDKE SK(1)' "$D/resp-iked.log" 2>/dev/null || true)
+		s_i=$(grep -cE 'IKE_INTERMEDIATE ADDKE SK\(1\) SKEYSEED=|IKE_SA rekey ADDKE SK\(1\)' "$D/init-iked.log" 2>/dev/null || true)
+		s_r=$(grep -cE 'IKE_INTERMEDIATE ADDKE SK\(1\) SKEYSEED=|IKE_SA rekey ADDKE SK\(1\)' "$D/resp-iked.log" 2>/dev/null || true)
 		if [ "${s_i:-0}" -ge 1 ] && [ "${s_r:-0}" -ge 1 ]; then
 			log "IKE_SA rekey ADDKE completed on BOTH sides at ${i}s"
 			ikesa=1; break
 		fi
 		i=$((i+1)); sleep 1
 	done
-	sk_i=$(grep -oE 'IKE_SA rekey ADDKE SK\(1\) [0-9]+ bytes: SKEYSEED=[0-9a-f]+' \
-		"$D/init-iked.log" 2>/dev/null | grep -oE 'SKEYSEED=[0-9a-f]+' | tail -1)
-	sk_r=$(grep -oE 'IKE_SA rekey ADDKE SK\(1\) [0-9]+ bytes: SKEYSEED=[0-9a-f]+' \
-		"$D/resp-iked.log" 2>/dev/null | grep -oE 'SKEYSEED=[0-9a-f]+' | tail -1)
+	sk_i=$(grep -oE 'SKEYSEED=[0-9a-f]+' \
+		"$D/init-iked.log" 2>/dev/null | tail -1 | cut -d= -f2)
+	sk_r=$(grep -oE 'SKEYSEED=[0-9a-f]+' \
+		"$D/resp-iked.log" 2>/dev/null | tail -1 | cut -d= -f2)
 	pqc=0
 	if [ "${ikesa:-0}" -eq 1 ] && [ -n "$sk_i" ] && [ "$sk_i" = "$sk_r" ]; then
 		pqc=1
