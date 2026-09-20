@@ -206,6 +206,9 @@
 /* define to use RFC 9242 IKE_INTERMEDIATE */
 #undef WITH_INTERMEDIATE
 
+/* define to emit child KEYMAT sha256 debug hashes */
+#undef WITH_KEYMAT_ORACLE
+
 /* define to use OpenSSL ENGINE */
 #undef WITH_OPENSSL_ENGINE
 
