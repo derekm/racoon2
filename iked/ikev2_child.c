@@ -1749,7 +1749,16 @@ ikev2_find_request(struct ikev2_sa *ike_sa, uint32_t id)
 		    && sa->message_id == id
 		    && (sa->state == IKEV2_CHILD_STATE_WAIT_RESPONSE
 			|| sa->state == IKEV2_CHILD_STATE_REQUEST_PENDING
-			|| sa->state == IKEV2_CHILD_STATE_REQUEST_SENT))
+			|| sa->state == IKEV2_CHILD_STATE_REQUEST_SENT
+			/* A responder-initiated CHILD rekey under WITH_INTERMEDIATE
+			 * lands while the child that owns this msgid is still in its
+			 * SPI-pending window (GETSPI/GETSPI_DONE); the msgid was
+			 * already reserved via ikev2_request_id(), so matching it
+			 * here is precise and lets the exchange proceed instead of
+			 * "no child SA for received message".  Exact-msgid + the
+			 * is_initiator check keep this a strict match. */
+			|| sa->state == IKEV2_CHILD_STATE_GETSPI
+			|| sa->state == IKEV2_CHILD_STATE_GETSPI_DONE))
 			return sa;
 	}
 	return 0;

@@ -57,6 +57,7 @@
 
 #include <openssl/evp.h>
 #include <openssl/ml_kem.h>
+#include <openssl/crypto.h>	/* OPENSSL_cleanse */
 
 #include "racoon.h"
 #include "isakmp.h"
@@ -222,6 +223,7 @@ ikev2_addke_mlkem_encap(unsigned int transform_id, rc_vchar_t *peer_pub,
 	*shared = rc_vnew(ssbuf, sslen);
 	r = 0;
       done:
+	OPENSSL_cleanse(ssbuf, sizeof(ssbuf));	/* drop the ML-KEM shared secret */
 	EVP_PKEY_CTX_free(ctx);
 	EVP_PKEY_free(peer);
 	racoon_free(ctbuf);
@@ -263,6 +265,7 @@ ikev2_addke_mlkem_decap(EVP_PKEY *pkey, rc_vchar_t *ct, rc_vchar_t **shared)
 	*shared = rc_vnew(ssbuf, sslen);
 	r = 0;
       done:
+	OPENSSL_cleanse(ssbuf, sizeof(ssbuf));	/* drop the ML-KEM shared secret */
 	EVP_PKEY_CTX_free(ctx);
 	if (r < 0) {
 		rc_vfree(*shared);
@@ -635,6 +638,9 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			    ike_sa->addke_rekey_init &&
 			    ikev2_rekey_ikesa_init_followup_msgid(ike_sa) ==
 				rmsgid) {
+				if (get_payload_data_length(&rke->header) <
+				    sizeof(rke->ke_h))
+					return;	/* malformed short KE */
 				rct = rc_vnew((const u_char *)(rke + 1),
 					      get_payload_data_length(&rke->header) -
 					      sizeof(rke->ke_h));
@@ -659,6 +665,8 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			return;
 		}
 
+		if (get_payload_data_length(&rke->header) < sizeof(rke->ke_h))
+			return;	/* malformed short KE */
 		rct = rc_vnew((const u_char *)(rke + 1),
 			      get_payload_data_length(&rke->header) -
 			      sizeof(rke->ke_h));
@@ -777,6 +785,8 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	}
 
 	/* the KE payload carries the initiator's ML-KEM public key */
+	if (get_payload_data_length(&ke->header) < sizeof(ke->ke_h))
+		goto malformed;	/* underflow guard before the size_t subtract */
 	peer_ke = rc_vnew((const u_char *)(ke + 1),
 			  get_payload_data_length(&ke->header) -
 			  sizeof(ke->ke_h));

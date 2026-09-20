@@ -221,12 +221,12 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 		uint8_t *q;
 
 		if (!sa->intauth_i || !sa->intauth_r)
-			goto end;
+			goto fail_intauth;
 
 		put_uint32((uint8_t *)midb, (uint32_t)(sa->intermediate_rounds + 1));
 		ia = rc_vmalloc(sa->intauth_i->l + sa->intauth_r->l + 4);
 		if (!ia)
-			goto end;
+			goto fail_intauth;
 		q = (uint8_t *)ia->v;
 		memcpy(q, sa->intauth_i->v, sa->intauth_i->l);
 		q += sa->intauth_i->l;
@@ -239,7 +239,7 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 		grown = rc_vconcat(octets, ia->v, ia->l);
 		rc_vfree(ia);
 		if (!grown)
-			goto end;
+			goto fail_intauth;
 		octets = grown;
 	}
 #endif
@@ -253,6 +253,19 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 	if (prf_output)
 		rc_vfree(prf_output);
 	return octets;
+
+      fail_intauth:
+	/* Fail CLOSED: intermediate rounds ran (RFC 9242) but the chained
+	 * IntAuth is missing or couldn't be built -- never emit a classical
+	 * (no-IntAuth) AUTH blob that a compliant peer would reject confusingly,
+	 * and never sign without the mandatory RFC 9242 appendix. */
+	if (prf_output)
+		rc_vfree(prf_output);
+	if (octets) {
+		rc_vfree(octets);
+		octets = 0;
+	}
+	return NULL;
 }
 
 
