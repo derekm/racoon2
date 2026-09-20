@@ -60,8 +60,12 @@ addke_ok() {
 	no)  return 1 ;;
 	esac
 	[ -x "$SBIN/iked" ] && grep -q ikev2_followup_ke_recv "$SBIN/iked" 2>/dev/null && return 0
-	# configure defines WITH_ADDKE in the subdir-local iked/config.h
-	[ -f "$R2_SRC/iked/config.h" ] && grep -qE 'WITH_ADDKE' "$R2_SRC/iked/config.h" 2>/dev/null
+	# Autoconf writes `/* #undef WITH_ADDKE */` when the feature is off.
+	# A bare grep of the token is a false-positive on Ubuntu OpenSSL 3.0
+	# and lets i2ikesa-addke / i2iinit-addke run (and fail) in CI.
+	[ -f "$R2_SRC/iked/config.h" ] &&
+		grep -qE '^[[:space:]]*#define[[:space:]]+WITH_ADDKE([[:space:]]|$)' \
+			"$R2_SRC/iked/config.h" 2>/dev/null
 }
 
 
@@ -98,7 +102,7 @@ pass=0
 fail=0
 skip=0
 trap iked_restore EXIT
-while IFS="$(printf '	')" read -r name kind expect workers note gate || [ -n "$name" ]; do
+while IFS="$(printf '\t')" read -r name kind expect workers note gate || [ -n "$name" ]; do
 	name=$(crstrip "$name")
 	kind=$(crstrip "$kind")
 	expect=$(crstrip "$expect")
