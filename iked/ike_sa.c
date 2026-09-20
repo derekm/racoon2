@@ -1158,6 +1158,9 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 	if (sa->qcd_token_peer)
 		rc_vfree(sa->qcd_token_peer);
 
+#ifdef WITH_INTERMEDIATE
+	ikev2_intermediate_clear(sa);
+#endif
 	racoon_free(sa);
 }
 
