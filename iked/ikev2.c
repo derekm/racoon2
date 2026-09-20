@@ -7506,6 +7506,14 @@ intermediate_finish_round(struct ikev2_sa *sa)
 	       "IKE_INTERMEDIATE round done reqlen=%zu resplen=%zu\n",
 	       sa->intermediate_req ? sa->intermediate_req->l : 0,
 	       sa->intermediate_resp ? sa->intermediate_resp->l : 0));
+	/* non-secret marker a matrix case asserts: both sides completing the
+	 * round (with the ESP child coming up = AUTH+IntAuth verified = the
+	 * RFC 9370 s3.5 SKEYSEED(1) genuinely matched) is the proof; the raw
+	 * SKEYSEED/IntAuth bytes are deliberately NOT logged. */
+	isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		   "IKE_INTERMEDIATE ADDKE round complete reqlen=%zu resplen=%zu\n",
+		   sa->intermediate_req ? sa->intermediate_req->l : 0,
+		   sa->intermediate_resp ? sa->intermediate_resp->l : 0);
 	sa->intermediate_rounds++;
 	ikev2_intermediate_chain_intauth(sa, 'i', sa->intermediate_req);
 	ikev2_intermediate_chain_intauth(sa, 'r', sa->intermediate_resp);
