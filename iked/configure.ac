@@ -238,6 +238,7 @@ if test x"$addke" = xyes; then
 fi
 AM_CONDITIONAL([ADDKE], [test x"$addke" = xyes])
 
+intermediate='auto'
 AC_ARG_ENABLE(intermediate,
 	[  --enable-intermediate  enable RFC 9242 IKE_INTERMEDIATE exchange (default: auto)],
 	[intermediate=$enableval])
