@@ -6383,10 +6383,19 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	 * peer offered ADDKE in this proposal, record the method so the
 	 * IKE-rekey response echoes it and the SKEYSEED deferral arms.
 	 */
-	if (result) {
+	if (result && spi) {
 		int p;
 
-		/* isakmp_parse_proposal indexes by prop->p_no (1-based),
+		/* IKE_SA-init response must be classical: only the REKEY path
+		 * (spi != NULL) negotiates ADDKE on the IKE_SA.  Echoing a
+		 * type-6 the peer offered on its SAi1 back in our SAr1 makes
+		 * the initial exchange ADDKE-advertised while no IKE_SA
+		 * ADDKE followup exists yet -- addressed by the review as
+		 * 'peer that offers ADDKE on INIT gets type-6 in the INIT
+		 * response', and observed live (iOS default profile refuses
+		 * to proceed past IKE_SA_INIT).  Same rule as the AUTH child:
+		 * ADDKE belongs to CREATE_CHILD / IKE_SA rekey only.
+		 * isakmp_parse_proposal indexes by prop->p_no (1-based),
 		 * so index 0 is a NULL slot; iterate ALL slots and skip
 		 * NULLs (the same walk isakmp_find_match uses), rather
 		 * than stopping at the first NULL which is always index 0
