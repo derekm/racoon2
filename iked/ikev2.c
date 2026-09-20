@@ -7583,6 +7583,11 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	struct ikev2_payloads payl;
 	uint32_t rmsgid;
 
+	isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		   "responder-inter start exch=%d rsp=%d msgid=%u next=%d addke=%u\n",
+		   ikehdr->exchange_type, !!(ikehdr->flags & IKEV2FLAG_RESPONSE),
+		   get_uint32(&ikehdr->message_id), ikehdr->next_payload,
+		   (sa->negotiated_sa ? sa->negotiated_sa->addke : 0));
 	if (ikehdr->flags & IKEV2FLAG_RESPONSE) {
 		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
 			   "IKE_INTERMEDIATE: unexpected response\n");
@@ -7601,9 +7606,14 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 			ke = (struct ikev2payl_ke *)p;
 		}
 	}
+	isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		   "responder-inter walked ke=%p\n", (void *)ke);
 	if (!ke || (uint32_t)ntohs(ke->ke_h.dh_group_id) != sa->negotiated_sa->addke)
 		goto drop;
 	body = intermediate_ke_body(ke);
+	isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		   "responder-inter ke_body=%p addke=%u\n", (void *)body,
+		   sa->negotiated_sa->addke);
 	if (!body)
 		goto drop;
 
