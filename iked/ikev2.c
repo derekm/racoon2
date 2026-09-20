@@ -1805,7 +1805,8 @@ initiator_skey_done(int rc, void *arg)
 	/* RFC 9370 s2.2.1: run the negotiated IKE_INTERMEDIATE ADDKE round(s)
 	 * before IKE_AUTH when the IKE_SA proposal selected ADDKE. */
 	if (ike_sa->intermediate_negotiated &&
-	    ike_sa->negotiated_sa && ike_sa->negotiated_sa->addke != 0) {
+	    ike_sa->negotiated_sa && ike_sa->negotiated_sa->addke != 0 &&
+	    ike_sa->encryptor && encryptor_icv_length(ike_sa->encryptor) > 0) {
 		ike_sa->intermediate_msgid = 1;
 		initiator_ike_intermediate_send(ike_sa);
 		ike_sa->crypto_pending = 0;
@@ -6489,23 +6490,22 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 
 #ifdef WITH_ADDKE
 	/*
-	 * The isakmpsa above was built from the MINE-side copy, which
-	 * never carries ADDKE (our IKE proposal has no type-6).  If the
-	 * peer offered ADDKE in this proposal, record the method so the
+	 * The isakmpsa above was built from the MINE-side copy.  Type-6
+	 * on the initial IKE_SA is offered only via
+	 * ikev2_maybe_offer_ikesa_addke() when WITH_INTERMEDIATE is on;
+	 * a classical IKE proposal still has no type-6.  If the peer
+	 * offered ADDKE in this proposal, record the method so the
 	 * IKE-rekey response echoes it and the SKEYSEED deferral arms.
 	 */
 	if (result && (spi != NULL || allow_init_addke)) {
 		int p;
 
-		/* IKE_SA-init response must be classical: only the REKEY path
-		 * (spi != NULL) negotiates ADDKE on the IKE_SA.  Echoing a
-		 * type-6 the peer offered on its SAi1 back in our SAr1 makes
-		 * the initial exchange ADDKE-advertised while no IKE_SA
-		 * ADDKE followup exists yet -- addressed by the review as
-		 * 'peer that offers ADDKE on INIT gets type-6 in the INIT
-		 * response', and observed live (iOS default profile refuses
-		 * to proceed past IKE_SA_INIT).  Same rule as the AUTH child:
-		 * ADDKE belongs to CREATE_CHILD / IKE_SA rekey only.
+		/* Type-6 on the INITIAL IKE_SA is recorded only when the
+		 * caller passes allow_init_addke (16438 negotiated).  The
+		 * IKE_SA-rekey path (spi != NULL) still records ADDKE so
+		 * FOLLOWUP_KE can run.  Without 16438, INIT stays classical
+		 * so iOS default profiles that offer type-6 without
+		 * intermediate do not see a type-6 SAr1.
 		 * isakmp_parse_proposal indexes by prop->p_no (1-based),
 		 * so index 0 is a NULL slot; iterate ALL slots and skip
 		 * NULLs (the same walk isakmp_find_match uses), rather
@@ -7255,48 +7255,72 @@ intermediate_packet_inner_blob(rc_vchar_t *packet)
 	struct ikev2_payload_header *p;
 	unsigned int type;
 	rc_vchar_t *out;
-	uint8_t *ptr;
+	uint8_t *ptr, *base, *end;
 	size_t msglen = 0;
 	uint8_t head = IKEV2_NO_NEXT_PAYLOAD;
 	uint8_t *prev_np = &head;
 	int started = 0;
 
-	if (!packet)
+	if (!packet || packet->l < sizeof(*ikehdr))
 		return 0;
 	ikehdr = (struct ikev2_header *)packet->v;
+	base = (uint8_t *)packet->v;
+	end = base + packet->l;
 	p = (struct ikev2_payload_header *)(ikehdr + 1);
-	for (type = ikehdr->next_payload;
-	     type != IKEV2_NO_NEXT_PAYLOAD;
-	     POINT_NEXT_PAYLOAD(p, type)) {
-		if (!started && type == IKEV2_PAYLOAD_ENCRYPTED)
+	type = ikehdr->next_payload;
+	while (type != IKEV2_NO_NEXT_PAYLOAD) {
+		uint32_t plen;
+
+		if ((uint8_t *)p < base || (uint8_t *)p + sizeof(*p) > end)
+			return 0;
+		plen = get_payload_length(p);
+		if (plen < sizeof(*p) || (uint8_t *)p + plen > end)
+			return 0;
+		if (!started && type == IKEV2_PAYLOAD_ENCRYPTED) {
+			type = p->next_payload;
+			p = (struct ikev2_payload_header *)((uint8_t *)p + plen);
 			continue;
+		}
 		started = 1;
-		msglen += get_payload_length(p);
+		msglen += plen;
+		type = p->next_payload;
+		p = (struct ikev2_payload_header *)((uint8_t *)p + plen);
 	}
-	if (!started)
+	if (!started || msglen == 0)
 		return 0;
 	out = rc_vmalloc(msglen);
 	if (!out)
 		return 0;
 	ptr = (uint8_t *)out->v;
 	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	type = ikehdr->next_payload;
 	started = 0;
-	for (type = ikehdr->next_payload;
-	     type != IKEV2_NO_NEXT_PAYLOAD;
-	     POINT_NEXT_PAYLOAD(p, type)) {
-		int plen;
+	while (type != IKEV2_NO_NEXT_PAYLOAD) {
+		uint32_t plen;
 
-		if (!started && type == IKEV2_PAYLOAD_ENCRYPTED)
-			continue;
-		started = 1;
+		if ((uint8_t *)p < base || (uint8_t *)p + sizeof(*p) > end)
+			goto fail;
 		plen = get_payload_length(p);
+		if (plen < sizeof(*p) || (uint8_t *)p + plen > end)
+			goto fail;
+		if (!started && type == IKEV2_PAYLOAD_ENCRYPTED) {
+			type = p->next_payload;
+			p = (struct ikev2_payload_header *)((uint8_t *)p + plen);
+			continue;
+		}
+		started = 1;
 		*prev_np = type;
 		prev_np = &(((struct ikev2_payload_header *)ptr)->next_payload);
 		memcpy(ptr, p, plen);
 		ptr += plen;
+		type = p->next_payload;
+		p = (struct ikev2_payload_header *)((uint8_t *)p + plen);
 	}
 	*prev_np = IKEV2_NO_NEXT_PAYLOAD;
 	return out;
+fail:
+	rc_vfree(out);
+	return 0;
 }
 
 /* RFC 9370 s3.5: SKEYSEED(1)=prf(SK_d,SK(1)|Ni|Nr) then recompute all
@@ -7333,7 +7357,7 @@ ikev2_intermediate_chain_intauth(struct ikev2_sa *sa, int dir,
 	rc_vchar_t **chain;
 
 	if (!content) {
-		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "IntAuth chain dir=%c no-content\n", dir);
 		return;
 	}
@@ -7341,7 +7365,7 @@ ikev2_intermediate_chain_intauth(struct ikev2_sa *sa, int dir,
 	key = (dir == 'i') ? sa->sk_p_i : sa->sk_p_r;
 	prev = *chain;
 	if (!key) {
-		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "IntAuth chain dir=%c no-key sk_p_%c=NULL\n",
 			   dir, dir);
 		return;
@@ -7477,42 +7501,11 @@ intermediate_find_ke(rc_vchar_t *packet)
 static void
 intermediate_finish_round(struct ikev2_sa *sa)
 {
-	/* matrix diff: fingerprint this round's request/response content */
-	{
-		unsigned long hi = 5381, hr = 5381;
-		int q;
-
-		if (sa->intermediate_req)
-			for (q = 0; q < (int)sa->intermediate_req->l; q++)
-				hi = hi * 33 + ((uint8_t *)sa->intermediate_req->v)[q];
-		if (sa->intermediate_resp)
-			for (q = 0; q < (int)sa->intermediate_resp->l; q++)
-				hr = hr * 33 + ((uint8_t *)sa->intermediate_resp->v)[q];
-		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-			   "INT_CONTENT reqlen=%d reqhash=%lx resplen=%d resphash=%lx\n",
-			   sa->intermediate_req ? (int)sa->intermediate_req->l : 0, hi,
-			   sa->intermediate_resp ? (int)sa->intermediate_resp->l : 0, hr);
-		if (sa->intermediate_req && sa->intermediate_req->l >= 32) {
-			char hexv[65];
-			int k;
-			for (k = 0; k < 32; k++)
-				snprintf(hexv + k * 2, 3, "%02x",
-					 ((uint8_t *)sa->intermediate_req->v)[k]);
-			hexv[64] = 0;
-			isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-				   "INT_REQ_A=%s\n", hexv);
-		}
-		if (sa->intermediate_resp && sa->intermediate_resp->l >= 32) {
-			char hexv[65];
-			int k;
-			for (k = 0; k < 32; k++)
-				snprintf(hexv + k * 2, 3, "%02x",
-					 ((uint8_t *)sa->intermediate_resp->v)[k]);
-			hexv[64] = 0;
-			isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-				   "INT_RESP_A=%s\n", hexv);
-		}
-	}
+	/* fingerprint lengths only — do not print SKEYSEED / IntAuth */
+	TRACE((PLOGLOC,
+	       "IKE_INTERMEDIATE round done reqlen=%zu resplen=%zu\n",
+	       sa->intermediate_req ? sa->intermediate_req->l : 0,
+	       sa->intermediate_resp ? sa->intermediate_resp->l : 0));
 	sa->intermediate_rounds++;
 	ikev2_intermediate_chain_intauth(sa, 'i', sa->intermediate_req);
 	ikev2_intermediate_chain_intauth(sa, 'r', sa->intermediate_resp);
@@ -7525,39 +7518,6 @@ intermediate_finish_round(struct ikev2_sa *sa)
 	sa->intermediate_req = 0;
 	rc_vfreez(sa->intermediate_resp);
 	sa->intermediate_resp = 0;
-	/* matrix proof: log the RFC 9370 s3.5 SKEYSEED(n) hex so both sides can
-	 * be diffed (the child keymat-hash / rekey SKEYSEED pattern). */
-	if (sa->skeyseed && sa->skeyseed->v) {
-		char hexv[2 * sa->skeyseed->l + 1];
-		int k;
-
-		for (k = 0; k < sa->skeyseed->l; k++)
-			snprintf(hexv + k * 2, 3, "%02x",
-				 ((uint8_t *)sa->skeyseed->v)[k]);
-		hexv[2 * sa->skeyseed->l] = 0;
-		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-			   "IKE_INTERMEDIATE ADDKE SK(1) SKEYSEED=%s\n", hexv);
-	}
-	if (sa->intauth_i && sa->intauth_i->v) {
-		char hexv[2 * sa->intauth_i->l + 1];
-		int k;
-		for (k = 0; k < sa->intauth_i->l; k++)
-			snprintf(hexv + k * 2, 3, "%02x",
-				 ((uint8_t *)sa->intauth_i->v)[k]);
-		hexv[2 * sa->intauth_i->l] = 0;
-		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-			   "INT_IAUTH_I=%s\n", hexv);
-	}
-	if (sa->intauth_r && sa->intauth_r->v) {
-		char hexv[2 * sa->intauth_r->l + 1];
-		int k;
-		for (k = 0; k < sa->intauth_r->l; k++)
-			snprintf(hexv + k * 2, 3, "%02x",
-				 ((uint8_t *)sa->intauth_r->v)[k]);
-		hexv[2 * sa->intauth_r->l] = 0;
-		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-			   "INT_IAUTH_R=%s\n", hexv);
-	}
 }
 
 /* --------------------------------------------------------------- initiator
@@ -7571,9 +7531,16 @@ initiator_ike_intermediate_send(struct ikev2_sa *sa)
 	EVP_PKEY *priv = 0;
 	uint32_t method;
 
-	if (!sa->negotiated_sa || sa->negotiated_sa->addke == 0) {
+	if (!sa->intermediate_negotiated || !sa->negotiated_sa ||
+	    sa->negotiated_sa->addke == 0) {
 		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "IKE_INTERMEDIATE: no negotiated ADDKE method\n");
+		ikev2_abort(sa, ECONNREFUSED);
+		return;
+	}
+	if (!sa->encryptor || encryptor_icv_length(sa->encryptor) <= 0) {
+		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: IntAuth_A requires an AEAD IKE cipher\n");
 		ikev2_abort(sa, ECONNREFUSED);
 		return;
 	}
@@ -7648,6 +7615,13 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	rc_vchar_t *body = 0, *ss = 0, *cA = 0, *ib = 0, *resp = 0;
 
 	(void)local; (void)remote;
+	if (!sa->intermediate_negotiated || !sa->negotiated_sa ||
+	    sa->negotiated_sa->addke == 0) {
+		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: unexpected response\n");
+		ikev2_abort(sa, ECONNREFUSED);
+		return;
+	}
 	if (!(ikehdr->flags & IKEV2FLAG_RESPONSE)) {
 		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
 			   "IKE_INTERMEDIATE: expected a response\n");
@@ -7690,8 +7664,10 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 
 	/* hold the RESPONSE content (IntAuth_r chunk) */
 	ib = intermediate_packet_inner_blob(packet);
+	if (!ib)
+		goto malformed;
 	cA = intermediate_content_a(sa, (struct ikev2_header *)packet->v,
-				    ib ? ib->l : 0, IKEV2_PAYLOAD_KE);
+				    ib->l, IKEV2_PAYLOAD_KE);
 	resp = intermediate_concat4(cA, ib, 0, 0);
 	rc_vfree(cA);
 	rc_vfree(ib);
@@ -7737,11 +7713,17 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	struct ikev2_payloads payl;
 	uint32_t rmsgid;
 
-	isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-		   "responder-inter start exch=%d rsp=%d msgid=%u next=%d addke=%u\n",
-		   ikehdr->exchange_type, !!(ikehdr->flags & IKEV2FLAG_RESPONSE),
-		   get_uint32(&ikehdr->message_id), ikehdr->next_payload,
-		   (sa->negotiated_sa ? sa->negotiated_sa->addke : 0));
+	if (!sa->intermediate_negotiated || !sa->negotiated_sa ||
+	    sa->negotiated_sa->addke == 0) {
+		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: not negotiated, dropping\n");
+		goto drop;
+	}
+	if (!sa->encryptor || encryptor_icv_length(sa->encryptor) <= 0) {
+		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: IntAuth_A requires an AEAD IKE cipher\n");
+		goto drop;
+	}
 	if (ikehdr->flags & IKEV2FLAG_RESPONSE) {
 		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
 			   "IKE_INTERMEDIATE: unexpected response\n");
@@ -7763,8 +7745,10 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 
 	/* hold the REQUEST content (IntAuth_i chunk) */
 	iblob = intermediate_packet_inner_blob(packet);
+	if (!iblob)
+		goto drop;
 	cAreq = intermediate_content_a(sa, (struct ikev2_header *)packet->v,
-				       iblob ? iblob->l : 0, IKEV2_PAYLOAD_KE);
+				       iblob->l, IKEV2_PAYLOAD_KE);
 	req = intermediate_concat4(cAreq, iblob, 0, 0);
 	rc_vfree(cAreq);
 	rc_vfree(iblob);

@@ -103,9 +103,11 @@ struct ikev2_header {
 /* RFC 9242: IKE_INTERMEDIATE, run sequentially between IKE_SA_INIT and
  * IKE_AUTH (msgid 1,2,…), each carrying an Encrypted payload.  Carrier for
  * additional key exchange; the rounds are bound into AUTH via the chained
- * IntAuth PRF + IKE_AUTH_MID appended to each peer's signed/mac'd blob.  Do
- * NOT echo INTERMEDIATE_EXCHANGE_SUPPORTED (16438) in the IKE_SA_INIT
- * response until the exchange is handled, or we advertise support we lack. */
+ * IntAuth PRF + IKE_AUTH_MID appended to each peer's signed/mac'd blob.
+ * Initiator offers N(16438) when WITH_INTERMEDIATE is on.  Responder echoes
+ * it only if the peer offered it.  Type-6 on the initial IKE_SA is recorded
+ * only when 16438 was negotiated (allow_init_addke).  IntAuth_A length is
+ * exact for AEAD IKE ciphers; non-AEAD suites skip the intermediate round. */
 #define	IKEV2EXCH_IKE_INTERMEDIATE	43
 /* RFC 9370: carries additional key exchange data that follows a
  * CREATE_CHILD_SA when the initiator included ADDKE transforms. */
