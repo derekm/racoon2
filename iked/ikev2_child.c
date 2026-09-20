@@ -1470,6 +1470,7 @@ ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 	 * keep the child pending so the followup correlates and completes.
 	 */
 	if (!peer_addke && child_sa->parent &&
+	    child_sa->parent->state == IKEV2_STATE_ESTABLISHED &&
 	    child_sa->parent->rmconf &&
 	    ikev2_addke_unrequested(child_sa->parent->rmconf) == RCT_BOOL_ON) {
 		child_sa->addke_nrounds = 1;
