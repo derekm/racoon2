@@ -6384,12 +6384,23 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	 * IKE-rekey response echoes it and the SKEYSEED deferral arms.
 	 */
 	if (result) {
-		struct prop_pair **pp;
+		int p;
 
-		for (pp = peer_proposal; pp && *pp; ++pp) {
+		/* isakmp_parse_proposal indexes by prop->p_no (1-based),
+		 * so index 0 is a NULL slot; iterate ALL slots and skip
+		 * NULLs (the same walk isakmp_find_match uses), rather
+		 * than stopping at the first NULL which is always index 0
+		 * and thus misses every proposal. */
+		for (p = 0; p < MAXPROPPAIRLEN; ++p) {
+			struct prop_pair *pp =
+			    peer_proposal ? peer_proposal[p] : NULL;
 			struct prop_pair *tr;
 
-			for (tr = (*pp)->tnext; tr; tr = tr->next) {
+			if (!pp)
+				continue;
+			/* transforms: ->tnext = first, chained via ->next
+			 * (ikev2_get_transforms result layout) */
+			for (tr = pp->tnext; tr; tr = tr->next) {
 				struct ikev2transform *t =
 				    (struct ikev2transform *)tr->trns;
 				if (t &&
