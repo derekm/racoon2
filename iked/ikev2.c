@@ -7444,6 +7444,22 @@ intermediate_find_ke(rc_vchar_t *packet)
 static void
 intermediate_finish_round(struct ikev2_sa *sa)
 {
+	/* matrix diff: fingerprint this round's request/response content */
+	{
+		unsigned long hi = 5381, hr = 5381;
+		int q;
+
+		if (sa->intermediate_req)
+			for (q = 0; q < (int)sa->intermediate_req->l; q++)
+				hi = hi * 33 + ((uint8_t *)sa->intermediate_req->v)[q];
+		if (sa->intermediate_resp)
+			for (q = 0; q < (int)sa->intermediate_resp->l; q++)
+				hr = hr * 33 + ((uint8_t *)sa->intermediate_resp->v)[q];
+		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "INT_CONTENT reqlen=%d reqhash=%lx resplen=%d resphash=%lx\n",
+			   sa->intermediate_req ? (int)sa->intermediate_req->l : 0, hi,
+			   sa->intermediate_resp ? (int)sa->intermediate_resp->l : 0, hr);
+	}
 	sa->intermediate_rounds++;
 	ikev2_intermediate_chain_intauth(sa, 'i', sa->intermediate_req);
 	ikev2_intermediate_chain_intauth(sa, 'r', sa->intermediate_resp);
