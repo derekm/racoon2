@@ -7459,6 +7459,26 @@ intermediate_finish_round(struct ikev2_sa *sa)
 			   "INT_CONTENT reqlen=%d reqhash=%lx resplen=%d resphash=%lx\n",
 			   sa->intermediate_req ? (int)sa->intermediate_req->l : 0, hi,
 			   sa->intermediate_resp ? (int)sa->intermediate_resp->l : 0, hr);
+		if (sa->intermediate_req && sa->intermediate_req->l >= 32) {
+			char hexv[65];
+			int k;
+			for (k = 0; k < 32; k++)
+				snprintf(hexv + k * 2, 3, "%02x",
+					 ((uint8_t *)sa->intermediate_req->v)[k]);
+			hexv[64] = 0;
+			isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+				   "INT_REQ_A=%s\n", hexv);
+		}
+		if (sa->intermediate_resp && sa->intermediate_resp->l >= 32) {
+			char hexv[65];
+			int k;
+			for (k = 0; k < 32; k++)
+				snprintf(hexv + k * 2, 3, "%02x",
+					 ((uint8_t *)sa->intermediate_resp->v)[k]);
+			hexv[64] = 0;
+			isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+				   "INT_RESP_A=%s\n", hexv);
+		}
 	}
 	sa->intermediate_rounds++;
 	ikev2_intermediate_chain_intauth(sa, 'i', sa->intermediate_req);
