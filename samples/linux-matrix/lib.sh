@@ -15,6 +15,17 @@ IKED_UNIT="${R2_IKED_UNIT:-iked}"
 SPMD_UNIT="${R2_SPMD_UNIT:-spmd}"
 
 log() { printf '%s\n' "$*"; }
+
+# hex of a whole-file PSK. xxd is not on every minimal image; od is coreutils.
+psk_file_hex() {
+	f=$1
+	if command -v xxd >/dev/null 2>&1; then
+		xxd -p -c 256 "$f" | tr -d '\n'
+		return 0
+	fi
+	od -An -tx1 "$f" | tr -d ' \n'
+}
+
 die() {
 	printf 'FAIL: %s\n' "$*" >&2
 	R2_CASE_FAIL=1
