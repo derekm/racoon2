@@ -36,6 +36,10 @@ kind_ikev2() {
 
 	# ICMP to the host's eth0 addr from the veth often fails (local-dest);
 	# IKE UDP still delivers. Gate on HIP only.
+	if ! command -v ping >/dev/null 2>&1; then
+		log "FAIL: ping(8) missing (install iputils-ping)"
+		return 1
+	fi
 	if ! ip netns exec "$NS" ping -c 1 -W 2 "$HIP" >/dev/null; then
 		log "FAIL: netns ping $HIP"
 		return 1
@@ -111,7 +115,8 @@ kind_ikev2() {
 	rekeyfuzz=0%'
 		;;
 	esac
-	pskhex=$(xxd -p -c 256 "$ETC/psk/macos.psk" | tr -d '\n')
+	pskhex=$(psk_file_hex "$ETC/psk/macos.psk")
+	[ -n "$pskhex" ] || { log "FAIL: empty PSK hex from $ETC/psk/macos.psk"; return 1; }
 	mkdir -p /etc/strongswan.d/charon
 	cat >/etc/strongswan.d/charon/bypass-lan.conf <<'EOF'
 charon {
@@ -157,6 +162,17 @@ EOF
 	ip netns exec "$NS" ipsec start
 	sleep 2
 	# ipsec up can hang after the Child SA is already in; ping is the gate.
+	# Snapshot host SAD while IKE_AUTH runs. On some kernels charon-in-netns
+	# cannot XFRM_MSG_NEWSA (netlink 93) and immediately DELETEs the child;
+	# a post-up grep then misses the responder SA iked already installed.
+	: >/tmp/r2-sad-watch
+	(
+		while :; do
+			ip xfrm state >>/tmp/r2-sad-watch 2>/dev/null || true
+			sleep 0.2
+		done
+	) &
+	_sadwatch=$!
 	timeout 25 ip netns exec "$NS" ipsec up r2macos || true
 	# NB: no inner-ping gate on the netns rows — charon-in-netns cannot
 	# install its side of the SAs on these kernels (mirrored WSL2 and
@@ -174,9 +190,15 @@ EOF
 	fi
 	_sad_ok=0
 	for _ in $(seq 1 30); do
-		ip xfrm state | grep -q "$_sadpat" && { _sad_ok=1; break; }
+		if ip xfrm state | grep -q "$_sadpat" ||
+		   grep -q "$_sadpat" /tmp/r2-sad-watch 2>/dev/null; then
+			_sad_ok=1
+			break
+		fi
 		sleep 1
 	done
+	kill "$_sadwatch" 2>/dev/null || true
+	wait "$_sadwatch" 2>/dev/null || true
 	if [ "$_sad_ok" != 1 ]; then
 		if [ -n "$EXPECT_AUTH" ]; then
 			log "FAIL: SAD missing $EXPECT_AUTH"

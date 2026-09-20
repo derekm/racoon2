@@ -82,7 +82,9 @@ new SPI takes packets, `REKEY_SOAK_RESULT=0`.  Net fix: `ikev2_createchild_
 initiator_recv` no longer finalizes the rekey (deleting the old child / logging
 "rekey complete") while the ADDKE child is still `addke_pending`; the old-child
 delete is deferred to `ikev2_initiator_followup_complete` once the KEM child is
-installed.  **Still open:** the initiator IKE_SA-rekey ADDKE feed.  (Outbound
+installed.  **Initiator IKE_SA-rekey ADDKE** is matrix-rowed as
+`i2ikesa-addke` (both sides log the same ADDKE SKEYSEED after
+IKE_FOLLOWUP_KE).  (Outbound
 fragmentation of our IKE_FOLLOWUP_KE was listed here before a 2026-09-18 code
 check showed it is already handled by `ikev2_transmit`/`ikev2_transmit_response`
 → `ikev2_frag_send` when RFC 7383 is negotiated; not a gap.)
@@ -149,17 +151,17 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   exchanges run sequentially between IKE_SA_INIT and IKE_AUTH (msgid 1,2,…), each
   carrying an Encrypted payload. It is a **carrier** for additional key exchange
   (e.g. ADDKE/ML-KEM) that updates SK_e/SK_a per the applying spec; the rounds are
- bound into AUTH via the **chained IntAuth PRF** (`IntAuth_i/rN`) + `IKE_AUTH_MID`
- chunk appended to each peer's signed/mac'd blob. iOS sends 16438 today (racoon2
- currently ignores it) — the phone is the live interop target. New exchange-type
- dispatch in **`iked/ikev2.c` pre-AUTH receive path** (IKE_INTERMEDIATE runs
- BEFORE IKE_AUTH; the IKE SA MUST NOT be considered established until IKE_AUTH
- completes — RFC 9242 s3.2 — so it is NOT `ikev2_established_recv`, which is the
- post-AUTH CREATE_CHILD/INFORMATIONAL/IKE_FOLLOWUP_KE switch), responder +
- initiator, new `iked/ikev2_intermediate.c` (CRLF), gate `--enable-intermediate`
- in **`iked/configure.ac`** (auto, empty TU off-path); do NOT echo 16438 in the
- response until exch-43 + IntAuth are wired (else we advertise support we don't
- implement).
+  bound into AUTH via the **chained IntAuth PRF** (`IntAuth_i/rN`) + `IKE_AUTH_MID`
+  chunk appended to each peer's signed/mac'd blob.  **Landed in `iked/ikev2.c`
+  (not a split `ikev2_intermediate.c` yet):** initiator offers N(16438) when
+  `WITH_INTERMEDIATE` is on; responder echoes it only if the peer offered it;
+  type-6 on the initial IKE_SA is recorded only with `allow_init_addke`;
+  IntAuth_A reconstruction is AEAD-exact (non-AEAD IKE ciphers skip / drop
+  exch 43); AUTH fails closed if the IntAuth appendix cannot be built.
+  Matrix proof is `i2iinit-addke` (Fedora / OpenSSL ≥ 3.5).  iOS sending
+  16438 is still the live interop target.  IKE_INTERMEDIATE runs BEFORE
+  IKE_AUTH (RFC 9242 s3.2) — it is not `ikev2_established_recv`.  Gate
+  `--enable-intermediate` in `iked/configure.ac` (auto-follows `--enable-addke`).
 - **RFC 8784 (PPK):** PPK_ID notify + quantum-resistant pre-shared mixing into
   SK_PRF/SKEYSEED + sequential counter to prevent reuse. New PPK config +
   notify handling + key feed; needs a PSK source. After 9242.
