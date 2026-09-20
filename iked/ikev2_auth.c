@@ -230,12 +230,15 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 			memcpy(q, sa->intauth_r->v, sa->intauth_r->l);
 			q += sa->intauth_r->l;
 			memcpy(q, midb, 4);
+			/* rc_vconcat reallocs dest IN PLACE and returns it (may
+			 * be a new pointer); octets aliases grown -- do NOT free
+			 * octets separately or we double-free. */
 			grown = rc_vconcat(octets, ia->v, ia->l);
 			rc_vfree(ia);
-			if (grown) {
-				rc_vfree(octets);
+			if (grown)
 				octets = grown;
-			}
+			else
+				goto end;
 		}
 	}
 #endif
