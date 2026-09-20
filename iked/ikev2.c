@@ -7321,21 +7321,41 @@ ikev2_intermediate_chain_intauth(struct ikev2_sa *sa, int dir,
 	       dir == 'i' ? 'i' : 'r'));
 }
 
-/* IntAuth_A scope for a message: its outer IKE header + the Encrypted
- * payload's generic header (RFC 9242 s3.3.2). */
+/* RFC 9242 s3.3.2 IntAuth_A: the outer IKE header + the Encrypted payload's
+ * generic header.  Reconstructed deterministically so BOTH the sender and a
+ * peer receiving the (fragmented) message reproduce identical bytes: the
+ * header's next_payload is normalized to ENCRYPTED, its Length to the
+ * UNfragmented full-message size, and the enc-payload length to
+ * 4+IV+plaintext+AEAD-tag.  This is only exact for an AEAD IKE cipher (no
+ * random padding); the initial-IKE_SA ADDKE path therefore requires an AEAD
+ * IKE cipher (AES-GCM), not CBC. */
 static rc_vchar_t *
-intermediate_content_a(rc_vchar_t *pkt)
+intermediate_content_a(struct ikev2_sa *sa, struct ikev2_header *hdr,
+		       size_t inner_len, uint8_t first_inner_type)
 {
-	static const size_t off = sizeof(struct ikev2_header)
-		+ sizeof(struct ikev2_payload_header);
+	static const size_t hdr_len = sizeof(struct ikev2_header);
+	size_t iv_len, tag_len;
+	uint32_t enc_len;
 	rc_vchar_t *c;
+	uint8_t *p;
 
-	if (!pkt || pkt->l < off)
-		return 0;
-	c = rc_vmalloc(off);
+	iv_len = sa->encryptor ? encryptor_iv_length(sa->encryptor) : 0;
+	tag_len = sa->encryptor ? encryptor_icv_length(sa->encryptor) : 0;
+	enc_len = sizeof(struct ikev2_payload_header) + iv_len
+		+ (uint32_t)inner_len + (uint32_t)tag_len;
+	c = rc_vmalloc(hdr_len + sizeof(struct ikev2_payload_header));
 	if (!c)
 		return 0;
-	memcpy(c->v, pkt->v, off);
+	p = (uint8_t *)c->v;
+	memcpy(p, hdr, hdr_len);
+	p[0] = IKEV2_PAYLOAD_ENCRYPTED;	/* normalize the header next_payload */
+	/* IKE header Length field is bytes 24-27: the UNfragmented full size */
+	put_uint32(p + 24, (uint32_t)(hdr_len + enc_len));
+	p += hdr_len;
+	/* Encrypted payload generic header */
+	p[0] = first_inner_type;
+	p[1] = 0;
+	put_uint16(p + 2, (uint16_t)enc_len);
 	return c;
 }
 
@@ -7478,7 +7498,8 @@ initiator_ike_intermediate_send(struct ikev2_sa *sa)
 				     sa->intermediate_msgid, sa, &payl);
 	if (!pkt)
 		goto fail;
-	cA = intermediate_content_a(pkt);
+	cA = intermediate_content_a(sa, (struct ikev2_header *)pkt->v,
+				    inner ? inner->l : 0, IKEV2_PAYLOAD_KE);
 	content = intermediate_concat4(cA, inner, 0, 0);
 	rc_vfree(cA);
 	if (!content)
@@ -7562,8 +7583,9 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	}
 
 	/* hold the RESPONSE content (IntAuth_r chunk) */
-	cA = intermediate_content_a(packet);
 	ib = intermediate_packet_inner_blob(packet);
+	cA = intermediate_content_a(sa, (struct ikev2_header *)packet->v,
+				    ib ? ib->l : 0, IKEV2_PAYLOAD_KE);
 	resp = intermediate_concat4(cA, ib, 0, 0);
 	rc_vfree(cA);
 	rc_vfree(ib);
@@ -7634,8 +7656,9 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 		goto drop;
 
 	/* hold the REQUEST content (IntAuth_i chunk) */
-	cAreq = intermediate_content_a(packet);
 	iblob = intermediate_packet_inner_blob(packet);
+	cAreq = intermediate_content_a(sa, (struct ikev2_header *)packet->v,
+				       iblob ? iblob->l : 0, IKEV2_PAYLOAD_KE);
 	req = intermediate_concat4(cAreq, iblob, 0, 0);
 	rc_vfree(cAreq);
 	rc_vfree(iblob);
@@ -7662,7 +7685,8 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 				     IKEV2FLAG_RESPONSE, rmsgid, sa, &payl);
 	if (!pkt)
 		goto drop2;
-	cA = intermediate_content_a(pkt);
+	cA = intermediate_content_a(sa, (struct ikev2_header *)pkt->v,
+				    inner ? inner->l : 0, IKEV2_PAYLOAD_KE);
 	resp = intermediate_concat4(cA, inner, 0, 0);
 	rc_vfree(cA);
 	rc_vfreez(sa->intermediate_resp);

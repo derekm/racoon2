@@ -34,7 +34,7 @@ remote matrix_resp {
 		my_id fqdn "racoon2-matrix";
 		peers_id fqdn "r2init-matrix";
 		peers_ipaddr "$HI";
-		kmp_enc_alg { aes256_cbc; };
+		kmp_enc_alg { aes_gcm; };
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
 		kmp_dh_group { ecp256; };
@@ -88,7 +88,7 @@ remote matrix_init {
 		my_id fqdn "r2init-matrix";
 		peers_id fqdn "racoon2-matrix";
 		peers_ipaddr "$HR";
-		kmp_enc_alg { aes256_cbc; };
+		kmp_enc_alg { aes_gcm; };
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
 		kmp_dh_group { ecp256; };
