@@ -1410,6 +1410,24 @@ ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 	int nrounds = 0;
 
 	/*
+	 * The initial IKE_AUTH child is always CLASSICAL.  Marking it
+	 * ADDKE-pending (whether from the peer's type-6 offer or from
+	 * responder-driven addke_unrequested) leaves the ESP child
+	 * uninstalled waiting for a followup that a non-ADDKE-echo peer
+	 * never sends, so the ESP never comes up and the peer DELETEs
+	 * IKE_SA -- observed live as the iOS default profile failing to
+	 * connect (fast fail) then our anti-DoS cookies (slow fail).
+	 * ADDKE belongs on CREATE_CHILD (rekey) only, i.e. once the parent
+	 * IKE_SA is ESTABLISHED.  An explicit addke_required opt-in keeps
+	 * working even on the AUTH child.  (Responder-driven addke_unrequested
+	 * is likewise gated to parent ESTABLISHED below.)
+	 */
+	int auth_child = !(child_sa->parent &&
+	    child_sa->parent->state == IKEV2_STATE_ESTABLISHED);
+	int addke_forced = child_sa->parent && child_sa->parent->rmconf &&
+	    ikev2_addke_required(child_sa->parent->rmconf) == RCT_BOOL_ON;
+
+	/*
 	 * Collect every ADDKE transform in the matched proposal, in
 	 * wire order.  RFC 9370 s2.2.1: additional key exchanges run in
 	 * order of their Transform Type values (ADDKE1=6 first); the
@@ -1444,6 +1462,17 @@ ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 		child_sa->addke_peer_offer = (nrounds > 0);
 		if (nrounds > 0)
 			child_sa->addke_method = child_sa->addke_methods[0];
+
+		/* initial IKE_AUTH child: drop the peer's ADDKE offer too --
+		 * it must stay classical (see the auth_child note above). */
+		if (auth_child && !addke_forced) {
+			peer_addke = 0;
+			nrounds = 0;
+			child_sa->addke_nrounds = 0;
+			child_sa->addke_peer_offer = 0;
+			child_sa->addke_method = 0;
+			child_sa->addke_round = 0;
+		}
 	}
 
 	/* required: the peer MUST offer ADDKE, or refuse the child. */
