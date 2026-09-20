@@ -215,41 +215,32 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 #ifdef WITH_INTERMEDIATE
 	/* RFC 9242 s3.3.2: append IntAuth = IntAuth_iN | IntAuth_rN |
 	 * IKE_AUTH_MID to the signed/MACed blob when intermediate rounds ran. */
-	if (sa->intermediate_negotiated && sa->intermediate_rounds > 0 &&
-	    sa->intauth_i && sa->intauth_r) {
+	if (sa->intermediate_negotiated && sa->intermediate_rounds > 0) {
 		rc_vchar_t *ia, *grown;
 		uint8_t midb[4];
 		uint8_t *q;
 
+		if (!sa->intauth_i || !sa->intauth_r)
+			goto end;
+
 		put_uint32((uint8_t *)midb, (uint32_t)(sa->intermediate_rounds + 1));
 		ia = rc_vmalloc(sa->intauth_i->l + sa->intauth_r->l + 4);
-		if (ia) {
-			q = (uint8_t *)ia->v;
-			memcpy(q, sa->intauth_i->v, sa->intauth_i->l);
-			q += sa->intauth_i->l;
-			memcpy(q, sa->intauth_r->v, sa->intauth_r->l);
-			q += sa->intauth_r->l;
-			memcpy(q, midb, 4);
-			/* rc_vconcat reallocs dest IN PLACE and returns it (may
-			 * be a new pointer); octets aliases grown -- do NOT free
-			 * octets separately or we double-free. */
-			grown = rc_vconcat(octets, ia->v, ia->l);
-			{
-				char hexv[2 * ia->l + 1];
-				int k;
-				for (k = 0; k < (int)ia->l; k++)
-					snprintf(hexv + k * 2, 3, "%02x",
-						 ((uint8_t *)ia->v)[k]);
-				hexv[2 * ia->l] = 0;
-				isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-					   "AUTH_INTAPPEND=%s\n", hexv);
-			}
-			rc_vfree(ia);
-			if (grown)
-				octets = grown;
-			else
-				goto end;
-		}
+		if (!ia)
+			goto end;
+		q = (uint8_t *)ia->v;
+		memcpy(q, sa->intauth_i->v, sa->intauth_i->l);
+		q += sa->intauth_i->l;
+		memcpy(q, sa->intauth_r->v, sa->intauth_r->l);
+		q += sa->intauth_r->l;
+		memcpy(q, midb, 4);
+		/* rc_vconcat reallocs dest IN PLACE and returns it (may
+		 * be a new pointer); octets aliases grown -- do NOT free
+		 * octets separately or we double-free. */
+		grown = rc_vconcat(octets, ia->v, ia->l);
+		rc_vfree(ia);
+		if (!grown)
+			goto end;
+		octets = grown;
 	}
 #endif
 
@@ -660,4 +651,3 @@ ikev2_verify(struct verified_info *info)
     done:
 	info->verified_callback(info);
 }
-
