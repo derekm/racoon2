@@ -15,6 +15,7 @@ HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/kinds/ikev1.sh"
 . "$HERE/kinds/i2ike.sh"
 . "$HERE/kinds/i2ikesa.sh"
+. "$HERE/kinds/i2iinit.sh"
 
 FILTER=
 REBUILD=

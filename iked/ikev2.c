@@ -7373,8 +7373,19 @@ intermediate_finish_round(struct ikev2_sa *sa)
 	ikev2_intermediate_chain_intauth(sa, 'r', sa->intermediate_resp);
 	rc_vfreez(sa->intermediate_req);
 	rc_vfreez(sa->intermediate_resp);
-	TRACE((PLOGLOC, "IKE_INTERMEDIATE round %d complete\n",
-	       sa->intermediate_rounds));
+	/* matrix proof: log the RFC 9370 s3.5 SKEYSEED(n) hex so both sides can
+	 * be diffed (the child keymat-hash / rekey SKEYSEED pattern). */
+	if (sa->skeyseed && sa->skeyseed->v) {
+		char hexv[2 * sa->skeyseed->l + 1];
+		int k;
+
+		for (k = 0; k < sa->skeyseed->l; k++)
+			snprintf(hexv + k * 2, 3, "%02x",
+				 ((uint8_t *)sa->skeyseed->v)[k]);
+		hexv[2 * sa->skeyseed->l] = 0;
+		isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "IKE_INTERMEDIATE ADDKE SK(1) SKEYSEED=%s\n", hexv);
+	}
 }
 
 /* --------------------------------------------------------------- initiator
