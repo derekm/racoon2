@@ -5,4 +5,4 @@
 # older x86_64 OpenSSL.  The PQC matrix rows (gate=addke) run only on this build.
 xfrm	
 pfkey	--with-km-backend=pfkey
-xfrm-addke	--enable-addke
+xfrm-addke	--enable-addke --enable-keymat-oracle

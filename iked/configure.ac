@@ -255,6 +255,14 @@ if test x"$intermediate" = xyes; then
 fi
 AM_CONDITIONAL([INTERMEDIATE], [test x"$intermediate" = xyes])
 
+AC_ARG_ENABLE(keymat-oracle,
+	[  --enable-keymat-oracle  emit sha256 of full child KEYMAT in debug logs (test-matrix oracle only; default: off for prod)],
+	[keymat_oracle=$enableval], [keymat_oracle=no])
+if test x"$keymat_oracle" = xyes; then
+	AC_DEFINE(WITH_KEYMAT_ORACLE, 1, [define to emit child KEYMAT sha256 debug hashes])
+fi
+AM_CONDITIONAL([KEYMAT_ORACLE], [test x"$keymat_oracle" = xyes])
+
 AC_ARG_WITH(openssl-provider,
 	[  --with-openssl-provider=NAME
                           OpenSSL 3 provider (e.g. qatprovider)],

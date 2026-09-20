@@ -2469,6 +2469,7 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 	 * overhead on the rekey hot path, and the digests are
 	 * key-material-derived, so neither should run when debug
 	 * logging is off. */
+#ifdef WITH_KEYMAT_ORACLE
 	{
 		struct rc_log *log = 0;
 		if (child_sa->parent)
@@ -2534,6 +2535,7 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 			}
 		}
 	}
+#endif /* WITH_KEYMAT_ORACLE */
 
 	/*
 	 * call sequence:
