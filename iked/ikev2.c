@@ -316,6 +316,9 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 			TRACE((PLOGLOC, "received fragment but no ike_sa\n"));
 			goto end;
 		}
+		isakmp_log(ike_sa, local, remote, packet, PLOG_DEBUG, PLOGLOC,
+			   "SKF fragment recv (next=SKF, msgid=%u, len=%zu)\n",
+			   get_uint32(&ikehdr->message_id), (size_t)packet->l);
 		reassembled_pkt = ikev2_frag_recv(ike_sa, packet, remote, local);
 		if (!reassembled_pkt)
 			goto end;
@@ -2452,6 +2455,9 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 #ifdef WITH_INTERMEDIATE
 	/* RFC 9242: inbound IKE_INTERMEDIATE between IKE_SA_INIT and IKE_AUTH
 	 * is handled by the responder's intermediate round (pre-AUTH). */
+	isakmp_log(ike_sa, local, remote, msg, PLOG_DEBUG, PLOGLOC,
+		   "state2(responder) recv exch=%d msgid=%u\n",
+		   ikehdr->exchange_type, message_id);
 	if (ikehdr->exchange_type == IKEV2EXCH_IKE_INTERMEDIATE) {
 		responder_ike_intermediate_recv(ike_sa, msg, remote, local);
 		return;
