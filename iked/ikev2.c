@@ -7516,8 +7516,15 @@ intermediate_finish_round(struct ikev2_sa *sa)
 	sa->intermediate_rounds++;
 	ikev2_intermediate_chain_intauth(sa, 'i', sa->intermediate_req);
 	ikev2_intermediate_chain_intauth(sa, 'r', sa->intermediate_resp);
+	/* rc_vfreez is BY VALUE and, in -DDEBUG builds, does NOT clear the
+	 * caller's pointer (the var->v=NULL is #ifndef DEBUG).  If we do not
+	 * null the fields here, a later graceful dispose (the rekey reaper /
+	 * ikev2_dispose_sa -> ikev2_intermediate_clear) re-frees the dangling
+	 * pointer -> double-free -> SIGSEGV.  Own the release explicitly. */
 	rc_vfreez(sa->intermediate_req);
+	sa->intermediate_req = 0;
 	rc_vfreez(sa->intermediate_resp);
+	sa->intermediate_resp = 0;
 	/* matrix proof: log the RFC 9370 s3.5 SKEYSEED(n) hex so both sides can
 	 * be diffed (the child keymat-hash / rekey SKEYSEED pattern). */
 	if (sa->skeyseed && sa->skeyseed->v) {
