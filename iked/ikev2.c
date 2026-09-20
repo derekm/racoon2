@@ -7301,13 +7301,20 @@ ikev2_intermediate_chain_intauth(struct ikev2_sa *sa, int dir,
 	rc_vchar_t *key, *prev, *data, *h;
 	rc_vchar_t **chain;
 
-	if (!content)
+	if (!content) {
+		isakmp_log(sa, 0, 0, 0, PLOG_WARNING, PLOGLOC,
+			   "IntAuth chain dir=%c no-content\n", dir);
 		return;
+	}
 	chain = (dir == 'i') ? &sa->intauth_i : &sa->intauth_r;
 	key = (dir == 'i') ? sa->sk_p_i : sa->sk_p_r;
 	prev = *chain;
-	if (!key)
+	if (!key) {
+		isakmp_log(sa, 0, 0, 0, PLOG_WARNING, PLOGLOC,
+			   "IntAuth chain dir=%c no-key sk_p_%c=NULL\n",
+			   dir, dir);
 		return;
+	}
 	data = intermediate_concat4(prev, content, 0, 0);
 	if (!data)
 		return;
