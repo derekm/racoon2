@@ -786,7 +786,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 	/* the KE payload carries the initiator's ML-KEM public key */
 	if (get_payload_data_length(&ke->header) < sizeof(ke->ke_h))
-		goto malformed;	/* underflow guard before the size_t subtract */
+		goto invalid;	/* underflow guard before the size_t subtract */
 	peer_ke = rc_vnew((const u_char *)(ke + 1),
 			  get_payload_data_length(&ke->header) -
 			  sizeof(ke->ke_h));
