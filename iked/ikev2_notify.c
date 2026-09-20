@@ -114,6 +114,12 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		ike_sa->frag_supported = 1;
 		TRACE((PLOGLOC, "peer supports IKEv2 fragmentation\n"));
 		break;
+#ifdef WITH_INTERMEDIATE
+	case IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED:
+		ike_sa->intermediate_negotiated = 1;
+		TRACE((PLOGLOC, "peer supports IKE_INTERMEDIATE\n"));
+		break;
+#endif
 
 	case IKEV2_MOBIKE_SUPPORTED:
 		ike_sa->mobike_supported = 1;
@@ -257,6 +263,12 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		ike_sa->frag_supported = 1;
 		TRACE((PLOGLOC, "peer supports IKEv2 fragmentation\n"));
 		break;
+#ifdef WITH_INTERMEDIATE
+	case IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED:
+		ike_sa->intermediate_negotiated = 1;
+		TRACE((PLOGLOC, "peer supports IKE_INTERMEDIATE\n"));
+		break;
+#endif
 
 	case IKEV2_MOBIKE_SUPPORTED:
 		ike_sa->mobike_supported = 1;

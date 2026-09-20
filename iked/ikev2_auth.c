@@ -212,6 +212,34 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 	VCONCAT(octets, p, nonce);
 	VCONCAT(octets, p, prf_output);
 
+#ifdef WITH_INTERMEDIATE
+	/* RFC 9242 s3.3.2: append IntAuth = IntAuth_iN | IntAuth_rN |
+	 * IKE_AUTH_MID to the signed/MACed blob when intermediate rounds ran. */
+	if (sa->intermediate_negotiated && sa->intermediate_rounds > 0 &&
+	    sa->intauth_i && sa->intauth_r) {
+		rc_vchar_t *ia, *grown;
+		uint8_t midb[4];
+		uint8_t *q;
+
+		put_uint32((uint8_t *)midb, (uint32_t)(sa->intermediate_rounds + 1));
+		ia = rc_vmalloc(sa->intauth_i->l + sa->intauth_r->l + 4);
+		if (ia) {
+			q = (uint8_t *)ia->v;
+			memcpy(q, sa->intauth_i->v, sa->intauth_i->l);
+			q += sa->intauth_i->l;
+			memcpy(q, sa->intauth_r->v, sa->intauth_r->l);
+			q += sa->intauth_r->l;
+			memcpy(q, midb, 4);
+			grown = rc_vconcat(octets, ia->v, ia->l);
+			rc_vfree(ia);
+			if (grown) {
+				rc_vfree(octets);
+				octets = grown;
+			}
+		}
+	}
+#endif
+
 	IF_TRACE({
 		TRACE((PLOGLOC, "octets = message | N | prf(SK, ID)\n"));
 		plogdump(PLOG_DEBUG, PLOGLOC, 0, octets->v, octets->l);

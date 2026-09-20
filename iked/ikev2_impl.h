@@ -426,6 +426,7 @@ extern void ikev2_payloads_init(struct ikev2_payloads *);
 extern void ikev2_payloads_push(struct ikev2_payloads *, int, rc_vchar_t *,
 				int);
 extern void ikev2_payloads_destroy(struct ikev2_payloads *);
+extern rc_vchar_t *ikev2_payloads_to_blob(struct ikev2_payloads *, uint8_t *);
 extern rc_vchar_t *ikev2_packet_construct(int, int, uint32_t,
 					  struct ikev2_sa *,
 					  struct ikev2_payloads *);

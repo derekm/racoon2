@@ -113,6 +113,10 @@ static void initiator_ike_sa_auth_recv0(struct ikev2_sa *, rc_vchar_t *,
 					struct sockaddr *, struct sockaddr *);
 static void responder_ike_sa_auth_recv0(struct ikev2_sa *, rc_vchar_t *,
 					struct sockaddr *, struct sockaddr *);
+#ifdef WITH_INTERMEDIATE
+static void initiator_ike_intermediate_recv(struct ikev2_sa *, rc_vchar_t *,
+					   struct sockaddr *, struct sockaddr *);
+#endif
 static void initiator_ike_sa_auth_cont(struct ikev2_sa *, int, rc_vchar_t *,
 				       struct sockaddr *, struct sockaddr *);
 static void responder_ike_sa_auth_cont(struct ikev2_sa *, int, rc_vchar_t *,
@@ -141,6 +145,9 @@ IKEV2INPUT ikev2_input_dispatch[] = {
 	ikev2_established_recv,	/* should be CREATE_CHILD_SA or INFORMATIONAL */
 	ikev2_dying_recv,	/* same as established, except no initiating */
 	ikev2_dead_recv,
+#ifdef WITH_INTERMEDIATE
+	initiator_ike_intermediate_recv, /* Initiator IKE_INTERMEDIATE sent */
+#endif
 };
 
 static void informational_responder_recv(struct ikev2_sa *, rc_vchar_t *,
@@ -1215,6 +1222,14 @@ initiator_start_after_gen(int rc, void *arg)
 						 IKEV2_FRAGMENTATION_SUPPORTED,
 						 0, 0),
 			    TRUE);
+#ifdef WITH_INTERMEDIATE
+	/* RFC 9242: offer the IKE_INTERMEDIATE exchange capability. */
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0,
+						 IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED,
+						 0, 0),
+			    TRUE);
+#endif
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
 				     0, ike_sa, &ctx->payl);
 	if (!pkt)
@@ -1661,6 +1676,17 @@ responder_state0_after_gen(int rc, void *arg)
 							 0, 0),
 				    TRUE);
 	}
+#ifdef WITH_INTERMEDIATE
+	/* RFC 9242: echo 16438 only when the peer offered it (negotiated is
+	 * set in resp_state0_recv_notify) -- we then handle inbound 43. */
+	if (ike_sa->intermediate_negotiated) {
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED,
+							 0, 0),
+				    TRUE);
+	}
+#endif
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_RESPONSE,
 				     0, ike_sa, &ctx->payl);
@@ -1755,8 +1781,20 @@ initiator_skey_done(int rc, void *arg)
 	if (ikev2_compute_keys(ike_sa) != 0)
 		goto abort;
 	ikev2_destroy_secret(ike_sa);
-	ikev2_set_state(ike_sa, IKEV2_STATE_INI_IKE_AUTH_SENT);
 	ikev2_update_message_id(ike_sa, ctx->message_id, TRUE);
+#ifdef WITH_INTERMEDIATE
+	/* RFC 9370 s2.2.1: run the negotiated IKE_INTERMEDIATE ADDKE round(s)
+	 * before IKE_AUTH when the IKE_SA proposal selected ADDKE. */
+	if (ike_sa->intermediate_negotiated &&
+	    ike_sa->negotiated_sa && ike_sa->negotiated_sa->addke != 0) {
+		ike_sa->intermediate_msgid = 1;
+		initiator_ike_intermediate_send(ike_sa);
+		ike_sa->crypto_pending = 0;
+		ikev2_dh_ctx_free(ctx);
+		return;
+	}
+#endif
+	ikev2_set_state(ike_sa, IKEV2_STATE_INI_IKE_AUTH_SENT);
 	initiator_state1_send(ike_sa, 0, ike_sa->remote);
 	ike_sa->crypto_pending = 0;
 	ikev2_dh_ctx_free(ctx);
@@ -2051,6 +2089,11 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	struct ikev2_payloads payl;
 	struct ikev2_child_sa *child_sa;
 	rc_vchar_t *pkt = 0;
+#ifdef WITH_INTERMEDIATE
+	uint32_t auth_msgid = (uint32_t)(1 + ike_sa->intermediate_rounds);
+#else
+	uint32_t auth_msgid = 1;
+#endif
 
 	/*
 	 * send message 3
@@ -2231,7 +2274,8 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_TS_R, ts_r, FALSE);
 
 	assert(ike_sa->sk_e_i);
-	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_AUTH, IKEV2FLAG_INITIATOR, 1,
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_AUTH, IKEV2FLAG_INITIATOR,
+				     auth_msgid,
 				     ike_sa, &payl);
 	if (!pkt)
 		goto fail;
@@ -2384,6 +2428,14 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 	ikehdr = (struct ikev2_header *)msg->v;
 	message_id = get_uint32(&ikehdr->message_id);
+#ifdef WITH_INTERMEDIATE
+	/* RFC 9242: inbound IKE_INTERMEDIATE between IKE_SA_INIT and IKE_AUTH
+	 * is handled by the responder's intermediate round (pre-AUTH). */
+	if (ikehdr->exchange_type == IKEV2EXCH_IKE_INTERMEDIATE) {
+		responder_ike_intermediate_recv(ike_sa, msg, remote, local);
+		return;
+	}
+#endif
 
 	p = (struct ikev2_payload_header *)(ikehdr + 1);
 	for (type = ikehdr->next_payload;
@@ -7089,3 +7141,499 @@ ikev2_child_state_str(int type)
 	}
 #undef S
 }
+
+#ifdef WITH_INTERMEDIATE
+/* =========================================================================
+ * RFC 9242 IKE_INTERMEDIATE + RFC 9370 s2.2/s3.5: ADDKE on the INITIAL
+ * IKE_SA.  When 16438 (INTERMEDIATE_EXCHANGE_SUPPORTED) is negotiated AND
+ * the IKE_SA proposal selected an ADDKE transform (type 6 = ADDKE1), the
+ * peers run one or more IKE_INTERMEDIATE (exch 43) rounds between
+ * IKE_SA_INIT and IKE_AUTH.  Each round carries a KE payload whose method
+ * equals the negotiated ADDKE id; after the round both sides update
+ * SKEYSEED(1)=prf(SK_d,SK(1)|Ni|Nr) then Sk_*=prf+(SKEYSEED(1),Ni|Nr|SPIi|SPIr)
+ * (RFC 9370 s3.5) and chain the round's pre-encryption content into the
+ * IntAuth PRF (RFC 9242 s3.3.2).  The final IntAuth_iN|IntAuth_rN|
+ * IKE_AUTH_MID is appended to the AUTH octets in ikev2_auth.c.  Both the
+ * initiator and the responder mirrors share the helpers below and the
+ * shared serializer ikev2_payloads_to_blob() from ikev2_packet.c.
+ * ========================================================================= */
+
+/* concat up to 4 optional vchars (NULL-safe) into a new vchar. */
+static rc_vchar_t *
+intermediate_concat4(rc_vchar_t *p1, rc_vchar_t *p2, rc_vchar_t *p3,
+		     rc_vchar_t *p4)
+{
+	rc_vchar_t *ps[4];
+	rc_vchar_t *out;
+	uint8_t *ptr;
+	size_t l = 0;
+	int i;
+
+	ps[0] = p1; ps[1] = p2; ps[2] = p3; ps[3] = p4;
+	for (i = 0; i < 4; ++i)
+		if (ps[i])
+			l += ps[i]->l;
+	out = rc_vmalloc(l);
+	if (!out)
+		return 0;
+	ptr = (uint8_t *)out->v;
+	for (i = 0; i < 4; ++i) {
+		if (!ps[i] || !ps[i]->l)
+			continue;
+		memcpy(ptr, ps[i]->v, ps[i]->l);
+		ptr += ps[i]->l;
+	}
+	return out;
+}
+
+/* Serialize the INNER payload chain of a decrypted inbound packet (skipping
+ * the leading Encrypted payload header) into IntAuth_P.  Byte-identical to
+ * ikev2_payloads_to_blob() of what the sender encrypted. */
+static rc_vchar_t *
+intermediate_packet_inner_blob(rc_vchar_t *packet)
+{
+	struct ikev2_header *ikehdr;
+	struct ikev2_payload_header *p;
+	unsigned int type;
+	rc_vchar_t *out;
+	uint8_t *ptr;
+	size_t msglen = 0;
+	uint8_t head = IKEV2_NO_NEXT_PAYLOAD;
+	uint8_t *prev_np = &head;
+	int started = 0;
+
+	if (!packet)
+		return 0;
+	ikehdr = (struct ikev2_header *)packet->v;
+	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	for (type = ikehdr->next_payload;
+	     type != IKEV2_NO_NEXT_PAYLOAD;
+	     POINT_NEXT_PAYLOAD(p, type)) {
+		if (!started && type == IKEV2_PAYLOAD_ENCRYPTED)
+			continue;
+		started = 1;
+		msglen += get_payload_length(p);
+	}
+	if (!started)
+		return 0;
+	out = rc_vmalloc(msglen);
+	if (!out)
+		return 0;
+	ptr = (uint8_t *)out->v;
+	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	started = 0;
+	for (type = ikehdr->next_payload;
+	     type != IKEV2_NO_NEXT_PAYLOAD;
+	     POINT_NEXT_PAYLOAD(p, type)) {
+		int plen;
+
+		if (!started && type == IKEV2_PAYLOAD_ENCRYPTED)
+			continue;
+		started = 1;
+		plen = get_payload_length(p);
+		*prev_np = type;
+		prev_np = &(((struct ikev2_payload_header *)ptr)->next_payload);
+		memcpy(ptr, p, plen);
+		ptr += plen;
+	}
+	*prev_np = IKEV2_NO_NEXT_PAYLOAD;
+	return out;
+}
+
+/* RFC 9370 s3.5: SKEYSEED(1)=prf(SK_d,SK(1)|Ni|Nr) then recompute all
+ * Sk_* = prf+(SKEYSEED(1),Ni|Nr|SPIi|SPIr) via ikev2_compute_keys.  SK_d is
+ * read as its PRE-update value (the formula's SK_d(n-1)). */
+static int
+ikev2_intermediate_update_keys(struct ikev2_sa *sa, rc_vchar_t *sk_n)
+{
+	rc_vchar_t *data, *new_seed;
+
+	if (!sa->sk_d || !sa->n_i || !sa->n_r || !sk_n)
+		return -1;
+	data = intermediate_concat4(sk_n, sa->n_i, sa->n_r, 0);
+	if (!data)
+		return -1;
+	new_seed = keyed_hash(sa->prf, sa->sk_d, data);
+	rc_vfree(data);
+	if (!new_seed)
+		return -1;
+	rc_vfreez(sa->skeyseed);
+	sa->skeyseed = new_seed;
+	if (ikev2_compute_keys(sa) != 0)
+		return -1;
+	return 0;
+}
+
+/* RFC 9242 s3.3.2: chain one round's content into IntAuth_i ('i') or
+ * IntAuth_r ('r'), keyed by the POST-update sk_p.  Call AFTER update. */
+static void
+ikev2_intermediate_chain_intauth(struct ikev2_sa *sa, int dir,
+				 rc_vchar_t *content)
+{
+	rc_vchar_t *key, *prev, *data, *h;
+	rc_vchar_t **chain;
+
+	if (!content)
+		return;
+	chain = (dir == 'i') ? &sa->intauth_i : &sa->intauth_r;
+	key = (dir == 'i') ? sa->sk_p_i : sa->sk_p_r;
+	prev = *chain;
+	if (!key)
+		return;
+	data = intermediate_concat4(prev, content, 0, 0);
+	if (!data)
+		return;
+	h = keyed_hash(sa->prf, key, data);
+	rc_vfree(data);
+	if (!h)
+		return;
+	rc_vfreez(*chain);
+	*chain = h;
+	TRACE((PLOGLOC, "IKE_INTERMEDIATE IntAuth_%c updated\n",
+	       dir == 'i' ? 'i' : 'r'));
+}
+
+/* IntAuth_A scope for a message: its outer IKE header + the Encrypted
+ * payload's generic header (RFC 9242 s3.3.2). */
+static rc_vchar_t *
+intermediate_content_a(rc_vchar_t *pkt)
+{
+	static const size_t off = sizeof(struct ikev2_header)
+		+ sizeof(struct ikev2_payload_header);
+	rc_vchar_t *c;
+
+	if (!pkt || pkt->l < off)
+		return 0;
+	c = rc_vmalloc(off);
+	if (!c)
+		return 0;
+	memcpy(c->v, pkt->v, off);
+	return c;
+}
+
+/* Build a KE payload whose method field carries the negotiated ADDKE id. */
+static rc_vchar_t *
+intermediate_ke_payload(uint32_t method, rc_vchar_t *body)
+{
+	struct ikev2payl_ke_h kh;
+
+	kh.dh_group_id = htons((uint16_t)method);
+	kh.reserved = 0;
+	return rc_vprepend(body, &kh, sizeof(kh));
+}
+
+/* extract the raw body of a KE payload (after its 4-byte method header) */
+static rc_vchar_t *
+intermediate_ke_body(struct ikev2payl_ke *ke)
+{
+	uint32_t l;
+	uint8_t *p;
+
+	if (!ke)
+		return 0;
+	l = get_payload_length(&ke->nh);
+	if (l <= sizeof(struct ikev2_payload_header)
+	    + sizeof(struct ikev2payl_ke_h))
+		return 0;
+	p = (uint8_t *)ke + sizeof(struct ikev2_payload_header)
+		+ sizeof(struct ikev2payl_ke_h);
+	return rc_vnew(p, l - sizeof(struct ikev2_payload_header)
+		       - sizeof(struct ikev2payl_ke_h));
+}
+
+/* both sides have completed round N: chain both IntAuth derivations from the
+ * held request/response contents (sk_p now holds the post-update keys). */
+static void
+intermediate_finish_round(struct ikev2_sa *sa)
+{
+	sa->intermediate_rounds++;
+	ikev2_intermediate_chain_intauth(sa, 'i', sa->intermediate_req);
+	ikev2_intermediate_chain_intauth(sa, 'r', sa->intermediate_resp);
+	rc_vfreez(sa->intermediate_req);
+	rc_vfreez(sa->intermediate_resp);
+	TRACE((PLOGLOC, "IKE_INTERMEDIATE round %d complete\n",
+	       sa->intermediate_rounds));
+}
+
+/* --------------------------------------------------------------- initiator
+ * send the current IKE_INTERMEDIATE request round. */
+static void
+initiator_ike_intermediate_send(struct ikev2_sa *sa)
+{
+	struct ikev2_payloads payl;
+	rc_vchar_t *pub = 0, *ke = 0, *pkt = 0, *cA = 0, *content = 0;
+	rc_vchar_t *inner = 0;
+	EVP_PKEY *priv = 0;
+	uint32_t method;
+
+	if (!sa->negotiated_sa || sa->negotiated_sa->addke == 0) {
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: no negotiated ADDKE method\n");
+		ikev2_abort(sa, ECONNREFUSED);
+		return;
+	}
+	method = sa->negotiated_sa->addke;
+	if (ikev2_addke_mlkem_keygen(method, &pub, &priv) != 0) {
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: ML-KEM keygen failed\n");
+		ikev2_abort(sa, ECONNREFUSED);
+		return;
+	}
+	ke = intermediate_ke_payload(method, pub);
+	pub = 0;
+	if (!ke) {
+		EVP_PKEY_free(priv);
+		ikev2_abort(sa, ECONNREFUSED);
+		return;
+	}
+	if (sa->intermediate_priv)
+		EVP_PKEY_free((EVP_PKEY *)sa->intermediate_priv);
+	sa->intermediate_priv = priv;
+
+	ikev2_payloads_init(&payl);
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ke, FALSE);
+	ke = 0;		/* owned by payl now */
+	inner = ikev2_payloads_to_blob(&payl, 0);
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_INTERMEDIATE,
+				     IKEV2FLAG_INITIATOR,
+				     sa->intermediate_msgid, sa, &payl);
+	if (!pkt)
+		goto fail;
+	cA = intermediate_content_a(pkt);
+	content = intermediate_concat4(cA, inner, 0, 0);
+	rc_vfree(cA);
+	if (!content)
+		goto fail;
+	rc_vfreez(sa->intermediate_req);
+	sa->intermediate_req = content;
+	content = 0;
+
+	if (ikev2_transmit(sa, pkt) != 0)
+		goto fail;
+	pkt = 0;
+	ikev2_set_state(sa, IKEV2_STATE_INI_IKE_INTERMEDIATE_SENT);
+	ikev2_payloads_destroy(&payl);
+	rc_vfree(inner);
+	return;
+
+fail:
+	ikev2_payloads_destroy(&payl);
+	if (pkt)
+		rc_vfree(pkt);
+	if (ke)
+		rc_vfree(ke);
+	if (content)
+		rc_vfree(content);
+	if (inner)
+		rc_vfree(inner);
+	isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		   "failed to send IKE_INTERMEDIATE\n");
+	ikev2_abort(sa, ECONNREFUSED);
+}
+
+/* initiator state IKEV2_STATE_INI_IKE_INTERMEDIATE_SENT: an
+ * IKE_INTERMEDIATE response carrying KEr(n) has arrived. */
+static void
+initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
+				struct sockaddr *local, struct sockaddr *remote)
+{
+	struct ikev2_header *ikehdr = (struct ikev2_header *)packet->v;
+	struct ikev2_payload_header *p;
+	unsigned int type;
+	struct ikev2payl_ke *ke = 0;
+	rc_vchar_t *body = 0, *ss = 0, *cA = 0, *ib = 0, *resp = 0;
+
+	(void)local; (void)remote;
+	if (!(ikehdr->flags & IKEV2FLAG_RESPONSE)) {
+		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: expected a response\n");
+		ikev2_abort(sa, ECONNREFUSED);
+		return;
+	}
+	if (get_uint32(&ikehdr->message_id) != sa->intermediate_msgid) {
+		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: msgid %u expected %u\n",
+			   get_uint32(&ikehdr->message_id),
+			   sa->intermediate_msgid);
+		ikev2_abort(sa, ECONNREFUSED);
+		return;
+	}
+
+	for (type = ikehdr->next_payload;
+	     type != IKEV2_NO_NEXT_PAYLOAD;
+	     POINT_NEXT_PAYLOAD(p, type)) {
+		if (type == IKEV2_PAYLOAD_ENCRYPTED)
+			continue;
+		if (type == IKEV2_PAYLOAD_KE) {
+			if (ke)
+				goto malformed;
+			ke = (struct ikev2payl_ke *)p;
+		}
+	}
+	if (!ke)
+		goto malformed;
+	if (ntohs(ke->dh_group_id) != sa->negotiated_sa->addke) {
+		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: round KE method %u != negotiated %u\n",
+			   ntohs(ke->dh_group_id), sa->negotiated_sa->addke);
+		goto malformed;
+	}
+	body = intermediate_ke_body(ke);
+	if (!body)
+		goto malformed;
+	if (ikev2_addke_mlkem_decap((EVP_PKEY *)sa->intermediate_priv,
+				    body, &ss) != 0) {
+		rc_vfree(body);
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: ML-KEM decap failed\n");
+		goto abort;
+	}
+	rc_vfree(body);
+	if (sa->intermediate_priv) {
+		EVP_PKEY_free((EVP_PKEY *)sa->intermediate_priv);
+		sa->intermediate_priv = 0;
+	}
+
+	/* hold the RESPONSE content (IntAuth_r chunk) */
+	cA = intermediate_content_a(packet);
+	ib = intermediate_packet_inner_blob(packet);
+	resp = intermediate_concat4(cA, ib, 0, 0);
+	rc_vfree(cA);
+	rc_vfree(ib);
+	rc_vfreez(sa->intermediate_resp);
+	sa->intermediate_resp = resp;
+	resp = 0;
+
+	if (ikev2_intermediate_update_keys(sa, ss) != 0) {
+		rc_vfree(ss);
+		goto abort;
+	}
+	rc_vfree(ss);
+	intermediate_finish_round(sa);
+
+	/* only ADDKE1 (one round) is implemented here */
+	ikev2_set_state(sa, IKEV2_STATE_INI_IKE_AUTH_SENT);
+	ikev2_update_message_id(sa, sa->intermediate_msgid, TRUE);
+	initiator_state1_send(sa, 0, sa->remote);
+	return;
+
+malformed:
+	isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+		   "IKE_INTERMEDIATE response malformed\n");
+	ikev2_abort(sa, ECONNREFUSED);
+	return;
+abort:
+	ikev2_abort(sa, ECONNREFUSED);
+}
+
+/* --------------------------------------------------------------- responder
+ * an IKE_INTERMEDIATE request (KEi(n)) reached the responder's post-INIT
+ * state.  Encapsulate, reply KEr(n), update the keys and IntAuth chains,
+ * and stay in the post-INIT state awaiting the next intermediate or AUTH. */
+static void
+responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
+				struct sockaddr *src, struct sockaddr *dst)
+{
+	struct ikev2_header *ikehdr = (struct ikev2_header *)packet->v;
+	struct ikev2_payload_header *p;
+	unsigned int type;
+	struct ikev2payl_ke *ke = 0;
+	rc_vchar_t *body = 0, *ct = 0, *ss = 0, *kep = 0, *pkt = 0;
+	rc_vchar_t *cA = 0, *cAreq = 0, *iblob = 0, *req = 0, *resp = 0;
+	rc_vchar_t *inner = 0;
+	struct ikev2_payloads payl;
+	uint32_t rmsgid;
+
+	if (ikehdr->flags & IKEV2FLAG_RESPONSE) {
+		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: unexpected response\n");
+		goto drop;
+	}
+	rmsgid = get_uint32(&ikehdr->message_id);
+
+	for (type = ikehdr->next_payload;
+	     type != IKEV2_NO_NEXT_PAYLOAD;
+	     POINT_NEXT_PAYLOAD(p, type)) {
+		if (type == IKEV2_PAYLOAD_ENCRYPTED)
+			continue;
+		if (type == IKEV2_PAYLOAD_KE) {
+			if (ke)
+				goto drop;
+			ke = (struct ikev2payl_ke *)p;
+		}
+	}
+	if (!ke || (uint32_t)ntohs(ke->dh_group_id) != sa->negotiated_sa->addke)
+		goto drop;
+	body = intermediate_ke_body(ke);
+	if (!body)
+		goto drop;
+
+	/* hold the REQUEST content (IntAuth_i chunk) */
+	cAreq = intermediate_content_a(packet);
+	iblob = intermediate_packet_inner_blob(packet);
+	req = intermediate_concat4(cAreq, iblob, 0, 0);
+	rc_vfree(cAreq);
+	rc_vfree(iblob);
+	rc_vfreez(sa->intermediate_req);
+	sa->intermediate_req = req;
+	req = 0;
+
+	if (ikev2_addke_mlkem_encap(sa->negotiated_sa->addke, body,
+				    &ct, &ss) != 0) {
+		rc_vfree(body);
+		goto drop;
+	}
+	rc_vfree(body);
+	kep = intermediate_ke_payload(sa->negotiated_sa->addke, ct);
+	ct = 0;
+	if (!kep)
+		goto drop;
+
+	ikev2_payloads_init(&payl);
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, kep, FALSE);
+	kep = 0;
+	inner = ikev2_payloads_to_blob(&payl, 0);
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_INTERMEDIATE,
+				     IKEV2FLAG_RESPONSE, rmsgid, sa, &payl);
+	if (!pkt)
+		goto drop2;
+	cA = intermediate_content_a(pkt);
+	resp = intermediate_concat4(cA, inner, 0, 0);
+	rc_vfree(cA);
+	rc_vfreez(sa->intermediate_resp);
+	sa->intermediate_resp = resp;
+	resp = 0;
+
+	if (ikev2_transmit_response(sa, pkt, src, dst) != 0)
+		goto drop2;
+	pkt = 0;
+	ikev2_payloads_destroy(&payl);
+	rc_vfree(inner);
+	inner = 0;
+
+	/* keys update AFTER the (pre-update-encrypted) response goes out */
+	if (ikev2_intermediate_update_keys(sa, ss) != 0) {
+		rc_vfree(ss);
+		goto drop;
+	}
+	rc_vfree(ss);
+	intermediate_finish_round(sa);
+	return;
+
+drop2:
+	ikev2_payloads_destroy(&payl);
+	if (pkt)
+		rc_vfree(pkt);
+	if (inner)
+		rc_vfree(inner);
+drop:
+	if (ss)
+		rc_vfree(ss);
+	if (ct)
+		rc_vfree(ct);
+	if (kep)
+		rc_vfree(kep);
+	isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+		   "IKE_INTERMEDIATE: responder round failed\n");
+}
+#endif /* WITH_INTERMEDIATE */

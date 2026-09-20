@@ -128,6 +128,59 @@ ikev2_payloads_destroy(struct ikev2_payloads *p)
 	racoon_free(p->payloads);
 }
 
+/* Serialize a payload list into contiguous plaintext bytes, chaining each
+ * payload's next_payload (last = NONE).  Used by ikev2_packet_construct
+ * (the body that gets encrypted) and by the RFC 9242 IKE_INTERMEDIATE code
+ * (the IntAuth_P chunk), keeping the two byte-identical.  On success
+ * *first_np holds the FIRST payload's type (the type the IKE header and the
+ * Encrypted payload's generic header reference).  Returns 0 on failure /
+ * an oversize payload. */
+rc_vchar_t *
+ikev2_payloads_to_blob(struct ikev2_payloads *pl, uint8_t *first_np)
+{
+	uint8_t *ptr;
+	uint8_t *prev_np;
+	uint8_t head = IKEV2_NO_NEXT_PAYLOAD;
+	rc_vchar_t *payloads;
+	int i, msglen = 0;
+
+	if (!pl)
+		return 0;
+	for (i = 0; i < pl->num; ++i) {
+		if (pl->payloads[i].data && pl->payloads[i].data->l >
+		    0xFFFF - sizeof(struct ikev2_payload_header))
+			return 0;
+		msglen += sizeof(struct ikev2_payload_header);
+		if (pl->payloads[i].data)
+			msglen += pl->payloads[i].data->l;
+	}
+	payloads = rc_vmalloc(msglen);
+	if (!payloads)
+		return 0;
+	ptr = (uint8_t *)payloads->v;
+	prev_np = &head;
+	for (i = 0; i < pl->num; ++i) {
+		struct ikev2_payload_header *xp =
+			(struct ikev2_payload_header *)ptr;
+		int payload_length = sizeof(struct ikev2_payload_header);
+
+		if (pl->payloads[i].data)
+			payload_length += pl->payloads[i].data->l;
+		*prev_np = pl->payloads[i].type;
+		prev_np = &xp->next_payload;
+		xp->header_byte_2 = 0;
+		put_uint16(&xp->payload_length, payload_length);
+		if (pl->payloads[i].data)
+			memcpy(xp + 1, pl->payloads[i].data->v,
+			       pl->payloads[i].data->l);
+		ptr += payload_length;
+	}
+	*prev_np = IKEV2_NO_NEXT_PAYLOAD;
+	if (first_np)
+		*first_np = head;
+	return payloads;
+}
+
 /*
  * construct ikev2 packet from payloads
  * encrypt if possible
@@ -140,14 +193,11 @@ ikev2_packet_construct(int exch_type, int flags, uint32_t message_id,
 {
 	int num;
 	struct ikev2_payload_info *payl;
-	int msglen;
 	rc_vchar_t *payloads = 0;
 	rc_vchar_t *pkt = 0;
 	rc_vchar_t *encrypted = 0;
 	struct ikev2_header hdr;
-	uint8_t *ptr;
 	uint8_t payload_type;
-	uint8_t *prev_np;
 	struct ikev2_payload_header *p;
 	int i;
 	int packet_len;
@@ -164,52 +214,9 @@ ikev2_packet_construct(int exch_type, int flags, uint32_t message_id,
 	if (!payl)		/* probably memory allocation failure */
 		goto done;
 
-	msglen = num * sizeof(struct ikev2_payload_header);
-	for (i = 0; i < num; ++i) {
-		TRACE((PLOGLOC, "payload %d type %d (%s) data %p len %lu\n",
-		       i, payl[i].type, IKEV2_PAYLOAD_NAME(payl[i].type),
-		       payl[i].data, (unsigned long)(payl[i].data ? payl[i].data->l : 0)));
-		if (!payl[i].data) {
-			TRACE((PLOGLOC,
-			       "shouldn't happen: null payload data\n"));
-			continue;
-		}
-		if (payl[i].data->l >
-		    0xFFFF - sizeof(struct ikev2_payload_header)) {
-			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
-				   "payload (type %d) data too large\n",
-				   payl[i].type);
-			goto done;
-		}
-		msglen += payl[i].data->l;
-	}
-
-	payloads = rc_vmalloc(msglen);
+	payloads = ikev2_payloads_to_blob(payl_list, &payload_type);
 	if (!payloads)
-		goto fail_nomem;
-
-	ptr = (uint8_t *)payloads->v;
-	prev_np = &payload_type;
-	for (i = 0; i < num; ++i) {
-		struct ikev2_payload_header *xp =
-			(struct ikev2_payload_header *)ptr;
-		int payload_length;
-
-		payload_length = sizeof(struct ikev2_payload_header);
-		if (payl[i].data) {
-			payload_length += payl[i].data->l;
-		}
-		*prev_np = payl[i].type;
-		prev_np = &xp->next_payload;
-		xp->header_byte_2 = 0;
-		put_uint16(&xp->payload_length, payload_length);
-		if (payl[i].data)
-			memcpy(xp + 1, payl[i].data->v, payl[i].data->l);
-
-		ptr += payload_length;
-	}
-
-	*prev_np = IKEV2_NO_NEXT_PAYLOAD;
+		goto done;
 
 	/*
 	 * for debug reason, hdr has to be made before encryption.
