@@ -3446,7 +3446,12 @@ initiator_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 		goto malformed_message;
 	}
 
-	child_sa = ikev2_find_request(ike_sa, 1);
+	/* With IKE_INTERMEDIATE rounds the IKE_AUTH message id is > 1
+	 * (INIT=0, intermediate=1, AUTH=2, ...).  The pending child request
+	 * was registered under ikev2_request_id() (= the AUTH msgid), so
+	 * look it up by the message id echoed in the AUTH response rather
+	 * than a hardcoded 1 (classical IKE_AUTH only). */
+	child_sa = ikev2_find_request(ike_sa, get_uint32(&ikehdr->message_id));
 	if (!child_sa)
 		goto unexpected;
 
