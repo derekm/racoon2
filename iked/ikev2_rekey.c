@@ -583,8 +583,7 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 
 	/* create new ike_sa */
 	old_sa = child_sa->parent;
-	isakmp_log(old_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-	    "IKESA-rekey-init-send entered\n");
+	TRACE((PLOGLOC, "IKESA-rekey-init-send entered\n"));
 	conf = rcf_deepcopy_remote(old_sa->rmconf);
 	if (!conf)
 		goto fail_nomem;
@@ -618,14 +617,7 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	 * IKE_SA with ML-KEM via the IKE_FOLLOWUP_KE exchange (we complete
 	 * SK(1) once its KEr ciphertext lands).  If the peer does not select
 	 * it, the proposal is simply accepted without ADDKE. */
-	{
-		int oa = ikev2_maybe_offer_ikesa_addke(proplist);
-
-		isakmp_log(old_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-		    "IKE_SA rekey offer type-6 ADDKE: rc=%d proplist=%p[1]=%p\n",
-		    oa, (void *)proplist,
-		    proplist ? (void *)proplist[1] : NULL);
-	}
+	ikev2_maybe_offer_ikesa_addke(proplist);
 #endif
 	sa = ikev2_pack_proposal(proplist);
 	if (!sa) {
@@ -2090,19 +2082,12 @@ rekey_skeyseed(struct ikev2_sa *new_sa, struct ikev2_sa *old_sa, rc_vchar_t *g_i
 		goto fail;
 #ifdef WITH_ADDKE
 	if (addke_sk != NULL) {
-		/* Both sides derive the SAME SKEYSEED (sharing old SK_d,
-		 * g_ir, Ni, Nr and ADDKE SK(1)): log it so a matrix case can
-		 * prove the IKE_SA rekey actually used ML-KEM keymat. */
-		char hexv[2 * new_sa->skeyseed->l + 1];
-		int k;
-
-		for (k = 0; k < new_sa->skeyseed->l; k++)
-			snprintf(hexv + k * 2, 3, "%02x",
-				 ((uint8_t *)new_sa->skeyseed->v)[k]);
-		hexv[2 * new_sa->skeyseed->l] = 0;
+		/* Non-secret marker a matrix case asserts (the actual key match
+		 * is proven by AUTH+IntAuth verifying / child staying up).  The
+		 * SK(1) / SKEYSEED bytes are deliberately NOT logged. */
 		isakmp_log(new_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-		    "IKE_SA rekey ADDKE SK(1) %zu bytes: SKEYSEED=%s\n",
-		    addke_sk->l, hexv);
+		    "IKE_SA rekey ADDKE SK(1) %zu bytes: key material derived (SKEYSEED not logged)\n",
+		    addke_sk->l);
 	}
 #endif
 	retval = 0;
