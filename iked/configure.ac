@@ -242,11 +242,14 @@ AC_ARG_ENABLE(intermediate,
 	[  --enable-intermediate  enable RFC 9242 IKE_INTERMEDIATE exchange (default: auto)],
 	[intermediate=$enableval])
 if test x"$intermediate" = xauto; then
-	intermediate='yes'
+	intermediate=$addke
 fi
 AC_MSG_CHECKING(--enable-intermediate)
 AC_MSG_RESULT($intermediate)
 if test x"$intermediate" = xyes; then
+	if test x"$addke" != xyes; then
+		AC_MSG_ERROR([IKE_INTERMEDIATE carries the ADDKE/ML-KEM rounds and needs OpenSSL 3.5+; build with --disable-intermediate])
+	fi
 	AC_DEFINE(WITH_INTERMEDIATE, 1, [define to use RFC 9242 IKE_INTERMEDIATE])
 fi
 AM_CONDITIONAL([INTERMEDIATE], [test x"$intermediate" = xyes])

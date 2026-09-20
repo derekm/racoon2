@@ -699,7 +699,8 @@ extern struct algdef *ikev2_child_dhdef(struct prop_pair *,
 
 extern struct ikev2_isakmpsa *ikev2_find_match_ikesa(struct rcf_remote *,
 						     struct prop_pair **,
-						     isakmp_cookie_t *);
+						     isakmp_cookie_t *,
+						     int);
 extern const char *ikev2_state_str(int);
 extern const char *ikev2_child_state_str(int);
 

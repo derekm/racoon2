@@ -845,7 +845,7 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 
 	negotiated_sa =
 		ikev2_find_match_ikesa(old_sa->rmconf, parsed_sa,
-				       &initiator_spi);
+				       &initiator_spi, 0);
 	if (!negotiated_sa)
 		goto no_proposal_chosen;
 	dhdef = negotiated_sa->dhdef;
@@ -1515,7 +1515,7 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 	if (!parsed_sa)
 		goto malformed_payload;	/* ??? maybe nomem? */
 
-	negotiated_sa = ikev2_find_match_ikesa(old_sa->rmconf, parsed_sa, &spi);
+	negotiated_sa = ikev2_find_match_ikesa(old_sa->rmconf, parsed_sa, &spi, 0);
 	if (!negotiated_sa)
 		goto no_proposal_chosen;
 

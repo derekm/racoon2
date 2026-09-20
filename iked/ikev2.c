@@ -1126,6 +1126,14 @@ ikev2_initiator_start(struct ikev2_sa *ike_sa)
 	proplist = ikev2_conf_to_proplist(conf, 0);
 	if (!proplist)
 		goto fail;
+#ifdef WITH_INTERMEDIATE
+	/* RFC 9370 s2.2.1: offer ADDKE (type-6) in the initial IKE_SA when
+	 * we can run the IKE_INTERMEDIATE rounds it commits us to (the
+	 * 16438 capability notify is sent alongside).  If the peer does not
+	 * negotiate IKE_INTERMEDIATE, the ADDKE-bearing proposal is simply
+	 * skipped to a classical fallback. */
+	ikev2_maybe_offer_ikesa_addke(proplist);
+#endif
 	sa = ikev2_pack_proposal(proplist);
 	if (!sa)
 		goto fail;
@@ -1462,7 +1470,12 @@ responder_state0_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	if (!parsed_sa)
 		goto malformed_payload;
 
-	negotiated_sa = ikev2_find_match_ikesa(conf, parsed_sa, 0);
+#ifdef WITH_INTERMEDIATE
+	negotiated_sa = ikev2_find_match_ikesa(conf, parsed_sa, 0,
+					       ike_sa->intermediate_negotiated);
+#else
+	negotiated_sa = ikev2_find_match_ikesa(conf, parsed_sa, 0, 0);
+#endif
 	if (!negotiated_sa)
 		goto no_proposal_chosen;
 
@@ -1936,7 +1949,12 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	if (!parsed_sa)
 		goto malformed_payload;	/* ??? maybe nomem? */
 
-	negotiated_sa = ikev2_find_match_ikesa(ike_sa->rmconf, parsed_sa, 0);
+#ifdef WITH_INTERMEDIATE
+	negotiated_sa = ikev2_find_match_ikesa(ike_sa->rmconf, parsed_sa, 0,
+					       ike_sa->intermediate_negotiated);
+#else
+	negotiated_sa = ikev2_find_match_ikesa(ike_sa->rmconf, parsed_sa, 0, 0);
+#endif
 	/* negotiated_sa = ikev2_check_proposal(ike_sa, parsed_sa); */
 	if (!negotiated_sa)
 		goto no_proposal_chosen;
@@ -6406,7 +6424,8 @@ ikev2_find_match(struct prop_pair **my_proposal,
  */
 struct ikev2_isakmpsa *
 ikev2_find_match_ikesa(struct rcf_remote *rminfo,
-		       struct prop_pair **peer_proposal, isakmp_cookie_t *spi)
+		       struct prop_pair **peer_proposal, isakmp_cookie_t *spi,
+		       int allow_init_addke)
 {
 	struct ikev2_isakmpsa *result = 0;
 	struct prop_pair **my_proposal = 0;
@@ -6438,7 +6457,7 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	 * peer offered ADDKE in this proposal, record the method so the
 	 * IKE-rekey response echoes it and the SKEYSEED deferral arms.
 	 */
-	if (result && spi) {
+	if (result && (spi != NULL || allow_init_addke)) {
 		int p;
 
 		/* IKE_SA-init response must be classical: only the REKEY path
