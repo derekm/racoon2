@@ -2319,6 +2319,9 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	pkt = 0;
 
 	child_sa->message_id = ikev2_request_id(ike_sa);
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		   "AUTH-CHILD msgid=%u state=%d\n",
+		   child_sa->message_id, child_sa->state);
 	ikev2_child_state_next(child_sa);
 
       done:
@@ -3451,6 +3454,22 @@ initiator_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	 * was registered under ikev2_request_id() (= the AUTH msgid), so
 	 * look it up by the message id echoed in the AUTH response rather
 	 * than a hardcoded 1 (classical IKE_AUTH only). */
+	{
+		struct ikev2_child_sa *c;
+		isakmp_log(ike_sa, local, remote, msg, PLOG_DEBUG, PLOGLOC,
+			   "AUTH-LOOKUP respmsgid=%u send_mid=%u children:",
+			   get_uint32(&ikehdr->message_id),
+			   ike_sa->send_message_id);
+		for (c = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+		     !IKEV2_CHILD_LIST_END(c);
+		     c = IKEV2_CHILD_LIST_NEXT(c)) {
+			if (c->is_initiator)
+				isakmp_log(ike_sa, local, remote, msg,
+					   PLOG_DEBUG, PLOGLOC,
+					   "  child msgid=%u state=%d\n",
+					   c->message_id, c->state);
+		}
+	}
 	child_sa = ikev2_find_request(ike_sa, get_uint32(&ikehdr->message_id));
 	if (!child_sa)
 		goto unexpected;
