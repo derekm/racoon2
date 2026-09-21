@@ -7437,6 +7437,22 @@ intermediate_content_a(struct ikev2_sa *sa, struct ikev2_header *hdr,
 	((struct ikev2_header *)p)->next_payload = IKEV2_PAYLOAD_ENCRYPTED;
 	/* IKE header Length field is bytes 24-27: the UNfragmented full size */
 	put_uint32(p + 24, (uint32_t)(hdr_len + enc_len));
+	/* Debug (non-secret): the reconstructed IntAuth_A chunk (IKE header +
+	 * Encrypted generic header) so it can be byte-diffed against the peer's
+	 * signed value.  Header bytes only, never key material. */
+	{
+		char hxb[40];
+		int _i;
+		for (_i = 0; _i < (int)c->l && _i * 2 + 2 < (int)sizeof(hxb); _i++)
+			snprintf(&hxb[_i * 2], 3, "%02x", ((u_char *)c->v)[_i]);
+		if (c->l > 16)
+			hxb[32] = '\0';
+		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "IntAuth_A recon[%zu] spi_i=%08x len=%u enc_len=%u enc_next=%u hx=%s\n",
+			   c->l, (unsigned)ntohl(*(uint32_t *)(p)),
+			   (unsigned)(hdr_len + enc_len), (unsigned)enc_len,
+			   (unsigned)first_inner_type, hxb);
+	}
 	p += hdr_len;
 	/* Encrypted payload generic header */
 	p[0] = first_inner_type;
