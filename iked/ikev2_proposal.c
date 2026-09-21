@@ -567,6 +567,18 @@ ikev2_match_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 				       "response (peer lacks type-6)\n"));
 				continue;
 			}
+			/* RFC 7296 / RFC 5282: an AEAD ENCR carries its own
+			 * integrity, so the peer's AEAD proposal has no
+			 * INTEG transform -- treat INTEG as satisfied (mirror
+			 * of ikev2_compare_transforms) instead of failing a
+			 * proposal that ikev2_compare_transforms accepted. */
+			if (type == IKEV2TRANSFORM_TYPE_INTEGR &&
+			    peer_uses_aead_encr(peers)) {
+				TRACE((PLOGLOC,
+				       "peer ENCR is AEAD; INTEG implicit, "
+				       "omitting from response\n"));
+				continue;
+			}
 			goto fail;
 		}
 
