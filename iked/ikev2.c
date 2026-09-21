@@ -1697,13 +1697,27 @@ responder_state0_after_gen(int rc, void *arg)
 	}
 #ifdef WITH_INTERMEDIATE
 	/* RFC 9242: echo 16438 only when the peer offered it (negotiated is
-	 * set in resp_state0_recv_notify) -- we then handle inbound 43. */
-	if (ike_sa->intermediate_negotiated) {
-		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
-				    ikev2_notify_payload(0, 0, 0,
-							 IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED,
-							 0, 0),
-				    TRUE);
+	 * set in resp_state0_recv_notify) AND the negotiated IKE cipher is
+	 * AEAD -- IntAuth_A is only deterministic for AEAD (random CBC
+	 * padding makes the wire Encrypted length unreconstructable).
+	 * Echoing on a CBC SA makes the peer send exch 43 which we then
+	 * drop in responder_ike_intermediate_recv -> the connect stalls.
+	 * A CBC peer that offered intermediate falls through to a classical
+	 * IKE_AUTH instead. */
+	if (ike_sa->intermediate_negotiated && ike_sa->negotiated_sa) {
+		u_int16_t _ce = ike_sa->negotiated_sa->encr;
+		if (_ce == IKEV2TRANSF_ENCR_AES_GCM_ICV8 ||
+		    _ce == IKEV2TRANSF_ENCR_AES_GCM_ICV12 ||
+		    _ce == IKEV2TRANSF_ENCR_AES_GCM_ICV16 ||
+		    _ce == IKEV2TRANSF_ENCR_AES_CCM_8 ||
+		    _ce == IKEV2TRANSF_ENCR_AES_CCM_12 ||
+		    _ce == IKEV2TRANSF_ENCR_AES_CCM_16) {
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+						 IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED,
+						 0, 0),
+					    TRUE);
+		}
 	}
 #endif
 
