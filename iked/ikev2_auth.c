@@ -234,19 +234,10 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 		q += sa->intauth_r->l;
 		memcpy(q, midb, 4);
 		IF_TRACE({
-			/* non-secret: the RFC 9242 IntAuth chunks (IKE header +
-			 * Encrypted generic header + inner payloads -- NO key
-			 * material is logged).  Dump so the responder's
-			 * reconstruction can be diffed byte-for-byte against the
-			 * peer's (iOS) RFC-correct IntAuth on the wire. */
+			/* non-secret: lengths only.  sa->intauth_i/r are sk_p-keyed
+			 * PRF outputs (secret MACs) and must NEVER be logged. */
 			TRACE((PLOGLOC, "IntAuth [i->r=%d] i_len=%zu r_len=%zu\n",
 			       i_to_r, sa->intauth_i->l, sa->intauth_r->l));
-			if (sa->intauth_i->l)
-				plogdump(PLOG_DEBUG, PLOGLOC, 0,
-					 sa->intauth_i->v, sa->intauth_i->l);
-			if (sa->intauth_r->l)
-				plogdump(PLOG_DEBUG, PLOGLOC, 0,
-					 sa->intauth_r->v, sa->intauth_r->l);
 		});
 		/* rc_vconcat reallocs dest IN PLACE and returns it (may
 		 * be a new pointer); octets aliases grown -- do NOT free
