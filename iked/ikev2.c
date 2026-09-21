@@ -7358,7 +7358,10 @@ ikev2_intermediate_update_keys(struct ikev2_sa *sa, rc_vchar_t *sk_n)
 }
 
 /* RFC 9242 s3.3.2: chain one round's content into IntAuth_i ('i') or
- * IntAuth_r ('r'), keyed by the POST-update sk_p.  Call AFTER update. */
+ * IntAuth_r ('r'), keyed by the CURRENT sk_p (the pre-update generation for
+ * this round: INIT keys for round 1).  Must be called BEFORE
+ * ikev2_intermediate_update_keys, which installs the next generation.  The
+ * result is a keyed PRF value and must NEVER be logged. */
 static void
 ikev2_intermediate_chain_intauth(struct ikev2_sa *sa, int dir,
 				 rc_vchar_t *content)
@@ -7396,11 +7399,13 @@ ikev2_intermediate_chain_intauth(struct ikev2_sa *sa, int dir,
 /* RFC 9242 s3.3.2 IntAuth_A: the outer IKE header + the Encrypted payload's
  * generic header.  Reconstructed deterministically so BOTH the sender and a
  * peer receiving the (fragmented) message reproduce identical bytes: the
- * header's next_payload is normalized to ENCRYPTED, its Length to the
- * UNfragmented full-message size, and the enc-payload length to
- * 4+IV+plaintext+AEAD-tag.  This is only exact for an AEAD IKE cipher (no
- * random padding); the initial-IKE_SA ADDKE path therefore requires an AEAD
- * IKE cipher (AES-GCM), not CBC. */
+ * header's next_payload is normalized to ENCRYPTED and its Length to the
+ * Adjusted Length (|IntAuth_A| + |IntAuth_P|); the Encrypted generic header's
+ * Payload Length is the Adjusted Payload Length (|IntAuth_P| + 4).  IV, ICV,
+ * Padding and Pad Length are NOT counted.  This is exact for any IKE cipher;
+ * an AEAD (AES-GCM) IKE cipher is still required for the initial-IKE_SA ADDKE
+ * path so the intermediate messages are authenticated (IntAuth_A requires an
+ * encryption ICV). */
 static rc_vchar_t *
 intermediate_content_a(struct ikev2_sa *sa, struct ikev2_header *hdr,
 		       size_t inner_len, uint8_t first_inner_type)
@@ -7541,22 +7546,9 @@ intermediate_find_ke(rc_vchar_t *packet)
 }
 
 /* both sides have completed round N: chain both IntAuth derivations from the
- * held request/response contents (sk_p now holds the post-update keys). */
-static char *
-intauth_hex(const unsigned char *v, size_t l)
-{
-	size_t i;
-	char *s;
-
-	s = malloc(l * 2 + 1);
-	if (!s)
-		return 0;
-	for (i = 0; i < l; i++)
-		snprintf(s + i * 2, 3, "%02x", v[i]);
-	s[l * 2] = '\0';
-	return s;
-}
-
+ * held request/response contents.  Called BEFORE ikev2_intermediate_update_keys
+ * so sa->sk_p_i/r still hold this round's pre-update generation, which is the
+ * generation RFC 9242 s3.3.2 keys IntAuth for round N. */
 static void
 intermediate_finish_round(struct ikev2_sa *sa)
 {
@@ -7576,28 +7568,10 @@ intermediate_finish_round(struct ikev2_sa *sa)
 	sa->intermediate_rounds++;
 	ikev2_intermediate_chain_intauth(sa, 'i', sa->intermediate_req);
 	ikev2_intermediate_chain_intauth(sa, 'r', sa->intermediate_resp);
-	/* Debug the iOS IntAuth divergence: dump the accumulated per-direction
-	 * transcript blobs (public bytes: IKE header + KE keyshares) at round-
-	 * completion.  IntAuth is the transcript being MAC'd in IKE_AUTH, so a
-	 * byte here is exactly what the peer verifies; iOS aborts before IKE_AUTH
-	 * so the verify-time dump never fires.  Non-secret. */
-	isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-		   "IntAuth chain i len=%zu r len=%zu (round %u)\n",
-		   sa->intauth_i ? sa->intauth_i->l : 0,
-		   sa->intauth_r ? sa->intauth_r->l : 0,
-		   sa->intermediate_rounds);
-	if (sa->intauth_i) {
-		char *h = intauth_hex(sa->intauth_i->v, sa->intauth_i->l);
-		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-			   "IntAuth_i[%zu]=%s\n", sa->intauth_i->l, h ? h : "");
-		free(h);
-	}
-	if (sa->intauth_r) {
-		char *h = intauth_hex(sa->intauth_r->v, sa->intauth_r->l);
-		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-			   "IntAuth_r[%zu]=%s\n", sa->intauth_r->l, h ? h : "");
-		free(h);
-	}
+	/* NOTE: sa->intauth_i / sa->intauth_r are keyed PRF values
+	 * (sk_p-keyed MACs, RFC 9242 s3.3.2) and must NEVER be logged.  The
+	 * public transcript they cover is sa->intermediate_req/resp, freed
+	 * below. */
 	/* rc_vfreez is BY VALUE and, in -DDEBUG builds, does NOT clear the
 	 * caller's pointer (the var->v=NULL is #ifndef DEBUG).  If we do not
 	 * null the fields here, a later graceful dispose (the rekey reaper /
@@ -7764,12 +7738,16 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	sa->intermediate_resp = resp;
 	resp = 0;
 
+	/* RFC 9242 s3.3: IntAuth for this round is keyed by the PRE-update sk_p
+	 * (the intermediate messages are protected with keys from the previous
+	 * generation).  Chain BOTH directions BEFORE the key update; the post-
+	 * update sk_p applies to the exchanges that FOLLOW the intermediate. */
+	intermediate_finish_round(sa);
 	if (ikev2_intermediate_update_keys(sa, ss) != 0) {
 		rc_vfree(ss);
 		goto abort;
 	}
 	rc_vfree(ss);
-	intermediate_finish_round(sa);
 
 	/* only ADDKE1 (one round) is implemented here */
 	ikev2_set_state(sa, IKEV2_STATE_INI_IKE_AUTH_SENT);
@@ -7879,13 +7857,16 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	rc_vfree(inner);
 	inner = 0;
 
-	/* keys update AFTER the (pre-update-encrypted) response goes out */
+	/* IntAuth for this round is keyed by the PRE-update sk_p (RFC 9242
+	 * s3.3: intermediate messages use the previous key generation).  Chain
+	 * both directions BEFORE the key update; the response itself was sent
+	 * immediately above, still encrypted with the pre-update IKE keys. */
+	intermediate_finish_round(sa);
 	if (ikev2_intermediate_update_keys(sa, ss) != 0) {
 		rc_vfree(ss);
 		goto drop;
 	}
 	rc_vfree(ss);
-	intermediate_finish_round(sa);
 	/* RFC 9242 s3.2: AUTH msgid = last intermediate + 1.  The responder
 	 * accepted the intermediate (recv_message_id == rmsgid); advance it so
 	 * the IKE_AUTH request (rmsgid+1) is not dropped as unordered. */
