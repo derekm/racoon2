@@ -7542,6 +7542,21 @@ intermediate_find_ke(rc_vchar_t *packet)
 
 /* both sides have completed round N: chain both IntAuth derivations from the
  * held request/response contents (sk_p now holds the post-update keys). */
+static char *
+intauth_hex(const unsigned char *v, size_t l)
+{
+	size_t i;
+	char *s;
+
+	s = malloc(l * 2 + 1);
+	if (!s)
+		return 0;
+	for (i = 0; i < l; i++)
+		snprintf(s + i * 2, 3, "%02x", v[i]);
+	s[l * 2] = '\0';
+	return s;
+}
+
 static void
 intermediate_finish_round(struct ikev2_sa *sa)
 {
@@ -7561,6 +7576,28 @@ intermediate_finish_round(struct ikev2_sa *sa)
 	sa->intermediate_rounds++;
 	ikev2_intermediate_chain_intauth(sa, 'i', sa->intermediate_req);
 	ikev2_intermediate_chain_intauth(sa, 'r', sa->intermediate_resp);
+	/* Debug the iOS IntAuth divergence: dump the accumulated per-direction
+	 * transcript blobs (public bytes: IKE header + KE keyshares) at round-
+	 * completion.  IntAuth is the transcript being MAC'd in IKE_AUTH, so a
+	 * byte here is exactly what the peer verifies; iOS aborts before IKE_AUTH
+	 * so the verify-time dump never fires.  Non-secret. */
+	isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		   "IntAuth chain i len=%zu r len=%zu (round %u)\n",
+		   sa->intauth_i ? sa->intauth_i->l : 0,
+		   sa->intauth_r ? sa->intauth_r->l : 0,
+		   sa->intermediate_rounds);
+	if (sa->intauth_i) {
+		char *h = intauth_hex(sa->intauth_i->v, sa->intauth_i->l);
+		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "IntAuth_i[%zu]=%s\n", sa->intauth_i->l, h ? h : "");
+		free(h);
+	}
+	if (sa->intauth_r) {
+		char *h = intauth_hex(sa->intauth_r->v, sa->intauth_r->l);
+		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "IntAuth_r[%zu]=%s\n", sa->intauth_r->l, h ? h : "");
+		free(h);
+	}
 	/* rc_vfreez is BY VALUE and, in -DDEBUG builds, does NOT clear the
 	 * caller's pointer (the var->v=NULL is #ifndef DEBUG).  If we do not
 	 * null the fields here, a later graceful dispose (the rekey reaper /
