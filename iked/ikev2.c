@@ -7413,11 +7413,20 @@ intermediate_content_a(struct ikev2_sa *sa, struct ikev2_header *hdr,
 
 	iv_len = sa->encryptor ? encryptor_iv_length(sa->encryptor) : 0;
 	tag_len = sa->encryptor ? encryptor_icv_length(sa->encryptor) : 0;
-	/* RFC 7296 s3.14: the Encrypted payload content is IV + ciphertext +
-	 * AEAD tag, where the plaintext is payloads + (pad=0) + 1 pad-length
-	 * byte -- ikev2_packet_construct uses inner = payloads->l + 1. */
-	enc_len = sizeof(struct ikev2_payload_header) + iv_len
-		+ (uint32_t)inner_len + 1 + (uint32_t)tag_len;
+	/* RFC 9242 s3.3.2: the IntAuth prf uses ADJUSTED length fields --
+	 * the IKE Header Length (Adjusted Length) = |IntAuth_A| + |IntAuth_P|
+	 * and the Encrypted generic Payload Length (Adjusted Payload Length)
+	 * = |IntAuth_P| + 4.  IV, Integrity Checksum Data, Padding and Pad
+	 * Length are NOT counted (the peer's configured/actual iv+tag+pad
+	 * must NOT leak into the prf input).  So:
+	 *   enc_len (Enc generic, adjusted) = 4 + inner_len
+	 *   header Length (adjusted)        = hdr_len + enc_len
+	 * OLD code counted iv+tag+pad-len (4+iv+inner+1+tag), which makes
+	 * every IntAuth_A differ from a standards-correct peer (iOS) by the
+	 * IV+ICV+pad bytes -> IKE_AUTH 'authentication failure'.  Self-
+	 * consistent between two racoon2 peers, so the iked<->iked matrix
+	 * could not catch it. */
+	enc_len = sizeof(struct ikev2_payload_header) + (uint32_t)inner_len;
 	/* Debug (non-secret): reconstruction inputs so a byte-diff against
 	 * the peer's signed IntAuth_A can pin the divergence.  Only lengths /
 	 * header bytes, never key material. */
