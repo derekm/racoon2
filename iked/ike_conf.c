@@ -3055,19 +3055,76 @@ static struct prop_pair *
 alg_to_proppair(struct rc_alglist *alg, int type,
 		struct algdef *translation_table)
 {
-	int code;
-	int keylen;
+	struct prop_pair *head = 0, **tail = &head, *t;
+	struct algdef *def;
+	int code = 0;
+	const int BITS = 8;
 
-	code = ikeconf_rcf_alg(alg->algtype, translation_table);
-	if (code == 0) {
-		isakmp_log(0, 0, 0, 0,
-			   PLOG_INTERR, PLOGLOC,
-			   "unsupported algorithm %s\n", rct2str(alg->algtype));
-		return 0;
+	if (alg->keylen) {
+		/* explicit keylen: a single transform carrying that
+		 * KEY_LENGTH attribute, its id from the matching row. */
+		for (def = translation_table; def->racoon_code != 0; ++def) {
+			if (alg->algtype != def->racoon_code)
+				continue;
+			if (KEYLEN(*def) * BITS == (size_t)alg->keylen) {
+				code = def->transform_id;
+				break;
+			}
+		}
+		if (code == 0)
+			code = ikeconf_rcf_alg(alg->algtype,
+					       translation_table);
+		t = transform_new(type, code, alg->keylen, 0);
+		if (!t)
+			goto fail;
+		*tail = t;
+		return head;
 	}
-	keylen = ikev2_rcf_alg_keylen(type, alg, translation_table);
 
-	return transform_new(type, code, keylen, 0);
+	/* No explicit keylen.  A variable-key-length algorithm offering
+	 * several KEYLEN rows (aes_gcm -> AES-GCM-ICV16 128/192/256) must
+	 * emit one transform per row so a peer offering ANY key length (e.g.
+	 * the iOS default profile's AES-GCM-256 proposal) can match; the old
+	 * code emitted only the first row (GCM-128) and fell back to AES-CBC
+	 * for such peers.  Fixed algorithms emit a single transform with no
+	 * KEY_LENGTH attribute, as before. */
+	{
+		int emitted = 0;
+		for (def = translation_table; def->racoon_code != 0; ++def) {
+			if (alg->algtype != def->racoon_code)
+				continue;
+			if (IS_PROTO_VARIABLE_KEYLEN(*def)) {
+				t = transform_new(type, def->transform_id,
+						   KEYLEN(*def) * BITS, 0);
+				if (!t)
+					goto fail;
+				*tail = t;
+				tail = &t->tnext;
+				emitted = 1;
+			} else if (!emitted) {
+				t = transform_new(type, def->transform_id,
+						   0, 0);
+				if (!t)
+					goto fail;
+				*tail = t;
+				tail = &t->tnext;
+				emitted = 1;
+			}
+		}
+		if (!emitted) {
+			isakmp_log(0, 0, 0, 0,
+				   PLOG_INTERR, PLOGLOC,
+				   "unsupported algorithm %s\n",
+				   rct2str(alg->algtype));
+			return 0;
+		}
+	}
+	return head;
+
+      fail:
+	if (head)
+		proppair_discard(head);
+	return 0;
 }
 
 static struct prop_pair *
@@ -3084,7 +3141,12 @@ alglist_to_proppair(struct rc_alglist *alg, int type,
 		transform = alg_to_proppair(alg, type, translation_table);
 		if (!transform)
 			goto fail;
+		/* alg_to_proppair returns a chain (one transform per
+		 * key-length row for variable-key-length algorithms);
+		 * append the whole chain. */
 		*tail = transform;
+		while (transform->tnext)
+			transform = transform->tnext;
 		tail = &transform->tnext;
 	}
 
