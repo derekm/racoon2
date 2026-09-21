@@ -6488,6 +6488,28 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	if (result && (spi != NULL || allow_init_addke)) {
 		int p;
 
+		/* On the INITIAL IKE_SA (allow_init_addke), ADDKE/type-6
+		 * requires the IKE_INTERMEDIATE round, which needs an AEAD
+		 * IKE cipher (IntAuth_A is deterministic only for AEAD;
+		 * without 16438 echoed, INIT stays classical).  When the
+		 * negotiated ENCR is not AEAD (we matched a CBC proposal),
+		 * do NOT echo type-6 -- keep the SA classical so iOS default
+		 * profiles that offer interim + ADDKE as their preferred
+		 * progressive path fall back to a plain IKE_AUTH instead of
+		 * aborting a type-6-committed CBC SA.  The IKE_SA-rekey path
+		 * (spi != NULL) records ADDKE independently (FOLLOWUP_KE).
+		 */
+		if (spi == NULL) {
+			unsigned int _e = result->encr;
+			if (!(_e == IKEV2TRANSF_ENCR_AES_GCM_ICV8 ||
+			      _e == IKEV2TRANSF_ENCR_AES_GCM_ICV12 ||
+			      _e == IKEV2TRANSF_ENCR_AES_GCM_ICV16 ||
+			      _e == IKEV2TRANSF_ENCR_AES_CCM_8 ||
+			      _e == IKEV2TRANSF_ENCR_AES_CCM_12 ||
+			      _e == IKEV2TRANSF_ENCR_AES_CCM_16))
+				goto done;	/* keep INIT classical */
+		}
+
 		/* Type-6 on the INITIAL IKE_SA is recorded only when the
 		 * caller passes allow_init_addke (16438 negotiated).  The
 		 * IKE_SA-rekey path (spi != NULL) still records ADDKE so
