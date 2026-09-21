@@ -7418,6 +7418,15 @@ intermediate_content_a(struct ikev2_sa *sa, struct ikev2_header *hdr,
 	 * byte -- ikev2_packet_construct uses inner = payloads->l + 1. */
 	enc_len = sizeof(struct ikev2_payload_header) + iv_len
 		+ (uint32_t)inner_len + 1 + (uint32_t)tag_len;
+	/* Debug (non-secret): reconstruction inputs so a byte-diff against
+	 * the peer's signed IntAuth_A can pin the divergence.  Only lengths /
+	 * header bytes, never key material. */
+	isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		   "IntAuth_A recon hdr.next=%u hdr.len=%u -> norm enc_len=%u "
+		   "iv=%zu tag=%zu inner=%zu\n",
+		   (unsigned)hdr->next_payload,
+		   (unsigned)get_uint32((uint8_t *)hdr + 24),
+		   (unsigned)enc_len, iv_len, tag_len, inner_len);
 	c = rc_vmalloc(hdr_len + sizeof(struct ikev2_payload_header));
 	if (!c)
 		return 0;
