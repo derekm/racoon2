@@ -116,8 +116,13 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		break;
 #ifdef WITH_INTERMEDIATE
 	case IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED:
+		/* RFC 9242: records that the PEER offered 16438.  NOT a two-sided
+		 * negotiation -- the responder only commits to running exch 43
+		 * when it echoes 16438 in SAr1 (gated on a selected AEAD+type-6
+		 * proposal in resp_state0_recv).  A receive-side flag alone must
+		 * never imply an intermediate round will (or can) run. */
 		ike_sa->intermediate_negotiated = 1;
-		TRACE((PLOGLOC, "peer supports IKE_INTERMEDIATE\n"));
+		TRACE((PLOGLOC, "peer offers IKE_INTERMEDIATE (16438)\n"));
 		break;
 #endif
 
@@ -265,8 +270,13 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		break;
 #ifdef WITH_INTERMEDIATE
 	case IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED:
+		/* RFC 9242: records that the PEER offered 16438.  NOT a two-sided
+		 * negotiation -- the responder only commits to running exch 43
+		 * when it echoes 16438 in SAr1 (gated on a selected AEAD+type-6
+		 * proposal in resp_state0_recv).  A receive-side flag alone must
+		 * never imply an intermediate round will (or can) run. */
 		ike_sa->intermediate_negotiated = 1;
-		TRACE((PLOGLOC, "peer supports IKE_INTERMEDIATE\n"));
+		TRACE((PLOGLOC, "peer offers IKE_INTERMEDIATE (16438)\n"));
 		break;
 #endif
 

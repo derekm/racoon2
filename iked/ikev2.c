@@ -1696,15 +1696,18 @@ responder_state0_after_gen(int rc, void *arg)
 				    TRUE);
 	}
 #ifdef WITH_INTERMEDIATE
-	/* RFC 9242: echo 16438 only when the peer offered it (negotiated is
-	 * set in resp_state0_recv_notify) AND the negotiated IKE cipher is
-	 * AEAD -- IntAuth_A is only deterministic for AEAD (random CBC
-	 * padding makes the wire Encrypted length unreconstructable).
-	 * Echoing on a CBC SA makes the peer send exch 43 which we then
-	 * drop in responder_ike_intermediate_recv -> the connect stalls.
-	 * A CBC peer that offered intermediate falls through to a classical
-	 * IKE_AUTH instead. */
-	if (ike_sa->intermediate_negotiated && ike_sa->negotiated_sa) {
+	/* RFC 9242: echo 16438 only when (a) the peer offered it
+	 * (negotiated is set in resp_state0_recv_notify), (b) the SELECTED
+	 * proposal actually carries type-6/ADDKE (addke != 0 -- echoing on a
+	 * classical AEAD match would make the peer send exch 43 before any
+	 * IKE_AUTH, which responder_ike_intermediate_recv would then drop
+	 * because addke == 0 -> the connect stalls), AND (c) the negotiated
+	 * IKE cipher is AEAD (IntAuth_A is only deterministic for AEAD;
+	 * random CBC padding makes the wire Encrypted length
+	 * unreconstructable).  A CBC peer that offered intermediate falls
+	 * through to a classical IKE_AUTH instead. */
+	if (ike_sa->intermediate_negotiated && ike_sa->negotiated_sa &&
+	    ike_sa->negotiated_sa->addke != 0) {
 		u_int16_t _ce = ike_sa->negotiated_sa->encr;
 		if (_ce == IKEV2TRANSF_ENCR_AES_GCM_ICV8 ||
 		    _ce == IKEV2TRANSF_ENCR_AES_GCM_ICV12 ||
@@ -6461,6 +6464,40 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	if (!my_proposal)
 		goto fail;
 
+#ifdef WITH_INTERMEDIATE
+	/* RFC 9370 s2.2.1: a peer type-6/ADDKE on the INITIAL IKE_SA is only
+	 * actionable when IKE_INTERMEDIATE (16438) was negotiated
+	 * (allow_init_addke).  Without it we must NOT select-and-strip ADDKE
+	 * (which would answer a peer's ADDKE proposal with an SAr1 that drops
+	 * type-6 -- the peer treats that as a failed exchange).  Skip such
+	 * proposals so a later classical fallback (the peer's own #2/#3)
+	 * matches and SAr1 stays classical.  Match against a filtered COPY so
+	 * the caller's peer_proposal array is left untouched. */
+	if (!spi && !allow_init_addke) {
+		struct prop_pair *filtered[MAXPROPPAIRLEN];
+		int fp;
+		memset(filtered, 0, sizeof(filtered));
+		for (fp = 0; fp < MAXPROPPAIRLEN; ++fp) {
+			struct prop_pair *np = peer_proposal ? peer_proposal[fp] : NULL;
+			struct prop_pair *tr;
+			int has_addke = 0;
+			if (!np)
+				continue;
+			for (tr = np->tnext; tr; tr = tr->next) {
+				struct ikev2transform *t =
+				    (struct ikev2transform *)tr->trns;
+				if (t && t->transform_type ==
+					    IKEV2TRANSFORM_TYPE_ADDKE) {
+					has_addke = 1;
+					break;
+				}
+			}
+			if (!has_addke)
+				filtered[fp] = np;
+		}
+		matched_proposal = ikev2_find_match(my_proposal, filtered, 0);
+	} else
+#endif
 	matched_proposal = ikev2_find_match(my_proposal, peer_proposal, 0);
 	if (!matched_proposal)
 		goto no_match;
@@ -6486,7 +6523,6 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	 * IKE-rekey response echoes it and the SKEYSEED deferral arms.
 	 */
 	if (result && (spi != NULL || allow_init_addke)) {
-		int p;
 
 		/* On the INITIAL IKE_SA (allow_init_addke), ADDKE/type-6
 		 * requires the IKE_INTERMEDIATE round, which needs an AEAD
@@ -6511,38 +6547,33 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 		}
 
 		/* Type-6 on the INITIAL IKE_SA is recorded only when the
-		 * caller passes allow_init_addke (16438 negotiated).  The
-		 * IKE_SA-rekey path (spi != NULL) still records ADDKE so
-		 * FOLLOWUP_KE can run.  Without 16438, INIT stays classical
-		 * so iOS default profiles that offer type-6 without
-		 * intermediate do not see a type-6 SAr1.
-		 * isakmp_parse_proposal indexes by prop->p_no (1-based),
-		 * so index 0 is a NULL slot; iterate ALL slots and skip
-		 * NULLs (the same walk isakmp_find_match uses), rather
-		 * than stopping at the first NULL which is always index 0
-		 * and thus misses every proposal. */
-		for (p = 0; p < MAXPROPPAIRLEN; ++p) {
-			struct prop_pair *pp =
-			    peer_proposal ? peer_proposal[p] : NULL;
-			struct prop_pair *tr;
-
-			if (!pp)
-				continue;
-			/* transforms: ->tnext = first, chained via ->next
-			 * (ikev2_get_transforms result layout) */
-			for (tr = pp->tnext; tr; tr = tr->next) {
-				struct ikev2transform *t =
-				    (struct ikev2transform *)tr->trns;
-				if (t &&
-				    t->transform_type ==
-				    IKEV2TRANSFORM_TYPE_ADDKE) {
-					result->addke =
-					    get_uint16(&t->transform_id);
-					break;
+		 * caller passes allow_init_addke (16438 negotiated); the
+		 * IKE_SA-rekey path (spi != NULL) records it independently so
+		 * FOLLOWUP_KE can run.  Without 16438, INIT stays classical. */
+		/* RFC 9370: record the SELECTED ADDKE method from the matched
+		 * peer proposal only.  isakmp_find_match already decided it and
+		 * stamped the ACCEPTED peer p_no (isakmp.c found_match, MINE
+		 * case) into matched_proposal->prop->p_no (1-based), so
+		 * peer_proposal[p_no-1] is that proposal.  A type-6 on a
+		 * NON-matched proposal must never seed result->addke -- it
+		 * would grow SAr1 a type-6 the match never selected. */
+		if (matched_proposal) {
+			unsigned int _pno = matched_proposal->prop->p_no;
+			if (_pno >= 1 && _pno <= MAXPROPPAIRLEN) {
+				struct prop_pair *mp = peer_proposal ?
+				    peer_proposal[_pno - 1] : NULL;
+				struct prop_pair *tr;
+				for (tr = mp ? mp->tnext : NULL; tr; tr = tr->next) {
+					struct ikev2transform *t =
+					    (struct ikev2transform *)tr->trns;
+					if (t && t->transform_type ==
+						    IKEV2TRANSFORM_TYPE_ADDKE) {
+						result->addke =
+						    get_uint16(&t->transform_id);
+						break;
+					}
 				}
 			}
-			if (result->addke != 0)
-				break;
 		}
 	}
 #endif
@@ -7337,7 +7368,7 @@ fail:
 static int
 ikev2_intermediate_update_keys(struct ikev2_sa *sa, rc_vchar_t *sk_n)
 {
-	rc_vchar_t *data, *new_seed;
+	rc_vchar_t *data, *new_seed, *old_seed;
 
 	if (!sa->sk_d || !sa->n_i || !sa->n_r || !sk_n)
 		return -1;
@@ -7348,10 +7379,20 @@ ikev2_intermediate_update_keys(struct ikev2_sa *sa, rc_vchar_t *sk_n)
 	rc_vfree(data);
 	if (!new_seed)
 		return -1;
-	rc_vfreez(sa->skeyseed);
+	/* RFC 9370 s3.5 / RFC 9242 s3.3: the SKEYSEED generation swap must be
+	 * all-or-nothing.  Hold the old generation until ikev2_compute_keys
+	 * succeeds so a mid-derivation failure never leaves the NEW SKEYSEED
+	 * paired with the OLD SK_* children (the caller aborts the SA on a
+	 * non-zero return, but the descriptor must stay internally consistent
+	 * up to that abort). */
+	old_seed = sa->skeyseed;
 	sa->skeyseed = new_seed;
-	if (ikev2_compute_keys(sa) != 0)
+	if (ikev2_compute_keys(sa) != 0) {
+		rc_vfreez(sa->skeyseed);
+		sa->skeyseed = old_seed;
 		return -1;
+	}
+	rc_vfree(old_seed);
 	return 0;
 }
 
@@ -7449,27 +7490,26 @@ intermediate_content_a(struct ikev2_sa *sa, struct ikev2_header *hdr,
 	((struct ikev2_header *)p)->next_payload = IKEV2_PAYLOAD_ENCRYPTED;
 	/* IKE header Length field is bytes 24-27: the UNfragmented full size */
 	put_uint32(p + 24, (uint32_t)(hdr_len + enc_len));
-	/* Debug (non-secret): the reconstructed IntAuth_A chunk (IKE header +
-	 * Encrypted generic header) so it can be byte-diffed against the peer's
-	 * signed value.  Header bytes only, never key material. */
-	{
-		char hxb[40];
-		int _i;
-		for (_i = 0; _i < (int)c->l && _i * 2 + 2 < (int)sizeof(hxb); _i++)
-			snprintf(&hxb[_i * 2], 3, "%02x", ((u_char *)c->v)[_i]);
-		if (c->l > 16)
-			hxb[32] = '\0';
-		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-			   "IntAuth_A recon[%zu] spi_i=%08x len=%u enc_len=%u enc_next=%u hx=%s\n",
-			   c->l, (unsigned)ntohl(*(uint32_t *)(p)),
-			   (unsigned)(hdr_len + enc_len), (unsigned)enc_len,
-			   (unsigned)first_inner_type, hxb);
-	}
 	p += hdr_len;
 	/* Encrypted payload generic header */
 	p[0] = first_inner_type;
 	p[1] = 0;
 	put_uint16(p + 2, (uint16_t)enc_len);
+	/* Debug (non-secret): the reconstructed IntAuth_A chunk (IKE header +
+	 * Encrypted generic header) is complete only now -- dump after the Enc
+	 * generic header above.  Public wire bytes; first 32 cover both SPIs +
+	 * the two headers' next/len, printed with the adjusted lengths.  Never
+	 * key material. */
+	{
+		char hxb[96];
+		int _i, _n = c->l < 32 ? (int)c->l : 32;
+		for (_i = 0; _i < _n; _i++)
+			snprintf(&hxb[_i * 2], 3, "%02x", ((u_char *)c->v)[_i]);
+		hxb[_i * 2] = '\0';
+		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "IntAuth_A recon[%zu] enc_len=%u enc_next=%u hx=%s\n",
+			   c->l, enc_len, first_inner_type, hxb);
+	}
 	return c;
 }
 

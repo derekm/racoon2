@@ -153,11 +153,18 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   (e.g. ADDKE/ML-KEM) that updates SK_e/SK_a per the applying spec; the rounds are
   bound into AUTH via the **chained IntAuth PRF** (`IntAuth_i/rN`) + `IKE_AUTH_MID`
   chunk appended to each peer's signed/mac'd blob.  **Landed in `iked/ikev2.c`
-  (not a split `ikev2_intermediate.c` yet):** initiator offers N(16438) when
-  `WITH_INTERMEDIATE` is on; responder echoes it only if the peer offered it;
-  type-6 on the initial IKE_SA is recorded only with `allow_init_addke`;
-  IntAuth_A reconstruction is AEAD-exact (non-AEAD IKE ciphers skip / drop
-  exch 43); AUTH fails closed if the IntAuth appendix cannot be built.
+  (NOT a split `ikev2_intermediate.c` yet):** initiator offers N(16438) when
+  `WITH_INTERMEDIATE` is on; responder echoes it only when the peer offered it
+  **AND** the selected proposal carries type-6 (`negotiated_sa->addke != 0`)
+  **AND** the negotiated IKE cipher is AEAD (IntAuth_A is deterministic only
+  for AEAD).  On the initial IKE_SA, a peer type-6 WITHOUT 16438 is skipped
+  (RFC 9370 s2.2.1 — never select-and-strip), and the selected ADDKE method
+  is read from the **matched** peer proposal only (never a non-selected one).
+  IntAuth for a round is chained with the **PRE-update** `sk_p` (RFC 9242
+  s3.3.2), i.e. before `ikev2_intermediate_update_keys`, which swaps
+  SKEYSEED generations all-or-nothing (fail-closed).  AUTH fails closed if the
+  IntAuth appendix cannot be built.  IntAuth_A reconstruction uses the
+  adjusted length fields (Enc generic = `4 + |P|`, IKE Length = `28 + enc`).
   Matrix proof is `i2iinit-addke` (Fedora / OpenSSL ≥ 3.5).  iOS sending
   16438 is still the live interop target.  IKE_INTERMEDIATE runs BEFORE
   IKE_AUTH (RFC 9242 s3.2) — it is not `ikev2_established_recv`.  Gate
