@@ -253,6 +253,36 @@ ikev2_find_match(struct prop_pair *my_proposal,
 #endif
 
 /*
+ * Does this (peer) proposal carry an AEAD ENCR transform?  RFC 5282 AEAD
+ * algorithms (AES-GCM / AES-CCM with an ICV in the transform) provide the
+ * integrity themselves, so an AEAD proposal carries no separate INTEG
+ * transform.  Used so the matcher does not reject a peer AEAD proposal for
+ * lacking the INTEG that our CBC-shaped config always lists.
+ */
+static int
+peer_uses_aead_encr(struct prop_pair *proposal)
+{
+	struct prop_pair *p;
+	unsigned int ae;
+
+	for (p = proposal->tnext; p; p = p->next) {
+		struct ikev2transform *t =
+		    (struct ikev2transform *)p->trns;
+		if (!t || t->transform_type != IKEV2TRANSFORM_TYPE_ENCR)
+			continue;
+		ae = get_uint16(&t->transform_id);
+		if (ae == IKEV2TRANSF_ENCR_AES_GCM_ICV8 ||
+		    ae == IKEV2TRANSF_ENCR_AES_GCM_ICV12 ||
+		    ae == IKEV2TRANSF_ENCR_AES_GCM_ICV16 ||
+		    ae == IKEV2TRANSF_ENCR_AES_CCM_8 ||
+		    ae == IKEV2TRANSF_ENCR_AES_CCM_12 ||
+		    ae == IKEV2TRANSF_ENCR_AES_CCM_16)
+			return 1;
+	}
+	return 0;
+}
+
+/*
  * for each of my transform types,
  * see whether there's a matching peer's transform
  * return 0 if success, non-0 otherwise
@@ -304,6 +334,26 @@ ikev2_compare_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 				TRACE((PLOGLOC,
 				       "peer proposal lacks ADDKE; "
 				       "treating as optional\n"));
+				continue;
+			}
+			/*
+			 * RFC 7296 / RFC 5282: an AEAD ENCR (AES-GCM / AES-CCM,
+			 * transform id with an ICV in the transform) provides the
+			 * integrity itself, so an AEAD proposal carries NO
+			 * separate INTEG transform.  Our config always lists
+			 * INTEG (from kmp_hash / esp_auth), so a peer AEAD
+			 * proposal is otherwise "missing INTEG" and we'd wrongly
+			 * skip it and fall back to a CBC proposal (live: iOS
+			 * default offers AES-GCM + ADDKE first; we negotiated
+			 * AES-CBC and the ADDKE-committed-no-intermediate SAr1
+			 * made iOS abort).  Treat INTEG as satisfied when the
+			 * peer's ENCR is an AEAD algorithm.
+			 */
+			if (type == IKEV2TRANSFORM_TYPE_INTEGR &&
+			    peer_uses_aead_encr(peers)) {
+				TRACE((PLOGLOC,
+				       "peer ENCR is AEAD; INTEG implicit, "
+				       "treating as satisfied\n"));
 				continue;
 			}
 			TRACE((PLOGLOC,
