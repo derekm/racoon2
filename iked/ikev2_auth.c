@@ -185,12 +185,9 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 		id = sa->id_r;
 	}
 
-	IF_TRACE({
-		TRACE((PLOGLOC, "SK\n"));
-		plogdump(PLOG_DEBUG, PLOGLOC, 0, sk->v, sk->l);
-		TRACE((PLOGLOC, "ID\n"));
-		plogdump(PLOG_DEBUG, PLOGLOC, 0, id->v, id->l);
-	});
+	/* NOTE: `sk` here is sk_p_r / sk_p_i — an IKE SKEYSEED-derived secret.
+	 * It and the signed octets (which carry the IntAuth appendix when
+	 * WITH_INTERMEDIATE) must NEVER be plogdumped. */
 
 	/* prf(SK, ID) */
 	prf_output = keyed_hash(prf, sk, id);
@@ -250,10 +247,9 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 	}
 #endif
 
-	IF_TRACE({
-		TRACE((PLOGLOC, "octets = message | N | prf(SK, ID)\n"));
-		plogdump(PLOG_DEBUG, PLOGLOC, 0, octets->v, octets->l);
-	});
+	/* NOTE: `octets` = message | N | prf(SK, ID) [ | IntAuth_iN | IntAuth_rN
+	 * | IKE_AUTH_MID ] — contains the SK-keyed MAC and the IntAuth appendix.
+	 * Secret; never plogdump. */
 
       end:
 	if (prf_output)

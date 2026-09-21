@@ -6771,13 +6771,11 @@ compute_skeyseed_after_dh(int rc, void *arg)
 		out = -1;
 	else if (rc == 0) {
 		IF_TRACE({
-			TRACE((PLOGLOC, "SKEYSEED\n"));
-			TRACE((PLOGLOC, "nonces\n"));
+			TRACE((PLOGLOC, "SKEYSEED inputs are nonces\n"));
 			plogdump(PLOG_DEBUG, PLOGLOC, 0, s->nonces->v,
 			    s->nonces->l);
-			TRACE((PLOGLOC, "g_ir\n"));
-			plogdump(PLOG_DEBUG, PLOGLOC, 0, s->g_ir->v,
-			    s->g_ir->l);
+			/* g_ir = g^ix is the DH shared secret from which
+			 * SKEYSEED derives -- NEVER plogdump. */
 		});
 		ike_sa->skeyseed = keyed_hash(ike_sa->prf, s->nonces, s->g_ir);
 		if (!ike_sa->skeyseed)
