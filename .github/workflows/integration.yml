@@ -166,13 +166,10 @@ jobs:
         run: |
           export R2_ADDKE=yes
           CASES=${{ inputs.cases }}
-          # Only the i2ike PQC proof runs here.  The unit/kind tests
-          # (eaytest/evlooptest/workerstest/kmtest) are already proven by
-          # this job's 'Fedora 44 NETLINK_XFRM build' `make check`, and the
-          # lib kernel-netlink cases (xfrmtmpl/xfrmnatt) do not verify
-          # inside a GH container (SPDADD errno=0) — those run in the
-          # Ubuntu host Linux-matrix job.
-          [ -n "$CASES" ] || CASES='i2ike'
+          # run.sh's filter regex-matches case NAMES; 'i2ike' would also pull
+          # in i2ikesa-addke (and 'i2ikesa-addke' is a separate ADDKE gate).
+          # Cover the box-verified gate rows on the INITIAL + rekey paths.
+          [ -n "$CASES" ] || CASES='i2iinit-addke|i2ike-addke|i2ikesa-addke'
           ARGS="--src $GITHUB_WORKSPACE --cases $CASES"
           bash samples/linux-matrix/run.sh $ARGS
         env:
@@ -185,5 +182,8 @@ jobs:
           name: fedora-pqc-matrix-logs
           path: |
             /tmp/r2-i2ike/*.log
+            /tmp/r2-i2ikesa/*.log
+            /tmp/r2-i2iinit/*.log
+            /tmp/r2-i2iinit-*/r2-*/*.log
             /tmp/*.log
           if-no-files-found: warn
