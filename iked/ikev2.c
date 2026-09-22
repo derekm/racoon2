@@ -46,6 +46,7 @@
 #endif
 #include <sys/socket.h>
 #include <sys/errno.h>
+#include <openssl/crypto.h>	/* OPENSSL_cleanse for key material */
 
 #include <netinet/in.h>
 #include <netdb.h>
@@ -1709,12 +1710,7 @@ responder_state0_after_gen(int rc, void *arg)
 	if (ike_sa->intermediate_negotiated && ike_sa->negotiated_sa &&
 	    ike_sa->negotiated_sa->addke != 0) {
 		u_int16_t _ce = ike_sa->negotiated_sa->encr;
-		if (_ce == IKEV2TRANSF_ENCR_AES_GCM_ICV8 ||
-		    _ce == IKEV2TRANSF_ENCR_AES_GCM_ICV12 ||
-		    _ce == IKEV2TRANSF_ENCR_AES_GCM_ICV16 ||
-		    _ce == IKEV2TRANSF_ENCR_AES_CCM_8 ||
-		    _ce == IKEV2TRANSF_ENCR_AES_CCM_12 ||
-		    _ce == IKEV2TRANSF_ENCR_AES_CCM_16) {
+		if (ikev2_encr_is_aead(_ce)) {
 			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 					    ikev2_notify_payload(0, 0, 0,
 						 IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED,
@@ -6537,12 +6533,7 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 		 */
 		if (spi == NULL) {
 			unsigned int _e = result->encr;
-			if (!(_e == IKEV2TRANSF_ENCR_AES_GCM_ICV8 ||
-			      _e == IKEV2TRANSF_ENCR_AES_GCM_ICV12 ||
-			      _e == IKEV2TRANSF_ENCR_AES_GCM_ICV16 ||
-			      _e == IKEV2TRANSF_ENCR_AES_CCM_8 ||
-			      _e == IKEV2TRANSF_ENCR_AES_CCM_12 ||
-			      _e == IKEV2TRANSF_ENCR_AES_CCM_16))
+			if (!ikev2_encr_is_aead(_e))
 				goto done;	/* keep INIT classical */
 		}
 
@@ -6902,6 +6893,20 @@ compute_skeyseed_submit(struct ikev2_sa *ike_sa, oakley_dh_done_t done,
 	return -1;
 }
 
+/* H2: free + cleanse a prior key-generation buffer before re-derivation.
+ * rc_vfreez alone neither clears the bytes in -DDEBUG nor nulls the caller's
+ * pointer (it is by-value and rc_free()s the container), so secret key
+ * material must be OPENSSL_cleanse'd and the pointer explicitly nulled. */
+static void
+ikev2_cleanse_key_gen(rc_vchar_t **p)
+{
+	if (*p) {
+		OPENSSL_cleanse((*p)->v, (*p)->l);
+		rc_vfreez(*p);
+		*p = 0;
+	}
+}
+
 /*
  * compute SK_d, SK_ai, SK_ar, SK_ei, SK_er, SK_pi, SK_pr
  *
@@ -6985,6 +6990,17 @@ ikev2_compute_keys(struct ikev2_sa *ike_sa)
 	if (!sk_pr)
 		goto fail;
 
+	/* Free + cleanse any PRIOR generation before overwriting -- the RFC 9370
+	 * intermediate key update calls this a second time per SA; never orphan
+	 * secret key bytes (H2). */
+	ikev2_cleanse_key_gen(&ike_sa->sk_d);
+	ikev2_cleanse_key_gen(&ike_sa->sk_a_i);
+	ikev2_cleanse_key_gen(&ike_sa->sk_a_r);
+	ikev2_cleanse_key_gen(&ike_sa->sk_e_i);
+	ikev2_cleanse_key_gen(&ike_sa->sk_e_r);
+	ikev2_cleanse_key_gen(&ike_sa->sk_p_i);
+	ikev2_cleanse_key_gen(&ike_sa->sk_p_r);
+
 	ike_sa->sk_d = sk_d;
 	ike_sa->sk_a_i = sk_ai;
 	ike_sa->sk_a_r = sk_ar;
@@ -6993,7 +7009,6 @@ ikev2_compute_keys(struct ikev2_sa *ike_sa)
 	ike_sa->sk_p_i = sk_pi;
 	ike_sa->sk_p_r = sk_pr;
 	retval = 0;
-
       done:
 	if (keys)
 		rc_vfreez(keys);
@@ -7491,7 +7506,12 @@ intermediate_content_a(struct ikev2_sa *sa, struct ikev2_header *hdr,
 	/* IKE header Length field is bytes 24-27: the UNfragmented full size */
 	put_uint32(p + 24, (uint32_t)(hdr_len + enc_len));
 	p += hdr_len;
-	/* Encrypted payload generic header */
+	/* Encrypted payload generic header.  RFC 9242 s3.3.2: the reassembled
+	 * header's RESERVED octet should be taken from the FIRST fragment's
+	 * Encrypted Fragment header.  We zero it here (p[1]=0) -- a stated
+	 * assumption that holds for every current peer (Critical bit C=0 and
+	 * RESERVED=0 on the wire, incl. iOS).  Length is the ADJUSTED
+	 * |IntAuth_P|+4 (IV/ICV/pad excluded). */
 	p[0] = first_inner_type;
 	p[1] = 0;
 	put_uint16(p + 2, (uint16_t)enc_len);

@@ -692,6 +692,7 @@ extern int ikev2_compare_transforms(struct isakmp_domain *, struct prop_pair *,
 struct prop_pair *ikev2_match_transforms(struct isakmp_domain *,
 					 struct prop_pair *,
 					 struct prop_pair *);
+extern int ikev2_encr_is_aead(u_int16_t);	/* RFC 5282 AEAD (ENCR+ICV) id */
 extern int ikev2_child_compare_transforms(struct isakmp_domain *,
 					  struct prop_pair *,
 					  struct prop_pair *);

@@ -2834,30 +2834,6 @@ ikeconf_rcf_alg(unsigned int alg, struct algdef *def)
 }
 
 /*
- * returns key length value if the algorithm requires the key length attribute
- * if not required, returns 0
- */
-static int
-ikev2_rcf_alg_keylen(int type, struct rc_alglist *alg, struct algdef *def)
-{
-	const int BITS = 8;
-
-	if (alg->keylen)
-		return alg->keylen;
-
-	for (; def->racoon_code != 0; ++def) {
-		if (alg->algtype == def->racoon_code) {
-			if (IS_PROTO_VARIABLE_KEYLEN(*def)) {
-				return KEYLEN(*def) * BITS;
-			} else {
-				return 0;
-			}
-		}
-	}
-	return 0;
-}
-
-/*
  * creates an encryptor based on negotiated proposal
  * code is ikev2 transform id, klen is key length in bits
  */

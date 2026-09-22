@@ -259,6 +259,20 @@ ikev2_find_match(struct prop_pair *my_proposal,
  * transform.  Used so the matcher does not reject a peer AEAD proposal for
  * lacking the INTEG that our CBC-shaped config always lists.
  */
+/* L1: single source of truth for "this IKE/esp ENCR id is an AEAD
+ * algorithm" (RFC 5282: ENCR+ICV, no separate INTEG).  Keep the enum set in
+ * ONE place; a future AEAD (e.g. ChaCha20-Poly1305) goes here only. */
+int
+ikev2_encr_is_aead(u_int16_t aid)
+{
+	return (aid == IKEV2TRANSF_ENCR_AES_GCM_ICV8 ||
+		aid == IKEV2TRANSF_ENCR_AES_GCM_ICV12 ||
+		aid == IKEV2TRANSF_ENCR_AES_GCM_ICV16 ||
+		aid == IKEV2TRANSF_ENCR_AES_CCM_8 ||
+		aid == IKEV2TRANSF_ENCR_AES_CCM_12 ||
+		aid == IKEV2TRANSF_ENCR_AES_CCM_16);
+}
+
 static int
 peer_uses_aead_encr(struct prop_pair *proposal)
 {
@@ -271,12 +285,7 @@ peer_uses_aead_encr(struct prop_pair *proposal)
 		if (!t || t->transform_type != IKEV2TRANSFORM_TYPE_ENCR)
 			continue;
 		ae = get_uint16(&t->transform_id);
-		if (ae == IKEV2TRANSF_ENCR_AES_GCM_ICV8 ||
-		    ae == IKEV2TRANSF_ENCR_AES_GCM_ICV12 ||
-		    ae == IKEV2TRANSF_ENCR_AES_GCM_ICV16 ||
-		    ae == IKEV2TRANSF_ENCR_AES_CCM_8 ||
-		    ae == IKEV2TRANSF_ENCR_AES_CCM_12 ||
-		    ae == IKEV2TRANSF_ENCR_AES_CCM_16)
+		if (ikev2_encr_is_aead(ae))
 			return 1;
 	}
 	return 0;

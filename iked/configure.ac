@@ -261,7 +261,6 @@ AC_ARG_ENABLE(keymat-oracle,
 if test x"$keymat_oracle" = xyes; then
 	AC_DEFINE(WITH_KEYMAT_ORACLE, 1, [define to emit child KEYMAT sha256 debug hashes])
 fi
-AM_CONDITIONAL([KEYMAT_ORACLE], [test x"$keymat_oracle" = xyes])
 
 AC_ARG_WITH(openssl-provider,
 	[  --with-openssl-provider=NAME

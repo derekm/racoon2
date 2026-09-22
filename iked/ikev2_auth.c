@@ -220,6 +220,14 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 		if (!sa->intauth_i || !sa->intauth_r)
 			goto fail_intauth;
 
+		/* RFC 9242 s3.3.2: IKE_AUTH_MID = the Message ID the IKE_AUTH
+		 * exchange actually runs under ("exactly as it appears on the
+		 * wire").  intermediate_rounds + 1 is that value for the current
+		 * single-round IKE_INTERMEDIATE (each round consumes exactly one
+		 * request msgid; IKE_SA_INIT=0, round-1 request=1, AUTH=2) --
+		 * it is NOT an arbitrary counter and must keep tracking the real
+		 * AUTH msgid if multi-round / card AUTH msgid allocation ever
+		 * changes (see ikev2_check_message_ordering / send_message_id). */
 		put_uint32((uint8_t *)midb, (uint32_t)(sa->intermediate_rounds + 1));
 		ia = rc_vmalloc(sa->intauth_i->l + sa->intauth_r->l + 4);
 		if (!ia)
