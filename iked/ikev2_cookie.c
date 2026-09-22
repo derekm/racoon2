@@ -152,19 +152,36 @@ ikev2_retransmit_add_cookie(struct ikev2_sa *ike_sa,
 	if (ikehdr->next_payload == IKEV2_PAYLOAD_NOTIFY
 	    && get_notify_type((struct ikev2payl_notify *)first_payload) ==
 	    IKEV2_COOKIE) {
-		/* remove old cookie */
+		/* remove old cookie.  The move count is the payload
+		 * AFTER the cookie notify, i.e. message length minus the
+		 * 28-byte header minus the notify payload; the pre-2026
+		 * code subtracted only the notify length and moved the
+		 * count 28 bytes past the end of the message (heap
+		 * over-read, and a heap *write* past the buffer for
+		 * cookie notifies shorter than the header). */
 		size_t first_payload_length = get_payload_length(first_payload);
+		uint32_t msg_len = get_uint32(&ikehdr->length);
+
 		ikehdr->next_payload = first_payload->next_payload;
+		if (msg_len < sizeof(struct ikev2_header) + first_payload_length) {
+			plog(PLOG_PROTOERR, PLOGLOC, 0,
+			     "cookie retransmit: message length %u shorter than header+notify %zu; not retransmitting\n",
+			     msg_len, sizeof(struct ikev2_header) + first_payload_length);
+			return;
+		}
 		memmove(first_payload,
 			((uint8_t *)first_payload) + first_payload_length,
-			get_uint32(&ikehdr->length) - first_payload_length);
-		put_uint32(&ikehdr->length,
-			   get_uint32(&ikehdr->length) - first_payload_length);
+			msg_len - sizeof(struct ikev2_header) - first_payload_length);
+		put_uint32(&ikehdr->length, msg_len - first_payload_length);
 	}
 
 	packet_len = get_uint32(&ikehdr->length);
 	cookie_notify_len = get_payload_length(notify);
 	if (!rc_vrealloc(packet, packet_len + cookie_notify_len)) {
+		/* rc_vrealloc leaves the original vmbuf intact on
+		 * failure (lib/vmbuf.c): free it before dropping the
+		 * pointer, or the cookie message leaks here. */
+		rc_vfree(packet);
 		ike_sa->my_first_message = 0;
 		goto fail_nomem;
 	}

@@ -1037,24 +1037,30 @@ isakmp_handler(int so_isakmp)
 #ifdef ENABLE_NATT
 	/*
 	 * we don't know about portchange yet,
-	 * look for non-esp marker instead
+	 * look for non-esp marker instead.
+	 * RFC 3948: the marker is four zero octets, and an ESP SPI
+	 * cannot be all-zero (RFC 4303), so a zero lead word selects the
+	 * IKE-with-marker path unambiguously.  The pre-2026 test also
+	 * required the second word non-zero, which (a) failed to strip a
+	 * real marker followed by an all-zero half-SPI and (b)
+	 * mis-stripped ESP packets whose SPI high word is zero.
+	 * Guard on the peeked length so a sub-4-byte datagram is never
+	 * classified from uninitialized peek-buffer bytes.
 	 */
-	if (x.non_esp[0] == 0 && x.non_esp[1] != 0) {
+	if (len >= (int)sizeof(uint32_t) && x.non_esp[0] == 0) {
 		extralen = NON_ESP_MARKER_LEN;
 	}
 #endif
 
-	/*
-	 * now we know if there is an extra non-esp
-	 * marker at the beginning or not
-	 */
-	memcpy((char *)&isakmp, x.buf + extralen, sizeof(isakmp));
-
-	/* check isakmp header length, as well as sanity of header length */
-	if ((size_t)len < sizeof(isakmp)) {
+	/* check isakmp header length, as well as sanity of header
+	 * length.  Do this BEFORE the header copy: with a marker
+	 * stripped a valid message needs sizeof(isakmp)+extralen bytes,
+	 * and copying from unread peek-buffer bytes would put garbage in
+	 * the length field and make the alloc below follow it. */
+	if ((size_t)len < sizeof(isakmp) + extralen) {
 		plog(PLOG_PROTOERR, PLOGLOC, 0,
-		     "packet (%d) shorter than isakmp header size.\n",
-		     len);
+		     "packet (%d) shorter than isakmp header size. (%zu+%d)\n",
+		     len, sizeof(isakmp), extralen);
 		++isakmpstat.shortpacket;
 	dummy_receive:
 		/* dummy receive */
@@ -1067,6 +1073,7 @@ isakmp_handler(int so_isakmp)
 		}
 		goto end;
 	}
+	memcpy((char *)&isakmp, x.buf + extralen, sizeof(isakmp));
 	if (ntohl(isakmp.len) < sizeof(isakmp)) {
 		plog(PLOG_PROTOERR, PLOGLOC, 0,
 		     "ISAKMP message length field value (%u) too small\n",
