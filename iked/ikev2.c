@@ -8037,7 +8037,16 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	intermediate_finish_round(sa);
 	if (ikev2_intermediate_update_keys(sa, ss) != 0) {
 		rc_vfree(ss);
-		goto drop;
+		/* The response was already sent (still gen-0).  Failing the
+		 * key update here MUST close the SA: leaving it up would
+		 * desync it (peer advances to gen-1 on the response it
+		 * already holds while we stay on gen-0, and recv_message_id
+		 * was never advanced, so a retransmit would be re-processed
+		 * as a brand-new round).  Fail closed, never drop. */
+		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: responder key update failed, aborting\n");
+		ikev2_abort(sa, ECONNREFUSED);
+		return;
 	}
 	rc_vfree(ss);
 	/* RFC 9242 s3.2: AUTH msgid = last intermediate + 1.  The responder
