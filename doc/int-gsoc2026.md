@@ -31,7 +31,7 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
   (2026-09-14: 10:50 lib + 21:17 iked, duplicate journal lines until
   lib was reinstalled). If a per-dir install is ever done, `lib` must
   go first: `make -C lib install && make -C iked install`.
-- Restart the service after install: `systemctl restart racoon2-iked`.
+- Restart the service after install: `systemctl restart iked` (unit is `iked.service`, not `racoon2-iked`).
 - Verify the running binary actually has the change:
   `md5sum /usr/local/racoon2/lib/libracoon.so.0.0.0
   /mnt/.../racoon2/lib/.libs/libracoon.so.0.0.0` must match (same for
@@ -65,9 +65,9 @@ re-verify on the new Fedora server.
   s2.2.4), not the shared secret.  The initiator can now offer type-6 on its
   IKE_SA-rekey (addke_unrequested), keygen, send the followup request, and
   complete SK(1).  Build + `make check` green (addketest/addkekat, FAIL 0);
-  child-rekey ADDKE regression green.  **Still not end-to-end matrix-proven:**
-  driving an IKE_SA rekey needs the `ike_sa_rekey` hook in the harness, which
-  is not wired yet — so the IKE_SA-rekey ADDKE completion is not claimed proven.
+  child-rekey ADDKE regression green.  **IKE_SA-rekey ADDKE is end-to-end
+  matrix-proven** as `i2ikesa-addke` (both sides log the same SK(1) SKEYSEED
+  after the followup; see below).
 - Independent pin: `addkekat` replays NIST FIPS 203 KATs — **20/20** shipped,
   **1000/1000** full file, suite **7/7**; log in `doc/kattest-results.txt`.
 - Full write-up: `doc/addke-design.md` (inventory, gaps, decision criteria).
@@ -121,7 +121,7 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
      strongSwan/charon** — install it, or add iked↔iked (charonless) rows.
   3. Add matrix rows: `ikev2-netns-addke` (charon mlkem768 vs racoon2
      `esp_addke_alg` responder, child-rekey ADDKE e2e), then `ikev2-netns-int`
-     once 9242 lands.
+     (`i2iinit-addke` landed 2026-09-19 once 9242 landed).
 - **ADDKE matrix peer decision (2026-09-18): iked↔iked, not charon.** Every
   available strongSwan lacks ML-KEM: WSL Ubuntu charon 5.9.13 (no ML-KEM), and
   Fedora RPM strongSwan 6.0.7 (`/usr/libexec/strongswan/charon` has zero

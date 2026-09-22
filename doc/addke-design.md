@@ -1,9 +1,8 @@
 # RFC 9370 ADDKE / ML-KEM (PQC) in racoon2 — design note & validation
 
-Status: **implemented & config-gated; deployed; one live event un-proven**
-Branch: `int/gsoc2026`  ·  Last runtime commit: `16372b2` (`9f0f71a` adds the
-KAT harness only — a test TU, not linked into `iked`; the deployed binary is
-byte-identical at runtime).
+Status: **implemented & config-gated; matrix-proven on the Fedora box**
+Branch: `int/gsoc2026` (this file is a design/status note, not a commit pin —
+check `git log` for the current HEAD of the implemented code).
 
 ## What this is
 
@@ -62,10 +61,13 @@ Not implemented (honest list — do not claim these):
   when RFC 7383 fragmentation is negotiated (`ike_sa->frag_supported`, set on
   the FRAGMENTATION_SUPPORTED (16430) notify).  A fragmented followup over a
   small MTU is already handled.  Removed as a gap on 2026-09-18 after code check.
-- **IKE_INTERMEDIATE** (RFC 9242) and INIT-time PQC — no IKE_AUTH early keys,
-  no hybrid at IKE_SA_INIT. PQC today rides only on CREATE_CHILD / child rekey.
-- **Initiator IKE_SA-rekey ADDKE** (racoon2 as initiator driving an IKE_SA rekey
-  that itself negotiates ADDKE). Responder feed is in; the initiator side is not.
+- **IKE_INTERMEDIATE** (RFC 9242) and INIT-time PQC carry the single pre-AUTH
+  ML-KEM round on the initial IKE_SA (exch 43 + N(16438)); matrix row
+  `i2iinit-addke` proves the same intermediate SKEYSEED on both sides.
+  One round only — ADDKE rounds 2+ are not implemented.
+- **IKE_SA-rekey ADDKE on both roles** — matrix row `i2ikesa-addke` proves
+  racoon2-as-initiator driving an IKE_SA rekey that negotiates ADDKE and
+  completes SK(1) via IKE_FOLLOWUP_KE.
 
 ## Independent test vector pin (roadmap item 7)
 
@@ -102,9 +104,9 @@ Ubuntu/WSL `--enable-addke`-off path stays 5/5 with no new TU.
   `/usr/local/racoon2/etc/racoon2/macos_ikev2.conf` (the peer include), all four
   `sa_protocol esp` blocks — i.e. ADDKE is **already enabled permanently**.
   `.pre-addke` backup is the no-type-6 variant.
-- **Binary**: `/usr/local/racoon2/sbin/iked` installed at commit `16372b2`,
-  and it is the current runtime (the only post-16372b2 commits are the KAT test
-  TU + a comment; neither links into `iked`). Built `--with-km-backend=xfrm
+- **Binary**: `/usr/local/racoon2/sbin/iked` — the prod responder is kept at
+  the current committed build (rebuilt from HEAD when deployed; check the
+  installed binary mtime/hash, not this file). Built `--with-km-backend=xfrm
   --enable-pcap --enable-addke`; `WITH_ADDKE` confirmed via symbols
   (`ikev2_followup_ke_recv`, `ikev2_child_addke_install`,
   `ikev2_rekey_responder_addke_complete` present).

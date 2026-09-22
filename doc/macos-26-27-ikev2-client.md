@@ -54,12 +54,12 @@ macOS 26 Tahoe **removed** from the built-in IPsec stack: DES, 3DES, SHA1-96, SH
 
 Apple IKE SA payload defaults (MDM `IKESecurityAssociationParameters` when the profile omits overrides):
 
-- Encryption: `AES-256` (CBC). `AES-256-GCM` is allowed; **iked cannot do IKE GCM** (no RFC 5282). If a profile forces IKE GCM, the SA will not match.
+- Encryption: `AES-256` (CBC). `AES-256-GCM` is supported — **iked implements IKE AES-GCM (RFC 5282)**; the responder offers AEAD (GCM) first so the RFC 9242 intermediate round is possible (IntAuth_A is only deterministic for AEAD).
 - Integrity: `SHA2-256`
 - DH: `14` (modp2048). Groups `1,2,5` gone on 26+. Group **19** (ECP256) is implemented here (RFC 5903) and accepted from Apple clients — `kmp_dh_group { ecp256; ... }` in the sample config offers it first. If the Mac proposes only 19, this responder negotiates 19 instead of failing.
 - Child SA: prefer ESP AES-GCM-16 here; CBC+SHA2-256 is the fallback.
 
-macOS 26+ MDM can set `Post Quantum Key Exchange Methods` (RFC 9370 ADDKE1–7) and RFC 8784 PPK. **Not implemented** in this racoon2 tree. Leave those keys unset on the client.
+macOS 26+ MDM can set `Post Quantum Key Exchange Methods` (RFC 9370 ADDKE1–7) and RFC 8784 PPK. **RFC 9370 ADDKE is implemented** (type-6, ML-KEM-768 via OpenSSL 3.5; one IKE_INTERMEDIATE round on the IKE_SA, type-6 on rekey) — a Mac offering ADDKE/ML-KEM negotiates hybrid here. **RFC 8784 PPK is NOT implemented**; leave PPK unset on the client until it lands.
 
 macOS 27 MDM adds `Network Routing` on the IKEv2 declaration. Manual Settings UI is not expected to expose it. Ignore until a 27 client is in hand.
 
@@ -67,7 +67,7 @@ Do **not** use L2TP/IPsec on 26/27 against this box. The L2TP UI may still exist
 
 ## What this first install will not do
 
-- IKE AES-GCM, ML-KEM / RFC 9370 (DH19/ECP256 **is** supported — RFC 5903, live since 2026-09-08)
+- IKE AES-GCM (RFC 5282) and RFC 9370 ML-KEM hybrid — both **implemented** (one IKE_INTERMEDIATE round; see `macos_ikev2.conf`). Not yet: RFC 8784 PPK, ADDKE rounds 2-7, EAP.
 - IPv6-in-IPv4
 - Host reboot not measured. Dump is StateDirectory (`/var/lib/racoon2/resume`); kernel ESP still dies. iked restart with a live IKE_SA kept the iPhone Connected 2026-09-08.
 
