@@ -53,6 +53,7 @@ ikev2_intermediate_clear(struct ikev2_sa *sa)
 {
 	if (!sa)
 		return;
+	ikev2_intermediate_clear_replay(sa);
 	rc_vfreez(sa->intauth_i);
 	sa->intauth_i = 0;
 	rc_vfreez(sa->intauth_r);
@@ -67,12 +68,25 @@ ikev2_intermediate_clear(struct ikev2_sa *sa)
 	sa->prev_sk_a_r = 0;
 	rc_vfreez(sa->prev_sk_e_r);
 	sa->prev_sk_e_r = 0;
-	rc_vfreez(sa->intermediate_replay);
-	sa->intermediate_replay = 0;
 	if (sa->intermediate_priv) {
 		EVP_PKEY_free((EVP_PKEY *)sa->intermediate_priv);
 		sa->intermediate_priv = 0;
 	}
+}
+
+/* Drop only the gen-0 response replay cache.  Called once IKE_AUTH is
+ * accepted (the RFC 9242 window is over); unlike ikev2_intermediate_clear
+ * it does NOT drop the retained prev-gen receive keys, which the classical
+ * (non-AEAD) gen-rolled retransmit path ikev2_check_icv_prev_gen() still
+ * needs until dispose. */
+void
+ikev2_intermediate_clear_replay(struct ikev2_sa *sa)
+{
+	if (!sa)
+		return;
+	rc_vfreez(sa->intermediate_replay);
+	sa->intermediate_replay = 0;
+	sa->intermediate_replay_msgid = 0;
 }
 
 #endif /* WITH_INTERMEDIATE */

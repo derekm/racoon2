@@ -743,6 +743,23 @@ ikev2_replay_intermediate_response(struct ikev2_sa *ike_sa)
 	sock = isakmp_find_socket(ike_sa->local);
 	if (sock == -1)
 		return;
+#ifdef ENABLE_NATT
+	/* A replayed response over UDP/4500 needs the RFC 3948 non-ESP
+	 * marker, exactly like the other send paths.  Use a copy so the
+	 * pristine gen-0 cache survives for further retransmits. */
+	if (natt_check_udp_encap(ike_sa->remote, ike_sa->local) > 0) {
+	    rc_vchar_t *mark = natt_set_non_esp_marker(
+		rc_vdup(ike_sa->intermediate_replay));
+	    if (!mark)
+		return;
+	    if (sendfromto(sock, mark->v, mark->l, ike_sa->local,
+			   ike_sa->remote, 1) == -1) {
+		rc_vfree(mark);
+		return;
+	    }
+	    rc_vfree(mark);
+	} else
+#endif
 	if (sendfromto(sock, ike_sa->intermediate_replay->v,
 		       ike_sa->intermediate_replay->l,
 		       ike_sa->local, ike_sa->remote, 1) == -1)
@@ -814,7 +831,17 @@ ikev2_update_message_id(struct ikev2_sa *ike_sa, uint32_t message_id,
 	} else {
 		TRACE((PLOGLOC, "update request message_id 0x%x\n",
 		       message_id));
-		assert(ike_sa->recv_message_id == message_id);
+		/* Fragmented messages skip ikev2_check_message_ordering()
+		 * (they are dispatched straight after reassembly), so an
+		 * out-of-order/duplicate fragmented request can reach here
+		 * with a stale id.  That must NOT abort the daemon: drop it
+		 * and leave recv_message_id untouched (review R2). */
+		if (ike_sa->recv_message_id != message_id) {
+			plog(PLOG_PROTOERR, PLOGLOC, NULL,
+			     "update_message_id: request id %u != expected %u; dropping (unordered) request\n",
+			     message_id, ike_sa->recv_message_id);
+			return;
+		}
 		if (ike_sa->recv_message_id == 0xFFFFFFFF) {
 			isakmp_log(ike_sa, 0, 0, 0,
 			    PLOG_PROTOERR, PLOGLOC,
@@ -859,13 +886,37 @@ ikev2_transmit(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 		rc_vchar_t *whole = rc_vdup(packet);
 		if (ikev2_frag_send(ike_sa, &packet) == 0) {
 		    if (whole) {
-			int r = isakmp_schedule_retransmit(&ike_sa->transmit_info,
-							  whole, ike_sa->local,
-							  ike_sa->remote);
-			isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-				   "RT-ARM: fragmented transmitted, retransmit armed (ret=%d)\n",
-				   r);
+#ifdef ENABLE_NATT
+			/* The retransmit below re-sends `whole` as one datagram;
+			 * on a NAT-T (4500) path that datagram too needs the
+			 * RFC 3948 non-ESP marker.  Bake it in now so the raw
+			 * send in isakmp_retransmit stays well-formed. */
+			if (natt_check_udp_encap(ike_sa->remote,
+						 ike_sa->local) > 0) {
+			    rc_vchar_t *mark = natt_set_non_esp_marker(whole);
+			    if (mark)
+				whole = mark;
+			    else
+				rc_vfree(whole), whole = 0;
+			}
+#endif
+			if (whole) {
+			    int r = isakmp_schedule_retransmit(
+				&ike_sa->transmit_info, whole, ike_sa->local,
+				ike_sa->remote);
+			    /* A fragmented request that cannot be retransmitted
+			     * leaves the SA with NO lost-message recovery during
+			     * the window: a lost reply would deadlock it.  The
+			     * packet is already on the wire, so fail loud rather
+			     * than pretend recovery is armed. */
+			    if (r != 0)
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+					   "RT-ARM: FAILED to arm fragmented-request retransmit (ret=%d): lost-message recovery disabled for this exchange\n",
+					   r);
+			}
 		    } else {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				   "RT-ARM: rc_vdup failed, no retransmit copy kept: lost-message recovery disabled for this exchange\n");
 			rc_vfree(whole);
 		    }
 		    return 0;	/* packet was fragmented and sent */
@@ -1025,6 +1076,14 @@ ikev2_set_state(struct ikev2_sa *sa, int state)
 	}
 	if (prev_state != IKEV2_STATE_ESTABLISHED &&
 	    state == IKEV2_STATE_ESTABLISHED) {
+		/* The IKE_INTERMEDIATE window is over once IKE_AUTH is
+		 * accepted: a retransmitted intermediate request can no
+		 * longer occur legitimately.  Drop the gen-0 response
+		 * cache so it is not retained (and cannot be triggered as
+		 * a stale replay/amplifier) for the life of the SA. */
+#ifdef WITH_INTERMEDIATE
+		ikev2_intermediate_clear_replay(sa);
+#endif
 		ikev2_sa_stop_timer(sa);
 		ikev2_sa_start_lifetime_timer(sa);
 		ikev2_sa_start_polling_timer(sa);

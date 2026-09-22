@@ -582,6 +582,7 @@ extern void ikev2_sa_delete(struct ikev2_sa *);
 extern void ikev2_dispose_sa(struct ikev2_sa *);
 #ifdef WITH_INTERMEDIATE
 extern void ikev2_intermediate_clear(struct ikev2_sa *);
+extern void ikev2_intermediate_clear_replay(struct ikev2_sa *);
 #endif
 extern void ikev2_shutdown(void);
 extern void ikev2_initial_contact(struct ikev2_sa *);

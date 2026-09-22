@@ -64,6 +64,7 @@
 #include "ikev2_impl.h"
 #include "sockmisc.h"
 #include "encryptor.h"
+#include "nattraversal.h"
 
 #include "debug.h"
 
@@ -294,6 +295,19 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 			rc_vfree(auth_output);
 			auth_output = NULL;
 		}
+
+		/* Each UDP datagram carrying an IKEv2 fragment over
+		 * UDP/4500 must start with the RFC 3948 non-ESP marker
+		 * (4 zero octets); mirror isakmp_transmit_noretry here.
+		 * Without it a fragmented IKE message (e.g. an ML-KEM
+		 * IKE_FOLLOWUP_KE) to a NAT-T peer is unparseable. */
+#ifdef ENABLE_NATT
+		if (natt_check_udp_encap(ike_sa->remote, ike_sa->local) > 0) {
+			frag_pkt = natt_set_non_esp_marker(frag_pkt);
+			if (!frag_pkt)
+				goto fail;
+		}
+#endif
 
 		/* Send the fragment */
 		if (sendfromto(sock, frag_pkt->v, frag_pkt->l,
