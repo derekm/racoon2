@@ -6582,15 +6582,19 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 		/* RFC 9370: record the SELECTED ADDKE method from the matched
 		 * peer proposal only.  isakmp_find_match already decided it and
 		 * stamped the ACCEPTED peer p_no (isakmp.c found_match, MINE
-		 * case) into matched_proposal->prop->p_no (1-based), so
-		 * peer_proposal[p_no-1] is that proposal.  A type-6 on a
+		 * case) into matched_proposal->prop->p_no (1-based).  CRITICAL:
+		 * peer_proposal[] is indexed by prop->p_no DIRECTLY (1-based,
+		 * from isakmp_parse_proposal); slot 0 is always the NULL
+		 * sentinel.  peer_proposal[_pno-1] would read slot 0 for the
+		 * first proposal and lose type-6 (regression: classical SAr1,
+		 * no 16438 echo, no IKE_INTERMEDIATE round).  A type-6 on a
 		 * NON-matched proposal must never seed result->addke -- it
 		 * would grow SAr1 a type-6 the match never selected. */
 		if (matched_proposal) {
 			unsigned int _pno = matched_proposal->prop->p_no;
-			if (_pno >= 1 && _pno <= MAXPROPPAIRLEN) {
+			if (_pno >= 1 && _pno < MAXPROPPAIRLEN) {
 				struct prop_pair *mp = peer_proposal ?
-				    peer_proposal[_pno - 1] : NULL;
+				    peer_proposal[_pno] : NULL;
 				struct prop_pair *tr;
 				for (tr = mp ? mp->tnext : NULL; tr; tr = tr->next) {
 					struct ikev2transform *t =
