@@ -221,10 +221,15 @@ Currently, the system supports the following specifications:
 	RFC 7296 §2.8 IKE_SA rekey is in code (soft lifetime + responder
 	CREATE_CHILD with IKE proposal). Matrix row is a log grep.
 
-	Not implemented in this tree yet: RFC 9242 (IKE_INTERMEDIATE),
-	RFC 9370 (multiple key exchanges / ADDKE), RFC 8784 PPK —
-	8784 is the next protocol item; 9242/9370 gate on it plus an
-	OpenSSL 3.5+/OQS ML-KEM provider.
+	Implemented: RFC 9242 (IKE_INTERMEDIATE) and RFC 9370 (ADDKE /
+	multiple key exchanges) via OpenSSL 3.5's native `<openssl/ml_kem.h>`
+	(ML-KEM-768), a single pre-IKE_AUTH intermediate round on the initial
+	IKE_SA plus type-6 ADDKE on IKE_SA and CHILD rekeys, and RFC 9242
+	IntAuth_A into IKE_AUTH. Netns matrix (`samples/linux-matrix`, rows
+	`i2ike-addke` / `i2ikesa-addke` / `i2iinit-addke`) proves it
+	iked<->iked. Not implemented yet: RFC 8784 PPK (next protocol item),
+	EAP, ADDKE rounds 2+, and a non-racoon2 ML-KEM peer for cross-implementation
+	interop.
 
 	Partial statuses (scope beyond the supported core):
 	RFC 7296 — IKEv2 EAP (section 2.16) absent until the AAA item;
