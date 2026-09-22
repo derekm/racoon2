@@ -559,10 +559,19 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 					   "malformed payload format\n");
 				++isakmpstat.malformed_payload;
 				goto end;
-			}
-		}
+				}
+				}
 
-		/* (draft-17)
+				/* A reassembled SKF request skipped ICV/ordering/retransmit_forced
+			* above.  If it is a retransmission of a request we already
+			* answered, replay response_info and do not re-enter the handler
+			* (that path answers STATE_NOT_FOUND / mints a second child once
+			* the original exchange has completed). */
+			if (reassembled &&
+			ikev2_retransmit_forced(ike_sa, message_id, is_response) != 0)
+			goto end;
+
+			/* (draft-17)
 		 * Receipt of a fresh cryptographically protected message on an IKE_SA
 		 * or any of its CHILD_SAs assures liveness of the IKE_SA and all of its
 		 * CHILD_SAs.
@@ -948,19 +957,62 @@ ikev2_transmit_response(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	       ike_sa, packet, (int)packet->l));
 
 	if (ike_sa->frag_supported) {
+	    int over;
+	    rc_vchar_t *cached = 0;
+
 	    if (SOCKADDR_FAMILY(ike_sa->remote) == AF_INET)
-	    {
-		if (packet->l >= IPV4_MAX_FRAGMENT_SIZE)
-		    if (ikev2_frag_send(ike_sa, &packet) == 0)
-			return 0;	/* packet was fragmented and sent */
-	    }
+		over = (packet->l >= IPV4_MAX_FRAGMENT_SIZE);
 	    else
-	    {
-		if (packet->l >= IPV6_MAX_FRAGMENT_SIZE)
-		    if (ikev2_frag_send(ike_sa, &packet) == 0)
-			return 0;
+		over = (packet->l >= IPV6_MAX_FRAGMENT_SIZE);
+	    if (over) {
+		/* Keep the pre-fragment response so a retransmitted
+		 * request (SKF or not) replays THIS response, not the
+		 * previous non-fragmented one.  isakmp_force_retransmit
+		 * sends the cache raw, so bake the RFC 3948 marker in
+		 * now when the peer is on UDP/4500. */
+		cached = rc_vdup(packet);
+#ifdef ENABLE_NATT
+		if (cached &&
+		    natt_check_udp_encap(remote, local) > 0) {
+		    rc_vchar_t *mark = natt_set_non_esp_marker(cached);
+		    if (mark)
+			cached = mark;
+		    else {
+			rc_vfree(cached);
+			cached = 0;
+		    }
+		}
+#endif
+		if (ikev2_frag_send(ike_sa, &packet) == 0) {
+		    info = &ike_sa->response_info;
+		    if (info->packet)
+			rc_vfree(info->packet);
+		    info->packet = cached;
+		    cached = 0;
+		    if (info->src)
+			rc_free(info->src);
+		    if (info->dest)
+			rc_free(info->dest);
+		    info->src = rcs_sadup(local);
+		    info->dest = rcs_sadup(remote);
+		    if (!info->src || !info->dest) {
+			if (info->src)
+			    rc_free(info->src);
+			if (info->dest)
+			    rc_free(info->dest);
+			info->src = info->dest = 0;
+			if (info->packet)
+			    rc_vfree(info->packet);
+			info->packet = 0;
+		    } else {
+			gettimeofday(&info->sent_time, 0);
+		    }
+		    return 0;
+		}
+		if (cached)
+		    rc_vfree(cached);
 	    }
-		/* fragmentation not needed or failed, send original */
+	    /* fragmentation not needed or failed before any send */
 	}
 
 	if (packet->l > IKEV2_SHOULD_SUPPORT_PACKET_SIZE) {

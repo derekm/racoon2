@@ -63,10 +63,11 @@ so bison/flex regenerate, and prove a scratch config parses at runtime.
    fragment (`samples/linux-matrix/kinds/i2iinit_drop.sh`, 80%→5% loss,
    bounded 4 retries, gate = `nreplay>=1`). A pass with no marker proves
    nothing.
-3. Do **not** export `IKE_INTERMEDIATE` as a topic until: replay cache is
-   cleared on AUTH-accept (done), the fragment/retransmit marker fix is in
-   (done), and a deterministic 576-MTU fragment-aware kill test exists (TODO —
-   the current test runs at veth MTU 1500).
+3. Fragmented **responses** (FOLLOWUP, large AUTH, large CREATE_CHILD) are
+   cached in `response_info` before `ikev2_frag_send`, and a reassembled
+   SKF retransmission replays that cache instead of re-entering the handler.
+   That is not an intermediate-only gap. A 576-MTU kill test that drops a
+   FOLLOWUP fragment is still TODO — `i2iinit-drop` runs at veth MTU 1500.
 
 ## Vendor-parity roadmap (in order — do not start 8784 on the old carrier)
 

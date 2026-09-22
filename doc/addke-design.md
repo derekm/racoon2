@@ -150,14 +150,15 @@ rekey** (above) — until one is observed end-to-end on a crash-free daemon,
 is not a live proof. That single event, plus a clean multi-rekey soak, closes
 item 8.
 
-## Roadmap (after the rekey lands clean / soak passes)
+## Roadmap (remaining, not the landed path)
 
-1. **Initiator IKE-SA-rekey ADDKE** — close the responder-only IKE-rekey feed gap
-   (small, high-urgency; the responder side is already in).
-2. **Initiator PQC everywhere** — INIT-time / IKE_INTERMEDIATE hybrid so PQC does
-   not wait for the first child rekey.
-3. **IKE_INTERMEDIATE** (RFC 9242) + outbound FOLLOWUP_KE fragmentation — finish
-   the "PQC everywhere" half and remove the unfragmented-followup MTU limit.
+1. **ADDKE rounds 2-7** as config. One ML-KEM round is implemented and
+   matrix-proven (`i2iinit-addke`, `i2ikesa-addke`, `i2ike-addke`).
+2. **RFC 8784 PPK** mixed into SKEYSEED. Not started.
+3. A non-racoon2 ML-KEM peer (strongSwan 6.0+ built with ML-KEM).
+4. Fragmented-response loss recovery is now cached in `response_info`
+   (not intermediate-only). A 576-MTU kill test that drops a FOLLOWUP
+   fragment and gates on the replay is still TODO.
 
 ## Dependencies & reproducible proof
 

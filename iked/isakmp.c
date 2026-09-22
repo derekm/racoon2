@@ -2159,6 +2159,22 @@ int
 isakmp_schedule_retransmit(struct transmit_info *info, rc_vchar_t *pkt,
 			   struct sockaddr *src, struct sockaddr *dest)
 {
+	struct sockaddr *nsrc, *ndest;
+
+	/* Own private copies.  transmit_info outlives the call (the timer
+	 * fires later), and ikev2_mobike_apply() frees ike_sa->local/remote
+	 * on a roam.  Borrowing those pointers is a use-after-free on the
+	 * next retransmit — the response path already dups for this reason. */
+	nsrc = rcs_sadup(src);
+	ndest = rcs_sadup(dest);
+	if (!nsrc || !ndest) {
+		if (nsrc)
+			rc_free(nsrc);
+		if (ndest)
+			rc_free(ndest);
+		return -1;
+	}
+
 	if (info->timer)
 		SCHED_KILL(info->timer);
 
@@ -2167,10 +2183,14 @@ isakmp_schedule_retransmit(struct transmit_info *info, rc_vchar_t *pkt,
 
 	if (info->packet)
 		rc_vfree(info->packet);
+	if (info->src)
+		rc_free(info->src);
+	if (info->dest)
+		rc_free(info->dest);
 
 	info->packet = pkt;	/* *info owns pkt */
-	info->src = src;
-	info->dest = dest;
+	info->src = nsrc;
+	info->dest = ndest;
 
 	info->timer =
 		sched_new(retransmit_interval[info->retry_count] *
@@ -2179,7 +2199,10 @@ isakmp_schedule_retransmit(struct transmit_info *info, rc_vchar_t *pkt,
 	if (!info->timer) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "failed to allocate retransmission timer\n");
-		info->packet = 0;
+		info->packet = 0;	/* caller still owns pkt */
+		rc_free(info->src);
+		rc_free(info->dest);
+		info->src = info->dest = 0;
 		return -1;
 	}
 

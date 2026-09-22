@@ -95,8 +95,14 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 	rc_vchar_t *ivbuf = NULL;
 	rc_vchar_t *orig = NULL;
 	rc_vchar_t *work = NULL;
+	rc_vchar_t *chunk_plain = NULL;
+	rc_vchar_t *encrypted = NULL;
+	rc_vchar_t *skf_payload = NULL;
+	rc_vchar_t *frag_pkt = NULL;
+	rc_vchar_t *auth_output = NULL;
 	uint8_t *d;
 	int total_frags, frag_no;
+	int sent_any = 0;
 	size_t frag_threshold;
 	size_t chunk_max;
 	size_t overhead;
@@ -209,14 +215,11 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 		size_t offset = (size_t)(frag_no - 1) * chunk_max;
 		size_t this_chunk = (frag_no < total_frags) ?
 				    chunk_max : (decrypted_len - offset);
-		rc_vchar_t *chunk_plain = NULL;
-		rc_vchar_t *encrypted = NULL;
-		rc_vchar_t *skf_payload = NULL;
-		rc_vchar_t *frag_pkt = NULL;
-		rc_vchar_t *auth_output = NULL;
 		struct ikev2payl_encrypted_fragment skf;
 		struct ikev2_header frag_hdr;
 		uint8_t *icv_ptr;
+
+		chunk_plain = encrypted = skf_payload = frag_pkt = auth_output = NULL;
 
 		chunk_plain = rc_vmalloc(this_chunk);
 		if (!chunk_plain)
@@ -303,9 +306,10 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 		 * IKE_FOLLOWUP_KE) to a NAT-T peer is unparseable. */
 #ifdef ENABLE_NATT
 		if (natt_check_udp_encap(ike_sa->remote, ike_sa->local) > 0) {
-			frag_pkt = natt_set_non_esp_marker(frag_pkt);
-			if (!frag_pkt)
+			rc_vchar_t *marked = natt_set_non_esp_marker(frag_pkt);
+			if (!marked)
 				goto fail;
+			frag_pkt = marked;
 		}
 #endif
 
@@ -316,6 +320,7 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 			     "ikev2_frag_send: sendfromto failed "
 			     "(frag %d/%d)\n", frag_no, total_frags);
 			rc_vfree(frag_pkt);
+			frag_pkt = NULL;
 			goto fail;
 		}
 
@@ -327,6 +332,7 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 		skf_payload = NULL;
 		rc_vfree(frag_pkt);
 		frag_pkt = NULL;
+		sent_any = 1;
 	}
 
 	/* Success - consume the original packet */
@@ -339,6 +345,16 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 	return 0;
 
 fail:
+	if (chunk_plain)
+		rc_vfree(chunk_plain);
+	if (encrypted)
+		rc_vfree(encrypted);
+	if (skf_payload)
+		rc_vfree(skf_payload);
+	if (frag_pkt)
+		rc_vfree(frag_pkt);
+	if (auth_output)
+		rc_vfree(auth_output);
 	if (work)
 		rc_vfree(work);
 	if (ivbuf)
@@ -347,6 +363,13 @@ fail:
 		rc_vfree(orig);
 	if (decrypted)
 		rc_vfree(decrypted);
+	/* A later fragment failed after earlier ones were already on the
+	 * wire.  Do not let the caller also send the original datagram. */
+	if (sent_any && packet && *packet) {
+		rc_vfree(*packet);
+		*packet = NULL;
+		return 0;
+	}
 	plog(PLOG_INTERR, PLOGLOC, NULL,
 	     "ikev2_frag_send: fragmentation failed\n");
 	return -1;
@@ -785,6 +808,20 @@ fail:
 		item->parts[frag_no] = NULL;
 		item->num_received--;
 		item->total_data_len -= data_len;
+	}
+	/* A decrypt/tag failure on a just-created assembly leaves an empty
+	 * item on frag_chain.  Four such SKFs (cleartext SPI, distinct
+	 * msgids) would evict a real in-progress ML-KEM assembly.  Drop
+	 * the empty item. */
+	if (item && item->num_received == 0 && ike_sa) {
+		struct ikev2_frag_item **pp = &ike_sa->frag_chain;
+
+		while (*pp && *pp != item)
+			pp = &(*pp)->next;
+		if (*pp == item) {
+			*pp = item->next;
+			ikev2_frag_item_free(item);
+		}
 	}
 	return NULL;
 }

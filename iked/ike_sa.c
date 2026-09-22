@@ -1137,6 +1137,10 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		rc_vfree(sa->transmit_info.packet);
 	if (sa->transmit_info.timer)
 		SCHED_KILL(sa->transmit_info.timer);
+	if (sa->transmit_info.src)
+		rc_free(sa->transmit_info.src);
+	if (sa->transmit_info.dest)
+		rc_free(sa->transmit_info.dest);
 	if (sa->response_info.packet)
 		rc_vfree(sa->response_info.packet);
 	if (sa->response_info.timer)

@@ -144,8 +144,8 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   `ikev2_decrypt_local`, key-direction fix `00d671d`) and the ADDKE link
   mismatch (`followup_ke_find_child`, `ee81c53`).  Baseline: initial IKE_AUTH
   child now PLAIN + stable (type-6 gated to ESTABLISHED); the ML-KEM rekey
-  is the open item (see above).  iPhone stays last until the PQC rekey is
-  green; today's iPhone connect against prod verified the plain-IKE_AUTH path.
+  is matrix-proven (`i2ike-addke` / `i2ikesa-addke`, see above).  iPhone stays
+  last until the router DNAT points at this box.
 - **RFC 9242 (IKE_INTERMEDIATE, exch 43):** negotiated by the
   `INTERMEDIATE_EXCHANGE_SUPPORTED` notify (16438) in IKE_SA_INIT; IKE_INTERMEDIATE
   exchanges run sequentially between IKE_SA_INIT and IKE_AUTH (msgid 1,2,…), each
