@@ -104,6 +104,25 @@ sendfromto(int sock, const void *buf, size_t buflen,
 	return -1;
 }
 
+/* ikev2_frag_send() consults NAT-T state before baking a fragment's
+ * RFC 3948 marker; the reassembler under test never runs that path, so
+ * the stubs pin the test to the non-NAT-T branch (same as
+ * ikev2_encrypt: send-path only). */
+int
+natt_check_udp_encap(struct sockaddr *remote, struct sockaddr *local)
+{
+	(void)remote;
+	(void)local;
+	return 0;
+}
+
+rc_vchar_t *
+natt_set_non_esp_marker(rc_vchar_t *pkt)
+{
+	(void)pkt;
+	return NULL;
+}
+
 uint16_t
 get_uint16(const void *ptr)
 {
