@@ -342,6 +342,8 @@ extern struct prop_pair *isakmp_find_match(struct isakmp_domain *,
 extern int isakmp_find_socket(struct sockaddr *);
 extern int isakmp_transmit(struct transmit_info *, rc_vchar_t *,
 			   struct sockaddr *, struct sockaddr *);
+extern int isakmp_schedule_retransmit(struct transmit_info *, rc_vchar_t *,
+				      struct sockaddr *, struct sockaddr *);
 extern void isakmp_transmit_noretry(struct transmit_info *, rc_vchar_t *,
 				    struct sockaddr *, struct sockaddr *);
 extern void isakmp_force_retransmit(struct transmit_info *);

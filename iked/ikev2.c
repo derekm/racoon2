@@ -162,6 +162,7 @@ static void informational_initiator_recv(struct ikev2_sa *, rc_vchar_t *,
 static int ikev2_check_message_ordering(struct ikev2_sa *, uint32_t, int,
 					struct sockaddr *, struct sockaddr *);
 static int ikev2_retransmit_forced(struct ikev2_sa *, uint32_t, int);
+static void ikev2_replay_intermediate_response(struct ikev2_sa *);
 static int ikev2_check_icv_prev_gen(struct ikev2_sa *, rc_vchar_t *);
 static int ikev2_check_new_request(rc_vchar_t *, struct sockaddr *,
 				   struct sockaddr *);
@@ -303,6 +304,20 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 		isakmp_log(0, local, remote, packet, PLOG_PROTOWARN, PLOGLOC,
 			   "message to a nonexistent ike_sa\n");
 		++isakmpstat.invalid_ike_spi;
+		goto end;
+	}
+
+	/* R1 (review): a retransmitted gen-0 IKE_INTERMEDIATE request --
+	 * whole packet or SKF fragment -- is encrypted under the pre-update
+	 * keys, so once the responder advanced to gen-1 it can never be
+	 * AEAD-decrypted.  Detect it by the cleartext outer exchange type +
+	 * message_id and replay the cached gen-0 response (a lost-fragment
+	 * recovery that the old H1 prev-gen-ICV retry could never reach). */
+	if (ike_sa != NULL &&
+	    ikehdr->exchange_type == IKEV2EXCH_IKE_INTERMEDIATE &&
+	    ike_sa->intermediate_replay != NULL &&
+	    get_uint32(&ikehdr->message_id) == ike_sa->intermediate_replay_msgid) {
+		ikev2_replay_intermediate_response(ike_sa);
 		goto end;
 	}
 
@@ -607,9 +622,19 @@ ikev2_check_message_ordering(struct ikev2_sa *ike_sa, uint32_t message_id,
 		 * it at mint time) or one of the protocol-fixed initial
 		 * ids (IKE_SA_INIT=0, IKE_AUTH=1) which the counter
 		 * catches up to in ikev2_update_message_id().  Accept
-		 * anything at or below our high-water mark.
+		 * only the OUTSTANDING response id (== send_message_id
+		 * while the fixed initial ids / a not-yet-advanced
+		 * intermediate round pend, == send_message_id-1 after
+		 * the counter advanced past it); reject messages any
+		 * older than that.  Blanket-accepting the whole window
+		 * let a stale/cleartext replay (e.g. an IKE_SA_INIT
+		 * reply) be dispatched to a later state's handler and
+		 * abort the SA (review R2).  The per-message handler
+		 * still re-guards on exchange type.
 		 */
-		if (message_id <= ike_sa->send_message_id)
+		if (message_id <= ike_sa->send_message_id &&
+		    (ike_sa->send_message_id == 0 ||
+		     message_id >= ike_sa->send_message_id - 1))
 			return 0;
 		TRACE((PLOGLOC, "response message_id %d, sent through %d\n",
 		       message_id, ike_sa->send_message_id));
@@ -686,6 +711,42 @@ ikev2_retransmit_forced(struct ikev2_sa *ike_sa, uint32_t message_id,
 	}
 
 	return -1;
+}
+
+/* R1 (review): replay the cached gen-0 IKE_INTERMEDIATE response verbatim,
+ * rate-limited to 1/sec.  Called from ikev2_input() when a retransmitted
+ * gen-0 request is detected by its cleartext outer message_id.  The cached
+ * bytes were authenticated under the pre-update (gen-0) keys -- which is
+ * exactly what a peer still retransmitting is on -- so no re-encryption is
+ * needed.  (Old H1 tried to re-validate the request ICV with retained
+ * prev-gen keys, but that was dead for AEAD and never saw the fragmented/
+ * decrypt-failed path; verbatim replay of the response is the working fix.) */
+static void
+ikev2_replay_intermediate_response(struct ikev2_sa *ike_sa)
+{
+	struct timeval now, diff;
+	int sock;
+
+	if (!ike_sa || !ike_sa->intermediate_replay)
+		return;
+
+	gettimeofday(&now, 0);
+	timersub(&now, &ike_sa->intermediate_replay_sent, &diff);
+	if (diff.tv_sec < 1)
+		return;
+
+	sock = isakmp_find_socket(ike_sa->local);
+	if (sock == -1)
+		return;
+	if (sendfromto(sock, ike_sa->intermediate_replay->v,
+		       ike_sa->intermediate_replay->l,
+		       ike_sa->local, ike_sa->remote, 1) == -1)
+		return;
+
+	ike_sa->intermediate_replay_sent = now;
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		   "H1 replay: re-sent cached gen-0 IKE_INTERMEDIATE response (%zu bytes)\n",
+		   ike_sa->intermediate_replay->l);
 }
 
 uint32_t
@@ -778,17 +839,31 @@ ikev2_transmit(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 
 	if (ike_sa != NULL && ike_sa->frag_supported)
 	{
+	    int want_frag;
 	    if (SOCKADDR_FAMILY(ike_sa->remote) == AF_INET)
-	    {
-		if (packet->l >= IPV4_MAX_FRAGMENT_SIZE)
-		    if (ikev2_frag_send(ike_sa, &packet) == 0)
-			return 0;	/* packet was fragmented and sent */
-	    }
+		want_frag = (packet->l >= IPV4_MAX_FRAGMENT_SIZE);
 	    else
-	    {
-		if (packet->l >= IPV6_MAX_FRAGMENT_SIZE)
-		    if (ikev2_frag_send(ike_sa, &packet) == 0)
-			return 0;
+		want_frag = (packet->l >= IPV6_MAX_FRAGMENT_SIZE);
+	    if (want_frag) {
+		/* Keep a whole-packet copy before ikev2_frag_send() consumes
+		 * it, and arm a retransmit of THAT copy (not re-send now).
+		 * Without this a fragmented request was never retransmitted
+		 * (review R1.3), so a lost intermediate response deadlocked
+		 * the SA -- the responder can only replay if the initiator
+		 * duty-cycles the request. */
+		rc_vchar_t *whole = rc_vdup(packet);
+		if (ikev2_frag_send(ike_sa, &packet) == 0) {
+		    if (whole) {
+			isakmp_schedule_retransmit(&ike_sa->transmit_info,
+						   whole, ike_sa->local,
+						   ike_sa->remote);
+		    } else {
+			rc_vfree(whole);
+		    }
+		    return 0;	/* packet was fragmented and sent */
+		}
+		if (whole)
+		    rc_vfree(whole);
 	    }
 		/* fragmentation not needed or failed, send original */
 	}
@@ -8022,6 +8097,18 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	rc_vfreez(sa->intermediate_resp);
 	sa->intermediate_resp = resp;
 	resp = 0;
+
+	/* R1: cache the gen-0 IKE_INTERMEDIATE response (full wire packet,
+	 * already authenticated under the pre-update keys) BEFORE
+	 * ikev2_transmit_response() fragments-and-consumes pkt.  A peer that
+	 * lost a fragment retransmits the gen-0 request, which we can no
+	 * longer decrypt once the keys advance to gen-1; ikev2_input() then
+	 * replays these exact bytes (the peer is still on gen-0 and can
+	 * authenticate them). */
+	rc_vfreez(sa->intermediate_replay);
+	sa->intermediate_replay = rc_vdup(pkt);
+	sa->intermediate_replay_msgid = rmsgid;
+	gettimeofday(&sa->intermediate_replay_sent, 0);
 
 	if (ikev2_transmit_response(sa, pkt, src, dst) != 0)
 		goto drop2;

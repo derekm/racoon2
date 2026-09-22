@@ -2144,6 +2144,21 @@ isakmp_transmit(struct transmit_info *info, rc_vchar_t *pkt,
 {
 	isakmp_transmit_noretry(info, pkt, src, dest);
 
+	return isakmp_schedule_retransmit(info, pkt, src, dest);
+}
+
+/*
+ * Store a packet for retransmission and arm the timer WITHOUT transmitting
+ * it now.  Used by ikev2_transmit() when a message was sent fragmented:
+ * the fragments already went out, but the peer may never have completed the
+ * exchange, so a retransmit of the whole pre-fragment packet is needed
+ * (review R1.3 -- the racoon2 initiator used to not retransmit a fragmented
+ * request at all, so a lost intermediate response deadlocked the SA).
+ */
+int
+isakmp_schedule_retransmit(struct transmit_info *info, rc_vchar_t *pkt,
+			   struct sockaddr *src, struct sockaddr *dest)
+{
 	if (info->timer)
 		SCHED_KILL(info->timer);
 

@@ -67,6 +67,8 @@ ikev2_intermediate_clear(struct ikev2_sa *sa)
 	sa->prev_sk_a_r = 0;
 	rc_vfreez(sa->prev_sk_e_r);
 	sa->prev_sk_e_r = 0;
+	rc_vfreez(sa->intermediate_replay);
+	sa->intermediate_replay = 0;
 	if (sa->intermediate_priv) {
 		EVP_PKEY_free((EVP_PKEY *)sa->intermediate_priv);
 		sa->intermediate_priv = 0;

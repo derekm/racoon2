@@ -193,12 +193,15 @@ struct ikev2_sa {
 	rc_vchar_t *sk_p_i;
 	rc_vchar_t *sk_p_r;
 
-	/* H1: retained PRE-update (gen-0) RECEIVE keys.  After an RFC 9242 key
-	 * update the responder is on gen-1, so a retransmitted gen-0
-	 * IKE_INTERMEDIATE request fails ICV against the current keys and
-	 * ikev2_retransmit_forced (cached-response replay) never fires -- one
-	 * lost intermediate response kills the SA.  Keep these until the SA
-	 * finishes so such a retransmit can validate ICV and be replayed. */
+	/* Legacy H1 fields: the PRE-update (gen-0) RECEIVE keys.  These were
+	 * added to re-validate a retransmitted gen-0 IKE_INTERMEDIATE request
+	 * via ICV, but that is dead for AEAD (RFC 5282: the tag is checked in
+	 * decrypt, ikev2_check_icv() returns 0 unconditionally; and a
+	 * retransmitted request is SKF-fragmented, failing decrypt with the
+	 * current keys before any ICV path).  The working recovery is
+	 * intermediate_replay[]: the responder caches the gen-0 RESPONSE and
+	 * replays it verbatim on the cleartext outer msgid.  Retained only for
+	 * cleanup symmetry. */
 	rc_vchar_t *prev_sk_a_r;
 	rc_vchar_t *prev_sk_e_r;
 
@@ -257,6 +260,14 @@ struct ikev2_sa {
 	rc_vchar_t *intermediate_req;	/* current round's request content (IntAuth) */
 	rc_vchar_t *intermediate_resp;	/* current round's response content (IntAuth) */
 	void *intermediate_priv;	/* initiator ML-KEM priv (EVP_PKEY *) */
+	/* R1 (review): cached gen-0 IKE_INTERMEDIATE RESPONSE (full wire
+	 * packet, already authenticated under the pre-update keys).  On a
+	 * retransmitted gen-0 request the responder is on gen-1 and can no
+	 * longer decrypt it, so it replays these exact bytes instead.
+	 * Cleared via ikev2_intermediate_clear(). */
+	rc_vchar_t *intermediate_replay;	/* gen-0 wire response to replay */
+	uint32_t intermediate_replay_msgid;	/* request msgid it answers */
+	struct timeval intermediate_replay_sent;/* replay rate-limit */
 #endif
 
 	int behind_nat;
