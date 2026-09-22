@@ -80,3 +80,6 @@ samples/systemd/spmd.socket
 # python bytecode
 __pycache__/
 *.py[cod]
+*.bak
+*~
+ylwrap
