@@ -169,22 +169,22 @@ EOF
 
 	sleep 2
 
-	# netem LOSS window on responder->initiator (egress of responder veth):
-	# drop ALL replies for the first ~1.2s of the exchange.  IkED retransmits
-	# its requests; the responder already advanced to gen-1 when it answered
-	# the intermediate request, so the retransmitted gen-0 intermediate
-	# request must be replayed from cache via the retained gen-0 keys (H1).
-	if ! ip netns exec "$NSR" tc qdisc add dev "$VR" root netem loss 100% 2>/dev/null; then
+	# netem LOSS on responder->initiator (egress of responder veth): a low,
+	# persistent rate drops isolated replies across the whole exchange.
+	# If the INTERMEDIATE RESPONSE is one of them, the responder already
+	# advanced to gen-1 keys when it answered it, so the READER's
+	# retransmitted gen-0 intermediate request must be replayed from the
+	# response cache via the RETAINED gen-0 keys (ikev2_check_icv_prev_gen /
+	# H1) instead of being dropped.  (A full 100% window is NOT usable here:
+	# it reorders/drops the fragmented IKE_SA_INIT and the initiator aborts on
+	# an unrelated msgid mismatch -- not the H1 path.)
+	if ! ip netns exec "$NSR" tc qdisc add dev "$VR" root netem loss 12% 2>/dev/null; then
 		log "FAIL: cannot add netem loss on $NSR/$VR (no tc?); abort"
 		pkill -9 -f "$C/" 2>/dev/null || true
 		return 1
 	fi
 
 	"$SBIN/ikedctl" -s /tmp/iked.sock-i2idrop-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
-
-	# hold the loss exactly one IKE retransmit period, then restore
-	sleep 1.2
-	ip netns exec "$NSR" tc qdisc del dev "$VR" root 2>/dev/null || true
 
 	up=0
 	i=0
