@@ -206,6 +206,7 @@ static int rcf_fix_my_gssapi_id (struct cf_list *, void *);
 static int rcf_fix_cookie_required (struct cf_list *, void *);
 static int rcf_fix_addke_required (struct cf_list *, void *);
 static int rcf_fix_addke_unrequested (struct cf_list *, void *);
+static int rcf_fix_offer_intermediate (struct cf_list *, void *);
 static int rcf_fix_send_peers_id (struct cf_list *, void *);
 static int rcf_fix_nat_traversal (struct cf_list *, void *);
 static int rcf_fix_natd_public_address (struct cf_list *, void *);
@@ -368,6 +369,7 @@ struct rcf_tdf_t {
 	{ CFD_COOKIE_REQUIRED,		rcf_fix_cookie_required, },
 	{ CFD_ADDKE_REQUIRED,		rcf_fix_addke_required, },
 	{ CFD_ADDKE_UNREQUESTED,	rcf_fix_addke_unrequested, },
+	{ CFD_OFFER_INTERMEDIATE,	rcf_fix_offer_intermediate, },
 	{ CFD_SEND_PEERS_ID,		rcf_fix_send_peers_id, },
 	{ CFD_NAT_TRAVERSAL,		rcf_fix_nat_traversal, },
 	{ CFD_NATD_PUBLIC_ADDRESS,	rcf_fix_natd_public_address, },
@@ -1558,6 +1560,19 @@ rcf_fix_addke_unrequested(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_ADDKE_UNREQUESTED))
 		return -1;
 	if (rcf_fix_boolean(head->nextp, &dst->addke_unrequested))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_offer_intermediate(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_OFFER_INTERMEDIATE))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->offer_intermediate))
 		return -1;
 
 	return 0;
@@ -3264,6 +3279,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_ALGLIST(src->kmp_auth_method, new->kmp_auth_method);
 	new->addke_required = src->addke_required;
 	new->addke_unrequested = src->addke_unrequested;
+	new->offer_intermediate = src->offer_intermediate;
 	DEEPCOPY_VDUP(src->addresspool, new->addresspool);
 	new->config_request = src->config_request;
 	DEEPCOPY_ADDRLIST(src->cfg_dns, new->cfg_dns);

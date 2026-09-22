@@ -347,6 +347,7 @@ dpd_maxfail		{ DP; return(DPD_MAXFAIL); }
 cookie_required		{ DP; return(COOKIE_REQUIRED); }
 addke_required		{ DP; return(ADDKE_REQUIRED); }
 addke_unrequested	{ DP; return(ADDKE_UNREQUESTED); }
+offer_intermediate	{ DP; return(OFFER_INTERMEDIATE); }
 send_peers_id		{ DP; return(SEND_PEERS_ID); }
 	/* valid for kink */
 my_principal		{ DP; return(MY_PRINCIPAL); }

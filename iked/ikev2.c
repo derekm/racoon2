@@ -633,6 +633,15 @@ ikev2_check_message_ordering(struct ikev2_sa *ike_sa, uint32_t message_id,
  * the cached response and the SA survives a lost intermediate reply.
  */
 static int
+/* CONCURRENCY (F3): ikev2_check_icv_prev_gen() temporarily swaps
+ * ike_sa->sk_a_r/sk_e_r to the retained gen-0 keys while it re-checks
+ * the ICV.  This is only safe because the receive path runs one
+ * ICV+decrypt per SA synchronously on this thread.  If per-message
+ * crypto is ever offloaded to worker threads concurrently with the
+ * receive loop, guard the key swap (mutex or copy the buffer) -- an
+ * unsynchronized swap would let a worker decrypt with the wrong-gen
+ * keys.
+ */
 ikev2_check_icv_prev_gen(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 {
 	rc_vchar_t *oa = ike_sa->sk_a_r, *oe = ike_sa->sk_e_r;
@@ -1276,12 +1285,19 @@ initiator_start_after_gen(int rc, void *arg)
 						 0, 0),
 			    TRUE);
 #ifdef WITH_INTERMEDIATE
-	/* RFC 9242: offer the IKE_INTERMEDIATE exchange capability. */
-	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
-			    ikev2_notify_payload(0, 0, 0,
-						 IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED,
-						 0, 0),
-			    TRUE);
+	/* RFC 9242: offer the IKE_INTERMEDIATE exchange capability (the 16438
+	 * notify).  Gated by the remote's 'offer_intermediate' config (default
+	 * ON).  Turning it OFF still offers the type-6/ADDKE transform via
+	 * ikev2_maybe_offer_ikesa_addke(), producing what a PQC-capable peer
+	 * WITHOUT IKE_INTERMEDIATE sends (RFC 9370 s2.2.1); the responder then
+	 * must fall back to a classical IKE_SA. */
+	if (ikev2_offer_intermediate(ike_sa->rmconf) == RCT_BOOL_ON) {
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED,
+							 0, 0),
+				    TRUE);
+	}
 #endif
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
 				     0, ike_sa, &ctx->payl);
@@ -3276,6 +3292,18 @@ initiator_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	 */
 
 	ikehdr = (struct ikev2_header *)msg->v;
+	/* Robustness: an ICV-valid response for a different exchange type
+	 * arriving while we await the IKE_AUTH response is a stale/duplicate
+	 * retransmit from an already-completed exchange (e.g. a duplicate
+	 * IKE_INTERMEDIATE or a delayed IKE_SA_INIT response).  Our receive
+	 * ordering accepts any response id <= the high-water, so these do
+	 * reach here; drop them rather than parse as IKE_AUTH and abort (F1). */
+	if (ikehdr->exchange_type != IKEV2EXCH_IKE_AUTH) {
+		isakmp_log(ike_sa, remote, local, msg, PLOG_DEBUG, PLOGLOC,
+			   "IKE_AUTH: ignoring stale exch %d response\n",
+			   ikehdr->exchange_type);
+		return;
+	}
 	p = (struct ikev2_payload_header *)(ikehdr + 1);
 	for (type = ikehdr->next_payload;
 	     type != IKEV2_NO_NEXT_PAYLOAD;
@@ -7802,12 +7830,24 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 		ikev2_abort(sa, ECONNREFUSED);
 		return;
 	}
+	/* Robustness: an ICV-valid response for a different exchange type
+	 * arriving while we await the intermediate response is a stale
+	 * retransmit (e.g. a delayed IKE_SA_INIT response).  Ignore it rather
+	 * than kill the SA -- RFC 7296 does not require aborting on a
+	 * last-arrived exchange (F1). */
+	if (ikehdr->exchange_type != IKEV2EXCH_IKE_INTERMEDIATE) {
+		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "IKE_INTERMEDIATE: ignoring stale exch %d response\n",
+			   ikehdr->exchange_type);
+		return;
+	}
 	if (get_uint32(&ikehdr->message_id) != sa->intermediate_msgid) {
-		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
-			   "IKE_INTERMEDIATE: msgid %u expected %u\n",
+		/* Late/retransmitted response for an already-consumed round, or
+		 * a stale message with a lower id.  Drop, don't abort (F1). */
+		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "IKE_INTERMEDIATE: stale/dup msgid %u (expected %u), dropping\n",
 			   get_uint32(&ikehdr->message_id),
 			   sa->intermediate_msgid);
-		ikev2_abort(sa, ECONNREFUSED);
 		return;
 	}
 
@@ -7823,6 +7863,15 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	body = intermediate_ke_body(ke);
 	if (!body)
 		goto malformed;
+	if (!sa->intermediate_priv) {
+		/* Duplicate of the response we already consumed this round
+		 * (the shared secret was obtained and intermediate_priv freed).
+		 * Idempotent -- ignore it, the SA survives (F1). */
+		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "IKE_INTERMEDIATE: duplicate response, ignoring\n");
+		rc_vfree(body);
+		return;
+	}
 	if (ikev2_addke_mlkem_decap((EVP_PKEY *)sa->intermediate_priv,
 				    body, &ss) != 0) {
 		rc_vfree(body);

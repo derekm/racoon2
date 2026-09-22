@@ -169,7 +169,7 @@ jobs:
           # run.sh's filter regex-matches case NAMES; 'i2ike' would also pull
           # in i2ikesa-addke (and 'i2ikesa-addke' is a separate ADDKE gate).
           # Cover the box-verified gate rows on the INITIAL + rekey paths.
-          [ -n "$CASES" ] || CASES='i2iinit-addke|i2ike-addke|i2ikesa-addke'
+          [ -n "$CASES" ] || CASES='i2iinit-addke|i2iinit-nointermediate|i2ike-addke|i2ikesa-addke'
           ARGS="--src $GITHUB_WORKSPACE --cases $CASES"
           bash samples/linux-matrix/run.sh $ARGS
         env:
@@ -184,6 +184,7 @@ jobs:
             /tmp/r2-i2ike/*.log
             /tmp/r2-i2ikesa/*.log
             /tmp/r2-i2iinit/*.log
+            /tmp/r2-i2ini/*.log
             /tmp/r2-i2iinit-*/r2-*/*.log
             /tmp/*.log
           if-no-files-found: warn

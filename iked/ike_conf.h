@@ -187,6 +187,7 @@ extern rc_type ikev2_need_pfs(struct rcf_remote *);
 extern rc_type ikev2_nat_traversal(struct rcf_remote *);
 extern rc_type ikev2_addke_required(struct rcf_remote *);
 extern rc_type ikev2_addke_unrequested(struct rcf_remote *);
+extern rc_type ikev2_offer_intermediate(struct rcf_remote *);
 extern void ikev2_child_maybe_reoffer_addke(struct ikev2_child_sa *);
 extern int ikev2_maybe_offer_ikesa_addke(struct prop_pair **);
 extern int ikev2_natk_interval(struct rcf_remote *);

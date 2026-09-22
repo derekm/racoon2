@@ -296,6 +296,13 @@ struct rcf_kmp {
 	 * response carries type-6) and complete the resulting ML-KEM exchange.
 	 * OFF (default) = classical peer gets a plain response, no followup. */
 	rc_type addke_unrequested;
+	/* RFC 9242: offer the IKE_INTERMEDIATE exchange capability by sending
+	 * the 16438 notify in IKE_SA_INIT.  This gates ONLY the capability
+	 * notify: the type-6/ADDKE transform is still offered regardless
+	 * (RFC 9370 s2.2.1), so OFF produces what a PQC-capable peer WITHOUT
+	 * IKE_INTERMEDIATE sends, and the responder must fall back to a
+	 * classical IKE_SA.  ON (default) = normal end-to-end ADDKE. */
+	rc_type offer_intermediate;
 };
 
 /* selector info */
