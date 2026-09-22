@@ -145,16 +145,18 @@ rc_vfreez(rc_vchar_t *var)
 		return;
 
 	if (var->v) {
-#ifndef DEBUG
+		/* Always cleanse key material, debug builds included (L3):
+		 * a -DDEBUG build must not leave secret bytes in freed heap
+		 * beyond the first scratch use. */
 		memset(var->v, 0, var->l);
-#endif
 		rc_free(var->v);
 	}
 
-#ifndef DEBUG
+	/* note: rc_vfreez is by-value and CANNOT null the caller's pointer;
+	 * callers that keep the reference after freeing must null it
+	 * themselves (callers null it themselves, e.g. ikev2_cleanse_key_gen). */
 	var->v = NULL;
 	var->l = 0;
-#endif
 	rc_free(var);
 
 	return;

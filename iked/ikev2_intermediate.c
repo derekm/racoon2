@@ -61,6 +61,12 @@ ikev2_intermediate_clear(struct ikev2_sa *sa)
 	sa->intermediate_req = 0;
 	rc_vfreez(sa->intermediate_resp);
 	sa->intermediate_resp = 0;
+	/* H1: retained gen-0 receive keys (must not leak; set on responder SA
+	 * that did an RFC 9242 key update). */
+	rc_vfreez(sa->prev_sk_a_r);
+	sa->prev_sk_a_r = 0;
+	rc_vfreez(sa->prev_sk_e_r);
+	sa->prev_sk_e_r = 0;
 	if (sa->intermediate_priv) {
 		EVP_PKEY_free((EVP_PKEY *)sa->intermediate_priv);
 		sa->intermediate_priv = 0;

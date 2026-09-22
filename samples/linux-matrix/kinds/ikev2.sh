@@ -167,7 +167,9 @@ EOF
 	# a post-up grep then misses the responder SA iked already installed.
 	: >/tmp/r2-sad-watch
 	(
-		while :; do
+		# Bounded so it self-terminates even if the kill below is missed;
+		# 250*0.2s = 50s outlives the outer ~30s poll.
+		for _snap in $(seq 1 250); do
 			ip xfrm state >>/tmp/r2-sad-watch 2>/dev/null || true
 			sleep 0.2
 		done

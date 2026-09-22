@@ -162,6 +162,7 @@ static void informational_initiator_recv(struct ikev2_sa *, rc_vchar_t *,
 static int ikev2_check_message_ordering(struct ikev2_sa *, uint32_t, int,
 					struct sockaddr *, struct sockaddr *);
 static int ikev2_retransmit_forced(struct ikev2_sa *, uint32_t, int);
+static int ikev2_check_icv_prev_gen(struct ikev2_sa *, rc_vchar_t *);
 static int ikev2_check_new_request(rc_vchar_t *, struct sockaddr *,
 				   struct sockaddr *);
 
@@ -491,11 +492,24 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 				goto end;
 			}
 			if (ikev2_check_icv(ike_sa, packet) != 0) {
-				isakmp_log(ike_sa, local, remote, packet,
-					   PLOG_PROTOERR, PLOGLOC,
-					   "ICV check failure\n");
-				++isakmpstat.fail_integrity_check;
-				goto end;
+				if (ikev2_check_icv_prev_gen(ike_sa, packet) == 0) {
+					/* H1: ICV validates against the PRE-update
+					 * (gen-0) keys => this is a retransmitted
+					 * IKE_INTERMEDIATE request we already
+					 * answered.  Fall through so
+					 * ikev2_retransmit_forced below replays the
+					 * cached response instead of killing the SA
+					 * on the current (gen-1) ICV mismatch. */
+					isakmp_log(ike_sa, local, remote, packet,
+					    PLOG_DEBUG, PLOGLOC,
+					    "replayed: ICV ok against PREVIOUS gen\n");
+				} else {
+					isakmp_log(ike_sa, local, remote, packet,
+						   PLOG_PROTOERR, PLOGLOC,
+						   "ICV check failure\n");
+					++isakmpstat.fail_integrity_check;
+					goto end;
+				}
 			}
 			if (ikev2_retransmit_forced(ike_sa, message_id, is_response) != 0) {
 				goto end;
@@ -608,6 +622,30 @@ ikev2_check_message_ordering(struct ikev2_sa *ike_sa, uint32_t message_id,
 
 	return -1;
 #endif
+}
+
+/*
+ * H1: validate an incoming request's ICV against the PRE-update (gen-0)
+ * receive keys, so a retransmitted gen-0 IKE_INTERMEDIATE request -- whose
+ * ICV the post-update (gen-1) keys can no longer verify -- is not dropped.
+ * The keys are swapped in only for the check (read-only) and restored; on
+ * success ikev2_retransmit_forced (recv_message_id-1 == message_id) replays
+ * the cached response and the SA survives a lost intermediate reply.
+ */
+static int
+ikev2_check_icv_prev_gen(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
+{
+	rc_vchar_t *oa = ike_sa->sk_a_r, *oe = ike_sa->sk_e_r;
+	int rc;
+
+	if (!ike_sa->prev_sk_a_r || !ike_sa->prev_sk_e_r)
+		return -1;
+	ike_sa->sk_a_r = ike_sa->prev_sk_a_r;
+	ike_sa->sk_e_r = ike_sa->prev_sk_e_r;
+	rc = ikev2_check_icv(ike_sa, packet);
+	ike_sa->sk_a_r = oa;
+	ike_sa->sk_e_r = oe;
+	return rc;
 }
 
 static int
@@ -7394,6 +7432,17 @@ ikev2_intermediate_update_keys(struct ikev2_sa *sa, rc_vchar_t *sk_n)
 	rc_vfree(data);
 	if (!new_seed)
 		return -1;
+	/* H1: retain the current (PRE-update, gen-0) RECEIVE keys before the
+	 * swap below destroys them (ikev2_compute_keys cleanses + frees the
+	 * originals).  A retransmitted gen-0 IKE_INTERMEDIATE request must be
+	 * able to validate ICV and be replayed from the response cache, or one
+	 * lost intermediate response kills the SA. */
+	rc_vfreez(sa->prev_sk_a_r); sa->prev_sk_a_r = 0;
+	rc_vfreez(sa->prev_sk_e_r); sa->prev_sk_e_r = 0;
+	if (sa->sk_a_r)
+		sa->prev_sk_a_r = rc_vdup(sa->sk_a_r);
+	if (sa->sk_e_r)
+		sa->prev_sk_e_r = rc_vdup(sa->sk_e_r);
 	/* RFC 9370 s3.5 / RFC 9242 s3.3: the SKEYSEED generation swap must be
 	 * all-or-nothing.  Hold the old generation until ikev2_compute_keys
 	 * succeeds so a mid-derivation failure never leaves the NEW SKEYSEED

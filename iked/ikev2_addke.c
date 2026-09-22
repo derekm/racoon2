@@ -639,8 +639,12 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			    ikev2_rekey_ikesa_init_followup_msgid(ike_sa) ==
 				rmsgid) {
 				if (get_payload_data_length(&rke->header) <
-				    sizeof(rke->ke_h))
+				    sizeof(rke->ke_h)) {
+					isakmp_log(ike_sa, local, remote,
+					    msg, PLOG_PROTOERR, PLOGLOC,
+					    "IKE_FOLLOWUP_KE short KE payload\n");
 					return;	/* malformed short KE */
+				}
 				rct = rc_vnew((const u_char *)(rke + 1),
 					      get_payload_data_length(&rke->header) -
 					      sizeof(rke->ke_h));
@@ -665,8 +669,12 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			return;
 		}
 
-		if (get_payload_data_length(&rke->header) < sizeof(rke->ke_h))
+		if (get_payload_data_length(&rke->header) < sizeof(rke->ke_h)) {
+			isakmp_log(ike_sa, local, remote, msg, PLOG_PROTOERR,
+				   PLOGLOC,
+				   "IKE_FOLLOWUP_KE short KE payload\n");
 			return;	/* malformed short KE */
+		}
 		rct = rc_vnew((const u_char *)(rke + 1),
 			      get_payload_data_length(&rke->header) -
 			      sizeof(rke->ke_h));

@@ -193,6 +193,15 @@ struct ikev2_sa {
 	rc_vchar_t *sk_p_i;
 	rc_vchar_t *sk_p_r;
 
+	/* H1: retained PRE-update (gen-0) RECEIVE keys.  After an RFC 9242 key
+	 * update the responder is on gen-1, so a retransmitted gen-0
+	 * IKE_INTERMEDIATE request fails ICV against the current keys and
+	 * ikev2_retransmit_forced (cached-response replay) never fires -- one
+	 * lost intermediate response kills the SA.  Keep these until the SA
+	 * finishes so such a retransmit can validate ICV and be replayed. */
+	rc_vchar_t *prev_sk_a_r;
+	rc_vchar_t *prev_sk_e_r;
+
 	rc_vchar_t *id_i;	/* IDi' */
 	rc_vchar_t *id_r;	/* IDr' */
 
