@@ -161,6 +161,14 @@ struct verified_info {
 
 struct transmit_info {
 	rc_vchar_t *packet;	/* for retransmission */
+	rc_vchar_t **frags;	/* fragmented form of packet: the exact SKF
+				 * datagrams that were sent (markers baked).
+				 * Replays resend THESE, never one oversized
+				 * whole datagram.  Mutually exclusive with
+				 * packet: fragmented => frags, else packet. */
+	int nfrags;
+	uint32_t message_id;	/* msgid this info answers (IKEv2), for the
+				 * reassembled-SKF retransmit gate */
 	struct timeval sent_time;
 	int retry_count;	/* 0 for first transmission, incr each retransmit */
 	int retry_limit;
@@ -343,7 +351,10 @@ extern int isakmp_find_socket(struct sockaddr *);
 extern int isakmp_transmit(struct transmit_info *, rc_vchar_t *,
 			   struct sockaddr *, struct sockaddr *);
 extern int isakmp_schedule_retransmit(struct transmit_info *, rc_vchar_t *,
-				      struct sockaddr *, struct sockaddr *);
+				struct sockaddr *, struct sockaddr *);
+extern int isakmp_schedule_retransmit_frags(struct transmit_info *,
+				rc_vchar_t **, int,
+				struct sockaddr *, struct sockaddr *);
 extern void isakmp_transmit_noretry(struct transmit_info *, rc_vchar_t *,
 				    struct sockaddr *, struct sockaddr *);
 extern void isakmp_force_retransmit(struct transmit_info *);

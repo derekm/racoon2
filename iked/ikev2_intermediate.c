@@ -86,6 +86,16 @@ ikev2_intermediate_clear_replay(struct ikev2_sa *sa)
 		return;
 	rc_vfreez(sa->intermediate_replay);
 	sa->intermediate_replay = 0;
+	if (sa->intermediate_replay_frags) {
+		int i;
+
+		for (i = 0; i < sa->intermediate_replay_nfrags; i++)
+			if (sa->intermediate_replay_frags[i])
+				rc_vfree(sa->intermediate_replay_frags[i]);
+		racoon_free(sa->intermediate_replay_frags);
+		sa->intermediate_replay_frags = 0;
+		sa->intermediate_replay_nfrags = 0;
+	}
 	sa->intermediate_replay_msgid = 0;
 }
 

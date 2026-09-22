@@ -692,6 +692,26 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 		rc_free(old_r);
 	if (old_l)
 		rc_free(old_l);
+
+	/* Armed transmit/response caches hold endpoint copies minted when
+	 * the retransmit was scheduled.  On a roam the peer that will send
+	 * the retransmit lives at the NEW addresses: retarget armed infos
+	 * or a replay goes to the dead mapping and the exchange is lost
+	 * (review).  Silent when idle -- packet==NULL means nothing armed. */
+	if ((ike_sa->transmit_info.packet || ike_sa->transmit_info.frags) &&
+	    ike_sa->transmit_info.src && ike_sa->transmit_info.dest) {
+		rc_free(ike_sa->transmit_info.src);
+		rc_free(ike_sa->transmit_info.dest);
+		ike_sa->transmit_info.src = rcs_sadup(local);
+		ike_sa->transmit_info.dest = rcs_sadup(remote);
+	}
+	if ((ike_sa->response_info.packet || ike_sa->response_info.frags) &&
+	    ike_sa->response_info.src && ike_sa->response_info.dest) {
+		rc_free(ike_sa->response_info.src);
+		rc_free(ike_sa->response_info.dest);
+		ike_sa->response_info.src = rcs_sadup(local);
+		ike_sa->response_info.dest = rcs_sadup(remote);
+	}
 }
 
 /*

@@ -2183,12 +2183,23 @@ isakmp_schedule_retransmit(struct transmit_info *info, rc_vchar_t *pkt,
 
 	if (info->packet)
 		rc_vfree(info->packet);
+	if (info->frags) {
+		int i;
+
+		for (i = 0; i < info->nfrags; i++) {
+			if (info->frags[i])
+				rc_vfree(info->frags[i]);
+		}
+		racoon_free(info->frags);
+	}
 	if (info->src)
 		rc_free(info->src);
 	if (info->dest)
 		rc_free(info->dest);
 
 	info->packet = pkt;	/* *info owns pkt */
+	info->frags = 0;
+	info->nfrags = 0;
 	info->src = nsrc;
 	info->dest = ndest;
 
@@ -2200,6 +2211,75 @@ isakmp_schedule_retransmit(struct transmit_info *info, rc_vchar_t *pkt,
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "failed to allocate retransmission timer\n");
 		info->packet = 0;	/* caller still owns pkt */
+		rc_free(info->src);
+		rc_free(info->dest);
+		info->src = info->dest = 0;
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
+ * Fragment-list variant of isakmp_schedule_retransmit(): arm a retransmit
+ * that re-sends the EXACT SKF datagrams that were put on the wire, not a
+ * re-encrypted / re-fragmented whole.  On success *info owns frags (the
+ * array and every member); on failure the caller still owns them.
+ */
+int
+isakmp_schedule_retransmit_frags(struct transmit_info *info,
+				 rc_vchar_t **frags, int nfrags,
+				 struct sockaddr *src, struct sockaddr *dest)
+{
+	struct sockaddr *nsrc, *ndest;
+
+	nsrc = rcs_sadup(src);
+	ndest = rcs_sadup(dest);
+	if (!nsrc || !ndest) {
+		if (nsrc)
+			rc_free(nsrc);
+		if (ndest)
+			rc_free(ndest);
+		return -1;
+	}
+
+	if (info->timer)
+		SCHED_KILL(info->timer);
+
+	gettimeofday(&info->sent_time, 0);
+	info->retry_count = 0;
+
+	if (info->packet)
+		rc_vfree(info->packet);
+	if (info->frags) {
+		int i;
+
+		for (i = 0; i < info->nfrags; i++) {
+			if (info->frags[i])
+				rc_vfree(info->frags[i]);
+		}
+		racoon_free(info->frags);
+	}
+	if (info->src)
+		rc_free(info->src);
+	if (info->dest)
+		rc_free(info->dest);
+
+	info->packet = 0;
+	info->frags = frags;	/* *info owns frags */
+	info->nfrags = nfrags;
+	info->src = nsrc;
+	info->dest = ndest;
+
+	info->timer =
+		sched_new(retransmit_interval[info->retry_count] *
+			  info->interval_to_send, isakmp_retransmit_stub, info);
+	TRACE((PLOGLOC, "sched %p\n", info->timer));
+	if (!info->timer) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed to allocate retransmission timer\n");
+		info->frags = 0;	/* caller still owns frags */
+		info->nfrags = 0;
 		rc_free(info->src);
 		rc_free(info->dest);
 		info->src = info->dest = 0;
@@ -2293,11 +2373,11 @@ void
 isakmp_force_retransmit(struct transmit_info *info)
 {
 	int sock;
-	int len;
+	int i;
 
 	TRACE((PLOGLOC, "retransmit %p\n", info));
 
-	if (!info->packet) {
+	if (!info->packet && info->nfrags <= 0) {
 		plog(PLOG_INTERR, PLOGLOC, NULL, "no packet to retransmit\n");
 		return;
 	}
@@ -2313,9 +2393,32 @@ isakmp_force_retransmit(struct transmit_info *info)
 		return;
 	}
 
-	len = sendfromto(sock, info->packet->v, info->packet->l,
-			 info->src, info->dest, 1);
-	if (len == -1) {
+	/* Fragmented exchange: replay the exact datagrams that were sent.
+	 * Each carries its own sk {SKF} + RFC 3948 marker; a whole-packet
+	 * replay would be ONE oversized datagram the peer cannot feed into
+	 * its assembly buffer (576-MTU hole found in review). */
+	if (info->frags) {
+		int sent = 0;
+
+		for (i = 0; i < info->nfrags; i++) {
+			if (!info->frags[i])
+				continue;
+			if (sendfromto(sock, info->frags[i]->v,
+				       info->frags[i]->l,
+				       info->src, info->dest, 1) == -1)
+				continue;
+			sent++;
+			TRACE((PLOGLOC, "retransmit frag %d/%d (%zu bytes)\n",
+			       i + 1, info->nfrags, info->frags[i]->l));
+		}
+		if (sent == 0)
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "retransmission error: %s\n", strerror(errno));
+		return;
+	}
+
+	if (sendfromto(sock, info->packet->v, info->packet->l,
+		       info->src, info->dest, 1) == -1) {
 		plog(PLOG_INTERR, PLOGLOC, NULL, "transmission error: %s\n",
 		     strerror(errno));
 		return;
@@ -2327,6 +2430,7 @@ isakmp_retransmit(struct transmit_info *info)
 {
 	int sock;
 	int len;
+	int i;
 	time_t next_interval;
 
 	TRACE((PLOGLOC, "retransmit %p\n", info));
@@ -2363,6 +2467,27 @@ isakmp_retransmit(struct transmit_info *info)
 	if (sock == -1) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "failed to find a socket for retransmission\n");
+		return;
+	}
+
+	/* Fragmented exchange: re-send the cached fragment datagrams (see
+	 * isakmp_force_retransmit); the periodic timer heals a partially
+	 * received SKF set because the peer's reassembler drops dups. */
+	if (info->frags) {
+		int sent = 0;
+
+		for (i = 0; i < info->nfrags; i++) {
+			if (!info->frags[i])
+				continue;
+			if (sendfromto(sock, info->frags[i]->v,
+				       info->frags[i]->l,
+				       info->src, info->dest, 1) == -1)
+				continue;
+			sent++;
+		}
+		if (sent == 0)
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "transmission error: %s\n", strerror(errno));
 		return;
 	}
 

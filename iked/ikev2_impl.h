@@ -266,6 +266,9 @@ struct ikev2_sa {
 	 * longer decrypt it, so it replays these exact bytes instead.
 	 * Cleared via ikev2_intermediate_clear(). */
 	rc_vchar_t *intermediate_replay;	/* gen-0 wire response to replay */
+	rc_vchar_t **intermediate_replay_frags;	/* gen-0 SKF datagrams sent
+						 * (fragment-list replay) */
+	int intermediate_replay_nfrags;
 	uint32_t intermediate_replay_msgid;	/* request msgid it answers */
 	struct timeval intermediate_replay_sent;/* replay rate-limit */
 #endif
@@ -553,7 +556,8 @@ struct ikev2_frag_item {
 	size_t total_data_len;
 };
 
-extern int ikev2_frag_send(struct ikev2_sa *, rc_vchar_t **);
+extern int ikev2_frag_send(struct ikev2_sa *, rc_vchar_t **,
+			   rc_vchar_t ***, int *);
 extern rc_vchar_t *ikev2_frag_recv(struct ikev2_sa *, rc_vchar_t *,
 				    struct sockaddr *, struct sockaddr *);
 extern void ikev2_frag_purge(struct ikev2_sa *);

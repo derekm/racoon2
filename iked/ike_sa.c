@@ -1135,6 +1135,14 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 
 	if (sa->transmit_info.packet)
 		rc_vfree(sa->transmit_info.packet);
+	if (sa->transmit_info.frags) {
+		int i;
+
+		for (i = 0; i < sa->transmit_info.nfrags; i++)
+			if (sa->transmit_info.frags[i])
+				rc_vfree(sa->transmit_info.frags[i]);
+		racoon_free(sa->transmit_info.frags);
+	}
 	if (sa->transmit_info.timer)
 		SCHED_KILL(sa->transmit_info.timer);
 	if (sa->transmit_info.src)
@@ -1143,6 +1151,14 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		rc_free(sa->transmit_info.dest);
 	if (sa->response_info.packet)
 		rc_vfree(sa->response_info.packet);
+	if (sa->response_info.frags) {
+		int i;
+
+		for (i = 0; i < sa->response_info.nfrags; i++)
+			if (sa->response_info.frags[i])
+				rc_vfree(sa->response_info.frags[i]);
+		racoon_free(sa->response_info.frags);
+	}
 	if (sa->response_info.timer)
 		SCHED_KILL(sa->response_info.timer);
 	if (sa->response_info.src)

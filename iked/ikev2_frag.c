@@ -39,6 +39,7 @@
 #include <config.h>
 
 #include <assert.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/types.h>
 #if TIME_WITH_SYS_TIME
@@ -81,9 +82,26 @@
  *
  * Returns 0 on success (packet is consumed), -1 on error.
  * On success, *packet is freed and set to NULL.
+ *
+ * On success *frags_out (if non-NULL) receives the EXACT datagrams that
+ * were sent (ownership transferred: each entry and the array must be
+ * freed by the caller), one per fragment, RFC 3948 marker baked in for
+ * NAT-T peers.  This is the replay cache: a retransmitted request is
+ * answered by re-sending these fragments verbatim -- never by re-sending
+ * the pre-fragment whole packet as one oversized datagram (defect fixed
+ * after review).  The peer's reassembler drops duplicate fragment
+ * numbers, so replaying the full list to a peer holding a partial set
+ * completes the assembly.
+ *
+ * Partial-send note: all fragments are built BEFORE any is sent, so
+ * even if a later sendfromto() fails the full list exists and the
+ * retransmit timer / replay path can deliver the missing fragments
+ * (the exchange is recoverable, not finished).  Logs INTWARN in that
+ * case; the caller arms the retransmit with the complete list.
  */
 int
-ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
+ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet,
+		rc_vchar_t ***frags_out, int *nfrags_out)
 {
 	struct ikev2_header *orig_hdr;
 	struct ikev2_payload_header *payl;
@@ -100,13 +118,20 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 	rc_vchar_t *skf_payload = NULL;
 	rc_vchar_t *frag_pkt = NULL;
 	rc_vchar_t *auth_output = NULL;
+	rc_vchar_t **frags = NULL;
+	int sent = 0;
+	int i;
 	uint8_t *d;
 	int total_frags, frag_no;
-	int sent_any = 0;
 	size_t frag_threshold;
 	size_t chunk_max;
 	size_t overhead;
 	int sock;
+
+	if (frags_out)
+		*frags_out = NULL;
+	if (nfrags_out)
+		*nfrags_out = 0;
 
 	if (ike_sa == NULL || packet == NULL || *packet == NULL)
 		return -1;
@@ -210,7 +235,17 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 	       "fragmenting %zu bytes into %d fragments (chunk_max=%zu)\n",
 	       decrypted_len, total_frags, chunk_max));
 
-	/* Fragment, encrypt, authenticate and send each fragment */
+	/* The fragment datagrams are ALWAYS collected (send pass reads
+	 * them; the list is also the replay cache when the caller asks).
+	 * If frags_out is NULL the caller only wants the send. */
+	frags = racoon_calloc((size_t)total_frags, sizeof(rc_vchar_t *));
+	if (!frags)
+		goto fail;
+
+	/* Pass 1: build ALL fragment datagrams (encrypt, authenticate, bake
+	 * the RFC 3948 marker).  Only after every fragment exists do we send,
+	 * so a mid-send failure never loses the ability to replay the full
+	 * set.  Nothing has gone to the wire yet if this pass fails. */
 	for (frag_no = 1; frag_no <= total_frags; frag_no++) {
 		size_t offset = (size_t)(frag_no - 1) * chunk_max;
 		size_t this_chunk = (frag_no < total_frags) ?
@@ -313,31 +348,54 @@ ikev2_frag_send(struct ikev2_sa *ike_sa, rc_vchar_t **packet)
 		}
 #endif
 
-		/* Send the fragment */
-		if (sendfromto(sock, frag_pkt->v, frag_pkt->l,
-			       ike_sa->local, ike_sa->remote, 1) == -1) {
-			plog(PLOG_INTERR, PLOGLOC, NULL,
-			     "ikev2_frag_send: sendfromto failed "
-			     "(frag %d/%d)\n", frag_no, total_frags);
-			rc_vfree(frag_pkt);
-			frag_pkt = NULL;
-			goto fail;
-		}
-
-		TRACE((PLOGLOC,
-		       "sent IKEv2 fragment %d/%d (%zu bytes)\n",
-		       frag_no, total_frags, frag_pkt->l));
+		if (frags)
+			frags[frag_no - 1] = frag_pkt;
+		frag_pkt = NULL;
 
 		rc_vfree(skf_payload);
 		skf_payload = NULL;
-		rc_vfree(frag_pkt);
-		frag_pkt = NULL;
-		sent_any = 1;
 	}
+
+	/* Pass 2: send every built fragment.  A send failure after some
+	 * fragments went out is NOT a lost exchange: the full list is
+	 * returned for the retransmit/replay cache and the peer's
+	 * reassembler drops duplicates.  Log it loud, keep going
+	 * best-effort. */
+	for (frag_no = 1; frag_no <= total_frags; frag_no++) {
+		if (sendfromto(sock, frags[frag_no - 1]->v,
+			       frags[frag_no - 1]->l,
+			       ike_sa->local, ike_sa->remote, 1) == -1) {
+			plog(PLOG_INTWARN, PLOGLOC, NULL,
+			     "ikev2_frag_send: sendfromto failed "
+			     "(frag %d/%d): %s; fragment list still "
+			     "cached for replay\n",
+			     frag_no, total_frags, strerror(errno));
+			continue;
+		}
+		sent++;
+		TRACE((PLOGLOC,
+		       "sent IKEv2 fragment %d/%d (%zu bytes)\n",
+		       frag_no, total_frags, frags[frag_no - 1]->l));
+	}
+
+	if (sent < total_frags)
+		plog(PLOG_INTWARN, PLOGLOC, NULL,
+		     "ikev2_frag_send: partial send %d/%d fragments; "
+		     "recovery via fragment-list replay\n",
+		     sent, total_frags);
 
 	/* Success - consume the original packet */
 	rc_vfree(*packet);
 	*packet = NULL;
+	if (frags_out) {
+		*frags_out = frags;
+		*nfrags_out = total_frags;
+	} else {
+		for (i = 0; i < total_frags; i++)
+			if (frags[i])
+				rc_vfree(frags[i]);
+		racoon_free(frags);
+	}
 	rc_vfree(work);
 	rc_vfree(ivbuf);
 	rc_vfree(orig);
@@ -355,6 +413,12 @@ fail:
 		rc_vfree(frag_pkt);
 	if (auth_output)
 		rc_vfree(auth_output);
+	if (frags) {
+		for (i = 0; i < total_frags; i++)
+			if (frags[i])
+				rc_vfree(frags[i]);
+		racoon_free(frags);
+	}
 	if (work)
 		rc_vfree(work);
 	if (ivbuf)
@@ -363,13 +427,9 @@ fail:
 		rc_vfree(orig);
 	if (decrypted)
 		rc_vfree(decrypted);
-	/* A later fragment failed after earlier ones were already on the
-	 * wire.  Do not let the caller also send the original datagram. */
-	if (sent_any && packet && *packet) {
-		rc_vfree(*packet);
-		*packet = NULL;
-		return 0;
-	}
+	/* Failure during the BUILD pass means nothing went to the wire:
+	 * the caller still owns *packet and may fall through to a plain
+	 * (non-fragmented) send of the original datagram. */
 	plog(PLOG_INTERR, PLOGLOC, NULL,
 	     "ikev2_frag_send: fragmentation failed\n");
 	return -1;

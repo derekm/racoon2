@@ -706,7 +706,17 @@ ikev2_retransmit_forced(struct ikev2_sa *ike_sa, uint32_t message_id,
 		return 0;
 	}
 
-	if (ike_sa->recv_message_id - 1 != message_id) {
+	/* Retransmission of a request we already answered.  Two equivalent
+	 * signals: the window's last request (recv-1), or the exact
+	 * message_id the armed response was minted for.  The second case
+	 * matters for REASSEMBLED retransmits: a fragmented exchange
+	 * (e.g. an ML-KEM IKE_FOLLOWUP_KE) never advanced recv_message_id,
+	 * so recv-1 never matches and without this the retransmit would
+	 * fall through into the handler and re-encapsulate (re-entering
+	 * ikev2_followup_ke_recv doubles the addke_sk append). */
+	if (ike_sa->recv_message_id - 1 != message_id &&
+	    !(ike_sa->response_info.message_id == message_id &&
+	      (ike_sa->response_info.packet || ike_sa->response_info.frags))) {
 		return 0;
 	}
 
@@ -752,6 +762,33 @@ ikev2_replay_intermediate_response(struct ikev2_sa *ike_sa)
 	sock = isakmp_find_socket(ike_sa->local);
 	if (sock == -1)
 		return;
+
+	if (ike_sa->intermediate_replay_frags) {
+		int i;
+
+		/* The gen-0 response went out as SKF fragments: replay the
+		 * EXACT datagrams.  Each carries its own RFC 3948 marker
+		 * (baked by ikev2_frag_send), so per-fragment UDP survives
+		 * a 576-MTU path, and the peer's reassembler feeds them by
+		 * message_id and drops duplicates.  Fragments are the wire
+		 * form; re-sending the pre-fragment whole as one datagram
+		 * (or re-marking it) would be the 576 hole again. */
+		for (i = 0; i < ike_sa->intermediate_replay_nfrags; i++) {
+			if (!ike_sa->intermediate_replay_frags[i])
+				continue;
+			if (sendfromto(sock,
+				       ike_sa->intermediate_replay_frags[i]->v,
+				       ike_sa->intermediate_replay_frags[i]->l,
+				       ike_sa->local, ike_sa->remote, 1) == -1)
+				break;
+		}
+		ike_sa->intermediate_replay_sent = now;
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "H1 replay: re-sent cached gen-0 IKE_INTERMEDIATE response (%d fragment datagrams)\n",
+			   ike_sa->intermediate_replay_nfrags);
+		return;
+	}
+
 #ifdef ENABLE_NATT
 	/* A replayed response over UDP/4500 needs the RFC 3948 non-ESP
 	 * marker, exactly like the other send paths.  Use a copy so the
@@ -886,52 +923,43 @@ ikev2_transmit(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 	    else
 		want_frag = (packet->l >= IPV6_MAX_FRAGMENT_SIZE);
 	    if (want_frag) {
-		/* Keep a whole-packet copy before ikev2_frag_send() consumes
-		 * it, and arm a retransmit of THAT copy (not re-send now).
-		 * Without this a fragmented request was never retransmitted
-		 * (review R1.3), so a lost intermediate response deadlocked
-		 * the SA -- the responder can only replay if the initiator
-		 * duty-cycles the request. */
-		rc_vchar_t *whole = rc_vdup(packet);
-		if (ikev2_frag_send(ike_sa, &packet) == 0) {
-		    if (whole) {
-#ifdef ENABLE_NATT
-			/* The retransmit below re-sends `whole` as one datagram;
-			 * on a NAT-T (4500) path that datagram too needs the
-			 * RFC 3948 non-ESP marker.  Bake it in now so the raw
-			 * send in isakmp_retransmit stays well-formed. */
-			if (natt_check_udp_encap(ike_sa->remote,
-						 ike_sa->local) > 0) {
-			    rc_vchar_t *mark = natt_set_non_esp_marker(whole);
-			    if (mark)
-				whole = mark;
-			    else
-				rc_vfree(whole), whole = 0;
-			}
-#endif
-			if (whole) {
-			    int r = isakmp_schedule_retransmit(
-				&ike_sa->transmit_info, whole, ike_sa->local,
-				ike_sa->remote);
-			    /* A fragmented request that cannot be retransmitted
-			     * leaves the SA with NO lost-message recovery during
-			     * the window: a lost reply would deadlock it.  The
-			     * packet is already on the wire, so fail loud rather
-			     * than pretend recovery is armed. */
-			    if (r != 0)
-				isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-					   "RT-ARM: FAILED to arm fragmented-request retransmit (ret=%d): lost-message recovery disabled for this exchange\n",
-					   r);
-			}
+		/* Cache the EXACT fragment datagrams that go out and arm a
+		 * retransmit of THOSE (fragment-list replay, R-c84373b8 #1):
+		 * a fragment stream is only recoverable by re-sending the
+		 * same SKF datagrams (each already carries its RFC 3948
+		 * marker; the peer reassembles by message_id and drops
+		 * duplicates).  Trusting a pre-fragment whole packet -- or
+		 * later re-fragmenting it -- is wrong: a raw whole over 576
+		 * bytes dies on a 576-MTU path and re-fragmenting
+		 * re-encrypts under different keys. */
+		rc_vchar_t **frags = NULL;
+		int nfrags = 0;
+		uint32_t tmsgid = get_uint32(
+		    &((struct ikev2_header *)packet->v)->message_id);
+		if (ikev2_frag_send(ike_sa, &packet, &frags, &nfrags) == 0) {
+		    if (frags && nfrags > 0) {
+			int r = isakmp_schedule_retransmit_frags(
+			    &ike_sa->transmit_info, frags, nfrags,
+			    ike_sa->local, ike_sa->remote);
+			/* A fragmented request that cannot be retransmitted
+			 * leaves the SA with NO lost-message recovery during
+			 * the window: a lost reply would deadlock it.  The
+			 * packet is already on the wire, so fail loud
+			 * rather than pretend recovery is armed. */
+			if (r != 0)
+			    isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR,
+				       PLOGLOC,
+				       "RT-ARM: FAILED to arm fragmented-request retransmit (ret=%d): lost-message recovery disabled for this exchange\n",
+				       r);
 		    } else {
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-				   "RT-ARM: rc_vdup failed, no retransmit copy kept: lost-message recovery disabled for this exchange\n");
-			rc_vfree(whole);
+				   "RT-ARM: no fragment datagrams captured, no retransmit copy kept: lost-message recovery disabled for this exchange\n");
 		    }
+		    ike_sa->transmit_info.message_id = tmsgid;
 		    return 0;	/* packet was fragmented and sent */
 		}
-		if (whole)
-		    rc_vfree(whole);
+		/* fragmentation failed before any send: fall through to the
+		 * original datagram */
 	    }
 		/* fragmentation not needed or failed, send original */
 	}
@@ -952,67 +980,80 @@ ikev2_transmit_response(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			struct sockaddr *local, struct sockaddr *remote)
 {
 	struct transmit_info	*info;
+	uint32_t msgid;
 
 	TRACE((PLOGLOC, "ikev2_transmit_response(%p, %p) len %d\n",
 	       ike_sa, packet, (int)packet->l));
 
+	/* The response echoes the request's Message ID; record which
+	 * request this cache answers so a reassembled retransmit can be
+	 * replayed by message_id even when the fragmented path never
+	 * advanced recv_message_id. */
+	msgid = get_uint32(&((struct ikev2_header *)packet->v)->message_id);
+
 	if (ike_sa->frag_supported) {
 	    int over;
-	    rc_vchar_t *cached = 0;
+	    rc_vchar_t **frags = NULL;
+	    int nfrags = 0;
 
 	    if (SOCKADDR_FAMILY(ike_sa->remote) == AF_INET)
 		over = (packet->l >= IPV4_MAX_FRAGMENT_SIZE);
 	    else
 		over = (packet->l >= IPV6_MAX_FRAGMENT_SIZE);
 	    if (over) {
-		/* Keep the pre-fragment response so a retransmitted
-		 * request (SKF or not) replays THIS response, not the
-		 * previous non-fragmented one.  isakmp_force_retransmit
-		 * sends the cache raw, so bake the RFC 3948 marker in
-		 * now when the peer is on UDP/4500. */
-		cached = rc_vdup(packet);
-#ifdef ENABLE_NATT
-		if (cached &&
-		    natt_check_udp_encap(remote, local) > 0) {
-		    rc_vchar_t *mark = natt_set_non_esp_marker(cached);
-		    if (mark)
-			cached = mark;
-		    else {
-			rc_vfree(cached);
-			cached = 0;
-		    }
+		struct sockaddr *nsrc, *ndest;
+		int i;
+
+		/* Resolve the replay endpoints BEFORE any fragment goes to
+		 * the wire: on failure nothing was sent and the caller
+		 * still owns *packet (its frame frees pkt on -1 -- a
+		 * dangling pointer here would double-free).  Fragments are
+		 * the replay form (each is a self-contained SKF with the
+		 * RFC 3948 marker baked in) and a retransmitted request
+		 * must be answered by re-sending those exact datagrams --
+		 * never by re-sending the pre-fragment whole as one
+		 * oversized datagram (576-MTU hole in review). */
+		nsrc = rcs_sadup(local);
+		ndest = rcs_sadup(remote);
+		if (!nsrc || !ndest) {
+		    if (nsrc)
+			rc_free(nsrc);
+		    if (ndest)
+			rc_free(ndest);
+		    isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			       "response send aborted (rcs_sadup)\n");
+		    return -1;
 		}
-#endif
-		if (ikev2_frag_send(ike_sa, &packet) == 0) {
+
+		if (ikev2_frag_send(ike_sa, &packet, &frags, &nfrags) == 0) {
 		    info = &ike_sa->response_info;
 		    if (info->packet)
 			rc_vfree(info->packet);
-		    info->packet = cached;
-		    cached = 0;
+		    if (info->frags) {
+			for (i = 0; i < info->nfrags; i++)
+			    if (info->frags[i])
+				rc_vfree(info->frags[i]);
+			racoon_free(info->frags);
+		    }
 		    if (info->src)
 			rc_free(info->src);
 		    if (info->dest)
 			rc_free(info->dest);
-		    info->src = rcs_sadup(local);
-		    info->dest = rcs_sadup(remote);
-		    if (!info->src || !info->dest) {
-			if (info->src)
-			    rc_free(info->src);
-			if (info->dest)
-			    rc_free(info->dest);
-			info->src = info->dest = 0;
-			if (info->packet)
-			    rc_vfree(info->packet);
-			info->packet = 0;
-		    } else {
-			gettimeofday(&info->sent_time, 0);
-		    }
+		    info->packet = NULL;
+		    info->frags = frags;
+		    info->nfrags = nfrags;
+		    info->src = nsrc;
+		    info->dest = ndest;
+		    info->message_id = msgid;
+		    gettimeofday(&info->sent_time, 0);
 		    return 0;
 		}
-		if (cached)
-		    rc_vfree(cached);
+		/* fragmentation failed before any fragment went to the
+		 * wire: *packet is still owned by the caller; fall through
+		 * to a plain (non-fragmented) send of the original. */
+		rc_free(nsrc);
+		rc_free(ndest);
 	    }
-	    /* fragmentation not needed or failed before any send */
 	}
 
 	if (packet->l > IKEV2_SHOULD_SUPPORT_PACKET_SIZE) {
@@ -1022,7 +1063,6 @@ ikev2_transmit_response(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	}
 
 	info = &ike_sa->response_info;
-	info->packet = packet;
 	/* response_info outlives the transmit path (peer may retransmit
 	 * the request and force a replay), so own private copies of the
 	 * endpoints instead of borrowing the caller's.  The IKE_SA rekey
@@ -1042,9 +1082,29 @@ ikev2_transmit_response(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		if (info->dest)
 			rc_free(info->dest);
 		info->src = info->dest = NULL;
-		info->packet = NULL;
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "response replay-arm failed (rcs_sadup)\n");
 		return -1;
 	}
+
+	/* Replace any previous cache (fragmented or whole) BEFORE taking
+	 * ownership of the new packet; the old response was already sent
+	 * and must not leak. */
+	if (info->packet)
+		rc_vfree(info->packet);
+	if (info->frags) {
+		int i;
+
+		for (i = 0; i < info->nfrags; i++)
+			if (info->frags[i])
+				rc_vfree(info->frags[i]);
+		racoon_free(info->frags);
+	}
+	info->packet = packet;
+	info->frags = NULL;
+	info->nfrags = 0;
+	info->message_id = msgid;
+	gettimeofday(&info->sent_time, 0);
 
 	isakmp_transmit_noretry(&ike_sa->response_info, packet, info->src,
 				info->dest);
@@ -8239,6 +8299,37 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	if (ikev2_transmit_response(sa, pkt, src, dst) != 0)
 		goto drop2;
 	pkt = 0;
+	/* If the response went out fragmented, the wire form is the SKF
+	 * datagram list now cached in response_info.  Own a private copy
+	 * for the gen-0 replay cache (response_info is reused by later
+	 * exchanges), so a 576-MTU retransmit replays per-fragment UDP --
+	 * the pre-fragment whole cannot be re-fragmented under gen-1 keys
+	 * nor carried as one datagram. */
+	{
+		int fi;
+
+		if (sa->intermediate_replay_frags) {
+			for (fi = 0; fi < sa->intermediate_replay_nfrags; fi++)
+				if (sa->intermediate_replay_frags[fi])
+					rc_vfree(sa->intermediate_replay_frags[fi]);
+			racoon_free(sa->intermediate_replay_frags);
+			sa->intermediate_replay_frags = 0;
+			sa->intermediate_replay_nfrags = 0;
+		}
+		if (sa->response_info.frags &&
+		    sa->response_info.nfrags > 0) {
+			sa->intermediate_replay_frags = racoon_calloc(
+			    (size_t)sa->response_info.nfrags,
+			    sizeof(rc_vchar_t *));
+			if (sa->intermediate_replay_frags) {
+				for (fi = 0; fi < sa->response_info.nfrags; fi++)
+					sa->intermediate_replay_frags[fi] =
+					    rc_vdup(sa->response_info.frags[fi]);
+				sa->intermediate_replay_nfrags =
+				    sa->response_info.nfrags;
+			}
+		}
+	}
 	ikev2_payloads_destroy(&payl);
 	rc_vfree(inner);
 	inner = 0;
