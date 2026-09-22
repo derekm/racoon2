@@ -6542,20 +6542,33 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 		for (fp = 0; fp < MAXPROPPAIRLEN; ++fp) {
 			struct prop_pair *np = peer_proposal ? peer_proposal[fp] : NULL;
 			struct prop_pair *tr;
-			int has_addke = 0;
+			int has_addke = 0, has_classic = 0;
 			if (!np)
 				continue;
+			/* RFC 9370 s2.2.1: the peer offered type-6/ADDKE on the
+			 * initial IKE_SA but did NOT negotiate IKE_INTERMEDIATE
+			 * (no 16438), so its ADDKE must not be actioned.  The
+			 * ADDKE transform may be a *separate* proposal (drop it)
+			 * or appended INTO the classical proposal (racoon2's
+			 * ikev2_maybe_offer_ikesa_addke keeps it with the
+			 * ENCR/PRF/DH); the latter must still match classically
+			 * by ignoring the type-6 transform, or the whole SA is
+			 * rejected with "no proposal chosen".  Keep any proposal
+			 * that retains a usable non-ADDKE (classical) anchor;
+			 * drop only pure-ADDKE proposals.  The addke-recording
+			 * block below is gated on (spi || allow_init_addke), so
+			 * a kept type-6 transform cannot arm ADDKE here. */
 			for (tr = np->tnext; tr; tr = tr->next) {
 				struct ikev2transform *t =
 				    (struct ikev2transform *)tr->trns;
-				if (t && t->transform_type ==
-					    IKEV2TRANSFORM_TYPE_ADDKE) {
+				unsigned int tt = t ? t->transform_type : 0;
+				if (tt == IKEV2TRANSFORM_TYPE_ADDKE)
 					has_addke = 1;
-					break;
-				}
+				else
+					has_classic = 1;
 			}
-			if (!has_addke)
-				filtered[fp] = np;
+			if (has_classic)
+				filtered[fp] = np; /* classical anchor: keep */
 		}
 		matched_proposal = ikev2_find_match(my_proposal, filtered, 0);
 	} else
