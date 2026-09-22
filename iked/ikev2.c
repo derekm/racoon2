@@ -317,6 +317,11 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 	    ikehdr->exchange_type == IKEV2EXCH_IKE_INTERMEDIATE &&
 	    ike_sa->intermediate_replay != NULL &&
 	    get_uint32(&ikehdr->message_id) == ike_sa->intermediate_replay_msgid) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_DEBUG, PLOGLOC,
+			   "RT-REPLAY: retransmitted gen-0 intermediate req detected "
+			   "(msgid=%u replay=%p)\n",
+			   (unsigned)get_uint32(&ikehdr->message_id),
+			   (void *)ike_sa->intermediate_replay);
 		ikev2_replay_intermediate_response(ike_sa);
 		goto end;
 	}
@@ -854,9 +859,12 @@ ikev2_transmit(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 		rc_vchar_t *whole = rc_vdup(packet);
 		if (ikev2_frag_send(ike_sa, &packet) == 0) {
 		    if (whole) {
-			isakmp_schedule_retransmit(&ike_sa->transmit_info,
-						   whole, ike_sa->local,
-						   ike_sa->remote);
+			int r = isakmp_schedule_retransmit(&ike_sa->transmit_info,
+							  whole, ike_sa->local,
+							  ike_sa->remote);
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+				   "RT-ARM: fragmented transmitted, retransmit armed (ret=%d)\n",
+				   r);
 		    } else {
 			rc_vfree(whole);
 		    }
@@ -7871,10 +7879,17 @@ initiator_ike_intermediate_send(struct ikev2_sa *sa)
 	sa->intermediate_req = content;
 	content = 0;
 
+	/* Set the awaiting-response state FIRST: ikev2_set_state() tears down
+	 * transmit_info (stop_retransmit) on every transition, which would
+	 * kill the request's retransmit timer armed by ikev2_transmit()
+	 * below as soon as it was created.  Ordering the state before the
+	 * send lets the retransmit timer survive, so a lost intermediate
+	 * response is retransmitted and the responder replays its cached
+	 * gen-0 response (review R1). */
+	ikev2_set_state(sa, IKEV2_STATE_INI_IKE_INTERMEDIATE_SENT);
 	if (ikev2_transmit(sa, pkt) != 0)
 		goto fail;
 	pkt = 0;
-	ikev2_set_state(sa, IKEV2_STATE_INI_IKE_INTERMEDIATE_SENT);
 	ikev2_payloads_destroy(&payl);
 	rc_vfree(inner);
 	return;
