@@ -3467,7 +3467,16 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 #endif
 
       send_response:
-	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_AUTH, IKEV2FLAG_RESPONSE, 1,
+	/* RFC 9242: when IKE_INTERMEDIATE (exch 43) runs between IKE_SA_INIT
+	 * and IKE_AUTH, the AUTH request's Message ID is no longer 1 (the
+	 * intermediate round consumed it); the response must echo the
+	 * request's actual Message ID.  ikev2_create_child_responder()
+	 * stashed that in child_sa->message_id.  (This was hardcoded to 1,
+	 * which looked right without IKE_INTERMEDIATE but left the phone
+	 * rejecting the response forever once the intermediate round
+	 * shifted ids.) */
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_AUTH, IKEV2FLAG_RESPONSE,
+				     child_sa->message_id,
 				     ike_sa, &payl);
 	if (!pkt)
 		goto fail;
