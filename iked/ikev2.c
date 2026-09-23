@@ -162,7 +162,9 @@ static void informational_initiator_recv(struct ikev2_sa *, rc_vchar_t *,
 static int ikev2_check_message_ordering(struct ikev2_sa *, uint32_t, int,
 					struct sockaddr *, struct sockaddr *);
 static int ikev2_retransmit_forced(struct ikev2_sa *, uint32_t, int);
+#ifdef WITH_INTERMEDIATE
 static void ikev2_replay_intermediate_response(struct ikev2_sa *);
+#endif /* WITH_INTERMEDIATE */
 static int ikev2_check_icv_prev_gen(struct ikev2_sa *, rc_vchar_t *);
 static int ikev2_check_new_request(rc_vchar_t *, struct sockaddr *,
 				   struct sockaddr *);
@@ -307,6 +309,7 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 		goto end;
 	}
 
+#ifdef WITH_INTERMEDIATE
 	/* R1 (review): a retransmitted gen-0 IKE_INTERMEDIATE request --
 	 * whole packet or SKF fragment -- is encrypted under the pre-update
 	 * keys, so once the responder advanced to gen-1 it can never be
@@ -325,6 +328,7 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 		ikev2_replay_intermediate_response(ike_sa);
 		goto end;
 	}
+#endif /* WITH_INTERMEDIATE */
 
 	/*
 	 * Handle IKEv2 fragment (SKF) reassembly BEFORE payload checking.
@@ -745,6 +749,7 @@ ikev2_retransmit_forced(struct ikev2_sa *ike_sa, uint32_t message_id,
  * needed.  (Old H1 tried to re-validate the request ICV with retained
  * prev-gen keys, but that was dead for AEAD and never saw the fragmented/
  * decrypt-failed path; verbatim replay of the response is the working fix.) */
+#ifdef WITH_INTERMEDIATE
 static void
 ikev2_replay_intermediate_response(struct ikev2_sa *ike_sa)
 {
@@ -816,6 +821,7 @@ ikev2_replay_intermediate_response(struct ikev2_sa *ike_sa)
 		   "H1 replay: re-sent cached gen-0 IKE_INTERMEDIATE response (%zu bytes)\n",
 		   ike_sa->intermediate_replay->l);
 }
+#endif /* WITH_INTERMEDIATE */
 
 uint32_t
 ikev2_request_id(struct ikev2_sa *ike_sa)
