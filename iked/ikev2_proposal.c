@@ -619,6 +619,60 @@ ikev2_match_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 		;
 	}
 
+#ifdef WITH_ADDKE
+	/*
+	 * RFC 9370 mirror of the omit-above: the existing branch drops
+	 * OUR type-6 when the peer lacks it (initiator offers, responder
+	 * declines).  The reverse — the peer's proposal carries an ADDKE
+	 * transform but ours does not — silently stripped the peer's
+	 * offer from the response SA: ikev2_ipsec_sa_to_proplist only
+	 * emits type-6 for an initiator or a peer that already proved
+	 * its offer (20157fb), so a responder's own proposal never
+	 * carries it, the type-keyed loop above never sees the peer's,
+	 * and ikev2_construct_sa() packed my_proposal[1] without it.
+	 * iOS rejects that as a failed exchange and deletes the IKE_SA
+	 * (observed live: DELETE IKE_SA at the first child rekey, our
+	 * response stripped its ADDKE ML-KEM-768 offer).  Carry the
+	 * peer's ADDKE transforms into the matched list so the echo
+	 * (response SA) and ikev2_child_addke_mark (pending/followup)
+	 * both see them.  Mirrors ikev2_compare_transforms' WITH_ADDKE
+	 * acceptance of a peer offer we have no counterpart for.
+	 */
+	{
+		struct prop_pair *pt;
+
+		for (pt = peer_transforms; pt; pt = pt->next) {
+			struct ikev2transform *ptf;
+			struct prop_pair *have;
+			unsigned int ptype;
+
+			ptf = (struct ikev2transform *)pt->trns;
+			if (!ptf)
+				continue;
+			ptype = ptf->transform_type;
+			if (ptype < IKEV2TRANSFORM_TYPE_ADDKE ||
+				    ptype > IKEV2TRANSFORM_TYPE_ADDKE + 6)
+				continue;
+			/* already carried (our own ADDKE matched)? */
+			for (have = head.next; have; have = have->next) {
+				struct ikev2transform *ht =
+				    (struct ikev2transform *)have->trns;
+				if (ht && ht->transform_type == ptype)
+					break;
+			}
+			if (have)
+				continue;
+			tail->next = proppair_dup(pt);
+			if (!tail->next)
+				goto fail_nomem;
+			TRACE((PLOGLOC,
+			       "carry peer ADDKE type %u id %u into matched proposal\n",
+			       ptype, get_uint16(&ptf->transform_id)));
+			tail = tail->next;
+		}
+	}
+#endif
+
 	return head.next;
 
       fail_nomem:
