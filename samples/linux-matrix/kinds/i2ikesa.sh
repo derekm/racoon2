@@ -1,8 +1,13 @@
 #!/bin/sh
-# kinds/i2ike.sh — PQC ADDKE case: iked<->iked on 192.0.4.x, each in its OWN
-# netns on a P2P veth (separate socket+XFRM stack), so the case is fully
-# self-contained and systemd-free — the only kind that runs the RFC 9370
-# ADDKE path end-to-end (strongSwan charon has no ML-KEM to peer with).
+# kinds/i2ikesa.sh — PQC ADDKE IKE_SA-rekey case: iked<->iked on 192.0.4.x,
+# each in its OWN netns on a P2P veth (separate socket+XFRM stack), so the
+# case is fully self-contained and systemd-free — the only kind that runs the
+# RFC 9370 ADDKE path end-to-end (strongSwan charon has no ML-KEM to peer
+# with).  NOTE: every resource name here (netns, veth, sockets, resume dirs,
+# conf dir) is UNIQUE to this kind — i2ike.sh must never share them, or a
+# lingering i2ike daemon/netns in the same runner (e.g. a container after the
+# previous case's pkill -9) leaks xfrm state into this case and IKE_SA rekey
+# silently never fires (route through the stale SAs instead).
 # Gate: run.sh only dispatches this case when ADDKE is available (gate=addke,
 # R2_ADDKE=yes / xfrm-addke build), so it runs on Fedora 44 (OpenSSL 3.5) and
 # skips on an OpenSSL 3.0 Ubuntu build.
@@ -13,16 +18,16 @@ kind_i2ikesa() {
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 
-	NSR=i2ike-r; NSI=i2ike-i; VR=i2v-r; VI=i2v-i
+	NSR=i2ikesa-r; NSI=i2ikesa-i; VR=i2kesa-v-r; VI=i2kesa-v-i
 	HR=192.0.4.1; HI=192.0.4.2
-	PRIVRES_R=/tmp/r2-i2ike-resume-r; PRIVRES_I=/tmp/r2-i2ike-resume-i
-	D=/tmp/r2-i2ike; C=/tmp/r2-i2ike-conf
+	PRIVRES_R=/tmp/r2-i2ikesa-resume-r; PRIVRES_I=/tmp/r2-i2ikesa-resume-i
+	D=/tmp/r2-i2ikesa; C=/tmp/r2-i2ikesa-conf
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
 	cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
-	spmd { unix "/tmp/spmif-i2ike-r"; };
+	spmd { unix "/tmp/spmif-i2ikesa-r"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -76,7 +81,7 @@ EOF
 	cat > "$C/initiator.conf" <<EOF
 interface {
 	ike { "$HI"; };
-	spmd { unix "/tmp/spmif-i2ike-i"; };
+	spmd { unix "/tmp/spmif-i2ikesa-i"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -133,7 +138,7 @@ EOF
 	# a pkill on the conf-internal remote name matches nothing and leaks
 	# up to 4 daemons holding the netns.
 	pkill -9 -f "$C/" 2>/dev/null || true
-	rm -f /tmp/spmif-i2ike-r /tmp/spmif-i2ike-i /tmp/iked.sock-i2ike-r /tmp/iked.sock-i2ike-i
+	rm -f /tmp/spmif-i2ikesa-r /tmp/spmif-i2ikesa-i /tmp/iked.sock-i2ikesa-r /tmp/iked.sock-i2ikesa-i
 
 	for NS in "$NSR" "$NSI"; do
 		ip netns del "$NS" 2>/dev/null || true
@@ -160,18 +165,18 @@ EOF
 
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	RSPMD=$!
-	i=0; until [ -S /tmp/spmif-i2ike-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ike-r RACOON2_RESUME_DIR="$PRIVRES_R" \
+	i=0; until [ -S /tmp/spmif-i2ikesa-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ikesa-r RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
 	ISPMD=$!
-	i=0; until [ -S /tmp/spmif-i2ike-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ike-i RACOON2_RESUME_DIR="$PRIVRES_I" \
+	i=0; until [ -S /tmp/spmif-i2ikesa-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ikesa-i RACOON2_RESUME_DIR="$PRIVRES_I" \
 	    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 
 	sleep 2
-	"$SBIN/ikedctl" -s /tmp/iked.sock-i2ike-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+	"$SBIN/ikedctl" -s /tmp/iked.sock-i2ikesa-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 
 	up=0
 	i=0
