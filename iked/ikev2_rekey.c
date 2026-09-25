@@ -1311,6 +1311,13 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 		goto fail;
 	if (ikev2_rekey_responder_finish(ctx) != 0)
 		goto fail;
+	/* success: the rekeyed SA is complete in its own right (already in
+	 * the SA list via ikev2_create_sa); drop the deferred-rekey link so
+	 * disposing the OLD SA cannot recurse into a live ESTABLISHED SA
+	 * that owns children (ikev2_dispose_sa asserts the child list is
+	 * empty).  Mirrors the initiator tail and the ADDKE timeout/abandon
+	 * paths, which all clear old_sa->new_sa. */
+	old_sa->new_sa = NULL;
 
 	/*
 	 * Reply with the followup's KEr(1): HDR(IKE_FOLLOWUP_KE),
@@ -1362,6 +1369,7 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 	if (new_sa)
 		ikev2_set_state(new_sa, IKEV2_STATE_DEAD);
 	ikev2_rekey_responder_ctx_free(ctx);
+	old_sa->new_sa = NULL;
 	old_sa->rekey_inprogress = FALSE;
 	return -1;
 }

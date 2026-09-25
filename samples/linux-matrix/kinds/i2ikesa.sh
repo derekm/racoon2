@@ -220,6 +220,39 @@ EOF
 		log "FAIL: IKE_SA rekey not ADDKE/ML-KEM (ikesa=${ikesa:-0})"
 	fi
 
+	# Rekey teardown: the initiator DELETEs the old IKE_SA (rfc7296
+	# 2.8.4) and the responder's periodic reaper then disposes it.
+	# Regression: the responder ADDKE completion used to leave
+	# old_sa->new_sa pointing at the LIVE rekeyed SA, so that dispose
+	# recursed (ike_sa.c:1058) into an SA that owns children and
+	# asserted -> SIGABRT -> data plane died mid-session (seen with
+	# iOS at the IKE_SA rekey).  Settle past the DELETE + one reaper
+	# pass, then prove both daemons are still alive and the child SA
+	# that was adopted onto the rekeyed IKE_SA is still installed.
+	sleep 6
+	crash=0
+	akill=0
+	for L in "$D/resp-iked.log" "$D/init-iked.log"; do
+		if grep -q 'Assertion.*failed' "$L" 2>/dev/null; then
+			log "FAIL: assertion crash in $L: $(grep -m1 'Assertion.*failed' "$L")"
+			crash=1
+		fi
+	done
+	alive_r=$(pgrep -f "$C/" 2>/dev/null | wc -l)
+	[ "${alive_r:-0}" -ge 4 ] || { log "FAIL: daemons died after IKE_SA rekey teardown (alive=$alive_r)"; akill=1; }
+	# ESP state count is on the REKEYED IKE_SA now: if the responder
+	# seeded its child only to the old (deleted) IKE_SA, the states
+	# vanish and the data plane is dead even though IKE is up.
+	re2=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+	ie2=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+	if [ "${re2:-0}" -lt 2 ] || [ "${ie2:-0}" -lt 2 ]; then
+		log "FAIL: ESP states lost after IKE_SA rekey teardown (resp=$re2 init=$ie2)"
+		akill=1
+	fi
+	if [ "${crash:-0}" -eq 0 ] && [ "${akill:-0}" -eq 0 ]; then
+		log "IKE_SA rekey teardown clean: old SA deleted, daemons alive, ESP resp=$re2 init=$ie2"
+	fi
+
 	# kill daemons by the unique per-run conf dir (it IS in their argv);
 	# a pkill on the conf-internal remote name matches nothing and leaks
 	# up to 4 daemons holding the netns.
