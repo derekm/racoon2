@@ -143,6 +143,19 @@ jobs:
           test -f /usr/include/openssl/ml_kem.h && echo "ml_kem.h present (ADDKE buildable)" \
             || { echo "WARNING: no /usr/include/openssl/ml_kem.h"; }
 
+      - name: Probe charon ML-KEM (gate for any future charon PQC row)
+        run: |
+          CHARON=$(ls /usr/libexec/strongswan/charon /usr/lib/ipsec/charon 2>/dev/null | head -1)
+          if [ -z "$CHARON" ]; then
+            echo "PROBE: no charon binary found; SKIP any charon PQC row"
+            exit 0
+          fi
+          if strings "$CHARON" | grep -q mlkem768; then
+            echo "PROBE: $CHARON has mlkem768 -> charon PQC row is legal"
+          else
+            echo "PROBE: $CHARON has NO mlkem768 (distro strongswan vs OpenSSL 3.5 gap) -> SKIP any charon PQC row; iked<->iked i2i rows remain the PQC gate"
+          fi
+
       - name: Build + install (xfrm + --enable-addke)
         run: |
           export R2_ADDKE=yes R2_PREFIX=/usr/local/racoon2
