@@ -206,12 +206,17 @@ EOF
 			log "FAIL: cannot apply netem loss on $NSR/$VR (no tc?); abort"
 			return 1
 		fi
+		d0=$(tc_dropped "$NSR" "$VR" || true)
+		ndrop=0
 
 		"$SBIN/ikedctl" -s /tmp/iked.sock-i2idrop-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 
 		# keep the high-loss window over the fragmented intermediate exchange
 		# (SA_INIT reply + gen-0 intermediate response), then ease off.
 		sleep 5
+		d1=$(tc_dropped "$NSR" "$VR" || true)
+		ndrop=$(( ${d1:-0} - ${d0:-0} ))
+		log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0})"
 		ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 5% 2>/dev/null || true
 
 		up=0
@@ -233,8 +238,8 @@ EOF
 		n_r=$(grep -c 'IKE_INTERMEDIATE ADDKE round complete' "$D/resp-iked.log" 2>/dev/null || true)
 		nreplay=$(grep -c 'H1 replay' "$D/resp-iked.log" 2>/dev/null || true)
 		[ "${n_i:-0}" -ge 1 ] && [ "${n_r:-0}" -ge 1 ] && nint=1
-		log "I2I-drop attempt $attempt: intermediate round(init=$n_i resp=$n_r) up=$up H1 replay=$nreplay"
-		if [ "$up" -eq 1 ] && [ "${nint:-0}" -eq 1 ] && [ "${nreplay:-0}" -ge 1 ]; then
+		log "I2I-drop attempt $attempt: intermediate round(init=$n_i resp=$n_r) up=$up H1 replay=$nreplay drop=$ndrop"
+		if [ "$up" -eq 1 ] && [ "${nint:-0}" -eq 1 ] && [ "${nreplay:-0}" -ge 1 ] && [ "${ndrop:-0}" -ge 1 ]; then
 			break
 		fi
 	done

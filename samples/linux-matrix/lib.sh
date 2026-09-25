@@ -16,6 +16,15 @@ SPMD_UNIT="${R2_SPMD_UNIT:-spmd}"
 
 log() { printf '%s\n' "$*"; }
 
+# netem's own dropped-datagram counter, read from `tc -s qdisc show`.
+# A replay marker alone can pass with zero measured loss; this counter
+# makes "replayed" and "actually dropped" agree (counted-drop gate).
+tc_dropped() {
+	_ns=$1 _dev=$2
+	ip netns exec "$_ns" tc -s qdisc show dev "$_dev" 2>/dev/null \
+		| grep -oE 'dropped [0-9]+' | head -1 | awk '{print $2}'
+}
+
 # hex of a whole-file PSK. xxd is not on every minimal image; od is coreutils.
 psk_file_hex() {
 	f=$1

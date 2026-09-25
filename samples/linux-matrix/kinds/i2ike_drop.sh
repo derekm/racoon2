@@ -201,6 +201,8 @@ EOF
 			log "FAIL: cannot apply netem loss on $NSR/$VR (no tc?); abort"
 			break
 		fi
+		d0=$(tc_dropped "$NSR" "$VR" || true)
+		ndrop=0
 
 		rekeyed=0; i=0
 		while [ "$i" -lt 130 ]; do
@@ -220,6 +222,9 @@ EOF
 		[ "$rekeyed" -eq 1 ] || \
 			log "FAIL: child-SA rekey not seen in 130s under loss (attempt $attempt; resp esp rows: $(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp'))"
 
+		d1=$(tc_dropped "$NSR" "$VR" || true)
+		ndrop=$(( ${d1:-0} - ${d0:-0} ))
+		log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0})"
 		# ease off so the followup SK(1) exchange completes cleanly once the
 		# response WAS replayed (the replay path is what we are proving).
 		ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 2% 2>/dev/null || true
@@ -245,12 +250,12 @@ EOF
 			log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
 		fi
 
-		if [ "$rekeyed" -eq 1 ] && [ "$pqc" -eq 1 ] && [ "${nreplay:-0}" -ge 1 ]; then
-			log "DROP-KILL-TEST: rekey survived the lost CREATE_CHILD response via armed-response replay (R2 replay x$nreplay, attempt $attempt)"
+		if [ "$rekeyed" -eq 1 ] && [ "$pqc" -eq 1 ] && [ "${nreplay:-0}" -ge 1 ] && [ "${ndrop:-0}" -ge 1 ]; then
+			log "DROP-KILL-TEST: rekey survived the lost CREATE_CHILD response via armed-response replay (R2 replay x$nreplay, netem-dropped=$ndrop, attempt $attempt)"
 			pass_ok=1
 			break
 		fi
-		log "attempt $attempt: rekeyed=$rekeyed pqc=$pqc nreplay=${nreplay:-0} (need replay >= 1; clean completion without a drop does not count)"
+		log "attempt $attempt: rekeyed=$rekeyed pqc=$pqc nreplay=${nreplay:-0} drop=${ndrop:-0} (need replay >= 1 AND measured drop >= 1; a marker without counted loss, or loss without a marker, both fail)"
 	done
 
 	pkill -9 -f "$C/" 2>/dev/null || true
