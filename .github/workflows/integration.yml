@@ -131,7 +131,7 @@ jobs:
           dnf install -y -q \
             autoconf automake libtool pkgconf-pkg-config gcc make \
             openssl openssl-devel libpcap-devel krb5-devel bison flex git \
-            iproute iproute-tc strongswan
+            iproute iproute-tc strongswan procps-ng
 
       - name: Checkout repository
         uses: actions/checkout@v4
