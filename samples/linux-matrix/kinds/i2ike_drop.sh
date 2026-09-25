@@ -67,7 +67,11 @@ policy pol {
 	my_sa_ipaddr "$HR";
 };
 ipsec ipsec_e {
-	ipsec_sa_lifetime_time 60 sec;
+	# responder must NOT initiate its own rekey inside the loss window:
+	# a simultaneous both-sides rekey steps on the initiator's retransmit
+	# (recv window consumed, response_info overwritten -> "dropping
+	# unordered" instead of replay).  Only the initiator rekeys (60s).
+	ipsec_sa_lifetime_time 3600 sec;
 	sa_index esp_e;
 };
 sa esp_e {
