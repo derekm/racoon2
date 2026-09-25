@@ -6,8 +6,8 @@
 #
 # Adjust R2_LAN_IP to the responder's LAN address on the outward NIC,
 # and R2_PUB_IP to the router's public (IGD external) address.
-R2_LAN_IP="${R2_LAN_IP:-192.168.68.119}"
-R2_PUB_IP="${R2_PUB_IP:-75.81.105.40}"
+R2_LAN_IP="${R2_LAN_IP:-192.168.0.165}"
+R2_PUB_IP="${R2_PUB_IP:-65.26.112.134}"
 
 ip addr add "${R2_PUB_IP}/32" dev lo 2>/dev/null || true
 set -e

@@ -5,7 +5,7 @@
 # ESP AES-CBC+HMAC needs the authenc template (CONFIG_CRYPTO_AUTHENC=m);
 # without it XFRM ADD returns ENOENT /
 # "unable to initialize cryptographic operations".
-R2_LAN_IP="${R2_LAN_IP:-192.168.68.119}"
+R2_LAN_IP="${R2_LAN_IP:-192.168.0.165}"
 
 modprobe xfrm_user || true
 modprobe esp4 || true

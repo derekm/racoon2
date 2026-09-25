@@ -739,6 +739,9 @@ ikev2_retransmit_forced(struct ikev2_sa *ike_sa, uint32_t message_id,
 	if (diff.tv_sec >= 1) {
 		TRACE((PLOGLOC, "force retransmit\n"));
 		isakmp_force_retransmit(&ike_sa->response_info);
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "R2 replay: re-sent armed response (message_id %u)\n",
+			   message_id);
 	} else {
 		TRACE((PLOGLOC, "rcv retransmit within 1sec, ignoring\n"));
 	}
