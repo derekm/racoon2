@@ -250,15 +250,7 @@ EOF
 		del=1
 	}
 	alive_r=0
-	if ! command -v pgrep >/dev/null 2>&1 || ! command -v pkill >/dev/null 2>&1; then
-		# fedora:44 container images do not ship procps-ng; without pgrep
-		# the alive gate below would silently read 0 (command-not-found
-		# swallowed by 2>/dev/null) and FAIL a live teardown, and the
-		# case-end pkill would no-op, leaking daemons into the next case.
-		# Fail loudly instead of mistaking a missing tool for dead daemons.
-		log "FAIL: pgrep/pkill not installed (procps-ng) — teardown-alive gate cannot run"
-		akill=1
-	else
+	require_procps || { akill=1; return 1; }
 	alive_r=$(pgrep -f "$C/" 2>/dev/null | wc -l)
 	[ "${alive_r:-0}" -ge 4 ] || { log "FAIL: daemons died after IKE_SA rekey teardown (alive=$alive_r)"; akill=1; }
 	# ESP state count is on the REKEYED IKE_SA now: if the responder
@@ -269,7 +261,6 @@ EOF
 	if [ "${re2:-0}" -lt 2 ] || [ "${ie2:-0}" -lt 2 ]; then
 		log "FAIL: ESP states lost after IKE_SA rekey teardown (resp=$re2 init=$ie2)"
 		akill=1
-	fi
 	fi
 	if [ "${crash:-0}" -eq 0 ] && [ "${akill:-0}" -eq 0 ] && [ "${del:-0}" -eq 0 ]; then
 		log "IKE_SA rekey teardown clean: DELETE received, old SA disposed, daemons alive, ESP resp=$re2 init=$ie2"

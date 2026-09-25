@@ -25,6 +25,16 @@ tc_dropped() {
 		| grep -oE 'dropped [0-9]+' | head -1 | awk '{print $2}'
 }
 
+# procps-ng guard: fedora:44 container images ship no pgrep/pkill unless
+# procps-ng is installed, so an alive gate would silently read 0 and a
+# case-end pkill would no-op, leaking daemons.  Fail loudly once, here.
+require_procps() {
+	if ! command -v pgrep >/dev/null 2>&1 || ! command -v pkill >/dev/null 2>&1; then
+		log "FAIL: pgrep/pkill not installed (procps-ng) — daemon alive/cleanup gates cannot run"
+		return 1
+	fi
+}
+
 # hex of a whole-file PSK. xxd is not on every minimal image; od is coreutils.
 psk_file_hex() {
 	f=$1
