@@ -6,7 +6,7 @@
 
 <p align="center">
 <strong>The Racoon2 IPsec server continuation</strong><br/>
-<em>IKEv1 + IKEv2 · RFC 7383 fragmentation · NAT-T / NAT-OA · Linux NETLINK_XFRM · iked / spmd / kinkd</em>
+<em>IKEv1 + IKEv2 · RFC 7383 fragmentation · RFC 9242 IKE_INTERMEDIATE · RFC 9370 ADDKE (ML-KEM) · NAT-T / NAT-OA · MOBIKE (UPDATE_SA_ADDRESSES) · crash-safe IKE_SA dump/resume · Linux NETLINK_XFRM · iked / spmd / kinkd</em>
 </p>
 
 <p align="center">
@@ -226,8 +226,14 @@ Currently, the system supports the following specifications:
 	(ML-KEM-768), a single pre-IKE_AUTH intermediate round on the initial
 	IKE_SA plus type-6 ADDKE on IKE_SA and CHILD rekeys, and RFC 9242
 	IntAuth_A into IKE_AUTH. Netns matrix (`samples/linux-matrix`, rows
-	`i2ike-addke` / `i2ikesa-addke` / `i2iinit-addke`) proves it
-	iked<->iked. Not implemented yet: RFC 8784 PPK (next protocol item),
+	`i2ike-addke` / `i2ikesa-addke` / `i2iinit-addke`, plus the
+	response-loss kill-tests `i2ike-drop` (R2 replay) and
+	`i2iinit-drop` / `i2iinit-drop576` (H1 replay)) proves it
+	iked<->iked: a netem-dropped CREATE_CHILD or IKE_INTERMEDIATE
+	response is replayed from the armed cache (gated on the replay
+	marker, so a clean completion without a drop cannot pass), the new
+	SPI takes packets on both sides, and the ML-KEM keymat hash matches.
+	Not implemented yet: RFC 8784 PPK (next protocol item),
 	EAP, ADDKE rounds 2+, and a non-racoon2 ML-KEM peer for cross-implementation
 	interop.
 
