@@ -220,24 +220,35 @@ EOF
 		log "FAIL: IKE_SA rekey not ADDKE/ML-KEM (ikesa=${ikesa:-0})"
 	fi
 
-	# Rekey teardown: the initiator DELETEs the old IKE_SA (rfc7296
-	# 2.8.4) and the responder's periodic reaper then disposes it.
+	# Rekey teardown — MUST actually run the old-SA dispose path, or the
+	# test proves nothing.  The initiator's rekey-done tail starts a wire
+	# DELETE IKE_SA for the old SA (ikev2_rekey.c rekey_done ->
+	# ikev2_sa_delete); the responder's ikev2_process_delete then aborts
+	# the old SA (DYING -> DEAD) and the periodic reaper disposes it.
 	# Regression: the responder ADDKE completion used to leave
 	# old_sa->new_sa pointing at the LIVE rekeyed SA, so that dispose
 	# recursed (ike_sa.c:1058) into an SA that owns children and
-	# asserted -> SIGABRT -> data plane died mid-session (seen with
-	# iOS at the IKE_SA rekey).  Settle past the DELETE + one reaper
-	# pass, then prove both daemons are still alive and the child SA
-	# that was adopted onto the rekeyed IKE_SA is still installed.
-	sleep 6
+	# asserted -> SIGABRT -> data plane died mid-session (seen with iOS
+	# at the IKE_SA rekey).  So: first prove the DELETE actually reached
+	# the responder (path exercised), then settle past the exchange +
+	# reaper ticks and prove both daemons are still alive, no assertion
+	# in stderr files either, and the adopted child SA is still up.
+	sleep 20
 	crash=0
 	akill=0
+	del=0
 	for L in "$D/resp-iked.log" "$D/init-iked.log"; do
-		if grep -q 'Assertion.*failed' "$L" 2>/dev/null; then
-			log "FAIL: assertion crash in $L: $(grep -m1 'Assertion.*failed' "$L")"
-			crash=1
-		fi
+		for F in "$L" "${L%.log}.out"; do
+			if grep -q 'Assertion.*failed' "$F" 2>/dev/null; then
+				log "FAIL: assertion crash in $F: $(grep -m1 'Assertion.*failed' "$F")"
+				crash=1
+			fi
+		done
 	done
+	grep -q 'received DELETE IKE_SA' "$D/resp-iked.log" 2>/dev/null || {
+		log "FAIL: responder never received DELETE IKE_SA (old-SA dispose path not exercised)"
+		del=1
+	}
 	alive_r=$(pgrep -f "$C/" 2>/dev/null | wc -l)
 	[ "${alive_r:-0}" -ge 4 ] || { log "FAIL: daemons died after IKE_SA rekey teardown (alive=$alive_r)"; akill=1; }
 	# ESP state count is on the REKEYED IKE_SA now: if the responder
@@ -249,8 +260,8 @@ EOF
 		log "FAIL: ESP states lost after IKE_SA rekey teardown (resp=$re2 init=$ie2)"
 		akill=1
 	fi
-	if [ "${crash:-0}" -eq 0 ] && [ "${akill:-0}" -eq 0 ]; then
-		log "IKE_SA rekey teardown clean: old SA deleted, daemons alive, ESP resp=$re2 init=$ie2"
+	if [ "${crash:-0}" -eq 0 ] && [ "${akill:-0}" -eq 0 ] && [ "${del:-0}" -eq 0 ]; then
+		log "IKE_SA rekey teardown clean: DELETE received, old SA disposed, daemons alive, ESP resp=$re2 init=$ie2"
 	fi
 
 	# kill daemons by the unique per-run conf dir (it IS in their argv);
@@ -263,8 +274,9 @@ EOF
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
-	if [ "$up" -ne 1 ] || [ "${ikesa:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; then
-		log "FAIL: PQC init-SA + IKE_SA rekey ADDKE incomplete (up=${up:-0} ikesa=${ikesa:-0} pqc=${pqc:-0})"
+	if [ "$up" -ne 1 ] || [ "${ikesa:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] \
+	   || [ "${crash:-0}" -ne 0 ] || [ "${akill:-0}" -ne 0 ] || [ "${del:-0}" -ne 0 ]; then
+		log "FAIL: PQC init-SA + IKE_SA rekey ADDKE incomplete (up=${up:-0} ikesa=${ikesa:-0} pqc=${pqc:-0} crash=${crash:-0} akill=${akill:-0} del=${del:-0})"
 		log "--- init-iked.log (IKE_SA rekey ADDKE) ---"
 		grep -E 'IKE_SA rekey ADDKE|FOLLOWUP|PQC|abort|err=' \
 			"$D/init-iked.log" 2>/dev/null | tail -6
