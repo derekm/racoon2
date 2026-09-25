@@ -259,6 +259,30 @@ test_validate(void)
 	rec.child[0].addke_link_len = R2RS_MAXSTR + 1;
 	CHECK(r2rs_validate(&rec) != 0, "validate pending ADDKE bad link len");
 
+	/* v5: fragment form binds nfrags and per-frag lengths */
+	fill_rec(&rec);
+	rec.resp_nfrags = 1;
+	rec.resp_frag_len[0] = R2RS_MAXFRAG;
+	CHECK(r2rs_validate(&rec) == 0, "validate single frag ok");
+	fill_rec(&rec);
+	rec.resp_nfrags = R2RS_MAXFRAGS + 1;
+	CHECK(r2rs_validate(&rec) != 0, "validate nfrags overrun");
+	fill_rec(&rec);
+	rec.resp_nfrags = 1;
+	rec.resp_frag_len[0] = R2RS_MAXFRAG + 1;
+	CHECK(r2rs_validate(&rec) != 0, "validate frag len overrun");
+	fill_rec(&rec);
+	rec.resp_nfrags = R2RS_MAXFRAGS;
+	for (int fi = 0; fi < R2RS_MAXFRAGS; fi++)
+		rec.resp_frag_len[fi] = R2RS_MAXFRAG;
+	/* MAXFRAGS*MAXFRAG == MAXRESP: boundary is legal */
+	CHECK(r2rs_validate(&rec) == 0, "validate frag total boundary ok");
+	fill_rec(&rec);
+	rec.resp_len = 100;
+	rec.resp_nfrags = 1;
+	rec.resp_frag_len[0] = R2RS_MAXFRAG;
+	CHECK(r2rs_validate(&rec) != 0, "validate whole+frag both set");
+
 	/* zero children is legal (IKE SA without matures) */
 	fill_rec(&rec);
 	rec.nchild = 0;

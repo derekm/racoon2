@@ -115,11 +115,31 @@ r2rs_validate(const struct r2rs_sa *rec)
 	if (!rec)
 		return -1;
 	if (rec->magic != R2RS_MAGIC ||
-	    (rec->version != R2RS_VERSION &&
-	     rec->version != R2RS_VERSION - 1))
+	    rec->version > R2RS_VERSION ||
+	    rec->version < R2RS_VERSION - 2)
 		return -1;
-	if (rec->version >= R2RS_VERSION && rec->resp_len > R2RS_MAXRESP)
+	if (rec->resp_len > R2RS_MAXRESP)
 		return -1;
+	if (rec->resp_nfrags > R2RS_MAXFRAGS)
+		return -1;
+	if (rec->version >= R2RS_VERSION) {
+		uint32_t f, total = 0;
+
+		/* exactly one response form: whole packet (resp_len) or
+		 * fragment list (resp_nfrags), never both.  Both zero is
+		 * legal (no response armed yet). */
+		if (rec->resp_len > 0 && rec->resp_nfrags > 0)
+			return -1;
+		for (f = 0; f < rec->resp_nfrags; f++) {
+			if (rec->resp_frag_len[f] > R2RS_MAXFRAG)
+				return -1;
+			total += rec->resp_frag_len[f];
+		}
+		/* per-frag caps already bound total to MAXFRAGS*MAXFRAG ==
+		 * MAXRESP; the check is belt and braces if the caps move. */
+		if (total > R2RS_MAXRESP)
+			return -1;
+	}
 	if (rec->nchild > R2RS_MAXCHILD)
 		return -1;
 	/* keys: len must fit data[]; anything else is a corrupt dump. */

@@ -31,9 +31,15 @@ extern "C" {
  * 3.1/2.10) instead of dropping it as unordered and then timing out
  * the peer at the retransmit budget (err=110).  Window counters are
  * now also refreshed per-advance (resume_dirty), not only at state
- * transitions. */
-#define R2RS_VERSION	4
-#define R2RS_MAXRESP	2048
+ * transitions.
+ * v5: fragmented responses too.  The ADDKE KEr reply is always over
+ * the 576-byte frag threshold, so the armed form is the fragment
+ * datagrams; resp_buf now holds either a whole packet (resp_nfrags==0)
+ * or the concatenated fragment datagrams with per-datagram lengths. */
+#define R2RS_VERSION	5
+#define R2RS_MAXRESP	4608
+#define R2RS_MAXFRAGS	8
+#define R2RS_MAXFRAG	576
 #define R2RS_MAXKEY	64
 #define R2RS_MAXSTR	64
 #define R2RS_MAXCHILD	8
@@ -99,6 +105,8 @@ struct r2rs_sa {
 	 * frags are variable-length and out of scope for the fixed record. */
 	uint32_t resp_msgid;
 	uint16_t resp_len;
+	uint16_t resp_nfrags;
+	uint16_t resp_frag_len[R2RS_MAXFRAGS];
 	uint8_t resp_buf[R2RS_MAXRESP];
 } __attribute__((packed));
 

@@ -470,7 +470,7 @@ ikev2_initiator_followup_send(struct ikev2_child_sa *child_sa,
 
 	message_id = ikev2_request_id(ike_sa);
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
-				     IKEV2FLAG_INITIATOR,
+				     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0),
 				     message_id, ike_sa, &payl);
 	rc_vfree(kei);
 	ikev2_payloads_destroy(&payl);
@@ -570,7 +570,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	 * actually matches; otherwise log and continue (the fragment
 	 * path already established authenticity).
 	 */
-	{
+	if (!is_response) {
 		uint32_t fid = get_uint32(&ikehdr->message_id);
 
 		if (ike_sa->recv_message_id == fid)
@@ -658,6 +658,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 					    "failed completing "
 					    "initiator IKE_SA-rekey "
 					    "ADDKE\n");
+				ikev2_update_message_id(ike_sa, rmsgid, TRUE);
 				rc_vfree(rct);
 				return;
 			}
@@ -687,6 +688,11 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			rc_vfree(rct);
 			return;
 		}
+		/* response to our followup request: commit the send window so
+		 * request_pending drops and the next exchange is not blocked
+		 * (review 2026-09-24: was never committed, retransmit never
+		 * stopped -- the matrix initiator stalled here). */
+		ikev2_update_message_id(ike_sa, rmsgid, TRUE);
 		rc_vfree(rct);
 		return;
 	}
@@ -942,6 +948,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ker, FALSE);
 		pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
+					     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
 					     IKEV2FLAG_RESPONSE,
 					     get_uint32(&ikehdr->message_id),
 					     ike_sa, &payl);

@@ -718,9 +718,14 @@ ikev2_retransmit_forced(struct ikev2_sa *ike_sa, uint32_t message_id,
 	 * so recv-1 never matches and without this the retransmit would
 	 * fall through into the handler and re-encapsulate (re-entering
 	 * ikev2_followup_ke_recv doubles the addke_sk append). */
-	if (ike_sa->recv_message_id - 1 != message_id &&
-	    !(ike_sa->response_info.message_id == message_id &&
+	if (!(ike_sa->response_info.message_id == message_id &&
 	      (ike_sa->response_info.packet || ike_sa->response_info.frags))) {
+		/* RFC 7296 2.10: only the response armed for THIS message id may
+		 * be replayed.  A recv-window match against a stale cache (the
+		 * previous response still armed while a CREATE_CHILD response
+		 * is being built asynchronously) answered the retransmit with
+		 * the wrong Message ID; fall through so the real response is
+		 * built instead (review 2026-09-24). */
 		return 0;
 	}
 
@@ -1050,6 +1055,7 @@ ikev2_transmit_response(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		    info->packet = NULL;
 		    info->frags = frags;
 		    info->nfrags = nfrags;
+		    ike_sa->resume_dirty = 1;	/* frag response armed; persist */
 		    info->src = nsrc;
 		    info->dest = ndest;
 		    info->message_id = msgid;
@@ -5461,10 +5467,14 @@ ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 		goto done;
 	}
-	ikev2_update_message_id(ike_sa, message_id, TRUE);
 	if (!child_sa
 	    || child_sa->state != IKEV2_CHILD_STATE_WAIT_RESPONSE)
 		goto unexpected;
+	/* commit the window only on a real WAIT_RESPONSE match (mirrors the
+	 * informational_initiator_recv fix in d627063): a duplicate or
+	 * unknown CREATE_CHILD response must not stop retransmit of the
+	 * request actually in flight (review 2026-09-24). */
+	ikev2_update_message_id(ike_sa, message_id, TRUE);
 
 #ifdef notyet
 	if (Notify) {

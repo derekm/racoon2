@@ -349,7 +349,7 @@ ikev2_resume_forget(struct ikev2_sa *sa)
 	unlink(path);
 }
 
-void
+int
 ikev2_resume_save(struct ikev2_sa *sa)
 {
 	struct r2rs_sa rec;
@@ -360,9 +360,9 @@ ikev2_resume_save(struct ikev2_sa *sa)
 	uint16_t lfam, lport, rfam, rport;
 
 	if (!sa || sa->state != IKEV2_STATE_ESTABLISHED)
-		return;
+		return -1;
 	if (!sa->sk_d || !sa->sk_e_i || !sa->sk_e_r || !sa->negotiated_sa)
-		return;
+		return -1;
 
 	memset(&rec, 0, sizeof(rec));
 	rec.magic = R2RS_MAGIC;
@@ -457,19 +457,54 @@ ikev2_resume_save(struct ikev2_sa *sa)
 	 * retransmitted request instead of dropping it as unordered. */
 	rec.resp_msgid = sa->response_info.message_id;
 	rec.resp_len = 0;
+	rec.resp_nfrags = 0;
 	if (sa->response_info.packet && !sa->response_info.frags &&
 	    sa->response_info.packet->l > 0 &&
 	    sa->response_info.packet->l <= R2RS_MAXRESP) {
 		rec.resp_len = (uint16_t)sa->response_info.packet->l;
 		memcpy(rec.resp_buf, sa->response_info.packet->v,
 		    rec.resp_len);
+	} else if (sa->response_info.frags && !sa->response_info.packet &&
+		   sa->response_info.nfrags > 0 &&
+		   sa->response_info.nfrags <= R2RS_MAXFRAGS) {
+		/* v5: the ADDKE KEr reply is always fragmented (576-byte
+		 * threshold); persist the exact datagrams so a post-restart
+		 * retransmit replays them.  skip if they exceed the record. */
+		size_t total = 0;
+		int f;
+
+		for (f = 0; f < sa->response_info.nfrags; f++)
+			if (sa->response_info.frags[f])
+				total += sa->response_info.frags[f]->l;
+		if (total >= R2RS_MAXRESP) {
+			rec.resp_nfrags = 0;
+		} else {
+			size_t off = 0;
+
+			rec.resp_nfrags = (uint16_t)sa->response_info.nfrags;
+			for (f = 0; f < sa->response_info.nfrags; f++) {
+				if (!sa->response_info.frags[f] ||
+				    sa->response_info.frags[f]->l == 0 ||
+				    sa->response_info.frags[f]->l >
+					R2RS_MAXFRAG)
+					break;
+				rec.resp_frag_len[f] =
+				    (uint16_t)sa->response_info.frags[f]->l;
+				memcpy(rec.resp_buf + off,
+				    sa->response_info.frags[f]->v,
+				    rec.resp_frag_len[f]);
+				off += rec.resp_frag_len[f];
+			}
+			if (f != sa->response_info.nfrags)
+				rec.resp_nfrags = 0;
+		}
 	}
 
 	(void)mkdir("/var/lib/racoon2", 0700);
 	if (mkdir(r2_resume_dir(), 0700) < 0 && errno != EEXIST) {
 		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "resume: mkdir %s failed\n", r2_resume_dir());
-		return;
+		return -1;
 	}
 	resume_filename(path, sizeof(path), rec.i_ck, rec.r_ck);
 	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
@@ -477,7 +512,7 @@ ikev2_resume_save(struct ikev2_sa *sa)
 	if (fd < 0) {
 		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "resume: open dump failed\n");
-		return;
+		return -1;
 	}
 	wr = write(fd, &rec, sizeof(rec));
 	if (wr != sizeof(rec) || fsync(fd) < 0) {
@@ -485,18 +520,19 @@ ikev2_resume_save(struct ikev2_sa *sa)
 		unlink(tmp);
 		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "resume: write dump failed\n");
-		return;
+		return -1;
 	}
 	close(fd);
 	if (rename(tmp, path) < 0) {
 		unlink(tmp);
 		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "resume: rename dump failed\n");
-		return;
+		return -1;
 	}
 	isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 		   "resume: saved children=%u ike_remain=%ld\n", rec.nchild,
 		   (long)(rec.ike_expire_at - (uint32_t)time(NULL)));
+	return 0;
 }
 
 void
@@ -531,8 +567,9 @@ restore_one(const char *path)
 		if (nr < 0)
 			return -1;
 		if (nr != (ssize_t)sizeof(rec)) {
-			/* v3 dump: prefix-sized, zero the v4 tail */
-			if (nr == (ssize_t)offsetof(struct r2rs_sa, resp_msgid))
+			/* v3/v4 dump: prefix-sized, zero the new tail */
+			if (nr == (ssize_t)offsetof(struct r2rs_sa, resp_msgid) ||
+			    nr == (ssize_t)offsetof(struct r2rs_sa, resp_nfrags))
 				memset((char *)&rec + nr, 0,
 				    sizeof(rec) - nr);
 			else
@@ -623,8 +660,9 @@ restore_one(const char *path)
 	}
 	nsa = NULL;
 
-	/* v4: rebuild the armed response so a retransmitted request is
-	 * answered with the exact bytes we sent pre-restart. */
+	/* v4/v5: rebuild the armed response so a retransmitted request is
+	 * answered with the exact bytes we sent pre-restart -- a whole
+	 * packet, or the fragment datagrams for the oversized ADDKE KEr. */
 	if (rec.version >= 4 && rec.resp_len > 0 &&
 	    rec.resp_len <= R2RS_MAXRESP) {
 		sa->response_info.packet = rc_vnew(rec.resp_buf, rec.resp_len);
@@ -632,6 +670,57 @@ restore_one(const char *path)
 			sa->response_info.message_id = rec.resp_msgid;
 			sa->response_info.src = rcs_sadup(sa->local);
 			sa->response_info.dest = rcs_sadup(sa->remote);
+		}
+	} else if (rec.version >= R2RS_VERSION && rec.resp_nfrags > 0 &&
+		   rec.resp_nfrags <= R2RS_MAXFRAGS) {
+		size_t off = 0;
+		int f;
+		int ok = 1;
+
+		for (f = 0; f < rec.resp_nfrags; f++) {
+			if (rec.resp_frag_len[f] == 0 ||
+			    rec.resp_frag_len[f] > R2RS_MAXFRAG) {
+				ok = 0;
+				break;
+			}
+			off += rec.resp_frag_len[f];
+		}
+		if (ok && off <= R2RS_MAXRESP) {
+			sa->response_info.nfrags = rec.resp_nfrags;
+			sa->response_info.frags = racoon_calloc(
+			    sa->response_info.nfrags, sizeof(rc_vchar_t *));
+			if (sa->response_info.frags) {
+				off = 0;
+				for (f = 0; f < sa->response_info.nfrags; f++) {
+					sa->response_info.frags[f] = rc_vnew(
+					    rec.resp_buf + off,
+					    rec.resp_frag_len[f]);
+					if (!sa->response_info.frags[f]) {
+						ok = 0;
+						break;
+					}
+					off += rec.resp_frag_len[f];
+				}
+				if (ok) {
+					sa->response_info.message_id =
+					    rec.resp_msgid;
+					sa->response_info.src =
+					    rcs_sadup(sa->local);
+					sa->response_info.dest =
+					    rcs_sadup(sa->remote);
+				} else {
+					for (f = 0; f < sa->response_info.nfrags;
+					     f++)
+						if (sa->response_info.frags[f])
+							rc_vfree(
+							    sa->response_info.frags[f]);
+					racoon_free(sa->response_info.frags);
+					sa->response_info.frags = NULL;
+					sa->response_info.nfrags = 0;
+				}
+			} else {
+				sa->response_info.nfrags = 0;
+			}
 		}
 	}
 

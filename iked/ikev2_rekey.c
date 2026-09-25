@@ -1348,6 +1348,7 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 		 * carries the CREATE_CHILD id, which differs once the
 		 * followup runs as its own exchange). */
 		pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
+					     (old_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
 					     IKEV2FLAG_RESPONSE,
 					     followup_msgid, old_sa, &payl);
 		rc_vfree(ker);
