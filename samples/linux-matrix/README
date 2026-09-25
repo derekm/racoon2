@@ -23,7 +23,9 @@ Windows UDP into WSL NAT. Apple NAT-T / v6-in-v4.
 
 RFC 9242/9370 rows live in `cases.tsv` as `gate=addke`: `i2ike-addke`
 (intermediate), `i2ikesa-addke` (rekey), `i2iinit-addke` (init), plus the
-drop/replay kill-tests `i2ike-drop` (R2 replay), `i2iinit-drop` and
+drop/replay kill-tests `i2ike-drop` (R2 replay), `i2ike-drop576`
+(R2 replay of a fragmented FOLLOWUP at MTU 576; not in the CI default
+until that counted gate is box-green), `i2iinit-drop` and
 `i2iinit-drop576` (H1 replay). The drop rows are counted-drop gates: PASS
 requires the netem dropped counter (read from `tc -s qdisc show`, helper
 `tc_dropped`) to agree with the replay marker — a marker with zero

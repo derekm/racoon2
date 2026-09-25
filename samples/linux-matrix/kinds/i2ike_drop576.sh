@@ -1,24 +1,19 @@
 #!/bin/sh
-# kinds/i2ike_drop576.sh — PQC CREATE_CHILD RESPONSE-loss kill-test at real
-# fragmentation: veth MTU 576 splits the CREATE_CHILD rekey request/response
-# and the IKE_FOLLOWUP_KE ML-KEM exchange (KEi 1184B -> RFC 7383 fragments),
-# so a netem drop hits a FRAGMENT; the initiator retransmits and the responder
-# must replay the armed response (R2 replay incl. cached frags).
-# i2iinit-drop576 proves the IKE_INTERMEDIATE fragment path only; CREATE_CHILD
-# fragment replay is unproven until this row. (review 2026-09-25
-# regression): iked<->iked on 192.0.9.x, each in its OWN netns on a P2P veth.
-# Same topology/gate as i2ike (type-06 ADDKE offer, ML-KEM keymat sha256 match on
-# BOTH sides, no followup abort, NEW ESP SPI both sides at the 60s soft rekey),
-# PLUS: netem loss 80% dropped on the responder->initiator veth during the rekey
-# window, so the CREATE_CHILD response is lost on the wire.  The initiator then
-# retransmits the request (1,2,4,8s ladder) and the responder MUST REPLAY the
-# armed response from response_info — gated on the greppable 'R2 replay' marker
-# that ikev2_retransmit_forced() logs exactly at the rate-limited replay.
-# No marker => FAIL: a clean rekey where no response was ever dropped proves
-# nothing (same philosophy as i2iinit_drop, which gates on 'H1 replay').
+# kinds/i2ike_drop576.sh — PQC CREATE_CHILD fragment-replay kill-test.
+# iked<->iked on 192.0.9.x, own netns, veth MTU 576.  i2iinit-drop576 proves
+# the IKE_INTERMEDIATE fragment path only.  This row is the CREATE_CHILD /
+# IKE_FOLLOWUP_KE path: ML-KEM KEr is 1184B, so the response is RFC 7383
+# SKF (3 datagrams).  Responder child lifetime is 3600s so only the
+# initiator rekeys.  Loss is 80% on responder->initiator from just before
+# the 60s soft rekey until the responder logs the fragmented FOLLOWUP
+# path (response just went out under that loss), then 5% so the replayed
+# fragments can land.  Holding 80% until the rekey completes cannot deliver
+# 3 fragments (0.8% per send).  PASS requires R2 replay >= 1, netem-dropped
+# >= 1, the fragmented-path log, matching ML-KEM keymat, and a new SPI.
 kind_i2ike_drop576() {
 	name=$1
 	require_root || return 1
+	require_procps || return 1
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
@@ -151,12 +146,21 @@ EOF
 		pkill -9 -f "$C/" 2>/dev/null || true
 		rm -f /tmp/spmif-i2iked576-r /tmp/spmif-i2iked576-i \
 		      /tmp/iked.sock-i2iked576-r /tmp/iked.sock-i2iked576-i
+		# Fresh IKE_SA and empty logs: a leftover 'fragmented path' or
+		# 'R2 replay' line from the previous attempt would pass the gate
+		# without exercising this attempt.
+		rm -rf "$PRIVRES_R" "$PRIVRES_I"
+		mkdir -p "$PRIVRES_R" "$PRIVRES_I"
+		: >"$D/resp-iked.log"
+		: >"$D/init-iked.log"
 
 		for NS in "$NSR" "$NSI"; do
 			ip netns del "$NS" 2>/dev/null || true
 			ip netns add "$NS"
 			ip netns exec "$NS" ip link set lo up
 		done
+		ip link del "$VR" 2>/dev/null || true
+		ip link del "$VI" 2>/dev/null || true
 		ip link add "$VR" type veth peer name "$VI"
 		# 576 MTU BEFORE addresses: forces RFC 7383 fragmenting of the
 		# CREATE_CHILD rekey + FOLLOWUP_KE ML-KEM exchange.
@@ -207,21 +211,39 @@ EOF
 		[ "$up" -eq 1 ] || log "FAIL: child not up after 45s (attempt $attempt)"
 		[ "$up" -eq 1 ] || continue
 
-		# INIT SA is up.  Arm the drop BEFORE the 60s-soft rekey fires: kill 80%
-		# of responder->initiator packets through the rekey window, so the
-		# CREATE_CHILD response is very likely lost once; the initiator then
-		# retransmits and the responder must replay its armed response.
+		# Soft rekey is ~48-54s after child install.  Hold no loss until
+		# just before that, then 80% so the FOLLOWUP_KE response (3 SKF
+		# datagrams at 576) is sent into loss.  Do NOT hold 80% until the
+		# rekey completes: P(all 3 fragments survive one send) is 0.8%, so
+		# the replayed fragments never land and the row fails even when
+		# replay works.  Ease to 5% once the responder has logged the
+		# fragmented FOLLOWUP path (response just went out under 80%).
+		sleep 30
 		if ! ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 80% 2>/dev/null; then
 			log "FAIL: cannot apply netem loss on $NSR/$VR (no tc?); abort"
 			break
 		fi
 		d0=$(tc_dropped "$NSR" "$VR" || true)
 		ndrop=0
+		frag_seen=0
+		i=0
+		while [ "$i" -lt 70 ]; do
+			if grep -F -q 'not advancing (fragmented path)' "$D/resp-iked.log" 2>/dev/null; then
+				frag_seen=1
+				break
+			fi
+			i=$((i+1)); sleep 1
+		done
+		# The fragmented-path log is written before the FOLLOWUP response
+		# is transmitted.  Two seconds lets that send hit the qdisc.
+		sleep 2
+		d1=$(tc_dropped "$NSR" "$VR" || true)
+		ndrop=$(( ${d1:-0} - ${d0:-0} ))
+		log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) frag_path=$frag_seen"
+		ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 5% 2>/dev/null || true
 
 		rekeyed=0; i=0
-		while [ "$i" -lt 130 ]; do
-			SRn=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort)
-			SIn=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort)
+		while [ "$i" -lt 90 ]; do
 			re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 			ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 			# a rekeyed child shows 3 esp rows; expect >= 3 (old + new)
@@ -234,15 +256,7 @@ EOF
 			i=$((i+1)); sleep 1
 		done
 		[ "$rekeyed" -eq 1 ] || \
-			log "FAIL: child-SA rekey not seen in 130s under loss (attempt $attempt; resp esp rows: $(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp'))"
-
-		d1=$(tc_dropped "$NSR" "$VR" || true)
-		ndrop=$(( ${d1:-0} - ${d0:-0} ))
-		log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0})"
-		# ease off so the followup SK(1) exchange completes cleanly once the
-		# response WAS replayed (the replay path is what we are proving).
-		ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 2% 2>/dev/null || true
-		sleep 4
+			log "FAIL: child-SA rekey not seen in 90s after easing loss (attempt $attempt; resp esp rows: $(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp') frag_path=$frag_seen)"
 
 		# PQC proof — identical to i2ike: the rekey must offer type-06 ADDKE
 		# (0x24 = mlkem768) in its CREATE_CHILD SA, derive ML-KEM keymat on
@@ -264,12 +278,12 @@ EOF
 			log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
 		fi
 
-		if [ "$rekeyed" -eq 1 ] && [ "$pqc" -eq 1 ] && [ "${nreplay:-0}" -ge 1 ] && [ "${ndrop:-0}" -ge 1 ]; then
-			log "DROP-KILL-TEST: rekey survived the lost CREATE_CHILD response via armed-response replay (R2 replay x$nreplay, netem-dropped=$ndrop, attempt $attempt)"
+		if [ "$rekeyed" -eq 1 ] && [ "$pqc" -eq 1 ] && [ "${nreplay:-0}" -ge 1 ] && [ "${ndrop:-0}" -ge 1 ] && [ "${frag_seen:-0}" -eq 1 ]; then
+			log "DROP-KILL-TEST: rekey survived a lost fragmented FOLLOWUP response via armed-response replay (R2 replay x$nreplay, netem-dropped=$ndrop, frag_path=1, attempt $attempt)"
 			pass_ok=1
 			break
 		fi
-		log "attempt $attempt: rekeyed=$rekeyed pqc=$pqc nreplay=${nreplay:-0} drop=${ndrop:-0} (need replay >= 1 AND measured drop >= 1; a marker without counted loss, or loss without a marker, both fail)"
+		log "attempt $attempt: rekeyed=$rekeyed pqc=$pqc nreplay=${nreplay:-0} drop=${ndrop:-0} frag_path=${frag_seen:-0} (need replay >= 1 AND measured drop >= 1 AND fragmented FOLLOWUP path)"
 	done
 
 	pkill -9 -f "$C/" 2>/dev/null || true
