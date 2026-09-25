@@ -4,6 +4,7 @@
 #include <config.h>
 
 #include <sys/types.h>
+#include <stddef.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -451,6 +452,19 @@ ikev2_resume_save(struct ikev2_sa *sa)
 	}
 	rec.nchild = (uint32_t)n;
 
+	/* v4: persist the last-armed response (whole-packet form only;
+	 * frags are variable-length, skip them) so a restart replays a
+	 * retransmitted request instead of dropping it as unordered. */
+	rec.resp_msgid = sa->response_info.message_id;
+	rec.resp_len = 0;
+	if (sa->response_info.packet && !sa->response_info.frags &&
+	    sa->response_info.packet->l > 0 &&
+	    sa->response_info.packet->l <= R2RS_MAXRESP) {
+		rec.resp_len = (uint16_t)sa->response_info.packet->l;
+		memcpy(rec.resp_buf, sa->response_info.packet->v,
+		    rec.resp_len);
+	}
+
 	(void)mkdir("/var/lib/racoon2", 0700);
 	if (mkdir(r2_resume_dir(), 0700) < 0 && errno != EEXIST) {
 		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
@@ -511,11 +525,21 @@ restore_one(const char *path)
 	fd = open(path, O_RDONLY);
 	if (fd < 0)
 		return -1;
-	if (read(fd, &rec, sizeof(rec)) != (ssize_t)sizeof(rec)) {
+	{
+		ssize_t nr = read(fd, &rec, sizeof(rec));
 		close(fd);
-		return -1;
+		if (nr < 0)
+			return -1;
+		if (nr != (ssize_t)sizeof(rec)) {
+			/* v3 dump: prefix-sized, zero the v4 tail */
+			if (nr == (ssize_t)offsetof(struct r2rs_sa, resp_msgid))
+				memset((char *)&rec + nr, 0,
+				    sizeof(rec) - nr);
+			else
+				return -1;
+		}
 	}
-	close(fd);
+
 	/* structural validation: magic/version, child count, key
 	 * lengths (a corrupt len on disk would make
 	 * r2rs_key_to_vchar read past its fixed array), child
@@ -598,6 +622,18 @@ restore_one(const char *path)
 		goto fail;
 	}
 	nsa = NULL;
+
+	/* v4: rebuild the armed response so a retransmitted request is
+	 * answered with the exact bytes we sent pre-restart. */
+	if (rec.version >= 4 && rec.resp_len > 0 &&
+	    rec.resp_len <= R2RS_MAXRESP) {
+		sa->response_info.packet = rc_vnew(rec.resp_buf, rec.resp_len);
+		if (sa->response_info.packet) {
+			sa->response_info.message_id = rec.resp_msgid;
+			sa->response_info.src = rcs_sadup(sa->local);
+			sa->response_info.dest = rcs_sadup(sa->remote);
+		}
+	}
 
 	sa->sk_d = r2rs_key_to_vchar(&rec.sk_d);
 	sa->sk_a_i = r2rs_key_to_vchar(&rec.sk_ai);

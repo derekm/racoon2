@@ -221,6 +221,7 @@ struct ikev2_sa {
 
 	struct transmit_info transmit_info;
 	struct transmit_info response_info;
+	int resume_dirty;	/* window/response advanced since last dump; persist on next periodic tick */
 
 	struct timeval due_time;	/* certificate expiration time */
 	struct sched *expire_timer;

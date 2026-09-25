@@ -851,6 +851,7 @@ ikev2_request_id(struct ikev2_sa *ike_sa)
 	}
 	++ike_sa->send_message_id;
 	++ike_sa->request_pending;
+	ike_sa->resume_dirty = 1;	/* window advanced (mint); persist */
 	return id;
 }
 
@@ -904,6 +905,7 @@ ikev2_update_message_id(struct ikev2_sa *ike_sa, uint32_t message_id,
 			++ike_sa->recv_message_id;
 		}
 	}
+	ike_sa->resume_dirty = 1;	/* window advanced; persist */
 #endif
 }
 
@@ -1110,6 +1112,7 @@ ikev2_transmit_response(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	info->frags = NULL;
 	info->nfrags = 0;
 	info->message_id = msgid;
+	ike_sa->resume_dirty = 1;	/* response armed; persist */
 	gettimeofday(&info->sent_time, 0);
 
 	isakmp_transmit_noretry(&ike_sa->response_info, packet, info->src,
@@ -6096,7 +6099,6 @@ informational_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 	ikehdr = (struct ikev2_header *)msg->v;
 	message_id = get_uint32(&ikehdr->message_id);
-	ikev2_update_message_id(ike_sa, message_id, TRUE);
 	child_sa = ikev2_find_request(ike_sa, message_id);
 	if (!child_sa || child_sa->state != IKEV2_CHILD_STATE_REQUEST_SENT) {
 		struct ikev2_child_sa *s;
@@ -6122,6 +6124,11 @@ informational_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		++isakmpstat.unexpected_packet;
 		goto done;
 	}
+	/* Only a real REQUEST_SENT match commits the window: an EXPIRED
+	 * duplicate (or unknown msgid) must not stop retransmit or
+	 * decrement request_pending for the request actually in flight.
+	 * (review 2026-09-24: window was committed on the miss path.) */
+	ikev2_update_message_id(ike_sa, message_id, TRUE);
 	if (child_sa->callback) {
 		child_sa->callback(REQUEST_CALLBACK_RESPONSE, child_sa,
 				   msg);

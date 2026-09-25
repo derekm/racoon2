@@ -25,8 +25,15 @@ extern "C" {
  * restart during a PQC child rekey does not break the followup link.
  * The initiator-side ML-KEM private key is NOT persisted (EVP_PKEY is
  * not serializable here) -- an initiator restart mid-followup falls
- * back to plain IKEv2 on the next rekey (RFC optionality). */
-#define R2RS_VERSION	3
+ * back to plain IKEv2 on the next rekey (RFC optionality).
+ * v4: last-armed response cache (resp_msgid/resp_len/resp_buf) so a
+ * restart can replay the response to a retransmitted request (RFC 7296
+ * 3.1/2.10) instead of dropping it as unordered and then timing out
+ * the peer at the retransmit budget (err=110).  Window counters are
+ * now also refreshed per-advance (resume_dirty), not only at state
+ * transitions. */
+#define R2RS_VERSION	4
+#define R2RS_MAXRESP	2048
 #define R2RS_MAXKEY	64
 #define R2RS_MAXSTR	64
 #define R2RS_MAXCHILD	8
@@ -87,6 +94,12 @@ struct r2rs_sa {
 	struct r2rs_key n_i, n_r, id_i, id_r;
 	uint32_t nchild;
 	struct r2rs_child child[R2RS_MAXCHILD];
+	/* v4: armed response to replay on a peer retransmit after restart.
+	 * Only whole-packet (non-fragmented) responses are persisted;
+	 * frags are variable-length and out of scope for the fixed record. */
+	uint32_t resp_msgid;
+	uint16_t resp_len;
+	uint8_t resp_buf[R2RS_MAXRESP];
 } __attribute__((packed));
 
 void r2rs_key_from_vchar(struct r2rs_key *, const rc_vchar_t *);

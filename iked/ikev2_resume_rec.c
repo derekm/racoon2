@@ -114,7 +114,11 @@ r2rs_validate(const struct r2rs_sa *rec)
 
 	if (!rec)
 		return -1;
-	if (rec->magic != R2RS_MAGIC || rec->version != R2RS_VERSION)
+	if (rec->magic != R2RS_MAGIC ||
+	    (rec->version != R2RS_VERSION &&
+	     rec->version != R2RS_VERSION - 1))
+		return -1;
+	if (rec->version >= R2RS_VERSION && rec->resp_len > R2RS_MAXRESP)
 		return -1;
 	if (rec->nchild > R2RS_MAXCHILD)
 		return -1;

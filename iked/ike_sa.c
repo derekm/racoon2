@@ -226,6 +226,10 @@ ikev2_sa_periodic_task(void)
 
 		TRACE((PLOGLOC, "ike_sa: %p state %d\n", sa, sa->state));
 		next_sa = IKEV2_SA_LIST_NEXT(sa);
+		if (sa->resume_dirty && sa->state == IKEV2_STATE_ESTABLISHED) {
+			sa->resume_dirty = 0;
+			ikev2_resume_save(sa);
+		}
 		if (sa->crypto_pending) {
 			/*
 			 * A crypto worker holds pointers into this SA
