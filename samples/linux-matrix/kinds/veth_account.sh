@@ -112,7 +112,7 @@ kind_veth_account() {
 				_q=0
 				while [ "$_q" -lt 20 ]; do
 					_s1=$(dev_pkts "$_nstop" "$_devstop" RX)
-					sleep 0.5
+					sleep 1
 					_s2=$(dev_pkts "$_nstop" "$_devstop" RX)
 					[ "${_s2:-0}" -eq "${_s1:-0}" ] && return 0
 					_q=$((_q + 1))

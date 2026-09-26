@@ -323,11 +323,29 @@ EOF
 			nfrag=0
 		fi
 	abt=$(grep -cE 'abort' "$D/resp-iked.log" 2>/dev/null || true)
+	# Wire evidence: count THIS exchange's request copies DIRECTLY
+	# from the pcap.  tshark display filters are proven dead on this
+	# box (retained: 'isakmp.message_id_raw == 5' matched 0 lines even
+	# though the same pcap's plain listing shows two 'CREATE_CHILD_SA
+	# MID=05 Initiator Request' rows; 4.6.8 rejects isakmp.message_id
+	# and isakmp.exchange_type outright).  tcpdump -X works: the
+	# ISAKMP msgid occupies bytes 0x30-0x33 of the -X frame dump
+	# (20B IP + 8B UDP + 16B IKE SPI), i.e. tokens $2$3 of the
+	# '0x0030:' line.  Verified against the retained pcap: initiator
+	# src filter yields msgids 3,3,4,4,5,5,6,6 — exactly the tshark
+	# summary.  MID is decimal from the log; the wire is hex, so the
+	# comparison is numeric via strtonum.  Direction is pinned to the
+	# initiator by 'src $HI' and msgid numbering is sequential per
+	# direction on this IKE_SA, so no INFORMATIONAL can collide with
+	# the CREATE_CHILD msgid.
 	wire=""
 	# TCPID was already reaped above; gate on the closed pcap file, not
 	# on the (now-empty) pid, or the wire count never runs.
-	if command -v tshark >/dev/null 2>&1 && [ -f "$PCAP" ]; then
-		wire=$(tshark -r "$PCAP" -Y "isakmp.message_id_raw == ${MID:-0}" 2>/dev/null | wc -l)
+	if command -v tcpdump >/dev/null 2>&1 && [ -n "$MID" ] && [ -f "$PCAP" ]; then
+		wire=$(tcpdump -r "$PCAP" -nn -X "udp port 500 and src $HI" 2>/dev/null \
+			| awk -v m="$MID" '
+				/0x0030:/ { if (strtonum("0x" $2 $3) == m) c++ }
+				END { print c+0 }')
 	fi
 
 	if [ "$rekeyed" -eq 1 ] && [ "${ncc:-0}" -eq 1 ] \
@@ -336,8 +354,9 @@ EOF
 		pass_ok=1
 		break
 	fi
-	# Wire-arrival fallback: if tshark counts >= 2 datagrams carrying
-	# msgid M on the responder ingress, the clone DID reach the socket.
+	# Wire-arrival fallback: if the tcpdump -X msgid scan counts >= 2
+	# datagrams carrying msgid M on the responder ingress, the clone DID
+	# reach the socket.
 	# ONE handler entry + rekey complete + no abort then proves the
 	# second copy was short-circuited before the handler even if the
 	# pre-arm drop path is silent (2026-09-26 box evidence: zero
