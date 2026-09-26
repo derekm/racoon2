@@ -16,7 +16,10 @@ HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/kinds/i2ike.sh"
 . "$HERE/kinds/i2ike_drop.sh"
 . "$HERE/kinds/i2ike_drop576.sh"
+. "$HERE/kinds/i2ike_dup.sh"
+. "$HERE/kinds/i2ike_reqdrop.sh"
 . "$HERE/kinds/i2ike_silence.sh"
+. "$HERE/kinds/veth_account.sh"
 . "$HERE/kinds/i2ikesa.sh"
 . "$HERE/kinds/i2iinit.sh"
 . "$HERE/kinds/i2iinit_drop.sh"
@@ -34,12 +37,14 @@ usage() {
 usage: run.sh [--cases REGEX] [--rebuild BUILD] [--src DIR] [--prefix DIR]
 builds.tsv names: xfrm (Linux default), pfkey, xfrm-addke (RFC 9370 PQC)
 cases.tsv kinds: unit admin ikev2 ikev1 i2ike
-cases.tsv gate: rows with gate=addke run ONLY when ADDKE is available (see
-                 R2_ADDKE below); they are auto-skipped otherwise so the PQC
-                 matrix does not run on an OpenSSL 3.0/Ubuntu build.
+cases.tsv gates: gate=addke rows run ONLY when ADDKE is available (see
+                 R2_ADDKE below); gate=dpd rows run ONLY when R2_DPD=yes;
+                 gate=box rows run ONLY when R2_BOX=yes (new-row staging:
+                 box-verified before a container run admits them to CI).
 env: R2_ADDKE=yes|auto  force the ADDKE gate (default auto: detect WITH_ADDKE
      in the installed iked).  CI sets it explicitly per target: yes for
      Fedora 44 (OpenSSL 3.5), unset/auto for Ubuntu (OpenSSL 3.0).
+     R2_DPD=yes / R2_BOX=yes: box-only rows (never set in CI).
 EOF
 }
 
@@ -135,6 +140,16 @@ while IFS="$(printf '\t')" read -r name kind expect workers note gate || [ -n "$
 	# Ubuntu/NetBSD full matrix (a 16-minute ladder on every push).
 	if [ "$gate" = dpd ] && [ "${R2_DPD:-no}" != "yes" ]; then
 		log "SKIP $name (DPD gate off: R2_DPD=${R2_DPD:-no})"
+		skip=$((skip + 1))
+		continue
+	fi
+	# BOX gate: new rows (i2ike-dup, i2ike-reqdrop, veth-account) run
+	# ONLY on the box until a counted-gate PASS exists there AND a
+	# container run admits them (i2ike-drop576 rule).  The box sets
+	# R2_BOX=yes; CI does not, so unverified rows cannot leak into the
+	# Ubuntu/NetBSD full matrix or the Fedora container default.
+	if [ "$gate" = box ] && [ "${R2_BOX:-no}" != "yes" ]; then
+		log "SKIP $name (BOX gate off: R2_BOX=${R2_BOX:-no})"
 		skip=$((skip + 1))
 		continue
 	fi

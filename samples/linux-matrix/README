@@ -32,6 +32,44 @@ requires the netem dropped counter (read from `tc -s qdisc show`, helper
 `tc_dropped`) to agree with the replay marker — a marker with zero
 measured loss, or loss without a marker, both fail.
 
+New-row staging: `gate=box` rows (`i2ike-dup`, `i2ike-reqdrop`,
+`veth-account`) run ONLY when `R2_BOX=yes` (the box runner sets it; CI
+must not).  They stay out of the Ubuntu/NetBSD full matrix and the
+Fedora container default until a counted-gate PASS exists on the box
+AND a container run admits them — same rule as `i2ike-drop576`.
+
+- `i2ike-dup` (review #5): CREATE_CHILD mid-handler duplicate unit.
+  `netem duplicate 100%` on the initiator egress veth doubles the rekey
+  CREATE_CHILD REQUEST back-to-back.  Dispatch (ikev2.c:538) must
+  short-circuit the second copy BEFORE the handler — pre-arm as
+  "dropping unordered message" (recv_message_id already advanced at
+  ikev2.c:4429 before the GETSPI netlink yield), post-arm as "R2
+  replay".  Gate: exactly ONE `CREATE_CHILD_SA request` handler entry
+  in the responder log + unordered/R2-replay marker >= 1 + rekey
+  completes (new SPI both sides) + no abort.  Two handler entries = the
+  window hole is real.  Deliberately classical ESP: the reassembler
+  stores SKF fragments unconditionally (ikev2_frag.c:765) with a
+  count-based completion gate (:778), so a duplicated mid-list fragment
+  livelocks the assembly and an ADDKE FOLLOWUP row would fail for the
+  wrong reason.  The DPD/NAT-D reply path has no yield between the msgid
+  advance and the response arm, so it is unreachable by a wire
+  retransmit (documented, no row).
+- `i2ike-reqdrop` (review #4): REQUEST-direction loss.  Every preexisting
+  loss row drops responder->initiator; this one nets the INITIATOR
+  egress veth and drops the CREATE_CHILD REQUEST itself.  Recovery is
+  the initiator's retransmit ladder (1,2,4,8...s), not a responder
+  replay; no R2 replay is expected.  30% loss until the responder log
+  shows the request arrived, then the qdisc is removed so the
+  FOLLOWUP+response complete inside the 10s ADDKE arm timer.  Gate:
+  netem-dropped >= 1 on the REQUEST direction + rekey completes + type-06
+  offer + matching ML-KEM keymat sha + no followup timeout.
+- `veth-account` (review #2): audits the premise every counted-drop gate
+  stands on.  `sent == peer_received + qdisc_dropped` on a standalone
+  veth pair, both directions, with netem loss 30% and a clean pass
+  (explicit /dev/udp generator covering UDP/500 + UDP/4500, kernel
+  `ip -s link` RX counters, `tc -s qdisc` dropped).  No iked, no ADDKE,
+  ~15s.
+
 RFC rows: `ikev2-netns-ikesa-rekey` (7296 §2.8), `ikev2-netns-cookie2`
 (4555 COOKIE2/ADDITIONAL), `ikev2-netns-qcd` (6290 AUTH token),
 `ikev2-netns-resume-dump` (SR2R dump after IKE_AUTH). Those IKE rows

@@ -1,0 +1,320 @@
+#!/bin/sh
+# kinds/i2ike_reqdrop.sh — PQC CREATE_CHILD REQUEST-direction loss kill-test.
+#
+# Review #4: every existing loss row (i2ike-drop, i2iinit-drop, both
+# *drop576) nets the RESPONDER egress veth, i.e. only the
+# RESPONDER->INITIATOR direction (response / intermediate reply) is ever
+# lost.  This row nets the INITIATOR egress veth instead: the CREATE_CHILD
+# rekey REQUEST itself is lost on the wire.  Recovery must be the
+# INITIATOR's own retransmit ladder (isakmp_retransmit: 1,2,4,8,16,32,
+# 64s, isakmp.c:2129/ladder, retry_limit 10) — the responder never saw
+# the first copy, so there is no armed response to replay: each surviving
+# retransmit arrives as a FRESH request (recv_message_id was never
+# consumed) and is processed normally.  No R2 replay is expected or
+# required here (nothing was answered and then lost); the counted gate is
+# proof that a request-direction drop did not stop the rekey.
+#
+# Shape (mirrors the box-proven drop576 retime): 30% loss armed on the
+# initiator egress AFTER child-up, kept until the responder log shows the
+# CREATE_CHILD request arrived ("CREATE_CHILD_SA request:"), then the
+# qdisc is REMOVED so the FOLLOWUP_KE (3 SKF; also initiator->responder)
+# and the response flow at 0% inside the 10s ADDKE arm timer.  Keeping
+# loss on across the followup would reproduce CI 36204006963 (y_arm=1,
+# followup timeout) for the wrong reason.
+#
+# Gate (counted): netem-dropped >= 1 on the INITIATOR egress AND the
+# rekey completes (new SPI both sides) AND PQ C keymat matches both sides
+# (type-6 offer, last KEM sha256 line, no followup timeout).  A rekey
+# completion with zero counted request-direction loss proves nothing; a
+# counted drop with no rekey proves nothing.
+kind_i2ike_reqdrop() {
+	name=$1
+	require_root || return 1
+	require_procps || return 1
+	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
+	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
+	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
+
+	NSR=i2ikereq-r; NSI=i2ikereq-i; VR=i2vreq-r; VI=i2vreq-i
+	HR=192.0.11.1; HI=192.0.11.2
+	PRIVRES_R=/tmp/r2-i2ikereq-resume-r; PRIVRES_I=/tmp/r2-i2ikereq-resume-i
+	D=/tmp/r2-i2ikereq; C=/tmp/r2-i2ikereq-conf
+	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
+
+	cat > "$C/responder.conf" <<EOF
+interface {
+	ike { "$HR"; };
+	spmd { unix "/tmp/spmif-i2ikereq-r"; };
+	spmd_password "$ETC/spmd.pwd";
+};
+resolver { resolver off; };
+remote matrix_resp {
+	acceptable_kmp { ikev2; };
+	ikev2 {
+		passive on;
+		my_id fqdn "racoon2-matrix";
+		peers_id fqdn "r2init-matrix";
+		peers_ipaddr "$HI";
+		kmp_enc_alg { aes256_cbc; };
+		kmp_prf_alg { hmac_sha2_256; };
+		kmp_hash_alg { hmac_sha2_256; };
+		kmp_dh_group { ecp256; };
+		kmp_auth_method { psk; };
+		pre_shared_key "$ETC/psk/macos.psk";
+		dpd_delay 60 sec;
+	};
+	selector_index sel_in;
+};
+selector sel_out {
+	direction outbound;
+	src "$HR"; dst "$HI";
+	policy_index pol;
+};
+selector sel_in {
+	direction inbound;
+	dst "$HR"; src "$HI";
+	policy_index pol;
+};
+policy pol {
+	action auto_ipsec;
+	remote_index matrix_resp;
+	ipsec_mode tunnel;
+	ipsec_index { ipsec_e; };
+	ipsec_level require;
+	peers_sa_ipaddr "$HI";
+	my_sa_ipaddr "$HR";
+};
+ipsec ipsec_e {
+	# responder must NOT initiate its own rekey inside the loss window:
+	# only the initiator rekeys (60s), so the retransmitted request is
+	# the only CREATE_CHILD on the SA.
+	ipsec_sa_lifetime_time 3600 sec;
+	sa_index esp_e;
+};
+sa esp_e {
+	sa_protocol esp;
+	esp_enc_alg { aes_gcm; };
+	esp_auth_alg { non_auth; };
+	esp_addke_alg { mlkem768; };
+};
+EOF
+	cat > "$C/initiator.conf" <<EOF
+interface {
+	ike { "$HI"; };
+	spmd { unix "/tmp/spmif-i2ikereq-i"; };
+	spmd_password "$ETC/spmd.pwd";
+};
+resolver { resolver off; };
+remote matrix_init {
+	acceptable_kmp { ikev2; };
+	ikev2 {
+		passive off;
+		my_id fqdn "r2init-matrix";
+		peers_id fqdn "racoon2-matrix";
+		peers_ipaddr "$HR";
+		kmp_enc_alg { aes256_cbc; };
+		kmp_prf_alg { hmac_sha2_256; };
+		kmp_hash_alg { hmac_sha2_256; };
+		kmp_dh_group { ecp256; };
+		kmp_auth_method { psk; };
+		pre_shared_key "$ETC/psk/macos.psk";
+		dpd_delay 60 sec;
+	};
+	selector_index sel_in;
+};
+selector sel_out {
+	direction outbound;
+	src "$HI"; dst "$HR";
+	policy_index pol;
+};
+selector sel_in {
+	direction inbound;
+	dst "$HI"; src "$HR";
+	policy_index pol;
+};
+policy pol {
+	action auto_ipsec;
+	remote_index matrix_init;
+	ipsec_mode tunnel;
+	ipsec_index { ipsec_e; };
+	ipsec_level require;
+	peers_sa_ipaddr "$HR";
+	my_sa_ipaddr "$HI";
+};
+ipsec ipsec_e {
+	ipsec_sa_lifetime_time 60 sec;
+	sa_index esp_e;
+};
+sa esp_e {
+	sa_protocol esp;
+	esp_enc_alg { aes_gcm; };
+	esp_auth_alg { non_auth; };
+	esp_addke_alg { mlkem768; };
+};
+EOF
+
+	attempts=3
+	pass_ok=0
+	for attempt in $(seq 1 "$attempts"); do
+		# kill daemons by the unique per-run conf dir (it IS in their argv).
+		pkill -9 -f "$C/" 2>/dev/null || true
+		rm -f /tmp/spmif-i2ikereq-r /tmp/spmif-i2ikereq-i \
+		      /tmp/iked.sock-i2ikereq-r /tmp/iked.sock-i2ikereq-i
+		# Fresh SAs and empty logs: a leftover 'CREATE_CHILD_SA request'
+		# or 'R2 replay' line from a previous attempt would fool the gate.
+		rm -rf "$PRIVRES_R" "$PRIVRES_I"
+		mkdir -p "$PRIVRES_R" "$PRIVRES_I"
+		: >"$D/resp-iked.log"
+		: >"$D/init-iked.log"
+
+		for NS in "$NSR" "$NSI"; do
+			ip netns del "$NS" 2>/dev/null || true
+			ip netns add "$NS"
+			ip netns exec "$NS" ip link set lo up
+		done
+		ip link del "$VR" 2>/dev/null || true
+		ip link del "$VI" 2>/dev/null || true
+		ip link add "$VR" type veth peer name "$VI"
+		ip link set "$VR" netns "$NSR"
+		ip netns exec "$NSR" ip link set "$VR" up
+		ip netns exec "$NSR" ip addr add "$HR/24" dev "$VR"
+		ip link set "$VI" netns "$NSI"
+		ip netns exec "$NSI" ip link set "$VI" up
+		ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"
+
+		# UDP-allow rows BEFORE any spmd (first-in-bucket at prio 0) so IKE is
+		# not captured by the auto_ipsec tunnel input policy (XfrmInNoStates).
+		for ns in "$NSR:$HR:$HI" "$NSI:$HI:$HR"; do
+			NSX=${ns%%:*}; rest=${ns#*:}; LX=${rest%%:*}; PX=${rest#*:}
+			for p in 500 4500; do
+				ip netns exec "$NSX" ip xfrm policy add src "$PX"/32 dst "$LX"/32 proto udp sport "$p" dport "$p" dir in  ptype main action allow 2>/dev/null || true
+				ip netns exec "$NSX" ip xfrm policy add src "$LX"/32 dst "$PX"/32 proto udp sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
+			done
+		done
+
+		( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
+		i=0; until [ -S /tmp/spmif-i2ikereq-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+		( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ikereq-r RACOON2_RESUME_DIR="$PRIVRES_R" \
+		    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
+
+		( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
+		i=0; until [ -S /tmp/spmif-i2ikereq-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+		( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ikereq-i RACOON2_RESUME_DIR="$PRIVRES_I" \
+		    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
+
+		sleep 2
+		"$SBIN/ikedctl" -s /tmp/iked.sock-i2ikereq-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+
+		up=0
+		i=0
+		while [ "$i" -lt 45 ]; do
+			re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+			ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+			if [ "${re:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ]; then
+				log "PQC ADDKE child UP: responder esp=$re initiator esp=$ie after ${i}s (attempt $attempt)"
+				up=1
+				break
+			fi
+			i=$((i+1)); sleep 1
+		done
+		[ "$up" -eq 1 ] || log "FAIL: child not up after 45s (attempt $attempt)"
+		[ "$up" -eq 1 ] || continue
+
+		# INIT SA is up.  Drop 30% of INITIATOR->RESPONDER packets (the
+		# REQUEST direction) from just before the 60s-soft rekey until the
+		# request is logged by the responder.  30% not 80%: the FOLLOWUP
+		# also rides this direction and 80% across the followup blows the
+		# 10s ADDKE arm timer (drop576 lesson).  The instigator of recovery
+		# is the INITIATOR's own retransmit ladder.
+		if ! ip netns exec "$NSI" tc qdisc replace dev "$VI" root netem loss 30% 2>/dev/null; then
+			log "FAIL: cannot apply netem loss on $NSI/$VI (no tc?); abort"
+			break
+		fi
+		d0=$(tc_dropped "$NSI" "$VI" || true)
+		req0=$(grep -c 'CREATE_CHILD_SA request: msgid=' "$D/resp-iked.log" 2>/dev/null || true)
+
+		# Poll up to 100s for the rekey request to ARRIVE (0->1).  Each
+		# arriving copy is a fresh request to the responder (the lost ones
+		# never consumed recv_message_id).  The moment it lands, kill the
+		# qdisc so response + FOLLOWUP go at 0% inside the 10s arm timer.
+		req=0
+		i=0
+		while [ "$i" -lt 100 ]; do
+			req=$(grep -c 'CREATE_CHILD_SA request: msgid=' "$D/resp-iked.log" 2>/dev/null || true)
+			if [ "${req:-0}" -gt "${req0:-0}" ]; then
+				log "rekey request arrived at responder after ${i}s of request-direction loss (attempt $attempt)"
+				break
+			fi
+			i=$((i+1)); sleep 1
+		done
+		[ "${req:-0}" -gt "${req0:-0}" ] || \
+			log "FAIL: rekey CREATE_CHILD request never arrived at responder in 100s of REQUEST-direction loss (attempt $attempt)"
+		d1=$(tc_dropped "$NSI" "$VI" || true)
+		ndrop=$(( ${d1:-0} - ${d0:-0} ))
+		ip netns exec "$NSI" tc qdisc del dev "$VI" root 2>/dev/null || true
+		log "drop-count window (REQUEST direction): netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) req ${req0:-0}->${req:-0}"
+
+		# With loss off, the response + FOLLOWUP finish; watch for the new
+		# SPI (rekey install) for up to 30s.
+		spi(){ ip netns exec "$1" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort; }
+		SR0=$(spi "$NSR"); SI0=$(spi "$NSI")
+		rekeyed=0; i=0
+		while [ "$i" -lt 30 ]; do
+			SRn=$(spi "$NSR"); SIn=$(spi "$NSI")
+			nr=$(comm -13 <(printf '%s\n' "$SR0") <(printf '%s\n' "$SRn") | grep -c spi)
+			ni=$(comm -13 <(printf '%s\n' "$SI0") <(printf '%s\n' "$SIn") | grep -c spi)
+			if [ "${nr:-0}" -ge 1 ] && [ "${ni:-0}" -ge 1 ]; then
+				log "rekey: new SPI both sides at ${i}s after request arrival (attempt $attempt)"
+				rekeyed=1
+				break
+			fi
+			i=$((i+1)); sleep 1
+		done
+		[ "$rekeyed" -eq 1 ] || \
+			log "FAIL: child-SA rekey not seen in 30s after request arrived under REQUEST-direction loss (attempt $attempt; resp SPIs now: $(spi "$NSR" | tr '\n' ' '))"
+
+		# PQC proof — same as i2ike drop576: type-06 ADDKE offer, matching
+		# KEM keymat on both sides, no followup timeout.
+		t6=$(grep -c '06000024' "$D/init-iked.log" 2>/dev/null || true)
+		abt=$(grep -c 'ADDKE followup timeout' "$D/resp-iked.log" 2>/dev/null || true)
+		kh_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=(n|Y)' "$D/init-iked.log" 2>/dev/null \
+			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
+		kh_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=(n|Y)' "$D/resp-iked.log" 2>/dev/null \
+			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
+		nreplay=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
+		pqc=0
+		if [ "${t6:-0}" -ge 1 ] && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
+		   && [ "${abt:-0}" -eq 0 ]; then
+			pqc=1
+			log "PQC rekey: type-6 offered (x$t6), last KEM keymat $kh_i matches both sides, no followup timeout"
+		else
+			log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
+		fi
+
+		if [ "$rekeyed" -eq 1 ] && [ "$pqc" -eq 1 ] && [ "${ndrop:-0}" -ge 1 ]; then
+			log "REQDIR-LOSS: request-direction drop recovered via INITIATOR retransmit ladder (netem-dropped=$ndrop, R2 replay=$nreplay (not expected on this row), attempt $attempt)"
+			pass_ok=1
+			break
+		fi
+		log "attempt $attempt: rekeyed=$rekeyed pqc=$pqc drop=${ndrop:-0} replay=${nreplay:-0} (need rekeyed AND pqc AND netem-dropped >= 1 on the REQUEST direction; a completion with zero counted request loss proves nothing)"
+	done
+
+	pkill -9 -f "$C/" 2>/dev/null || true
+	sleep 1
+	ip netns del "$NSR" 2>/dev/null || true
+	ip netns del "$NSI" 2>/dev/null || true
+	ip link del "$VR" 2>/dev/null || true
+	rm -rf "$PRIVRES_R" "$PRIVRES_I"
+
+	if [ "$pass_ok" -ne 1 ]; then
+		log "FAIL: PQC CREATE_CHILD REQUEST-direction drop did not recover via the initiator retransmit ladder (pass_ok=0)"
+		log "--- init-iked.log (request/retransmit/install) ---"
+		sed -n 's/.*\(CREATE_CHILD\|retransmit\|ESTABLISHED\|FOLLOWUP\|ADDKE\|install\|abort\|err=\).*/\1: &/p' \
+			"$D/init-iked.log" 2>/dev/null | tail -8
+		log "--- resp-iked.log (receive/install) ---"
+		sed -n 's/.*\(CREATE_CHILD_SA request\|ESTABLISHED\|FOLLOWUP\|ADDKE\|install\|abort\|err=\).*/\1: &/p' \
+			"$D/resp-iked.log" 2>/dev/null | tail -8
+		return 1
+	fi
+	return 0
+}
