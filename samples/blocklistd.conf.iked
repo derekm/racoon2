@@ -1,0 +1,18 @@
+# blocklistd fragment for iked (UDP/500 + UDP/4500).
+# Install next to /etc/blocklistd.conf; see derekm/blocklist linux-port LINUX.md.
+#
+# Threshold 8 / 1h matches sshd-style scanner cadence. Do not list the
+# other matrix namespace (or any expected peer) under [remote].
+#
+# iked reports via blocklist_sa() (datagram, no accepted fd):
+#   shortpacket / malformed_len / zero-cookie / AUTH_FAILED  -> AUTH_FAIL
+#   AUTH_OK                                                 -> AUTH_OK (resets count)
+
+[local]
+isakmp      dgram   udp     *   blocklistd  8   1h
+isakmp-natt dgram   udp     *   blocklistd  8   1h
+500         dgram   udp     *   blocklistd  8   1h
+4500        dgram   udp     *   blocklistd  8   1h
+
+[remote]
+# never ban the other matrix namespace / peer under test
