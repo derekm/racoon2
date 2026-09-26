@@ -6,7 +6,7 @@
 
 <p align="center">
 <strong>The Racoon2 IPsec server continuation</strong><br/>
-<em>IKEv1 + IKEv2 · RFC 7383 fragmentation · RFC 9242 IKE_INTERMEDIATE · RFC 9370 ADDKE (ML-KEM) · NAT-T / NAT-OA · MOBIKE (UPDATE_SA_ADDRESSES) · crash-safe IKE_SA dump/resume · Linux NETLINK_XFRM · iked / spmd / kinkd</em>
+<em>IKEv1 + IKEv2 · RFC 7383 fragmentation · RFC 9242 IKE_INTERMEDIATE · RFC 9370 ADDKE (ML-KEM-768) · NAT-T / NAT-OA · MOBIKE (UPDATE_SA_ADDRESSES) · crash-safe IKE_SA dump/resume · Linux NETLINK_XFRM · netem kill-test netns matrix · iked / spmd / kinkd</em>
 </p>
 
 <p align="center">
@@ -233,6 +233,25 @@ Currently, the system supports the following specifications:
 	response is replayed from the armed cache (gated on the replay
 	marker, so a clean completion without a drop cannot pass), the new
 	SPI takes packets on both sides, and the ML-KEM keymat hash matches.
+	Review-arbitration rows (box gate 2026-09-26; box-only until a
+	container run passes their counted gates): `i2ike-reqdrop` nets the
+	INITIATOR egress so the CREATE_CHILD REQUEST itself is the counted
+	loss (netem-dropped >= 1, request logged strictly after qdisc
+	removal, recovery on the initiator's own retransmit ladder, new
+	keymat g_ir_present=Y both sides with matching sha); `i2ike-dup`
+	duplicates the CREATE_CHILD REQUEST 100% and requires exactly ONE
+	handler entry while a tcpdump msgid scan proves >= 2 copies reached
+	the socket — dispatch short-circuits the second copy pre-handler;
+	the box proved this pre-arm drop path is silent (completed rekey,
+	zero marker lines), so the wire count is the direct measurement;
+	`veth-account` audits the accounting premise every counted-drop gate
+	stands on (sent == peer UDP-MIB delivered + qdisc dropped, both
+	directions — the raw link RX counter catches ARP replies and lies);
+	`i2ike-silence` (gate=dpd) proves responder exhaustion on a silent
+	peer (retransmit ladder 1,2,4,8,16,32,64 fires the 11th timer at
+	383 s, abort err=110, zero inbound accepted during the silence).
+	`i2ike-drop576` is not box-stable and stays out of the CI default
+	(see samples/linux-matrix/cases.tsv).
 	Not implemented yet: RFC 8784 PPK (next protocol item),
 	EAP, ADDKE rounds 2+, and a non-racoon2 ML-KEM peer for cross-implementation
 	interop.
