@@ -213,16 +213,30 @@ EOF
 			ip netns exec "$NSR" tcpdump -ni "$VR" -w "$D/after.pcap" 'udp port 500 or udp port 4500' >/dev/null 2>&1 &
 			# Kill only the initiator.  It sends nothing after this.
 			pkill -9 -f "$C/initiator.conf" 2>/dev/null || true
-			# Ladder 1+2+4+8+16+32+64 = 127s.  150s covers the abort log.
-			sleep 150
+			# Ladder: isakmp retransmit_interval[] = 1,2,4,8,16,32,64 with
+			# retry_limit = IKEV2_DEFAULT_RETRY 10, so ikev2_timeout()
+			# fires ~447s after the first unanswered send, plus up to
+			# dpd_delay (60s) until the next poll.  First 150s attempt
+			# stopped before even the 64s rung (sends 19:36:49 (+32),
+			# row ended 19:37:39).  Poll up to 600s; biggest cost is the
+			# calls to grep, not the wait.
+			i=0
+			abt=0
+			exc=0
+			while [ "$i" -lt 600 ]; do
+				abt=$(grep -c 'aborting ike_sa err=110' "$D/resp-iked.log" 2>/dev/null || true)
+				exc=$(grep -c 'retransmission count exceeded the limit' "$D/resp-iked.log" 2>/dev/null || true)
+				if [ "${abt:-0}" -ge 1 ] || [ "${exc:-0}" -ge 1 ]; then
+					break
+				fi
+				i=$((i+1)); sleep 1
+			done
 			pkill -f "$D/after.pcap" 2>/dev/null || true
 			sleep 1
 			after=$(tcpdump -nn -r "$D/after.pcap" "src $HI" 2>/dev/null | wc -l | tr -d ' ')
 			u1=$(grep -c 'dropping unordered' "$D/resp-iked.log" 2>/dev/null || true)
 			x1=$(grep -c 'unexpected response' "$D/resp-iked.log" 2>/dev/null || true)
 			c1=$(grep -c 'CREATE_CHILD' "$D/resp-iked.log" 2>/dev/null || true)
-			abt=$(grep -c 'aborting ike_sa err=110' "$D/resp-iked.log" 2>/dev/null || true)
-			exc=$(grep -c 'retransmission count exceeded' "$D/resp-iked.log" 2>/dev/null || true)
 			log "silence after-kill: inbound-from-initiator=${after:-0} abort=${abt:-0} exceeded=${exc:-0} unordered $u0->$u1 unexpected $x0->$x1 CREATE_CHILD $c0->$c1"
 			if [ "${after:-0}" -eq 0 ] && [ "${abt:-0}" -ge 1 ] && [ "${exc:-0}" -ge 1 ] \
 				&& [ "${u1:-0}" -eq "${u0:-0}" ] && [ "${x1:-0}" -eq "${x0:-0}" ] \
