@@ -45,8 +45,16 @@ AND a container run admits them — same rule as `i2ike-drop576`.
   "dropping unordered message" (recv_message_id already advanced at
   ikev2.c:4429 before the GETSPI netlink yield), post-arm as "R2
   replay".  Gate: exactly ONE `CREATE_CHILD_SA request` handler entry
-  in the responder log + unordered/R2-replay marker >= 1 + rekey
-  completes (new SPI both sides) + no abort.  Two handler entries = the
+  (responder log, scoped to the rekey msgid) + rekey completes (new SPI
+  both sides) + no abort + (marker lines for THAT msgid >= 1 OR the
+  tcpdump `-X` msgid scan of the responder-ingress tap counts >= 2
+  request copies).  The wire count substitutes because the box proved
+  the pre-arm drop path is SILENT (2026-09-26: completed rekey, zero
+  marker lines) — markers are only a proxy for "a duplicate landed";
+  the tap count is the direct measurement.  (tshark display filters
+  are dead on this Wireshark 4.6.8 build: isakmp.message_id and
+  isakmp.exchange_type are rejected outright, so the count parses the
+  msgid from the `-X` byte dump instead.)  Two handler entries = the
   window hole is real.  Deliberately classical ESP: the reassembler
   stores SKF fragments unconditionally (ikev2_frag.c:765) with a
   count-based completion gate (:778), so a duplicated mid-list fragment
@@ -58,17 +66,25 @@ AND a container run admits them — same rule as `i2ike-drop576`.
   loss row drops responder->initiator; this one nets the INITIATOR
   egress veth and drops the CREATE_CHILD REQUEST itself.  Recovery is
   the initiator's retransmit ladder (1,2,4,8...s), not a responder
-  replay; no R2 replay is expected.  30% loss until the responder log
-  shows the request arrived, then the qdisc is removed so the
-  FOLLOWUP+response complete inside the 10s ADDKE arm timer.  Gate:
-  netem-dropped >= 1 on the REQUEST direction + rekey completes + type-06
-  offer + matching ML-KEM keymat sha + no followup timeout.
+  replay; no R2 replay is expected.  100% loss is held until the netem
+  drop counter TICKS (that tick is the counted loss of the first
+  request copy), kept ~4s so the 1s/3s ladder rungs are counted too,
+  then the qdisc is REMOVED so the 7s rung arrives and FOLLOWUP +
+  response complete inside the 10s ADDKE arm timer.  Gate:
+  netem-dropped >= 1 on the REQUEST direction + the request logged
+  strictly after qdisc removal + rekey completes + type-06 offer +
+  matching ML-KEM keymat sha (g_ir_present=Y both sides) + no followup
+  timeout.
 - `veth-account` (review #2): audits the premise every counted-drop gate
   stands on.  `sent == peer_received + qdisc_dropped` on a standalone
   veth pair, both directions, with netem loss 30% and a clean pass
   (explicit /dev/udp generator covering UDP/500 + UDP/4500, kernel
-  `ip -s link` RX counters, `tc -s qdisc` dropped).  No iked, no ADDKE,
-  ~15s.
+  `ip -s link` RX counters, `tc -s qdisc` dropped).  ARP is PRIMED
+  before every baseline (single datagrams until the peer RX ticks) and
+  DRAINED (peer RX quiescent for 1s) so no priming or ARP frame lands
+  inside an asserted delta; IPv6 is disabled in both namespaces —
+  fresh-netns DAD/MLD/RS frames are a third bucket that overshoots RX.
+  No iked, no ADDKE, ~15s.
 
 RFC rows: `ikev2-netns-ikesa-rekey` (7296 §2.8), `ikev2-netns-cookie2`
 (4555 COOKIE2/ADDITIONAL), `ikev2-netns-qcd` (6290 AUTH token),
