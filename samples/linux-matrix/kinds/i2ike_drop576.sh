@@ -1,15 +1,21 @@
 #!/bin/sh
 # kinds/i2ike_drop576.sh — PQC CREATE_CHILD fragment-replay kill-test.
 # iked<->iked on 192.0.9.x, own netns, veth MTU 576.  i2iinit-drop576 proves
-# the IKE_INTERMEDIATE fragment path only.  This row is the CREATE_CHILD /
-# IKE_FOLLOWUP_KE path: ML-KEM KEr is 1184B, so the response is RFC 7383
-# SKF (3 datagrams).  Responder child lifetime is 3600s so only the
-# initiator rekeys.  Loss is 80% on responder->initiator from just before
-# the 60s soft rekey until the responder logs the fragmented FOLLOWUP
-# path (response just went out under that loss), then 5% so the replayed
-# fragments can land.  Holding 80% until the rekey completes cannot deliver
-# 3 fragments (0.8% per send).  PASS requires R2 replay >= 1, netem-dropped
-# >= 1, the fragmented-path log, matching ML-KEM keymat, and a new SPI.
+# the IKE_INTERMEDIATE fragment path only.  This row is CREATE_CHILD /
+# IKE_FOLLOWUP_KE: ML-KEM KEr is 1184B, so the response is RFC 7383 SKF
+# (3 datagrams; journal line is "SKF fragment recv", not "fragmented path"
+# — that line only fires when the recv window does not match).
+# Responder child lifetime is 3600s so only the initiator rekeys.
+# Loss is 30%, not 80%.  The ADDKE arm timer is 10s from the CREATE_CHILD
+# response until FOLLOWUP install.  80% on that response delivers in ~15s,
+# the timer aborts the child, and the FOLLOWUP arrives to "no pending
+# ADDKE state" (observed 19:03:02 / 19:03:12 / 19:03:18).  30% delivers the
+# one-packet CREATE_CHILD response in a few seconds and still drops a
+# fragment of the 3-SKF FOLLOWUP often enough that the replay lands inside
+# the same 10s budget.
+# PASS: R2 replay >= 1, netem-dropped >= 1, SKF fragment recv >= 3,
+# a new g_ir_present=Y keymat that matches both sides (the n line is the
+# AUTH child), a new SPI, and no ADDKE followup timeout.
 kind_i2ike_drop576() {
 	name=$1
 	require_root || return 1
@@ -137,7 +143,7 @@ sa esp_e {
 };
 EOF
 
-	attempts=3
+	attempts=4
 	pass_ok=0
 	for attempt in $(seq 1 "$attempts"); do
 		# kill daemons by the unique per-run conf dir (it IS in their argv);
@@ -210,80 +216,76 @@ EOF
 		done
 		[ "$up" -eq 1 ] || log "FAIL: child not up after 45s (attempt $attempt)"
 		[ "$up" -eq 1 ] || continue
+		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort -u > "$D/spi0"
 
-		# Soft rekey is ~48-54s after child install.  Hold no loss until
-		# just before that, then 80% so the FOLLOWUP_KE response (3 SKF
-		# datagrams at 576) is sent into loss.  Do NOT hold 80% until the
-		# rekey completes: P(all 3 fragments survive one send) is 0.8%, so
-		# the replayed fragments never land and the row fails even when
-		# replay works.  Ease to 5% once the responder has logged the
-		# fragmented FOLLOWUP path (response just went out under 80%).
-		sleep 30
-		if ! ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 80% 2>/dev/null; then
+		# 30% from just before the 60s soft rekey.  See the file header:
+		# 80% blows the 10s ADDKE arm timer before FOLLOWUP can install.
+		sleep 36
+		if ! ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 30% 2>/dev/null; then
 			log "FAIL: cannot apply netem loss on $NSR/$VR (no tc?); abort"
 			break
 		fi
 		d0=$(tc_dropped "$NSR" "$VR" || true)
+		y_arm=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
 		ndrop=0
-		frag_seen=0
+		rekeyed=0
 		i=0
-		while [ "$i" -lt 70 ]; do
-			if grep -F -q 'not advancing (fragmented path)' "$D/resp-iked.log" 2>/dev/null; then
-				frag_seen=1
-				break
-			fi
-			i=$((i+1)); sleep 1
-		done
-		# The fragmented-path log is written before the FOLLOWUP response
-		# is transmitted.  Two seconds lets that send hit the qdisc.
-		sleep 2
-		d1=$(tc_dropped "$NSR" "$VR" || true)
-		ndrop=$(( ${d1:-0} - ${d0:-0} ))
-		log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) frag_path=$frag_seen"
-		ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 5% 2>/dev/null || true
-
-		rekeyed=0; i=0
-		while [ "$i" -lt 90 ]; do
-			re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
-			ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
-			# a rekeyed child shows 3 esp rows; expect >= 3 (old + new)
-			if [ "${re:-0}" -ge 3 ] && [ "${ie:-0}" -ge 3 ]; then
-				nreplay=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
-				log "rekey: new SPI rows both sides at ${i}s (resp=$re init=$ie) R2 replay=$nreplay (attempt $attempt)"
+		while [ "$i" -lt 40 ]; do
+			y1=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
+			if [ "${y1:-0}" -gt "${y_arm:-0}" ]; then
 				rekeyed=1
 				break
 			fi
+			if grep -F -q 'ADDKE followup timeout' "$D/resp-iked.log" 2>/dev/null; then
+				break
+			fi
 			i=$((i+1)); sleep 1
 		done
-		[ "$rekeyed" -eq 1 ] || \
-			log "FAIL: child-SA rekey not seen in 90s after easing loss (attempt $attempt; resp esp rows: $(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp') frag_path=$frag_seen)"
+		d1=$(tc_dropped "$NSR" "$VR" || true)
+		ndrop=$(( ${d1:-0} - ${d0:-0} ))
+		# Ease so one more retransmit can finish an install that is
+		# already inside the timer.  Recount Y after that grace.
+		ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 5% 2>/dev/null || true
+		sleep 6
+		y1=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
+		if [ "${y1:-0}" -gt "${y_arm:-0}" ]; then
+			rekeyed=1
+		fi
+		log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) y_arm=${y_arm:-0} y1=${y1:-0}"
 
-		# PQC proof — identical to i2ike: the rekey must offer type-06 ADDKE
-		# (0x24 = mlkem768) in its CREATE_CHILD SA, derive ML-KEM keymat on
-		# BOTH sides (install logs 'sha256=<hash> g_ir_present=n'; the LAST
-		# such line on each side must MATCH), and not abort the pending rekey.
+		newspi=0
+		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort -u > "$D/spi1"
+		while read -r s; do
+			grep -qxF "$s" "$D/spi0" || newspi=1
+		done < "$D/spi1"
+		[ "$newspi" -eq 1 ] || log "FAIL: no new responder SPI after the loss window (attempt $attempt)"
+
 		t6=$(grep -c '06000024' "$D/init-iked.log" 2>/dev/null || true)
-		abt=$(grep -cE 'ADDKE followup timeout; abort' "$D/resp-iked.log" 2>/dev/null || true)
-		kh_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/init-iked.log" 2>/dev/null \
+		abt=$(grep -c 'ADDKE followup timeout' "$D/resp-iked.log" 2>/dev/null || true)
+		# g_ir_present=n is the AUTH child.  The rekey KEM line is Y.
+		kh_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/init-iked.log" 2>/dev/null \
 			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
-		kh_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/resp-iked.log" 2>/dev/null \
+		kh_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null \
 			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
 		nreplay=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
+		skf=$(grep -c 'SKF fragment recv' "$D/resp-iked.log" 2>/dev/null || true)
 		pqc=0
 		if [ "${t6:-0}" -ge 1 ] && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
 		   && [ "${abt:-0}" -eq 0 ]; then
 			pqc=1
-			log "PQC rekey: type-6 offered (x$t6), last KEM keymat sha256=$kh_i matches both sides, no followup abort"
+			log "PQC rekey: type-6 offered (x$t6), last KEM keymat $kh_i matches both sides, no followup timeout"
 		else
 			log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
 		fi
 
-		if [ "$rekeyed" -eq 1 ] && [ "$pqc" -eq 1 ] && [ "${nreplay:-0}" -ge 1 ] && [ "${ndrop:-0}" -ge 1 ] && [ "${frag_seen:-0}" -eq 1 ]; then
-			log "DROP-KILL-TEST: rekey survived a lost fragmented FOLLOWUP response via armed-response replay (R2 replay x$nreplay, netem-dropped=$ndrop, frag_path=1, attempt $attempt)"
+		if [ "$rekeyed" -eq 1 ] && [ "$newspi" -eq 1 ] && [ "$pqc" -eq 1 ] \
+		   && [ "${nreplay:-0}" -ge 1 ] && [ "${ndrop:-0}" -ge 1 ] \
+		   && [ "${skf:-0}" -ge 3 ]; then
+			log "DROP-KILL-TEST: fragmented FOLLOWUP replayed under counted loss (R2 replay x$nreplay, netem-dropped=$ndrop, skf=$skf, attempt $attempt)"
 			pass_ok=1
 			break
 		fi
-		log "attempt $attempt: rekeyed=$rekeyed pqc=$pqc nreplay=${nreplay:-0} drop=${ndrop:-0} frag_path=${frag_seen:-0} (need replay >= 1 AND measured drop >= 1 AND fragmented FOLLOWUP path)"
+		log "attempt $attempt: rekeyed=$rekeyed newspi=$newspi pqc=$pqc nreplay=${nreplay:-0} drop=${ndrop:-0} skf=${skf:-0} (need replay >= 1 AND drop >= 1 AND SKF >= 3 AND a new Y keymat)"
 	done
 
 	pkill -9 -f "$C/" 2>/dev/null || true
