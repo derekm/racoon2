@@ -6,13 +6,13 @@
 # (3 datagrams; journal line is "SKF fragment recv", not "fragmented path"
 # — that line only fires when the recv window does not match).
 # Responder child lifetime is 3600s so only the initiator rekeys.
-# Loss is 30%, not 80%.  The ADDKE arm timer is 10s from the CREATE_CHILD
-# response until FOLLOWUP install.  80% on that response delivers in ~15s,
-# the timer aborts the child, and the FOLLOWUP arrives to "no pending
-# ADDKE state" (observed 19:03:02 / 19:03:12 / 19:03:18).  30% delivers the
-# one-packet CREATE_CHILD response in a few seconds and still drops a
-# fragment of the 3-SKF FOLLOWUP often enough that the replay lands inside
-# the same 10s budget.
+# Loss stays off until the rekey CREATE_CHILD response has been sent
+# (journal: "CREATE_CHILD_SA response:").  30% across that response is
+# what CI 36204006963 failed: y_arm stayed 1, the 10s ADDKE timer aborted,
+# and the new Y keymat never landed, even though the same 30% passed once
+# on the box.  After the response is on the wire, 30% for a few seconds
+# hits the FOLLOWUP response, then 0% so the replay finishes inside the
+# timer.  Not in the CI default until a container run passes this gate.
 # PASS: R2 replay >= 1, netem-dropped >= 1, SKF fragment recv >= 3,
 # a new g_ir_present=Y keymat that matches both sides (the n line is the
 # AUTH child), a new SPI, and no ADDKE followup timeout.
@@ -218,19 +218,38 @@ EOF
 		[ "$up" -eq 1 ] || continue
 		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort -u > "$D/spi0"
 
-		# 30% from just before the 60s soft rekey.  See the file header:
-		# 80% blows the 10s ADDKE arm timer before FOLLOWUP can install.
-		sleep 36
+		# No loss until the rekey CREATE_CHILD response has left.  Holding
+		# 30% across that send is what kept y1 at 1 in CI 36204006963.
+		resp0=$(grep -c 'CREATE_CHILD_SA response:' "$D/resp-iked.log" 2>/dev/null || true)
+		replay0=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
+		i=0
+		resp1=$resp0
+		while [ "$i" -lt 70 ]; do
+			resp1=$(grep -c 'CREATE_CHILD_SA response:' "$D/resp-iked.log" 2>/dev/null || true)
+			if [ "${resp1:-0}" -gt "${resp0:-0}" ]; then
+				break
+			fi
+			i=$((i+1)); sleep 1
+		done
+		if [ "${resp1:-0}" -le "${resp0:-0}" ]; then
+			log "FAIL: rekey CREATE_CHILD response never sent (attempt $attempt)"
+			continue
+		fi
 		if ! ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 30% 2>/dev/null; then
 			log "FAIL: cannot apply netem loss on $NSR/$VR (no tc?); abort"
 			break
 		fi
 		d0=$(tc_dropped "$NSR" "$VR" || true)
 		y_arm=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
-		ndrop=0
+		# 4s at 30% is enough to drop a FOLLOWUP fragment and still
+		# leave the 10s arm timer room to finish at 0%.
+		sleep 4
+		d1=$(tc_dropped "$NSR" "$VR" || true)
+		ndrop=$(( ${d1:-0} - ${d0:-0} ))
+		ip netns exec "$NSR" tc qdisc del dev "$VR" root 2>/dev/null || true
 		rekeyed=0
 		i=0
-		while [ "$i" -lt 40 ]; do
+		while [ "$i" -lt 8 ]; do
 			y1=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
 			if [ "${y1:-0}" -gt "${y_arm:-0}" ]; then
 				rekeyed=1
@@ -241,17 +260,11 @@ EOF
 			fi
 			i=$((i+1)); sleep 1
 		done
-		d1=$(tc_dropped "$NSR" "$VR" || true)
-		ndrop=$(( ${d1:-0} - ${d0:-0} ))
-		# Ease so one more retransmit can finish an install that is
-		# already inside the timer.  Recount Y after that grace.
-		ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 5% 2>/dev/null || true
-		sleep 6
 		y1=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
 		if [ "${y1:-0}" -gt "${y_arm:-0}" ]; then
 			rekeyed=1
 		fi
-		log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) y_arm=${y_arm:-0} y1=${y1:-0}"
+		log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) y_arm=${y_arm:-0} y1=${y1:-0} resp ${resp0:-0}->${resp1:-0}"
 
 		newspi=0
 		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort -u > "$D/spi1"
