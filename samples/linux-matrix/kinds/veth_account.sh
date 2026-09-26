@@ -34,14 +34,25 @@
 # the FIRST packet of a fresh flow emits an ARP request that rides the
 # sender egress qdisc and lands in the peer RX counter — a third bucket
 # outside N.  Before every baseline we therefore prime the link: send
-# single UDP datagrams (retried until one provably arrives, which also
-# proves ARP resolved) until the peer RX counter ticks, THEN take the
-# d0/r0 baselines.  The priming traffic is excluded from every delta by
-# construction.  ARP entries (dest reached, ~600s STALE hold) cover the
-# whole 200-packet flood with no new ARP frames.  ICMP port-unreachable
+# single UDP datagrams (retried until the peer RX counter ticks) and
+# then DRAIN: wait until the peer RX counter is STABLE for 0.5s before
+# returning, so no priming frame (data or ARP) can still be in flight
+# when the caller reads its r0/d0 baselines.  Lossy priming (30% netem
+# is already armed) can queue several priming datagrams; the earlier
+# version only slept 0.2s, and late priming frames landed INSIDE the
+# asserted delta (measured: 147+57=204 and 130+72=202 — received
+# overshoot by exactly the priming residue).  Quiescence makes the
+# priming traffic excluded from every delta by construction.
+# ARP entries (dest reached, ~600s STALE hold) cover the whole
+# 200-packet flood with no new ARP frames.  ICMP port-unreachable
 # replies from the unbound receiver travel the REVERSE direction only,
-# never the asserted forward egress/RX (baselines taken immediately
-# after priming; 2s settle before each re-read).
+# never the asserted forward egress/RX (and the reverse-direction
+# baseline is taken after its own priming + drain).
+#
+# NOTE on variable names: kind functions run in run.sh's own shell, so
+# a bare `fail=0` here CLOBBERS run.sh's tally counter (observed:
+# `pass=6 fail=2` while three rows logged FAIL).  All state in this
+# kind is namespaced va_*.
 kind_veth_account() {
 	name=$1
 	require_root || return 1
@@ -55,6 +66,16 @@ kind_veth_account() {
 	ip link del "$VA" 2>/dev/null || true
 
 	ip netns add "$NA"; ip netns add "$NB"
+	# Kill the IPv6 third bucket AT THE SOURCE: a fresh netns emits DAD
+	# NS, MLD reports and up to MAX_RTR_SOLICITATIONS Router Solicitations
+	# on link-up, and the RS retransmit ladder (1s, backoff) can fire
+	# INSIDE the flood window after the priming drain — RX then overshoots
+	# N by the RS/MLD frames riding the same netem qdisc (observed
+	# overshoots +4 and +2 with ARP priming+drain alone).  Disabling
+	# IPv6 in both namespaces removes every kernel-generated frame class
+	# except ARP, and ARP is primed+drained before every baseline.
+	ip netns exec "$NA" sysctl -qw net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
+	ip netns exec "$NB" sysctl -qw net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 	ip netns exec "$NA" ip link set lo up
 	ip netns exec "$NB" ip link set lo up
 	ip link add "$VA" type veth peer name "$VB"
@@ -75,9 +96,9 @@ kind_veth_account() {
 			  '
 	}
 	# Prime ARP on the path _nsfrom->(_nstop,_devstop): single-datagram
-	# sends, retried until the PEER's RX counter ticks (delivery proves
-	# ARP resolved).  Runs before every baseline so no priming frame
-	# lands inside an asserted delta.
+	# sends until the PEER's RX counter ticks, then DRAIN until the peer
+	# RX counter is stable for 0.5s (two reads equal).  Runs before every
+	# baseline so no priming frame lands inside an asserted delta.
 	prime_arp() {
 		_nsfrom=$1 _nstop=$2 _devstop=$3 _dst=$4
 		_seen=$(dev_pkts "$_nstop" "$_devstop" RX)
@@ -88,7 +109,14 @@ kind_veth_account() {
 			sleep 0.5
 			_now=$(dev_pkts "$_nstop" "$_devstop" RX)
 			if [ "${_now:-0}" -gt "${_seen:-0}" ]; then
-				sleep 0.2
+				_q=0
+				while [ "$_q" -lt 20 ]; do
+					_s1=$(dev_pkts "$_nstop" "$_devstop" RX)
+					sleep 0.5
+					_s2=$(dev_pkts "$_nstop" "$_devstop" RX)
+					[ "${_s2:-0}" -eq "${_s1:-0}" ] && return 0
+					_q=$((_q + 1))
+				done
 				return 0
 			fi
 			_t=$((_t + 1))
@@ -108,16 +136,16 @@ kind_veth_account() {
 		' _ "$_n" "$_dst"
 	}
 
-	fail=0
+	va_fail=0
 	# --- pass 1: A->B with 30% loss on A egress ---
 	if ! ip netns exec "$NA" tc qdisc replace dev "$VA" root netem loss 30% 2>/dev/null; then
 		log "FAIL: cannot apply netem loss on $NA/$VA (no tc?)"
-		fail=1
+		va_fail=1
 	else
-		prime_arp "$NA" "$NB" "$VB" "$IB" || fail=1
+		prime_arp "$NA" "$NB" "$VB" "$IB" || va_fail=1
 		d0=$(tc_dropped "$NA" "$VA" || true)
 		r0=$(dev_pkts "$NB" "$VB" RX)
-		flood "$NA" "$IB" 200 || fail=1
+		flood "$NA" "$IB" 200 || va_fail=1
 		sleep 2
 		d1=$(tc_dropped "$NA" "$VA" || true)
 		r1=$(dev_pkts "$NB" "$VB" RX)
@@ -127,7 +155,7 @@ kind_veth_account() {
 			log "VETH-ACCOUNT A->B: sent=200 received=$R qdisc_dropped=$D (200 == $R + $D) OK"
 		else
 			log "FAIL: VETH-ACCOUNT A->B identity broken: sent=200 received=$R qdisc_dropped=$D (need 200 == $R + $D AND dropped >= 1)"
-			fail=1
+			va_fail=1
 		fi
 		ip netns exec "$NA" tc qdisc del dev "$VA" root 2>/dev/null || true
 	fi
@@ -135,12 +163,12 @@ kind_veth_account() {
 	# --- pass 2: B->A with 30% loss on B egress ---
 	if ! ip netns exec "$NB" tc qdisc replace dev "$VB" root netem loss 30% 2>/dev/null; then
 		log "FAIL: cannot apply netem loss on $NB/$VB (no tc?)"
-		fail=1
+		va_fail=1
 	else
-		prime_arp "$NB" "$NA" "$VA" "$IA" || fail=1
+		prime_arp "$NB" "$NA" "$VA" "$IA" || va_fail=1
 		d0=$(tc_dropped "$NB" "$VB" || true)
 		r0=$(dev_pkts "$NA" "$VA" RX)
-		flood "$NB" "$IA" 200 || fail=1
+		flood "$NB" "$IA" 200 || va_fail=1
 		sleep 2
 		d1=$(tc_dropped "$NB" "$VB" || true)
 		r1=$(dev_pkts "$NA" "$VA" RX)
@@ -150,15 +178,15 @@ kind_veth_account() {
 			log "VETH-ACCOUNT B->A: sent=200 received=$R qdisc_dropped=$D (200 == $R + $D) OK"
 		else
 			log "FAIL: VETH-ACCOUNT B->A identity broken: sent=200 received=$R qdisc_dropped=$D (need 200 == $R + $D AND dropped >= 1)"
-			fail=1
+			va_fail=1
 		fi
 		ip netns exec "$NB" tc qdisc del dev "$VB" root 2>/dev/null || true
 	fi
 
 	# --- pass 3: A->B with NO loss (exact delivery; dropped must be 0) ---
-	prime_arp "$NA" "$NB" "$VB" "$IB" || fail=1
+	prime_arp "$NA" "$NB" "$VB" "$IB" || va_fail=1
 	r0=$(dev_pkts "$NB" "$VB" RX)
-	flood "$NA" "$IB" 200 || fail=1
+	flood "$NA" "$IB" 200 || va_fail=1
 	sleep 2
 	r1=$(dev_pkts "$NB" "$VB" RX)
 	R=$(( ${r1:-0} - ${r0:-0} ))
@@ -166,13 +194,13 @@ kind_veth_account() {
 		log "VETH-ACCOUNT clean: sent=200 received=$R qdisc_dropped=0 OK"
 	else
 		log "FAIL: VETH-ACCOUNT clean link lost packets: sent=200 received=$R"
-		fail=1
+		va_fail=1
 	fi
 
 	ip netns del "$NA" 2>/dev/null || true
 	ip netns del "$NB" 2>/dev/null || true
 	ip link del "$VA" 2>/dev/null || true
 
-	[ "$fail" -eq 0 ] || return 1
+	[ "$va_fail" -eq 0 ] || return 1
 	return 0
 }

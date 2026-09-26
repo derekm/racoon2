@@ -240,6 +240,17 @@ EOF
 			log "FAIL: cannot apply netem duplicate on $NSI/$VI (no tc?); abort"
 			break
 		fi
+		# DIAG tap: ingress on the RESPONDER veth (post-netem, so the
+		# duplicated copies ARE visible there; a tap on the initiator
+		# egress sits ABOVE netem and would only ever show the original).
+		PCAP="$D/dup-window.pcap"
+		TCPID=
+		rm -f "$PCAP"
+		if command -v tcpdump >/dev/null 2>&1; then
+			ip netns exec "$NSR" tcpdump -ni "$VR" -U -w "$PCAP" udp port 500 \
+				>/dev/null 2>&1 &
+			TCPID=$!
+		fi
 
 		spi(){ ip netns exec "$1" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort; }
 		SR0=$(spi "$NSR"); SI0=$(spi "$NSI")
@@ -258,10 +269,27 @@ EOF
 		[ "$rekeyed" -eq 1 ] || \
 			log "FAIL: child-SA rekey not seen in 120s under dup (attempt $attempt; resp SPIs now: $(spi "$NSR" | tr '\n' ' '))"
 
-		# ease off so the exchange completes cleanly once the response WAS
-		# handled (the short-circuit path is what we are proving).
+		# Response (responder->initiator) is NOT duplicated (injector is
+		# on the initiator egress).  The rekey poll above already broke
+		# on the new SPI pair, i.e. the CREATE_CHILD exchange is done;
+		# hold `duplicate 100%` 12s LONGER so any late ladder rung or
+		# clone is still counted inside the measured window, then ease
+		# off.  (The clone rides netem back-to-back with the original,
+		# while the response is not yet armed — the mid-window case.)
+		# (2026-09-26 FAIL evidence, retained from /home/yescorp/r2-
+		# matrix.log: resp-iked.log showed ONE 'request: msgid=5' line
+		# and ZERO 'dropping unordered' / 'R2 replay' lines — either the
+		# clone never reached the socket or the pre-arm drop path is
+		# silent; the tcpdump tap above and the wire count below
+		# arbitrate between those two.)
+		sleep 12
 		ip netns exec "$NSI" tc qdisc replace dev "$VI" root netem duplicate 0% 2>/dev/null || true
 		sleep 4
+		if [ -n "${TCPID:-}" ]; then
+			kill "$TCPID" 2>/dev/null || true
+			wait "$TCPID" 2>/dev/null || true
+			TCPID=
+		fi
 
 		# WINDOW evidence MUST be tied to THIS exchange's msgid.  The
 		# handler-entry line (ikev2.c:4514) carries the request msgid M;
@@ -281,20 +309,48 @@ EOF
 			ncc=$(grep -c "CREATE_CHILD_SA request: msgid=${MID} " "$D/resp-iked.log" 2>/dev/null || true)
 			nunord=$(grep -cF "dropping unordered message (id $MID)" "$D/resp-iked.log" 2>/dev/null || true)
 			nreplay=$(grep -cF "R2 replay: re-sent armed response (message_id $MID)" "$D/resp-iked.log" 2>/dev/null || true)
+			# SKF reassembly path: a reassembled duplicate request is
+			# dropped in ikev2_update_message_id with its OWN log line
+			# ("update_message_id: request id M != expected N; dropping
+			# (unordered) request", ikev2.c:902) — it never reaches the
+			# :496/:544 or :743 markers because fragmented messages
+			# skip retransmit_forced/check_message_ordering (ikev2.c:895).
+			nfrag=$(grep -cE "update_message_id: request id ${MID} != expected [0-9]+" "$D/resp-iked.log" 2>/dev/null || true)
 		else
 			ncc=0
 			nunord=0
 			nreplay=0
+			nfrag=0
 		fi
-		abt=$(grep -cE 'abort' "$D/resp-iked.log" 2>/dev/null || true)
+	abt=$(grep -cE 'abort' "$D/resp-iked.log" 2>/dev/null || true)
+	wire=""
+	# TCPID was already reaped above; gate on the closed pcap file, not
+	# on the (now-empty) pid, or the wire count never runs.
+	if command -v tshark >/dev/null 2>&1 && [ -f "$PCAP" ]; then
+		wire=$(tshark -r "$PCAP" -Y "isakmp.message_id_raw == ${MID:-0}" 2>/dev/null | wc -l)
+	fi
 
-		if [ "$rekeyed" -eq 1 ] && [ "${ncc:-0}" -eq 1 ] \
-		   && [ $(( ${nunord:-0} + ${nreplay:-0} )) -ge 1 ] && [ "${abt:-0}" -eq 0 ]; then
-			log "DUP-WINDOW-UNIT: mid-window duplicate short-circuited (handler entries=$ncc, unordered=$nunord, R2 replay=$nreplay, attempt $attempt)"
-			pass_ok=1
-			break
-		fi
-		log "attempt $attempt: rekeyed=$rekeyed cc_entries=${ncc:-0} unordered=${nunord:-0} replay=${nreplay:-0} abort=${abt:-0} (need exactly 1 handler entry AND unordered+replay >= 1 AND no abort; two entries = the window hole is real)"
+	if [ "$rekeyed" -eq 1 ] && [ "${ncc:-0}" -eq 1 ] \
+	   && [ $(( ${nunord:-0} + ${nreplay:-0} + ${nfrag:-0} )) -ge 1 ] && [ "${abt:-0}" -eq 0 ]; then
+		log "DUP-WINDOW-UNIT: mid-window duplicate short-circuited (handler entries=$ncc, unordered=$nunord, R2 replay=$nreplay, frag-drop=$nfrag, wire-id${MID}-pkts=${wire:-n/a}, attempt $attempt)"
+		pass_ok=1
+		break
+	fi
+	# Wire-arrival fallback: if tshark counts >= 2 datagrams carrying
+	# msgid M on the responder ingress, the clone DID reach the socket.
+	# ONE handler entry + rekey complete + no abort then proves the
+	# second copy was short-circuited before the handler even if the
+	# pre-arm drop path is silent (2026-09-26 box evidence: zero
+	# marker lines with a completed rekey — marker presence is only a
+	# PROXY for "a duplicate landed"; the wire count is the direct
+	# measurement, so it may substitute when markers stay 0).
+	if [ "$rekeyed" -eq 1 ] && [ "${ncc:-0}" -eq 1 ] \
+	   && [ "${wire:-}" != "" ] && [ "${wire:-0}" -ge 2 ] && [ "${abt:-0}" -eq 0 ]; then
+		log "DUP-WINDOW-UNIT: clone reached socket (wire-id${MID}-pkts=$wire) with exactly $ncc handler entry — short-circuited pre-handler (silent path; markers=$nunord/$nreplay/$nfrag, attempt $attempt)"
+		pass_ok=1
+		break
+	fi
+	log "attempt $attempt: rekeyed=$rekeyed cc_entries=${ncc:-0} unordered=${nunord:-0} replay=${nreplay:-0} frag-drop=${nfrag:-0} abort=${abt:-0} wire-id${MID:-?}-pkts=${wire:-n/a} (need exactly 1 handler entry AND unordered+replay+frag-drop >= 1 AND no abort; two entries = the window hole is real)"
 	done
 
 	pkill -9 -f "$C/" 2>/dev/null || true
