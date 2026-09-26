@@ -189,9 +189,10 @@ jobs:
           # i2ike-drop576 is box-green once and container-red (36204006963:
           # new Y never landed).  It stays out of this default until a
           # container run passes the same counted gate.
-          [ -n "$CASES" ] || CASES='^i2iinit-addke |^i2iinit-nointermediate |^i2ike-addke |^i2ikesa-addke |^i2ike-drop |^i2iinit-drop576 '
-          ARGS="--src $GITHUB_WORKSPACE --cases $CASES"
-          bash samples/linux-matrix/run.sh $ARGS
+          [ -n "$CASES" ] || CASES='^(i2iinit-addke |i2iinit-nointermediate |i2ike-addke |i2ikesa-addke |i2ike-drop |i2iinit-drop576 )'
+          # run.sh splits ARGS on IFS.  A --cases value with spaces (the
+          # anchored names above) must be one argv: pass it quoted.
+          bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" --cases "$CASES"
         env:
           R2_PREFIX: /usr/local/racoon2
 
