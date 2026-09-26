@@ -13,6 +13,9 @@ kind_i2iinit() {
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
+	PEER=$(i2i_peer "$name")
+	PEER_ID=$(i2i_peer_resp_id "$PEER")
+	[ "$PEER" = charon ] && ! command -v "$I2I_CHARON_BIN" >/dev/null 2>&1 && { log "FAIL: no charon binary $I2I_CHARON_BIN"; return 1; }
 
 	NSR=i2init-r; NSI=i2init-i; VR=i2iv-r; VI=i2iv-i
 	HR=192.0.5.1; HI=192.0.5.2
@@ -32,7 +35,7 @@ remote matrix_resp {
 	ikev2 {
 		passive on;
 		my_id fqdn "racoon2-matrix";
-		peers_id fqdn "r2init-matrix";
+		peers_id fqdn "$PEER_ID";
 		peers_ipaddr "$HI";
 		kmp_enc_alg { aes_gcm; };
 		kmp_prf_alg { hmac_sha2_256; };
@@ -74,7 +77,12 @@ sa esp_e {
 	esp_addke_alg { mlkem768; };
 };
 EOF
-	cat > "$C/initiator.conf" <<EOF
+	if [ "$PEER" = charon ]; then
+	# charon initiator: shared helper writes the swanctl conn (PSK hex read
+	# from the existing matrix psk, never printed) and spawns/triggers it.
+	i2i_peer_i_conf "$C" "$HI" "$HR" "$name" charon || return 1
+else
+cat > "$C/initiator.conf" <<EOF
 interface {
 	ike { "$HI"; };
 	spmd { unix "/tmp/spmif-i2init-i"; };
@@ -128,6 +136,7 @@ sa esp_e {
 	esp_addke_alg { mlkem768; };
 };
 EOF
+fi
 
 	# kill daemons by the unique per-run conf dir (it IS in their argv)
 	pkill -9 -f "$C/" 2>/dev/null || true
@@ -161,14 +170,22 @@ EOF
 	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2init-r RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 
+if [ "$PEER" = charon ]; then
+	i2i_peer_i_start "$D" "$NSI" charon "$name"
+else
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
 	ISPMD=$!
 	i=0; until [ -S /tmp/spmif-i2init-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2init-i RACOON2_RESUME_DIR="$PRIVRES_I" \
 	    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
+fi
 
 	sleep 2
+if [ "$PEER" = charon ]; then
+	i2i_peer_i_trigger "$D" "$NSI" charon "$name"
+else
 	"$SBIN/ikedctl" -s /tmp/iked.sock-i2init-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+fi
 
 	up=0
 	i=0
@@ -184,16 +201,20 @@ EOF
 	done
 
 	# The initial IKE_SA ran an IKE_INTERMEDIATE ADDKE round (SAi1 type-6 +
-	# 16438 both sides).  intermediate_finish_round logs
-	#   IKE_INTERMEDIATE ADDKE SK(1) SKEYSEED=<hex>
-	# IDENTICALLY on both sides (RFC 9370 s3.5).  A classical int exchange
-	# logs no such line -> fail.
+	# 16438 both sides).  iked logs 'IKE_INTERMEDIATE ADDKE round complete'
+	# IDENTICALLY on the responder; the initiator side is proven by the peer
+	# backend: iked logs the same marker, charon selected KE1_ML_KEM_768 and
+	# reached ESTABLISHED (RFC 9370 s3.5).  A classical int exchange logs no
+	# such line -> fail.
 	nint=0; i=0
 	while [ "$i" -lt 20 ]; do
-		n_i=$(grep -c 'IKE_INTERMEDIATE ADDKE round complete' "$D/init-iked.log" 2>/dev/null || true)
 		n_r=$(grep -c 'IKE_INTERMEDIATE ADDKE round complete' "$D/resp-iked.log" 2>/dev/null || true)
-		if [ "${n_i:-0}" -ge 1 ] && [ "${n_r:-0}" -ge 1 ]; then
-			log "IKE_INTERMEDIATE ADDKE round completed on BOTH sides at ${i}s"
+		# initiator-side evidence: iked round-complete marker, or charon
+		# KE1_ML_KEM_768 + ESTABLISHED (the ESP child proves SK(1) matched).
+		i2i_peer_i_evidence "$D" "$PEER"
+		n_p=$?
+		if [ "${n_r:-0}" -ge 1 ] && [ "$n_p" -eq 0 ]; then
+			log "IKE_INTERMEDIATE ADDKE round completed: responder + ${PEER} initiator at ${i}s"
 			nint=1; break
 		fi
 		i=$((i+1)); sleep 1
@@ -201,8 +222,8 @@ EOF
 	# AUTH+IntAuth verified == the RFC 9370 s3.5 SKEYSEED(1) matched: both
 	# sides derived the same intermediate key or the ESP child could not
 	# establish (up=1 is checked separately).  The raw SKEYSEED/IntAuth bytes
-	# are intentionally not logged, so the round-complete marker on both
-	# sides, plus up=1, is the proof.
+	# are intentionally not logged, so the round-complete marker plus up=1 is
+	# the proof.
 	pqc=0
 	if [ "${nint:-0}" -eq 1 ]; then
 		pqc=1
@@ -211,8 +232,11 @@ EOF
 		log "FAIL: initial IKE_SA not ADDKE/ML-KEM (nint=${nint:-0})"
 	fi
 
-	# kill daemons by the unique per-run conf dir
+	# kill daemons by the unique per-run conf dir; charon initiator is torn
+	# down via the peer helper (swanctl conn file removed, charon killed).
+	i2i_peer_i_cleanup "$PEER"
 	pkill -9 -f "$C/" 2>/dev/null || true
+	rm -f /etc/strongswan/swanctl/conf.d/r2-${name}.conf
 	sleep 1
 	ip netns del "$NSR" 2>/dev/null || true
 	ip netns del "$NSI" 2>/dev/null || true
@@ -220,10 +244,15 @@ EOF
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
 	if [ "$up" -ne 1 ] || [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; then
-		log "FAIL: PQC initial-IKE_SA ADDKE incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0})"
-		log "--- init-iked.log ---"
-		grep -E 'IKE_INTERMEDIATE|IKE_SA_INIT|IKE_AUTH|abort|err=|FOLLOWUP' \
-			"$D/init-iked.log" 2>/dev/null | tail -8
+		log "FAIL: PQC initial-IKE_SA ADDKE incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} peer=${PEER})"
+		if [ "$PEER" = charon ]; then
+			log "--- charon-init.log ---"
+			i2i_peer_i_diag "$D" charon
+		else
+			log "--- init-iked.log ---"
+			grep -E 'IKE_INTERMEDIATE|IKE_SA_INIT|IKE_AUTH|abort|err=|FOLLOWUP' \
+				"$D/init-iked.log" 2>/dev/null | tail -8
+		fi
 		log "--- resp-iked.log ---"
 		grep -E 'IKE_INTERMEDIATE|IKE_SA_INIT|IKE_AUTH|abort|err=|FOLLOWUP' \
 			"$D/resp-iked.log" 2>/dev/null | tail -8
