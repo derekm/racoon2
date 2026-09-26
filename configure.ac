@@ -24,6 +24,12 @@ AM_CONDITIONAL([BUILD_KINKD], [test x"$enable_kinkd" = xyes])
 AS_IF([test x"$enable_kinkd" = xyes], [AC_CONFIG_SUBDIRS([kinkd])])
 
 dnl Documented here; lib/configure.ac selects if_xfrm.c / if_pfkeyv2.c / if_userspace.c.
+dnl Documented here; iked/configure.ac does the libblocklist probe.
+AC_ARG_ENABLE(blocklist,
+	[AS_HELP_STRING([--enable-blocklist],
+		[iked notifies blocklistd of IKE scanners (default: no)])],
+	[], [enable_blocklist=no])
+
 AC_ARG_WITH(km-backend,
 	[  --with-km-backend=xfrm|pfkey|userspace
                           SAD/SPD interface (Linux default xfrm;
