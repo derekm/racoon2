@@ -78,8 +78,11 @@ AND a container run admits them — same rule as `i2ike-drop576`.
 - `veth-account` (review #2): audits the premise every counted-drop gate
   stands on.  `sent == peer_received + qdisc_dropped` on a standalone
   veth pair, both directions, with netem loss 30% and a clean pass
-  (explicit /dev/udp generator covering UDP/500 + UDP/4500, kernel
-  `ip -s link` RX counters, `tc -s qdisc` dropped).  ARP is PRIMED
+  (explicit /dev/udp generator covering UDP/500 + UDP/4500, peer
+  per-netns UDP MIB counter InDatagrams+NoPorts from /proc/net/snmp —
+  the raw link RX counter overshoots by one ARP reply per pass (box:
+  141+60=201), the UDP MIB only ever counts UDP; `tc -s qdisc`
+  dropped).  ARP is PRIMED
   before every baseline (single datagrams until the peer RX ticks) and
   DRAINED (peer RX quiescent for 1s) so no priming or ARP frame lands
   inside an asserted delta; IPv6 is disabled in both namespaces —
