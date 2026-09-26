@@ -78,7 +78,9 @@ jobs:
           CASES=${{ inputs.cases }}
           ARGS="--src $GITHUB_WORKSPACE"
           [ -z "$CASES" ] || ARGS="$ARGS --cases $CASES"
-          sudo -E bash samples/linux-matrix/run.sh $ARGS
+          # run.sh splits $ARGS on IFS; a --cases value with spaces must
+          # be one argv (same trap as the Fedora job before 617ed26).
+          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" ${CASES:+--cases "$CASES"}
         env:
           R2_PREFIX: /usr/local/racoon2
 

@@ -129,6 +129,15 @@ while IFS="$(printf '\t')" read -r name kind expect workers note gate || [ -n "$
 		skip=$((skip + 1))
 		continue
 	fi
+	# DPD gate: rows that need the full retransmit ladder (11 timers,
+	# ~383s at dpd_delay 60) only run when the runner opts in.  The
+	# box sets R2_DPD=yes; CI does not, so i2ike-silence stays off the
+	# Ubuntu/NetBSD full matrix (a 16-minute ladder on every push).
+	if [ "$gate" = dpd ] && [ "${R2_DPD:-no}" != "yes" ]; then
+		log "SKIP $name (DPD gate off: R2_DPD=${R2_DPD:-no})"
+		skip=$((skip + 1))
+		continue
+	fi
 	case $workers in -|'') R2_WORKERS= ;; *) R2_WORKERS=$workers ;; esac
 	export R2_WORKERS
 	log "=== $name ($kind) workers=${R2_WORKERS:-live} ==="

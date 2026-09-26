@@ -214,12 +214,14 @@ EOF
 			# Kill only the initiator.  It sends nothing after this.
 			pkill -9 -f "$C/initiator.conf" 2>/dev/null || true
 			# Ladder: isakmp retransmit_interval[] = 1,2,4,8,16,32,64 with
-			# retry_limit = IKEV2_DEFAULT_RETRY 10, so ikev2_timeout()
-			# fires ~447s after the first unanswered send, plus up to
-			# dpd_delay (60s) until the next poll.  First 150s attempt
-			# stopped before even the 64s rung (sends 19:36:49 (+32),
-			# row ended 19:37:39).  Poll up to 600s; biggest cost is the
-			# calls to grep, not the wait.
+			# retry_limit = IKEV2_DEFAULT_RETRY 10.  Re-derived from
+			# isakmp.c:2213-2215 + 2449-2465: initial send t=0, retransmits
+			# at 1,3,7,15,31,63,127,191,255,319, timeout check at t=383
+			# (11th timer, retry_count 10 >= limit 10 -> ikev2_timeout).
+			# Not 447s/12th: that adds one extra clamped 64s rung.  Worst
+			# case is up to dpd_delay (60s) to the next poll + 383s = 443s;
+			# polling to 600s covers it (first 150s try stopped before
+			# even the 64s rung: sends 19:36:49 (+32), row ended 19:37:39).
 			i=0
 			abt=0
 			exc=0
