@@ -33,10 +33,33 @@ requires the netem dropped counter (read from `tc -s qdisc show`, helper
 measured loss, or loss without a marker, both fail.
 
 New-row staging: `gate=box` rows (`i2ike-dup`, `i2ike-reqdrop`,
-`veth-account`) run ONLY when `R2_BOX=yes` (the box runner sets it; CI
-must not).  They stay out of the Ubuntu/NetBSD full matrix and the
-Fedora container default until a counted-gate PASS exists on the box
-AND a container run admits them — same rule as `i2ike-drop576`.
+`veth-account`, `i2iinit-charon`) run ONLY when `R2_BOX=yes` (the box
+runner sets it; CI must not).  They stay out of the Ubuntu/NetBSD full
+matrix and the Fedora container default until a counted-gate PASS exists
+on the box AND a container run admits them — same rule as `i2ike-drop576`.
+
+Peer-backend swap: the i2i kinds default to iked<->iked, but a `-charon`
+suffix on the case name runs the SAME kind with a strongSwan 6.0.7
+(charon/swanctl, `ml` plugin) INITIATOR in the sibling initiator netns —
+the responder stays the iked SUT.  Shared peer helpers live in
+`kinds/i2i_peer.sh` (swanctl conn write with ke1_mlkem768 + RFC 9242
+IKE_INTERMEDIATE; spawn/trigger via charon+swanctl; gate evidence =
+charon `KE1_ML_KEM_768` selected + `CONNECTING => ESTABLISHED`; cleanup).
+This is the independent-implementation interop row: two ML-KEM-768
+implementations derive the same SK(1), proven by the ESP child landing.
+
+- `i2iinit-charon` (interop, gate=box): initial-IKE_SA ADDKE
+  iked-responder vs charon-initiator on 192.0.5.x.  charon 6.0.7 places
+  KE1_ML_KEM_768 in SAi1 (strongSwan 6.0 NEWS: RFC 9370 ADDKE transform
+  types 1..7 + RFC 9242 IKE_INTERMEDIATE, ML-KEM via the `ml` plugin —
+  NOT the vendored 5.9 that had no mlkem in the charon binary; prove the
+  installed build with `swanctl --list-algs` needing a live charon, or
+  `strings /usr/lib64/strongswan/libstrongswan.so.0 | grep mlkem`).  Box
+  probe 2026-09-26 (id-fixed run): charon ESTABLISHED AES_GCM_16-256/
+  PRF_HMAC_SHA2_256/ECP_256/KE1_ML_KEM_768, iked
+  RES_IKE_AUTH_RCVD->ESTABLISHED + `IKE_INTERMEDIATE ADDKE round complete`
+  + PRF_PLUS T1 recompute MATCH + keymat sha256=01a642e6.. g_ir_present=n,
+  ESP in both netnss.
 
 - `i2ike-dup` (review #5): CREATE_CHILD mid-handler duplicate unit.
   `netem duplicate 100%` on the initiator egress veth doubles the rekey
