@@ -14,7 +14,7 @@
 #   - response already armed -> "R2 replay".
 # Either marker is correct; the sharp gate is that the handler runs
 # EXACTLY ONCE: the resp log carries exactly one "CREATE_CHILD_SA
-# request:" line (ikev2.c:4513) for the rekey.  Two lines = handler
+# request:" line (ikev2.c:4514) for the rekey.  Two lines = handler
 # re-entered = the window hole is real (FAIL).
 #
 # Injector: netem `duplicate 100%` on the INITIATOR egress veth, armed
@@ -263,13 +263,29 @@ EOF
 		ip netns exec "$NSI" tc qdisc replace dev "$VI" root netem duplicate 0% 2>/dev/null || true
 		sleep 4
 
-		# WINDOW evidence: the duplicate landed pre-arm (dropped as
-		# unordered: NEVER reached the handler) or post-arm (R2 replay).
-		# Sharp no-re-entry assertion: exactly ONE CREATE_CHILD_SA request
-		# handler entry for the rekey.
-		nunord=$(grep -c 'dropping unordered message' "$D/resp-iked.log" 2>/dev/null || true)
-		nreplay=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
-		ncc=$(grep -c 'CREATE_CHILD_SA request: msgid=' "$D/resp-iked.log" 2>/dev/null || true)
+		# WINDOW evidence MUST be tied to THIS exchange's msgid.  The
+		# handler-entry line (ikev2.c:4514) carries the request msgid M;
+		# a short-circuited duplicate is logged for the SAME M:
+		# "dropping unordered message (id M)" pre-arm, or
+		# "R2 replay: re-sent armed response (message_id M)" post-arm.
+		# Bare markers would let an unrelated DPD/informational replay
+		# (dpd_delay 60 runs on this same SA) satisfy the gate without
+		# any CREATE_CHILD duplicate ever landing, so the marker greps
+		# only accept lines carrying M.
+		# Sharp no-re-entry assertion scoped to THIS exchange: the
+		# initial child also logs the :4514 line, so the rekey is the
+		# LAST handler entry; count entries carrying that msgid only.
+		MID=$(grep -oE 'CREATE_CHILD_SA request: msgid=[0-9]+' "$D/resp-iked.log" 2>/dev/null \
+			| tail -n1 | cut -d= -f2)
+		if [ -n "$MID" ]; then
+			ncc=$(grep -c "CREATE_CHILD_SA request: msgid=${MID} " "$D/resp-iked.log" 2>/dev/null || true)
+			nunord=$(grep -cF "dropping unordered message (id $MID)" "$D/resp-iked.log" 2>/dev/null || true)
+			nreplay=$(grep -cF "R2 replay: re-sent armed response (message_id $MID)" "$D/resp-iked.log" 2>/dev/null || true)
+		else
+			ncc=0
+			nunord=0
+			nreplay=0
+		fi
 		abt=$(grep -cE 'abort' "$D/resp-iked.log" 2>/dev/null || true)
 
 		if [ "$rekeyed" -eq 1 ] && [ "${ncc:-0}" -eq 1 ] \

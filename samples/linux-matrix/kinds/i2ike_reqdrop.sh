@@ -7,26 +7,43 @@
 # lost.  This row nets the INITIATOR egress veth instead: the CREATE_CHILD
 # rekey REQUEST itself is lost on the wire.  Recovery must be the
 # INITIATOR's own retransmit ladder (isakmp_retransmit: 1,2,4,8,16,32,
-# 64s, isakmp.c:2129/ladder, retry_limit 10) — the responder never saw
+# 64s doubling ladder, retry_limit 10) — the responder never saw
 # the first copy, so there is no armed response to replay: each surviving
 # retransmit arrives as a FRESH request (recv_message_id was never
 # consumed) and is processed normally.  No R2 replay is expected or
 # required here (nothing was answered and then lost); the counted gate is
 # proof that a request-direction drop did not stop the rekey.
 #
-# Shape (mirrors the box-proven drop576 retime): 30% loss armed on the
-# initiator egress AFTER child-up, kept until the responder log shows the
-# CREATE_CHILD request arrived ("CREATE_CHILD_SA request:"), then the
-# qdisc is REMOVED so the FOLLOWUP_KE (3 SKF; also initiator->responder)
-# and the response flow at 0% inside the 10s ADDKE arm timer.  Keeping
-# loss on across the followup would reproduce CI 36204006963 (y_arm=1,
-# followup timeout) for the wrong reason.
+# Shape (tightened per review #4): 100% loss armed on the initiator
+# egress AFTER child-up; KEPT until the netem drop counter ticks (the
+# first request copy is counted lost), held ~4s longer so the 1s/3s
+# ladder rungs are also counted dropped, THEN the qdisc is REMOVED and
+# the next ladder rung (t+7s) arrives inside the 10s ADDKE arm timer.
+# Keeping loss on across the FOLLOWUP would reproduce CI 36204006963
+# (y_arm=1, followup timeout) for the wrong reason — loss ends before
+# the FOLLOWUP starts.
+# WHY 100% (review #4: "netem-dropped >= 1 is any datagram on initiator
+# egress between arm and the request log, not a lost CREATE_CHILD"):
+# the window opens at child-up (~t0) and closes within ~5s of the first
+# tick, which the 60s child lifetime fires at ~t0+60.  The last
+# inbound packet lands at ~t0+12 (FOLLOWUP), so with dpd_delay 60 the
+# earliest initiator-side DPD datagram leaves at ~t0+72 — after the
+# qdisc is gone — and responder probes ride the responder egress, which
+# this qdisc never sees.  Every counted drop in the window is therefore
+# a copy of the CREATE_CHILD rekey request, and 100% makes the proof
+# deterministic: the first send cannot pass, so any arrival logged AFTER
+# qdisc removal is a ladder copy — the initiator's own ladder recovered
+# a counted-lost request.
 #
-# Gate (counted): netem-dropped >= 1 on the INITIATOR egress AND the
-# rekey completes (new SPI both sides) AND PQ C keymat matches both sides
-# (type-6 offer, last KEM sha256 line, no followup timeout).  A rekey
-# completion with zero counted request-direction loss proves nothing; a
-# counted drop with no rekey proves nothing.
+# Gate (counted): netem-dropped >= 1 on the INITIATOR egress while ONLY
+# request-direction traffic can flow AND the request arrives strictly
+# after the qdisc came off (fresh msgid, req counter increments) AND
+# the rekey completes (new SPI both sides) AND the new CHILD keymat on
+# both sides carries g_ir_present=Y with matching sha256 (the new
+# CREATE_CHILD request was KE-bearing: ML-KEM installed after the loss)
+# AND no followup timeout.  A rekey completion with zero counted
+# request-direction loss proves nothing; a counted drop with no rekey
+# proves nothing.
 kind_i2ike_reqdrop() {
 	name=$1
 	require_root || return 1
@@ -220,39 +237,62 @@ EOF
 		[ "$up" -eq 1 ] || log "FAIL: child not up after 45s (attempt $attempt)"
 		[ "$up" -eq 1 ] || continue
 
-		# INIT SA is up.  Drop 30% of INITIATOR->RESPONDER packets (the
-		# REQUEST direction) from just before the 60s-soft rekey until the
-		# request is logged by the responder.  30% not 80%: the FOLLOWUP
-		# also rides this direction and 80% across the followup blows the
-		# 10s ADDKE arm timer (drop576 lesson).  The instigator of recovery
+		# INIT SA is up.  Drop 100% of INITIATOR->RESPONDER packets (the
+		# REQUEST direction) from just before the 60s-soft rekey until
+		# the request is logged by the responder.  100%: the first copy
+		# CANNOT arrive, so any logged arrival must be a retransmit-
+		# ladder copy (the review #4 proof).  The window is only the
+		# request exchange — the qdisc goes away the moment arrival is
+		# observed, before FOLLOWUP starts.  The instigator of recovery
 		# is the INITIATOR's own retransmit ladder.
-		if ! ip netns exec "$NSI" tc qdisc replace dev "$VI" root netem loss 30% 2>/dev/null; then
+		if ! ip netns exec "$NSI" tc qdisc replace dev "$VI" root netem loss 100% 2>/dev/null; then
 			log "FAIL: cannot apply netem loss on $NSI/$VI (no tc?); abort"
 			break
 		fi
 		d0=$(tc_dropped "$NSI" "$VI" || true)
 		req0=$(grep -c 'CREATE_CHILD_SA request: msgid=' "$D/resp-iked.log" 2>/dev/null || true)
 
-		# Poll up to 100s for the rekey request to ARRIVE (0->1).  Each
-		# arriving copy is a fresh request to the responder (the lost ones
-		# never consumed recv_message_id).  The moment it lands, kill the
-		# qdisc so response + FOLLOWUP go at 0% inside the 10s arm timer.
-		req=0
+		# While 100% is up, NOTHING arrives.  Watch the netem drop
+		# counter for up to 100s: the first tick is the counted loss of a
+		# rekey-request copy (soft lifetime 60s fires the rekey inside
+		# the window).  Hold 4s longer so the 1s/3s ladder rungs are also
+		# counted dropped, THEN remove the qdisc; the 7s rung arrives with
+		# the link clean, before FOLLOWUP even starts.
+		ticked=0
 		i=0
 		while [ "$i" -lt 100 ]; do
+			d1=$(tc_dropped "$NSI" "$VI" || true)
+			if [ $(( ${d1:-0} - ${d0:-0} )) -ge 1 ]; then
+				ticked=1
+				log "request copy counted lost after ${i}s at 100% request-direction loss (attempt $attempt)"
+				break
+			fi
+			i=$((i+1)); sleep 1
+		done
+		[ "$ticked" -eq 1 ] || \
+			log "FAIL: no counted loss of the rekey request in 100s at 100% (attempt $attempt)"
+		sleep 4
+		d1=$(tc_dropped "$NSI" "$VI" || true)
+		ndrop=$(( ${d1:-0} - ${d0:-0} ))
+		ip netns exec "$NSI" tc qdisc del dev "$VI" root 2>/dev/null || true
+		log "drop-count window (REQUEST direction): netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) req ${req0:-0}->(polling)"
+
+		# The qdisc is OFF and the next ladder rung lands within ~10s.
+		# Require a FRESH request entry (req > req0) after removal —
+		# at 100% nothing could have arrived earlier, so the increment is
+		# the initiator's own retransmit ladder completing delivery.
+		req=0
+		i=0
+		while [ "$i" -lt 40 ]; do
 			req=$(grep -c 'CREATE_CHILD_SA request: msgid=' "$D/resp-iked.log" 2>/dev/null || true)
 			if [ "${req:-0}" -gt "${req0:-0}" ]; then
-				log "rekey request arrived at responder after ${i}s of request-direction loss (attempt $attempt)"
+				log "rekey request arrived at responder ${i}s after qdisc removal (attempt $attempt)"
 				break
 			fi
 			i=$((i+1)); sleep 1
 		done
 		[ "${req:-0}" -gt "${req0:-0}" ] || \
-			log "FAIL: rekey CREATE_CHILD request never arrived at responder in 100s of REQUEST-direction loss (attempt $attempt)"
-		d1=$(tc_dropped "$NSI" "$VI" || true)
-		ndrop=$(( ${d1:-0} - ${d0:-0} ))
-		ip netns exec "$NSI" tc qdisc del dev "$VI" root 2>/dev/null || true
-		log "drop-count window (REQUEST direction): netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) req ${req0:-0}->${req:-0}"
+			log "FAIL: rekey CREATE_CHILD request never arrived at responder after counted loss (attempt $attempt)"
 
 		# With loss off, the response + FOLLOWUP finish; watch for the new
 		# SPI (rekey install) for up to 30s.
@@ -277,18 +317,26 @@ EOF
 		# KEM keymat on both sides, no followup timeout.
 		t6=$(grep -c '06000024' "$D/init-iked.log" 2>/dev/null || true)
 		abt=$(grep -c 'ADDKE followup timeout' "$D/resp-iked.log" 2>/dev/null || true)
-		kh_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=(n|Y)' "$D/init-iked.log" 2>/dev/null \
+		# Review #4 gate: the NEW (rekey) CHILD keymat on BOTH sides must
+		# carry g_ir_present=Y — proof the KE-bearing request survived
+		# and ML-KEM actually installed after the counted loss.  The
+		# AUTH child logs g_ir_present=n, so a Y line can only be the
+		# rekey.  Matching sha256 across peers proves the same KEM secret.
+		y_i=$(grep -c 'g_ir_present=Y' "$D/init-iked.log" 2>/dev/null || true)
+		y_r=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
+		kh_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/init-iked.log" 2>/dev/null \
 			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
-		kh_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=(n|Y)' "$D/resp-iked.log" 2>/dev/null \
+		kh_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null \
 			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
 		nreplay=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
 		pqc=0
-		if [ "${t6:-0}" -ge 1 ] && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
+		if [ "${t6:-0}" -ge 1 ] && [ "${y_i:-0}" -ge 1 ] && [ "${y_r:-0}" -ge 1 ] \
+		   && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
 		   && [ "${abt:-0}" -eq 0 ]; then
 			pqc=1
-			log "PQC rekey: type-6 offered (x$t6), last KEM keymat $kh_i matches both sides, no followup timeout"
+			log "PQC rekey: type-6 offered (x$t6), new KEM keymat g_ir_present=Y both sides, $kh_i matches, no followup timeout"
 		else
-			log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
+			log "FAIL: rekey not ADDKE/ML-KEM on the NEW keymat (type6=$t6 y_i=${y_i:-0} y_r=${y_r:-0} kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
 		fi
 
 		if [ "$rekeyed" -eq 1 ] && [ "$pqc" -eq 1 ] && [ "${ndrop:-0}" -ge 1 ]; then
