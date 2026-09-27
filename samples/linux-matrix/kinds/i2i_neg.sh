@@ -50,19 +50,19 @@ kind_i2i_neg() {
 		EXPECT=refuse
 		PSK_I="$ETC/psk/macos.psk"  # same key, same ids — strength is the probe
 		MYID_I='fqdn "r2init-matrix"'
-		CHILD_K=32; STRENGTH_ON=yes ;;
+		CHILD_K=256; STRENGTH_ON=yes ;;
 	i2ineg-a12permit)
 		EXPECT=accept
 		PSK_I="$ETC/psk/macos.psk"
 		MYID_I='fqdn "r2init-matrix"'
-		CHILD_K=32; STRENGTH_ON=no ;;
+		CHILD_K=256; STRENGTH_ON=no ;;
 	*)
 		log "FAIL: unknown NEG case $name"
 		return 1 ;;
 	esac
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 	[ -f "$PSK_I" ] || { log "FAIL: no $PSK_I for case $name"; return 1; }
-	[ "$CHILD_K" = 16 ] || [ "$CHILD_K" = 32 ] || { log "FAIL: bad CHILD_K=$CHILD_K"; return 1; }
+	[ "$CHILD_K" = 16 ] || [ "$CHILD_K" = 256 ] || { log "FAIL: bad CHILD_K=$CHILD_K"; return 1; }
 
 	# parent_child_strength line for the ikev2 blocks (empty when off)
 	if [ "$STRENGTH_ON" = yes ]; then
