@@ -210,13 +210,17 @@ i2i_peer_r_trigger() {
 }
 
 # i2i_peer_r_evidence <D> <peer> — this RESPONDER completed its ADDKE side:
-# iked logs round-complete; charon selected KE1_ML_KEM_768 and reached
-# ESTABLISHED (the ESP child landing in the kind proves SK(1) matched).
+# iked logs round-complete; a charon RESPONDER does NOT emit the initiator-
+# seat 'state change: CONNECTING => ESTABLISHED' (it logs CREATED=>
+# CONNECTING then finishes via MGR checkin) — instead prove it selected the
+# ML-KEM proposal AND verified the peer AUTH (which is IntAuth-chained under
+# RFC 9242, so SK(1) matched); the ESP child landing elsewhere in the kind
+# is the up= gate.
 i2i_peer_r_evidence() {
 	_D=$1 _peer=$2
 	if [ "$_peer" = charon ]; then
-		grep -q 'KE1_ML_KEM_768' "$_D/charon-resp.log" 2>/dev/null &&
-		grep -q 'state change: CONNECTING => ESTABLISHED' "$_D/charon-resp.log" 2>/dev/null
+		grep -q 'selected proposal: IKE:.*KE1_ML_KEM_768' "$_D/charon-resp.log" 2>/dev/null &&
+		grep -q "authentication of 'r2init-matrix' with pre-shared key successful" "$_D/charon-resp.log" 2>/dev/null
 		return $?
 	fi
 	grep -q 'IKE_INTERMEDIATE ADDKE round complete' "$_D/resp-iked.log" 2>/dev/null
