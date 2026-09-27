@@ -42,6 +42,11 @@ if [ "$n" -eq 0 ]; then
 	exit 2
 fi
 
+# The report is a fresh artifact every run: truncate $OUT (do NOT append —
+# an append merges a previous run's cells into this one and can resurrect an
+# old (pre-hardening) evidence marker at the top of the delivered file).
+: > "$OUT"
+
 # ---- which cells does the plan claim? (authoritative plan list) -----------
 # A1..A14 FCS_IPSEC_EXT.1, B1..B6 crypto support SFRs.
 CELLS="A1 A2 A3 A4 A5 A6 A7 A8 A9 A10 A11 A12 A13 A14 B1 B2 B3 B4 B5 B6"
@@ -60,18 +65,18 @@ CELLS="A1 A2 A3 A4 A5 A6 A7 A8 A9 A10 A11 A12 A13 A14 B1 B2 B3 B4 B5 B6"
 	echo "|------|---------|----------------------------|"
 } >> "$OUT"
 
-rc=0; n_noev=0; n_fail=0
+rc=0; n_noev=0; n_fail=0; n_notpass=0
 for c in $CELLS; do
 	raw="$(grep "^$c:" "$TMP" | sort -u)"
 	if [ -z "$raw" ]; then
 		echo "| $c | NO EVIDENCE | no CPL/KAT line observed in this run |" >> "$OUT"
-		n_noev=$((n_noev+1)); continue
+		n_noev=$((n_noev+1)); n_notpass=$((n_notpass+1)); continue
 	fi
 	# aggregate verdict for the cell (raw lines carry <CELL>:<VERDICT>:...)
 	v=""
-	if printf '%s\n' "$raw" | grep -q ":FAIL:"; then v="FAIL"; rc=1; n_fail=$((n_fail+1));
+	if printf '%s\n' "$raw" | grep -q ":FAIL:"; then v="FAIL"; rc=1; n_fail=$((n_fail+1)); n_notpass=$((n_notpass+1));
 	elif printf '%s\n' "$raw" | grep -q ":PASS:"; then v="PASS";
-	else v="INFO"; fi
+	else v="INFO"; n_notpass=$((n_notpass+1)); fi
 	# render each distinct evidence line for this cell
 	echo "| $c | $v | $(printf '%s\n' "$raw" \
 	    | sed -e 's/:\(PASS\|FAIL\|INFO\):/ \1 → /' \
@@ -108,12 +113,12 @@ nfail="$(grep -c ':FAIL:' "$TMP")"
 	echo
 	echo "- CPL/KAT evidence lines observed: **$n** ($npass PASS, $ninf INFO, $nfail FAIL)"
 	echo "- Cells with a FAIL verdict: **$n_fail**"
-	echo "- Cells with no evidence: **$n_noev** (of 20 planned: A1–A14, B1–B6)"
+	echo "- Cells without a PASS verdict (FAIL/INFO/NO EVIDENCE): **$n_notpass** (of 20 planned: A1–A14, B1–B6)"
 	echo
-	if [ "$rc" -eq 0 ] && [ "$n_noev" -eq 0 ]; then
-		echo "**CONCLUSION: all 20 planned cells have observed verdicts and none failed.**"
+	if [ "$rc" -eq 0 ] && [ "$n_notpass" -eq 0 ]; then
+		echo "**CONCLUSION: all 20 planned cells have a PASS verdict and none failed.**"
 	else
-		echo "**CONCLUSION: not fully green.** See FAIL / NO EVIDENCE rows above."
+		echo "**CONCLUSION: not fully green — $n_notpass of 20 cells are not PASS (FAIL/INFO/NO EVIDENCE).**"
 	fi
 } >> "$OUT"
 
