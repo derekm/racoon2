@@ -230,5 +230,16 @@ EOF
 	[ "$crash" -eq 0 ] || { log "FAIL: a daemon died (crash=1)"; return 1; }
 
 	log "PASS $name: CONF lifetime knobs honored (A7 IKE rekey t=${a7_t:-?} A8 hard-time=53, child up)"
+
+	# Teardown BEFORE returning: leave no daemons/netns behind.  The row's
+	# daemons hold the netns + bind :500 in it; if this row is last (it is
+	# in the box full suite) they would otherwise leak into the NEXT run and
+	# perturb the netem-timing rows there (2026-09-27: i2iconf leaked i2cnf
+	# spmd/iked + netns; veth-account then failed repeatedly until cleaned
+	# manually — teardown is not optional).
+	pkill -9 -f "$C/" 2>/dev/null || true
+	ip netns del "$NSR" 2>/dev/null || true
+	ip netns del "$NSI" 2>/dev/null || true
+	ip link del "$VR" 2>/dev/null || true
 	return 0
 }
