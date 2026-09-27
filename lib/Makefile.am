@@ -23,10 +23,12 @@ endif
 endif
 EXTRA_DIST = if_xfrm.c if_pfkeyv2.c if_userspace.c xfrmnatt.c xfrmtmpl.c
 libracoon_la_LIBADD = $(LTLIBOBJS) -lpcap
-TESTS = sample kmtest
-check_PROGRAMS = sample kmtest
+TESTS = sample kmtest loginkat
+check_PROGRAMS = sample kmtest loginkat
 sample_SOURCES = sample.c
 sample_LDADD = libracoon.la
+loginkat_SOURCES = loginkat.c
+loginkat_LDADD = libracoon.la
 # Extensionless tests ignore per-test *_LOG_COMPILER; the wrapper passes
 # the config file to sample and is a no-op for kmtest / xfrmnatt (main).
 LOG_COMPILER = $(SHELL) $(srcdir)/sample-wrapper.sh

@@ -667,7 +667,7 @@ shell_gen_challenge(void)
 	unsigned int digest_len;
 
 	OpenSSL_add_all_digests();
-	if (!(m = EVP_get_digestbyname("sha1"))) {
+	if (!(m = EVP_get_digestbyname("sha256"))) {
 		SPMD_PLOG(SPMD_L_INTERR, "Can't find Hash function");
 		goto just_fin;
 	}
@@ -818,11 +818,14 @@ spmd_passwd_check(char *str, struct spmd_cid *cid)
 	plen = strlen(cid->hash);
 	slen = strlen(str);
 
-	if (slen < plen) {
+	/* exact-length, constant-time comparison: reject a prefix-as-
+	 * full-match (a longer digest string must NOT authenticate), and
+	 * do not let a strncmp early-out leak the match position. */
+	if (slen != plen) {
 		goto fin;
 	}
-
-	ret = strncmp(cid->hash, str, plen);
+	for (ret = 0, slen = 0; slen < plen; slen++)
+		ret |= (unsigned char)cid->hash[slen] ^ (unsigned char)str[slen];
 
 fin:
 	return ret;

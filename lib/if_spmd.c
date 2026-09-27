@@ -52,6 +52,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 
 #include "racoon.h"
 #include "safefile.h"
@@ -1106,51 +1107,28 @@ int
 spmd_if_login_response(struct spmd_cid *pci)
 {
 	unsigned char md[EVP_MAX_MD_SIZE];
-	EVP_MD_CTX *ctx;
-	size_t hash_len;
 	unsigned int md_len;
-	int error;
+	size_t hash_len;
 	size_t i, used;
 	char *p;
+	int error = -1;
 
-	error = -1;
+	if (pci == NULL || pci->password == NULL || pci->challenge == NULL)
+		return error;
 
-	ctx = EVP_MD_CTX_new();
-	if (ctx == NULL) {
+	if (HMAC(SPMD_DIGEST_ALG,
+		 (const unsigned char *)pci->password, strlen(pci->password),
+		 (const unsigned char *)pci->challenge, strlen(pci->challenge),
+		 md, &md_len) == NULL) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
-		    "failed to allocate Message Digest context\n");
-		goto fail_early;
-	}
-	if (!EVP_DigestInit_ex(ctx, SPMD_DIGEST_ALG, SPMD_EVP_ENGINE)) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		    "failed to initilize Message Digest function\n");
-		goto fail_early;
-	}
-	if (!EVP_DigestUpdate(ctx, pci->challenge, strlen(pci->challenge))) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		    "failed to hash Challenge\n");
-		goto fail;
-	}
-	if (!EVP_DigestUpdate(ctx, pci->password, strlen(pci->password))) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		    "failed to hash Password\n");
-		goto fail;
-	}
-	if (sizeof(md) < (size_t)EVP_MD_CTX_size(ctx)) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		    "Message Digest buffer is not enough\n");
-		goto fail;
-	}
-	if (!EVP_DigestFinal_ex(ctx, md, &md_len)) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		    "failed to get Message Digest value\n");
-		goto fail;
+		    "failed to compute login HMAC\n");
+		return error;
 	}
 
 	hash_len = md_len * 2 + 1;
 	if ((pci->hash = malloc(hash_len)) == NULL) {
 		plog(PLOG_INTERR, PLOGLOC, NULL, "out of memory\n");
-		goto fail;
+		return error;
 	}
 	p = pci->hash;
 	for (i = 0; i < md_len; i++) {
@@ -1166,8 +1144,8 @@ spmd_if_login_response(struct spmd_cid *pci)
 
 	error = 0;
 fail:
-	EVP_MD_CTX_free(ctx);
-fail_early:
+	if (error)
+		free(pci->hash), pci->hash = NULL;
 	return error;
 }
 

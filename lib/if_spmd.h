@@ -54,7 +54,7 @@ void spmif_cancel_callback(void *tag);
 
 int spmif_handler(int fd);
 
-#define SPMD_DIGEST_ALG		EVP_sha1()
+#define SPMD_DIGEST_ALG		EVP_sha256()
 #define SPMD_EVP_ENGINE		NULL
 #define SPMD_CID_SEED_LEN 	256
 struct spmd_cid {
