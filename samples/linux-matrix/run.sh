@@ -39,12 +39,16 @@ crstrip() { printf '%s' "$1" | tr -d '\r'; }
 usage() {
 	cat <<EOF
 usage: run.sh [--cases REGEX] [--rebuild BUILD] [--src DIR] [--prefix DIR]
+              [--shard K M]
 builds.tsv names: xfrm (Linux default), pfkey, xfrm-addke (RFC 9370 PQC)
 cases.tsv kinds: unit admin ikev2 ikev1 i2ike
 cases.tsv gates: gate=addke rows run ONLY when ADDKE is available (see
                  R2_ADDKE below); gate=dpd rows run ONLY when R2_DPD=yes;
                  gate=box rows run ONLY when R2_BOX=yes (new-row staging:
                  box-verified before a container run admits them to CI).
+--shard K M    run only rows whose (filter-passing index) %% M == K.  Run M
+                 disjoint shards in parallel (different shells/hosts) to cut
+                 wall-time; sum the per-shard "pass=" lines for the total.
 env: R2_ADDKE=yes|auto  force the ADDKE gate (default auto: detect WITH_ADDKE
      in the installed iked).  CI sets it explicitly per target: yes for
      Fedora 44 (OpenSSL 3.5), unset/auto for Ubuntu (OpenSSL 3.0).
@@ -58,6 +62,7 @@ while [ $# -gt 0 ]; do
 	--rebuild) REBUILD=$2; shift 2 ;;
 	--src) R2_SRC=$2; shift 2 ;;
 	--prefix) PREFIX=$2; ETC=$PREFIX/etc/racoon2; SBIN=$PREFIX/sbin; shift 2 ;;
+	--shard) SHARD_K=$2; SHARD_M=$3; shift 3 ;;
 	-h|--help) usage; exit 0 ;;
 	*) usage; exit 2 ;;
 	esac
@@ -116,8 +121,9 @@ fi
 pass=0
 fail=0
 skip=0
+SHARD_IDX=0
 trap iked_restore EXIT
-while IFS="$(printf '\t')" read -r name kind expect workers note gate || [ -n "$name" ]; do
+while IFS="$(printf '	')" read -r name kind expect workers note gate || [ -n "$name" ]; do
 	name=$(crstrip "$name")
 	kind=$(crstrip "$kind")
 	expect=$(crstrip "$expect")
@@ -127,6 +133,18 @@ while IFS="$(printf '\t')" read -r name kind expect workers note gate || [ -n "$
 	case $name in ''|\#*) continue ;; esac
 	if [ -n "$FILTER" ]; then
 		echo "$name $kind" | grep -Eq "$FILTER" || continue
+	fi
+	# Shard partition (round-robin over filter-passing rows).  A shared
+	# global row index gives every shard the SAME partition only if the
+	# counter is incremented before any per-shard continue.  skip the
+	# row iff K != (index %% M).
+	SHARD_IDX=$((SHARD_IDX + 1))
+	if [ -n "${SHARD_M:-}" ]; then
+		if [ $((SHARD_IDX % SHARD_M)) -ne "${SHARD_K:-0}" ]; then
+			log "SKIP $name (shard $SHARD_K/$SHARD_M, idx $SHARD_IDX)"
+			skip=$((skip + 1))
+			continue
+		fi
 	fi
 	if [ "$expect" = skip ]; then
 		log "SKIP $name ($note)"
