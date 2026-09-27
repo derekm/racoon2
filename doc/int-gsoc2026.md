@@ -122,18 +122,25 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   3. Add matrix rows: `ikev2-netns-addke` (charon mlkem768 vs racoon2
      `esp_addke_alg` responder, child-rekey ADDKE e2e), then `ikev2-netns-int`
      (`i2iinit-addke` landed 2026-09-19 once 9242 landed).
-- **ADDKE matrix peer decision (2026-09-18): iked↔iked, not charon.** Every
-  available strongSwan lacks ML-KEM: WSL Ubuntu charon 5.9.13 (no ML-KEM), and
-  Fedora RPM strongSwan 6.0.7 (`/usr/libexec/strongswan/charon` has zero
-  `mlkem768` strings — built on OpenSSL 3.5.8 but the spec didn't enable it).
-  Neither can offer type-6 ADDKE. So the `ikev2-netns-addke` peer is a second
+- **ADDKE matrix peer decision (2026-09-18): iked↔iked harness — still the
+  base.** At the time, the Fedora box ran no strongSwan at all and the WSL
+  Ubuntu charon 5.9.13 had no ML-KEM, so the interop-free peer was a second
   racoon2 WITH_ADDKE: **racoon2-as-initiator (offers type-6 on child / IKE_SA)
-  ↔ racoon2-with-ADDKE responder** in two netns on Fedora (host ns + one netns,
-  or two netns). Self-contained; verifies the exact initiator-ADDKE code we
-  need continuously. Requires a new iked↔iked 2-namespace harness (the current
-  kinds/ikev2.sh is charon-centric). Fedora strongSwan 6.0.7 RPM stays useful
-  for the non-PQC rows; 9242/IKE_INTERMEDIATE has the same peer problem — an
-  iked↔iked `ikev2-netns-int` row reuses the harness once 9242 lands.
+  ↔ racoon2-with-ADDKE responder** in two netns.  Requires the iked↔iked
+  2-namespace harness (the current `kinds/ikev2.sh` is charon-centric).
+- **StrongSwan interop peer — now proven (2026-09-26).** The Fedora box's
+  strongSwan 6.0.7 ships the `ml` plugin (`libstrongswan-ml.so`) and
+  `ke1_mlkem768`/RFC 9370+9242 arrived with strongSwan 6.0: NOT a blank
+  `charon` ELF (that was a false `strings` negative — charon is a ~19 KB
+  loader; probe the library + plugin, not the binary).  `i2iinit-charon`
+  (charon 6.0.7 INITIATOR vs the iked responder SUT) is box-green
+  2026-09-26: charon selected `KE1_ML_KEM_768`, iked `IKE_INTERMEDIATE ADDKE
+  round complete` + `PRF_PLUS T1 recompute MATCH` + ESTABLISHED, ESP child
+  in both netnss — two independent ML-KEM-768 implementations derive the
+  same SK(1).  Reverse direction (`i2iinit-charonr`, racoon2 iked initiator
+  vs charon responder seat) staged alongside, same gate discipline.  Both
+  rows are `gate=box` pending a container counted-gate PASS; WSL charon
+  5.9.13 still has no ML-KEM.
 - **iked↔iked harness live (2026-09-18): `samples/linux-matrix/i2i/`.** Three
   real racoon2-as-initiator-in-netns bugs found & fixed (never exercised
   before): multi-instance admin-socket collision (`RACOON2_ADMIN_SOCK` env),

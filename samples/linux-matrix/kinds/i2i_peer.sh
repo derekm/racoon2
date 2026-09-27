@@ -134,6 +134,10 @@ i2i_peer_i_diag() {
 i2i_peer_i_cleanup() {
 	_peer=$1
 	[ "$_peer" = charon ] || return 0
+	# fail loudly, never a silent no-op: a missing killall/procps here would
+	# leak charon into the next case (skill: cleanup gates must not no-op).
+	command -v killall >/dev/null 2>&1 || { log "FAIL: no killall (psmisc) — charon cleanup would no-op"; return 1; }
+	require_procps || return 1
 	killall -9 charon 2>/dev/null || true
 	rm -f /var/run/charon.pid /var/run/charon.ctl
 	rm -f "${I2I_CHARON_CONF:-/nonexistent}"
@@ -231,6 +235,9 @@ i2i_peer_r_diag() {
 i2i_peer_r_cleanup() {
 	_peer=$1 _name=$2
 	[ "$_peer" = charon ] || return 0
+	# same no-silent-no-op guard as the initiator-seat cleanup.
+	command -v killall >/dev/null 2>&1 || { log "FAIL: no killall (psmisc) — charon cleanup would no-op"; return 1; }
+	require_procps || return 1
 	killall -9 charon 2>/dev/null || true
 	rm -f /var/run/charon.pid /var/run/charon.ctl
 	rm -f "${I2I_CHARON_R_CONF:-/nonexistent}"
