@@ -60,13 +60,13 @@ jobs:
       - name: Install build + test dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \\
-            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \\
+          sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
+            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \
             libsystemd-dev iputils-ping xxd iptables
 
       - name: Build + install (xfrm backend)
         run: |
-          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \\
+          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
             --rebuild xfrm --cases 'a^'
         env:
           R2_PREFIX: /usr/local/racoon2
@@ -138,8 +138,8 @@ jobs:
 
       - name: Merge shard logs + generate compliance report
         run: |
-          cat /tmp/shards/r2-matrix-shard-0.log \\
-              /tmp/shards/r2-matrix-shard-1.log \\
+          cat /tmp/shards/r2-matrix-shard-0.log \
+              /tmp/shards/r2-matrix-shard-1.log \
               /tmp/shards/r2-matrix-shard-2.log > /tmp/r2-matrix.log
           bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/linux-matrix-compliance.md" /tmp/r2-matrix.log
 
