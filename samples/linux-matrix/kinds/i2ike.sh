@@ -226,6 +226,10 @@ EOF
 		log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
 	fi
 
+	# NDcPP v3.0e compliance report for this row (A/B cells) — runs while
+	# the netnss + SADB are still live (A1/A2/A3 read xfrm policy/state).
+	i2i_compliance "$D" "$C" "$NSR" "$NSI" "$HR" "$HI" "$name"; cpl=$?
+
 	# kill daemons by the unique per-run conf dir (it IS in their argv);
 	# a pkill on the conf-internal remote name matches nothing and leaks
 	# up to 4 daemons holding the netns.
@@ -236,8 +240,8 @@ EOF
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
-	if [ "$up" -ne 1 ] || [ "${rekeyed:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; then
-		log "FAIL: PQC init-SA + child-SA rekey incomplete (up=${up:-0} rekeyed=${rekeyed:-0} pqc=${pqc:-0})"
+	if [ "$up" -ne 1 ] || [ "${rekeyed:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] || [ "$cpl" -ne 0 ]; then
+		log "FAIL: PQC init-SA + child-SA rekey incomplete (up=${up:-0} rekeyed=${rekeyed:-0} pqc=${pqc:-0} cpl=$cpl)"
 		log "--- init-iked.log (followup/ESTABLISHED) ---"
 		sed -n 's/.*\(ESTABLISHED\|FOLLOWUP\|ADDKE\|abort\|err=\|GETSPI\).*/\1: &/p' \
 			"$D/init-iked.log" 2>/dev/null | tail -6

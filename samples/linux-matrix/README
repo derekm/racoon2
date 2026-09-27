@@ -64,6 +64,20 @@ This is the independent-implementation interop row: two ML-KEM-768
 implementations derive the same SK(1), proven by the ESP child landing.
 `R2_PEER_I=charon`/`R2_PEER_R=charon` force the seat globally for a batch.
 
+NDcPP v3.0e compliance report: the i2i-family kinds (`i2ike`, `i2iinit`,
+including the `-charon` / `-charonr` interop seats) end by running
+`i2i_compliance` (`kinds/i2i_compliance.sh`), which emits one `CPL <cell>`
+line per NDcPP FCS_IPSEC_EXT.1 A-cell (A1 SPD architecture, A2 default-
+discard — counted via `/proc/net/xfrm_stat`, A3 tunnel mode, A4 ESP cipher,
+A5 IKEv2/NAT-T socket, A6 IKE cipher, A7/A8 SA lifetimes, A11 DH group,
+A12 IKE_SA>=CHILD_SA strength, A13 peer auth, A14 identifier binding) plus
+a B2 key-establishment line; every line is read from the row's OWN retained
+artifacts (netns xfrm policy/state, iked/charon logs, conf dir) — never
+invented.  Unit-level cells (A9 DH-secret length, A10 nonce size, B1/B3-B6
+crypto SFRs) emit INFO pointing at the KAT unit rows.  A wired cell that
+FAILs fails the case; INFO cells never do.  The kind calls it BEFORE netns
+teardown (policy/SADB/counters must be live).
+
 - `i2iinit-charon` (interop, gate=box): initial-IKE_SA ADDKE
   iked-responder vs charon-initiator on 192.0.5.x.  charon 6.0.7 places
   KE1_ML_KEM_768 in SAi1 (strongSwan 6.0 NEWS: RFC 9370 ADDKE transform

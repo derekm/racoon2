@@ -252,6 +252,11 @@ fi
 		log "FAIL: initial IKE_SA not ADDKE/ML-KEM (nint=${nint:-0})"
 	fi
 
+	# NDcPP v3.0e compliance report for this row (A/B cells) — runs while
+	# the netnss + SADB are still live (A1/A2/A3 read xfrm policy/state)
+	# and before charon conn files are removed (A13/A14 read the conn).
+	i2i_compliance "$D" "$C" "$NSR" "$NSI" "$HR" "$HI" "$name"; cpl=$?
+
 	# kill daemons by the unique per-run conf dir; charon on either seat is
 	# torn down via the peer helpers (swanctl conn file removed, charon
 	# killed).
@@ -265,8 +270,8 @@ fi
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
-	if [ "$up" -ne 1 ] || [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; then
-		log "FAIL: PQC initial-IKE_SA ADDKE incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} peeri=${PEER} peerr=${PEER_R})"
+	if [ "$up" -ne 1 ] || [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] || [ "$cpl" -ne 0 ]; then
+		log "FAIL: PQC initial-IKE_SA ADDKE incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl peeri=${PEER} peerr=${PEER_R})"
 		if [ "$PEER" = charon ]; then
 			log "--- charon-init.log ---"
 			i2i_peer_i_diag "$D" charon
