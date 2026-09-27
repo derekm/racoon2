@@ -85,8 +85,8 @@ sa esp_e {
 	esp_auth_alg { non_auth; };
 	esp_addke_alg { mlkem768; };
 	};
-	EOF
-	fi
+EOF
+fi
 
 	if [ "$PEER" = charon ]; then
 	# charon initiator: shared helper writes the swanctl conn (PSK hex read
