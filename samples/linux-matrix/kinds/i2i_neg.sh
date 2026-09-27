@@ -249,8 +249,16 @@ EOF
 	# they are mutually exclusive across the cases above).
 	marker=0
 	marker_line=
+	# A12 refuses pin the RESOLVED numbers (cbits=256 > pbits=128): a
+	# mis-scaled strength (e.g. 32-vs-128) must NOT satisfy the strict
+	# row.  The full log line is "CHILD_SA encr strength 256 bits
+	# exceeds parent IKE_SA strength 128 bits; refusing".
 	if grep -q "CHILD_SA encr strength" "$D/resp-iked.log" 2>/dev/null; then
-		marker=1; marker_line="CHILD_SA encr strength"
+		if [ "$STRENGTH_ON" = yes ]; then
+			grep -q "CHILD_SA encr strength 256 bits exceeds parent IKE_SA strength 128 bits" "$D/resp-iked.log" 2>/dev/null && { marker=1; marker_line="CHILD_SA encr strength 256 bits exceeds parent IKE_SA strength 128 bits"; }
+		else
+			marker=1; marker_line="CHILD_SA encr strength"
+		fi
 	elif grep -q "authentication failure" "$D/resp-iked.log" 2>/dev/null; then
 		marker=1; marker_line="authentication failure"
 	elif grep -q "does not match peers id" "$D/resp-iked.log" 2>/dev/null; then

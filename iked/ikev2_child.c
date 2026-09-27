@@ -972,6 +972,10 @@ ikev2_child_encr_keylen_bits(struct prop_pair *proposal)
 			for (; attr_bytes > 0;
 			     attr_bytes -= ISAKMP_ATTRIBUTE_TOTALLENGTH(attr),
 			     attr = ISAKMP_NEXT_ATTRIB(attr)) {
+				/* parity with ikev2_proposal_to_ipsec (ike_conf.c):
+				 * guard a short/broken attribute run */
+				if (attr_bytes < sizeof(struct ikev2attrib))
+					return 0;
 				if (get_uint16(&attr->type) ==
 				    (IKEV2ATTRIB_SHORT | IKEV2ATTRIB_KEY_LENGTH))
 					keylen_attr = get_uint16(&attr->lorv);
@@ -1197,6 +1201,20 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		if (psa && psa->encr != 0)
 			pbits = ikev2_encr_keylen_bits(psa->encr, psa->encrklen);
 		cbits = ikev2_child_encr_keylen_bits(matching_my_proposal);
+		/* Fail closed on unresolvable strength: with the knob on,
+		 * a child or parent strength that cannot be resolved must
+		 * not silently slip through the gate (auditor review
+		 * deleg_f9b2b14b).  An own-config matched proposal always
+		 * resolves, so this only trips on malformed/unknown ENCR. */
+		if (pbits == 0 || cbits == 0) {
+			isakmp_log(ike_sa, local, remote, 0,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "cannot resolve encr strength (parent %d, "
+				   "child %d bits); refusing "
+				   "(parent_child_strength on)\n",
+				   pbits, cbits);
+			goto no_proposal_chosen;
+		}
 		if (pbits > 0 && cbits > 0 && cbits > pbits) {
 			isakmp_log(ike_sa, local, remote, 0,
 				   PLOG_PROTOERR, PLOGLOC,
