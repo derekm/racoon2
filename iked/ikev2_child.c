@@ -972,9 +972,9 @@ ikev2_child_encr_keylen_bits(struct prop_pair *proposal)
 			trns = (struct ikev2transform *)t->trns;
 			isakmp_log(0, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
 			    "a12dump:   transform type=%d id=0x%04x\n",
-			    trns ? get_uint16(&trns->transform_type) : -1,
+			    trns ? trns->transform_type : -1,
 			    trns ? get_uint16(&trns->transform_id) : 0);
-			if (!trns || get_uint16(&trns->transform_type) !=
+			if (!trns || trns->transform_type !=
 			    IKEV2TRANSFORM_TYPE_ENCR)
 				continue;
 			transform_id = get_uint16(&trns->transform_id);
