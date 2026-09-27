@@ -264,7 +264,17 @@ EOF
 		if [ "${y1:-0}" -gt "${y_arm:-0}" ]; then
 			rekeyed=1
 		fi
-		log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) y_arm=${y_arm:-0} y1=${y1:-0} resp ${resp0:-0}->${resp1:-0}"
+		# rekeyed is a *sampling* proxy: it wants a NEW g_ir_present=Y KEM
+	# line to appear after the loss window armed.  But the responder can
+	# emit all of its KEM lines (y_arm already 2) before the arm sample
+	# runs — same binary passes with y_arm=1 y1=2 and fails with
+	# y_arm=2 y1=2 (2026-09-27).  It is NOT part of the gate: a rekey
+	# that actually happened during the window is proven by newspi=1
+	# (new child SPI = completed rekey) + pqc=1 (ML-KEM keymat hash
+	# matches both sides, no followup timeout) + nreplay/drop/skf
+	# (a rekey fragment was dropped by netem AND recovered via armed
+	# response replay).  Keep it as a diagnostic only.
+	log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) y_arm=${y_arm:-0} y1=${y1:-0} rekeyed=${rekeyed:-0} resp ${resp0:-0}->${resp1:-0}"
 
 		newspi=0
 		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort -u > "$D/spi1"
@@ -291,7 +301,17 @@ EOF
 			log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
 		fi
 
-		if [ "$rekeyed" -eq 1 ] && [ "$newspi" -eq 1 ] && [ "$pqc" -eq 1 ] \
+		# Gate: a fragmented PQC rekey under COUNTED loss that recovered.
+		# Each fact is independently falsifiable in the logs:
+		#   newspi=1  new child SPI after the window => a rekey COMPLETED here
+		#   pqc=1     type-6 ML-KEM offered, keymat hash matches on BOTH sides,
+		#             no followup timeout => the rekey KEM converged
+		#   nreplay>=1 armed-response replay actually fired (resp log)
+		#   ndrop>=1  netem counted a real drop during the window
+		#   skf>=3    SKF fragmentation path was exercised
+		# (rekeyed is deliberately NOT in the gate: see the drop-count window
+		# comment — it is a sampling proxy, not a daemon property.)
+		if [ "$newspi" -eq 1 ] && [ "$pqc" -eq 1 ] \
 		   && [ "${nreplay:-0}" -ge 1 ] && [ "${ndrop:-0}" -ge 1 ] \
 		   && [ "${skf:-0}" -ge 3 ]; then
 			log "DROP-KILL-TEST: fragmented FOLLOWUP replayed under counted loss (R2 replay x$nreplay, netem-dropped=$ndrop, skf=$skf, attempt $attempt)"
