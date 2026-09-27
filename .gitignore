@@ -83,3 +83,19 @@ __pycache__/
 *.bak
 *~
 ylwrap
+
+# matrix test-binaries / archives (regenerable; MUST match box-shipped archive,
+# see samples/linux-matrix/README 'build manifest')
+iked/addkekat
+iked/addketest
+iked/eaytest
+lib/kmtest
+lib/sample
+lib/xfrmnatt
+lib/xfrmtmpl
+lib/kmtest.log
+lib/sample.log
+lib/xfrmnatt.log
+lib/xfrmtmpl.log
+lib/test-suite.log
+r2-*.t*gz

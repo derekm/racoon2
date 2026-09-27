@@ -33,10 +33,19 @@ requires the netem dropped counter (read from `tc -s qdisc show`, helper
 measured loss, or loss without a marker, both fail.
 
 New-row staging: `gate=box` rows (`i2ike-dup`, `i2ike-reqdrop`,
-`veth-account`, `i2iinit-charon`) run ONLY when `R2_BOX=yes` (the box
-runner sets it; CI must not).  They stay out of the Ubuntu/NetBSD full
-matrix and the Fedora container default until a counted-gate PASS exists
-on the box AND a container run admits them — same rule as `i2ike-drop576`.
+`veth-account`, `i2iinit-charon`, `i2iinit-charonr`) run ONLY when
+`R2_BOX=yes` (the box runner sets it; CI must not).  They stay out of
+the Ubuntu/NetBSD full matrix and the Fedora container default until a
+counted-gate PASS exists on the box AND a container run admits them —
+same rule as `i2ike-drop576`.
+
+Build manifest: the box runs `git archive HEAD`, scp'd as
+`~/r2-matrix.tar.gz`; the archive hash is printed next to the iked
+`staged/installed` hash proof every run, so the tree under test is
+identified (latest green triple 2026-09-26 19:46 on `af87b6b`: the
+aft archive sha256 = 52d3b2e6…).  Regenerate from the commit you intend
+to test; never trust a repo-root `r2-matrix.tar.gz` (archives are
+git-ignored, boxes may hold a stale copy).
 
 Peer-backend swap: the i2i kinds default to iked<->iked, but a `-charon`
 suffix on the case name runs the SAME kind with a strongSwan 6.0.7
@@ -45,8 +54,12 @@ the responder stays the iked SUT.  A `-charonr` suffix is the reverse:
 racoon2 iked INITIATES, charon takes the sibling RESPONDER seat (conn
 loaded passively, no --initiate).  Shared peer helpers live in
 `kinds/i2i_peer.sh` (swanctl conn write with ke1_mlkem768 + RFC 9242
-IKE_INTERMEDIATE; spawn/load/trigger via charon+swanctl; gate evidence =
-charon `KE1_ML_KEM_768` selected + `CONNECTING => ESTABLISHED`; cleanup).
+IKE_INTERMEDIATE; spawn/load/trigger via charon+swanctl; gate evidence is
+seat-dependent: initiator seat = charon `KE1_ML_KEM_768` selected +
+`CONNECTING => ESTABLISHED`, responder seat = charon `selected proposal:
+…KE1_ML_KEM_768` + `authentication of 'r2init-matrix' … successful`
+(charon-as-responder does not emit the ESTABLISHED state transition —
+it finishes via MGR checkin); cleanup).
 This is the independent-implementation interop row: two ML-KEM-768
 implementations derive the same SK(1), proven by the ESP child landing.
 `R2_PEER_I=charon`/`R2_PEER_R=charon` force the seat globally for a batch.
@@ -69,8 +82,9 @@ implementations derive the same SK(1), proven by the ESP child landing.
   RESPONDER seat on 192.0.5.x — the `-charonr` suffix loads the swanctl
   conn passively (no --initiate; local id racoon2-matrix, peer id
   r2init-matrix).  Same ML-KEM-768 SK(1) proof; the iked side must show
-  `IKE_INTERMEDIATE ADDKE round complete` and charon must show
-  KE1_ML_KEM_768 + ESTABLISHED.
+  `IKE_INTERMEDIATE ADDKE round complete` and charon (responder seat)
+  must show `selected proposal: …KE1_ML_KEM_768` +
+  `authentication of 'r2init-matrix' … successful`.
 
 - `i2ike-dup` (review #5): CREATE_CHILD mid-handler duplicate unit.
   `netem duplicate 100%` on the initiator egress veth doubles the rekey
