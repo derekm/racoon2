@@ -666,8 +666,19 @@ shell_gen_challenge(void)
 	unsigned char digest[EVP_MAX_MD_SIZE];
 	unsigned int digest_len;
 
-	OpenSSL_add_all_digests();
-	if (!(m = EVP_get_digestbyname("sha256"))) {
+	/*
+	 * Use the direct function pointer (EVP_sha256) rather than a by-name
+	 * fetch (EVP_get_digestbyname("sha256")): on NetBSD's OpenSSL 3.0 a
+	 * by-name-fetched legacy digest returned a handle that then failed to
+	 * init (shell.c:709 "Failed to initialize Message Digest function"),
+	 * aborting the login challenge (green pre-059442e used "sha1" through
+	 * the same init and worked).  The client hashes the SAME challenge as
+	 * the server via EVP_sha256() directly (see spmd_if_login_response in
+	 * lib/if_spmd.c), so both sides stay in lockstep.  No engine, no
+	 * OpenSSL_add_all_digests() needed.
+	 */
+	m = EVP_sha256();
+	if (!m) {
 		SPMD_PLOG(SPMD_L_INTERR, "Can't find Hash function");
 		goto just_fin;
 	}
