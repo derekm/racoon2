@@ -344,7 +344,15 @@ EOF
 	if command -v tcpdump >/dev/null 2>&1 && [ -n "$MID" ] && [ -f "$PCAP" ]; then
 		wire=$(tcpdump -r "$PCAP" -nn -X "udp port 500 and src $HI" 2>/dev/null \
 			| awk -v m="$MID" '
-				/0x0030:/ { if (strtonum("0x" $2 $3) == m) c++ }
+				function h2d(s,  i,c,v) {
+					for (i=1;i<=length(s);i++) {
+						c=index("0123456789abcdef", tolower(substr(s,i,1))) - 1;
+						if (c < 0) return -1;
+						v = v*16 + c;
+					}
+					return v;
+				}
+				/0x0030:/ { if (h2d($2 $3) == m) c++ }
 				END { print c+0 }')
 	fi
 

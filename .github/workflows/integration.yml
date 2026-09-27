@@ -152,10 +152,12 @@ jobs:
             echo "PROBE: no charon binary found; SKIP any charon PQC row"
             exit 0
           fi
-          if strings "$CHARON" | grep -q mlkem768; then
-            echo "PROBE: $CHARON has mlkem768 -> charon PQC row is legal"
+          if strings "$CHARON" | grep -q mlkem768 \
+              || strings /usr/lib64/strongswan/libstrongswan.so.0 /usr/lib/strongswan/libstrongswan.so 2>/dev/null | grep -q mlkem768 \
+              || find /usr/lib64/strongswan /usr/lib/strongswan -name 'libstrongswan-ml.so' 2>/dev/null | grep -q .; then
+            echo "PROBE: ML-KEM present (charon or the ml plugin/library) -> charon PQC row is legal"
           else
-            echo "PROBE: $CHARON has NO mlkem768 (distro strongswan vs OpenSSL 3.5 gap) -> SKIP any charon PQC row; iked<->iked i2i rows remain the PQC gate"
+            echo "PROBE: no ML-KEM (binary is a ~19 KB loader; the strings live in libstrongswan.so.0 / the ml plugin — doc/int-gsoc2026.md) -> SKIP any charon PQC row; iked<->iked i2i rows remain the PQC gate"
           fi
 
       - name: Build + install (xfrm + --enable-addke)
