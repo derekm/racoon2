@@ -49,10 +49,24 @@ if [ ! -f /var/run/spmd.pid ] || [ ! -f /var/run/iked.pid ]; then
 	sleep 1
 	"${PREFIX}/sbin/iked" -f "${CONF}" || echo "iked direct st=$?"
 	sleep 2
-	if [ ! -f /var/run/iked.pid ]; then
-		# iked -f daemonizes and closes stderr; rerun foreground (-F) so the
-		# startup failure reason reaches the CI capture instead of syslog.
-		# Bound it: kill after 4s if foreground mode keeps running.
+	if [ ! -f /var/run/iked.pid ] || [ ! -f /var/run/spmd.pid ]; then
+		# Both daemons -f daemonize and close stderr, so the startup
+		# failure reason reaches syslog, not CI.  Rerun each foreground
+		# (-F) with stderr captured so the reason is visible here.
+		# Bound each: kill after 4s if foreground mode keeps running.
+		if [ ! -f /var/run/spmd.pid ]; then
+			echo "=== spmd foreground (-F) startup for diagnostics ==="
+			"${PREFIX}/sbin/spmd" -F -f "${CONF}" > /tmp/spmd-F.log 2>&1 &
+			F_PID=$!
+			sleep 4
+			if kill -0 "$F_PID" 2>/dev/null; then
+				echo "note: spmd -F is running after 4s (killed); reason was not a hard startup error"
+				kill "$F_PID" 2>/dev/null || true
+			else
+				wait "$F_PID" || true
+			fi
+			cat /tmp/spmd-F.log 2>/dev/null || true
+		fi
 		echo "=== iked foreground (-F) startup for diagnostics ==="
 		"${PREFIX}/sbin/iked" -F -f "${CONF}" > /tmp/iked-F.log 2>&1 &
 		F_PID=$!
