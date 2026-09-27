@@ -164,14 +164,18 @@ i2i_compliance() {
 	[ "$a6_ok" -eq 0 ] && PLOG A6 FAIL "IKE payload cipher not in {aes256_cbc,aes_gcm} (no charon proposal / conf)"
 
 	# ---- A7  IKE_SA lifetime admin-configurable, within [.. 24h] -----------
-	# Conf does not fix a short IKE lifetime; default 24h honored — the
-	# resume log 'ike_remain=86...' (86400 s) proves it.  The admin knob
-	# (kmp_sa_lifetime_time) is exercised by the i2ikesa row (30s rekey).
+	# The default 24h IKE_SA lifetime is honored — the resume log's
+	# 'ike_remain=86400' (86400 s) proves it.  The admin knob
+	# (kmp_sa_lifetime_time) is exercised specifically by the
+	# i2iconf-lifetime row (37s; observed "initiating IKE_SA rekey" inside
+	# the window); this cell only claims the 24h default is honored.
+	# The regex is anchored to the exact 86400 s default: the loose
+	# 8[0-9]{4} matched any 80000–89999 and overstated the proof.
 	a7_ok=0
 	for _lg in "$_D/resp-iked.log" "$_D/init-iked.log"; do
-		if [ -f "$_lg" ] && grep -qE "ike_remain=8[0-9]{4}" "$_lg"; then a7_ok=1; fi
+		if [ -f "$_lg" ] && grep -qE "ike_remain=86400" "$_lg"; then a7_ok=1; fi
 	done
-	[ "$a7_ok" -eq 1 ] && PLOG A7 PASS "IKE_SA lifetime 24h (ike_remain=86400) honored; knob via i2ikesa row"
+	[ "$a7_ok" -eq 1 ] && PLOG A7 PASS "IKE_SA default lifetime 24h honored (resume ike_remain=86400); admin knob exercised by the i2iconf-lifetime row (kmp_sa_lifetime_time 37s -> observed 'initiating IKE_SA rekey')"
 	[ "$a7_ok" -eq 0 ] && PLOG A7 FAIL "no ike_remain=86400 (24h) IKE_SA lifetime in iked logs"
 
 	# ---- A8  CHILD_SA lifetime admin-configurable, within [.. 8h] ----------
