@@ -74,7 +74,8 @@ i2i_compliance() {
 	if [ "$a2_ok" -eq 1 ]; then
 		PLOG A2 PASS "SPD has no clear path: no catch-all, udp BYPASS scoped to IKE ports"
 	else
-		_note=$(printf '%s\n' "$_pol" | grep -aE "proto udp|0\.0\.0\.0/0" | head -4 | tr '\n' ';')
+		printf '%s\n' "$_pol" > "${_D:-/tmp}/a2-policy-init.txt" 2>/dev/null || true
+		_note=$(printf '%s\n' "$_pol" | grep -aE "proto udp|0\\.0\\.0\\.0/0" | head -6 | tr '\n' ';')
 		PLOG A2 FAIL "SPD cleartext-path risk (catch-all or unscoped udp). udp rows: $_note"
 	fi
 
