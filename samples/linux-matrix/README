@@ -41,12 +41,15 @@ on the box AND a container run admits them — same rule as `i2ike-drop576`.
 Peer-backend swap: the i2i kinds default to iked<->iked, but a `-charon`
 suffix on the case name runs the SAME kind with a strongSwan 6.0.7
 (charon/swanctl, `ml` plugin) INITIATOR in the sibling initiator netns —
-the responder stays the iked SUT.  Shared peer helpers live in
+the responder stays the iked SUT.  A `-charonr` suffix is the reverse:
+racoon2 iked INITIATES, charon takes the sibling RESPONDER seat (conn
+loaded passively, no --initiate).  Shared peer helpers live in
 `kinds/i2i_peer.sh` (swanctl conn write with ke1_mlkem768 + RFC 9242
-IKE_INTERMEDIATE; spawn/trigger via charon+swanctl; gate evidence =
+IKE_INTERMEDIATE; spawn/load/trigger via charon+swanctl; gate evidence =
 charon `KE1_ML_KEM_768` selected + `CONNECTING => ESTABLISHED`; cleanup).
 This is the independent-implementation interop row: two ML-KEM-768
 implementations derive the same SK(1), proven by the ESP child landing.
+`R2_PEER_I=charon`/`R2_PEER_R=charon` force the seat globally for a batch.
 
 - `i2iinit-charon` (interop, gate=box): initial-IKE_SA ADDKE
   iked-responder vs charon-initiator on 192.0.5.x.  charon 6.0.7 places
@@ -60,6 +63,14 @@ implementations derive the same SK(1), proven by the ESP child landing.
   RES_IKE_AUTH_RCVD->ESTABLISHED + `IKE_INTERMEDIATE ADDKE round complete`
   + PRF_PLUS T1 recompute MATCH + keymat sha256=01a642e6.. g_ir_present=n,
   ESP in both netnss.
+
+- `i2iinit-charonr` (interop reverse, gate=box): initial-IKE_SA ADDKE
+  racoon2 iked INITIATOR (establish-sa, id r2init-matrix) vs charon 6.0.7
+  RESPONDER seat on 192.0.5.x — the `-charonr` suffix loads the swanctl
+  conn passively (no --initiate; local id racoon2-matrix, peer id
+  r2init-matrix).  Same ML-KEM-768 SK(1) proof; the iked side must show
+  `IKE_INTERMEDIATE ADDKE round complete` and charon must show
+  KE1_ML_KEM_768 + ESTABLISHED.
 
 - `i2ike-dup` (review #5): CREATE_CHILD mid-handler duplicate unit.
   `netem duplicate 100%` on the initiator egress veth doubles the rekey

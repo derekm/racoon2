@@ -17,12 +17,23 @@ I2I_CHARON_BIN=${I2I_CHARON_BIN:-/usr/libexec/strongswan/charon}
 I2I_SWANCTL_BIN=${I2I_SWANCTL_BIN:-/usr/bin/swanctl}
 I2I_CHARON_VDIR=${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}
 
-# i2i_peer <name> — peer backend for a case: charon when the name carries a
-# -charon suffix (or R2_PEER_I=charon globally), else iked.
+# i2i_peer <name> — INITIATOR-seat backend for a case: charon when the name
+# carries a -charon suffix (or R2_PEER_I=charon globally), else iked.
 i2i_peer() {
 	case "$1" in
 	*-charon) echo charon ;;
 	*)        echo "${R2_PEER_I:-iked}" ;;
+	esac
+}
+
+# i2i_peer_r <name> — RESPONDER-seat backend: charon when the name carries
+# a -charonr suffix (or R2_PEER_R=charon globally), else iked.  This is the
+# reverse interop direction: racoon2 iked INITIATES, charon 6.0.7 answers
+# (swanctl conn loaded passively, no --initiate).
+i2i_peer_r() {
+	case "$1" in
+	*-charonr) echo charon ;;
+	*)         echo "${R2_PEER_R:-iked}" ;;
 	esac
 }
 
@@ -128,3 +139,101 @@ i2i_peer_i_cleanup() {
 	rm -f "${I2I_CHARON_CONF:-/nonexistent}"
 	return 0
 }
+# ==== responder seat: charon answers, racoon2 iked initiates ============
+# i2i_peer_r_conf <C> <HR> <HI> <name> <peer> — swanctl conn for a charon
+# RESPONDER (local_addrs=HR, my id racoon2-matrix; expects initiator id
+# r2init-matrix).  PSK hex read from the matrix psk, never printed.
+i2i_peer_r_conf() {
+	_C=$1 _HR=$2 _HI=$3 _name=$4 _peer=$5
+	[ "$_peer" = charon ] || return 0
+	I2I_CHARON_R_CONF="$I2I_CHARON_VDIR/r2-${_name}.conf"
+	mkdir -p "$I2I_CHARON_VDIR" || return 1
+	_pskhex=$(psk_file_hex "$ETC/psk/macos.psk") || { log "FAIL: charon psk hex"; return 1; }
+	cat > "$I2I_CHARON_R_CONF" <<EOF
+connections {
+	$_name {
+		version = 2
+		rekey_time = 0s
+		proposals = aes256gcm16-prfsha256-ecp256-ke1_mlkem768
+		local_addrs = $_HR
+		remote_addrs = $_HI
+		local {
+			id = racoon2-matrix
+			auth = psk
+		}
+		remote {
+			id = r2init-matrix
+			auth = psk
+		}
+		children {
+			ch {
+				local_ts = $_HR/32
+				remote_ts = $_HI/32
+				esp_proposals = aes128gcm16
+				rekey_time = 0s
+			}
+		}
+	}
+}
+secrets {
+	ike-$_name {
+		secret = "0x$_pskhex"
+	}
+}
+EOF
+	return 0
+}
+
+# i2i_peer_r_start <D> <NSR> <peer> <name> — spawn the charon RESPONDER in
+# the responder netns (stderr to $D/charon-resp.log).  iked spawn stays in
+# the kind.  charon is passive; it is loaded, never initiated.
+i2i_peer_r_start() {
+	_D=$1 _NSR=$2 _peer=$3 _name=$4
+	[ "$_peer" = charon ] || return 0
+	( ip netns exec "$_NSR" "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
+	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 ) >"$_D/charon-resp.log" 2>&1 &
+	sleep 2
+	return 0
+}
+
+# i2i_peer_r_trigger <D> <NSR> <peer> <name> — LOAD conns only (no
+# initiate): the racoon2 initiator drives the exchange via establish-sa.
+i2i_peer_r_trigger() {
+	_D=$1 _NSR=$2 _peer=$3 _name=$4
+	[ "$_peer" = charon ] || return 0
+	( ip netns exec "$_NSR" "$I2I_SWANCTL_BIN" --load-all --debug 2 ) >"$_D/swanctl-load-resp.log" 2>&1
+	return 0
+}
+
+# i2i_peer_r_evidence <D> <peer> — this RESPONDER completed its ADDKE side:
+# iked logs round-complete; charon selected KE1_ML_KEM_768 and reached
+# ESTABLISHED (the ESP child landing in the kind proves SK(1) matched).
+i2i_peer_r_evidence() {
+	_D=$1 _peer=$2
+	if [ "$_peer" = charon ]; then
+		grep -q 'KE1_ML_KEM_768' "$_D/charon-resp.log" 2>/dev/null &&
+		grep -q 'state change: CONNECTING => ESTABLISHED' "$_D/charon-resp.log" 2>/dev/null
+		return $?
+	fi
+	grep -q 'IKE_INTERMEDIATE ADDKE round complete' "$_D/resp-iked.log" 2>/dev/null
+}
+
+# i2i_peer_r_diag <D> <peer> — charon RESPONDER-side failure tail.
+i2i_peer_r_diag() {
+	_D=$1 _peer=$2
+	[ "$_peer" = charon ] || return 0
+	grep -E 'selected proposal|KE1_ML_KEM_768|state change|not acceptable|no proposal|received proposals' \
+		"$_D/charon-resp.log" 2>/dev/null | tail -8
+}
+
+# i2i_peer_r_cleanup <peer> <name> — stop the charon RESPONDER, drop its
+# swanctl conn file.  iked cleanup stays in the kind.
+i2i_peer_r_cleanup() {
+	_peer=$1 _name=$2
+	[ "$_peer" = charon ] || return 0
+	killall -9 charon 2>/dev/null || true
+	rm -f /var/run/charon.pid /var/run/charon.ctl
+	rm -f "${I2I_CHARON_R_CONF:-/nonexistent}"
+	return 0
+}
+
