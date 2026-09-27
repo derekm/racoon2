@@ -92,6 +92,12 @@ jobs:
             ./configure --prefix=/usr/local/racoon2 >/dev/null
             make -j2 >/dev/null
             sudo make install
+            # Re-run the unit/KAT suites on the production-shaped build so the
+            # compliance report has evidence again (make clean removed the
+            # sanitized-run logs; these non-sanitized results are the more
+            # representative cells anyway).
+            make -C lib check
+            make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats"
 
             echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
             # ASan daemons: no leak-abort on orderly stop. NetBSD gcc ASan
