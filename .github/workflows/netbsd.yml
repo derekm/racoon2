@@ -66,8 +66,8 @@ jobs:
             echo "=== Unit suite (lib: make check) ==="
             make -C lib check
 
-            echo "=== Unit suite (iked: eaytest evlooptest workerstest) ==="
-            make -C iked check TESTS="eaytest evlooptest workerstest"
+            echo "=== Unit suite (iked: eaytest evlooptest workerstest ndcppkats) ==="
+            make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats"
 
             echo "=== make install ==="
             sudo make install
@@ -84,4 +84,15 @@ jobs:
             sudo sysctl -w security.pax.aslr.enabled=0 || true
             sudo -E env PREFIX=/usr/local/racoon2 SRC="$PWD" ASAN_OPTIONS="$ASAN_OPTIONS" \
               sh samples/netbsd-ci/rc-smoke.sh
+      - name: 'Generate compliance report (KAT evidence from NetBSD build)'
+        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/netbsd-build-test-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
+        working-directory: ${{ runner.workspace }}/racoon2
+
+      - name: 'Upload compliance report artifact'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report-netbsd-build-test
+          path: netbsd-build-test-compliance.md
+          if-no-files-found: error
 

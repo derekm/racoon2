@@ -78,8 +78,19 @@ jobs:
       - name: 'Unit suite (lib: make check)'
         run: make -C lib check
 
-      - name: 'Unit suite (iked: full TESTS, incl. resumetest + addketest)'
-        run: make -C iked check
+      - name: 'Unit suite (iked: full TESTS, incl. resumetest + addketest + ndcppkats)'
+        run: make -C iked check TESTS="eaytest evlooptest workerstest resumetest fragtest ndcppkats"
+
+      - name: 'Generate compliance report (KAT + full unit evidence)'
+        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/${{ github.job }}-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
+
+      - name: 'Upload compliance report artifact'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report-${{ github.job }}
+          path: ${{ github.job }}-compliance.md
+          if-no-files-found: error
 
       - name: 'Dump unit logs on failure'
         if: failure()

@@ -80,9 +80,20 @@ jobs:
           [ -z "$CASES" ] || ARGS="$ARGS --cases $CASES"
           # run.sh splits $ARGS on IFS; a --cases value with spaces must
           # be one argv (same trap as the Fedora job before 617ed26).
-          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" ${CASES:+--cases "$CASES"}
+          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" ${CASES:+--cases "$CASES"} | tee /tmp/r2-matrix.log
         env:
           R2_PREFIX: /usr/local/racoon2
+
+      - name: Generate compliance report (linux-matrix CPL evidence)
+        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/linux-matrix-compliance.md" /tmp/r2-matrix.log /tmp/r2_i2i*/*.log /tmp/*.log
+
+      - name: Upload compliance report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report-linux-matrix
+          path: linux-matrix-compliance.md
+          if-no-files-found: error
 
       - name: Collect integration diagnostics (on failure)
         if: failure()
@@ -196,9 +207,20 @@ jobs:
           [ -n "$CASES" ] || CASES='^(i2iinit-addke |i2iinit-nointermediate |i2ike-addke |i2ikesa-addke |i2ike-drop |i2iinit-drop576 )'
           # run.sh splits ARGS on IFS.  A --cases value with spaces (the
           # anchored names above) must be one argv: pass it quoted.
-          bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" --cases "$CASES"
+          bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" --cases "$CASES" | tee /tmp/r2-matrix.log
         env:
           R2_PREFIX: /usr/local/racoon2
+
+      - name: Generate compliance report (fedora-pqc CPL evidence)
+        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/fedora-pqc-compliance.md" /tmp/r2-matrix.log /tmp/r2-*/*.log /tmp/*.log
+
+      - name: Upload compliance report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report-fedora-pqc
+          path: fedora-pqc-compliance.md
+          if-no-files-found: error
 
       - name: Upload matrix logs on failure
         if: failure()
