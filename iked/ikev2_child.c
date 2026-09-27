@@ -1192,6 +1192,13 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		if (psa && psa->encr != 0)
 			pbits = ikev2_encr_keylen_bits(psa->encr, psa->encrklen);
 		cbits = ikev2_child_encr_keylen_bits(matching_my_proposal);
+		isakmp_log(ike_sa, local, remote, 0,
+			   PLOG_DEBUG, PLOGLOC,
+			   "parent_child_strength gate: pbits=%d cbits=%d "
+			   "(parent encr=%d encrklen=%d)\n",
+			   pbits, cbits,
+			   psa ? psa->encr : -1,
+			   psa ? psa->encrklen : -1);
 		if (pbits > 0 && cbits > 0 && cbits > pbits) {
 			isakmp_log(ike_sa, local, remote, 0,
 				   PLOG_PROTOERR, PLOGLOC,
