@@ -69,11 +69,28 @@ jobs:
             echo "=== Unit suite (iked: eaytest evlooptest workerstest ndcppkats) ==="
             make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats"
 
-            echo "=== make install ==="
+            echo "=== make install (sanitized, for the unit-test build only) ==="
             sudo make install
             test -x /usr/local/racoon2/sbin/iked
             test -x /usr/local/racoon2/etc/racoon2/rc.d/iked
             test -x /usr/local/racoon2/etc/racoon2/rc.d/spmd
+
+            echo "=== REBUILD non-sanitized daemons for the rc.d smoke ==="
+            # The unit suites above already ran the ASan/UBSan check.  The
+            # boot smoke (rc.d + PF_KEY + UDP/500) must run PRODUCTION-shaped
+            # binaries: ASan breaks OpenSSL 3.0's provider-based sha256 EVP
+            # ops on this toolchain (EVP_DigestInit_ex fails with an empty
+            # ERR even for a plain EVP_sha256()/HMAC probe linked only
+            # against /usr/lib/libcrypto.a), which makes spmd's keyed
+            # HMAC-SHA256 SPMIF login fail at challenge generation.  sha1
+            # survives only via OpenSSL's legacy path.  Non-sanitized build
+            # is the real deployment shape — proven working by the same probe
+            # (sha1/sha256/byname/HMAC all OK without -fsanitize).
+            make clean >/dev/null
+            CFLAGS="-g -O2" \
+            ./configure --prefix=/usr/local/racoon2 >/dev/null
+            make -j2 >/dev/null
+            sudo make install
 
             echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
             # ASan daemons: no leak-abort on orderly stop. NetBSD gcc ASan
