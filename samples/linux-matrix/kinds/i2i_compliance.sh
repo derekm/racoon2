@@ -81,7 +81,7 @@ i2i_compliance() {
 	_udp_unscoped=$(printf '%s\n' "$_pol" | grep -E "^src [0-9].*proto udp" | grep -vE "sport (500|4500)")
 	if [ -n "$_udp_unscoped" ]; then a2_ok=0; fi
 	if [ "$a2_ok" -eq 1 ]; then
-		PLOG A2 PASS "SPD has no clear path: no routing catch-all, udp BYPASS scoped to IKE ports"
+		PLOG A2 PASS "negative shape check: SPD has no clear path (no routing catch-all; udp BYPASS scoped to IKE ports 500/4500). Scope: this is a negative architecture check, not a positive discard-the-unmatched NEG proof (separate i2ineg rows cover packet-level refusal)"
 	else
 		printf '%s\n' "$_pol" > "${_D:-/tmp}/a2-policy-init.txt" 2>/dev/null || true
 		_note=$(printf '%s\n' "$_pol" | grep -aE "proto udp|0\\.0\\.0\\.0/0" | head -6 | tr '\n' ';')
@@ -306,7 +306,7 @@ i2i_compliance() {
 	[ "$b2_ok" -eq 1 ] && PLOG B2 PASS "key establishment: matching keymat sha256 both sides"
 	[ "$b2_ok" -eq 0 ] && PLOG B2 FAIL "no keymat sha256 evidence"
 	PLOG B1 INFO "FCS_CKM.1 keygen covered by KAT unit rows"
-	PLOG B3 INFO "FCS_CKM.4 destruction covered by unit zeroization checks"
+	PLOG B3 INFO "FCS_CKM.4 zeroization covered by unit OPENSSL_cleanse checks + source reference; scope: primitive/static proof, not a live teardown-path observation on the daemon (see the unit KAT)"
 	PLOG B4 INFO "FCS_COP.1 AES ciphers covered by KAT unit rows"
 	PLOG B5 INFO "FCS_COP.1 siggen covered by KAT unit rows"
 	PLOG B6 INFO "FCS_RBG_EXT.1 DRBG covered by KAT unit rows"
