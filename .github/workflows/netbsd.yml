@@ -87,6 +87,7 @@ jobs:
             # is the real deployment shape — proven working by the same probe
             # (sha1/sha256/byname/HMAC all OK without -fsanitize).
             make clean >/dev/null
+            SAN_CFLAGS= SAN_LDFLAGS= \
             CFLAGS="-g -O2" \
             ./configure --prefix=/usr/local/racoon2 >/dev/null
             make -j2 >/dev/null
