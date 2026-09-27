@@ -20,6 +20,20 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
   KEr + g^ir for a PFS-less suite; iOS killed the IKE_SA one
   message after the first iOS-initiated rekey, 20:01:34).  Both
   paths gate on "proposal carries a DH transform" (RFC 7296 §2.18).
+- **NDcPP v3.0e compliance** (20-cell CPL + KAT matrix, `samples/linux-matrix`,
+  report generated in CI): A12 `parent_child_strength` is per-remote and
+  **default OFF** (RFC 7296 permissive) by code, but the NDcPP v3.0e
+  **evaluated configuration enables it** (`i2ineg-a12strict` proves the
+  ON behavior) — the compliance report states this default-vs-evaluated
+  distinction rather than claiming ON is the shipped default; A7/A8
+  CONF lifetimes proven admin-configurable (37s/53s knob row, not
+  hardcoded); A2/A13/A14 NEG fail-closed rows; A12 refuses a CHILD_SA
+  whose encr strength exceeds the parent IKE_SA (`CHILD_SA encr
+  strength %d bits exceeds parent IKE_SA strength %d bits`,
+  NO_PROPOSAL_CHOSEN).  PQC ADDKE is NOT a v3.0e claim (green
+  `i2ike-addke` is not NDcPP coverage).  See
+  `samples/linux-matrix/kinds/i2i_compliance.sh` and
+  `references/ndcpp-ipsec.md`.
 
 ## Build & deploy
 - Top-level `make install` (after `./configure && make`) is the only
