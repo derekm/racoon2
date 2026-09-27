@@ -58,25 +58,34 @@ i2i_compliance() {
 	# ---------- A2  no cleartext path for unmatched traffic ------------------
 	# The i2i SPD's BYPASS rows are scoped to the IKE ports only (udp
 	# 500/4500) and every other peer flow is PROTECT (esp tunnel, A1).
-	# Assert there is NO cleartext path: (a) no catch-all row (a bare
-	# 0.0.0.0/0 allow would forward unmatched traffic in clear), and
-	# (b) every udp row is scoped to 500/4500 only.  A probe to the peer's
-	# /32 matches the LIVE tunnel SA (it is a PROTECT flow), so it is
-	# tunneled, not dropped — as such A2 is a negative SPD-shape check
-	# (no clear path exists), not a counted drop.
+	# Assert there is NO cleartext path:
+	#   (a) no routing catch-all — '0.0.0.0/0 dst 0.0.0.0/0' blocks whose
+	#       body is NOT a 'socket' policy (charon installs socket-layer
+	#       bypass rows at priority 0 that do NOT forward routed traffic);
+	#   (b) every udp BYPASS row is scoped to 500/4500 only.
+	# A probe to the peer's /32 matches the LIVE tunnel SA (it is a PROTECT
+	# flow), so it is tunneled, not dropped — as such A2 is a negative
+	# SPD-shape check (no clear path exists), not a counted drop.
 	a2_ok=1
 	_pol=$(ip netns exec "$_NSI" ip xfrm policy 2>/dev/null || true)
-	# (a) no catch-all
-	if printf '%s\n' "$_pol" | grep -qE "src 0\\.0\\.0\\.0/0|dst 0\\.0\\.0\\.0/0"; then a2_ok=0; fi
+	# (a) flag only NON-socket catch-all policy blocks (header 0.0.0.0/0 and
+	# a 'dir' body — a real direction policy covering everything).
+	_ca=$(printf '%s\n' "$_pol" | awk '
+		/^[^[:space:]]/ { if (old != "") print old; old=$0; prev=""; next }
+		{ if ($0 ~ /socket/) { old=""; } }
+		END { if (old != "") print old }' \
+		| awk '/^src 0\.0\.0\.0\/0 dst 0\.0\.0\.0\/0/{print; c=1; next} /^[^[:space:]]/{c=0} {if(c) print}' \
+		| grep -vE "socket" | head -1)
+	if [ -n "$_ca" ]; then a2_ok=0; fi
 	# (b) every udp row scoped to an IKE port — any uncovered udp line fails
-	_udp_unscoped=$(printf '%s\n' "$_pol" | grep -E "^src .*proto udp" | grep -vE "sport (500|4500)")
+	_udp_unscoped=$(printf '%s\n' "$_pol" | grep -E "^src [0-9].*proto udp" | grep -vE "sport (500|4500)")
 	if [ -n "$_udp_unscoped" ]; then a2_ok=0; fi
 	if [ "$a2_ok" -eq 1 ]; then
-		PLOG A2 PASS "SPD has no clear path: no catch-all, udp BYPASS scoped to IKE ports"
+		PLOG A2 PASS "SPD has no clear path: no routing catch-all, udp BYPASS scoped to IKE ports"
 	else
 		printf '%s\n' "$_pol" > "${_D:-/tmp}/a2-policy-init.txt" 2>/dev/null || true
 		_note=$(printf '%s\n' "$_pol" | grep -aE "proto udp|0\\.0\\.0\\.0/0" | head -6 | tr '\n' ';')
-		PLOG A2 FAIL "SPD cleartext-path risk (catch-all or unscoped udp). udp rows: $_note"
+		PLOG A2 FAIL "SPD cleartext-path risk (routing catch-all or unscoped udp). rows: $_note"
 	fi
 
 	# ------------------------- A3  tunnel mode, both seats -------------------
