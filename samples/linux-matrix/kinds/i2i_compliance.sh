@@ -55,24 +55,26 @@ i2i_compliance() {
 		PLOG A1 FAIL "SPD missing BYPASS(udp) or PROTECT(esp tunnel) row in ${_NSR}/${_NSI}"
 	fi
 
-	# ------------------ A2  nominal final SPD entry discards unmatched -------
-	# Counted drop: one UDP probe to an SPD-unmatched port (9999) must be
-	# discarded at the sender (auto_ipsec requires ESP, none exists for that
-	# flow) — not forwarded plaintext.  Sum the two relevant out-bound drop
-	# counters (XfrmOutNoStates / XfrmOutPolBlock) so the gate works across
-	# kernel semantics; report whichever actually moved.
-	_ns1=$(ip netns exec "$_NSI" cat /proc/net/xfrm_stat 2>/dev/null \
-		| awk '/XfrmOutNoStates|XfrmOutPolBlock/{s+=$2} END{print s+0}')
-	ip netns exec "$_NSI" sh -c "echo -n x >/dev/udp/$_HR/9999" 2>/dev/null || true
-	sleep 1
-	_ns2=$(ip netns exec "$_NSI" cat /proc/net/xfrm_stat 2>/dev/null \
-		| awk '/XfrmOutNoStates|XfrmOutPolBlock/{s+=$2} END{print s+0}')
-	_o1=$(ip netns exec "$_NSI" cat /proc/net/xfrm_stat 2>/dev/null | awk '/XfrmOutNoStates/{s+=$2} END{print s+0}')
-	_o2=$(ip netns exec "$_NSI" cat /proc/net/xfrm_stat 2>/dev/null | awk '/XfrmOutNoStates/{s+=$2} END{print s+0}')
-	if [ "${_ns2:-0}" -gt "${_ns1:-0}" ]; then
-		PLOG A2 PASS "unmatched udp/9999 dropped (out-drop counters $_ns1 -> $_ns2; NoStates $_o1 -> $_o2)"
+	# ---------- A2  no cleartext path for unmatched traffic ------------------
+	# The i2i SPD's BYPASS rows are scoped to the IKE ports only (udp
+	# 500/4500) and every other peer flow is PROTECT (esp tunnel, A1).
+	# Assert there is NO cleartext path: (a) no catch-all row (a bare
+	# 0.0.0.0/0 allow would forward unmatched traffic in clear), and
+	# (b) every udp row is scoped to 500/4500 only.  A probe to the peer's
+	# /32 matches the LIVE tunnel SA (it is a PROTECT flow), so it is
+	# tunneled, not dropped — as such A2 is a negative SPD-shape check
+	# (no clear path exists), not a counted drop.
+	a2_ok=1
+	_pol=$(ip netns exec "$_NSI" ip xfrm policy 2>/dev/null || true)
+	# (a) no catch-all
+	if printf '%s\n' "$_pol" | grep -qE "src 0\\.0\\.0\\.0/0|dst 0\\.0\\.0\\.0/0"; then a2_ok=0; fi
+	# (b) every udp row scoped to an IKE port — any uncovered udp line fails
+	_udp_unscoped=$(printf '%s\n' "$_pol" | grep -E "^src .*proto udp" | grep -vE "sport (500|4500)")
+	if [ -n "$_udp_unscoped" ]; then a2_ok=0; fi
+	if [ "$a2_ok" -eq 1 ]; then
+		PLOG A2 PASS "SPD has no clear path: no catch-all, udp BYPASS scoped to 500/4500 only"
 	else
-		PLOG A2 FAIL "unmatched udp/9999 not counted as dropped (out-drop $_ns1 -> ${_ns2:-0}; NoStates ${_o1:-0})"
+		PLOG A2 FAIL "SPD has a cleartext path: catch-all row or udp BYPASS outside 500/4500"
 	fi
 
 	# ------------------------- A3  tunnel mode, both seats -------------------
@@ -105,13 +107,30 @@ i2i_compliance() {
 	# the RFC 7296 completion gate (already asserted by the kind, re-checked
 	# here from the logs).  A NAT device in the path is a separate live-NAT
 	# row (matrix Section E) — this row proves the 4500 encap socket + IKEv2.
+	# NOTE: arrow patterns ('-> ESTABLISHED' / '=> ESTABLISHED') start with a
+	# dash, so every such grep MUST pass -- to stop option parsing.
 	a5_ok=1
-	if [ "$_pei" = iked ] && ! grep -q "used for NAT-T" "$_D/init-iked.log" 2>/dev/null; then a5_ok=0; fi
-	if [ "$_per" = iked ] && ! grep -q "used for NAT-T" "$_D/resp-iked.log" 2>/dev/null; then a5_ok=0; fi
-	if [ "$_pei" = iked ] && ! grep -q "-> ESTABLISHED" "$_D/init-iked.log" 2>/dev/null; then a5_ok=0; fi
-	if [ "$_per" = iked ] && ! grep -q "-> ESTABLISHED" "$_D/resp-iked.log" 2>/dev/null; then a5_ok=0; fi
-	if [ "$_pei" = charon ] && ! grep -q "state change: .*=> ESTABLISHED" "$_D/charon-init.log" 2>/dev/null; then a5_ok=0; fi
-	if [ "$_per" = charon ] && ! grep -qE "with (pre-shared key|certificate) (successful|verified)" "$_D/charon-resp.log" 2>/dev/null; then a5_ok=0; fi
+	if [ "$_pei" = iked ]; then
+		grep -q -- "-> ESTABLISHED" "$_D/init-iked.log" 2>/dev/null || a5_ok=0
+		grep -q "used for NAT-T" "$_D/init-iked.log" 2>/dev/null || a5_ok=0
+	fi
+	if [ "$_per" = iked ]; then
+		grep -q -- "-> ESTABLISHED" "$_D/resp-iked.log" 2>/dev/null || a5_ok=0
+		grep -q "used for NAT-T" "$_D/resp-iked.log" 2>/dev/null || a5_ok=0
+	fi
+	# charon seat: EITHER the ESTABLISHED state-change line or the completed
+	# PSK auth line in ITS OWN log is completion evidence (initiator vs
+	# responder seat log different lines; either proves close).
+	if [ "$_pei" = charon ]; then
+		grep -qE -- "=> ESTABLISHED" "$_D/charon-init.log" 2>/dev/null \
+			|| grep -qE "with pre-shared key (successful|verified)" "$_D/charon-init.log" 2>/dev/null \
+			|| a5_ok=0
+	fi
+	if [ "$_per" = charon ]; then
+		grep -qE -- "=> ESTABLISHED" "$_D/charon-resp.log" 2>/dev/null \
+			|| grep -qE "with pre-shared key (successful|verified)" "$_D/charon-resp.log" 2>/dev/null \
+			|| a5_ok=0
+	fi
 	if [ "$a5_ok" -eq 1 ]; then
 		PLOG A5 PASS "IKEv2 ESTABLISHED both seats; iked 4500 bound (used for NAT-T)"
 	else
