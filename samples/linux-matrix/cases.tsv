@@ -11,6 +11,7 @@
 kmtest	unit	pass	-	lib/kmtest (userspace loopback even when KM is xfrm)
 eaytest	unit	pass	-	iked/eaytest
 evlooptest	unit	pass	-	iked/evlooptest
+ndcppkats	unit	pass	-	NDcPP v3.0e crypto KATs (A9 DH-x len, A10 nonce, B1 keygen, B3 zeroize, B4 AES-CBC/GCM, B5 ECDSA, B6 DRBG) against the daemon's OpenSSL wrappers; emits one 'KAT <cell>: PASS/FAIL <evidence>' line per cell for the compliance report
 workerstest	unit	pass	-	iked/workerstest (inline, 1, 10)
 admin-empty	admin	pass	-	show-sa empty; esp ENOTSUP; vpn-connect ENOENT
 ikev2-netns	ikev2	pass	0	strongSwan netns; inline drain (RACOON2_CRYPTO_WORKERS=0)

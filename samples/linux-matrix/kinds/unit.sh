@@ -12,6 +12,14 @@ kind_unit() {
 		make -C "$src/iked" eaytest
 		"$src/iked/eaytest"
 		;;
+	ndcppkats)
+		# NDcPP v3.0e crypto KATs (A9/A10/B1/B3-B6).  The KAT prints one
+		# "KAT <cell>: PASS|FAIL <evidence>" line per cell on stdout,
+		# which the runner captures into the matrix log; the report
+		# generator later maps KAT lines to CPL cells.
+		make -C "$src/iked" ndcppkats
+		"$src/iked/ndcppkats"
+		;;
 	evlooptest)
 		make -C "$src/iked" evlooptest
 		"$src/iked/evlooptest"
