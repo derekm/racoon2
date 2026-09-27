@@ -34,7 +34,8 @@ kind_i2i_neg() {
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 
 	# per-case knobs: EXPECT (refuse|accept), PSK_I, MYID_I,
-	# CHILD_K (child enc keylen, bytes), STRENGTH_ON (bool)
+	# CHILD_K (child enc keylen, BITS — conf keylen grammar is `alg, bits`),
+	# STRENGTH_ON (bool)
 	case "$name" in
 	i2ineg-wrongpsk)
 		EXPECT=refuse

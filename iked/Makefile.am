@@ -46,7 +46,7 @@ check_PROGRAMS = eaytest evlooptest workerstest resumetest fragtest ndcppkats
 eaytest_SOURCES = eaytest.c crypto_openssl.c str2val.c
 # NDcPP v3.0e crypto KATs (A9/A10/B1/B3-B6) against the daemon's OpenSSL
 # wrappers; emits a "KAT <cell>: PASS/FAIL <evidence>" line per cell.
-ndcppkats_SOURCES = ndcppkats.c crypto_openssl.c str2val.c
+ndcppkats_SOURCES = ndcppkats.c crypto_openssl.c str2val.c dh.c crypto_workers.c
 workerstest_SOURCES = workerstest.c crypto_workers.c
 # resume-dump record layer is pure libracoon; test it standalone.
 resumetest_SOURCES = resumetest.c ikev2_resume_rec.c
