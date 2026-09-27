@@ -13,28 +13,63 @@
 #                      'r2init-matrix' but the initiator presents a foreign
 #                      my_id.  Refusal = no ESP child AND 'received ID_I
 #                      ... does not match peers id' on the responder.
+#   i2ineg-a12strict   A12 STRICT (NDcPP FCS_IPSEC_EXT.1.12): same PSK and
+#                      ids, but the child offers 256-bit AES-GCM under a
+#                      128-bit IKE_SA and parent_child_strength is ON.
+#                      Refusal = no ESP child AND 'CHILD_SA encr strength
+#                      256 bits exceeds parent IKE_SA strength 128 bits'.
+#   i2ineg-a12permit   A12 RFC-PERMISSIVE (knob OFF): same stronger-child
+#                      offer; RFC 7296 allows it, so the exchange MUST
+#                      establish a child.  PASS = ESP child present in both
+#                      netnss AND no parent_child_strength refusal logged.
 #
-# The gate is inverted from the positive kinds: this kind returns 0 only
-# when the exchange was REFUSED.  Setup/cleanup mirror i2iinit.sh but with
-# distinct netns/socket/resume names (copied-kind rule).
+# The gate is inverted from the positive kinds ONLY for reject-expecting
+# rows: this kind returns 0 for i2ineg-* when the exchange was REFUSED,
+# and for i2ineg-a12permit when it was ACCEPTED.  Setup/cleanup mirror
+# i2iinit.sh but with distinct netns/socket/resume names (copied-kind rule).
 kind_i2i_neg() {
 	name=$1
 	require_root || return 1
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
+
+	# per-case knobs: EXPECT (refuse|accept), PSK_I, MYID_I,
+	# CHILD_K (child enc keylen, bytes), STRENGTH_ON (bool)
 	case "$name" in
 	i2ineg-wrongpsk)
+		EXPECT=refuse
 		PSK_I="$ETC/psk/l2tp.psk"   # DIFFERENT key than the responder's
-		MYID_I='fqdn "r2init-matrix"' ;;
+		MYID_I='fqdn "r2init-matrix"'
+		CHILD_K=16; STRENGTH_ON=no ;;
 	i2ineg-idmismatch)
+		EXPECT=refuse
 		PSK_I="$ETC/psk/macos.psk"  # same key, foreign identity
-		MYID_I='fqdn "neg-intruder"' ;;
+		MYID_I='fqdn "neg-intruder"'
+		CHILD_K=16; STRENGTH_ON=no ;;
+	i2ineg-a12strict)
+		EXPECT=refuse
+		PSK_I="$ETC/psk/macos.psk"  # same key, same ids — strength is the probe
+		MYID_I='fqdn "r2init-matrix"'
+		CHILD_K=32; STRENGTH_ON=yes ;;
+	i2ineg-a12permit)
+		EXPECT=accept
+		PSK_I="$ETC/psk/macos.psk"
+		MYID_I='fqdn "r2init-matrix"'
+		CHILD_K=32; STRENGTH_ON=no ;;
 	*)
 		log "FAIL: unknown NEG case $name"
 		return 1 ;;
 	esac
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 	[ -f "$PSK_I" ] || { log "FAIL: no $PSK_I for case $name"; return 1; }
+	[ "$CHILD_K" = 16 ] || [ "$CHILD_K" = 32 ] || { log "FAIL: bad CHILD_K=$CHILD_K"; return 1; }
+
+	# parent_child_strength line for the ikev2 blocks (empty when off)
+	if [ "$STRENGTH_ON" = yes ]; then
+		STRENGTH_LINE="parent_child_strength on;"   # → NO_PROPOSAL_CHOSEN for a stronger child
+	else
+		STRENGTH_LINE=""                             # RFC 7296 permissive default
+	fi
 
 	NSR=i2neg-r; NSI=i2neg-i; VR=i2negr; VI=i2negi
 	HR=192.0.7.1; HI=192.0.7.2
@@ -56,6 +91,7 @@ remote matrix_resp {
 		my_id fqdn "racoon2-matrix";
 		peers_id fqdn "r2init-matrix";
 		peers_ipaddr "$HI";
+		$STRENGTH_LINE
 		kmp_enc_alg { aes_gcm; };
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
@@ -91,7 +127,7 @@ ipsec ipsec_e {
 };
 sa esp_e {
 	sa_protocol esp;
-	esp_enc_alg { aes_gcm; };
+	esp_enc_alg { aes_gcm, $CHILD_K; };
 	esp_auth_alg { non_auth; };
 };
 EOF
@@ -110,6 +146,7 @@ remote matrix_init {
 		my_id $MYID_I;
 		peers_id fqdn "racoon2-matrix";
 		peers_ipaddr "$HR";
+		$STRENGTH_LINE
 		kmp_enc_alg { aes_gcm; };
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
@@ -145,7 +182,7 @@ ipsec ipsec_e {
 };
 sa esp_e {
 	sa_protocol esp;
-	esp_enc_alg { aes_gcm; };
+	esp_enc_alg { aes_gcm, $CHILD_K; };
 	esp_auth_alg { non_auth; };
 };
 EOF
@@ -190,9 +227,8 @@ EOF
 	sleep 2
 	"$SBIN/ikedctl" -s /tmp/iked.sock-i2ineg-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 
-	# A refusal surfaces fast (IKE_AUTH round-trip).  Wait up to ~30 s for
-	# the outcome to settle, then measure: NO ESP child may be left in
-	# either netns (a child means the TOE accepted the bad config).
+	# Refusals surface fast (IKE_AUTH round-trip); acceptance too.  Wait
+	# up to ~30 s for the outcome to settle, then measure the gate.
 	up=0
 	i=0
 	while [ "$i" -lt 30 ]; do
@@ -203,42 +239,63 @@ EOF
 	done
 	sleep 2
 
-	# NEG gate: refused == (no child) AND (refusal marker in the logs).
 	re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 	ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 	nochild=0
 	[ "${re:-0}" -eq 0 ] && [ "${ie:-0}" -eq 0 ] && nochild=1
 
+	# Refusal markers quoted from the real iked log (checked in order;
+	# they are mutually exclusive across the cases above).
 	marker=0
 	marker_line=
-	if grep -q "authentication failure" "$D/resp-iked.log" 2>/dev/null; then
+	if grep -q "CHILD_SA encr strength" "$D/resp-iked.log" 2>/dev/null; then
+		marker=1; marker_line="CHILD_SA encr strength"
+	elif grep -q "authentication failure" "$D/resp-iked.log" 2>/dev/null; then
 		marker=1; marker_line="authentication failure"
 	elif grep -q "does not match peers id" "$D/resp-iked.log" 2>/dev/null; then
 		marker=1; marker_line="does not match peers id"
 	fi
 
-	refused=0
-	[ "$nochild" -eq 1 ] && [ "$marker" -eq 1 ] && refused=1
-
-	if [ "$refused" -eq 1 ]; then
-		# refused exactly as failed-closed requires -> the NEG row PASSES
-		if [ "$name" = i2ineg-wrongpsk ]; then
-			printf 'CPL A13: PASS NEG wrong-psk: exchange refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed\n' "${re:-0}" "${ie:-0}" "$marker_line"
-		else
-			printf 'CPL A14: PASS NEG id-mismatch: exchange refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed\n' "${re:-0}" "${ie:-0}" "$marker_line"
-		fi
-		log "PASS $name: TOE refused the mis-configured exchange (nochild=$nochild marker=$marker '$marker_line')"
+	gote=0
+	if [ "$EXPECT" = refuse ]; then
+		[ "$nochild" -eq 1 ] && [ "$marker" -eq 1 ] && gote=1
 	else
-		if [ "$up" -eq 1 ]; then
-			log "FAIL $name: TOE ACCEPTED the mis-configured exchange (esp up resp=${re} init=${ie}) — fail-closed violation"
+		# EXPECT=accept: child established AND no strength refusal
+		[ "$up" -eq 1 ] && [ "$marker" -eq 0 ] && gote=1
+	fi
+
+	if [ "$gote" -eq 1 ]; then
+		# the TOE behaved exactly as this row requires
+		case "$name" in
+		i2ineg-wrongpsk)
+			printf 'CPL A13: PASS NEG wrong-psk: exchange refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed\\n' "${re:-0}" "${ie:-0}" "$marker_line" ;;
+		i2ineg-idmismatch)
+			printf 'CPL A14: PASS NEG id-mismatch: exchange refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed\\n' "${re:-0}" "${ie:-0}" "$marker_line" ;;
+		i2ineg-a12strict)
+			printf 'CPL A12: PASS STRICT parent>=child: 256-bit CHILD_SA under 128-bit IKE_SA refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed\\n' "${re:-0}" "${ie:-0}" "$marker_line" ;;
+		i2ineg-a12permit)
+			printf 'CPL A12: PASS RFC-permissive: 256-bit CHILD_SA under 128-bit IKE_SA ACCEPTED (resp esp=%s init esp=%s) as RFC 7296 allows when parent_child_strength is off\\n' "${re:-0}" "${ie:-0}" ;;
+		esac
+		log "PASS $name: TOE behaved as required ($EXPECT; nochild=$nochild marker=$marker up=$up '$marker_line')"
+	else
+		if [ "$EXPECT" = refuse ]; then
+			if [ "$up" -eq 1 ]; then
+				log "FAIL $name: TOE ACCEPTED the mis-config (esp up resp=${re} init=${ie}) — fail-closed violation"
+			else
+				log "FAIL $name: neither child nor refusal marker (nochild=$nochild marker=$marker) — inconclusive/hung"
+			fi
 		else
-			log "FAIL $name: no child AND no refusal marker (nochild=$nochild marker=$marker) — inconclusive/hung"
+			if [ "$marker" -eq 1 ]; then
+				log "FAIL $name: TOE refused a legal stronger child (marker='$marker_line') — RFC-permissive broken (false veto)"
+			else
+				log "FAIL $name: child did not establish under the legal offer (up=$up esp resp=${re} init=${ie})"
+			fi
 		fi
 		log "--- resp-iked.log ---"
-		grep -E 'IKE_SA_INIT|IKE_AUTH|authentication|peers id|AUTHENTICATION_FAILED|abort|err=|ESTABLISHED' \
+		grep -E 'IKE_SA_INIT|IKE_AUTH|authentication|peers id|AUTHENTICATION_FAILED|encr strength|abort|err=|ESTABLISHED|NO_PROPOSAL' \
 			"$D/resp-iked.log" 2>/dev/null | tail -10
 		log "--- init-iked.log ---"
-		grep -E 'IKE_SA_INIT|IKE_AUTH|authentication|peers id|AUTHENTICATION_FAILED|abort|err=|ESTABLISHED' \
+		grep -E 'IKE_SA_INIT|IKE_AUTH|authentication|peers id|AUTHENTICATION_FAILED|encr strength|abort|err=|ESTABLISHED|NO_PROPOSAL' \
 			"$D/init-iked.log" 2>/dev/null | tail -10
 	fi
 
@@ -250,6 +307,6 @@ EOF
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
-	[ "$refused" -eq 1 ]
+	[ "$gote" -eq 1 ]
 	return $?
 }
