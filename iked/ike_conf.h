@@ -186,6 +186,7 @@ extern rc_type ikev2_send_peers_id(struct rcf_remote *);
 extern rc_type ikev2_need_pfs(struct rcf_remote *);
 extern rc_type ikev2_nat_traversal(struct rcf_remote *);
 extern rc_type ikev2_addke_required(struct rcf_remote *);
+extern rc_type ikev2_parent_child_strength(struct rcf_remote *);
 extern rc_type ikev2_addke_unrequested(struct rcf_remote *);
 extern rc_type ikev2_offer_intermediate(struct rcf_remote *);
 extern void ikev2_child_maybe_reoffer_addke(struct ikev2_child_sa *);
@@ -281,6 +282,7 @@ int ikev2_proposal_to_ipsec(struct ikev2_child_sa *, struct ikev2_child_param *,
 			    int (*apply_func) (struct ikev2_child_sa *,
 					       struct rcpfk_msg *, void *),
 			    void *);
+int ikev2_encr_keylen_bits(unsigned int transform_id, int keylen_attr);
 
 int ike_conf_check_consistency(void);
 

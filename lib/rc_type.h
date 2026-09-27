@@ -290,6 +290,13 @@ struct rcf_kmp {
 	 * transform (downgrade protection).  OFF = ADDKE optional
 	 * (peer without type-6 negotiates plain IKEv2). */
 	rc_type addke_required;
+	/* NDcPP FCS_IPSEC_EXT.1.12: refuse a CHILD_SA whose negotiated
+	 * encr strength exceeds the parent IKE_SA's.  OFF (default) =
+	 * RFC 7296 permissive (a stronger child is legal); ON = the TOE
+	 * fails closed and answers NO_PROPOSAL_CHOSEN.  TomRight: the
+	 * IKEv1 side has no negotiated-strength record, so the knob is
+	 * consulted on IKEv2 seats only. */
+	rc_type parent_child_strength;
 	/* RFC 9370 responder-driven ADDKE: force/offer a type-6 transform in a
 	 * CREATE_CHILD response even when the initiator never requested it (a
 	 * classical-only peer like iOS still drives IKE_FOLLOWUP_KE when the

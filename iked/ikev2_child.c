@@ -937,6 +937,48 @@ ikev2_child_responder_dh_done(int rc, void *arg)
  * creates a responder child_sa
  * then issues GETSPI
  */
+/*
+ * NDcPP FCS_IPSEC_EXT.1.12: effective ENCR key length (bits) of a
+ * matched CHILD_SA proposal, resolved from its ENCR transform (the
+ * KEY_LENGTH attribute when present, else the algorithm default).
+ * Shared with ikev2_conf.c's ikev2_encr_keylen_bits() for the parent.
+ */
+static int
+ikev2_child_encr_keylen_bits(struct prop_pair *proposal)
+{
+	struct prop_pair *t;
+	unsigned int keylen_attr = 0;
+	int transform_id = 0;
+
+	if (!proposal)
+		return 0;
+	for (t = proposal->tnext; t; t = t->next) {
+		struct ikev2transform *trns;
+		struct isakmp_data *attr;
+		size_t attr_bytes;
+
+		trns = (struct ikev2transform *)t->trns;
+		if (get_uint16(&trns->transform_type) !=
+		    IKEV2TRANSFORM_TYPE_ENCR)
+			continue;
+		transform_id = get_uint16(&trns->transform_id);
+		attr = (struct isakmp_data *)(trns + 1);
+		attr_bytes = get_uint16(&trns->transform_length) -
+		    sizeof(struct ikev2transform);
+		for (; attr_bytes > 0;
+		     attr_bytes -= ISAKMP_ATTRIBUTE_TOTALLENGTH(attr),
+		     attr = ISAKMP_NEXT_ATTRIB(attr)) {
+			if (get_uint16(&attr->type) ==
+			    (IKEV2ATTRIB_SHORT | IKEV2ATTRIB_KEY_LENGTH))
+				keylen_attr = get_uint16(&attr->lorv);
+		}
+		break;
+	}
+	if (transform_id == 0)
+		return 0;
+	return ikev2_encr_keylen_bits(transform_id, keylen_attr);
+}
+
 int
 ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 			     struct sockaddr *local,
@@ -1138,6 +1180,28 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	}
 	if (!matching_peer_proposal || !matching_my_proposal)
 		goto no_proposal_chosen;
+
+	/* NDcPP FCS_IPSEC_EXT.1.12: when parent_child_strength is on,
+	 * refuse a CHILD_SA whose ENCR strength exceeds the parent
+	 * IKE_SA's (fail closed, NO_PROPOSAL_CHOSEN).  OFF = RFC 7296
+	 * permissive (a stronger child is legal). */
+	if (ikev2_parent_child_strength(ike_sa->rmconf) == RCT_BOOL_ON) {
+		int pbits = 0, cbits = 0;
+		struct ikev2_isakmpsa *psa = ike_sa->negotiated_sa;
+
+		if (psa && psa->encr != 0)
+			pbits = ikev2_encr_keylen_bits(psa->encr, psa->encrklen);
+		cbits = ikev2_child_encr_keylen_bits(matching_my_proposal);
+		if (pbits > 0 && cbits > 0 && cbits > pbits) {
+			isakmp_log(ike_sa, local, remote, 0,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "CHILD_SA encr strength %d bits exceeds "
+				   "parent IKE_SA strength %d bits; refusing "
+				   "(parent_child_strength on)\n",
+				   cbits, pbits);
+			goto no_proposal_chosen;
+		}
+	}
 
 	if (g_i) {
 		struct algdef *dhdef;

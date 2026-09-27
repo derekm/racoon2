@@ -208,6 +208,7 @@ struct rcf_kmp ikev2_default_values = {
 	{ NULL },		/* script */
 	NULL,			/* natd_public_address */
 	RCT_BOOL_OFF,		/* addke_required (RFC 9370 downgrade gate) */
+	RCT_BOOL_OFF,		/* parent_child_strength (NDcPP FCS_IPSEC_EXT.1.12) */
 	RCT_BOOL_OFF,		/* addke_unrequested (responder-driven ADDKE) */
 	RCT_BOOL_ON,		/* offer_intermediate (RFC 9242 capability notify) */
 };
@@ -431,6 +432,7 @@ IKEV2_CONF_ATTR(rc_type, send_peers_id)
 IKEV2_CONF_ATTR(rc_type, nat_traversal)
 IKEV2_CONF_ATTR(int, natk_interval)
 IKEV2_CONF_ATTR(rc_type, addke_required)
+IKEV2_CONF_ATTR(rc_type, parent_child_strength)
 IKEV2_CONF_ATTR(rc_type, addke_unrequested)
 IKEV2_CONF_ATTR(rc_type, offer_intermediate)
 IKEV2_CONF_ATTR(struct rc_addrlist *, natd_public_address)
@@ -3634,6 +3636,23 @@ ikeconf_find_alg(unsigned int id, struct algdef *def)
 			return def;
 	}
 	return 0;
+}
+
+int
+ikev2_encr_keylen_bits(unsigned int transform_id, int keylen_attr)
+{
+	struct algdef *alg;
+
+	/* An explicit IKEv2 KEY_LENGTH attribute is authoritative
+	 * (it is in bits).  Absent one (or 0), the algorithm row's
+	 * default KEYLEN (bytes -> bits) is the effective strength.
+	 * Used by the NDcPP FCS_IPSEC_EXT.1.12 parent>=child gate. */
+	if (keylen_attr > 0)
+		return keylen_attr;
+	alg = ikeconf_find_alg(transform_id, &ikev2_transf_encr[0]);
+	if (!alg)
+		return 0;
+	return (int)(KEYLEN(*alg) * 8);
 }
 
 int
