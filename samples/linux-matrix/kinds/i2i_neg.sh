@@ -210,8 +210,12 @@ EOF
 	[ "${re:-0}" -eq 0 ] && [ "${ie:-0}" -eq 0 ] && nochild=1
 
 	marker=0
-	if grep -q "authentication failure" "$D/resp-iked.log" 2>/dev/null; then marker=1; fi
-	if grep -q "does not match peers id" "$D/resp-iked.log" 2>/dev/null; then marker=1; fi
+	marker_line=
+	if grep -q "authentication failure" "$D/resp-iked.log" 2>/dev/null; then
+		marker=1; marker_line="authentication failure"
+	elif grep -q "does not match peers id" "$D/resp-iked.log" 2>/dev/null; then
+		marker=1; marker_line="does not match peers id"
+	fi
 
 	refused=0
 	[ "$nochild" -eq 1 ] && [ "$marker" -eq 1 ] && refused=1
@@ -219,11 +223,11 @@ EOF
 	if [ "$refused" -eq 1 ]; then
 		# refused exactly as failed-closed requires -> the NEG row PASSES
 		if [ "$name" = i2ineg-wrongpsk ]; then
-			printf 'CPL A13: PASS NEG wrong-psk: exchange refused (resp esp=%s init esp=%s; authentication failure) — TOE fails closed\n' "${re:-0}" "${ie:-0}"
+			printf 'CPL A13: PASS NEG wrong-psk: exchange refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed\n' "${re:-0}" "${ie:-0}" "$marker_line"
 		else
-			printf 'CPL A14: PASS NEG id-mismatch: exchange refused (resp esp=%s init esp=%s; does not match peers id) — TOE fails closed\n' "${re:-0}" "${ie:-0}"
+			printf 'CPL A14: PASS NEG id-mismatch: exchange refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed\n' "${re:-0}" "${ie:-0}" "$marker_line"
 		fi
-		log "PASS $name: TOE refused the mis-configured exchange (nochild=$nochild marker=$marker)"
+		log "PASS $name: TOE refused the mis-configured exchange (nochild=$nochild marker=$marker '$marker_line')"
 	else
 		if [ "$up" -eq 1 ]; then
 			log "FAIL $name: TOE ACCEPTED the mis-configured exchange (esp up resp=${re} init=${ie}) — fail-closed violation"
