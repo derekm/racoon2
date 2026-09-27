@@ -94,5 +94,6 @@ jobs:
         with:
           name: compliance-report-netbsd-build-test
           path: netbsd-build-test-compliance.md
+          overwrite: true
           if-no-files-found: error
 

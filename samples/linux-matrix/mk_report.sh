@@ -84,6 +84,26 @@ ninf="$(grep -c ':INFO:' "$TMP")"
 nfail="$(grep -c ':FAIL:' "$TMP")"
 {
 	echo
+	echo "## Evaluation context and scope"
+	echo
+	echo "- **A12 (FCS_IPSEC_EXT.1.12) and Application Note 93**: the strength"
+	echo "  property may be configurable, but the *evaluated configuration*"
+	echo "  must enable it.  In this matrix the strict A12 row enables"
+	echo "  \`parent_child_strength on;\` (the evaluated configuration), which"
+	echo "  makes the TOE refuse a CHILD_SA stronger than its parent IKE_SA — a"
+	echo "  capability that holds for any remote that negotiates a child"
+	echo "  stronger than the parent.  The RFC-permissive row proves the"
+	echo "  default (off) still honors RFC 7296.  AGD/config guidance must"
+	echo "  therefore ship \`parent_child_strength on;\` for the evaluated"
+	echo "  configuration (see samples and the strict-row conf)."
+	echo "- **Responder role only**: the gate and the A12 rows exercise racoon2"
+	echo "  as the IKE responder (the matrix's TOE seat).  The initiator role is"
+	echo "  not strength-gated; a dual-role TOE claim must state that the"
+	echo "  evaluated configuration exercises the responder seat."
+	echo
+} >> "$OUT"
+{
+	echo
 	echo "## Suite summary"
 	echo
 	echo "- CPL/KAT evidence lines observed: **$n** ($npass PASS, $ninf INFO, $nfail FAIL)"

@@ -972,8 +972,11 @@ ikev2_child_encr_keylen_bits(struct prop_pair *proposal)
 			for (; attr_bytes > 0;
 			     attr_bytes -= ISAKMP_ATTRIBUTE_TOTALLENGTH(attr),
 			     attr = ISAKMP_NEXT_ATTRIB(attr)) {
-				/* parity with ikev2_proposal_to_ipsec (ike_conf.c):
-				 * guard a short/broken attribute run */
+				/* This walker mirrors ikev2_proposal_to_ipsec
+				 * (ike_conf.c:3771), but where the reference asserts
+				 * attr_bytes >= sizeof(struct ikev2attrib), this walker
+				 * returns 0 on a short/broken attribute run so the
+				 * A12 gate fails closed instead of hitting UB. */
 				if (attr_bytes < sizeof(struct ikev2attrib))
 					return 0;
 				if (get_uint16(&attr->type) ==
@@ -1215,7 +1218,7 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 				   pbits, cbits);
 			goto no_proposal_chosen;
 		}
-		if (pbits > 0 && cbits > 0 && cbits > pbits) {
+		if (cbits > pbits) {
 			isakmp_log(ike_sa, local, remote, 0,
 				   PLOG_PROTOERR, PLOGLOC,
 				   "CHILD_SA encr strength %d bits exceeds "

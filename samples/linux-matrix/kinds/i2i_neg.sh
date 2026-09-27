@@ -280,8 +280,8 @@ EOF
 			printf 'CPL A13: PASS NEG wrong-psk: exchange refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed\\n' "${re:-0}" "${ie:-0}" "$marker_line" ;;
 		i2ineg-idmismatch)
 			printf 'CPL A14: PASS NEG id-mismatch: exchange refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed\\n' "${re:-0}" "${ie:-0}" "$marker_line" ;;
-		i2ineg-a12strict)
-			printf 'CPL A12: PASS STRICT parent>=child: 256-bit CHILD_SA under 128-bit IKE_SA refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed\\n' "${re:-0}" "${ie:-0}" "$marker_line" ;;
+			i2ineg-a12strict)
+				printf 'CPL A12: PASS STRICT parent>=child: 256-bit CHILD_SA under 128-bit IKE_SA refused (resp esp=%s init esp=%s); observed "%s" — TOE fails closed (parent_child_strength on, as the evaluated configuration enables per NDcPP app note 93)\\n' "${re:-0}" "${ie:-0}" "$marker_line" ;;
 		i2ineg-a12permit)
 			printf 'CPL A12: PASS RFC-permissive: 256-bit CHILD_SA under 128-bit IKE_SA ACCEPTED (resp esp=%s init esp=%s) as RFC 7296 allows when parent_child_strength is off\\n' "${re:-0}" "${ie:-0}" ;;
 		esac

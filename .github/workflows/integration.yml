@@ -93,6 +93,7 @@ jobs:
         with:
           name: compliance-report-linux-matrix
           path: linux-matrix-compliance.md
+          overwrite: true
           if-no-files-found: error
 
       - name: Collect integration diagnostics (on failure)
@@ -220,6 +221,7 @@ jobs:
         with:
           name: compliance-report-fedora-pqc
           path: fedora-pqc-compliance.md
+          overwrite: true
           if-no-files-found: error
 
       - name: Upload matrix logs on failure

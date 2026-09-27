@@ -58,6 +58,7 @@ jobs:
         with:
           name: compliance-report-${{ github.job }}
           path: ${{ github.job }}-compliance.md
+          overwrite: true
           if-no-files-found: error
 
       - name: 'Dump unit logs on failure'
@@ -105,6 +106,7 @@ jobs:
         with:
           name: compliance-report-${{ github.job }}
           path: ${{ github.job }}-compliance.md
+          overwrite: true
           if-no-files-found: error
 
       - name: 'Dump unit logs on failure'
