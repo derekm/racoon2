@@ -46,10 +46,13 @@ permissions:
 
 jobs:
   linux-matrix:
-    name: 'Linux matrix (${{ inputs.cases || ''all cases'' }})'
+    name: 'Linux matrix shard ${{ matrix.shard }}/3 (${{ inputs.cases || ''all cases'' }})'
     runs-on: ubuntu-latest
     if: inputs.os == 'linux' && inputs.dist != 'fedora'
-
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -57,13 +60,13 @@ jobs:
       - name: Install build + test dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
-            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \
+          sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \\
+            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \\
             libsystemd-dev iputils-ping xxd iptables
 
       - name: Build + install (xfrm backend)
         run: |
-          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \\
             --rebuild xfrm --cases 'a^'
         env:
           R2_PREFIX: /usr/local/racoon2
@@ -73,26 +76,21 @@ jobs:
           sudo bash samples/linux-matrix/ci-setup.sh --prefix /usr/local/racoon2
           sudo systemctl status racoon2-iked racoon2-spmd --no-pager | head -12
 
-      - name: Run the test matrix (xfrm backend)
+      - name: Run the test matrix shard (xfrm backend)
         run: |
           CASES=${{ inputs.cases }}
-          ARGS="--src $GITHUB_WORKSPACE"
+          ARGS="--src $GITHUB_WORKSPACE --shard ${{ matrix.shard }} 3"
           [ -z "$CASES" ] || ARGS="$ARGS --cases $CASES"
-          # run.sh splits $ARGS on IFS; a --cases value with spaces must
-          # be one argv (same trap as the Fedora job before 617ed26).
-          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" ${CASES:+--cases "$CASES"} | tee /tmp/r2-matrix.log
+          sudo -E bash samples/linux-matrix/run.sh $ARGS | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
         env:
           R2_PREFIX: /usr/local/racoon2
 
-      - name: Generate compliance report (linux-matrix CPL evidence)
-        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/linux-matrix-compliance.md" /tmp/r2-matrix.log /tmp/r2_i2i*/*.log /tmp/*.log
-
-      - name: Upload compliance report artifact
+      - name: Upload shard matrix log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compliance-report-linux-matrix
-          path: linux-matrix-compliance.md
+          name: matrix-shard-${{ matrix.shard }}
+          path: /tmp/r2-matrix-shard-${{ matrix.shard }}.log
           overwrite: true
           if-no-files-found: error
 
@@ -114,7 +112,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: matrix-logs
+          name: matrix-logs-${{ matrix.shard }}
           path: |
             /tmp/r2-iked-matrix.log
             /tmp/r2-diag.txt
@@ -122,10 +120,38 @@ jobs:
             /tmp/r2_*.txt
           if-no-files-found: warn
 
-  # Fedora 44 PQC matrix. Runs in the fedora:44 container (root, no systemd),
-  # so it builds the ADDKE path and only executes the self-contained cases that
-  # do not need systemd units: the unit suite plus the i2ike PQC ADDKE case.
-  # run.sh's gate=addke keeps the PQC rows OFF the Ubuntu job above.
+  linux-matrix-report:
+    name: 'Linux compliance report (merged shards)'
+    runs-on: ubuntu-latest
+    needs: linux-matrix
+    if: inputs.os == 'linux' && inputs.dist != 'fedora'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download shard matrix logs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: matrix-shard-*
+          path: /tmp/shards
+          merge-multiple: true
+
+      - name: Merge shard logs + generate compliance report
+        run: |
+          cat /tmp/shards/r2-matrix-shard-0.log \\
+              /tmp/shards/r2-matrix-shard-1.log \\
+              /tmp/shards/r2-matrix-shard-2.log > /tmp/r2-matrix.log
+          bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/linux-matrix-compliance.md" /tmp/r2-matrix.log
+
+      - name: Upload compliance report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report-linux-matrix
+          path: linux-matrix-compliance.md
+          overwrite: true
+          if-no-files-found: error
+
   fedora-pqc-matrix:
     name: 'Fedora PQC matrix (ADDKE, gated to Fedora)'
     runs-on: ubuntu-latest
