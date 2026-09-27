@@ -54,20 +54,24 @@ if [ ! -f /var/run/spmd.pid ] || [ ! -f /var/run/iked.pid ]; then
 		# failure reason reaches syslog, not CI.  Rerun each foreground
 		# (-F) with stderr captured so the reason is visible here.
 		# Bound each: kill after 4s if foreground mode keeps running.
-		if [ ! -f /var/run/spmd.pid ]; then
-			echo "=== spmd foreground (-F) startup for diagnostics ==="
-			"${PREFIX}/sbin/spmd" -F -f "${CONF}" > /tmp/spmd-F.log 2>&1 &
-			F_PID=$!
-			sleep 4
-			if kill -0 "$F_PID" 2>/dev/null; then
-				echo "note: spmd -F is running after 4s (killed); reason was not a hard startup error"
-				kill "$F_PID" 2>/dev/null || true
-			else
-				wait "$F_PID" || true
-			fi
-			cat /tmp/spmd-F.log 2>/dev/null || true
-		fi
-		echo "=== iked foreground (-F) startup for diagnostics ==="
+		#
+		# iked's `spmd I/F: closed` (EOF on the banner) means spmd
+		# ACCEPTED then closed WITHOUT sending the login challenge:
+		# spmd's own shell_gen_challenge() returned NULL (36291686209
+		# pre-HMAC green vs 059442e HMAC red; box Green on the same
+		# binary is Linux-only).  The only way to see spmd's reason is
+		# spmd stderr, so: kill the daemonized spmd, run spmd -F in the
+		# background, then run iked -F against THAT spmd — spmd -F logs
+		# `Can't find Hash function` (EVP_get_digestbyname NULL) or
+		# `Can't get seed for authentication` (short urandom read) on
+		# stderr, and iked -F shows whether a banner arrived.
+		[ ! -f /var/run/spmd.pid ] || kill "$(cat /var/run/spmd.pid)" 2>/dev/null || true
+		sleep 1
+		echo "=== spmd foreground (-F) startup for diagnostics ==="
+		"${PREFIX}/sbin/spmd" -F -f "${CONF}" > /tmp/spmd-F.log 2>&1 &
+		S_PID=$!
+		sleep 2
+		echo "=== iked foreground (-F) startup against that spmd ==="
 		"${PREFIX}/sbin/iked" -F -f "${CONF}" > /tmp/iked-F.log 2>&1 &
 		F_PID=$!
 		sleep 4
@@ -77,7 +81,9 @@ if [ ! -f /var/run/spmd.pid ] || [ ! -f /var/run/iked.pid ]; then
 		else
 			wait "$F_PID" || true
 		fi
-		cat /tmp/iked-F.log 2>/dev/null || true
+		kill "$S_PID" 2>/dev/null || true
+		echo "--- spmd -F log ---"; cat /tmp/spmd-F.log 2>/dev/null || true
+		echo "--- iked -F log ---"; cat /tmp/iked-F.log 2>/dev/null || true
 	fi
 	echo "=== iked/spmd stderr (if any) ==="
 	ls -l /var/run/spmd.pid /var/run/iked.pid 2>&1 || true
