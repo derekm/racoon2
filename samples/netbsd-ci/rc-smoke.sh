@@ -148,6 +148,12 @@ int main(void) {
 EOF
 		cc -o /tmp/digprobe /tmp/digprobe.c /usr/lib/libcrypto.a 2>&1 | tail -3 || true
 		/tmp/digprobe 2>&1 | sed 's/^/[digprobe] /' || true
+		echo "=== probe REPEAT under the CI sanitizer flags (ASan/UBSan) ==="
+		cc -fsanitize=address,undefined -fno-omit-frame-pointer -o /tmp/digprobe-san /tmp/digprobe.c /usr/lib/libcrypto.a 2>&1 | tail -5 || true
+		([ -x /tmp/digprobe-san ] && /tmp/digprobe-san 2>&1 | sed 's/^/[digprobe-san] /') || echo "[digprobe-san] build or run failed"
+		echo "=== probe REPEAT with ASan flag only ==="
+		cc -fsanitize=address -fno-omit-frame-pointer -o /tmp/digprobe-asan /tmp/digprobe.c /usr/lib/libcrypto.a 2>&1 | tail -5 || true
+		([ -x /tmp/digprobe-asan ] && /tmp/digprobe-asan 2>&1 | sed 's/^/[digprobe-asan] /') || echo "[digprobe-asan] build or run failed"
 	fi
 	echo "=== iked/spmd stderr (if any) ==="
 	ls -l /var/run/spmd.pid /var/run/iked.pid 2>&1 || true
