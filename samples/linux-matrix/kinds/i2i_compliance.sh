@@ -72,9 +72,10 @@ i2i_compliance() {
 	_udp_unscoped=$(printf '%s\n' "$_pol" | grep -E "^src .*proto udp" | grep -vE "sport (500|4500)")
 	if [ -n "$_udp_unscoped" ]; then a2_ok=0; fi
 	if [ "$a2_ok" -eq 1 ]; then
-		PLOG A2 PASS "SPD has no clear path: no catch-all, udp BYPASS scoped to 500/4500 only"
+		PLOG A2 PASS "SPD has no clear path: no catch-all, udp BYPASS scoped to IKE ports"
 	else
-		PLOG A2 FAIL "SPD has a cleartext path: catch-all row or udp BYPASS outside 500/4500"
+		_note=$(printf '%s\n' "$_pol" | grep -aE "proto udp|0\.0\.0\.0/0" | head -4 | tr '\n' ';')
+		PLOG A2 FAIL "SPD cleartext-path risk (catch-all or unscoped udp). udp rows: $_note"
 	fi
 
 	# ------------------------- A3  tunnel mode, both seats -------------------
