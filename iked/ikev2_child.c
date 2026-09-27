@@ -956,13 +956,6 @@ ikev2_child_encr_keylen_bits(struct prop_pair *proposal)
 	for (proto = proposal; proto; proto = proto->next) {
 		struct prop_pair *t;
 
-		{
-			struct ikev2proposal *pp = (struct ikev2proposal *)proto->prop;
-			isakmp_log(0, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-			    "a12dump: proposal proto_id=%d spi_size=%d tnext=%p\n",
-			    pp ? pp->protocol_id : -1,
-			    pp ? pp->spi_size : -1, (void *)proto->tnext);
-		}
 		for (t = proto->tnext; t; t = t->next) {
 			struct ikev2transform *trns;
 			struct isakmp_data *attr;
@@ -970,12 +963,7 @@ ikev2_child_encr_keylen_bits(struct prop_pair *proposal)
 			unsigned int keylen_attr = 0;
 
 			trns = (struct ikev2transform *)t->trns;
-			isakmp_log(0, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-			    "a12dump:   transform type=%d id=0x%04x\n",
-			    trns ? trns->transform_type : -1,
-			    trns ? get_uint16(&trns->transform_id) : 0);
-			if (!trns || trns->transform_type !=
-			    IKEV2TRANSFORM_TYPE_ENCR)
+			if (!trns || trns->transform_type != IKEV2TRANSFORM_TYPE_ENCR)
 				continue;
 			transform_id = get_uint16(&trns->transform_id);
 			attr = (struct isakmp_data *)(trns + 1);
@@ -1209,13 +1197,6 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		if (psa && psa->encr != 0)
 			pbits = ikev2_encr_keylen_bits(psa->encr, psa->encrklen);
 		cbits = ikev2_child_encr_keylen_bits(matching_my_proposal);
-		isakmp_log(ike_sa, local, remote, 0,
-			   PLOG_DEBUG, PLOGLOC,
-			   "parent_child_strength gate: pbits=%d cbits=%d "
-			   "(parent encr=%d encrklen=%d)\n",
-			   pbits, cbits,
-			   psa ? psa->encr : -1,
-			   psa ? psa->encrklen : -1);
 		if (pbits > 0 && cbits > 0 && cbits > pbits) {
 			isakmp_log(ike_sa, local, remote, 0,
 				   PLOG_PROTOERR, PLOGLOC,
