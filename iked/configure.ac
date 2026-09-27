@@ -255,6 +255,24 @@ if test x"$intermediate" = xyes; then
 fi
 AM_CONDITIONAL([INTERMEDIATE], [test x"$intermediate" = xyes])
 
+# Optional libblocklist (blocklistd) -- off by default so CI stays green
+# without the library.  --enable-blocklist requires libblocklist
+# (NetBSD base, or derekm/blocklist linux-port on Linux).
+AC_ARG_ENABLE(blocklist,
+	[AS_HELP_STRING([--enable-blocklist],
+		[notify blocklistd of IKE scanners / AUTH failures])],
+	[], [enable_blocklist=no])
+AC_MSG_CHECKING(--enable-blocklist)
+AC_MSG_RESULT($enable_blocklist)
+if test x"$enable_blocklist" = xyes; then
+	AC_CHECK_HEADERS([blocklist.h], [],
+		[AC_MSG_ERROR([--enable-blocklist requires blocklist.h])])
+	AC_CHECK_LIB([blocklist], [blocklist_sa_r],
+		[AC_DEFINE([HAVE_BLOCKLIST], [1], [libblocklist present])
+		 LIBS="$LIBS -lblocklist"],
+		[AC_MSG_ERROR([--enable-blocklist requires libblocklist (blocklist_sa_r)])])
+fi
+
 AC_ARG_ENABLE(keymat-oracle,
 	[  --enable-keymat-oracle  emit sha256 of full child KEYMAT in debug logs (test-matrix oracle only; default: off for prod)],
 	[keymat_oracle=$enableval], [keymat_oracle=no])

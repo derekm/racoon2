@@ -1,0 +1,105 @@
+diff --git a/iked/ikev1/ikev1.c b/iked/ikev1/ikev1.c
+index 555061f..68b3284 100644
+--- a/iked/ikev1/ikev1.c
++++ b/iked/ikev1/ikev1.c
+@@ -64,6 +64,7 @@
+ #include "racoon.h"
+ 
+ #include "isakmp.h"
++#include "blocklist_peer.h"
+ #include "ikev2.h"
+ #include "keyed_hash.h"
+ #include "isakmp_impl.h"
+@@ -255,6 +256,8 @@ ikev1_main(rc_vchar_t *msg, struct sockaddr *remote, struct sockaddr *local)
+ 	if (memcmp(&isakmp->i_ck, r_ck0, sizeof(isakmp_cookie_t)) == 0) {
+ 		plog(PLOG_PROTOERR, PLOGLOC, 0,
+ 		     "malformed cookie received.\n");
++		iked_blocklist_peer(BLOCKLIST_AUTH_FAIL, remote,
++		    "iked zero-cookie");
+ 		++isakmpstat.invalid_ike_spi;
+ 		return -1;
+ 	}
+diff --git a/iked/ikev2_auth.c b/iked/ikev2_auth.c
+index ffc0155..47ef189 100644
+--- a/iked/ikev2_auth.c
++++ b/iked/ikev2_auth.c
+@@ -52,6 +52,7 @@
+ #include "ikev2.h"
+ #include "isakmp_impl.h"
+ #include "ikev2_impl.h"
++#include "blocklist_peer.h"
+ #include "ike_conf.h"
+ #include "crypto_impl.h"
+ 
+@@ -667,7 +668,12 @@ ikev2_verify(struct verified_info *info)
+ 	if (info->result == VERIFIED_FAILURE) {
+ 		isakmp_log(ike_sa, info->local, info->remote, info->packet,
+ 			   PLOG_PROTOERR, PLOGLOC, "authentication failure\n");
++		iked_blocklist_peer(BLOCKLIST_AUTH_FAIL,
++		    info->remote, "iked AUTH_FAILED");
+ 		++isakmpstat.authentication_failed;
++	} else if (info->result == VERIFIED_SUCCESS) {
++		iked_blocklist_peer(BLOCKLIST_AUTH_OK,
++		    info->remote, "iked AUTH_OK");
+ 	} else if (info->result == VERIFIED_WAITING)
+ 		return;
+ 
+diff --git a/iked/isakmp.c b/iked/isakmp.c
+index 2f5435f..3be0c1e 100644
+--- a/iked/isakmp.c
++++ b/iked/isakmp.c
+@@ -73,6 +73,7 @@
+ #include "var.h"
+ #include "sockmisc.h"
+ #include "debug.h"
++#include "blocklist_peer.h"
+ 
+ /* #include "remote_info.h" */
+ #include "isakmp.h"
+@@ -1061,6 +1062,8 @@ isakmp_handler(int so_isakmp)
+ 		plog(PLOG_PROTOERR, PLOGLOC, 0,
+ 		     "packet (%d) shorter than isakmp header size. (%zu+%d)\n",
+ 		     len, sizeof(isakmp), extralen);
++		iked_blocklist_peer(BLOCKLIST_AUTH_FAIL,
++		    (struct sockaddr *)&remote, "iked shortpacket");
+ 		++isakmpstat.shortpacket;
+ 	dummy_receive:
+ 		/* dummy receive */
+@@ -1078,6 +1081,8 @@ isakmp_handler(int so_isakmp)
+ 		plog(PLOG_PROTOERR, PLOGLOC, 0,
+ 		     "ISAKMP message length field value (%u) too small\n",
+ 		     ntohl(isakmp.len));
++		iked_blocklist_peer(BLOCKLIST_AUTH_FAIL,
++		    (struct sockaddr *)&remote, "iked malformed_len");
+ 		++isakmpstat.malformed_message;
+ 		goto dummy_receive;
+ 	}
+@@ -1085,6 +1090,8 @@ isakmp_handler(int so_isakmp)
+ 		plog(PLOG_PROTOERR, PLOGLOC, 0,
+ 		     "ISAKMP message length field value (%u) too large\n",
+ 		     ntohl(isakmp.len));
++		iked_blocklist_peer(BLOCKLIST_AUTH_FAIL,
++		    (struct sockaddr *)&remote, "iked malformed_len");
+ 		++isakmpstat.malformed_message;
+ 		goto dummy_receive;
+ 	}
+diff --git a/iked/main.c b/iked/main.c
+index 57696cf..77a3db4 100644
+--- a/iked/main.c
++++ b/iked/main.c
+@@ -72,6 +72,7 @@
+ #endif
+ #include "evloop.h"
+ #include "crypto_workers.h"
++#include "blocklist_peer.h"
+ 
+ const char *racoon_config_path = RACOON_CONF;
+ int opt_foreground = FALSE;
+@@ -421,6 +422,7 @@ main(int argc, char **argv)
+ 		     "failed initializing isakmp handling\n");
+ 		iked_exit(IKED_EXIT_FAILURE);
+ 	}
++	iked_blocklist_init();
+ 	ikev2_resume_load();
+ 
+ 	if (!opt_foreground) {
