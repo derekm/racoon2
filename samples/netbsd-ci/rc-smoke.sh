@@ -61,7 +61,7 @@ if [ ! -f /var/run/spmd.pid ] || [ ! -f /var/run/iked.pid ]; then
 			echo "note: iked -F is running after 4s (killed); reason was not a hard startup error"
 			kill "$F_PID" 2>/dev/null || true
 		else
-			wait "$F_PID"
+			wait "$F_PID" || true
 		fi
 		cat /tmp/iked-F.log 2>/dev/null || true
 	fi
