@@ -384,15 +384,20 @@ response_recv(struct task *t)
 		goto fin;
 	}
 
-	dd = snoop_reply(msg); /* store && update FQDN<->IP addr */
+	dd = snoop_reply(msg, (size_t)n); /* store && update FQDN<->IP addr */
+	if (dd == NULL) {
+		SPMD_PLOG(SPMD_L_PROTOERR, "insufficient or malformed DNS response");
+		ret = -1;
+		goto fin;
+	}
 	id = dd->id;
 	q = find_query_q(id);
 	if (q==NULL) {
 		SPMD_PLOG(SPMD_L_INTWARN, "Unknown Query:id=%#hx",id);
+		free_dns_data(dd);	/* drop the parsed RRs with the unknown id */
 		ret = -1;
 		goto fin;
 	}
-
 	cache_update(dd);
 
 	if (spmd_loglevel >= SPMD_L_DEBUG2)

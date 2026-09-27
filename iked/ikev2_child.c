@@ -2767,7 +2767,12 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 						     &kp) == 0 &&
 			    pub && kp) {
 				child_sa->addke_pending = 1;
-				child_sa->addke_link = random_bytes(16);
+				/* RFC 9370 s2.2.4: echo the responder-chosen link the
+				 * CREATE_CHILD_SA response carried in N(16441) (captured
+				 * in createchild_init_recv_notify); only mint a fresh
+				 * link when the peer sent none. */
+				if (child_sa->addke_link == NULL)
+					child_sa->addke_link = random_bytes(16);
 				child_sa->addke_priv = kp;
 				child_sa->addke_method = peer_addke_id;
 				TRACE((PLOGLOC,

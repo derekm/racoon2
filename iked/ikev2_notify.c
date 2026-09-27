@@ -467,6 +467,36 @@ createchild_init_recv_notify(struct ikev2_sa *ike_sa,
 		/* create new ike_sa and initiate? */
 #endif
 
+	case IKEV2_ADDITIONAL_KEY_EXCHANGE:
+		/*
+		 * RFC 9370 s2.2.4: when the CREATE_CHILD_SA response
+		 * selected an ADDKE transform, the responder chose the
+		 * link and returned it as N(16441).  Capture it now
+		 * (the notify walk runs before ikev2_update_child) so
+		 * the initiator's IKE_FOLLOWUP_KE echoes the
+		 * responder-chosen link instead of minting a fresh
+		 * random one that the responder cannot exact-match.
+		 */
+		if (child_sa && child_sa->addke_link == NULL) {
+			struct ikev2payl_notify *nt =
+			    (struct ikev2payl_notify *)payload;
+			int dl;
+			if (get_payload_length(payload) <
+			    (int)(sizeof(struct ikev2payl_notify) +
+				  nt->nh.spi_size))
+				return -1;	/* truncated 16441 */
+			dl = get_payload_length(payload) -
+			     sizeof(struct ikev2payl_notify) -
+			     nt->nh.spi_size;
+			if (dl > 0 && dl <= 64) {
+				child_sa->addke_link =
+				    rc_vnew(get_notify_data(nt), (size_t)dl);
+				if (!child_sa->addke_link)
+					return -1;	/* ENOMEM */
+			}
+		}
+		break;
+
 	case IKEV2_INVALID_KE_PAYLOAD:
 		/*
 		 * We sent a KEi in some group, the responder rejects it.

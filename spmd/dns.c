@@ -379,54 +379,72 @@ free_dns_data(struct dns_data *dd)
 }
 
 static int
-get_name(uint8_t *head, char *name, uint8_t *rrmsg, int idx)
+get_name(uint8_t *head, uint8_t *end, char *name, size_t namesz,
+	 uint8_t *rrmsg, int idx, int *depth)
 {
+	uint8_t *start = rrmsg;
 	int i;
 	uint8_t label_len;
-	uint16_t offset;
-	int len = 0;
 
-	label_len = *rrmsg;
-	rrmsg++;
+	if (rrmsg < head || rrmsg >= end)
+		return -1;
+	if (++(*depth) > 16)
+		return -1;
 
 	while (1) {
+		label_len = *rrmsg;
+		rrmsg++;
+
 		if (label_len == 0) {
 			if (idx == 0) {
+				if (idx + 1 >= (int)namesz)
+					return -1;
 				name[idx] = '.';
+				idx++;
 			}
-			idx++;
-			len++;
 			break;
 		}
 
 		switch (label_len & LABEL_MASK) {
-			case 0xc0: /* pointer */
+			case 0xc0: {
+				uint16_t offset;
+				if (rrmsg >= end)
+					return -1;
 				offset = GET_OFFSET(label_len, *rrmsg);
-				get_name(head, name, head+offset, idx);
-				return len+2;
+				rrmsg++;
+				if ((size_t)offset >= (size_t)(end - head))
+					return -1;
+				if (get_name(head, end, name, namesz,
+					     head + offset, idx, depth) < 0)
+					return -1;
+				return (int)(rrmsg - start);
 				break;
+			}
 			case 0x00:
+				if ((size_t)label_len > (size_t)(end - rrmsg))
+					return -1;
+				if (idx + (int)label_len + 1 >= (int)namesz)
+					return -1;
 				for (i=0; i < label_len; i++) {
 					name[idx] = *rrmsg;
 					idx++;
 					rrmsg++;
-					len++;
 				}
 				name[idx] = '.';
 				idx++;
-				label_len = *rrmsg;
-				rrmsg++;
-				len++;
 				break;
-			case 0x10: case 0x01: /* reserved */
+			case 0x10: case 0x01:
 			default:
 				return -1;
 				break;
 		}
 	}
+
+	if (idx >= (int)namesz)
+		return -1;
 	name[idx] = '\0';
 
-	return len;
+	return (int)(rrmsg - start);
 }
 
 /* question != 0 : Question Section,
@@ -435,14 +453,17 @@ get_name(uint8_t *head, char *name, uint8_t *rrmsg, int idx)
  * rr: you have to free().
  */
 static struct rr *
-parse_rr(uint8_t *head, uint8_t **rrmsgp, int question)
+parse_rr(uint8_t *head, uint8_t *end, uint8_t **rrmsgp, int question)
 {
 	uint8_t *rrmsg = *rrmsgp;
 	struct rr *rr;
 	char *name;
 	uint16_t val;
 	uint32_t ttl;
-	int len;
+	int len, depth = 0;
+
+	if (rrmsg < head || rrmsg > end)
+		return NULL;
 
 	rr = (struct rr *)spmd_malloc(sizeof(struct rr));
 	if (!rr)
@@ -450,22 +471,34 @@ parse_rr(uint8_t *head, uint8_t **rrmsgp, int question)
 	memset(rr, 0, sizeof(*rr));
 
 	name = rr->name;
-	len = get_name(head, name, rrmsg, 0);
+	len = get_name(head, end, name, sizeof(rr->name), rrmsg, 0, &depth);
 	if (len < 0) {
 		spmd_free(rr);
 		return NULL;
 	}
 	rrmsg += len;
 
+	if ((size_t)(end - rrmsg) < sizeof(uint16_t)) {
+		spmd_free(rr);
+		return NULL;
+	}
 	memcpy(&val, rrmsg, sizeof(uint16_t));
 	rr->type = ntohs(val);
 	rrmsg += sizeof(uint16_t);
 
+	if ((size_t)(end - rrmsg) < sizeof(uint16_t)) {
+		spmd_free(rr);
+		return NULL;
+	}
 	memcpy(&val, rrmsg, sizeof(uint16_t));
 	rr->class = ntohs(val);
 	rrmsg += sizeof(uint16_t);
 
 	if (!question) {
+		if ((size_t)(end - rrmsg) < sizeof(uint32_t) + sizeof(uint16_t)) {
+			spmd_free(rr);
+			return NULL;
+		}
 		memcpy(&ttl, rrmsg, sizeof(uint32_t));
 		rr->ttl = ntohl(ttl);
 		rrmsg += sizeof(uint32_t);
@@ -474,9 +507,18 @@ parse_rr(uint8_t *head, uint8_t **rrmsgp, int question)
 		rr->rdlen = ntohs(val);
 		rrmsg += sizeof(uint16_t);
 
+		if ((size_t)rr->rdlen > (size_t)(end - rrmsg)) {
+			spmd_free(rr);
+			return NULL;
+		}
+
 		if ( rr->type == TYPE_A) {
 			struct sockaddr_storage *ss;
 			struct sockaddr_in *sin;
+			if (rr->rdlen != sizeof(struct in_addr)) {
+				spmd_free(rr);
+				return NULL;
+			}
 			ss = (struct sockaddr_storage *)spmd_calloc(sizeof(struct sockaddr_storage));
 			sin = (struct sockaddr_in *)ss;
 			sin->sin_family = AF_INET;
@@ -488,6 +530,10 @@ parse_rr(uint8_t *head, uint8_t **rrmsgp, int question)
 		} else if (rr->type == TYPE_AAAA) {
 			struct sockaddr_storage *ss;
 			struct sockaddr_in6 *sin6;
+			if (rr->rdlen != sizeof(struct in6_addr)) {
+				spmd_free(rr);
+				return NULL;
+			}
 			ss = (struct sockaddr_storage *)spmd_calloc(sizeof(struct sockaddr_storage));
 			sin6 = (struct sockaddr_in6 *)ss;
 			sin6->sin6_family = AF_INET6;
@@ -497,8 +543,17 @@ parse_rr(uint8_t *head, uint8_t **rrmsgp, int question)
 			rr->sa->sa_len = SPMD_SALEN(rr->sa);
 #endif
 		} else if (rr->type == TYPE_CNAME) {
-			get_name(head, rr->rdata, rrmsg, 0);
-		} else { /* just copy */
+			depth = 0;
+			if (get_name(head, end, rr->rdata, sizeof(rr->rdata),
+				     rrmsg, 0, &depth) < 0) {
+				spmd_free(rr);
+				return NULL;
+			}
+		} else {
+			if ((size_t)rr->rdlen > sizeof(rr->rdata)) {
+				spmd_free(rr);
+				return NULL;
+			}
 			memcpy(rr->rdata, rrmsg, rr->rdlen);
 		}
 		rrmsg += rr->rdlen;
@@ -509,13 +564,20 @@ parse_rr(uint8_t *head, uint8_t **rrmsgp, int question)
 }
 
 struct dns_data *
-snoop_reply(uint8_t *msg)
+snoop_reply(uint8_t *msg, size_t msglen)
 {
 	struct dnsh *dh;
 	uint16_t flags;
 	struct dns_data *dd;
-	uint8_t *rrmsg;
+	uint8_t *rrmsg, *end;
 	uint16_t cnt;
+
+	if (msglen < sizeof(struct dnsh)) {
+		SPMD_PLOG(SPMD_L_PROTOERR,
+			  "Short DNS response (%zu bytes, need %zu)",
+			  msglen, sizeof(struct dnsh));
+		return NULL;
+	}
 
 	dh = (struct dnsh *)msg;
 	flags =  ntohs(dh->flags);
@@ -538,30 +600,31 @@ snoop_reply(uint8_t *msg)
 	dd->arcount = ntohs(dh->arcount);
 
 	rrmsg = msg + sizeof(struct dnsh);
+	end = msg + msglen;
 
 	for (cnt = dd->qdcount; cnt; cnt--) {
-		struct rr *rr = parse_rr(msg, &rrmsg, 1);
+		struct rr *rr = parse_rr(msg, end, &rrmsg, 1);
 		if (rr == NULL)
 			goto bad;
 		add_dns_data(dd, rr, QDCOUNT);
 	}
 
 	for (cnt = dd->ancount; cnt; cnt--) {
-		struct rr *rr = parse_rr(msg, &rrmsg, 0);
+		struct rr *rr = parse_rr(msg, end, &rrmsg, 0);
 		if (rr == NULL)
 			goto bad;
 		add_dns_data(dd, rr, ANCOUNT);
 	}
 
 	for (cnt = dd->nscount; cnt; cnt--) {
-		struct rr *rr = parse_rr(msg, &rrmsg, 0);
+		struct rr *rr = parse_rr(msg, end, &rrmsg, 0);
 		if (rr == NULL)
 			goto bad;
 		add_dns_data(dd, rr, NSCOUNT);
 	}
 
 	for (cnt = dd->arcount; cnt; cnt--) {
-		struct rr *rr = parse_rr(msg, &rrmsg, 0);
+		struct rr *rr = parse_rr(msg, end, &rrmsg, 0);
 		if (rr == NULL)
 			goto bad;
 		add_dns_data(dd, rr, ARCOUNT);

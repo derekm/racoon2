@@ -191,7 +191,7 @@ struct dns_data *alloc_dns_data(void);
 #define ARCOUNT 4
 int add_dns_data(struct dns_data *dd, struct rr *p, int counttype);
 void free_dns_data(struct dns_data *dd);
-struct dns_data *snoop_reply(uint8_t *buf);
+struct dns_data *snoop_reply(uint8_t *buf, size_t msglen);
 void dump_dns_data(struct dns_data *dd);
 
 #endif /* __SPMD_DNS_H */

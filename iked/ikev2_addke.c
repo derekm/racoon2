@@ -503,13 +503,17 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 
 	kp = (EVP_PKEY *)child_sa->addke_priv;
 	child_sa->addke_priv = NULL;
-	if (!kp || !ciphertext)
+	if (!kp)
 		return -1;
+	if (!ciphertext) {
+		EVP_PKEY_free(kp);
+		return -1;
+	}
 
 	if (ikev2_addke_mlkem_decap(kp, ciphertext, &ss) < 0 ||
 	    ss == NULL ||
 	    ss->l != OSSL_ML_KEM_SHARED_SECRET_BYTES) {
-		rc_vfree(ss);
+		rc_vfreez(ss);
 		EVP_PKEY_free(kp);
 		return -1;
 	}
@@ -518,7 +522,7 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 	child_sa->addke_sk = ss;
 	if (ikev2_child_addke_install(child_sa) < 0) {
 		child_sa->addke_sk = NULL;
-		rc_vfree(ss);
+		rc_vfreez(ss);
 		return -1;
 	}
 	/*
@@ -878,11 +882,11 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_INTERR, PLOGLOC,
 				   "failed to complete ADDKE IKE-SA rekey\n");
-			rc_vfree(ss);
+			rc_vfreez(ss);
 			ss = 0;
 			goto invalid;
 		}
-		rc_vfree(ss);
+		rc_vfreez(ss);
 		ss = 0;
 		goto done;
 	}
@@ -911,19 +915,19 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		acc = rc_vmalloc((child_sa->addke_sk ?
 				  child_sa->addke_sk->l : 0) + ss->l);
 		if (!acc) {
-			rc_vfree(ss);
+			rc_vfreez(ss);
 			ss = 0;
 			goto nomem;
 		}
 		if (child_sa->addke_sk) {
 			memcpy(acc->v, child_sa->addke_sk->v,
 			       child_sa->addke_sk->l);
-			rc_vfree(child_sa->addke_sk);
+			rc_vfreez(child_sa->addke_sk);
 			child_sa->addke_sk = 0;
 		}
 		memcpy(acc->v + acc->l - ss->l, ss->v, ss->l);
 		child_sa->addke_sk = acc;
-		rc_vfree(ss);
+		rc_vfreez(ss);
 		ss = 0;
 	}
 
@@ -984,6 +988,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_INTERR, PLOGLOC,
 			   "failed to install ADDKE child\n");
+		rc_vfreez(child_sa->addke_sk);
 		child_sa->addke_sk = 0;
 		goto invalid;
 	}
@@ -1009,7 +1014,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	if (ct)
 		rc_vfree(ct);
 	if (ss)
-		rc_vfree(ss);
+		rc_vfreez(ss);
 }
 
 #endif	/* WITH_ADDKE */
