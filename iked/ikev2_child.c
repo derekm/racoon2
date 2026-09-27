@@ -946,37 +946,43 @@ ikev2_child_responder_dh_done(int rc, void *arg)
 static int
 ikev2_child_encr_keylen_bits(struct prop_pair *proposal)
 {
-	struct prop_pair *t;
-	unsigned int keylen_attr = 0;
+	struct prop_pair *proto;
 	int transform_id = 0;
 
 	if (!proposal)
 		return 0;
-	for (t = proposal->tnext; t; t = t->next) {
-		struct ikev2transform *trns;
-		struct isakmp_data *attr;
-		size_t attr_bytes;
+	/* Mirror ikev2_proposal_to_ipsec(): proposals chain on ->next,
+	 * transforms of each proposal chain on ->tnext. */
+	for (proto = proposal; proto; proto = proto->next) {
+		struct prop_pair *t;
 
-		trns = (struct ikev2transform *)t->trns;
-		if (get_uint16(&trns->transform_type) !=
-		    IKEV2TRANSFORM_TYPE_ENCR)
-			continue;
-		transform_id = get_uint16(&trns->transform_id);
-		attr = (struct isakmp_data *)(trns + 1);
-		attr_bytes = get_uint16(&trns->transform_length) -
-		    sizeof(struct ikev2transform);
-		for (; attr_bytes > 0;
-		     attr_bytes -= ISAKMP_ATTRIBUTE_TOTALLENGTH(attr),
-		     attr = ISAKMP_NEXT_ATTRIB(attr)) {
-			if (get_uint16(&attr->type) ==
-			    (IKEV2ATTRIB_SHORT | IKEV2ATTRIB_KEY_LENGTH))
-				keylen_attr = get_uint16(&attr->lorv);
+		for (t = proto->tnext; t; t = t->next) {
+			struct ikev2transform *trns;
+			struct isakmp_data *attr;
+			size_t attr_bytes;
+			unsigned int keylen_attr = 0;
+
+			trns = (struct ikev2transform *)t->trns;
+			if (!trns || get_uint16(&trns->transform_type) !=
+			    IKEV2TRANSFORM_TYPE_ENCR)
+				continue;
+			transform_id = get_uint16(&trns->transform_id);
+			attr = (struct isakmp_data *)(trns + 1);
+			attr_bytes = get_uint16(&trns->transform_length) -
+			    sizeof(struct ikev2transform);
+			for (; attr_bytes > 0;
+			     attr_bytes -= ISAKMP_ATTRIBUTE_TOTALLENGTH(attr),
+			     attr = ISAKMP_NEXT_ATTRIB(attr)) {
+				if (get_uint16(&attr->type) ==
+				    (IKEV2ATTRIB_SHORT | IKEV2ATTRIB_KEY_LENGTH))
+					keylen_attr = get_uint16(&attr->lorv);
+			}
+			if (transform_id == 0)
+				return 0;
+			return ikev2_encr_keylen_bits(transform_id, keylen_attr);
 		}
-		break;
 	}
-	if (transform_id == 0)
-		return 0;
-	return ikev2_encr_keylen_bits(transform_id, keylen_attr);
+	return 0;
 }
 
 int
