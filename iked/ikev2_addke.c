@@ -328,8 +328,8 @@ ikev2_addke_selftest(void)
 	      next:
 		rc_vfree(pub);
 		rc_vfree(ct);
-		rc_vfree(ss1);
-		rc_vfree(ss2);
+		rc_vfreez(ss1);
+		rc_vfreez(ss2);
 		EVP_PKEY_free(kp);
 		if (r < 0)
 			break;
