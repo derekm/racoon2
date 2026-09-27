@@ -1,3 +1,6 @@
+#ifndef RACOON2_IF_SPMD_H
+#define RACOON2_IF_SPMD_H
+
 /* $Id: if_spmd.h,v 1.20 2008/02/05 09:03:24 mk Exp $ */
 /*
  * Copyright (C) 2003, 2004 WIDE Project.
@@ -66,3 +69,5 @@ struct spmd_cid {
 
 /* calculate  response value */
 int spmd_if_login_response(struct spmd_cid *pci);
+
+#endif /* RACOON2_IF_SPMD_H */
