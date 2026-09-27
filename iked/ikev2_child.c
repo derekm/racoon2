@@ -956,6 +956,13 @@ ikev2_child_encr_keylen_bits(struct prop_pair *proposal)
 	for (proto = proposal; proto; proto = proto->next) {
 		struct prop_pair *t;
 
+		{
+			struct ikev2proposal *pp = (struct ikev2proposal *)proto->prop;
+			isakmp_log(0, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			    "a12dump: proposal proto_id=%d spi_size=%d tnext=%p\n",
+			    pp ? pp->protocol_id : -1,
+			    pp ? pp->spi_size : -1, (void *)proto->tnext);
+		}
 		for (t = proto->tnext; t; t = t->next) {
 			struct ikev2transform *trns;
 			struct isakmp_data *attr;
@@ -963,6 +970,10 @@ ikev2_child_encr_keylen_bits(struct prop_pair *proposal)
 			unsigned int keylen_attr = 0;
 
 			trns = (struct ikev2transform *)t->trns;
+			isakmp_log(0, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			    "a12dump:   transform type=%d id=0x%04x\n",
+			    trns ? get_uint16(&trns->transform_type) : -1,
+			    trns ? get_uint16(&trns->transform_id) : 0);
 			if (!trns || get_uint16(&trns->transform_type) !=
 			    IKEV2TRANSFORM_TYPE_ENCR)
 				continue;
