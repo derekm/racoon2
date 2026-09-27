@@ -17,7 +17,7 @@
 # The gate is inverted from the positive kinds: this kind returns 0 only
 # when the exchange was REFUSED.  Setup/cleanup mirror i2iinit.sh but with
 # distinct netns/socket/resume names (copied-kind rule).
-kind_i2ineg() {
+kind_i2i_neg() {
 	name=$1
 	require_root || return 1
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
