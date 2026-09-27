@@ -84,6 +84,70 @@ if [ ! -f /var/run/spmd.pid ] || [ ! -f /var/run/iked.pid ]; then
 		kill "$S_PID" 2>/dev/null || true
 		echo "--- spmd -F log ---"; cat /tmp/spmd-F.log 2>/dev/null || true
 		echo "--- iked -F log ---"; cat /tmp/iked-F.log 2>/dev/null || true
+
+		echo "=== OpenSSL digest probe (same /usr/lib/libcrypto.a) ==="
+		cat > /tmp/digprobe.c <<'EOF'
+#include <stdio.h>
+#include <string.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/err.h>
+static void probe(const char *name, const EVP_MD *(*get)(void)) {
+	const EVP_MD *m;
+	EVP_MD_CTX *ctx;
+	unsigned char d[EVP_MAX_MD_SIZE];
+	unsigned int n = 0;
+	m = get();
+	if (!m) { printf("sha-name=%s get=NULL\n", name); return; }
+	ctx = EVP_MD_CTX_new();
+	if (!ctx) { printf("sha-name=%s ctx=NULL err=%s\n", name, ERR_error_string(ERR_get_error(), NULL)); return; }
+	if (!EVP_DigestInit_ex(ctx, m, NULL)) {
+		printf("sha-name=%s INIT_FAIL err=%s\n", name, ERR_error_string(ERR_get_error(), NULL));
+		ERR_clear_error();
+	} else if (!EVP_DigestUpdate(ctx, "seedbytes", 9) || !EVP_DigestFinal_ex(ctx, d, &n)) {
+		printf("sha-name=%s UPDATE/FINAL_FAIL err=%s\n", name, ERR_error_string(ERR_get_error(), NULL));
+		ERR_clear_error();
+	} else {
+		printf("sha-name=%s OK dgst_len=%u\n", name, n);
+	}
+	EVP_MD_CTX_free(ctx);
+}
+static void probename(const char *name) {
+	OpenSSL_add_all_digests();
+	EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+	const EVP_MD *m = EVP_get_digestbyname(name);
+	unsigned char d[EVP_MAX_MD_SIZE]; unsigned int n = 0;
+	if (!m) { printf("byname=%s NULL\n", name); return; }
+	if (!EVP_DigestInit_ex(ctx, m, NULL)) {
+		printf("byname=%s INIT_FAIL err=%s\n", name, ERR_error_string(ERR_get_error(), NULL));
+		ERR_clear_error();
+	} else if (!EVP_DigestUpdate(ctx, "seedbytes", 9) || !EVP_DigestFinal_ex(ctx, d, &n)) {
+		printf("byname=%s UPDATE_FAIL err=%s\n", name, ERR_error_string(ERR_get_error(), NULL));
+		ERR_clear_error();
+	} else printf("byname=%s OK len=%u\n", name, n);
+	EVP_MD_CTX_free(ctx);
+}
+static void probehmac(const char *name) {
+	unsigned char out[EVP_MAX_MD_SIZE]; unsigned int n = 0;
+	const EVP_MD *m = EVP_get_digestbyname(name);
+	if (!m) { printf("hmac-%s get-NULL\n", name); return; }
+	if (!HMAC(m, "pw", 2, (const unsigned char *)"challenge", 9, out, &n)) {
+		printf("hmac-%s FAIL err=%s\n", name, ERR_error_string(ERR_get_error(), NULL));
+		ERR_clear_error();
+	} else printf("hmac-%s OK len=%u\n", name, n);
+}
+int main(void) {
+	OPENSSL_init_crypto(0, NULL);
+	probe("sha1", EVP_sha1);
+	probe("sha256", EVP_sha256);
+	probename("sha1");
+	probename("sha256");
+	probehmac("sha256");
+	return 0;
+}
+EOF
+		cc -o /tmp/digprobe /tmp/digprobe.c /usr/lib/libcrypto.a 2>&1 | tail -3 || true
+		/tmp/digprobe 2>&1 | sed 's/^/[digprobe] /' || true
 	fi
 	echo "=== iked/spmd stderr (if any) ==="
 	ls -l /var/run/spmd.pid /var/run/iked.pid 2>&1 || true
