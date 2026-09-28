@@ -262,7 +262,7 @@ workstream and never conflict with the "Do not" list.
     (commit `ec4f825`, box run rc=0); rows ship `gate=box` pending a
     container run, like `i2iinit-charon`/`i2ike-drop576`.
   - **FCS_IPSEC_EXT.1.11 / "at least one public-key-based method … is
-    required in order to conform"** — **satisfied** on commit `929979d`.
+    required in order to conform"** — **satisfied** on commit `e7a7283`.
     The daemon now wires ECDSA IKE_AUTH (RFC 4754, methods 9/10/11, raw
     r‖s) in addition to RSA, the RSA PKCS#1-v1.5 signature hash moved off
     SHA-1 to SHA-256 (RFC 8247 §3.2), and the matrix ships two live
