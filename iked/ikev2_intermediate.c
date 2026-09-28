@@ -60,6 +60,8 @@
 #include "ikev2_notify.h"
 #include "nattraversal.h"
 #include "var.h"
+#include "sockmisc.h"
+#include "debug.h"
 
 void
 ikev2_intermediate_clear(struct ikev2_sa *sa)

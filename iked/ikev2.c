@@ -2402,7 +2402,7 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	/* should send notify? */
 	goto done;
 }
-
+void
 initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 		      struct sockaddr *dest)
 {
