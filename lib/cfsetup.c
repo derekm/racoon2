@@ -3277,6 +3277,7 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rc_vfree(n->pre_shared_key);
 	rc_vfree(n->my_principal);
 	rc_vfree(n->peers_principal);
+	rc_vfree(n->addresspool);
 	rc_vfree(n->ppk_id);
 	rc_free(n);
 }

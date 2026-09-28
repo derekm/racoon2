@@ -59,6 +59,8 @@ main(int ac, char **av)
 	int fail = 0;
 
 	(void)ac; (void)av;
+	if (rbuf_init(8, 80, 4, 160, 4) == -1)
+		return 1;
 	plog_setmode(RCT_LOGMODE_NORMAL, NULL, "loginkat", 1, 1);
 
 	/* v1: 64-hex password, 40-hex challenge */
