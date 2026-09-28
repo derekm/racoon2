@@ -263,7 +263,7 @@ workstream and never conflict with the "Do not" list.
     container run, like `i2iinit-charon`/`i2ike-drop576`.
   - **FCS_IPSEC_EXT.1.11 / "at least one public-key-based method … is
     required in order to conform"** — every matrix row is
-    `kmp_auth_method { psk; }` (44 data rows; `ikev1.sh`/`i2i*` etc.). The
+    `kmp_auth_method { psk; }` (46 data rows; `ikev1.sh`/`i2i*` etc.). The
     suite has NO live RSA/ECDSA `IKE_AUTH` row proving certificate peer
     auth end-to-end. `B5 ECDSA` is a unit KAT only. A `.1.11` green cell
     needs an iked↔iked (or charon) X.509v3 AUTH row.

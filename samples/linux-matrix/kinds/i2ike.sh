@@ -13,6 +13,22 @@ kind_i2ike() {
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 
+	# ADDKE method from row-name suffix: i2ike-addke-512 / -1024 (768 default).
+	# Each method = its own ADDKE "round" (ML-KEM-512/768/1024 transform ids
+	# 35/36/37).  The charon seats only speak ke1_mlkem768 on this box, so
+	# the 512/1024 rows are iked<->iked (no -charon suffix accepted here).
+	I2I_MLKEM=${I2I_MLKEM:-768}
+	case "${name##*-}" in
+	512)   I2I_MLKEM=512 ;;
+	1024)  I2I_MLKEM=1024 ;;
+	esac
+	MLKEM=mlkem${I2I_MLKEM}
+	case "$I2I_MLKEM" in
+	512)  T6=06000023 ;;
+	768)  T6=06000024 ;;
+	1024) T6=06000025 ;;
+	esac
+
 	NSR=i2ike-r; NSI=i2ike-i; VR=i2v-r; VI=i2v-i
 	HR=192.0.4.1; HI=192.0.4.2
 	PRIVRES_R=/tmp/r2-i2ike-resume-r; PRIVRES_I=/tmp/r2-i2ike-resume-i
@@ -70,7 +86,7 @@ sa esp_e {
 	sa_protocol esp;
 	esp_enc_alg { aes_gcm; };
 	esp_auth_alg { non_auth; };
-	esp_addke_alg { mlkem768; };
+	esp_addke_alg { $MLKEM; };
 };
 EOF
 	cat > "$C/initiator.conf" <<EOF
@@ -124,7 +140,7 @@ sa esp_e {
 	sa_protocol esp;
 	esp_enc_alg { aes_gcm; };
 	esp_auth_alg { non_auth; };
-	esp_addke_alg { mlkem768; };
+	esp_addke_alg { $MLKEM; };
 };
 EOF
 
@@ -211,7 +227,7 @@ EOF
 	# decapsulate the same SK(1)).  Using tail -1 (not sort|head) so a
 	# no-PFS AUTH child that also logs g_ir_present=n cannot be mistaken
 	# for the rekey.  (c) not abort the pending rekey child.
-	t6=$(grep -c '06000024' "$D/init-iked.log" 2>/dev/null || true)
+	t6=$(grep -c "$T6" "$D/init-iked.log" 2>/dev/null || true)
 	abt=$(grep -cE 'ADDKE followup timeout; abort' "$D/resp-iked.log" 2>/dev/null || true)
 	kh_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/init-iked.log" 2>/dev/null \
 		| grep -oE 'sha256=[0-9a-f]+' | tail -1)
