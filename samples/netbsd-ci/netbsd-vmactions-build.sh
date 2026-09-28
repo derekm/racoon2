@@ -83,7 +83,17 @@ $SUDO make install
 # report has evidence again (make clean removed the sanitized-run logs; these
 # non-sanitized results are the more representative cells anyway).
 make -C lib check
-make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats"
+# addketest/addkekat (PQC: RFC 9370 ADDKE logic + NIST FIPS 203 ML-KEM-768 KAT)
+# are TESTS += under WITH_ADDKE in iked/Makefile.am, so they only exist when
+# this leg's base OpenSSL ships ml_kem.h (NetBSD 11.0 = OpenSSL 3.5.7 via the
+# PR/60511 pull-up; NetBSD 10.2 = OpenSSL 3.0.21 = addke=no, so check-TESTS
+# must NOT be asked for them). Gate from the built config, not the release.
+if grep -q "^#define WITH_ADDKE 1" iked/config.h 2>/dev/null; then
+	IKE_TESTS="eaytest evlooptest workerstest ndcppkats addketest addkekat"
+else
+	IKE_TESTS="eaytest evlooptest workerstest ndcppkats"
+fi
+make -C iked check TESTS="$IKE_TESTS"
 
 echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
 if [ -n "$SUDO" ]; then
