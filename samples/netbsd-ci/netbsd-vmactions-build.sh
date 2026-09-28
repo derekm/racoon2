@@ -58,8 +58,12 @@ make -j2
 # below.  Gate from the built config, not the release.
 if ! grep -q "^#define WITH_ADDKE 1" iked/config.h 2>/dev/null; then
 	echo "=== Unit suites UNDER ASan (non-ADDKE leg) ==="
-	make -C lib check
-	make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats"
+	# Dump the failing test logs so a sanitizer trip is diagnosable in CI
+	# (automake hides per-test stderr by default; the reason lives in
+	# test-suite.log / the individual .log files).
+	make -C lib check || { cat lib/test-suite.log 2>/dev/null | tail -80; \
+			       for _l in lib/*.log; do [ -f "$_l" ] && grep -lE "AddressSanitizer|ERROR|runtime error" "$_l" >/dev/null 2>&1 && { echo "--- $_l ---"; tail -60 "$_l"; }; done; exit 1; }
+	make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats" || { cat iked/test-suite.log 2>/dev/null | tail -80; exit 1; }
 else
 	echo "=== ASan = compile probe only (ADDKE/OpenSSL 3.5 leg) ==="
 fi
