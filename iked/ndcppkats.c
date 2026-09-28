@@ -76,6 +76,32 @@ trace_debug(const char *location, const char *fmt, ...)
 	va_end(ap);
 }
 
+/*
+ * rc_vnew() returns a heap rc_vchar_t (head + payload, rc_vmalloc()).
+ * The KATs store the struct BY VALUE into a stack rc_vchar_t and later
+ * rc_free(buf->v) only the payload — the 16-byte head was leaked every
+ * call (LeakSanitizer: "Direct leak of 16 byte(s)").  Copy the payload
+ * into a caller-owned rc_vchar_t and free the head; the caller still
+ * frees .v.  (rc_free() is free(); rc_vfree() would also stomp .v.)
+ */
+static rc_vchar_t
+kat_vnew_copy(const void *ptr, size_t len)
+{
+	rc_vchar_t *heap = rc_vnew(ptr, len);
+	rc_vchar_t out;
+
+	if (heap == NULL) {
+		out.v = NULL;
+		out.l = 0;
+		return out;
+	}
+	out.l = heap->l;
+	out.v = heap->v;
+	rc_free(heap);
+	return out;
+}
+
+
 static int failures;
 
 static void
@@ -127,9 +153,9 @@ test_aes_cbc(void)
 	rc_vchar_t key, iv, pt, *ct, *back;
 	int ok = 1;
 
-	key = *rc_vnew((const void *)kb128, sizeof(kb128));
-	iv = *rc_vnew((const void *)kv128, sizeof(kv128));
-	pt = *rc_vnew((const void *)kpt, sizeof(kpt));
+	key = kat_vnew_copy((const void *)kb128, sizeof(kb128));
+	iv = kat_vnew_copy((const void *)kv128, sizeof(kv128));
+	pt = kat_vnew_copy((const void *)kpt, sizeof(kpt));
 
 	ct = eay_aes_encrypt(&pt, &key, &iv);
 	if (!ct || ct->l != sizeof(kct128) ||
@@ -173,10 +199,10 @@ test_aes_gcm(void)
 	for (i = 0; i < sizeof(ivbuf); i++)
 		ivbuf[i] = (unsigned char)(i * 5 + 2);
 
-	key = *rc_vnew((const void *)keybuf, sizeof(keybuf));
-	iv = *rc_vnew((const void *)ivbuf, sizeof(ivbuf));
-	pt = *rc_vnew((const void *)kpt, sizeof(kpt));
-	aad = *rc_vnew((const void *)kv128, 12);
+	key = kat_vnew_copy((const void *)keybuf, sizeof(keybuf));
+	iv = kat_vnew_copy((const void *)ivbuf, sizeof(ivbuf));
+	pt = kat_vnew_copy((const void *)kpt, sizeof(kpt));
+	aad = kat_vnew_copy((const void *)kv128, 12);
 
 	ct = eay_aes_gcm_ike_encrypt(&pt, &key, &iv, &aad);
 	if (!ct || ct->l != pt.l + AES_GCM_ICV_SIZE) {
@@ -334,7 +360,7 @@ test_ecdsa_raw_rs_one(const char *cell, int nid, unsigned int bits,
 
 	for (i = 0; i < sizeof(sbuf); i++)
 		sbuf[i] = (unsigned char)(i * 7 + 1);
-	octets = *rc_vnew((const void *)sbuf, sizeof(sbuf));
+	octets = kat_vnew_copy((const void *)sbuf, sizeof(sbuf));
 
 	kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
 	if (!kctx) goto fail;
@@ -402,7 +428,7 @@ test_rsa_sha256(void)
 
 	for (i = 0; i < sizeof(sbuf); i++)
 		sbuf[i] = (unsigned char)(i * 11 + 3);
-	octets = *rc_vnew((const void *)sbuf, sizeof(sbuf));
+	octets = kat_vnew_copy((const void *)sbuf, sizeof(sbuf));
 
 	kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
 	if (!kctx) goto fail;
@@ -646,8 +672,8 @@ test_rfc8784_ppk(void)
 	memset(skd_buf, 0x11, sizeof(skd_buf));
 	SHA256((const unsigned char *)"rfc8784-kat", 11, ppk_buf);
 
-	skd = *rc_vnew(skd_buf, sizeof(skd_buf));
-	ppk = *rc_vnew(ppk_buf, sizeof(ppk_buf));
+	skd = kat_vnew_copy(skd_buf, sizeof(skd_buf));
+	ppk = kat_vnew_copy(ppk_buf, sizeof(ppk_buf));
 	b.v = (caddr_t)&one;
 	b.l = 1;
 

@@ -2311,7 +2311,9 @@ free_selectorlist(struct rcf_selector *s)
 	for (; s; s = s_next) {
 		s_next = s->next;
 		rcf_free_selector(s);
-		s->next = 0;
+		/* NB: rcf_clean_selector() -> rc_free(n) frees the node, so
+		 * s is gone here — do NOT touch s->next (ASan caught this
+		 * as heap-use-after-free in IKEv2 child-SA selection). */
 	}
 }
 

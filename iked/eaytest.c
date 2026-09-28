@@ -749,6 +749,9 @@ ccf2 3044 fada ed03 4cfc 484f 5e78 235f c8c9 f3e5 fad6 da83\
 			  eay_camellia_encrypt, eay_camellia_decrypt) < 0)
 	  return -1;
 #endif
+	free(data.v);
+	free(key.v);
+	free(iv0.v);
 	return 0;
 }
 
@@ -1004,6 +1007,8 @@ dhtest(ac, av)
 		vfree(priv2);
 		vfree(gxy1);
 		vfree(gxy2);
+		free(p1.v);
+		free(p2.v);
 	}
 
 	return 0;

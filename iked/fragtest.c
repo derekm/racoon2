@@ -279,21 +279,25 @@ build_frag(struct ikev2_sa *sa, enum frag_mode mode, uint32_t msgid,
 	if (raw_plain) {
 		plain_len = chunk_len;
 		plain = rc_vnew(chunk, chunk_len);
-	} else if (mode == MODE_CBC) {
-		int block = encryptor_block_length(sa->encryptor);
-		pad_len = (size_t)(block - ((chunk_len + 1) % block));
-		if (pad_len == (size_t)block)
-			pad_len = 0;
+		if (!plain)
+			goto out;
 	} else {
-		pad_len = 0;
+		if (mode == MODE_CBC) {
+			int block = encryptor_block_length(sa->encryptor);
+			pad_len = (size_t)(block - ((chunk_len + 1) % block));
+			if (pad_len == (size_t)block)
+				pad_len = 0;
+		} else {
+			pad_len = 0;
+		}
+		plain_len = chunk_len + pad_len + 1;
+		plain = rc_vmalloc(plain_len);
+		if (!plain)
+			goto out;
+		memcpy(plain->v, chunk, chunk_len);
+		memset(plain->v + chunk_len, 0, pad_len);	/* padding bytes */
+		plain->u[plain_len - 1] = (uint8_t)pad_len;	/* pad len field */
 	}
-	plain_len = chunk_len + pad_len + 1;
-	plain = rc_vmalloc(plain_len);
-	if (!plain)
-		goto out;
-	memcpy(plain->v, chunk, chunk_len);
-	memset(plain->v + chunk_len, 0, pad_len);	/* padding bytes */
-	plain->u[plain_len - 1] = (uint8_t)pad_len;	/* pad len field */
 
 	iv = rc_vmalloc(iv_len);
 	if (!iv)
@@ -378,9 +382,14 @@ sa_setup(struct ikev2_sa *sa, enum frag_mode mode)
 	sa->authenticator = ctx_auth;
 	sa->is_initiator = 0;
 	/* sk_e_i: AES-128 key (16B) or AES-GCM-128 key+salt (20B); the
-	 * GCM implementation needs keylen = 4 (salt) + 16 (AES) */
-	sa->sk_e_i = rc_vnew("0123456789abcdef",
-			     (mode == MODE_GCM) ? 20 : 16);
+	 * GCM implementation needs keylen = 4 (salt) + 16 (AES).  Feed
+	 * rc_vnew() a source at least as long as the requested length —
+	 * passing a 17-byte literal with len 20 made rc_vnew memcpy-READ 3
+	 * bytes past the end (ASan global-buffer-overflow). */
+	if (mode == MODE_GCM)
+		sa->sk_e_i = rc_vnew("0123456789abcdef0123", 20);
+	else
+		sa->sk_e_i = rc_vnew("0123456789abcdef", 16);
 	sa->sk_a_i = rc_vnew("abcdefghijklmnopqrstuvwxyz012345", 32);
 	sa->sk_e_r = NULL;
 
@@ -482,6 +491,8 @@ test_happy_cbc(void)
 	CHECK(ok, "CBC happy-path reassembly (3 frags out-of-order)");
 	if (pkt)
 		rc_vfree(pkt);
+	for (i = 0; i < 3; i++)
+		rc_vfree(frags[i]);
 	sa_teardown(&sa);
 }
 
@@ -519,6 +530,8 @@ test_happy_gcm(void)
 	CHECK(ok, "GCM happy-path reassembly (3 frags, AEAD tag)");
 	if (pkt)
 		rc_vfree(pkt);
+	for (i = 0; i < 3; i++)
+		rc_vfree(frags[i]);
 	sa_teardown(&sa);
 }
 
@@ -549,6 +562,9 @@ test_incomplete(void)
 	      "incomplete set completes on last fragment");
 	if (pkt)
 		rc_vfree(pkt);
+	rc_vfree(f1);
+	rc_vfree(f2);
+	rc_vfree(f3);
 	sa_teardown(&sa);
 }
 
@@ -580,6 +596,10 @@ test_duplicate(void)
 	      "duplicate not double-counted (merge clean)");
 	if (pkt)
 		rc_vfree(pkt);
+	rc_vfree(f1);
+	rc_vfree(f2a);
+	rc_vfree(f2b);
+	rc_vfree(f3);
 	sa_teardown(&sa);
 }
 
