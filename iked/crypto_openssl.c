@@ -3376,19 +3376,44 @@ eay_dh_compute (rc_vchar_t *prime, uint32_t gg, rc_vchar_t *pub,
 }
 
 /* RFC 5903 group 19: P-256. KE is 64-byte x||y; shared secret is x (32). */
+static int
+ecp_curve_nid(size_t field_len)
+{
+	switch (field_len) {
+	case 32:	/* P-256 */
+		return NID_X9_62_prime256v1;
+	case 48:	/* P-384 */
+		return NID_secp384r1;
+	case 66:	/* P-521 */
+		return NID_secp521r1;
+	default:
+		return 0;
+	}
+}
+
 int
-eay_ecp256_generate(rc_vchar_t **pub, rc_vchar_t **priv)
+eay_ecp_generate(size_t field_len, rc_vchar_t **pub, rc_vchar_t **priv)
 {
 	EC_KEY *ec = NULL;
 	const EC_GROUP *grp;
 	const EC_POINT *pt;
 	const BIGNUM *priv_bn;
-	unsigned char buf[65];
-	size_t n;
+	unsigned char *buf = NULL;
+	size_t n, publish;
+	int nid;
 	int error = -1;
 
+	if (!pub || !priv)
+		return -1;
 	*pub = *priv = NULL;
-	ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+	nid = ecp_curve_nid(field_len);
+	if (nid == 0)
+		return -1;
+	publish = field_len * 2;	/* RFC 5903: x || y */
+	buf = malloc(1 + publish);
+	if (!buf)
+		return -1;
+	ec = EC_KEY_new_by_curve_name(nid);
 	if (!ec || !EC_KEY_generate_key(ec))
 		goto end;
 	grp = EC_KEY_get0_group(ec);
@@ -3397,15 +3422,16 @@ eay_ecp256_generate(rc_vchar_t **pub, rc_vchar_t **priv)
 	if (!grp || !pt || !priv_bn)
 		goto end;
 	n = EC_POINT_point2oct(grp, pt, POINT_CONVERSION_UNCOMPRESSED,
-	    buf, sizeof(buf), NULL);
-	if (n != 65 || buf[0] != 0x04)
+	    buf, 1 + publish, NULL);
+	if (n != 1 + publish || buf[0] != 0x04)
 		goto end;
-	*pub = rc_vnew(buf + 1, 64);
-	*priv = rc_vmalloc(32);
+	*pub = rc_vnew(buf + 1, publish);
+	*priv = rc_vmalloc(field_len);
 	if (!*pub || !*priv)
 		goto end;
-	memset((*priv)->v, 0, 32);
-	if (BN_bn2binpad(priv_bn, (unsigned char *)(*priv)->v, 32) != 32)
+	memset((*priv)->v, 0, field_len);
+	if (BN_bn2binpad(priv_bn, (unsigned char *)(*priv)->v, field_len) !=
+	    (int)field_len)
 		goto end;
 	error = 0;
       end:
@@ -3419,52 +3445,64 @@ eay_ecp256_generate(rc_vchar_t **pub, rc_vchar_t **priv)
 			*priv = NULL;
 		}
 	}
+	if (buf)
+		free(buf);
 	if (ec)
 		EC_KEY_free(ec);
 	return error;
 }
 
 int
-eay_ecp256_compute(rc_vchar_t *pub, rc_vchar_t *priv, rc_vchar_t *pub_p,
-    rc_vchar_t **key)
+eay_ecp_compute(size_t field_len, rc_vchar_t *pub, rc_vchar_t *priv,
+    rc_vchar_t *pub_p, rc_vchar_t **key)
 {
 	EC_KEY *ec = NULL;
 	EC_POINT *peer = NULL;
 	const EC_GROUP *grp;
 	BIGNUM *priv_bn = NULL;
-	unsigned char enc[65];
+	unsigned char *enc = NULL;
 	int xlen;
+	int nid;
 	int error = -1;
 
 	(void)pub;
-	if (!priv || priv->l != 32 || !pub_p || pub_p->l != 64 || !key)
+	if (!priv || priv->l != field_len || !pub_p || pub_p->l != 2 * field_len ||
+	    !key)
 		return -1;
-	ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+	nid = ecp_curve_nid(field_len);
+	if (nid == 0)
+		return -1;
+	ec = EC_KEY_new_by_curve_name(nid);
 	if (!ec)
 		goto end;
 	grp = EC_KEY_get0_group(ec);
-	priv_bn = BN_bin2bn((unsigned char *)priv->v, 32, NULL);
+	priv_bn = BN_bin2bn((unsigned char *)priv->v, field_len, NULL);
 	if (!priv_bn || !EC_KEY_set_private_key(ec, priv_bn))
 		goto end;
+	enc = malloc(1 + 2 * field_len);
+	if (!enc)
+		goto end;
 	enc[0] = 0x04;
-	memcpy(enc + 1, pub_p->v, 64);
+	memcpy(enc + 1, pub_p->v, 2 * field_len);
 	peer = EC_POINT_new(grp);
-	if (!peer || !EC_POINT_oct2point(grp, peer, enc, 65, NULL))
+	if (!peer || !EC_POINT_oct2point(grp, peer, enc, 1 + 2 * field_len, NULL))
 		goto end;
 	if (!*key)
-		*key = rc_vmalloc(32);
+		*key = rc_vmalloc(field_len);
 	if (!*key)
 		goto end;
-	xlen = ECDH_compute_key((*key)->v, 32, peer, ec, NULL);
-	if (xlen != 32)
+	xlen = ECDH_compute_key((*key)->v, field_len, peer, ec, NULL);
+	if (xlen != (int)field_len)
 		goto end;
-	(*key)->l = 32;
+	(*key)->l = field_len;
 	error = 0;
       end:
 	if (peer)
 		EC_POINT_free(peer);
 	if (priv_bn)
 		BN_free(priv_bn);
+	if (enc)
+		free(enc);
 	if (ec)
 		EC_KEY_free(ec);
 	return error;

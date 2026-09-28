@@ -247,8 +247,8 @@ extern int eay_dh_generate (rc_vchar_t *, uint32_t, unsigned int, rc_vchar_t **,
 				rc_vchar_t **);
 extern int eay_dh_compute (rc_vchar_t *, uint32_t, rc_vchar_t *,
 			       rc_vchar_t *, rc_vchar_t *, rc_vchar_t **);
-extern int eay_ecp256_generate (rc_vchar_t **, rc_vchar_t **);
-extern int eay_ecp256_compute (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
+extern int eay_ecp_generate (size_t, rc_vchar_t **, rc_vchar_t **);
+extern int eay_ecp_compute (size_t, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
 			       rc_vchar_t **);
 
 /* misc */

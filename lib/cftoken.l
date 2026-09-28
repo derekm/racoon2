@@ -205,6 +205,8 @@ modp4096		{ DP; return(MODP4096); }
 modp6144		{ DP; return(MODP6144); }
 modp8192		{ DP; return(MODP8192); }
 ecp256			{ DP; return(ECP256); }
+ecp384			{ DP; return(ECP384); }
+ecp521			{ DP; return(ECP521); }
 mlkem512		{ DP; return(MLKEM512); }
 mlkem768		{ DP; return(MLKEM768); }
 mlkem1024		{ DP; return(MLKEM1024); }

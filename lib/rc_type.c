@@ -448,6 +448,10 @@ rct2str(int type)
 		return "MODP8192";
 	case RCT_ALG_ECP256:
 		return "ECP256";
+	case RCT_ALG_ECP384:
+		return "ECP384";
+	case RCT_ALG_ECP521:
+		return "ECP521";
 	case RCT_ALG_MLKEM512:
 		return "MLKEM512";
 	case RCT_ALG_MLKEM768:
