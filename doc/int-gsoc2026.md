@@ -251,17 +251,19 @@ workstream and never conflict with the "Do not" list.
   (`https://commoncriteria.github.io/pp/ipsec/ipsec.html`). The suite's
   `FCS_IPSEC_EXT.1` element map (cases.tsv A-cells) is directly comparable
   to this FP — same .1.1–.1.14 numbering. Validated on the tree (2026-09-27):
-  - **FCS_IPSEC_EXT.1.8 / DH groups 19 AND 20 are MANDATORY**; racoon2
-    offers only ECP256 (group 19). `ike_conf.c` has `ECP384`/`ECP521`
-    commented out and `dh_ecp256` (`dh.c:68`) is a placeholder `memset`,
-    not a real EC group — closing group 20 is a genuine ECDH feature (new
-    `dh_ecp384` + real EC keygen/derive + `IKEV2TRANSF_DH_ECP384` row), not
-    a config knob. FP-conformance requires either group 20 or an explicit
-    "selections exclude group 20" claim that this FP's application note
-    does not allow at the mandatory level.
+  - **FCS_IPSEC_EXT.1.8 / DH groups 19 AND 20 are MANDATORY**; **RESOLVED**
+    (box-validated 2026-09-28). ECP-384 (20) + ECP-521 (21) are wired
+    full-stack per RFC 8247 (`67999b7`): RCT tokens, lexer/grammar, dhgroup
+    init, curve-NID dispatch in `eay_ecp_generate/compute`, transform rows;
+    the A9 KAT loops all three curves. Group 19 ECDH was always genuine
+    OpenSSL P-256 (only the `dhgroup` struct's `prime` field is a zeroed
+    stub; the ECDH path is real). Matrix: 8 iked↔iked rows (groups 14–21)
+    + 4 charon interop rows (20/21, both seats) all PASS on the Fedora box
+    (commit `ec4f825`, box run rc=0); rows ship `gate=box` pending a
+    container run, like `i2iinit-charon`/`i2ike-drop576`.
   - **FCS_IPSEC_EXT.1.11 / "at least one public-key-based method … is
     required in order to conform"** — every matrix row is
-    `kmp_auth_method { psk; }` (53 sites; `ikev1.sh`/`i2i*` etc.). The
+    `kmp_auth_method { psk; }` (44 data rows; `ikev1.sh`/`i2i*` etc.). The
     suite has NO live RSA/ECDSA `IKE_AUTH` row proving certificate peer
     auth end-to-end. `B5 ECDSA` is a unit KAT only. A `.1.11` green cell
     needs an iked↔iked (or charon) X.509v3 AUTH row.
