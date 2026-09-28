@@ -147,7 +147,7 @@ echo "| .1.4 | ESP RFC 4303; **AES-GCM-128/256 mandatory** plus optional AES-CBC
 echo "| .1.5 | IKEv1 Main Mode / IKEv2 RFC 7296; VPN ⇒ NAT-T **mandatory**; cites RFC 8784/8247/4868 | A5 (+NAT-T row) | IKEv2+NAT-T covered → A5 evidence |"
 echo "| .1.6 | IKE encrypted payload AES-CBC+HMAC (+optional AES-GCM RFC 5282) | A6 | covered → A6 evidence |"
 echo "| .1.7 | IKEv2 SA lifetimes admin-configurable (time/packets/bytes) | A7/A8 | covered → A7/A8 evidence |"
-echo "| .1.8 | DH groups **19 and 20 mandatory**; optional 14/15/16/17/18/24 | A11 | **group 19 PASS only — group 20 wired, box rows pending (see G1)** |"
+echo "| .1.8 | DH groups **19 and 20 mandatory**; optional 14/15/16/17/18/24 | A11 | **groups 14-21 box-validated: 8 iked↔iked rows + 4 charon interop rows (20/21) all PASS (see G1)** |"
 echo "| .1.9 | DH secret x ≥ 2× negotiated group bits-of-security | A9 | covered → A9 evidence |"
 echo "| .1.10 | IKE nonces ≥ 1/2^bits-of-security repetition (RFC 7296 half-PRF) | A10 | covered → A10 evidence |"
 echo "| .1.11 | peer auth RSA/ECDSA X.509v3 (RFC 4945) + optional PSK; **≥1 public-key method required** | A13 | **PSK PASS only — no live public-key AUTH row (see G2)** |"
@@ -156,13 +156,16 @@ echo "| .1.13 | parent (IKE_SA) symmetric strength ≥ child (CHILD_SA) by defau
 echo
 echo "### Open items for FP conformance (not satisfied at this commit)"
 echo
-echo "- **G1 — DH group 20 (P-384) is mandatory in .1.8**; now wired:"
+echo "- **G1 — DH group 20 (P-384) is mandatory in .1.8**; satisfied."
 echo "  ECP-384/ECP-521 full-stack per RFC 8247 (RCT tokens, lexer/grammar,"
 echo "  dhgroup init, curve-NID dispatch in eay_ecp_generate/compute,"
-echo "  transform rows). Group 19 ECDH is genuine OpenSSL P-256 — only the"
-echo "  dhgroup struct's prime field is a zeroed stub; the ECDH path is real."
-echo "  This commit's A11 PASS evidences group 19 only; the box matrix rows"
-echo "  for groups 20/21 are the remaining validation."
+echo "  transform rows; A9 KAT loops all three curves: P-384 x=384 in order"
+echo "  n=384 sec 192, P-521 x=521 in order n=521 sec 256). Group 19 ECDH"
+echo "  is genuine OpenSSL P-256 — the dhgroup struct's prime field is a"
+echo "  zeroed stub, the ECDH path is real. Matrix: 8 iked↔iked rows for"
+echo "  groups 14-21 + 4 charon interop rows (20/21, both seats) box-validated"
+echo "  PASS on commit ec4f825 (box run rc=0). A9 KAT on box = FN.PT.crypto"
+echo "  evidence for the new groups."
 echo "- **G2 — .1.11 requires at least one public-key (RSA/ECDSA) peer-auth"
 echo "  method in order to conform**; every matrix row (44) is \`psk\` and B5"
 echo "  ECDSA is a unit KAT only — there is no live X.509 IKE_AUTH row. Add"
@@ -191,5 +194,5 @@ echo "| decisions to DISCARD or BYPASS network packets (+SPD entry applied) | A2
 echo "| failure to establish an IPsec SA (+ identity/reason) | A13/A14 NEG rows (\"authentication failure\", \"does not match peers id\"); A12 strict CHILD refusal |"
 echo "| establishment/termination of an IPsec SA (FP Table 1) | not claimed (would require FAU_GEN.1, an audit SFR racoon2 does not implement) |"
 echo
-}
+} >> "$OUT"
 exit $rc
