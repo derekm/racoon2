@@ -597,11 +597,19 @@ void ikev2_sa_start_lifetime_timer(struct ikev2_sa *);
 void ikev2_sa_arm_lifetime(struct ikev2_sa *, int);
 void ikev2_sa_stop_grace_timer(struct ikev2_sa *);
 extern void ikev2_sa_expire(struct ikev2_sa *, int);
+extern void initiator_state1_send(struct ikev2_sa *,
+    void *, struct sockaddr *);
 extern void ikev2_sa_delete(struct ikev2_sa *);
 extern void ikev2_dispose_sa(struct ikev2_sa *);
 #ifdef WITH_INTERMEDIATE
 extern void ikev2_intermediate_clear(struct ikev2_sa *);
 extern void ikev2_intermediate_clear_replay(struct ikev2_sa *);
+extern void initiator_ike_intermediate_send(struct ikev2_sa *);
+extern void initiator_ike_intermediate_recv(struct ikev2_sa *,
+    rc_vchar_t *, struct sockaddr *, struct sockaddr *);
+extern void responder_ike_intermediate_recv(struct ikev2_sa *,
+    rc_vchar_t *, struct sockaddr *, struct sockaddr *);
+extern void ikev2_replay_intermediate_response(struct ikev2_sa *);
 #endif
 extern void ikev2_shutdown(void);
 extern void ikev2_initial_contact(struct ikev2_sa *);
