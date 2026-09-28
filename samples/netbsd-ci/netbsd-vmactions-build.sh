@@ -70,7 +70,7 @@ echo "=== REBUILD non-sanitized daemons for the rc.d smoke ==="
 # (EVP_DigestInit_ex fails, empty ERR, even for a lone EVP_sha256()/HMAC probe
 # linked only against /usr/lib/libcrypto.a — OpenSSL issue #25456), which makes
 # spmd's keyed HMAC-SHA256 SPMIF login fail at challenge generation.  sha1
-# survives only via OpenSSL's legacy path; this is a libasan interceptor
+# survives only via OpenSSL 3.x's default-provider path; this is a libasan interceptor
 # mismatch (NetBSD/FreeBSD only), not a racoon2 defect.  The non-sanitized
 # build is the real deployment shape and is proven working by that same probe.
 make clean >/dev/null

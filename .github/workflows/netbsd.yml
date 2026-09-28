@@ -83,7 +83,7 @@ jobs:
             # ERR even for a plain EVP_sha256()/HMAC probe linked only
             # against /usr/lib/libcrypto.a), which makes spmd's keyed
             # HMAC-SHA256 SPMIF login fail at challenge generation.  sha1
-            # survives only via OpenSSL's legacy path.  Non-sanitized build
+            # survives only via OpenSSL 3.x's default-provider path (sha256 is provider-
             # is the real deployment shape — proven working by the same probe
             # (sha1/sha256/byname/HMAC all OK without -fsanitize).
             # CFLAGS is pinned explicitly and the SAN_* compose-vars cleared:
