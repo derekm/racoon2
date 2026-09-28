@@ -51,6 +51,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <errno.h>		/* errno — NetBSD 11 / gcc requires the public header */
 #include <sys/errno.h>
 #include <netinet/in.h>
 #include <netdb.h>
