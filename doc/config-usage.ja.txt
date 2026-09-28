@@ -277,6 +277,7 @@ o アルゴリズムの表記方法
 		psk
 		dss
 		rsasig
+		ecdsa
 		rsaenc
 		rsarev
 		gssapi_krb
@@ -297,6 +298,22 @@ o アルゴリズムの表記方法
 		mlkem1024
 		ADDKEはML-KEMバックエンド付きビルドでのみ利用できる。
 		(configure --enable-addke, OpenSSL >= 3.5)
+
+	RFC 8784 耐量子プリシェアードキー (PPK) - ikev2 セクション:
+
+		use_ppk on;
+		ppk_mandatory off;
+		ppk_id "my-ppk";
+
+	use_ppk は PPK 交換を有効にする: daemon は IKE_SA_INIT で USE_PPK を通知し、
+	鍵導出にプリシェアードキーを混ぜる (SK_d/SK_pi/SK_pr = prf+(PPK, SK'))。
+	したがって後から鍵交換を破られた攻撃者は SA を導出できない。PPK 値は
+	$SYSCONFDIR/ppk/<ppk_id>.bin (素のバイト列) から読む。ファイルが無い場合、
+	ppk_mandatory on なら IKE_AUTH は fail closed。ppk_mandatory off なら
+	非秘密のテスト用デフォルト SHA-256(ppk_id) に大きな警告付きでフォールバックする
+	(本番では使わないこと)。PPK は最初の IKE_SA にのみ適用され、rekey では
+	適用されない (RFC 8784 §2.2)。ピアも PPK 対応が必要; iked間はマトリックスで
+	検証済み (i2iinit-ppk)。
 
 	ipcomp_alg
 		oui
