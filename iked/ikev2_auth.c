@@ -195,8 +195,8 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 		goto end;
 
 	IF_TRACE({
-		TRACE((PLOGLOC, "prf(SK, ID)\n"));
-		plogdump(PLOG_DEBUG, PLOGLOC, 0, prf_output->v, prf_output->l);
+		TRACE((PLOGLOC, "prf(SK, ID) length=%lu\n",
+		    (unsigned long)prf_output->l));
 	});
 
 	/* octets = message | N | prf(SK, ID) */
@@ -393,8 +393,8 @@ ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 			if (!k)
 				goto fail_nomem;
 			IF_TRACE({
-				TRACE((PLOGLOC, "k\n"));
-				plogdump(PLOG_DEBUG, PLOGLOC, 0, k->v, k->l);
+				TRACE((PLOGLOC, "k length=%lu\n",
+				    (unsigned long)k->l));
 			});
 			authdata = keyed_hash(sa->prf, k, octets);
 			if (!authdata)
@@ -557,8 +557,8 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 			if (!k)
 				goto fail_nomem;
 			IF_TRACE({
-				TRACE((PLOGLOC, "k\n"));
-				plogdump(PLOG_DEBUG, PLOGLOC, 0, k->v, k->l);
+				TRACE((PLOGLOC, "k length=%lu\n",
+				    (unsigned long)k->l));
 			});
 			prf_output = keyed_hash(sa->prf, k, octets);
 			if (!prf_output)
