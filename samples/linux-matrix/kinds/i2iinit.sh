@@ -26,6 +26,20 @@ kind_i2iinit() {
 	D=/tmp/r2-i2init; C=/tmp/r2-i2init-conf
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
+	# RFC 8784 PPK rows (i2iinit-ppk): both seats enable USE_PPK with a
+	# shared ppk_id (test default = SHA-256(ppk_id), no secret files on the
+	# box).  TRACE must be on (0x0003) for the kind's USE_PPK/PPK_IDENTITY
+	# evidence lines to land in the iked logs.
+	I2I_DBG=0x0001
+	I2I_PPK=0
+	case "$name" in
+	*-ppk) I2I_PPK=1; I2I_DBG=0x0003 ;;
+	esac
+	PPK_TXT=""
+	[ "$I2I_PPK" = 1 ] && PPK_TXT='		use_ppk on;
+		ppk_mandatory off;
+		ppk_id "rfc8784-mat";'
+
 	if [ "$PEER_R" = charon ]; then
 	# charon responder: shared helper writes the swanctl conn (PSK hex read
 	# from the existing matrix psk, never printed); iked responder.conf below
@@ -52,6 +66,7 @@ remote matrix_resp {
 		kmp_dh_group { ecp256; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
+$PPK_TXT
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -113,6 +128,7 @@ remote matrix_init {
 		kmp_dh_group { ecp256; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
+$PPK_TXT
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -182,7 +198,7 @@ else
 	RSPMD=$!
 	i=0; until [ -S /tmp/spmif-i2init-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2init-r RACOON2_RESUME_DIR="$PRIVRES_R" \
-	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
+	    "$SBIN/iked" -F -f "$C/responder.conf" -D "$I2I_DBG" -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 fi
 
 if [ "$PEER" = charon ]; then
@@ -192,7 +208,7 @@ else
 	ISPMD=$!
 	i=0; until [ -S /tmp/spmif-i2init-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2init-i RACOON2_RESUME_DIR="$PRIVRES_I" \
-	    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
+	    "$SBIN/iked" -F -f "$C/initiator.conf" -D "$I2I_DBG" -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 fi
 
 	sleep 2
@@ -252,6 +268,24 @@ fi
 		log "FAIL: initial IKE_SA not ADDKE/ML-KEM (nint=${nint:-0})"
 	fi
 
+	# RFC 8784 PPK rows: with USE_PPK on both seats the child only lands if
+	# BOTH re-derived SK_d/SK_pi/SK_pr with the same PPK; the AUTH passing
+	# (up=1) already proves that.  Additionally assert the append-only
+	# wire markers: the initiator saw the USE_PPK echo + the responder
+	# confirmed the PPK_IDENTITY (TRACE level, enabled by I2I_DBG=0x0003).
+	ppk_ok=0
+	if [ "$I2I_PPK" = 1 ]; then
+		gre=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/resp-iked.log" 2>/dev/null)
+		gie=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/init-iked.log" 2>/dev/null)
+		gid=$(grep -c "RFC 8784: responder confirmed PPK_IDENTITY" "$D/init-iked.log" 2>/dev/null)
+		if [ "${gre:-0}" -ge 1 ] && [ "${gie:-0}" -ge 1 ] && [ "${gid:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
+			ppk_ok=1
+			log "RFC 8784 PPK: USE_PPK echoed both seats + PPK_IDENTITY confirmed; child up => PPK-mixed SK_d matched"
+		else
+			log "FAIL: RFC 8784 PPK markers absent (resp_use_ppk=${gre:-0} init_use_ppk=${gie:-0} init_id_confirm=${gid:-0})"
+		fi
+	fi
+
 	# NDcPP v3.0e compliance report for this row (A/B cells) — runs while
 	# the netnss + SADB are still live (A1/A2/A3 read xfrm policy/state)
 	# and before charon conn files are removed (A13/A14 read the conn).
@@ -270,8 +304,8 @@ fi
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
-	if [ "$up" -ne 1 ] || [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] || [ "$cpl" -ne 0 ]; then
-		log "FAIL: PQC initial-IKE_SA ADDKE incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl peeri=${PEER} peerr=${PEER_R})"
+	if [ "$up" -ne 1 ] || [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] || [ "$cpl" -ne 0 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; }; then
+		log "FAIL: PQC initial-IKE_SA ADDKE incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl ppk_ok=${ppk_ok:-0} peeri=${PEER} peerr=${PEER_R})"
 		if [ "$PEER" = charon ]; then
 			log "--- charon-init.log ---"
 			i2i_peer_i_diag "$D" charon
