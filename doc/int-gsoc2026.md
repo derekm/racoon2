@@ -247,6 +247,35 @@ workstream and never conflict with the "Do not" list.
   rows — the highest-value next verification. Timing-sensitive rows
   (drop576/replay ladders) may false-fail under ASan's overhead; those stay on
   the production-shaped binary, sanitized runs target the pure-crypto rows.
+- **NIAP Functional Package for IPsec v1.0 (2022-03-29) validation gaps**
+  (`https://commoncriteria.github.io/pp/ipsec/ipsec.html`). The suite's
+  `FCS_IPSEC_EXT.1` element map (cases.tsv A-cells) is directly comparable
+  to this FP — same .1.1–.1.14 numbering. Validated on the tree (2026-09-27):
+  - **FCS_IPSEC_EXT.1.8 / DH groups 19 AND 20 are MANDATORY**; racoon2
+    offers only ECP256 (group 19). `ike_conf.c` has `ECP384`/`ECP521`
+    commented out and `dh_ecp256` (`dh.c:68`) is a placeholder `memset`,
+    not a real EC group — closing group 20 is a genuine ECDH feature (new
+    `dh_ecp384` + real EC keygen/derive + `IKEV2TRANSF_DH_ECP384` row), not
+    a config knob. FP-conformance requires either group 20 or an explicit
+    "selections exclude group 20" claim that this FP's application note
+    does not allow at the mandatory level.
+  - **FCS_IPSEC_EXT.1.11 / "at least one public-key-based method … is
+    required in order to conform"** — every matrix row is
+    `kmp_auth_method { psk; }` (53 sites; `ikev1.sh`/`i2i*` etc.). The
+    suite has NO live RSA/ECDSA `IKE_AUTH` row proving certificate peer
+    auth end-to-end. `B5 ECDSA` is a unit KAT only. A `.1.11` green cell
+    needs an iked↔iked (or charon) X.509v3 AUTH row.
+  - **FCS_IPSEC_EXT.2 (EAP) dependency** — this FP routes PSK peer auth
+    through EAP-TLS/TTLS + FCS_IPSEC_EXT.2 when ".1.11 PSK transmitted via
+    EAP" is selected ("transmitted via means other than EAP" for IKEv1).
+    The suite claims IKEv2 PSK only; the doc/skill must state the PSK
+    selection is the non-EAP IKEv2 path, else FCS_IPSEC_EXT.2/FP-TLS
+    dependencies appear unmet at review.
+  Audit-table (Table 1) events for `.1.1` DISCARD/BYPASS decisions are not
+  wired to report CPL evidence — SPD discard is asserted via the
+  default-discard A2 behavior, but the auditable-event table expects
+  DISCARD/BYPASS/SA-establishment logging where FAU_GEN.1 exists. Record
+  that mapping when the report adds an audit section.
 - Transport-mode IKEv2 e2e; IPv6-in-IPv4; Windows/Android/macOS.
 - Fuzz `ikev2_input` / `isakmp`. Live IKEv1 NAT-OA peer.
 
