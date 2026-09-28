@@ -1,13 +1,12 @@
 #!/bin/sh
 # samples/netbsd-ci/netbsd-vmactions-build.sh — the NetBSD build/test/smoke
-# body for the vmactions/netbsd-vm legs (10.2, 11.0).  Kept byte-equivalent in
-# intent to the cross-platform-actions 10.1 job in .github/workflows/netbsd.yml
-# so all three NetBSD legs test the same thing; only the package tool differs
-# (base pkg_add here, pkgin there) — detected, not assumed.
+# body for all three vmactions/netbsd-vm legs (10.1, 10.2, 11.0).  Kept
+# byte-equivalent in intent across the legs so every NetBSD build tests the
+# same thing; dependencies are installed with the base pkg_add (PKG_PATH is
+# pre-wired to live quarterlies by the action's onStarted hook).
 #
 # Runs INSIDE the NetBSD VM (vmactions `run:`).  Deps are installed with the
-# base pkg_add (PKG_PATH is pre-wired to live quarterlies by the action's
-# onStarted hook).  Script is root-agnostic: uses sudo only when not already
+# base pkg_add.  Script is root-agnostic: uses sudo only when not already
 # root.  Exits non-zero on any step failure.
 set -eu
 
@@ -48,14 +47,16 @@ LDFLAGS="${SAN_LDFLAGS}" \
 echo "=== Building (sanitized compile probe) ==="
 make -j2
 
-# The ASan/UBSan unit-suite check is carried by the cross-platform-actions
-# 10.1 leg (green) and the WSL builds.  On these vmactions legs the sanitizer
-# build is kept as a compile probe only: running the KAT binaries under ASan on
-# NetBSD 10.2/11.0 trips the same upstream libasan-vs-crypto interposer issue
-# (failed HMAC-SHA256 EVP ops, empty ERR) that the 10.1 job works around by
-# running its smoke on non-ASan binaries — sample and loginkat fail under ASan
-# here while passing on the identical production-shaped build below.  So the
-# KAT/unit suites are run against the non-sanitized, deployment-shaped rebuild.
+# Sanitizer coverage note (all three NetBSD legs are now vmactions):
+# every leg keeps ASan/UBSan as a COMPILE PROBE (this build) and runs the
+# KAT/unit suites against the non-sanitized, deployment-shaped rebuild below.
+# Running the KAT binaries under ASan on the vmactions VMs trips an upstream
+# libasan-vs-OpenSSL interposer issue (failed HMAC-SHA256 EVP ops, empty ERR,
+# OpenSSL #25456) — sample and loginkat fail under ASan while passing on the
+# identical production-shaped build.  This means CI no longer EXECUTES the
+# unit suites under ASan: the former cross-platform 10.1 leg (removed 2026-09,
+# ported to vmactions) was the only runner that did.  ASan-runtime KAT
+# coverage now lives in local WSL dev builds, not CI.
 
 echo "=== make install (sanitized, for the unit-test build only) ==="
 $SUDO make install

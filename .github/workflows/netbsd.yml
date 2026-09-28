@@ -1,11 +1,13 @@
 # NetBSD CI Build & Test for racoon2.
-# NetBSD 10.1 QEMU (cross-platform-actions): pfkey KM default.
-# Units + make install + rc.d smoke (spmd/iked onestart, UDP 500).
+# NetBSD 10.1 build/test/smoke via vmactions/netbsd-vm (same accelerator as
+# the 10.2/11.0 legs — replaces the slow cross-platform-actions QEMU job that
+# intermittently hung on the plain-QEMU boot).  Units + make install + rc.d
+# smoke (spmd/iked onestart, UDP 500).
 # Not a tunnel matrix: no Linux netns; npf/pf/ipf is packet filter, not
 # SAD/SPD (that is setkey/PF_KEY). Do not wrap linux-matrix here.
 #
-# Dependencies (via pkgin): autoconf automake libtool pkgconf gmake m4 bison.
-# Base system provides cc (gcc), flex, openssl, krb5 headers.
+# The build/test body lives in samples/netbsd-ci/netbsd-vmactions-build.sh
+# (shared by all three NetBSD legs so they test the same thing).
 
 name: NetBSD build & test
 
@@ -21,103 +23,33 @@ permissions:
 
 jobs:
   netbsd-build-test:
-    name: 'NetBSD 10.1 build & test (pfkey KM)'
+    name: 'NetBSD 10.1 build & test (pfkey KM) [vmactions]'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build and test on NetBSD 10
-        uses: cross-platform-actions/action@v0.27.0
+      - name: Build and test on NetBSD 10.1
+        uses: vmactions/netbsd-vm@v1
         with:
-          operating_system: netbsd
-          architecture: x86_64
-          version: '10.1'
-          shell: bash
-          memory: 4096
-          cpu_count: 2
+          release: "10.1"
+          mem: 4096
+          cpu: 2
           run: |
-            set -euo pipefail
+            set -eu
+            sh samples/netbsd-ci/netbsd-vmactions-build.sh
 
-            echo "=== Syncing package repository ==="
-            sudo pkgin -y update
-
-            echo "=== Installing build dependencies ==="
-            sudo pkgin -y install autoconf automake libtool pkgconf gmake m4 bison
-
-            # Sanitizer: ASan/UBSan on by default (this VM's toolchain is
-            # NetBSD's own gcc — sanitizers here are the non-Linux check).
-            export SAN_CFLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
-            export SAN_LDFLAGS="-fsanitize=address,undefined"
-            export CC=cc
-
-            echo "=== Bootstrapping build system ==="
-            autoreconf -fi
-
-            echo "=== Configure ==="
-            CFLAGS="-g -O2 ${SAN_CFLAGS}" \
-            LDFLAGS="${SAN_LDFLAGS}" \
-            ./configure --prefix=/usr/local/racoon2
-
-            echo "=== Building ==="
-            make -j2
-
-            echo "=== Unit suite (lib: make check) ==="
-            make -C lib check
-
-            echo "=== Unit suite (iked: eaytest evlooptest workerstest ndcppkats) ==="
-            make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats"
-
-            echo "=== make install (sanitized, for the unit-test build only) ==="
-            sudo make install
-            test -x /usr/local/racoon2/sbin/iked
-            test -x /usr/local/racoon2/etc/racoon2/rc.d/iked
-            test -x /usr/local/racoon2/etc/racoon2/rc.d/spmd
-
-            echo "=== REBUILD non-sanitized daemons for the rc.d smoke ==="
-            # The unit suites above already ran the ASan/UBSan check.  The
-            # boot smoke (rc.d + PF_KEY + UDP/500) must run PRODUCTION-shaped
-            # binaries: ASan breaks OpenSSL 3.0's provider-based sha256 EVP
-            # ops on this toolchain (EVP_DigestInit_ex fails with an empty
-            # ERR even for a plain EVP_sha256()/HMAC probe linked only
-            # against /usr/lib/libcrypto.a), which makes spmd's keyed
-            # HMAC-SHA256 SPMIF login fail at challenge generation.  sha1
-            # survives only via OpenSSL 3.x's default-provider path (sha256 is provider-
-            # is the real deployment shape — proven working by the same probe
-            # (sha1/sha256/byname/HMAC all OK without -fsanitize).
-            # CFLAGS is pinned explicitly and the SAN_* compose-vars cleared:
-            # autoconf re-invokes ./configure from the stored args during
-            # config.status --recheck / a fresh configure, which would
-            # otherwise re-adopt the sanitized CFLAGS from the tool run.
-            make clean >/dev/null
-            SAN_CFLAGS= SAN_LDFLAGS= \
-            CFLAGS="-g -O2" \
-            ./configure --prefix=/usr/local/racoon2 >/dev/null
-            make -j2 >/dev/null
-            sudo make install
-            # Re-run the unit/KAT suites on the production-shaped build so the
-            # compliance report has evidence again (make clean removed the
-            # sanitized-run logs; these non-sanitized results are the more
-            # representative cells anyway).
-            make -C lib check
-            make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats"
-
-            echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
-            # Smoke runs the production-shaped daemons just installed above —
-            # no sanitizer flags, no ASLR/sanitizer accommodation needed.
-            sudo -E env PREFIX=/usr/local/racoon2 SRC="$PWD" \
-              sh samples/netbsd-ci/rc-smoke.sh
-      - name: 'Generate compliance report (KAT evidence from NetBSD build)'
-        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/netbsd-build-test-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
+      - name: 'Generate compliance report (KAT evidence from NetBSD 10.1 build)'
+        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/netbsd-build-test-101-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
         working-directory: ${{ runner.workspace }}/racoon2
 
       - name: 'Upload compliance report artifact'
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compliance-report-netbsd-build-test
-          path: netbsd-build-test-compliance.md
+          name: compliance-report-netbsd-build-test-101
+          path: netbsd-build-test-101-compliance.md
           overwrite: true
           if-no-files-found: error
 
