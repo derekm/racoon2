@@ -125,6 +125,15 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		TRACE((PLOGLOC, "peer offers IKE_INTERMEDIATE (16438)\n"));
 		break;
 #endif
+	case IKEV2_USE_PPK:
+		/* RFC 8784 s2.2: the PEER (or, for the initiator view, the
+		 * responder's echo of) N(USE_PPK).  The responder decides to echo
+		 * and set ppk_active in its IKE_SA_INIT response build; the
+		 * initiator resolves ppk_active from this echo + its
+		 * mandatory/optional config in initiator_ike_sa_init_recv. */
+		ike_sa->peer_sent_use_ppk = 1;
+		TRACE((PLOGLOC, "peer uses RFC 8784 PPK (USE_PPK)\n"));
+		break;
 
 	case IKEV2_MOBIKE_SUPPORTED:
 		ike_sa->mobike_supported = 1;
@@ -279,6 +288,15 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		TRACE((PLOGLOC, "peer offers IKE_INTERMEDIATE (16438)\n"));
 		break;
 #endif
+	case IKEV2_USE_PPK:
+		/* RFC 8784 s2.2: the PEER (or, for the initiator view, the
+		 * responder's echo of) N(USE_PPK).  The responder decides to echo
+		 * and set ppk_active in its IKE_SA_INIT response build; the
+		 * initiator resolves ppk_active from this echo + its
+		 * mandatory/optional config in initiator_ike_sa_init_recv. */
+		ike_sa->peer_sent_use_ppk = 1;
+		TRACE((PLOGLOC, "peer uses RFC 8784 PPK (USE_PPK)\n"));
+		break;
 
 	case IKEV2_MOBIKE_SUPPORTED:
 		ike_sa->mobike_supported = 1;
@@ -334,6 +352,47 @@ resp_ike_sa_auth_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	case IKEV2_HTTP_CERT_LOOKUP_SUPPORTED:
 		TRACE((PLOGLOC, "received Notify HTTP_CERT_LOOKUP_SUPPORTED\n"));
 		*http_cert_lookup_supported = TRUE;
+		break;
+
+	case IKEV2_PPK_IDENTITY:
+	{
+		/* RFC 8784 s2.3: the initiator identifies the PPK it used.  We
+		 * committed to this PPK when we echoed N(USE_PPK) in IKE_SA_INIT;
+		 * confirm the received PPK_ID matches our configured ppk_id (the
+		 * responder never echoes USE_PPK unless it holds the PPK, so a
+		 * mismatch here is a genuine misconfiguration).  The post-loop
+		 * gate in responder_ike_sa_auth_cont turns a missing/mismatched
+		 * PPK_IDENTITY into IKEV2_AUTHENTICATION_FAILED. */
+		size_t dlen = 0;
+		const uint8_t *kt = NULL;
+		rc_vchar_t *my_id = ikev2_ppk_id(ike_sa->rmconf);
+
+		if (get_payload_length(&notify->header) >
+		    sizeof(struct ikev2payl_notify)) {
+			kt = (const uint8_t *)(notify + 1);
+			dlen = get_payload_length(&notify->header) -
+			    sizeof(struct ikev2payl_notify);
+		}
+		if (my_id && my_id->l == dlen &&
+		    memcmp(my_id->v, kt, dlen) == 0) {
+			ike_sa->peer_ppk_identity_ok = 1;
+		} else {
+			isakmp_log(ike_sa, 0, 0, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "RFC 8784: PPK_IDENTITY does not match my ppk_id\n");
+			ike_sa->peer_ppk_identity_ok = 0;
+		}
+		break;
+	}
+	case IKEV2_NO_PPK_AUTH:
+		/* RFC 8784 s2.3: the initiator signals that using the PPK is
+		 * optional for it.  A responder that echoed N(USE_PPK) keeps
+		 * using the PPK (RFC 8784 Table 1 row 7); the authentication-data
+		 * swap this notification would enable for a non-PPK responder is
+		 * unreachable here because we only echo USE_PPK when we hold the
+		 * PPK.  Logged for parity with the peer. */
+		TRACE((PLOGLOC,
+		       "RFC 8784: peer advertises NO_PPK_AUTH (PPK optional)\n"));
 		break;
 
 	default:
@@ -414,6 +473,17 @@ init_ike_sa_auth_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 		ikev2_child_abort(child_sa, ECONNREFUSED);	/* ??? */
 		*acceptable = TRUE;
+		break;
+
+	case IKEV2_PPK_IDENTITY:
+		/* RFC 8784 s2.3: responder echo of N(PPK_IDENTITY) (no data
+		 * needed -- the content is ignored per RFC).  Confirms the
+		 * responder honoured the USE_PPK agreement; the initiator's
+		 * post-loop gate in initiator_ike_sa_auth_cont requires it when
+		 * ppk_active. */
+		ike_sa->peer_ppk_identity_ok = 1;
+		TRACE((PLOGLOC,
+		       "RFC 8784: responder confirmed PPK_IDENTITY\n"));
 		break;
 
 	case IKEV2_NO_ADDITIONAL_SAS:	/* ??? */
@@ -1047,6 +1117,9 @@ ikev2_notify_type_str(int type)
 		S(NO_NATS_ALLOWED);
 		S(AUTH_LIFETIME);
 		S(QCD_TOKEN);
+		S(USE_PPK);
+		S(PPK_IDENTITY);
+		S(NO_PPK_AUTH);
 
 	default:
 		{

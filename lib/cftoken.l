@@ -351,6 +351,10 @@ addke_required		{ DP; return(ADDKE_REQUIRED); }
 parent_child_strength	{ DP; return(PARENT_CHILD_STRENGTH); }
 addke_unrequested	{ DP; return(ADDKE_UNREQUESTED); }
 offer_intermediate	{ DP; return(OFFER_INTERMEDIATE); }
+	/* RFC 8784 PPK */
+use_ppk			{ DP; return(USE_PPK); }
+ppk_mandatory		{ DP; return(PPK_MANDATORY); }
+ppk_id			{ DP; return(PPK_ID); }
 send_peers_id		{ DP; return(SEND_PEERS_ID); }
 	/* valid for kink */
 my_principal		{ DP; return(MY_PRINCIPAL); }

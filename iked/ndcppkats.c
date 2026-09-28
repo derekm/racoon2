@@ -37,6 +37,7 @@
 #include <openssl/ecdsa.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 
 #include "var.h"
 #include "racoon.h"
@@ -48,6 +49,7 @@
 #include "dhgroup.h"
 #include "crypto_impl.h"
 #include "crypto_openssl.h"
+#include "keyed_hash.h"
 
 /* A10: the IKEv2 nonce length the daemon actually mints. */
 #include "isakmp.h"
@@ -463,6 +465,68 @@ test_zeroize(void)
 		 " cleanses sk_a/sk_e at ikev2.c:7276 (source path)");
 }
 
+
+/* RFC 8784 s4.2: the PPK mixing KAT.  With the IKEv2 convention that every
+ * PRF's output length equals its (preferred) key length, prf+(PPK,SK_d') is
+ * a single iteration: T1 = prf(PPK, SK_d' | 0x01) = HMAC-SHA256(PPK, ...)
+ * -- exactly the first prf+ block ikev2_prf_plus() emits.  Input: SK_d' =
+ * 64 x 0x11, PPK = SHA-256("rfc8784-kat") (a test vector, not a secret).
+ * Expected af77d27e... was precomputed with python hashlib/hmac and pinned
+ * here so the daemon's keyed_hash pipeline cannot silently regress. */
+static void
+test_rfc8784_ppk(void)
+{
+	unsigned char skd_buf[64];
+	unsigned char ppk_buf[32];
+	unsigned char one = 0x01;
+	static const unsigned char expected[32] = {
+		0xaf, 0x77, 0xd2, 0x7e, 0x31, 0x36, 0x08, 0x88,
+		0x21, 0x60, 0x68, 0xe2, 0xae, 0x23, 0xf3, 0x53,
+		0x1b, 0x05, 0x7a, 0x4d, 0x2c, 0x0f, 0x61, 0x40,
+		0x7a, 0xd8, 0x9e, 0xe8, 0x7e, 0x9d, 0x47, 0xdb,
+	};
+	rc_vchar_t skd, ppk, b;
+	rc_vchar_t *out = 0;
+	struct keyed_hash *prf;
+	int ok = 0;
+
+	memset(skd_buf, 0x11, sizeof(skd_buf));
+	SHA256((const unsigned char *)"rfc8784-kat", 11, ppk_buf);
+
+	skd = *rc_vnew(skd_buf, sizeof(skd_buf));
+	ppk = *rc_vnew(ppk_buf, sizeof(ppk_buf));
+	b.v = (caddr_t)&one;
+	b.l = 1;
+
+	prf = hmacsha256_new();
+	if (!prf)
+		goto out;
+	/* prf+ first iteration (RFC 8784 s4.2 one-shot form). */
+	if (prf->method->key(prf, &ppk) != 0)
+		goto out;
+	prf->method->start(prf);
+	prf->method->update(prf, &skd);
+	prf->method->update(prf, &b);
+	out = prf->method->finish(prf);
+	if (out && out->l == sizeof(expected) &&
+	    memcmp(out->v, expected, sizeof(expected)) == 0) {
+		kat_pass("RFC8784-PPK-KAT",
+			 "SK_d=prf+(PPK,SK_d') af77d27e... (PPK="
+			 "SHA-256 of 'rfc8784-kat', HMAC-SHA256 via "
+			 "daemon keyed_hash pipeline)");
+		ok = 1;
+	}
+out:
+	if (prf)
+		keyed_hash_dispose(prf);
+	if (out)
+		rc_vfree(out);
+	rc_free(skd.v);
+	rc_free(ppk.v);
+	if (!ok)
+		kat_fail("RFC8784-PPK-KAT", "prf+(PPK,SK_d') mismatch");
+}
+
 int
 main(int ac, char **av)
 {
@@ -482,6 +546,7 @@ main(int ac, char **av)
 	test_dh_xlen_modp();
 	test_dh_xlen_ecp();
 	test_zeroize();
+	test_rfc8784_ppk();
 
 	eay_cleanup();
 	if (failures) {

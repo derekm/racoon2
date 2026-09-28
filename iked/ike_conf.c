@@ -41,6 +41,8 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <assert.h>
+#include <unistd.h>
+#include <openssl/sha.h>
 
 #include "racoon.h"
 #include "safefile.h"
@@ -211,6 +213,9 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* parent_child_strength (NDcPP FCS_IPSEC_EXT.1.12) */
 	RCT_BOOL_OFF,		/* addke_unrequested (responder-driven ADDKE) */
 	RCT_BOOL_ON,		/* offer_intermediate (RFC 9242 capability notify) */
+	RCT_BOOL_OFF,		/* use_ppk (RFC 8784 PPK mixing) */
+	RCT_BOOL_OFF,		/* ppk_mandatory (RFC 8784 mandatory_or_not) */
+	NULL,			/* ppk_id (RFC 8784 PPK_IDENTIFIER) */
 };
 
 #ifdef IKEV1
@@ -435,6 +440,9 @@ IKEV2_CONF_ATTR(rc_type, addke_required)
 IKEV2_CONF_ATTR(rc_type, parent_child_strength)
 IKEV2_CONF_ATTR(rc_type, addke_unrequested)
 IKEV2_CONF_ATTR(rc_type, offer_intermediate)
+IKEV2_CONF_ATTR(rc_type, use_ppk)
+IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
+IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)
 IKEV2_CONF_ATTR(struct rc_addrlist *, natd_public_address)
 IKEV2_CONF_ATTR(rc_type, need_pfs)
 IKEV2_CONF_ATTR(rc_vchar_t *, application_version)
@@ -443,6 +451,48 @@ IKEV2_CONF_ATTR(int, dpd_interval)
 rc_type ikev2_config_required(struct rcf_remote *conf)
 {
 	return RCT_BOOL_OFF;
+}
+
+/* RFC 8784 s5: obtain the PPK secret bytes for a remote.  The secret is
+ * the raw content of $SYSCONFDIR/ppk/<ppk_id>.bin when that file exists;
+ * otherwise (test/build default only, never a production install) the
+ * PPK is SHA-256 of the ppk_id string so a PPK-enabled iked pair works
+ * out of the box without provisioning a secret file.  A config keyword
+ * carrying a literal PPK value is deliberately NOT exposed -- no secret
+ * may ever sit in a committed configuration.  Caller owns the returned
+ * buffer (cleanse with OPENSSL_cleanse before rc_vfree). */
+rc_vchar_t *
+ikev2_ppk_load(struct rcf_remote *rmconf)
+{
+	rc_vchar_t *ppk_id;
+	char path[512];
+	rc_vchar_t *ret;
+
+	ppk_id = ikev2_ppk_id(rmconf);
+	if (!ppk_id || ppk_id->l == 0)
+		return 0;
+
+	if (snprintf(path, sizeof(path), SYSCONFDIR "/ppk/%.*s.bin",
+		     (int)ppk_id->l, (const char *)ppk_id->v) >= (int)sizeof(path)) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "ppk_id too long for $SYSCONFDIR/ppk/<ppk_id>.bin\n");
+		return 0;
+	}
+
+	if (access(path, R_OK) == 0) {
+		ret = rcf_readfile(path, PLOGLOC, 1);
+		if (ret)
+			return ret;
+		/* fall through to the test default if the file read fails */
+	}
+
+	/* test/build default: PPK = SHA-256(ppk_id string) */
+	ret = rc_vmalloc(32);
+	if (!ret)
+		return 0;
+	SHA256((const unsigned char *)ppk_id->v, ppk_id->l,
+	       (unsigned char *)ret->v);
+	return ret;
 }
 
 static int

@@ -208,6 +208,9 @@ static int rcf_fix_addke_required (struct cf_list *, void *);
 static int rcf_fix_parent_child_strength (struct cf_list *, void *);
 static int rcf_fix_addke_unrequested (struct cf_list *, void *);
 static int rcf_fix_offer_intermediate (struct cf_list *, void *);
+static int rcf_fix_use_ppk (struct cf_list *, void *);
+static int rcf_fix_ppk_mandatory (struct cf_list *, void *);
+static int rcf_fix_ppk_id (struct cf_list *, void *);
 static int rcf_fix_send_peers_id (struct cf_list *, void *);
 static int rcf_fix_nat_traversal (struct cf_list *, void *);
 static int rcf_fix_natd_public_address (struct cf_list *, void *);
@@ -372,6 +375,9 @@ struct rcf_tdf_t {
 	{ CFD_PARENT_CHILD_STRENGTH,	rcf_fix_parent_child_strength, },
 	{ CFD_ADDKE_UNREQUESTED,	rcf_fix_addke_unrequested, },
 	{ CFD_OFFER_INTERMEDIATE,	rcf_fix_offer_intermediate, },
+	{ CFD_USE_PPK,			rcf_fix_use_ppk, },
+	{ CFD_PPK_MANDATORY,		rcf_fix_ppk_mandatory, },
+	{ CFD_PPK_ID,			rcf_fix_ppk_id, },
 	{ CFD_SEND_PEERS_ID,		rcf_fix_send_peers_id, },
 	{ CFD_NAT_TRAVERSAL,		rcf_fix_nat_traversal, },
 	{ CFD_NATD_PUBLIC_ADDRESS,	rcf_fix_natd_public_address, },
@@ -1588,6 +1594,45 @@ rcf_fix_offer_intermediate(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_OFFER_INTERMEDIATE))
 		return -1;
 	if (rcf_fix_boolean(head->nextp, &dst->offer_intermediate))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_use_ppk(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_USE_PPK))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->use_ppk))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_ppk_mandatory(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_PPK_MANDATORY))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->ppk_mandatory))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_ppk_id(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_PPK_ID))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->ppk_id))
 		return -1;
 
 	return 0;
@@ -3232,6 +3277,7 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rc_vfree(n->pre_shared_key);
 	rc_vfree(n->my_principal);
 	rc_vfree(n->peers_principal);
+	rc_vfree(n->ppk_id);
 	rc_free(n);
 }
 
@@ -3296,6 +3342,9 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	new->parent_child_strength = src->parent_child_strength;
 	new->addke_unrequested = src->addke_unrequested;
 	new->offer_intermediate = src->offer_intermediate;
+	new->use_ppk = src->use_ppk;
+	new->ppk_mandatory = src->ppk_mandatory;
+	DEEPCOPY_VDUP(src->ppk_id, new->ppk_id);
 	DEEPCOPY_VDUP(src->addresspool, new->addresspool);
 	new->config_request = src->config_request;
 	DEEPCOPY_ADDRLIST(src->cfg_dns, new->cfg_dns);

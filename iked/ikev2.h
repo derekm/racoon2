@@ -586,6 +586,9 @@ struct ikev2payl_notify {
 /* RFC 9370 s2.2.4: error notification, not fatal to the IKE SA.
  * Sent in response to an IKE_FOLLOWUP_KE message for which the
  * responder has no key exchange state. */
+#define	IKEV2_USE_PPK			16435	/* (RFC8784) */
+#define	IKEV2_PPK_IDENTITY		16436	/* (RFC8784) */
+#define	IKEV2_NO_PPK_AUTH		16437	/* (RFC8784) */
 #define	IKEV2_STATE_NOT_FOUND		47
 /* RESERVED TO IANA - STATUS TYPES      16431 - 40959 */
 /* Private Use - STATUS TYPES           40960 - 65535 */

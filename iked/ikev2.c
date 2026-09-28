@@ -1571,6 +1571,17 @@ initiator_start_after_gen(int rc, void *arg)
 				    TRUE);
 	}
 #endif
+	/* RFC 8784 s2.2: offer PPK use.  Gated on the remote's 'use_ppk'
+	 * config (default OFF).  The responder echoes N(USE_PPK) iff it
+	 * holds a PPK for this peer; the mandatory/optional decision is
+	 * resolved in initiator_ike_sa_init_recv(). */
+	if (ikev2_use_ppk(ike_sa->rmconf) == RCT_BOOL_ON) {
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_USE_PPK,
+							 0, 0),
+				    TRUE);
+	}
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
 				     0, ike_sa, &ctx->payl);
 	if (!pkt)
@@ -2045,6 +2056,21 @@ responder_state0_after_gen(int rc, void *arg)
 		}
 	}
 #endif
+	/* RFC 8784 s2.2: echo N(USE_PPK) only when the peer offered it AND
+	 * we are configured with a PPK for this peer (use_ppk on and a
+	 * ppk_id set).  Once echoed we are committed: ikev2_compute_keys()
+	 * re-derives SK_d/SK_pi/SK_pr with the PPK (ppk_active), and
+	 * IKE_AUTH must then confirm the PPK_IDENTITY or the SA aborts. */
+	if (ike_sa->peer_sent_use_ppk &&
+	    ikev2_use_ppk(ike_sa->rmconf) == RCT_BOOL_ON &&
+	    ikev2_ppk_id(ike_sa->rmconf) != NULL) {
+		ike_sa->ppk_active = 1;
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_USE_PPK,
+							 0, 0),
+				    TRUE);
+	}
 
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_RESPONSE,
 				     0, ike_sa, &ctx->payl);
@@ -2356,6 +2382,31 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	 */
 #endif
 
+	/* RFC 8784 s2.2: we offered N(USE_PPK); the responder echoed it iff
+	 * it holds a PPK for us.  mandatory==ON and no echo is a downgrade
+	 * (quantum-vulnerable) and MUST abort the exchange; mandatory==OFF
+	 * and no echo continues without a PPK (keys derived unmodified).
+	 * This runs before the SKEYSEED compute, so ikev2_compute_keys()
+	 * sees ppk_active and re-derives SK_d/SK_pi/SK_pr accordingly. */
+	if (ikev2_use_ppk(ike_sa->rmconf) == RCT_BOOL_ON) {
+		if (ike_sa->peer_sent_use_ppk) {
+			ike_sa->ppk_active = 1;
+		} else if (ikev2_ppk_mandatory(ike_sa->rmconf) ==
+			   RCT_BOOL_ON) {
+			isakmp_log(ike_sa, local, remote, packet,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "RFC 8784: mandatory USE_PPK not echoed "
+				   "by responder, aborting\n");
+			++isakmpstat.authentication_failed;
+			goto abort;
+		} else {
+			isakmp_log(ike_sa, local, remote, packet,
+				   PLOG_INFO, PLOGLOC,
+				   "RFC 8784: optional PPK not echoed by "
+				   "responder; continuing without PPK\n");
+		}
+	}
+
 	/* compute SKEYSEED */
 	if (ikev2_set_negotiated_sa(ike_sa, ike_sa->negotiated_sa) != 0)
 		goto abort;
@@ -2629,6 +2680,29 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	 * [N(NON_FIRST_FRAGMENTS_ALSO)]
 	 */
 #endif
+
+	/* RFC 8784 s2.3: in IKE_AUTH, identify the PPK we used (the
+	 * configured ppk_id).  When using the PPK is merely optional for
+	 * us, also advertise N(NO_PPK_AUTH) so a peer that cannot honour
+	 * this PPK may continue classically; this only reaches a responder
+	 * that already echoed N(USE_PPK) (ppk_active set at IKE_SA_INIT). */
+	if (ike_sa->ppk_active) {
+		rc_vchar_t *ppk_id = ikev2_ppk_id(ike_sa->rmconf);
+		if (ppk_id && ppk_id->l > 0) {
+			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+								 IKEV2_PPK_IDENTITY,
+								 (uint8_t *)ppk_id->v, ppk_id->l),
+					    TRUE);
+			if (ikev2_ppk_mandatory(ike_sa->rmconf) ==
+			    RCT_BOOL_OFF)
+				ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+						    ikev2_notify_payload(0, 0, 0,
+									 IKEV2_NO_PPK_AUTH,
+									 0, 0),
+						    TRUE);
+		}
+	}
 
 	/*
 	 * SA, TSi, TSr
@@ -3128,6 +3202,19 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 		}
 	}
 
+	/* RFC 8784 s2.3: we echoed N(USE_PPK), so we MUST see a matching
+	 * N(PPK_IDENTITY) in the IKE_AUTH request (a missing or mismatching
+	 * PPK_ID is AUTHENTICATION_FAILED -- see resp_ike_sa_auth_recv_notify). */
+	if (ike_sa->ppk_active && !ike_sa->peer_ppk_identity_ok) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "RFC 8784: USE_PPK negotiated but no matching "
+			   "PPK_IDENTITY in IKE_AUTH; aborting\n");
+		++isakmpstat.authentication_failed;
+		error = IKEV2_AUTHENTICATION_FAILED;
+		goto notify;
+	}
+
 	if (!(sa_i2 && ts_i && ts_r)) {
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
@@ -3464,6 +3551,17 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 		}
 	}
 
+	/* RFC 8784 s2.3: acknowledge the PPK session with an empty
+	 * N(PPK_IDENTITY) -- the initiator's post-loop gate requires it
+	 * when ppk_active, and the content is ignored per RFC 8784. */
+	if (ike_sa->ppk_active) {
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_PPK_IDENTITY,
+							 0, 0),
+				    TRUE);
+	}
+
 	/*
 	 * SA, TSi, TSr
 	 */
@@ -3790,6 +3888,18 @@ initiator_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 		default:
 			break;
 		}
+	}
+
+	/* RFC 8784 s2.3: when we are using the PPK, the responder MUST
+	 * have echoed N(PPK_IDENTITY) in its IKE_AUTH response; its absence
+	 * while ppk_active means the peer did not actually use the PPK. */
+	if (ike_sa->ppk_active && !ike_sa->peer_ppk_identity_ok) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "RFC 8784: PPK active but responder did not "
+			   "echo N(PPK_IDENTITY); aborting\n");
+		++isakmpstat.authentication_failed;
+		goto authentication_failed;
 	}
 
 	if (!(sa_r2 && ts_i && ts_r)) {
@@ -7361,6 +7471,49 @@ ikev2_compute_keys(struct ikev2_sa *ike_sa)
 	sk_pr = rc_vnew(p, sk_p_len);
 	if (!sk_pr)
 		goto fail;
+
+	/* RFC 8784 s4.2: when the USE_PPK session is active (ppk_active,
+	 * negotiated in IKE_SA_INIT only), re-derive the three keys the
+	 * PPK protects.  SK_ai/ar/ei/er are deliberately left from the
+	 * un-PPK'ed prf+ output -- they already protected IKE_SA_INIT and
+	 * IKE_AUTH (the PPK is unknown to the responder until IKE_AUTH).
+	 * All IKEv2 PRFs have output length == preferred key length, so a
+	 * single prf+ iteration (T1 = prf(PPK, key | 0x01)) suffices.
+	 * ppk_active is never set on a rekeyed/resumed SA (RFC 8784 s2.2:
+	 * PPK for the initial SA only), so rekeys derive classically. */
+	if (ike_sa->ppk_active) {
+		rc_vchar_t *ppk = 0, *sk_d2 = 0, *sk_pi2 = 0, *sk_pr2 = 0;
+
+		ppk = ikev2_ppk_load(ike_sa->rmconf);
+		if (!ppk) {
+			isakmp_log(ike_sa, 0, 0, 0,
+				   PLOG_INTERR, PLOGLOC,
+				   "RFC 8784: failed to load PPK for the "
+				   "negotiated USE_PPK session\n");
+			goto fail;
+		}
+		sk_d2 = ikev2_prf_plus(ike_sa, ppk, sk_d, sk_d_len);
+		sk_pi2 = ikev2_prf_plus(ike_sa, ppk, sk_pi, sk_p_len);
+		sk_pr2 = ikev2_prf_plus(ike_sa, ppk, sk_pr, sk_p_len);
+		OPENSSL_cleanse(ppk->v, ppk->l);
+		rc_vfreez(ppk);
+		ppk = 0;
+		if (!sk_d2 || !sk_pi2 || !sk_pr2) {
+			if (sk_d2)
+				rc_vfreez(sk_d2);
+			if (sk_pi2)
+				rc_vfreez(sk_pi2);
+			if (sk_pr2)
+				rc_vfreez(sk_pr2);
+			goto fail;
+		}
+		rc_vfreez(sk_d);
+		rc_vfreez(sk_pi);
+		rc_vfreez(sk_pr);
+		sk_d = sk_d2;
+		sk_pi = sk_pi2;
+		sk_pr = sk_pr2;
+	}
 
 	/* Free + cleanse any PRIOR generation before overwriting -- the RFC 9370
 	 * intermediate key update calls this a second time per SA; never orphan

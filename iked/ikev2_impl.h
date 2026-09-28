@@ -274,6 +274,20 @@ struct ikev2_sa {
 	struct timeval intermediate_replay_sent;/* replay rate-limit */
 #endif
 
+	/* RFC 8784 PPK: set on a peer who negotiated N(USE_PPK) in IKE_SA_INIT
+	 * (echoed by the responder that holds the PPK; confirmed by the
+	 * initiator that received the echo).  Gates the SK_d/SK_pi/SK_pr
+	 * re-derivation with the PPK in ikev2_compute_keys() -- and hence
+	 * MUST be zero on any rekeyed/resumed SA (the RFC 8784 s2.2 rule: PPK
+	 * is used only for the initial IKE SA; rekey is taken at the first
+	 * opportunity).  peer_sent_use_ppk records that the PEER offered
+	 * (responder view) or echoed (initiator view) N(USE_PPK);
+	 * peer_ppk_identity_ok is confirmed when the peer's N(PPK_IDENTITY)
+	 * matched our configured PPK_ID in IKE_AUTH. */
+	int ppk_active;
+	int peer_sent_use_ppk;
+	int peer_ppk_identity_ok;
+
 	int behind_nat;
 	int peer_behind_nat;
 	int crypto_pending;

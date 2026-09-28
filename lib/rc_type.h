@@ -311,6 +311,18 @@ struct rcf_kmp {
 	 * IKE_INTERMEDIATE sends, and the responder must fall back to a
 	 * classical IKE_SA.  ON (default) = normal end-to-end ADDKE. */
 	rc_type offer_intermediate;
+	/* RFC 8784: Post-quantum Preshared Key (PPK) mixing.  use_ppk gates the
+	 * USE_PPK / PPK_IDENTITY notifications and the SK_d/SK_pi/SK_pr
+	 * re-derivation (RFC 8784 s4.2); ppk_mandatory mirrors RFC 8784's
+	 * mandatory_or_not flag (ON = abort when the peer fails to echo
+	 * USE_PPK, guarding against quantum downgrade); ppk_id is the
+	 * identifier sent in N(PPK_IDENTITY) and is keyed into the PPK
+	 * lookup $SYSCONFDIR/ppk/<ppk_id>.bin (or, test/build default,
+	 * SHA-256(ppk_id)).  A PPK secret VALUE keyword is deliberately NOT
+	 * exposed -- no secret may live in a committed config. */
+	rc_type use_ppk;
+	rc_type ppk_mandatory;
+	rc_vchar_t *ppk_id;
 };
 
 /* selector info */
