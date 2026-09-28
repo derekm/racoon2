@@ -71,7 +71,8 @@ USGv6 NPD §2.3.2 references exactly that (see below).
 
 ## 4. Intrusion Detection Systems
 
-racoon2 is not an IDS and makes no detection claim.  The NPD IDS/IPS tests
+> **§4.2 note:** racoon2 is not an IDS and makes no detection claim (below).
+
 (4.1–4.6, 5.1–5.2) target signature/anomaly/port-scan detection products.
 They are **SCOPE** for this TOE; the relevant *IPsec-relevant* behaviors
 the suite does cover are the negative/misbehaving-peer rows (IKE_SA_INIT
