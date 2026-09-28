@@ -113,7 +113,7 @@ the parent IKE_SA is ESTABLISHED (CREATE_CHILD / rekey), so the initial child
 is plain and stable.  This is the documented design ("IKE_AUTH still has no
 type-6"); the false-positive "CHILD UP" proof was withdrawn.
 
-## Begin — RFC 9242 IKE_INTERMEDIATE, then RFC 8784 PPK
+## RFC 9242 IKE_INTERMEDIATE — landed; RFC 8784 PPK — landed (box-validated, iked↔iked)
 
 **Priority change 2026-09-18 (iPhone cannot hold a session to the ~1440s rekey —
 two consecutive err=110 DPD-timeout deaths: 06:39→07:02, 07:04→07:19, no DELETE,
@@ -194,8 +194,12 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   IKE_AUTH (RFC 9242 s3.2) — it is not `ikev2_established_recv`.  Gate
   `--enable-intermediate` in `iked/configure.ac` (auto-follows `--enable-addke`).
 - **RFC 8784 (PPK):** PPK_ID notify + quantum-resistant pre-shared mixing into
-  SK_PRF/SKEYSEED + sequential counter to prevent reuse. New PPK config +
-  notify handling + key feed; needs a PSK source. After 9242.
+  SK_PRF/SKEYSEED + sequential counter to prevent reuse. **LANDED + box-validated
+  (iked↔iked only)**: `868792d` (engine + mixing), `a213b35` (fail closed when
+  `ppk_mandatory` and the secret file is missing), config `use_ppk` /
+  `ppk_mandatory` / `ppk_id` in `remote { ikev2 { } }` (`ike_conf.c`).  The
+  open pieces are a PSK-provisioning story for multi-vendor/phone interop and a
+  cross-implementation (non-iked) peer; the matrix rows stay iked↔iked.
 
 ## Still this chunk (do not start EAP/8784)
 
@@ -237,16 +241,21 @@ workstream and never conflict with the "Do not" list.
 ## Later
 
 - IKEv2 EAP-MSCHAPv2 + RADIUS.
-- QCD token-taker. RFC 8784 PPK — **now ordered after RFC 9242** (see Begin section above); needs a PSK source.
-- **ASan/UBSan on the Linux netns matrix daemons** (review deleg_251cffaf rec). The
-  RFC 9370/9242/fragment-reassembly/ADDKE-teardown surface (~36k new lines) is
-  exercised by the i2i matrix without sanitizers; NetBSD ASan covers only the
-  isolated unit/KAT harnesses (the rc.d smoke must stay non-sanitized per the
-  libasan-vs-provider-digest toolchain bug). Build the i2i-prefix iked with
-  `-fsanitize=address,undefined` in the netns matrix and run the counted-gate
-  rows — the highest-value next verification. Timing-sensitive rows
-  (drop576/replay ladders) may false-fail under ASan's overhead; those stay on
-  the production-shaped binary, sanitized runs target the pure-crypto rows.
+- QCD token-taker (unknown-SA crash path).
+- **ASan/UBSan + valgrind over the Linux netns matrix — DONE (2026-09-28).** Box
+  runner `r2-memcheck-run.sh` (R2_SAN asan,ubsan; R2_VG units; R2_VG_MATRIX over
+  daemon shims) with all 11 unit binaries + full 7-row matrix genuinely valgrind-
+  instrumented (per-pid `%p` logs), 0 findings; one real UAF
+  (`free_selectorlist`, `91c1f1e`) caught and fixed. Measured cost: units ~15s,
+  matrix ~5 min — the earlier "10–30× slow" claim was wrong. `veth-account`
+  removed entirely (`c2a8380`): kernel-link audit, not a racoon2 test.
+- **Deploy state (2026-09-28): HEAD `c2a8380` (ADDKE/ML-KEM + IKE_INTERMEDIATE +
+  ECDSA + PPK + ASan fixes) installed on the Fedora prod box**, verified active
+  (iked/spmd pids, :500/:4500 bound, `spmd LOGIN ok`) for iPhone testing. Traps:
+  swap must `ln -sf libracoon.so.0.0.0 …/libracoon.so.0` after copying the lib —
+  a stale `.so.0 → *.bak` symlink made the new iked die
+  `unsupported kmp_auth_method (PresharedKey)` and spmd login `550` (enum/ABI
+  mismatch, not a code regression).
 - **NIAP Functional Package for IPsec v1.0 (2022-03-29) validation gaps**
   (`https://commoncriteria.github.io/pp/ipsec/ipsec.html`). The suite's
   `FCS_IPSEC_EXT.1` element map (cases.tsv A-cells) is directly comparable
