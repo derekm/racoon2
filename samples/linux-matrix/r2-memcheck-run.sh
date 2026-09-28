@@ -22,12 +22,12 @@
 #                                  daemon's valgrind log -> /tmp/r2-vg-*.log;
 #                                  findings (Invalid / uninitialised /
 #                                  definite/indirect leaks / SIGSEGV) are
-#                                  scanned and echoed after the row pass.  Use
-#                                  establishing/fragment rows, NOT loss rows:
-#                                  their 45s/130s counted-loss timing asserts
-#                                  are noise under valgrind's 10-30x (those
-#                                  rows stay ASan-covered).  NEVER with R2_SAN
-#                                  (valgrind + ASan instrumented binaries clash).
+#                                  scanned and echoed after the row pass.  Run
+#                                  ANY rows; loss rows' timing gates may fail
+#                                  under valgrind's 10-30x interpreter — the
+#                                  daemon memory findings are the deliverable.
+#                                  NEVER with R2_SAN (valgrind + ASan
+#                                  instrumented binaries clash).
 #
 # Args: [tarball] [cases-filter]  (same shape as r2-matrix-run.sh)
 # Never touches /usr/local/racoon2 (prod) or the i2i prefix: all builds/installs
@@ -120,12 +120,20 @@ if [ "$VG" = 1 ] && [ -z "$SAN_FLAG" ]; then
     vg_unit lib-loginkat $VGBIN "$SRC/lib/loginkat" || VG_RC=1
     for _t in eaytest evlooptest workerstest resumetest fragtest ndcppkats addketest addkekat; do
         [ -x "$SRC/iked/$_t" ] || continue
-        vg_unit iked-$_t $VGBIN "$SRC/iked/$_t" || VG_RC=1
+        # addkekat reads kat_MLKEM_768.rsp from its OWN cwd (iked/) — run
+        # all iked units from the iked dir so the KAT .rsp resolves.
+        (cd "$SRC/iked" && vg_unit iked-$_t $VGBIN "./$_t") || VG_RC=1
     done
     echo "=== valgrind summary: rc=$VG_RC ===" | tee -a "$LOG"
 fi
 
 if [ "${R2_VG_MATRIX:-0}" = 1 ] && [ -z "$SAN_FLAG" ]; then
+    # A prior R2_VG_MATRIX run leaves sbin/<b>.bin shim targets in the
+    # prefix.  make install overwrites sbin/<b> with the plain ELF but the
+    # wrap guard below (`[ -x *.bin ] && continue`) would then skip and the
+    # daemons would run UNinstrumented.  Drop stale *.bin first so the wrap
+    # is always rebuilt after install.
+    rm -f "$PREFIX/sbin/iked.bin" "$PREFIX/sbin/spmd.bin" "$PREFIX/sbin/ikedctl.bin"
     echo "=== [$(date +%T)] make install (plain, for valgrind matrix) ===" | tee -a "$LOG"
     make install >>"$LOG" 2>&1 || { tail -20 "$LOG"; exit 1; }
     if [ -d /usr/local/racoon2-i2i/etc/racoon2/psk ]; then
