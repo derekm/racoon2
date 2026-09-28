@@ -3107,6 +3107,33 @@ alg_to_proppair(struct rc_alglist *alg, int type,
 	return 0;
 }
 
+/*
+ * NSA "Securing IPsec Virtual Private Networks" (executive summary +
+ * "Configuring IPsec Virtual Private Networks", CNSSP-15): warn when a
+ * configured proposal would use an algorithm the guidance lists as
+ * obsolete (DES/3DES, MD5, SHA-1, MODP 768/1024/1536).  Warning-only:
+ * the rows stay usable for legacy interop, but offering them is a
+ * downgrade surface, so an operator review should remove them from the
+ * configuration once no peer needs them.  See doc/nsa-ipsec-hardening.md.
+ */
+static int
+nsa_deprecated_alg(const struct rc_alglist *alg)
+{
+	switch (alg->algtype) {
+	case RCT_ALG_DES_CBC:
+	case RCT_ALG_DES3_CBC:
+	case RCT_ALG_HMAC_MD5:
+	case RCT_ALG_MD5:
+	case RCT_ALG_HMAC_SHA1:
+	case RCT_ALG_SHA1:
+	case RCT_ALG_MODP768:
+	case RCT_ALG_MODP1024:
+	case RCT_ALG_MODP1536:
+		return 1;
+	}
+	return 0;
+}
+
 static struct prop_pair *
 alglist_to_proppair(struct rc_alglist *alg, int type,
 		    struct algdef *translation_table)
@@ -3118,6 +3145,11 @@ alglist_to_proppair(struct rc_alglist *alg, int type,
 
 	tail = &transform_head;
 	for (num_alg = 0; alg != 0; ++num_alg, alg = alg->next) {
+		if (nsa_deprecated_alg(alg))
+			plog(PLOG_INTWARN, PLOGLOC, 0,
+			     "configuring obsolete algorithm %s - remove the suite "
+			     "(NSA/CNSSP-15; see doc/nsa-ipsec-hardening.md)\n",
+			     rct2str(alg->algtype));
 		transform = alg_to_proppair(alg, type, translation_table);
 		if (!transform)
 			goto fail;
