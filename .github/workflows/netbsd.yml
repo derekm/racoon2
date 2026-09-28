@@ -86,6 +86,10 @@ jobs:
             # survives only via OpenSSL's legacy path.  Non-sanitized build
             # is the real deployment shape — proven working by the same probe
             # (sha1/sha256/byname/HMAC all OK without -fsanitize).
+            # CFLAGS is pinned explicitly and the SAN_* compose-vars cleared:
+            # autoconf re-invokes ./configure from the stored args during
+            # config.status --recheck / a fresh configure, which would
+            # otherwise re-adopt the sanitized CFLAGS from the tool run.
             make clean >/dev/null
             SAN_CFLAGS= SAN_LDFLAGS= \
             CFLAGS="-g -O2" \
@@ -100,13 +104,9 @@ jobs:
             make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats"
 
             echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
-            # ASan daemons: no leak-abort on orderly stop. NetBSD gcc ASan
-            # refuses to exec under ASLR ("This sanitizer is not compatible
-            # with enabled ASLR") — drop it for the smoke only.
-            export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
-            sudo sysctl -w security.pax.aslr.global=0 || true
-            sudo sysctl -w security.pax.aslr.enabled=0 || true
-            sudo -E env PREFIX=/usr/local/racoon2 SRC="$PWD" ASAN_OPTIONS="$ASAN_OPTIONS" \
+            # Smoke runs the production-shaped daemons just installed above —
+            # no sanitizer flags, no ASLR/sanitizer accommodation needed.
+            sudo -E env PREFIX=/usr/local/racoon2 SRC="$PWD" \
               sh samples/netbsd-ci/rc-smoke.sh
       - name: 'Generate compliance report (KAT evidence from NetBSD build)'
         run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/netbsd-build-test-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
