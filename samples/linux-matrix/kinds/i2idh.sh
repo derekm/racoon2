@@ -234,6 +234,17 @@ EOF
 	done
 	[ "$up" -eq 1 ] || log "FAIL: no ESP child for DH group $G in 45s (resp=$re init=$ie)"
 
+	# charon (esp. the initiator seat) flushes its ESTABLISHED/auth line to
+	# the log slightly AFTER the kernel installs the ESP child — the up-loop
+	# already broke, and A5 reads charon's log, so wait for the completion
+	# marker (bounded; the kind's up gate already proved the exchange).
+	if [ "$PEER_I" = charon ]; then
+		i=0; until grep -qE -- "=> ESTABLISHED|with pre-shared key (successful|verified)" "$D/charon-init.log" 2>/dev/null || [ "$i" -ge 10 ]; do sleep 1; i=$((i+1)); done
+	fi
+	if [ "$PEER_R" = charon ]; then
+		i=0; until grep -qE -- "=> ESTABLISHED|with pre-shared key (successful|verified)" "$D/charon-resp.log" 2>/dev/null || [ "$i" -ge 10 ]; do sleep 1; i=$((i+1)); done
+	fi
+
 	# NDcPP v3.0e CPL for this row — A11 asserts the requested group is in
 	# the claimed set from the actual conf (kmp_dh_group) or charon proposal.
 	i2i_compliance "$D" "$C" "$NSR" "$NSI" "$HR" "$HI" "$name"; cpl=$?
