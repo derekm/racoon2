@@ -14,6 +14,20 @@
 #   R2_VG=1                        plain build: run every unit binary under
 #                                  valgrind --leak-check=full
 #                                  (error-exitcode => a leak/error fails).
+#   R2_VG_MATRIX=1                 (with R2_VG=1, plain build only): AFTER the
+#                                  unit pass, install into the isolated prefix,
+#                                  wrap sbin/iked + sbin/spmd with valgrind
+#                                  shims (real binary kept as *.bin), and run
+#                                  the CASES matrix rows under valgrind.  Each
+#                                  daemon's valgrind log -> /tmp/r2-vg-*.log;
+#                                  findings (Invalid / uninitialised /
+#                                  definite/indirect leaks / SIGSEGV) are
+#                                  scanned and echoed after the row pass.  Use
+#                                  establishing/fragment rows, NOT loss rows:
+#                                  their 45s/130s counted-loss timing asserts
+#                                  are noise under valgrind's 10-30x (those
+#                                  rows stay ASan-covered).  NEVER with R2_SAN
+#                                  (valgrind + ASan instrumented binaries clash).
 #
 # Args: [tarball] [cases-filter]  (same shape as r2-matrix-run.sh)
 # Never touches /usr/local/racoon2 (prod) or the i2i prefix: all builds/installs
@@ -109,6 +123,42 @@ if [ "$VG" = 1 ] && [ -z "$SAN_FLAG" ]; then
         vg_unit iked-$_t $VGBIN "$SRC/iked/$_t" || VG_RC=1
     done
     echo "=== valgrind summary: rc=$VG_RC ===" | tee -a "$LOG"
+fi
+
+if [ "${R2_VG_MATRIX:-0}" = 1 ] && [ -z "$SAN_FLAG" ]; then
+    echo "=== [$(date +%T)] make install (plain, for valgrind matrix) ===" | tee -a "$LOG"
+    make install >>"$LOG" 2>&1 || { tail -20 "$LOG"; exit 1; }
+    if [ -d /usr/local/racoon2-i2i/etc/racoon2/psk ]; then
+        cp -a /usr/local/racoon2-i2i/etc/racoon2/psk/. "$PREFIX/etc/racoon2/psk/" 2>/dev/null
+        echo "=== [$(date +%T)] psk seeded from i2i prefix ($(ls "$PREFIX/etc/racoon2/psk" | wc -l) files) ===" | tee -a "$LOG"
+    fi
+    echo "=== [$(date +%T)] wrap sbin/iked + sbin/spmd with valgrind shims ===" | tee -a "$LOG"
+    for b in iked spmd ikedctl; do
+        [ -x "$PREFIX/sbin/$b" ] || continue
+        [ -x "$PREFIX/sbin/$b.bin" ] && continue
+        cp -a "$PREFIX/sbin/$b" "$PREFIX/sbin/$b.bin"
+        printf '#!/bin/sh\n# valgrind shim (r2-memcheck-run.sh R2_VG_MATRIX) — keep argv/conf visible to pgrep\nVGBIN="valgrind --quiet --log-file=/tmp/r2-vg-%s-%%p.log --leak-check=full --show-leak-kinds=definite,indirect"\nexec $VGBIN "%s" "$@"\n' "$b" "$PREFIX/sbin/$b.bin" > "$PREFIX/sbin/$b"
+        chmod 755 "$PREFIX/sbin/$b"
+        echo "wrapped $PREFIX/sbin/$b -> $b.bin" | tee -a "$LOG"
+    done
+    echo "=== [$(date +%T)] matrix cases=$CASES under valgrind (plain daemons) ===" | tee -a "$LOG"
+    cd "$SRC/samples/linux-matrix" || exit 1
+    bash ./run.sh --src "$SRC" --prefix "$PREFIX" --cases "$CASES" >>"$LOG" 2>&1
+    rc=$?
+    echo "=== [$(date +%T)] matrix rc=$rc ===" | tee -a "$LOG"
+    echo "=== valgrind matrix error scan ===" | tee -a "$LOG"
+    found=0
+    ls /tmp/r2-vg-iked-*.log /tmp/r2-vg-spmd-*.log 2>/dev/null | sort -u > "$SRC/vgscan.txt"
+    while read -r lf; do
+        [ -f "$lf" ] || continue
+        if grep -qE 'Invalid |uninitialised|definitely lost|indirectly lost|ERROR SUMMARY: [1-9]|SIGSEGV|SIGABRT' "$lf"; then
+            found=1
+            echo "FINDINGS in $lf:" | tee -a "$LOG"
+            grep -E 'Invalid |uninitialised|definitely lost|indirectly lost|ERROR SUMMARY|at 0x|by 0x|SIGSEGV|SIGABRT' "$lf" | head -14 | tee -a "$LOG"
+        fi
+    done < "$SRC/vgscan.txt"
+    echo "=== valgrind matrix scan done (findings=$found) ===" | tee -a "$LOG"
+    exit $rc
 fi
 
 if [ -n "$SAN_FLAG" ]; then
