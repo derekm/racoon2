@@ -384,9 +384,8 @@ ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 				goto fail_bad_preshared_key;
 
 			IF_TRACE({
-				TRACE((PLOGLOC, "sharedkey\n"));
-				plogdump(PLOG_DEBUG, PLOGLOC, 0, sharedkey->v,
-					 sharedkey->l);
+				TRACE((PLOGLOC, "sharedkey (%lu bytes, NOT dumped)\n",
+				       (unsigned long)sharedkey->l));
 			});
 			k = keyed_hash(sa->prf, sharedkey,
 				       (rc_vchar_t *)&keypad);
@@ -550,9 +549,8 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 			    sharedkey->l != (size_t)sa->prf->method->preferred_key_len)
 				goto fail_bad_preshared_key;
 			IF_TRACE({
-				TRACE((PLOGLOC, "sharedkey\n"));
-				plogdump(PLOG_DEBUG, PLOGLOC, 0, sharedkey->v,
-					 sharedkey->l);
+				TRACE((PLOGLOC, "sharedkey (%lu bytes, NOT dumped)\n",
+				       (unsigned long)sharedkey->l));
 			});
 			k = keyed_hash(sa->prf, sharedkey, &keypad);
 			rc_vfreez(sharedkey);

@@ -781,7 +781,8 @@ shell_cfg_get_password(void)
 		dp +=2;
 		plen -= 2;
 	}
-	SPMD_PLOG(SPMD_L_DEBUG, "Password=%s", d);
+	SPMD_PLOG(SPMD_L_DEBUG, "spmd interface password (%lu bytes, NOT dumped)",
+		 (unsigned long)vpasswd->l);
 
 	rc_vfree(vpasswd);
 
@@ -822,9 +823,7 @@ spmd_passwd_check(char *str, struct spmd_cid *cid)
 		goto fin;
 	}
 
-	SPMD_PLOG(SPMD_L_DEBUG, "Spmd interface Login Password=>%s", cid->password);
-	SPMD_PLOG(SPMD_L_DEBUG, "Spmd interface Login Challenge=>%s", cid->challenge);
-	SPMD_PLOG(SPMD_L_DEBUG, "Spmd interface Login Hash=>%s", cid->hash);
+	SPMD_PLOG(SPMD_L_DEBUG, "Spmd interface login OK (password/challenge/hash not dumped)");
 
 	plen = strlen(cid->hash);
 	slen = strlen(str);
