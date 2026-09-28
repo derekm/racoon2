@@ -37,6 +37,7 @@
 #include <openssl/ecdsa.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+#include <openssl/rsa.h>
 #include <openssl/sha.h>
 
 #include "var.h"
@@ -284,6 +285,158 @@ test_ecdsa(void)
 	test_ecdsa_one("B5", NID_secp384r1, 384);
 	test_ecdsa_one("B1", NID_X9_62_prime256v1, 256);
 	test_ecdsa_one("B1", NID_secp384r1, 384);
+}
+
+/* ECDSA+RAW-RS: RFC 4754 raw r||s signature format wired into
+ * eay_ecdsa_sign / eay_ecdsa_verify, plus the config->key DER plumbing
+ * (i2v_PrivateKey = i2d_private_key, i2v_PublicKey = i2d_PUBKEY). */
+static rc_vchar_t *
+kat_i2d_privatekey(EVP_PKEY *pkey)
+{
+	unsigned char *der = NULL;
+	int len;
+	rc_vchar_t *buf;
+
+	len = i2d_PrivateKey(pkey, &der);
+	if (len <= 0 || der == NULL)
+		return NULL;
+	buf = rc_vnew(der, len);
+	OPENSSL_free(der);
+	return buf;
+}
+
+static rc_vchar_t *
+kat_i2d_pubkey(EVP_PKEY *pkey)
+{
+	unsigned char *der = NULL;
+	int len;
+	rc_vchar_t *buf;
+
+	len = i2d_PUBKEY(pkey, &der);
+	if (len <= 0 || der == NULL)
+		return NULL;
+	buf = rc_vnew(der, len);
+	OPENSSL_free(der);
+	return buf;
+}
+
+static void
+test_ecdsa_raw_rs_one(const char *cell, int nid, unsigned int bits,
+		      const char *hash)
+{
+	EVP_PKEY *pkey = NULL;
+	EVP_PKEY_CTX *kctx = NULL;
+	rc_vchar_t *privblob = NULL, *pubblob = NULL;
+	rc_vchar_t octets, *sig = NULL;
+	unsigned char sbuf[64];
+	unsigned int width = (bits + 7) / 8;
+	size_t i;
+
+	for (i = 0; i < sizeof(sbuf); i++)
+		sbuf[i] = (unsigned char)(i * 7 + 1);
+	octets = *rc_vnew((const void *)sbuf, sizeof(sbuf));
+
+	kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
+	if (!kctx) goto fail;
+	if (EVP_PKEY_keygen_init(kctx) <= 0) goto fail;
+	if (EVP_PKEY_CTX_set_ec_paramgen_curve_nid(kctx, nid) <= 0) goto fail;
+	if (EVP_PKEY_keygen(kctx, &pkey) <= 0) goto fail;
+
+	/* i2v_PrivateKey-style DER (i2d_private_key) -> privkey blob ... */
+	privblob = kat_i2d_privatekey(pkey);
+	if (!privblob) goto fail;
+	/* ... and i2v_PublicKey-style DER (i2d_PUBKEY) -> pubkey blob */
+	pubblob = kat_i2d_pubkey(pkey);
+	if (!pubblob) goto fail;
+
+	sig = eay_ecdsa_sign(hash, &octets, privblob);
+	if (!sig) goto fail;
+	if (sig->l != (size_t)(width * 2)) {
+		kat_fail(cell, "P-%u raw r||s length %lu != %u",
+			 bits, (unsigned long)sig->l, width * 2);
+		goto out;
+	}
+	if (eay_ecdsa_verify(hash, &octets, sig, pubblob) != 0) {
+		kat_fail(cell, "P-%u raw r||s round-trip verify failed", bits);
+		goto out;
+	}
+	/* corrupted signature must fail closed */
+	((unsigned char *)sig->v)[0] ^= 0x01;
+	if (eay_ecdsa_verify(hash, &octets, sig, pubblob) == 0) {
+		kat_fail(cell, "P-%u corrupted raw r||s signature accepted", bits);
+		goto out;
+	}
+	kat_pass(cell, "P-%u raw r||s sign+verify ok (len %u), "
+		 "key-DER plumbing ok", bits, width * 2);
+	goto out;
+fail:
+	kat_fail(cell, "P-%u raw r||s keygen/sign/verify failed", bits);
+out:
+	if (sig) rc_vfree(sig);
+	rc_free(octets.v);
+	if (privblob) rc_vfree(privblob);
+	if (pubblob) rc_vfree(pubblob);
+	if (kctx) EVP_PKEY_CTX_free(kctx);
+	if (pkey) EVP_PKEY_free(pkey);
+}
+
+static void
+test_ecdsa_raw_rs(void)
+{
+	test_ecdsa_raw_rs_one("ECDSA-RAW-RS", NID_X9_62_prime256v1, 256, "SHA256");
+	test_ecdsa_raw_rs_one("ECDSA-RAW-RS", NID_secp384r1, 384, "SHA384");
+	test_ecdsa_raw_rs_one("ECDSA-RAW-RS", NID_secp521r1, 521, "SHA512");
+}
+
+/* RSA-SHA256: PKCS#1-v1.5 IKEv2 AUTH signature hash is SHA-256
+ * (RFC 8247 3.2); a SHA-1 verify of SHA-256 material must fail. */
+static void
+test_rsa_sha256(void)
+{
+	EVP_PKEY *pkey = NULL;
+	EVP_PKEY_CTX *kctx = NULL;
+	rc_vchar_t *privblob = NULL, *pubblob = NULL;
+	rc_vchar_t octets, *sig = NULL;
+	unsigned char sbuf[64];
+	size_t i;
+
+	for (i = 0; i < sizeof(sbuf); i++)
+		sbuf[i] = (unsigned char)(i * 11 + 3);
+	octets = *rc_vnew((const void *)sbuf, sizeof(sbuf));
+
+	kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+	if (!kctx) goto fail;
+	if (EVP_PKEY_keygen_init(kctx) <= 0) goto fail;
+	if (EVP_PKEY_CTX_set_rsa_keygen_bits(kctx, 2048) <= 0) goto fail;
+	if (EVP_PKEY_keygen(kctx, &pkey) <= 0) goto fail;
+
+	privblob = kat_i2d_privatekey(pkey);
+	if (!privblob) goto fail;
+	pubblob = kat_i2d_pubkey(pkey);
+	if (!pubblob) goto fail;
+
+	sig = eay_rsassa_pkcs1_v1_5_sign("SHA256", &octets, privblob);
+	if (!sig) goto fail;
+	if (eay_rsassa_pkcs1_v1_5_verify("SHA256", &octets, sig, pubblob) != 0) {
+		kat_fail("RSA-SHA256", "SHA-256 sign/verify round-trip failed");
+		goto out;
+	}
+	if (eay_rsassa_pkcs1_v1_5_verify("SHA1", &octets, sig, pubblob) == 0) {
+		kat_fail("RSA-SHA256", "SHA-1 verify accepted a SHA-256 signature");
+		goto out;
+	}
+	kat_pass("RSA-SHA256", "PKCS#1-v1.5 SHA-256 sign/verify ok, "
+		 "SHA-1 verify rejected");
+	goto out;
+fail:
+	kat_fail("RSA-SHA256", "PKCS#1-v1.5 SHA-256 exercise failed");
+out:
+	if (sig) rc_vfree(sig);
+	rc_free(octets.v);
+	if (privblob) rc_vfree(privblob);
+	if (pubblob) rc_vfree(pubblob);
+	if (kctx) EVP_PKEY_CTX_free(kctx);
+	if (pkey) EVP_PKEY_free(pkey);
 }
 
 /* B6: the daemon mints every key/nonce via RAND_bytes (RAND_bytes in
@@ -541,6 +694,8 @@ main(int ac, char **av)
 	test_aes_cbc();
 	test_aes_gcm();
 	test_ecdsa();
+	test_ecdsa_raw_rs();
+	test_rsa_sha256();
 	test_drbg();
 	test_nonce();
 	test_dh_xlen_modp();

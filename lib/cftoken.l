@@ -213,6 +213,7 @@ mlkem1024		{ DP; return(MLKEM1024); }
 psk			{ DP; return(PSK); }
 dss			{ DP; return(DSS); }
 rsasig			{ DP; return(RSASIG); }
+ecdsa			{ DP; return(ECDSA); }
 rsaenc			{ DP; return(RSAENC); }
 rsarev			{ DP; return(RSAREV); }
 gssapi_krb		{ DP; return(GSSAPI_KRB); }

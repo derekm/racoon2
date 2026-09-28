@@ -4256,6 +4256,7 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 				break;
 			case RCT_ALG_RSASIG:
 			case RCT_ALG_DSS:
+			case RCT_ALG_ECDSA:
 				IKEV2_CONF(peers_pubkey, rmconf, peers_pubkey,
 					   0);
 				if (!peers_pubkey) {

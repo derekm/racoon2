@@ -61,7 +61,7 @@ typedef enum {
 	 * rc_alg names map to the IANA Transform Type 4 / KE method
 	 * registry ids 35/36/37 (draft-ietf-ipsecme-ikev2-mlkem-09). */
 	RCT_ALG_MLKEM512, RCT_ALG_MLKEM768, RCT_ALG_MLKEM1024,
-	RCT_ALG_PSK, RCT_ALG_DSS, RCT_ALG_RSASIG, RCT_ALG_RSAENC,
+	RCT_ALG_PSK, RCT_ALG_DSS, RCT_ALG_RSASIG, RCT_ALG_ECDSA, RCT_ALG_RSAENC,
 	RCT_ALG_RSAREV, RCT_ALG_GSSAPI_KRB,
 
 		/* remote */

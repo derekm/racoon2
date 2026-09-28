@@ -193,7 +193,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %token ECP256
 %token ECP384 ECP521
 %token MLKEM512 MLKEM768 MLKEM1024
-%token PSK DSS RSASIG RSAENC RSAREV GSSAPI_KRB
+%token PSK DSS RSASIG RSAENC RSAREV GSSAPI_KRB ECDSA
        /* addresspool for IKE Config */
 %token ADDRESSPOOL
 
@@ -1633,6 +1633,7 @@ algorithm_type
 	|	PSK		{ MKRCFVAL($$, RCT_ALG_PSK); }
 	|	DSS		{ MKRCFVAL($$, RCT_ALG_DSS); }
 	|	RSASIG		{ MKRCFVAL($$, RCT_ALG_RSASIG); }
+	|	ECDSA		{ MKRCFVAL($$, RCT_ALG_ECDSA); }
 	|	RSAENC		{ MKRCFVAL($$, RCT_ALG_RSAENC); }
 	|	RSAREV		{ MKRCFVAL($$, RCT_ALG_RSAREV); }
 	|	GSSAPI_KRB	{ MKRCFVAL($$, RCT_ALG_GSSAPI_KRB); }

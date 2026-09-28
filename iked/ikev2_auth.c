@@ -280,6 +280,24 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 
 
 /*
+ * map an ECDSA IKEv2 AUTH method number to the OpenSSL digest name
+ * (RFC4754: 9 -> SHA256, 10 -> SHA384, 11 -> SHA512)
+ */
+static const char *
+ikev2_auth_ecdsa_hash(int method)
+{
+	switch (method) {
+	case IKEV2_AUTH_ECDSA_SHA256_P256:
+		return "SHA256";
+	case IKEV2_AUTH_ECDSA_SHA384_P384:
+		return "SHA384";
+	case IKEV2_AUTH_ECDSA_SHA512_P521:
+		return "SHA512";
+	}
+	return NULL;
+}
+
+/*
  * returns the content of Auth payload
  * (including struct ikev2payl_auth_h but does not include payload header)
  */
@@ -323,13 +341,11 @@ ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 				   "failed to get private key\n");
 			goto fail;
 		}
-		/* (draft-eronen-ipsec-ikev2-clarifications-05.txt)
-		 * This document recommends that all implementations support SHA-1, and
-		 * use SHA-1 as the default hash function when generating the
-		 * signatures, unless there are good reasons (such as explicit manual
-		 * configuration) to believe that the other end supports something else.
+		/* (RFC8247)
+		 * Section 3.2 requires SHA-256 for IKEv2 AUTH PKCS#1-v1.5 RSA
+		 * signatures; SHA-1 MUST NOT be used for this purpose.
 		 */
-		authdata = eay_rsassa_pkcs1_v1_5_sign("SHA1", octets, privkey);
+		authdata = eay_rsassa_pkcs1_v1_5_sign("SHA256", octets, privkey);
 		if (!authdata) {
 			isakmp_log(sa, 0, 0, 0,
 				   PLOG_INTERR, PLOGLOC,
@@ -354,6 +370,30 @@ ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 			isakmp_log(sa, 0, 0, 0,
 				   PLOG_INTERR, PLOGLOC,
 				   "failed calculating DSS signature\n");
+			goto fail;
+		}
+		break;
+	case IKEV2_AUTH_ECDSA_SHA256_P256:
+	case IKEV2_AUTH_ECDSA_SHA384_P384:
+	case IKEV2_AUTH_ECDSA_SHA512_P521:
+		/* (RFC4754)
+		 * ECDSA Digital Signature (9/10/11) - Computed as specified in
+		 * section 3.3.2 using an ECDSA private key over a SHA-* hash.
+		 * The signature data is the raw r||s octet string.
+		 */
+		privkey = ikev2_private_key(sa, id);
+		if (!privkey) {
+			isakmp_log(sa, 0, 0, 0,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed to get private key\n");
+			goto fail;
+		}
+		authdata = eay_ecdsa_sign(ikev2_auth_ecdsa_hash(method),
+					  octets, privkey);
+		if (!authdata) {
+			isakmp_log(sa, 0, 0, 0,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed calculating ECDSA signature\n");
 			goto fail;
 		}
 		break;
@@ -503,7 +543,7 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 				   "failed to get public key\n");
 			goto fail;
 		}
-		if (eay_rsassa_pkcs1_v1_5_verify("SHA1", octets,
+		if (eay_rsassa_pkcs1_v1_5_verify("SHA256", octets,
 						 authdata, pubkey) == 0)
 			result = VERIFIED_SUCCESS;
 		else
@@ -522,6 +562,22 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 			goto fail;
 		}
 		if (eay_dss_verify(octets, authdata, pubkey) == 0)
+			result = VERIFIED_SUCCESS;
+		else
+			result = VERIFIED_FAILURE;
+		break;
+	case IKEV2_AUTH_ECDSA_SHA256_P256:
+	case IKEV2_AUTH_ECDSA_SHA384_P384:
+	case IKEV2_AUTH_ECDSA_SHA512_P521:
+		pubkey = ikev2_public_key(sa, id, &sa->due_time);
+		if (!pubkey) {
+			isakmp_log(sa, 0, 0, 0,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed to get public key\n");
+			goto fail;
+		}
+		if (eay_ecdsa_verify(ikev2_auth_ecdsa_hash(method),
+				     octets, authdata, pubkey) == 0)
 			result = VERIFIED_SUCCESS;
 		else
 			result = VERIFIED_FAILURE;
@@ -637,6 +693,42 @@ ikev2_auth_method(struct ikev2_sa *sa)
 		return IKEV2_AUTH_DSS;
 	case RCT_ALG_RSASIG:
 		return IKEV2_AUTH_RSASIG;
+	case RCT_ALG_ECDSA:
+#ifdef HAVE_SIGNING_C
+		/* (RFC4754)
+		 * The method number reflects the curve of the private key:
+		 * P-256 -> 9, P-384 -> 10, P-521 -> 11.
+		 */
+		{
+			rc_vchar_t *privkey;
+			int bits;
+
+			privkey = ikev2_private_key(sa, sa->id_i);
+			if (!privkey) {
+				isakmp_log(sa, 0, 0, 0,
+					   PLOG_INTERR, PLOGLOC,
+					   "failed to get private key\n");
+				return 0;
+			}
+			bits = eay_ecdsa_curve_bits(privkey);
+			rc_vfreez(privkey);
+			switch (bits) {
+			case 256:
+				return IKEV2_AUTH_ECDSA_SHA256_P256;
+			case 384:
+				return IKEV2_AUTH_ECDSA_SHA384_P384;
+			case 521:
+				return IKEV2_AUTH_ECDSA_SHA512_P521;
+			default:
+				isakmp_log(sa, 0, 0, 0,
+					   PLOG_INTERR, PLOGLOC,
+					   "unsupported ECDSA curve (%d bits)\n", bits);
+				return 0;
+			}
+		}
+#else
+		return 0;
+#endif
 	default:
 		isakmp_log(sa, 0, 0, 0,
 			   PLOG_INTERR, PLOGLOC,

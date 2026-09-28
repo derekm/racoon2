@@ -63,6 +63,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/ec.h>
+#include <openssl/ecdsa.h>
 #include <openssl/obj_mac.h>
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 #include <openssl/provider.h>
@@ -1419,6 +1420,266 @@ eay_dss_verify(rc_vchar_t *octets, rc_vchar_t *sig, rc_vchar_t *pubkey)
 	if (ctx)
 		EVP_MD_CTX_free(ctx);
 	return -1;
+}
+
+/* (RFC4754) */
+/*
+ * generates an ECDSA signature over Hash(octets) and returns the RAW
+ * r || s octet string, NOT the DER-encoded ECDSA_SIG that EVP emits.
+ * r and s are each exactly the size of the curve order (P-256: 32,
+ * P-384: 48, P-521: 66 octets).
+ *
+ * hash_type:  name string of Hash function
+ * octets:     message octets to sign
+ * privkey:    vmbuf of private key in DER (SEC1 ECPrivateKey or PKCS#8)
+ */
+rc_vchar_t *
+eay_ecdsa_sign(const char *hash_type, rc_vchar_t *octets,
+	       rc_vchar_t *privkey)
+{
+	EVP_PKEY *pkey;
+	BPP_const unsigned char *bp;
+	const EVP_MD *md;
+	EVP_MD_CTX *ctx = NULL;
+	unsigned char *der = NULL;
+	size_t derlen;
+	const unsigned char *derp;
+	ECDSA_SIG *esig = NULL;
+	const BIGNUM *r, *s;
+	rc_vchar_t *sig = 0;
+	int width;
+
+	bp = (unsigned char *)privkey->v;
+	/* convert private key from vmbuf to internal data */
+	pkey = d2i_AutoPrivateKey(NULL, &bp, privkey->l);
+	if (pkey == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed obtaining private key: %s\n", eay_strerror());
+		goto fail;
+	}
+	if (EVP_PKEY_id(pkey) != EVP_PKEY_EC) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "private key is not an EC key\n");
+		goto fail;
+	}
+	width = (EVP_PKEY_bits(pkey) + 7) / 8;
+	if (width < 32) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "unsupported ECDSA curve (%d bits)\n",
+		     EVP_PKEY_bits(pkey));
+		goto fail;
+	}
+
+	md = EVP_get_digestbyname(hash_type);
+	if (!md) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed to find digest algorithm %s\n", hash_type);
+		goto fail;
+	}
+	ctx = EVP_MD_CTX_new();
+	if (!ctx) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed allocating context\n");
+		goto fail;
+	}
+	if (EVP_DigestSignInit(ctx, NULL, md, NULL, pkey) != 1 ||
+	    EVP_DigestSignUpdate(ctx, octets->v, octets->l) != 1 ||
+	    EVP_DigestSignFinal(ctx, NULL, &derlen) != 1) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "ECDSA sign failed: %s\n", eay_strerror());
+		goto fail;
+	}
+	der = malloc(derlen);
+	if (der == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed allocating memory\n");
+		goto fail;
+	}
+	if (EVP_DigestSignFinal(ctx, der, &derlen) != 1) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "ECDSA sign failed: %s\n", eay_strerror());
+		goto fail;
+	}
+
+	/* convert the DER-encoded ECDSA_SIG to the raw r||s octet string */
+	derp = der;
+	esig = d2i_ECDSA_SIG(NULL, &derp, derlen);
+	if (esig == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed parsing ECDSA signature: %s\n", eay_strerror());
+		goto fail;
+	}
+	sig = rc_vmalloc(width * 2);
+	if (sig == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed allocating memory\n");
+		goto fail;
+	}
+	ECDSA_SIG_get0(esig, &r, &s);
+	if (BN_bn2binpad(r, (unsigned char *)sig->v, width) != width ||
+	    BN_bn2binpad(s, (unsigned char *)sig->v + width, width) != width) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed serializing ECDSA signature\n");
+		goto fail;
+	}
+	EVP_MD_CTX_free(ctx);
+	EVP_PKEY_free(pkey);
+	ECDSA_SIG_free(esig);
+	free(der);
+	return sig;
+
+      fail:
+	if (sig)
+		rc_vfree(sig);
+	if (ctx)
+		EVP_MD_CTX_free(ctx);
+	if (pkey)
+		EVP_PKEY_free(pkey);
+	if (esig)
+		ECDSA_SIG_free(esig);
+	if (der)
+		free(der);
+	return 0;
+}
+
+/*
+ * verifies the raw r||s ECDSA signature (RFC4754) over Hash(octets)
+ * returns 0 if successfully verified, non-0 otherwise
+ */
+int
+eay_ecdsa_verify(const char *hash_type, rc_vchar_t *octets, rc_vchar_t *sig,
+		 rc_vchar_t *pubkey)
+{
+	EVP_PKEY *pkey;
+	BPP_const unsigned char *bp;
+	const EVP_MD *md;
+	EVP_MD_CTX *ctx = NULL;
+	unsigned char *der = NULL;
+	int derlen;
+	unsigned char *derout;
+	ECDSA_SIG *esig = NULL;
+	BIGNUM *r = NULL, *s = NULL;
+	int width;
+
+	bp = (unsigned char *)pubkey->v;
+	pkey = d2i_PUBKEY(NULL, &bp, pubkey->l);
+	if (pkey == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed obtaining public key: %s\n", eay_strerror());
+		goto fail;
+	}
+	if (EVP_PKEY_id(pkey) != EVP_PKEY_EC) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "public key is not an EC key\n");
+		goto fail;
+	}
+	width = (EVP_PKEY_bits(pkey) + 7) / 8;
+	if (sig->l != (size_t)(width * 2)) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "invalid ECDSA signature length (%lu)\n",
+		     (unsigned long)sig->l);
+		goto fail;
+	}
+
+	/* convert the raw r||s octet string to a DER-encoded ECDSA_SIG */
+	esig = ECDSA_SIG_new();
+	if (esig == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed allocating ECDSA_SIG\n");
+		goto fail;
+	}
+	r = BN_bin2bn((unsigned char *)sig->v, width, NULL);
+	s = BN_bin2bn((unsigned char *)sig->v + width, width, NULL);
+	if (r == NULL || s == NULL ||
+	    ECDSA_SIG_set0(esig, r, s) != 1) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed parsing ECDSA signature: %s\n", eay_strerror());
+		goto fail;
+	}
+	r = s = NULL;	/* esig owns them now */
+	derlen = i2d_ECDSA_SIG(esig, NULL);
+	if (derlen <= 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed encoding ECDSA signature: %s\n", eay_strerror());
+		goto fail;
+	}
+	der = malloc(derlen);
+	if (der == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed allocating memory\n");
+		goto fail;
+	}
+	derout = der;
+	if (i2d_ECDSA_SIG(esig, &derout) != derlen) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed encoding ECDSA signature\n");
+		goto fail;
+	}
+
+	md = EVP_get_digestbyname(hash_type);
+	if (!md) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed to find the digest algorithm %s\n", hash_type);
+		goto fail;
+	}
+	ctx = EVP_MD_CTX_new();
+	if (ctx == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed allocating context\n");
+		goto fail;
+	}
+	if (EVP_DigestVerifyInit(ctx, NULL, md, NULL, pkey) != 1 ||
+	    EVP_DigestVerifyUpdate(ctx, octets->v, octets->l) != 1 ||
+	    EVP_DigestVerifyFinal(ctx, der, derlen) != 1) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "ECDSA verify failed: %s\n", eay_strerror());
+		goto fail;
+	}
+
+	EVP_MD_CTX_free(ctx);
+	EVP_PKEY_free(pkey);
+	ECDSA_SIG_free(esig);
+	free(der);
+	return 0;
+
+      fail:
+	if (r)
+		BN_free(r);
+	if (s)
+		BN_free(s);
+	if (ctx)
+		EVP_MD_CTX_free(ctx);
+	if (pkey)
+		EVP_PKEY_free(pkey);
+	if (esig)
+		ECDSA_SIG_free(esig);
+	if (der)
+		free(der);
+	return -1;
+}
+
+/*
+ * returns the bit size of the EC group order of the private key
+ * (256/384/521), 0 if the key is not an EC key or on error
+ */
+int
+eay_ecdsa_curve_bits(rc_vchar_t *privkey)
+{
+	EVP_PKEY *pkey;
+	BPP_const unsigned char *bp;
+	int bits = 0;
+
+	bp = (unsigned char *)privkey->v;
+	pkey = d2i_AutoPrivateKey(NULL, &bp, privkey->l);
+	if (pkey == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed obtaining private key: %s\n", eay_strerror());
+		return 0;
+	}
+	if (EVP_PKEY_id(pkey) == EVP_PKEY_EC)
+		bits = EVP_PKEY_bits(pkey);
+	EVP_PKEY_free(pkey);
+	return bits;
 }
 
 /*
