@@ -53,6 +53,9 @@ kind_i2idh() {
 		export I2I_PROPOSAL
 	fi
 	NSR=i2idh-r; NSI=i2idh-i; VR=i2dh-vr; VI=i2dh-vi
+	# responder's peers_id must match THIS row's initiator id: charon
+	# identifies as charon-i2i, iked as r2init-matrix.
+	PEER_ID=$(i2i_peer_resp_id "$PEER_I")
 	HR=192.0.14.1; HI=192.0.14.2
 	PRIVRES_R=/tmp/r2-i2idh-resume-r; PRIVRES_I=/tmp/r2-i2idh-resume-i
 	D=/tmp/r2-i2idh-$G; C=/tmp/r2-i2idh-conf-$G
@@ -70,7 +73,7 @@ remote matrix_resp {
 	ikev2 {
 		passive on;
 		my_id fqdn "racoon2-matrix";
-		peers_id fqdn "r2init-matrix";
+		peers_id fqdn "$PEER_ID";
 		peers_ipaddr "$HI";
 		kmp_enc_alg { aes_gcm; };
 		kmp_prf_alg { hmac_sha2_256; };
