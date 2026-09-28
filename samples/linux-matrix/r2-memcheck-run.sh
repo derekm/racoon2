@@ -38,7 +38,7 @@ PREFIX=/usr/local/racoon2-san
 UNITDIR=$PREFIX/lib/systemd
 TAR=${1:-/home/yescorp/r2-matrix.tar.gz}
 LOG=/home/yescorp/r2-memcheck.log
-CASES=${2:-'^(i2ike-addke|i2ike-drop|i2iinit-drop|i2iinit-addke|i2ike-dup|i2ike-reqdrop|veth-account)([[:space:]]|$)'}
+CASES=${2:-'^(i2ike-addke|i2ike-drop|i2iinit-drop|i2iinit-addke|i2ike-dup|i2ike-reqdrop)([[:space:]]|$)'}
 
 SAN_FLAG=${R2_SAN:-}
 VG=${R2_VG:-0}

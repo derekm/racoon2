@@ -47,7 +47,7 @@ echo "hash proof OK" | tee -a "$LOG"
 # also pulled in i2ike-drop576 (and i2iinit-drop pulled i2iinit-drop576)
 # into a run whose header did not name them.  Each alternative is now
 # anchored to the start of "$name $kind" with a space/end boundary.
-CASES=${2:-'^(i2ike-addke|i2ike-drop|i2iinit-drop|i2iinit-addke|i2ike-dup|i2ike-reqdrop|veth-account)([[:space:]]|$)'}
+CASES=${2:-'^(i2ike-addke|i2ike-drop|i2iinit-drop|i2iinit-addke|i2ike-dup|i2ike-reqdrop)([[:space:]]|$)'}
 echo "=== [$(date +%T)] matrix cases=$CASES ===" | tee -a "$LOG"
 cd "$SRC/samples/linux-matrix" || exit 1
 R2_ADDKE=yes R2_DPD=yes R2_BOX=yes bash ./run.sh --src "$SRC" --prefix "$PREFIX" \

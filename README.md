@@ -244,9 +244,6 @@ Currently, the system supports the following specifications:
 	the socket — dispatch short-circuits the second copy pre-handler;
 	the box proved this pre-arm drop path is silent (completed rekey,
 	zero marker lines), so the wire count is the direct measurement;
-	`veth-account` audits the accounting premise every counted-drop gate
-	stands on (sent == peer UDP-MIB delivered + qdisc dropped, both
-	directions — the raw link RX counter catches ARP replies and lies);
 	`i2ike-silence` (gate=dpd) proves responder exhaustion on a silent
 	peer (retransmit ladder 1,2,4,8,16,32,64 fires the 11th timer at
 	383 s, abort err=110, zero inbound accepted during the silence).

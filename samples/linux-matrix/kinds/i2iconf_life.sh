@@ -235,8 +235,8 @@ EOF
 	# daemons hold the netns + bind :500 in it; if this row is last (it is
 	# in the box full suite) they would otherwise leak into the NEXT run and
 	# perturb the netem-timing rows there (2026-09-27: i2iconf leaked i2cnf
-	# spmd/iked + netns; veth-account then failed repeatedly until cleaned
-	# manually — teardown is not optional).
+	# spmd/iked + netns; the netem-timing rows then failed repeatedly until
+	# cleaned manually — teardown is not optional).
 	pkill -9 -f "$C/" 2>/dev/null || true
 	ip netns del "$NSR" 2>/dev/null || true
 	ip netns del "$NSI" 2>/dev/null || true

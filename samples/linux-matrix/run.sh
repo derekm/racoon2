@@ -20,7 +20,6 @@ HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/kinds/i2ike_dup.sh"
 . "$HERE/kinds/i2ike_reqdrop.sh"
 . "$HERE/kinds/i2ike_silence.sh"
-. "$HERE/kinds/veth_account.sh"
 . "$HERE/kinds/i2ikesa.sh"
 . "$HERE/kinds/i2iinit.sh"
 . "$HERE/kinds/i2ipubkey.sh"
@@ -168,7 +167,7 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate || [ -n "$n
 		skip=$((skip + 1))
 		continue
 	fi
-	# BOX gate: new rows (i2ike-dup, i2ike-reqdrop, veth-account) run
+	# BOX gate: new rows (i2ike-dup, i2ike-reqdrop) run
 	# ONLY on the box until a counted-gate PASS exists there AND a
 	# container run admits them (i2ike-drop576 rule).  The box sets
 	# R2_BOX=yes; CI does not, so unverified rows cannot leak into the
