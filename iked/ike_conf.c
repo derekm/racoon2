@@ -486,7 +486,23 @@ ikev2_ppk_load(struct rcf_remote *rmconf)
 		/* fall through to the test default if the file read fails */
 	}
 
-	/* test/build default: PPK = SHA-256(ppk_id string) */
+	/* test/build default: PPK = SHA-256(ppk_id string).
+	 * A missing secret file is a provisioning error — a deterministic
+	 * SHA-256 of the advertised (public) ppk_id is NOT a secret, so this
+	 * fallback is matrix/test material only.  When the config demanded a
+	 * MANDATORY PPK (ppk_mandatory on), refuse outright: returning 0 here
+	 * makes the RFC 8784 key-mixing step fail and IKE_AUTH abort with
+	 * 'failed to load PPK'.  For an optional session, warn loudly that the
+	 * deployment is running the non-secret test default. */
+	if (ikev2_ppk_mandatory(rmconf) == RCT_BOOL_ON) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "RFC 8784: PPK file %s missing and ppk_mandatory on — refusing to derive a weak default PPK (no SHA-256 fallback for a hardened session)\n",
+		     path);
+		return 0;
+	}
+	plog(PLOG_INTWARN, PLOGLOC, NULL,
+	     "RFC 8784: PPK file %s missing; using non-secret TEST default SHA-256(ppk_id '%.*s') — do NOT run this in production\n",
+	     path, (int)ppk_id->l, (const char *)ppk_id->v);
 	ret = rc_vmalloc(32);
 	if (!ret)
 		return 0;
