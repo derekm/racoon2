@@ -270,16 +270,27 @@ i2i_compliance() {
 	# own required evidence; the log line is not mandatory (the initiator
 	# seat logs console auth differently).
 	a13_ok=1
-	if [ "$_pei" = iked ] && ! grep -q "pre_shared_key" "$_C/initiator.conf" 2>/dev/null; then a13_ok=0; fi
-	if [ "$_per" = iked ] && ! grep -q "pre_shared_key" "$_C/responder.conf" 2>/dev/null; then a13_ok=0; fi
+	# A peer-auth method must be DECLARED on every seat.  Either a PSK or a
+	# public-key (cert) method satisfies the NDcPP A13 "peer authentication"
+	# cell; the SA established (A5) proves the declared method actually ran.
+	if [ "$_pei" = iked ]; then
+		if ! grep -q "pre_shared_key" "$_C/initiator.conf" 2>/dev/null && \
+		   ! grep -q "my_public_key"  "$_C/initiator.conf" 2>/dev/null; then a13_ok=0; fi
+	fi
+	if [ "$_per" = iked ]; then
+		if ! grep -q "pre_shared_key" "$_C/responder.conf" 2>/dev/null && \
+		   ! grep -q "my_public_key"  "$_C/responder.conf" 2>/dev/null; then a13_ok=0; fi
+	fi
 	if [ "$_pei" = charon ] && \
-	   ! grep -q "auth = psk" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
+	   ! grep -q "auth = psk" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null && \
+	   ! grep -q "auth = pubkey" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
 	if [ "$_per" = charon ] && \
-	   ! grep -q "auth = psk" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
+	   ! grep -q "auth = psk" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null && \
+	   ! grep -q "auth = pubkey" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
 	if [ "$a13_ok" -eq 1 ]; then
-		PLOG A13 PASS "peer auth PSK declared on both seats (conf invariant; A5 proves it ran)"
+		PLOG A13 PASS "peer auth (PSK or public key) declared on both seats (conf invariant; A5 proves it ran)"
 	else
-		PLOG A13 FAIL "PSK peer auth not declared on both seats (conf)"
+		PLOG A13 FAIL "peer auth not declared on both seats (conf)"
 	fi
 
 	# ---- A14  reference identifier binding (peer id vs configured) ----------

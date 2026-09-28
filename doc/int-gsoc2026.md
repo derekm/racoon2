@@ -262,11 +262,16 @@ workstream and never conflict with the "Do not" list.
     (commit `ec4f825`, box run rc=0); rows ship `gate=box` pending a
     container run, like `i2iinit-charon`/`i2ike-drop576`.
   - **FCS_IPSEC_EXT.1.11 / "at least one public-key-based method … is
-    required in order to conform"** — every matrix row is
-    `kmp_auth_method { psk; }` (46 data rows; `ikev1.sh`/`i2i*` etc.). The
-    suite has NO live RSA/ECDSA `IKE_AUTH` row proving certificate peer
-    auth end-to-end. `B5 ECDSA` is a unit KAT only. A `.1.11` green cell
-    needs an iked↔iked (or charon) X.509v3 AUTH row.
+    required in order to conform"** — **satisfied** on commit `929979d`.
+    The daemon now wires ECDSA IKE_AUTH (RFC 4754, methods 9/10/11, raw
+    r‖s) in addition to RSA, the RSA PKCS#1-v1.5 signature hash moved off
+    SHA-1 to SHA-256 (RFC 8247 §3.2), and the matrix ships two live
+    iked↔iked X.509 rows (`i2ipubkey-rsa` RSA-2048, `i2ipubkey-ecdsa`
+    P-384) with a per-run test CA + leaf certs, no `pre_shared_key`
+    anywhere; the iked TRACE `auth method 1/10` on both seats plus the ESP
+    child landing prove the public-key AUTH verified end-to-end. Before
+    this, every row was `kmp_auth_method { psk; }` and `B5 ECDSA` was a
+    unit KAT only.
   - **FCS_IPSEC_EXT.2 (EAP) dependency** — this FP routes PSK peer auth
     through EAP-TLS/TTLS + FCS_IPSEC_EXT.2 when ".1.11 PSK transmitted via
     EAP" is selected ("transmitted via means other than EAP" for IKEv1).

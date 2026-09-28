@@ -23,6 +23,7 @@ HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/kinds/veth_account.sh"
 . "$HERE/kinds/i2ikesa.sh"
 . "$HERE/kinds/i2iinit.sh"
+. "$HERE/kinds/i2ipubkey.sh"
 . "$HERE/kinds/i2i_compliance.sh"
 . "$HERE/kinds/i2i_neg.sh"
 . "$HERE/kinds/i2iconf_life.sh"
