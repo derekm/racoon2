@@ -378,39 +378,66 @@ out:
 	if (priv) rc_vfree(priv);
 }
 
+static const struct {
+	size_t		field_len;	/* bytes; profiled curve */
+	int		sec_bits;	/* SP 800-57 strength */
+	const char	*name;
+} ecp_curves[] = {
+	{ 32, 128, "P-256" },
+	{ 48, 192, "P-384" },
+	{ 66, 256, "P-521" },
+};
+
 static void
 test_dh_xlen_ecp(void)
 {
-	rc_vchar_t *pub = NULL, *priv = NULL;
-	BIGNUM *x = NULL;
-	const EC_GROUP *grp = NULL;
-	int xbits, nbits;
+	size_t i;
+	int allok;
 
-	/* daemon path: eay_ecp256_generate (P-256) */
-	if (eay_ecp256_generate(&pub, &priv) < 0 || !priv) {
-		kat_fail("A9", "ECP-256 keygen via eay_ecp256_generate failed");
-		goto out;
+	allok = 1;
+	for (i = 0; i < sizeof(ecp_curves) / sizeof(ecp_curves[0]); i++) {
+		rc_vchar_t *pub = NULL, *priv = NULL;
+		BIGNUM *x = NULL;
+		const EC_GROUP *grp = NULL;
+		int xbits, nbits;
+
+		/* daemon path: eay_ecp_generate (curve-aware, by field len) */
+		if (eay_ecp_generate(ecp_curves[i].field_len, &pub, &priv) < 0 ||
+		    !priv) {
+			kat_fail("A9", "%s keygen via eay_ecp_generate failed",
+			    ecp_curves[i].name);
+			allok = 0;
+			goto next;
+		}
+		x = BN_bin2bn((unsigned char *)priv->v, priv->l, NULL);
+		grp = EC_GROUP_new_by_curve_name(
+		    (ecp_curves[i].field_len == 32) ? NID_X9_62_prime256v1 :
+		    (ecp_curves[i].field_len == 48) ? NID_secp384r1 :
+		    NID_secp521r1);
+		if (!x || !grp) {
+			kat_fail("A9", "%s x/group missing", ecp_curves[i].name);
+			allok = 0;
+			goto next;
+		}
+		xbits = BN_num_bits(x);
+		nbits = BN_num_bits(EC_GROUP_get0_order(grp));
+		if (nbits < 2 * ecp_curves[i].sec_bits || xbits < 1) {
+			kat_fail("A9", "%s order=%d bits x=%d bits",
+			    ecp_curves[i].name, nbits, xbits);
+			allok = 0;
+			goto next;
+		}
+		kat_pass("A9", "%s x=%d bits in order n=%d bits (sec %d;"
+			 " group order >= 2x sec; via daemon eay_ecp_generate)",
+		    ecp_curves[i].name, xbits, nbits, ecp_curves[i].sec_bits);
+next:
+		if (x) BN_free(x);
+		if (grp) EC_GROUP_free((EC_GROUP *)grp);
+		if (pub) rc_vfree(pub);
+		if (priv) rc_vfree(priv);
 	}
-	x = BN_bin2bn((unsigned char *)priv->v, priv->l, NULL);
-	grp = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1);
-	if (!x || !grp) {
-		kat_fail("A9", "ECP-256 x/group missing");
-		goto out;
-	}
-	xbits = BN_num_bits(x);
-	nbits = BN_num_bits(EC_GROUP_get0_order(grp));
-	if (nbits < 256 || xbits < 1) {
-		kat_fail("A9", "ECP-256 order=%d bits x=%d bits", nbits, xbits);
-		goto out;
-	}
-	kat_pass("A9", "ECP-256(P-256) x=%d bits in order n=%d bits"
-		 " (sec 128; group order >= 2x128=256; via daemon"
-		 " eay_ecp256_generate)", xbits, nbits);
-out:
-	if (x) BN_free(x);
-	if (grp) EC_GROUP_free((EC_GROUP *)grp);
-	if (pub) rc_vfree(pub);
-	if (priv) rc_vfree(priv);
+	if (!allok)
+		return;
 }
 
 /* B3: zeroization on the daemon key-teardown path.  iked OPENSSL_cleanse's
