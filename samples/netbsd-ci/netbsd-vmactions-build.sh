@@ -11,12 +11,22 @@
 # root.  Exits non-zero on any step failure.
 set -eu
 
-# root-agnostic: SUDO= when root, else sudo (vmactions ci user is sudo-enabled)
+# root-agnostic: SUDO= when root, else sudo (vmactions VM runs as root; the
+# cross-platform-actions 10.1 job runs as root too — non-root is belt+braces)
 if [ "$(id -u)" = "0" ]; then
 	SUDO=
 else
 	SUDO=sudo
 fi
+
+# ASan/UBSan builds cannot exec under NetBSD's PaX ASLR/mprotect (the
+# sanitizer runtime's shadow-memory mprotect is blocked, and on NetBSD 11 the
+# ASan-instrumented configure conftest dies at exec under ASLR).  Disable the
+# PaX knobs up-front for the whole build/test run; these are what the rc.d
+# smoke disables anyway.  Harmless where a knob does not exist.
+$SUDO sysctl -w security.pax.aslr.global=0 || true
+$SUDO sysctl -w security.pax.aslr.enabled=0 || true
+$SUDO sysctl -w security.pax.mprotect.global=0 || true
 
 echo "=== Installing build dependencies (pkg_add) ==="
 $SUDO /usr/sbin/pkg_add \
@@ -73,8 +83,11 @@ make -C lib check
 make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats"
 
 echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
-$SUDO sysctl -w security.pax.aslr.global=0 || true
-$SUDO sysctl -w security.pax.aslr.enabled=0 || true
-$SUDO -E env PREFIX=/usr/local/racoon2 SRC="$PWD" \
-  sh samples/netbsd-ci/rc-smoke.sh
+if [ -n "$SUDO" ]; then
+	$SUDO -E env PREFIX=/usr/local/racoon2 SRC="$PWD" \
+		sh samples/netbsd-ci/rc-smoke.sh
+else
+	env PREFIX=/usr/local/racoon2 SRC="$PWD" \
+		sh samples/netbsd-ci/rc-smoke.sh
+fi
 echo "=== NetBSD build/test/smoke OK ==="
