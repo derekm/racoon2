@@ -51,18 +51,26 @@ make -j2
 # (addketest/addkekat, only present when WITH_ADDKE) are the combination
 # that trips the upstream libasan-vs-OpenSSL interposer issue (OpenSSL
 # #25456) under ASan.  So the NON-ADDKE legs — NetBSD 10.1/10.2, both
-# OpenSSL 3.0 with no addke units — run the full unit/KAT suites UNDER
-# ASan here (the former cross-platform 10.1 leg proved this green).  The
+# OpenSSL 3.0 with no addke units — run the unit/KAT suites UNDER ASan
+# here (the former cross-platform 10.1 leg proved this green).  The
 # ADDKE leg (11.0, OpenSSL 3.5.7) keeps ASan as a compile probe only and
 # runs the suites against the non-sanitized, deployment-shaped rebuild
 # below.  Gate from the built config, not the release.
 if ! grep -q "^#define WITH_ADDKE 1" iked/config.h 2>/dev/null; then
 	echo "=== Unit suites UNDER ASan (non-ADDKE leg) ==="
+	# loginkat exercises OpenSSL's EVP HMAC (spmd_if_login_response),
+	# which trips the same libasan-vs-OpenSSL interposer as the ADDKE
+	# units on these VMs — observed "if_spmd.c:1123: failed to compute
+	# login HMAC" (HMAC() returns NULL), OpenSSL issue #25456.  It is
+	# NOT a racoon2 defect: loginkat passes on the non-sanitized,
+	# production-shaped rebuild below (make -C lib check runs it there).
+	# sample + kmtest run racoon2's own config/ring-buffer code and pass
+	# under ASan here.
 	# Dump the failing test logs so a sanitizer trip is diagnosable in CI
 	# (automake hides per-test stderr by default; the reason lives in
 	# test-suite.log / the individual .log files).
-	make -C lib check || { cat lib/test-suite.log 2>/dev/null | tail -80; \
-			       for _l in lib/*.log; do [ -f "$_l" ] && grep -lE "AddressSanitizer|ERROR|runtime error" "$_l" >/dev/null 2>&1 && { echo "--- $_l ---"; tail -60 "$_l"; }; done; exit 1; }
+	make -C lib check TESTS="sample kmtest" || { cat lib/test-suite.log 2>/dev/null | tail -80; \
+		       for _l in lib/*.log; do [ -f "$_l" ] && grep -lE "AddressSanitizer|ERROR|runtime error" "$_l" >/dev/null 2>&1 && { echo "--- $_l ---"; tail -60 "$_l"; }; done; exit 1; }
 	make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats" || { cat iked/test-suite.log 2>/dev/null | tail -80; exit 1; }
 else
 	echo "=== ASan = compile probe only (ADDKE/OpenSSL 3.5 leg) ==="
