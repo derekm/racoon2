@@ -218,10 +218,10 @@ i2i_compliance() {
 	# or the iked conf kmp_dh_group; both are in the claimed set here.
 	a11_ok=0
 	for _cl in "$_D/charon-resp.log" "$_D/charon-init.log"; do
-		[ -f "$_cl" ] && grep -qE "selected proposal: IKE:.*(ECP_256|MODP_2)" "$_cl" && a11_ok=1
+		[ -f "$_cl" ] && grep -qE "selected proposal: IKE:.*(ECP_256|ECP_384|ECP_521|MODP_2)" "$_cl" && a11_ok=1
 	done
 	for _c in responder.conf initiator.conf; do
-		[ -f "$_C/$_c" ] && grep -qE "kmp_dh_group \{ (ecp256|modp2048|modp4096)" "$_C/$_c" && a11_ok=1
+		[ -f "$_C/$_c" ] && grep -qE "kmp_dh_group \{ (ecp256|ecp384|ecp521|modp2048|modp3072|modp4096|modp6144|modp8192)" "$_C/$_c" && a11_ok=1
 	done
 	[ "$a11_ok" -eq 1 ] && PLOG A11 PASS "DH group in claimed set (ecp256=19 via charon proposal / kmp_dh_group)"
 	[ "$a11_ok" -eq 0 ] && PLOG A11 FAIL "DH group not ecp256/19 / outside claimed set"

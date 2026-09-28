@@ -16,6 +16,7 @@ I2I_CHARON_ID=charon-i2i
 I2I_CHARON_BIN=${I2I_CHARON_BIN:-/usr/libexec/strongswan/charon}
 I2I_SWANCTL_BIN=${I2I_SWANCTL_BIN:-/usr/bin/swanctl}
 I2I_CHARON_VDIR=${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}
+I2I_DH_GROUP=${I2I_DH_GROUP:-ecp256}	# charon IKE proposal DH group
 
 # i2i_peer <name> — INITIATOR-seat backend for a case: charon when the name
 # carries a -charon suffix (or R2_PEER_I=charon globally), else iked.
@@ -57,7 +58,7 @@ connections {
 	$_name {
 		version = 2
 		rekey_time = 0s
-		proposals = aes256gcm16-prfsha256-ecp256-ke1_mlkem768
+		proposals = aes256gcm16-prfsha256-${I2I_DH_GROUP}-ke1_mlkem768
 		local_addrs = $_HI
 		remote_addrs = $_HR
 		local {
@@ -158,7 +159,7 @@ connections {
 	$_name {
 		version = 2
 		rekey_time = 0s
-		proposals = aes256gcm16-prfsha256-ecp256-ke1_mlkem768
+		proposals = aes256gcm16-prfsha256-${I2I_DH_GROUP}-ke1_mlkem768
 		local_addrs = $_HR
 		remote_addrs = $_HI
 		local {

@@ -52,3 +52,15 @@ i2ineg-a12strict	i2i_neg	pass	0	NDcPP A12 STRICT (FCS_IPSEC_EXT.1.12): 256-bit C
 i2ineg-a12permit	i2i_neg	pass	0	NDcPP A12 RFC-PERMISSIVE: same 256-bit child under 128-bit IKE_SA, parent_child_strength off (default) - RFC 7296 allows it, TOE must ACCEPT (child establishes). Positive gate. gate=box, i2i topology.	box
 i2iconf-lifetime	i2iconf_life	pass	0	NDcPP A7/A8 CONF (admin-configurable lifetimes, notes 88/89): distinctive knobs kmp_sa_lifetime_time 37s (IKE_SA) + ipsec_sa_lifetime_time 53s (CHILD_SA); asserts the 53s reaches SADB as hard time (not default) AND an IKE_SA rekey fires inside the 37s soft window. gate=box (netns+xfrm), classical ESP, runs on any build.	box
 i2i-nsawarn	i2i_nsawarn	pass	0	NSA/CNSSP-15: kmp_enc_alg lists 3des_cbc on both seats — iked must log 'configuring obsolete algorithm 3DES-CBC' (nsa_deprecated_alg) at proposal-build on both sides while negotiation still lands on aes256_cbc and the ESP child establishes (advisory-only, never blocks). PASS = warning in both iked logs + child up.	box
+i2idh-modp2048	i2idh	pass	0	RFC 8247 group 14: iked<->iked negotiates modp2048; ESP child up on both seats proves the KE payload keyed; A11 reports the group (kmp_dh_group).	box
+i2idh-modp3072	i2idh	pass	0	RFC 8247 group 15: modp3072 iked<->iked; ESP child up; A11 group in claimed set.	box
+i2idh-modp4096	i2idh	pass	0	RFC 8247 group 16: modp4096 iked<->iked; ESP child up; A11 group in claimed set.	box
+i2idh-modp6144	i2idh	pass	0	RFC 8247 group 17: modp6144 iked<->iked; ESP child up; A11 group in claimed set.	box
+i2idh-modp8192	i2idh	pass	0	RFC 8247 group 18: modp8192 iked<->iked; ESP child up; A11 group in claimed set.	box
+i2idh-ecp256	i2idh	pass	0	RFC 8247 group 19 (ECP-256): iked<->iked regression row (control for the ECP path); ESP child up; A11 group in claimed set.	box
+i2idh-ecp384	i2idh	pass	0	RFC 8247 group 20 (ECP-384, FP .1.8-mandatory, closes G1): iked<->iked negotiates the NEW curve via eay_ecp_generate/compute field-len dispatch; ESP child up proves keymat derived; A11 group in claimed set.	box
+i2idh-ecp521	i2idh	pass	0	RFC 8247 group 21 (ECP-521): iked<->iked negotiates the NEW curve; ESP child up proves 66-byte field ECDH keymat; A11 group in claimed set.	box
+i2idh-ecp384-charon	i2idh	pass	0	Interop (initiator seat): strongSwan charon proposes ECP-384 (swanctl I2I_DH_GROUP=ecp384); iked responder negotiates; ESP child up proves cross-implementation P-384 keymat match (AUTH+SK). A11 via charon selected-proposal ECP_384.	box
+i2idh-ecp384-charonr	i2idh	pass	0	Interop (responder seat): charon RESPONDS with ECP-384 (passive swanctl); iked initiator drives; ESP child up proves cross-implementation P-384 keymat match. A11 via charon selected-proposal ECP_384.	box
+i2idh-ecp521-charon	i2idh	pass	0	Interop (initiator seat): charon proposes ECP-521; iked responder negotiates; ESP child up proves cross-implementation P-521 keymat match. A11 via ECP_521.	box
+i2idh-ecp521-charonr	i2idh	pass	0	Interop (responder seat): charon RESPONDS with ECP-521; iked initiator drives; ESP child up proves cross-implementation P-521 keymat match. A11 via ECP_521.	box
