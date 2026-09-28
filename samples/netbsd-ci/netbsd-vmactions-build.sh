@@ -47,16 +47,22 @@ LDFLAGS="${SAN_LDFLAGS}" \
 echo "=== Building (sanitized compile probe) ==="
 make -j2
 
-# Sanitizer coverage note (all three NetBSD legs are now vmactions):
-# every leg keeps ASan/UBSan as a COMPILE PROBE (this build) and runs the
-# KAT/unit suites against the non-sanitized, deployment-shaped rebuild below.
-# Running the KAT binaries under ASan on the vmactions VMs trips an upstream
-# libasan-vs-OpenSSL interposer issue (failed HMAC-SHA256 EVP ops, empty ERR,
-# OpenSSL #25456) — sample and loginkat fail under ASan while passing on the
-# identical production-shaped build.  This means CI no longer EXECUTES the
-# unit suites under ASan: the former cross-platform 10.1 leg (removed 2026-09,
-# ported to vmactions) was the only runner that did.  ASan-runtime KAT
-# coverage now lives in local WSL dev builds, not CI.
+# ASan-runtime unit suites.  The ADDKE/OpenSSL-3.5 ML-KEM units
+# (addketest/addkekat, only present when WITH_ADDKE) are the combination
+# that trips the upstream libasan-vs-OpenSSL interposer issue (OpenSSL
+# #25456) under ASan.  So the NON-ADDKE legs — NetBSD 10.1/10.2, both
+# OpenSSL 3.0 with no addke units — run the full unit/KAT suites UNDER
+# ASan here (the former cross-platform 10.1 leg proved this green).  The
+# ADDKE leg (11.0, OpenSSL 3.5.7) keeps ASan as a compile probe only and
+# runs the suites against the non-sanitized, deployment-shaped rebuild
+# below.  Gate from the built config, not the release.
+if ! grep -q "^#define WITH_ADDKE 1" iked/config.h 2>/dev/null; then
+	echo "=== Unit suites UNDER ASan (non-ADDKE leg) ==="
+	make -C lib check
+	make -C iked check TESTS="eaytest evlooptest workerstest ndcppkats"
+else
+	echo "=== ASan = compile probe only (ADDKE/OpenSSL 3.5 leg) ==="
+fi
 
 echo "=== make install (sanitized, for the unit-test build only) ==="
 $SUDO make install
