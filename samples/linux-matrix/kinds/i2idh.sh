@@ -42,14 +42,6 @@ kind_i2idh() {
 
 	I2I_DH_GROUP=$G
 	export I2I_DH_GROUP
-	PEER_I=$(i2i_peer "$name")
-	PEER_R=$(i2i_peer_r "$name")
-	# the charon seats negotiate CLASSICAL IKE here (no ADDKE on the i2idh
-	# iked side): drop the -ke1_mlkem768 element charon's default carries.
-	if [ "$PEER_I" = charon ] || [ "$PEER_R" = charon ]; then
-		I2I_PROPOSAL="aes256gcm16-prfsha256-${I2I_DH_GROUP}"
-		export I2I_PROPOSAL
-	fi
 	NSR=i2idh-r; NSI=i2idh-i; VR=i2dh-vr; VI=i2dh-vi
 	HR=192.0.14.1; HI=192.0.14.2
 	PRIVRES_R=/tmp/r2-i2idh-resume-r; PRIVRES_I=/tmp/r2-i2idh-resume-i
