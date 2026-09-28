@@ -123,4 +123,69 @@ nfail="$(grep -c ':FAIL:' "$TMP")"
 } >> "$OUT"
 
 echo "mk_report: wrote $OUT ($n cells, $n_fail fail, $n_noev no-evidence)"
-exit "$rc"
+
+{
+echo
+echo "## Appendix A — NIAP Functional Package for IPsec v1.0 (2022-03-29) mapping"
+echo
+echo "The \`FCS_IPSEC_EXT.1\` elements above are quoted under the cPP_ND v3.0e"
+echo "element ordering. The NIAP *Functional Package for IPsec v1.0*"
+echo "(draft, 2022-03-29, commoncriteria.github.io/pp/ipsec) uses the same"
+echo "component but a *different element ordering* (mode = .1.2, final-SPD"
+echo "entry = .1.3, SA lifetimes = .1.7, DH groups = .1.8, strength = .1.13;"
+echo "no .1.14 — identifier matching is .1.12). The mapping below is by"
+echo "substance, not by element number."
+echo
+echo "| FP element | FP requirement (short) | Report cell | Coverage |"
+echo "|------------|------------------------|-------------|----------|"
+echo "| .1.1 | IPsec per RFC 4301 (SPD PROTECT/BYPASS/DISCARD, ordering) | A1 | covered → A1 evidence |"
+echo "| .1.2 | tunnel mode and/or transport mode | A3 | covered → A3 evidence |"
+echo "| .1.3 | nominal final SPD entry discards unmatched | A2 | covered → A2 evidence |"
+echo "| .1.4 | ESP RFC 4303; **AES-GCM-128/256 mandatory** plus optional AES-CBC+HMAC | A4 | AES-GCM offered (aes_gcm 16/24/32) → A4 evidence |"
+echo "| .1.5 | IKEv1 Main Mode / IKEv2 RFC 7296; VPN ⇒ NAT-T **mandatory**; cites RFC 8784/8247/4868 | A5 (+NAT-T row) | IKEv2+NAT-T covered → A5 evidence |"
+echo "| .1.6 | IKE encrypted payload AES-CBC+HMAC (+optional AES-GCM RFC 5282) | A6 | covered → A6 evidence |"
+echo "| .1.7 | IKEv2 SA lifetimes admin-configurable (time/packets/bytes) | A7/A8 | covered → A7/A8 evidence |"
+echo "| .1.8 | DH groups **19 and 20 mandatory**; optional 14/15/16/17/18/24 | A11 | **group 19 PASS only — group 20 not implemented (see G1)** |"
+echo "| .1.9 | DH secret x ≥ 2× negotiated group bits-of-security | A9 | covered → A9 evidence |"
+echo "| .1.10 | IKE nonces ≥ 1/2^bits-of-security repetition (RFC 7296 half-PRF) | A10 | covered → A10 evidence |"
+echo "| .1.11 | peer auth RSA/ECDSA X.509v3 (RFC 4945) + optional PSK; **≥1 public-key method required** | A13 | **PSK PASS only — no live public-key AUTH row (see G2)** |"
+echo "| .1.12 | SA only if presented cert identifier matches configured reference | A14 | covered → A14 evidence |"
+echo "| .1.13 | parent (IKE_SA) symmetric strength ≥ child (CHILD_SA) by default | A12 | covered → A12 evidence |"
+echo
+echo "### Open items for FP conformance (not satisfied at this commit)"
+echo
+echo "- **G1 — DH group 20 (P-384) is mandatory in .1.8** yet not implemented:"
+echo "  \`iked/ike_conf.c\` ships only \`ECP256\` (group 19); \`ECP384\`/\`ECP521\`"
+echo "  are commented out and \`dh_ecp256\` is a placeholder memset (not a real"
+echo "  EC group). Closing .1.8 requires a genuine ECDH-P-384 feature"
+echo "  (dh_ecp384 + curve-NID dispatch + transform row), not a config knob."
+echo "  The A11 PASS above evidences group 19 only."
+echo "- **G2 — .1.11 requires at least one public-key (RSA/ECDSA) peer-auth"
+echo "  method in order to conform**; every matrix row is \`psk\` (53 sites)"
+echo "  and B5 ECDSA is a unit KAT only — there is no live X.509 IKE_AUTH"
+echo "  row. Add an iked↔iked (or -charon) cert-auth row to satisfy .1.11."
+echo "- **RFC 8784 (PPK) divergence**: .1.5 cites RFC 8784 in the IKEv2"
+echo "  selection; racoon2's post-quantum story is RFC 9242/9370 ADDKE"
+echo "  (pre-suite PQC), not RFC 8784 mixing. A PPK claim requires the RFC"
+echo "  8784 PRF+ extension. ADDKE satisfies a later, stronger protection."
+echo
+echo "### Incorporation dependencies (ST must also claim, per FP §2)"
+echo
+echo "| Dependency | Provides | Report cell |"
+echo "|------------|----------|-------------|"
+echo "| FCS_CKM.1 / .2 / .4 | keygen / establishment / destruction | B1/B2/B3 |"
+echo "| FCS_COP.1 (AES, sig, hash, HMAC) | crypto | B4/B5 |"
+echo "| FCS_RBG_EXT.1 | DH x + nonces | B6, A9/A10 |"
+echo "| FIA_PSK_EXT.1 | PSK composition (if PSK selected in .1.11) | A13 |"
+echo "| FIA_X509_EXT.1/.2 | X.509v3 cert handling (required by .1.11 pubkey) | A13/A14 (config surface) |"
+echo "| FPT_STM.1 | reliable time (for .1.12 + cert validity) | A14 context |"
+echo
+echo "### Auditable events (FP §3.1 Table 1, if FAU_GEN.1 present)"
+echo
+echo "| Audited event | This report's evidence |"
+echo "|---------------|------------------------|"
+echo "| decisions to DISCARD or BYPASS network packets (+SPD entry applied) | A2 evidence (default-discard SPD); A1 SPD actions |"
+echo "| failure to establish an IPsec SA (+ identity/reason) | A13/A14 NEG rows (\"authentication failure\", \"does not match peers id\"); A12 strict CHILD refusal |"
+echo
+}
+exit $rc

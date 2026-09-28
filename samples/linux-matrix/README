@@ -74,7 +74,14 @@ A12 IKE_SA>=CHILD_SA strength, A13 peer auth, A14 identifier binding) plus
 a B2 key-establishment line; every line is read from the row's OWN retained
 artifacts (netns xfrm policy/state, iked/charon logs, conf dir) — never
 invented.  Unit-level cells (A9 DH-secret length, A10 nonce size, B1/B3-B6
-crypto SFRs) emit INFO pointing at the KAT unit rows.  A wired cell that
+crypto SFRs) emit INFO pointing at the KAT unit rows.
+
+Standalone mappings for adjacent compliance scopes:
+`doc/nsa-ipsec-hardening.md` (NSA briefs -> config),
+`doc/usgv6-npd-compliance-matrix.md` (USGv6 NPD v1.3 device plan ->
+racoon2 / platform / out-of-scope), and `mk_report.sh` Appendix A
+(NIAP Functional Package for IPsec v1.0 element mapping, with the two
+open FP items G1/G2).  A wired cell that
 FAILs fails the case; INFO cells never do.  The kind calls it BEFORE netns
 teardown (policy/SADB/counters must be live).
 
