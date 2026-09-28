@@ -238,6 +238,15 @@ workstream and never conflict with the "Do not" list.
 
 - IKEv2 EAP-MSCHAPv2 + RADIUS.
 - QCD token-taker. RFC 8784 PPK — **now ordered after RFC 9242** (see Begin section above); needs a PSK source.
+- **ASan/UBSan on the Linux netns matrix daemons** (review deleg_251cffaf rec). The
+  RFC 9370/9242/fragment-reassembly/ADDKE-teardown surface (~36k new lines) is
+  exercised by the i2i matrix without sanitizers; NetBSD ASan covers only the
+  isolated unit/KAT harnesses (the rc.d smoke must stay non-sanitized per the
+  libasan-vs-provider-digest toolchain bug). Build the i2i-prefix iked with
+  `-fsanitize=address,undefined` in the netns matrix and run the counted-gate
+  rows — the highest-value next verification. Timing-sensitive rows
+  (drop576/replay ladders) may false-fail under ASan's overhead; those stay on
+  the production-shaped binary, sanitized runs target the pure-crypto rows.
 - Transport-mode IKEv2 e2e; IPv6-in-IPv4; Windows/Android/macOS.
 - Fuzz `ikev2_input` / `isakmp`. Live IKEv1 NAT-OA peer.
 
