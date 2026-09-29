@@ -74,6 +74,64 @@ addketest_SOURCES = addketest.c ikev2_addke.c
 addkekat_SOURCES = addkekat.c
 endif
 
+# RFC 7296 2.23.1 NAT-T transport TS/ID address-substitution unit tests
+# (upstream gsoc2026 work, cherry-picked from ssszcmawo/racoon2):
+# TS substitution (ike_conf.c), the IKEv1 NAT-OA payload helpers
+# (ikev1_natt.c) and the IP_ANY wildcard (historic IP_RW synonym) ID
+# handling.  Each links all iked objects except main.o (the tests
+# provide their own main() plus the main.o globals).  The object list
+# is spelled out via the same source group as iked_SOURCES instead of
+# $(filter-out ...) because BSD make (FreeBSD/NetBSD CI) has no GNU
+# filter-out builtin and would expand the LDADD to nothing.
+TESTS += test_ts_substitute test_natoa test_ip_any
+check_PROGRAMS += test_ts_substitute test_natoa test_ip_any
+test_ts_substitute_SOURCES = test_ts_substitute.c
+test_ts_substitute_LDADD = $(addtest_ikedsrc) $(LDADD)
+test_natoa_SOURCES = test_natoa.c
+test_natoa_CPPFLAGS = $(AM_CPPFLAGS) -Iikev1
+test_natoa_LDADD = $(addtest_ikedsrc) $(LDADD)
+test_ip_any_SOURCES = test_ip_any.c
+test_ip_any_LDADD = $(addtest_ikedsrc) $(LDADD)
+
+if USE_EPOLL
+addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
+	isakmp.$(OBJEXT) authenticator.$(OBJEXT) encryptor.$(OBJEXT) \
+	crypto_openssl.$(OBJEXT) crypto_workers.$(OBJEXT) str2val.$(OBJEXT) \
+	keyed_hash.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
+	ike_spmif.$(OBJEXT) schedule.$(OBJEXT) ratelimit.$(OBJEXT) \
+	script.$(OBJEXT) rtsock.$(OBJEXT) \
+	$(addtest_ikev1) $(addtest_ikev2) evloop_epoll.$(OBJEXT) \
+	$(addtest_admin)
+else
+addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
+	isakmp.$(OBJEXT) authenticator.$(OBJEXT) encryptor.$(OBJEXT) \
+	crypto_openssl.$(OBJEXT) crypto_workers.$(OBJEXT) str2val.$(OBJEXT) \
+	keyed_hash.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
+	ike_spmif.$(OBJEXT) schedule.$(OBJEXT) ratelimit.$(OBJEXT) \
+	script.$(OBJEXT) rtsock.$(OBJEXT) \
+	$(addtest_ikev1) $(addtest_ikev2) evloop_select.$(OBJEXT) \
+	$(addtest_admin)
+endif
+addtest_ikev1 = ikev1/ikev1.$(OBJEXT) ikev1/genlist.$(OBJEXT) \
+	ikev1/ipsec_doi.$(OBJEXT) ikev1/isakmp_ident.$(OBJEXT) \
+	ikev1/isakmp_quick.$(OBJEXT) ikev1/isakmp_inf.$(OBJEXT) \
+	ikev1/handler.$(OBJEXT) ikev1/strnames.$(OBJEXT) \
+	ikev1/oakley.$(OBJEXT) ikev1/vendorid.$(OBJEXT) \
+	ikev1/algorithm.$(OBJEXT) ikev1/proposal.$(OBJEXT) \
+	ikev1/pfkey.$(OBJEXT) ikev1/ikev1_natt.$(OBJEXT)
+addtest_ikev2 = ikev2.$(OBJEXT) ikev2_intermediate.$(OBJEXT) \
+	ikev2_auth.$(OBJEXT) ikev2_child.$(OBJEXT) ikev2_cookie.$(OBJEXT) \
+	ikev2_notify.$(OBJEXT) ikev2_packet.$(OBJEXT) ikev2_payload.$(OBJEXT) \
+	ikev2_decrypt.$(OBJEXT) ikev2_proposal.$(OBJEXT) ikev2_rekey.$(OBJEXT) \
+	ikev2_config.$(OBJEXT) ikev2_frag.$(OBJEXT) ikev2_resume.$(OBJEXT) \
+	ikev2_resume_rec.$(OBJEXT) ikev2_qcd.$(OBJEXT) ikev2_addke.$(OBJEXT) \
+	ikev2cfg_walk.$(OBJEXT) nattraversal.$(OBJEXT)
+if USE_ADMIN
+addtest_admin = admin.$(OBJEXT)
+else
+addtest_admin =
+endif
+
 LIBS = @LIBS@
 
 man_MANS = iked.8
