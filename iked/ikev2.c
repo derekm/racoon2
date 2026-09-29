@@ -2629,8 +2629,8 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 			 * and would not match a bare id. */
 			rc_vchar_t *typed = rc_vmalloc(ppk_id->l + 1);
 			if (typed) {
-				typed->v[0] = 2;	/* PPK_ID_FIXED */
-				memcpy(typed->v + 1, ppk_id->v, ppk_id->l);
+				((uint8_t *)typed->v)[0] = 2;	/* PPK_ID_FIXED */
+				memcpy((uint8_t *)typed->v + 1, ppk_id->v, ppk_id->l);
 				ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
 						    ikev2_notify_payload(0, 0, 0,
 									 IKEV2_PPK_IDENTITY,
