@@ -203,6 +203,20 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   `ppk_mandatory` / `ppk_id` in `remote { ikev2 { } }` (`ike_conf.c`).  The
   open pieces are a PSK-provisioning story for multi-vendor/phone interop and a
   cross-implementation (non-iked) peer; the matrix rows stay iked↔iked.
+- **PPK × IKE_INTERMEDIATE deferral fix (`287540a`, 2026-09-28, deployed to
+  prod):** the iOS "Connecting…" hang was racoon2 PPK-mixing SK_d at IKE_SA_INIT
+  AND re-mixing inside the post-ADDKE `ikev2_compute_keys` call, so the
+  intermediate `SKEYSEED(1)=prf(SK_d,…)` (RFC 9370 §2.2.2) saw a PPK'd SK_d and
+  gen-1 SK_ei/SK_ai diverged from iOS, which *defers* the PPK to the final
+  generation (a responder cannot know the PPK until IKE_AUTH PPK_IDENTITY; RFC
+  9867 §3.1.1).  Wire tell: USE_PPK confirmed + ADDKE round completes
+  (SK_e/SK_a never PPK-mixed) then IKE_AUTH "failed to decrypt".  Fix adds
+  `ppk_deferred` on both seats when `intermediate_negotiated && addke != 0`;
+  `ikev2_compute_keys` skips the mix while deferred, and `ikev2_ppk_apply()`
+  mixes the FINAL generation once in both intermediate round-complete paths
+  (initiator before IKE_AUTH send, responder before awaiting IKE_AUTH).  Pure
+  RFC 8784 (no ADDKE) still mixes at IKE_SA_INIT.  `i2iinit-ppk` matrix stays
+  green (self-consistent — NOT the iOS proof; a third-party peer exposed it).
 
 ## Still this chunk (do not start EAP/8784)
 
