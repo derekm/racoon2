@@ -1081,9 +1081,11 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		SCHED_KILL(sa->addke_rekey_timer);
 		sa->addke_rekey_timer = NULL;
 	}
+	#ifdef WITH_ADDKE
 	if (sa->addke_rekey_complete)
 		ikev2_rekey_abandon_parked(sa);
 
+	#endif /* WITH_ADDKE */
 	if (sa->rmconf)
 		rcf_free_remote(sa->rmconf);
 
