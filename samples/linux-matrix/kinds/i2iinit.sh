@@ -408,8 +408,10 @@ fi
 	if [ "${nint:-0}" -eq 1 ]; then
 		pqc=1
 		log "INITIAL IKE_SA ADDKE: IKE_INTERMEDIATE round on BOTH sides, ESP child up => SK(1) key material matched"
-	else
+	elif [ "${need_pqc:-1}" = 1 ]; then
 		log "FAIL: initial IKE_SA not ADDKE/ML-KEM (nint=${nint:-0})"
+	else
+		log "waived: classical-CBC row has no ADDKE round (need_pqc=0, expected)"
 	fi
 
 	# RFC 8784 PPK rows: with USE_PPK on both seats the child only lands if
