@@ -173,10 +173,13 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   carrying an Encrypted payload. It is a **carrier** for additional key exchange
   (e.g. ADDKE/ML-KEM) that updates SK_e/SK_a per the applying spec; the rounds are
   bound into AUTH via the **chained IntAuth PRF** (`IntAuth_i/rN`) + `IKE_AUTH_MID`
-  chunk appended to each peer's signed/mac'd blob.  **Landed in `iked/ikev2.c`;**
-  the minimal `iked/ikev2_intermediate.c` TU holds only
-  `ikev2_intermediate_clear` (SA-dispose release of IntAuth/ML-KEM state) — the
-  exchanger itself is still the ~7.8k-line tail of `ikev2.c`.  Initiator
+  chunk appended to each peer's signed/mac'd blob.  **Landed: the full exchange
+  (exch-43 handlers, IntAuth chain, ADDKE-round finalize, gen-0 response replay)
+  lives in `iked/ikev2_intermediate.c`** — the four cross-TU entry points
+  (`initiator_ike_intermediate_send/recv`, `responder_ike_intermediate_recv`,
+  `ikev2_replay_intermediate_response`) are extern via `ikev2_impl.h`;
+  `initiator_state1_send` is shared (extern, unguarded).  `ikev2.c` keeps the
+  dispatch sites (its ~7.8k-line RFC 9242 tail is gone; `c7df136`).  Initiator
   offers N(16438) when
   `WITH_INTERMEDIATE` is on; responder echoes it only when the peer offered it
   **AND** the selected proposal carries type-6 (`negotiated_sa->addke != 0`)

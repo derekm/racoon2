@@ -29,11 +29,14 @@
  */
 
 /*
- * RFC 9242 IKE_INTERMEDIATE helpers that must outlive ikev2.c.
+ * RFC 9242 IKE_INTERMEDIATE: exchange handlers, IntAuth chain, ADDKE-round
+ * finalize, gen-0 response replay, and SA-dispose release (clear fns).
  *
- * ikev2.c still owns the exchange (exch 43, IntAuth chain, ADDKE round).
- * This TU exists so SA dispose can release IntAuth / ML-KEM state without
- * pulling the 7.8k-line ikev2.c through the GitHub contents push path.
+ * The exch-43 handlers + helpers were moved here from ikev2.c (c7df136) so
+ * the RFC 9242 code lives in one TU instead of as the tail of ikev2.c.
+ * ikev2.c keeps only the dispatch sites; the four cross-TU entry points are
+ * prototyped in ikev2_impl.h under WITH_INTERMEDIATE, and initiator_state1_send
+ * (defined in ikev2.c) is shared extern for the post-round IKE_AUTH handoff.
  */
 
 #include "config.h"
