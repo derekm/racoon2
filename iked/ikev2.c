@@ -3356,8 +3356,10 @@ ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
 						filename = rc_vmem2str(pk->pubkey);
 					pk = pk->next;
 				}
-				if (filename) {
-					err = rc_safefile(filename, FALSE);
+				if (!filename || (err = rc_safefile(filename, FALSE)) != 0) {
+					status = -1;
+					goto fail;
+				}
 					if (err == 0) {
 						rc_vchar_t *my_cert_data =
 						    eay_get_x509cert(filename);
@@ -3381,7 +3383,6 @@ ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
 							goto fail;
 						}
 					}
-				}
 			}
 			kmp_auth_method = kmp_auth_method->next;
 		}

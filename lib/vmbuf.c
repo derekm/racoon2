@@ -241,11 +241,11 @@ rc_vnew(const void *ptr, size_t len)
 rc_vchar_t *
 rc_vprepend(const rc_vchar_t *buf, const void * ptr, size_t len)
 {
-	size_t orig_l = buf->l;
 	rc_vchar_t	* newv;
 
 	if (buf == NULL)
 		return NULL;
+	size_t orig_l = buf->l;
 	newv = rc_vmalloc(orig_l + len);
 	if (newv == NULL)
 		return NULL;
