@@ -217,6 +217,21 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   (initiator before IKE_AUTH send, responder before awaiting IKE_AUTH).  Pure
   RFC 8784 (no ADDKE) still mixes at IKE_SA_INIT.  `i2iinit-ppk` matrix stays
   green (self-consistent — NOT the iOS proof; a third-party peer exposed it).
+- **PPK_IDENTITY §5.1 type octet (`aeb1e73`+`4b7d2a1`, 2026-09-28, deployed to
+  prod):** after the deferral fix the phone's IKE_AUTH now DECRYPTS (state
+  advances), then aborts err=111 `PPK_IDENTITY does not match my ppk_id`.
+  The iPhone's N(PPK_IDENTITY) 16436 data on the wire was `02 70 70 6b 31`
+  (= PPK_ID_FIXED=2 + "ppk1") — RFC 8784 §5.1 says the initiator's PPK_ID has
+  its FIRST octet as the type (1=OPAQUE, 2=FIXED) and the configured value in
+  the remaining octets.  racoon2 compared the WHOLE payload against `ppk_id`
+  and iOS/strongSwan are typed while racoon2's own initiator sends BARE —
+  matrix self-consistency hid it again.  Fix on both seats: responder
+  (`ikev2_notify.c`) accepts BARE or typed (type 1|2 + id) and TRACE-logs
+  which; initiator (`ikev2.c`) emits `0x02`+ppk_id via a temp `rc_vmalloc`'d
+  buffer (freed right after `ikev2_notify_payload` copies it — `push(…,TRUE)`
+  owns the notify buffer, and `typed->v` is `void*`, cast to `uint8_t*`).
+  Matrix `i2iinit-ppk` still green on BOTH forms.  Phone acceptance is the
+  IKE_AUTH passing the PPK_IDENTITY gate to authenticated.
 
 ## Still this chunk (do not start EAP/8784)
 
