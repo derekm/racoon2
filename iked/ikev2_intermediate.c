@@ -783,6 +783,21 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	}
 	rc_vfree(ss);
 
+	/* RFC 9867 s3.1.1: the IKE_INTERMEDIATE rounds are all done -- apply
+	 * the PPK to the FINAL generation now, before IKE_AUTH derives AUTH
+	 * and child keymat from SK_d/SK_pi/SK_pr. */
+	if (sa->ppk_active && sa->ppk_deferred) {
+		sa->ppk_deferred = 0;
+		if (ikev2_ppk_apply(sa) != 0) {
+			isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				   "RFC 8784: PPK mix after intermediate round failed\n");
+			ikev2_abort(sa, ECONNREFUSED);
+			return;
+		}
+		TRACE((PLOGLOC,
+		       "RFC 8784: PPK applied after intermediate round\n"));
+	}
+
 	/* only ADDKE1 (one round) is implemented here */
 	ikev2_set_state(sa, IKEV2_STATE_INI_IKE_AUTH_SENT);
 	ikev2_update_message_id(sa, sa->intermediate_msgid, TRUE);
@@ -953,6 +968,21 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 		return;
 	}
 	rc_vfree(ss);
+	/* RFC 9867 s3.1.1: the IKE_INTERMEDIATE rounds are all done -- apply
+	 * the PPK to the FINAL generation now; the following IKE_AUTH request
+	 * (and its child keymat, and the responder's AUTH) use the PPK'd
+	 * SK_d/SK_pi/SK_pr. */
+	if (sa->ppk_active && sa->ppk_deferred) {
+		sa->ppk_deferred = 0;
+		if (ikev2_ppk_apply(sa) != 0) {
+			isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				   "RFC 8784: PPK mix after intermediate round failed\n");
+			ikev2_abort(sa, ECONNREFUSED);
+			return;
+		}
+		TRACE((PLOGLOC,
+		       "RFC 8784: PPK applied after intermediate round\n"));
+	}
 	/* RFC 9242 s3.2: AUTH msgid = last intermediate + 1.  The responder
 	 * accepted the intermediate (recv_message_id == rmsgid); advance it so
 	 * the IKE_AUTH request (rmsgid+1) is not dropped as unordered. */

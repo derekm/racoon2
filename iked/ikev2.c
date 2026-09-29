@@ -1981,6 +1981,16 @@ responder_state0_after_gen(int rc, void *arg)
 	    ikev2_use_ppk(ike_sa->rmconf) == RCT_BOOL_ON &&
 	    ikev2_ppk_id(ike_sa->rmconf) != NULL) {
 		ike_sa->ppk_active = 1;
+#ifdef WITH_INTERMEDIATE
+		/* RFC 9867 s3.1.1: with an ADDKE intermediate round pending, defer
+		 * the PPK mix -- the intermediate SKEYSEED(1)=prf(SK_d,...) must see
+		 * the un-PPK'd SK_d (a responder cannot know the PPK until IKE_AUTH
+		 * PPK_IDENTITY); ikev2_ppk_apply() runs on the final generation in
+		 * responder_ike_intermediate_recv. */
+		if (ike_sa->intermediate_negotiated && ike_sa->negotiated_sa &&
+		    ike_sa->negotiated_sa->addke != 0)
+			ike_sa->ppk_deferred = 1;
+#endif
 		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(0, 0, 0,
 							 IKEV2_USE_PPK,
@@ -2307,6 +2317,14 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	if (ikev2_use_ppk(ike_sa->rmconf) == RCT_BOOL_ON) {
 		if (ike_sa->peer_sent_use_ppk) {
 			ike_sa->ppk_active = 1;
+#ifdef WITH_INTERMEDIATE
+			/* RFC 9867 s3.1.1: defer the PPK mix until the final generation
+			 * (after the ADDKE intermediate round), so both peers derive
+			 * subsequent rounds from the un-PPK'd SK_d. */
+			if (ike_sa->intermediate_negotiated && ike_sa->negotiated_sa &&
+			    ike_sa->negotiated_sa->addke != 0)
+				ike_sa->ppk_deferred = 1;
+#endif
 		} else if (ikev2_ppk_mandatory(ike_sa->rmconf) ==
 			   RCT_BOOL_ON) {
 			isakmp_log(ike_sa, local, remote, packet,
@@ -7319,6 +7337,58 @@ ikev2_cleanse_key_gen(rc_vchar_t **p)
  *	if successful, ike_sa->{sk_d,sk_a_i,sk_a_r,sk_e_i,sk_e_r,sk_p_i,sk_p_r} holds keys
  *	if fails, ike_sa does not change
  */
+
+/* RFC 8784 s4.2: apply the PPK to an ALREADY-DERIVED key generation,
+ * re-deriving SK_d/SK_pi/SK_pr as prf+(PPK, key).  Used only on the
+ * FINAL generation, after all IKE_INTERMEDIATE ADDKE rounds have updated
+ * SKEYSEED/SK_* (RFC 9867 s3.1.1: the PPK application is the LAST key
+ * action before the keys are used in IKE_AUTH).  Skipped while
+ * ppk_deferred is set so intermediate SKEYSEED(1)=prf(SK_d, ...) sees the
+ * UN-PPK'd SK_d -- a responder cannot know the PPK until it sees
+ * PPK_IDENTITY in IKE_AUTH.  Returns 0 on success, -1 on failure (SA must
+ * be aborted).  ppk_active is never set on a rekeyed/resumed SA, so the
+ * apply path is initial-SA only. */
+int
+ikev2_ppk_apply(struct ikev2_sa *ike_sa)
+{
+	rc_vchar_t *ppk = 0, *sk_d2 = 0, *sk_pi2 = 0, *sk_pr2 = 0;
+	int sk_d_len, sk_p_len;
+
+	if (!ike_sa->ppk_active)
+		return 0;
+	if (!ike_sa->sk_d || !ike_sa->sk_p_i || !ike_sa->sk_p_r)
+		return -1;
+	sk_d_len = ike_sa->sk_d->l;
+	sk_p_len = ike_sa->sk_p_i->l;
+	ppk = ikev2_ppk_load(ike_sa->rmconf);
+	if (!ppk) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "RFC 8784: failed to load PPK for the "
+			   "negotiated USE_PPK session\n");
+		return -1;
+	}
+	sk_d2 = ikev2_prf_plus(ike_sa, ppk, ike_sa->sk_d, sk_d_len);
+	sk_pi2 = ikev2_prf_plus(ike_sa, ppk, ike_sa->sk_p_i, sk_p_len);
+	sk_pr2 = ikev2_prf_plus(ike_sa, ppk, ike_sa->sk_p_r, sk_p_len);
+	OPENSSL_cleanse(ppk->v, ppk->l);
+	rc_vfreez(ppk);
+	ppk = 0;
+	if (!sk_d2 || !sk_pi2 || !sk_pr2)
+		goto fail;
+	rc_vfreez(ike_sa->sk_d); ike_sa->sk_d = sk_d2;
+	rc_vfreez(ike_sa->sk_p_i); ike_sa->sk_p_i = sk_pi2;
+	rc_vfreez(ike_sa->sk_p_r); ike_sa->sk_p_r = sk_pr2;
+	return 0;
+fail:
+	if (sk_d2)
+		rc_vfreez(sk_d2);
+	if (sk_pi2)
+		rc_vfreez(sk_pi2);
+	if (sk_pr2)
+		rc_vfreez(sk_pr2);
+	return -1;
+}
+
 int
 ikev2_compute_keys(struct ikev2_sa *ike_sa)
 {
@@ -7396,7 +7466,7 @@ ikev2_compute_keys(struct ikev2_sa *ike_sa)
 	 * single prf+ iteration (T1 = prf(PPK, key | 0x01)) suffices.
 	 * ppk_active is never set on a rekeyed/resumed SA (RFC 8784 s2.2:
 	 * PPK for the initial SA only), so rekeys derive classically. */
-	if (ike_sa->ppk_active) {
+	if (ike_sa->ppk_active && !ike_sa->ppk_deferred) {
 		rc_vchar_t *ppk = 0, *sk_d2 = 0, *sk_pi2 = 0, *sk_pr2 = 0;
 
 		ppk = ikev2_ppk_load(ike_sa->rmconf);

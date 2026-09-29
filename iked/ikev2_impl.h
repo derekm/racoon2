@@ -287,6 +287,7 @@ struct ikev2_sa {
 	int ppk_active;
 	int peer_sent_use_ppk;
 	int peer_ppk_identity_ok;
+	int ppk_deferred;	/* PPK mix deferred past IKE_INTERMEDIATE rounds */
 
 	int behind_nat;
 	int peer_behind_nat;
@@ -725,6 +726,7 @@ extern int ikev2_confirm_ts(struct ikev2_payload_header *,
 extern rc_vchar_t *ikev2_identifier(struct rc_idlist *);
 
 extern int ikev2_compute_keys(struct ikev2_sa *);
+extern int ikev2_ppk_apply(struct ikev2_sa *ike_sa);
 extern void ikev2_destroy_secret(struct ikev2_sa *sa);
 
 extern rc_vchar_t *ikev2_prf_plus(struct ikev2_sa *, rc_vchar_t *, rc_vchar_t *,
