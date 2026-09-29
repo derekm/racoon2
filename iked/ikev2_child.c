@@ -1135,7 +1135,8 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	 * need_pfs config gate remains in security contexts.
 	 */
 	my_proposal = ikev2_ipsec_conf_to_proplist(child_sa,
-	    is_createchild && g_i != NULL);
+	    (is_createchild && g_i != NULL) ||
+	    ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON);
 	if (!my_proposal)
 		goto fail_create_proposal;
 
@@ -1320,6 +1321,23 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	}
 
       no_pfs:
+	/*
+	 * AUTH child (RFC 7296 2.17: initial-child keying derives from
+	 * SK_d, no child DH exchange happens at IKE_AUTH) -- but when the
+	 * negotiated AUTH-child proposal pair carried a DH transform the
+	 * group is a real negotiated parameter (the iPhone EnablePFS
+	 * shape).  Record it on child_sa->dhgrp so a later
+	 * responder-minted rekey mirrors THAT group into its KEi instead
+	 * of borrowing the IKE_SA's dhdef.  Only fires when a DH transform
+	 * was actually matched on both sides (no-op for the classic rows).
+	 */
+	if (!is_createchild) {
+		struct algdef *adhdef = ikev2_child_dhdef(matching_my_proposal,
+						      matching_peer_proposal);
+		if (adhdef)
+			child_sa->dhgrp = adhdef;
+	}
+
 	if (is_createchild &&
 	    ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
 		isakmp_log(ike_sa, local, remote, 0, PLOG_INTERR,

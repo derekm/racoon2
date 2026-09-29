@@ -159,6 +159,24 @@ kind_i2iinit() {
 	CHILDLESS_TXT_R=""
 	[ "$I2I_CHILDLESS" = 1 ] && CHILDLESS_TXT_R='		childless on;
 '
+	# RFC 7296 2.17/2.18 AUTH-child PFS (iPhone EnablePFS shape),
+	# SELF-CONSISTENT iked<->iked: with need_pfs on BOTH seats, the
+	# iked initiator's AUTH-child proposal carries a DH group (charon
+	# never offers child DH at IKE_AUTH, so these rows are iked-only)
+	# and the responder records child_sa->dhgrp from the matched pair
+	# so the responder-minted rekey mirrors THAT group.  Never add to
+	# -charon rows -- charon's AUTH child is DH-less and the strict
+	# matcher would reject it (NO_PROPOSAL_CHOSEN).
+	NEED_PFS_TXT_I=""
+	NEED_PFS_TXT_R=""
+	case "$name" in
+	*-pfsrekey*-charon) : ;;  # charon interop: keep AUTH child DH-less
+	*-pfsrekey*)
+		NEED_PFS_TXT_I='		need_pfs on;
+'
+		NEED_PFS_TXT_R='		need_pfs on;
+' ;;
+	esac
 	# ESN rows: ext_sequence on in the ipsec block (RFC 7296 s3.3.2).
 	ESN_TXT=""
 	[ "$I2I_ESN" = 1 ] && ESN_TXT='		ext_sequence on;
@@ -192,6 +210,7 @@ remote matrix_resp {
 		pre_shared_key "$ETC/psk/macos.psk";
 $PPK_TXT
 $CHILDLESS_TXT_R
+$NEED_PFS_TXT_R
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -254,6 +273,7 @@ remote matrix_init {
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 $PPK_TXT
+$NEED_PFS_TXT_I
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -447,18 +467,31 @@ fi
 		if [ "$PEER" = charon ]; then
 			ike_log="$D/resp-iked.log"; spi_ns="$NSR"
 		else
-			ike_log="$D/init-iked.log"; spi_ns="$NSI"
+			# iked<->iked AUTH-child-PFS row: BOTH seats carry the
+			# short child lifetime and both are PFS-aware (need_pfs
+			# on both), so either seat may win the rekey race.  Gate
+			# on whichever iked minted it: any rekey marker + a PFS
+			# (g_ir_present=Y) keymat + SPI change + no
+			# NO_PROPOSAL_CHOSEN on either iked.
+			ike_log="$D/resp-iked.log"; spi_ns="$NSR"
 		fi
-		spi_before=$(ip netns exec "$spi_ns" ip xfrm state 2>/dev/null | grep 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '
-' ' ')
+		spi_before=$(ip netns exec "$spi_ns" ip xfrm state 2>/dev/null | grep 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
 		sleep 40
-		# that iked must mint the rekey (child soft lifetime ~20s)
-		if ! grep -q 'initiating CREATE_CHILD_SA rekey' "$ike_log" 2>/dev/null; then
+		# that iked must mint the rekey (child soft lifetime ~20s);
+		# for iked<->iked rows check either iked's log
+		rekey_log=""
+		for L in "$D/resp-iked.log" "$D/init-iked.log"; do
+			[ -f "$L" ] && grep -q 'initiating CREATE_CHILD_SA rekey' "$L" && rekey_log="$L"
+		done
+		if [ "$PEER" != charon ] && [ -z "$rekey_log" ]; then
+			log "FAIL: no iked initiated child rekey (resp+init logs)"
+		elif [ "$PEER" = charon ] && ! grep -q 'initiating CREATE_CHILD_SA rekey' "$ike_log" 2>/dev/null; then
 			log "FAIL: iked did not initiate child rekey ($ike_log)"
-		elif grep -q 'NO_PROPOSAL_CHOSEN' "$ike_log" 2>/dev/null; then
+		elif grep -q 'NO_PROPOSAL_CHOSEN' "$D/resp-iked.log" 2>/dev/null || \
+		     grep -q 'NO_PROPOSAL_CHOSEN' "$D/init-iked.log" 2>/dev/null; then
 			log "FAIL: rekey answered NO_PROPOSAL_CHOSEN (KE-less rekey?)"
-		elif ! grep -qE 'g_ir_present=Y' "$ike_log" 2>/dev/null; then
-			log "FAIL: no PFS (g_ir_present=Y) keymat after rekey ($ike_log)"
+		elif ! grep -qE 'g_ir_present=Y' "$D/resp-iked.log" "$D/init-iked.log" 2>/dev/null; then
+			log "FAIL: no PFS (g_ir_present=Y) keymat after rekey"
 		else
 			spi_after=$(ip netns exec "$spi_ns" ip xfrm state 2>/dev/null | grep 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '
 ' ' ')

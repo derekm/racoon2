@@ -3402,7 +3402,9 @@ ikev2_ipsec_conf_to_proplist(struct ikev2_child_sa *child_sa,
 				   "Extended Sequence Number unsupported.\n");
 		}
 #endif
-		need_pfs = is_createchild;
+		need_pfs = is_createchild ||
+		    (child_sa->parent && child_sa->parent->rmconf &&
+		     ikev2_need_pfs(child_sa->parent->rmconf) == RCT_BOOL_ON);
 		if (conf->sa_ah) {
 			*prop_tail = ikev2_ipsec_sa_to_proplist(child_sa,
 								proposal_number,
