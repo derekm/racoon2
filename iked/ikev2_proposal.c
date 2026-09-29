@@ -673,6 +673,58 @@ ikev2_match_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 	}
 #endif
 
+	/*
+	 * Peer-offered PFS mirror (same class as the ADDKE carry above):
+	 * when the peer OFFERED a DH transform and our own proposal carries
+	 * none, carry the peer's DH into the matched list so the stored
+	 * proposal (child_sa->my_proposal[1]) and the REKEY clone of it
+	 * both carry it.  Our ESP config rows declare no DH group, so at
+	 * IKE_AUTH the AUTH child's my_proposal has no DH transform and
+	 * pfs would compute 0 on a responder-initiated rekey -- the rekey
+	 * then ships SA+NONCE+TS with no KEi and a PFS-requiring peer
+	 * (iOS EnablePFS=1) answers NO_PROPOSAL_CHOSEN (live: 482x).
+	 * RFC 7296 2.18: a child negotiated WITH PFS must be rekeyed with
+	 * the same DH.  Mirroring the peer's transform is strictly
+	 * peer-offer-driven -- a PFS-less peer never gets a DH invented.
+	 */
+	{
+		struct prop_pair *pt;
+		int ptype_seen = 0;
+
+		for (pt = peer_transforms; pt; pt = pt->next) {
+			struct ikev2transform *ptf;
+			struct prop_pair *have;
+			unsigned int ptype;
+
+			ptf = (struct ikev2transform *)pt->trns;
+			if (!ptf)
+				continue;
+			ptype = ptf->transform_type;
+			if (ptype != IKEV2TRANSFORM_TYPE_DH)
+				continue;
+			/* already carried (our own DH matched)? */
+			for (have = head.next; have; have = have->next) {
+				struct ikev2transform *ht =
+				    (struct ikev2transform *)have->trns;
+				if (ht && ht->transform_type == ptype)
+					break;
+			}
+			if (have)
+				continue;
+			ptype_seen = 1;
+			tail->next = proppair_dup(pt);
+			if (!tail->next)
+				goto fail_nomem;
+			TRACE((PLOGLOC,
+			       "carry peer DH type %u id %u into matched proposal\n",
+			       ptype, get_uint16(&ptf->transform_id)));
+			tail = tail->next;
+		}
+		if (ptype_seen)
+			TRACE((PLOGLOC,
+			       "mirrored peer-offered DH into matched proposal\n"));
+	}
+
 	return head.next;
 
       fail_nomem:

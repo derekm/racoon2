@@ -328,6 +328,20 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 	 * type-6); re-offer ADDKE so this CREATE_CHILD rekey can negotiate it */
 	ikev2_child_maybe_reoffer_addke(new_child_sa);
 
+	/*
+	 * Carry the child's negotiated PFS group onto the rekeyed
+	 * child.  The rekey proposal is a clone of the AUTH child's
+	 * my_proposal[1], which (with the peer-offered DH mirror in
+	 * ikev2_match_transforms) now carries the negotiated DH
+	 * transform; storing dhgrp here makes the pfs gate AND the
+	 * KEi generation (ikev2_createchild_initiator_send_tail
+	 * preferentially uses child_sa->dhgrp) use the same group the
+	 * original child negotiated (RFC 7296 2.18 -- a PFS child is
+	 * rekeyed with PFS).  A PFS-less child (dhgrp NULL) stays
+	 * PFS-less, as before.
+	 */
+	new_child_sa->dhgrp = old_child_sa->dhgrp;
+
 	new_child_sa->srclist = old_child_sa->srclist;
 	old_child_sa->srclist = 0;
 	new_child_sa->dstlist = old_child_sa->dstlist;
