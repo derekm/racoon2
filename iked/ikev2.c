@@ -3189,11 +3189,36 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 			error = IKEV2_INVALID_SYNTAX;
 			goto notify;
 		}
+		/* RFC 6023 s5: [CP(CFG_REQUEST)] is permitted in the modified request.
+		 * Mirror the childful gate: a config-handling responder that requires a
+		 * config payload MUST NOT accept a request that omits it. */
+		if (ikev2_config_required(ike_sa->rmconf) == RCT_BOOL_ON && !cfg) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "childless peer message lacks required config payload\n");
+			++isakmpstat.malformed_message;
+			error = IKEV2_FAILED_CP_REQUIRED;
+			goto notify;
+		}
+		if (cfg) {
+			if (ikev2_process_config_informational(ike_sa, cfg, &child_param)) {
+				isakmp_log(ike_sa, local, remote, msg,
+					   PLOG_PROTOWARN, PLOGLOC,
+					   "childless: failed processing CONFIG payload, ignored\n");
+				++isakmpstat.payload_ignored;
+			} else if (ikev2_create_config_reply(ike_sa, NULL, &child_param)) {
+				isakmp_log(ike_sa, local, remote, msg,
+					   PLOG_PROTOWARN, PLOGLOC,
+					   "childless: failed to create CONFIG payload, continuing\n");
+				++isakmpstat.payload_ignored;
+			}
+		}
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
 			   "received childless (SA-less) IKE_AUTH, establishing IKE_SA with zero children\n");
 		ikev2_update_message_id(ike_sa, message_id, FALSE);
-		if (ikev2_responder_childless_auth_send(ike_sa, message_id) != 0) {
+		if (ikev2_responder_childless_auth_send(ike_sa, message_id,
+						    child_param.cfg_payload) != 0) {
 			++isakmpstat.fail_send_packet;
 			error = IKEV2_INVALID_SYNTAX;
 			goto notify;
@@ -3287,13 +3312,16 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
  */
 int
 ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
-			      uint32_t message_id)
+			      uint32_t message_id,
+			      rc_vchar_t *cfg_payload)
 {
 	rc_vchar_t *id_r = 0;
 	rc_vchar_t *auth = 0;
+	rc_vchar_t *my_cert = 0;
 	struct ikev2_payloads payl;
 	rc_vchar_t *pkt = 0;
 	struct rc_idlist *my_id;
+	int status = 0;
 
 	ikev2_payloads_init(&payl);
 
@@ -3313,13 +3341,64 @@ ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
 	if (!auth)
 		goto fail;
 
+	/* [CERT+] under RSA-signature AUTH (mirror the childful responder). */
+	{
+		struct rc_alglist *kmp_auth_method =
+		    ike_sa->rmconf->ikev2->kmp_auth_method;
+		while (kmp_auth_method) {
+			if (kmp_auth_method->algtype == RCT_ALG_RSASIG) {
+				const char *filename = 0;
+				int err;
+				struct rc_pklist *pk =
+				    ike_sa->rmconf->ikev2->my_pubkey;
+				while (pk) {
+					if (pk->ftype == RCT_FTYPE_X509PEM)
+						filename = rc_vmem2str(pk->pubkey);
+					pk = pk->next;
+				}
+				if (filename) {
+					err = rc_safefile(filename, FALSE);
+					if (err == 0) {
+						rc_vchar_t *my_cert_data =
+						    eay_get_x509cert(filename);
+						uint8_t value = IKEV2_CERT_X509_SIGN;
+						void *cert_encoding = &value;
+						my_cert = rc_vprepend(my_cert_data,
+								       cert_encoding,
+								       sizeof(value));
+						if (!my_cert) {
+							rc_vfree(my_cert_data);
+							status = -1;
+							goto fail;
+						}
+						err = eay_check_x509cert(my_cert_data,
+									 NULL);
+						rc_vfree(my_cert_data);
+						if (err) {
+							rc_vfree(my_cert);
+							my_cert = 0;
+							status = -1;
+							goto fail;
+						}
+					}
+				}
+			}
+			kmp_auth_method = kmp_auth_method->next;
+		}
+	}
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_R, id_r, FALSE);
+	if (my_cert)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CERT, my_cert, FALSE);
 	if (ikev2_send_initial_contact(ike_sa))
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(0, 0, 0,
 							 IKEV2_INITIAL_CONTACT,
 							 0, 0), TRUE);
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_AUTH, auth, FALSE);
+
+	/* [CP(CFG_REPLY)] RFC 6023 s5: answer a permitted CP(CFG_REQUEST). */
+	if (cfg_payload)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CONFIG, cfg_payload, FALSE);
 
 	/* RFC 8784 s2.3: acknowledge the PPK session (as in the childful path). */
 	if (ike_sa->ppk_active)
@@ -3344,12 +3423,15 @@ ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
 		rc_vfree(pkt);
 	if (auth)
 		rc_vfree(auth);
+	if (my_cert)
+		rc_vfree(my_cert);
 	ikev2_payloads_destroy(&payl);
-	return 0;
+	return status;
 
       fail:
 	isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 		   "failed building childless IKE_AUTH response\n");
+	status = -1;
 	goto done;
 }
 

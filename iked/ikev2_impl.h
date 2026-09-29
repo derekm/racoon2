@@ -496,7 +496,8 @@ extern void ikev2_set_state(struct ikev2_sa *, int);
 extern void ikev2_responder_state1_send(struct ikev2_sa *,
 					struct ikev2_child_sa *);
 extern int ikev2_responder_childless_auth_send(struct ikev2_sa *,
-					uint32_t message_id);
+					uint32_t message_id,
+					rc_vchar_t *cfg_payload);
 
 extern int ikev2_createchild_initiator_send(struct ikev2_sa *,
 					    struct ikev2_child_sa *);
