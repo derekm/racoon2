@@ -589,6 +589,7 @@ struct ikev2payl_notify {
 #define	IKEV2_USE_PPK			16435	/* (RFC8784) */
 #define	IKEV2_PPK_IDENTITY		16436	/* (RFC8784) */
 #define	IKEV2_NO_PPK_AUTH		16437	/* (RFC8784) */
+#define	IKEV2_CHILDLESS_IKEV2_SUPPORTED	16418	/* (RFC6023) */
 #define	IKEV2_STATE_NOT_FOUND		47
 /* RESERVED TO IANA - STATUS TYPES      16431 - 40959 */
 /* Private Use - STATUS TYPES           40960 - 65535 */

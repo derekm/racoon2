@@ -190,6 +190,7 @@ extern rc_type ikev2_parent_child_strength(struct rcf_remote *);
 extern rc_type ikev2_addke_unrequested(struct rcf_remote *);
 extern rc_type ikev2_offer_intermediate(struct rcf_remote *);
 extern rc_type ikev2_use_ppk(struct rcf_remote *);
+extern rc_type ikev2_childless(struct rcf_remote *);
 extern rc_type ikev2_ppk_mandatory(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ppk_id(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ppk_load(struct rcf_remote *);

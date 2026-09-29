@@ -321,6 +321,7 @@ struct rcf_kmp {
 	 * SHA-256(ppk_id)).  A PPK secret VALUE keyword is deliberately NOT
 	 * exposed -- no secret may live in a committed config. */
 	rc_type use_ppk;
+	rc_type childless;	/* RFC 6023: accept SA-less IKE_AUTH */
 	rc_type ppk_mandatory;
 	rc_vchar_t *ppk_id;
 };

@@ -1140,6 +1140,7 @@ ikev2_notify_type_str(int type)
 		S(USE_PPK);
 		S(PPK_IDENTITY);
 		S(NO_PPK_AUTH);
+		S(CHILDLESS_IKEV2_SUPPORTED);
 
 	default:
 		{

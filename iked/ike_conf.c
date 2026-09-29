@@ -214,6 +214,7 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* addke_unrequested (responder-driven ADDKE) */
 	RCT_BOOL_ON,		/* offer_intermediate (RFC 9242 capability notify) */
 	RCT_BOOL_OFF,		/* use_ppk (RFC 8784 PPK mixing) */
+	RCT_BOOL_OFF,		/* childless (RFC 6023 SA-less IKE_AUTH) */
 	RCT_BOOL_OFF,		/* ppk_mandatory (RFC 8784 mandatory_or_not) */
 	NULL,			/* ppk_id (RFC 8784 PPK_IDENTIFIER) */
 };
@@ -441,6 +442,7 @@ IKEV2_CONF_ATTR(rc_type, parent_child_strength)
 IKEV2_CONF_ATTR(rc_type, addke_unrequested)
 IKEV2_CONF_ATTR(rc_type, offer_intermediate)
 IKEV2_CONF_ATTR(rc_type, use_ppk)
+IKEV2_CONF_ATTR(rc_type, childless)
 IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
 IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)
 IKEV2_CONF_ATTR(struct rc_addrlist *, natd_public_address)

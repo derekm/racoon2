@@ -210,6 +210,7 @@ static int rcf_fix_addke_unrequested (struct cf_list *, void *);
 static int rcf_fix_offer_intermediate (struct cf_list *, void *);
 static int rcf_fix_use_ppk (struct cf_list *, void *);
 static int rcf_fix_ppk_mandatory (struct cf_list *, void *);
+static int rcf_fix_childless (struct cf_list *, void *);
 static int rcf_fix_ppk_id (struct cf_list *, void *);
 static int rcf_fix_send_peers_id (struct cf_list *, void *);
 static int rcf_fix_nat_traversal (struct cf_list *, void *);
@@ -376,6 +377,7 @@ struct rcf_tdf_t {
 	{ CFD_ADDKE_UNREQUESTED,	rcf_fix_addke_unrequested, },
 	{ CFD_OFFER_INTERMEDIATE,	rcf_fix_offer_intermediate, },
 	{ CFD_USE_PPK,			rcf_fix_use_ppk, },
+	{ CFD_CHILDLESS,			rcf_fix_childless, },
 	{ CFD_PPK_MANDATORY,		rcf_fix_ppk_mandatory, },
 	{ CFD_PPK_ID,			rcf_fix_ppk_id, },
 	{ CFD_SEND_PEERS_ID,		rcf_fix_send_peers_id, },
@@ -1594,6 +1596,19 @@ rcf_fix_offer_intermediate(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_OFFER_INTERMEDIATE))
 		return -1;
 	if (rcf_fix_boolean(head->nextp, &dst->offer_intermediate))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_childless(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_CHILDLESS))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->childless))
 		return -1;
 
 	return 0;
@@ -3344,6 +3359,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	new->addke_unrequested = src->addke_unrequested;
 	new->offer_intermediate = src->offer_intermediate;
 	new->use_ppk = src->use_ppk;
+	new->childless = src->childless;
 	new->ppk_mandatory = src->ppk_mandatory;
 	DEEPCOPY_VDUP(src->ppk_id, new->ppk_id);
 	DEEPCOPY_VDUP(src->addresspool, new->addresspool);

@@ -1998,6 +1998,21 @@ responder_state0_after_gen(int rc, void *arg)
 				    TRUE);
 	}
 
+	/* RFC 6023 s4: advertise childless IKE_SA support when configured for
+	 * this peer (protocol id 1 = IKE, spi size 0).  A supporting initiator
+	 * MAY then send a modified IKE_AUTH request without SAi2/TSi/TSr,
+	 * which responder_ike_sa_auth_cont() accepts and answers with an
+	 * SA-less response, leaving an authenticated IKE_SA with zero
+	 * children (liveness/DPD keep it alive; first CHILD_SA arrives via
+	 * CREATE_CHILD_SA). */
+	if (ikev2_childless(ike_sa->rmconf) == RCT_BOOL_ON) {
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(1, 0, 0,
+							 IKEV2_CHILDLESS_IKEV2_SUPPORTED,
+							 0, 0),
+				    TRUE);
+	}
+
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_RESPONSE,
 				     0, ike_sa, &ctx->payl);
 	if (!pkt) {
@@ -3159,6 +3174,28 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 		goto notify;
 	}
 
+	if (!(sa_i2 || ts_i || ts_r)) {
+		/* RFC 6023 modified IKE_AUTH: all of SAi2/TSi/TSr are absent,
+		 * which is only legal when we advertised CHILDLESS_IKEV2_SUPPORTED
+		 * in the IKE_SA_INIT response (s3: MUST NOT send modified IKE_AUTH
+		 * without it).  Accept: establish the IKE_SA with zero children.
+		 */
+		if (ikev2_childless(ike_sa->rmconf) != RCT_BOOL_ON) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "received modified (SA-less) IKE_AUTH but childless not configured\n");
+			++isakmpstat.malformed_message;
+			error = IKEV2_INVALID_SYNTAX;
+			goto notify;
+		}
+		ikev2_update_message_id(ike_sa, message_id, FALSE);
+		if (ikev2_responder_childless_auth_send(ike_sa, message_id) != 0) {
+			++isakmpstat.fail_send_packet;
+			error = IKEV2_INVALID_SYNTAX;
+			goto notify;
+		}
+		goto done;
+	}
 	if (!(sa_i2 && ts_i && ts_r)) {
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
@@ -3236,6 +3273,80 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	error = IKEV2_AUTHENTICATION_FAILED;
 	goto notify;
 #endif
+}
+
+/* RFC 6023: build + send the modified IKE_AUTH response for a childless
+ * (SA-less) request: IDr, [CERT], AUTH, [N+]/[V+] but NO SAr2/TSi/TSr.
+ * The IKE_SA is marked ESTABLISHED with zero children; DPD/liveness
+ * (ikev2_sa_start_polling_timer) keeps it alive until the peer adds the
+ * first child via CREATE_CHILD_SA.  Returns 0 on success.
+ */
+int
+ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
+			      uint32_t message_id)
+{
+	rc_vchar_t *id_r = 0;
+	rc_vchar_t *auth = 0;
+	struct ikev2_payloads payl;
+	rc_vchar_t *pkt = 0;
+	struct rc_idlist *my_id;
+
+	ikev2_payloads_init(&payl);
+
+	if (ike_sa->id_r) {
+		id_r = ike_sa->id_r;
+	} else {
+		my_id = ikev2_my_id(ike_sa->rmconf);
+		if (!my_id)
+			goto fail;
+		id_r = ikev2_identifier(my_id);
+		if (!id_r)
+			goto fail;
+		ike_sa->id_r = id_r;
+	}
+
+	auth = ikev2_auth_calculate(ike_sa, FALSE);
+	if (!auth)
+		goto fail;
+
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_R, id_r, FALSE);
+	if (ikev2_send_initial_contact(ike_sa))
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_INITIAL_CONTACT,
+							 0, 0), TRUE);
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_AUTH, auth, FALSE);
+
+	/* RFC 8784 s2.3: acknowledge the PPK session (as in the childful path). */
+	if (ike_sa->ppk_active)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_PPK_IDENTITY, 0, 0), TRUE);
+
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_AUTH, IKEV2FLAG_RESPONSE,
+				     message_id, ike_sa, &payl);
+	if (!pkt)
+		goto fail;
+
+	if (ikev2_transmit_response(ike_sa, pkt, ike_sa->local, ike_sa->remote) != 0)
+		goto fail;
+	pkt = 0;
+
+	ikev2_set_state(ike_sa, IKEV2_STATE_ESTABLISHED);
+	natt_start_natk(ike_sa);
+
+      done:
+	if (pkt)
+		rc_vfree(pkt);
+	if (auth)
+		rc_vfree(auth);
+	ikev2_payloads_destroy(&payl);
+	return 0;
+
+      fail:
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		   "failed building childless IKE_AUTH response\n");
+	goto done;
 }
 
 void
