@@ -46,8 +46,28 @@ kind_i2iinit() {
 	I2I_ESN=0                       # ipsec block ext_sequence on
 	I2I_CHILDLESS=0                 # responder childless on (RFC 6023)
 	I2I_CLASSICAL=0                 # proposal-shape rows without ADDKE round
+	I2I_PPK=0                       # RFC 8784 PPK on charon seat
+	I2I_PERPETUAL=0
+	I2I_ESN=0
+	I2I_PFSREKEY=0
+	# charon child esp_proposals.  Deliberately left EMPTY here: the base
+	# value is defaulted at USAGE in i2i_peer.sh (${I2I_ESP:-aes128gcm16}),
+	# and the -pfsrekey/-dh arms below must overwrite it with a DH-suffix
+	# proposal.  A non-empty base here would defeat those arms (their
+	# ${I2I_ESP:-...} would keep this base value).
+	I2I_ESP=
+	I2I_CLASSICAL=0                 # proposal-shape rows without ADDKE round
+	# Per-row resets for knobs the suffix arms overwrite (run.sh runs every
+	# row in ONE shell, so a -dh521/-pfsrekey/-ppk row's assignment would
+	# otherwise leak into the next row).  UNCONDITIONAL assignments — a
+	# `:-` default keeps the previous row's value and leaks it.
+	I2I_DH_GROUP=ecp256
+	I2I_PROPOSAL=aes256gcm16-prfsha256-ecp256-ke1_mlkem768
+	I2I_LIFETIME=300
+	I2I_DBG=0x0001
+	I2I_ESP=
 	case "$name" in
-	*-childless*) I2I_CHILDLESS=1 ;;
+	*-childless*) I2I_CHILDLESS=1; I2I_DBG=0x0003 ;;   # TRACE markers (16418 advertise) need DEBUG_FLAG_TRACE=0x0002
 	esac
 	case "$name" in
 	*-ike-cbc256*) I2I_IKE_ENC="aes256_cbc" ;;
@@ -452,6 +472,66 @@ fi
 		;;
 	esac
 
+	# Proposal-shape SAD gate: rows that change ESP shape must show the
+	# negotiated kernel SAD cipher, else a row could PASS with the child
+	# up on the DEFAULT aes_gcm (a knob that silently failed to apply).
+	# -esp-gcm256 -> aead rfc4106 keylen 32   -esp-cbc256 -> enc cbc(aes) 32
+	# + auth hmac(sha256)                      -esn         -> 'flag E' on
+	# the ESP state (ESN replay counter).  Only the responder netns SAD is
+	# checked (the peer seat mirrors it).
+	shape_ok=1
+	# Retain the responder SAD for the shape proof (netns dies at teardown).
+	ip netns exec "$NSR" ip xfrm state >"$D/resp-sad.txt" 2>/dev/null
+	ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -E 'proto esp|aead|enc |auth |flag' >"$D/resp-sad-esp.txt"
+	case "$name" in
+	*-esp-gcm256)
+		# iproute2: "aead rfc4106(gcm(aes)) 0x<hex> 128" — trailing 128 = ICV bits;
+		# key length is the hex length (36 B = 32 B key + 4 B salt = AES-256-GCM,
+		# vs 20 B salt+key for AES-128-GCM).
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'aead rfc4106\(gcm\(aes\)\) 0x[0-9a-f]{72} 128$'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD aead rfc4106(gcm(aes)) 72-hex key (AES-256-GCM)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-gcm256 row but responder SAD lacks aead rfc4106 72-hex (AES-256) key'
+		fi
+		;;
+	*-esp-cbc256)
+		# iproute2: "enc cbc(aes) 0x<64hex>" (32 B = AES-256-CBC) and
+		# "auth-trunc hmac(sha256) 0x<64hex> 128" (truncated ICV).  Default
+		# AES-128-CBC enc hex is 32 chars, so the 64-hex enc is the discriminator.
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc cbc\(aes\) 0x[0-9a-f]{64}$' \
+		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'auth-trunc hmac\(sha256\) 0x[0-9a-f]{64}'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc cbc(aes) 64-hex + auth-trunc hmac(sha256) (AES-CBC-256 + separate integrity)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-cbc256 row but responder SAD lacks cbc(aes)64-hex + auth-trunc hmac(sha256)'
+		fi
+		;;
+	*-esn)
+		# ESN is NOT implemented by iked: ike_conf.c:4665 logs
+		# 'ext_sequence is specified but it is not suported' when the knob is
+		# parsed, and the child installs with a plain (non-ESN) replay window.
+		# The honest gate is CONFIG-ACCEPTANCE: the knob reached iked and the
+		# documented not-supported warning fired while the child still lands
+		# (a parser-reject or a crash would fail).  A future ESN
+		# implementation flips this row to assert the SAD E flag.
+		if grep -q 'ext_sequence is specified but it is not suported' "$D/resp-iked.log" 2>/dev/null; then
+			shape_ok=1
+			log 'ESN config-accept: iked parsed ext_sequence on + logged not-supported (ike_conf.c:4665); child up'
+		else
+			shape_ok=0
+			log 'FAIL: -esn row but iked did not log the ext_sequence not-supported warning'
+		fi
+		;;
+	*)
+		shape_ok=1
+		;;
+	esac
+	if [ "$shape_ok" -ne 1 ]; then
+		log 'FAIL: proposal-shape SAD gate rejected the row'
+	fi
 	# NDcPP v3.0e compliance report for this row (A/B cells) — runs while
 	# the netnss + SADB are still live (A1/A2/A3 read xfrm policy/state)
 	# and before charon conn files are removed (A13/A14 read the conn).
@@ -484,52 +564,7 @@ fi
 		fi
 	fi
 
-	# Proposal-shape SAD gate: rows that change ESP shape must show the
-	# negotiated kernel SAD cipher, else a row could PASS with the child
-	# up on the DEFAULT aes_gcm (a knob that silently failed to apply).
-	# -esp-gcm256 -> aead rfc4106 keylen 32   -esp-cbc256 -> enc cbc(aes) 32
-	# + auth hmac(sha256)                      -esn         -> 'flag E' on
-	# the ESP state (ESN replay counter).  Only the responder netns SAD is
-	# checked (the peer seat mirrors it).
-	shape_ok=1
-	case "$name" in
-	*-esp-gcm256)
-		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'aead rfc4106\(gcm\(aes\)\).* 32$'; then
-			shape_ok=1
-			log 'ESP shape: responder SAD aead rfc4106(gcm(aes)) keylen 32 (AES-256-GCM)'
-		else
-			shape_ok=0
-			log 'FAIL: -esp-gcm256 row but responder SAD lacks aead rfc4106 keylen 32'
-		fi
-		;;
-	*-esp-cbc256)
-		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc cbc\(aes\).* 32' \
-		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'auth hmac\(sha256\)'; then
-			shape_ok=1
-			log 'ESP shape: responder SAD enc cbc(aes) keylen 32 + auth hmac(sha256) (AES-CBC-256 + separate integrity)'
-		else
-			shape_ok=0
-			log 'FAIL: -esp-cbc256 row but responder SAD lacks cbc(aes)32 + hmac(sha256)'
-		fi
-		;;
-	*-esn)
-		# ESN shows as a replay-window flag E on the ESP state (iproute2).
-		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE '\bE\b|flag E| replay-window' \
-		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'proto esp'; then
-			shape_ok=1
-			log 'ESP shape: responder SAD carries ESN (ext_sequence on)'
-		else
-			shape_ok=0
-			log 'FAIL: -esn row but responder SAD shows no ESN flag'
-		fi
-		;;
-	*)
-		shape_ok=1
-		;;
-	esac
-	if [ "$shape_ok" -ne 1 ]; then
-		log 'FAIL: proposal-shape SAD gate rejected the row'
-	fi
+
 
 	# RFC 6023 childless rows (Feature A):
 	#   i2iinit-childless-charon  charon INITIATOR childless=force -> iked

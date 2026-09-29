@@ -100,18 +100,24 @@ i2i_compliance() {
 		PLOG A3 FAIL "no tunnel-mode ESP state on ${_NSR}/${_NSI}"
 	fi
 
-	# ----------- A4  ESP cipher within claimed set (aes_gcm here) -----------
-	# SADB log from the iked seat(s) shows enctype=AES-GCM (R2 conf aes_gcm).
-	# When a seat is charon, its negotiated child proposal string is checked.
+	# ----------- A4  ESP cipher within claimed set -----------
+	# NDcPP FCS_IPSEC_EXT.1.1 claimed set: AES-GCM (sa aes_gcm) AND optional
+	# AES-CBC + HMAC (RFC 4868).  The matrix's esp-*shape* rows select the
+	# explicit keylen/alg; the SADB log shows enctype=AES-GCM / enctype=AES-CBC.
 	a4_ok=0
+	_aa4=
+	case "$name" in
+	*-esp-cbc256) _aa4="enctype=AES-CBC|enc cbc\\(aes\\)" ;;
+	*)            _aa4="enctype=AES-GCM|aead rfc4106\\|gcm\\|aes_gcm" ;;
+	esac
 	for _lg in "$_D/resp-iked.log" "$_D/init-iked.log"; do
-		[ -f "$_lg" ] && grep -q "enctype=AES-GCM" "$_lg" && a4_ok=1
+		[ -f "$_lg" ] && grep -qE "$_aa4" "$_lg" && a4_ok=1
 	done
 	for _cl in "$_D/charon-resp.log" "$_D/charon-init.log"; do
 		[ -f "$_cl" ] && grep -qE "aes(128|192|256)(gcm|cbc)" "$_cl" && a4_ok=1
 	done
-	[ "$a4_ok" -eq 1 ] && PLOG A4 PASS "ESP cipher AES-GCM within claimed set (sa/esp aes_gcm)"
-	[ "$a4_ok" -eq 0 ] && PLOG A4 FAIL "ESP cipher not AES-GCM in logs"
+	[ "$a4_ok" -eq 1 ] && PLOG A4 PASS "ESP cipher in claimed set ($_aa4 for $name)"
+	[ "$a4_ok" -eq 0 ] && PLOG A4 FAIL "ESP cipher absent from logs (wanted $_aa4)"
 
 	# -------------- A5  IKEv2 (RFC 7296) + NAT-T socket + established --------
 	# NAT-T: iked binds 4500 ('used for NAT-T'); ESTABLISHED on both seats is

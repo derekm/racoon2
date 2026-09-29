@@ -19,11 +19,21 @@ I2I_CHARON_VDIR=${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}
 I2I_DH_GROUP=${I2I_DH_GROUP:-ecp256}	# charon IKE proposal DH group
 I2I_PROPOSAL=${I2I_PROPOSAL:-aes256gcm16-prfsha256-${I2I_DH_GROUP}-ke1_mlkem768}	# full charon IKE proposal string
 # Child (ESP) proposal: ${I2I_ESP:-aes128gcm16} default.  PFS-child rows
-# (i2iinit-charonr-pfsrekey) set I2I_ESP='aes128gcm16-ecp256!' so charon
-# REQUIRES a DH transform on any child SA it accepts (RFC 7296 2.18.
-# rekey-of-PFS-child MUST re-key with PFS; charon answers NO_PROPOSAL_CHOSEN
-# to a KE-less rekey).
-I2I_ESP=${I2I_ESP:-aes128gcm16}
+# (i2iinit-childless-pfsrekey-charon, i2iinit-pfsrekey-*) set
+# I2I_ESP='aes128gcm16-ecp256' — the DH-group SUFFIX is how swanctl
+# expresses child PFS (strongSwan REJECTS a trailing '!', e.g. '...ecp256!'
+# -> 'invalid value for: esp_proposals').  NOTE (review 2026-09-29): charon's
+# DH suffix is an OFFER, not a requirement — a compliant responder that
+# selects its own DH-less child SA (as iked's sa esp_e does) gets an
+# accepted PFS-less child, so the IKE_AUTH AUTH-child is NOT PFS.  The
+# sealed rekey testing path is a child that lands via CREATE_CHILD_SA, where
+# charon genuinely offers child DH (childless = force, RFC 6023) and
+# child_sa->dhgrp is actually populated (iked/ikev2_child.c:1270); the
+# responder-minted rekey of that child then carries the mirrored DH (ee60cda).
+# NB: no I2I_ESP default here.  i2iinit.sh may set a DH-suffix proposal
+# (PFS-rekey / childless rows) AFTER this file was sourced (run.sh sources
+# i2i_peer.sh first); a source-time default here would pre-empt that arm.
+I2I_ESP="${I2I_ESP:-}"
 # RFC 8784 PPK on a charon seat: I2I_PPK=1 adds ppk_id/ppk_required to the
 # conn and a secrets.ppk block whose secret is the SAME test default the
 # iked seat derives (SHA-256('rfc8784-mat')) — charon sends the typed
@@ -128,7 +138,8 @@ connections {
 	$_name {
 		version = 2
 		rekey_time = 0s
-$(childless_conn_lines)		proposals = ${I2I_PROPOSAL}
+$(childless_conn_lines)
+		proposals = ${I2I_PROPOSAL}
 		local_addrs = $_HI
 		remote_addrs = $_HR
 		local {
@@ -144,7 +155,7 @@ $(ppk_conn_lines)
 			ch {
 				local_ts = $_HI/32
 				remote_ts = $_HR/32
-				esp_proposals = ${I2I_ESP}
+				esp_proposals = ${I2I_ESP:-aes128gcm16}
 				rekey_time = 0s
 			}
 		}
@@ -177,6 +188,14 @@ i2i_peer_i_trigger() {
 	_D=$1 _NSI=$2 _peer=$3 _name=$4
 	[ "$_peer" = charon ] || return 0
 	( ip netns exec "$_NSI" "$I2I_SWANCTL_BIN" --load-all --debug 2 ) >"$_D/swanctl-load.log" 2>&1
+	# RFC 6023 childless=force: strongSwan's own net2net-childless scenario
+	# (testing/tests/ikev2/net2net-childless) shows the canonical initiate is
+	# a SINGLE "swanctl --initiate --child <child>" — charon establishes the
+	# childless IKE_SA itself (SA-less IKE_AUTH, 16418 advertise) and the
+	# first CHILD_SA arrives via CREATE_CHILD_SA ("generating CREATE_CHILD_SA
+	# request ... KE" in strongSwan's evaltest.dat).  The only path where
+	# charon genuinely offers child DH/PFS — the exact production rekey-storm
+	# shape this row exists to exercise.
 	( ip netns exec "$_NSI" "$I2I_SWANCTL_BIN" --initiate --child ch --debug 2 ) >"$_D/swanctl-init.log" 2>&1
 	return 0
 }
@@ -247,7 +266,7 @@ $(ppk_conn_lines)
 			ch {
 				local_ts = $_HR/32
 				remote_ts = $_HI/32
-				esp_proposals = ${I2I_ESP}
+				esp_proposals = ${I2I_ESP:-aes128gcm16}
 				rekey_time = 0s
 			}
 		}
