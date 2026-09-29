@@ -2006,6 +2006,7 @@ responder_state0_after_gen(int rc, void *arg)
 	 * children (liveness/DPD keep it alive; first CHILD_SA arrives via
 	 * CREATE_CHILD_SA). */
 	if (ikev2_childless(ike_sa->rmconf) == RCT_BOOL_ON) {
+		TRACE((PLOGLOC, "advertising childless IKE_SA support (16418)\n"));
 		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(1, 0, 0,
 							 IKEV2_CHILDLESS_IKEV2_SUPPORTED,
@@ -3188,6 +3189,9 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 			error = IKEV2_INVALID_SYNTAX;
 			goto notify;
 		}
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "received childless (SA-less) IKE_AUTH, establishing IKE_SA with zero children\n");
 		ikev2_update_message_id(ike_sa, message_id, FALSE);
 		if (ikev2_responder_childless_auth_send(ike_sa, message_id) != 0) {
 			++isakmpstat.fail_send_packet;

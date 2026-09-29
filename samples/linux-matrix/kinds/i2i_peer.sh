@@ -83,6 +83,11 @@ i2i_sa_addke_lines() {
 	case "$1" in
 	*-pfsrekey*) return 0 ;;
 	esac
+	# classical proposal-shape rows (CBC IKE / ESP shape variants) have no
+	# ADDKE round — drop the type-6 child offer like pfsrekey rows do.
+	if [ "${I2I_CLASSICAL:-0}" = 1 ]; then
+		return 0
+	fi
 	printf '	esp_addke_alg { mlkem768; };
 '
 	return 0
@@ -94,6 +99,17 @@ ppk_conn_lines() {
 		ppk_id = "$I2I_PPK_ID"
 		ppk_required = yes
 PPKL
+	return 0
+}
+
+# childless_conn_lines — RFC 6023: charon INITIATOR seat sends a modified
+# (SA-less) IKE_AUTH when the conn sets childless = force.  Only the
+# initiator seat emits this (a responder never advertises it).  Gate rows
+# via I2I_CHILDLESS (set by i2iinit.sh suffix).  Off for every base row.
+childless_conn_lines() {
+	[ "$I2I_CHILDLESS" = 1 ] || return 0
+	printf '		childless = force
+'
 	return 0
 }
 
@@ -112,7 +128,7 @@ connections {
 	$_name {
 		version = 2
 		rekey_time = 0s
-		proposals = ${I2I_PROPOSAL}
+$(childless_conn_lines)		proposals = ${I2I_PROPOSAL}
 		local_addrs = $_HI
 		remote_addrs = $_HR
 		local {

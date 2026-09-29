@@ -37,6 +37,45 @@ kind_i2iinit() {
 	I2I_DBG=0x0001
 	I2I_PPK=0
 	I2I_PPK_MANDATORY=0
+	# Proposal-shape / config-option knobs (suffix-driven; iked conf templates
+	# below interpolate these).  Defaults = the PQC base shape.
+	I2I_IKE_ENC="aes_gcm"          # kmp_enc_alg on both iked seats
+	I2I_IKE_PRF="hmac_sha2_256"    # kmp_prf_alg + kmp_hash_alg
+	I2I_ESP_ENC="aes_gcm"          # esp_enc_alg (name, optional ', <keylen>')
+	I2I_ESP_AUTH="non_auth"        # esp_auth_alg (separate integrity)
+	I2I_ESN=0                       # ipsec block ext_sequence on
+	I2I_CHILDLESS=0                 # responder childless on (RFC 6023)
+	I2I_CLASSICAL=0                 # proposal-shape rows without ADDKE round
+	case "$name" in
+	*-childless*) I2I_CHILDLESS=1 ;;
+	esac
+	case "$name" in
+	*-ike-cbc256*) I2I_IKE_ENC="aes256_cbc" ;;
+	esac
+	case "$name" in
+	*-prfsha384*) I2I_IKE_PRF="hmac_sha2_384" ;;
+	*-prfsha512*) I2I_IKE_PRF="hmac_sha2_512" ;;
+	esac
+	case "$name" in
+	*-esp-gcm256*) I2I_ESP_ENC="aes_gcm, 256" ;;
+	*-esp-cbc256*) I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
+	esac
+	case "$name" in
+	*-ike-cbc256*) I2I_CLASSICAL=1 ;;
+	esac
+	case "$name" in
+	*-esn*) I2I_ESN=1 ;;
+	esac
+	# esp_addke_alg line for the INITIATOR sa block: classical shape rows
+	# (proposal-shape tests) omit type-6 so the exchange is purely keyboard
+	# crypto; every other row keeps ML-KEM-768 on the child (RFC 9370).
+	I2I_ADDKE_TXT=""
+	if [ "$I2I_CLASSICAL" = 1 ]; then
+		I2I_ADDKE_TXT=""
+	else
+		I2I_ADDKE_TXT='	esp_addke_alg { mlkem768; };
+'
+	fi
 	case "$name" in
 	*-ppk*) I2I_PPK=1; I2I_DBG=0x0003 ;;
 	esac
@@ -92,6 +131,19 @@ kind_i2iinit() {
 	*-pfsrekey*) I2I_LIFETIME=25; I2I_ESP=${I2I_ESP:-aes128gcm16-ecp256} ;;
 	esac
 
+	# RFC 6023 childless IKE_SA (Feature A): responder advertises
+	# CHILDLESS_IKEV2_SUPPORTED + accepts a SA-less (modified) IKE_AUTH
+	# ONLY when a -childless row (both the iked responder conf and, for the
+	# charon-init seat, the swanctl childless = force conn line via
+	# i2i_peer.sh) opt in.  Default off keeps every base row childless-free.
+	CHILDLESS_TXT_R=""
+	[ "$I2I_CHILDLESS" = 1 ] && CHILDLESS_TXT_R='		childless on;
+'
+	# ESN rows: ext_sequence on in the ipsec block (RFC 7296 s3.3.2).
+	ESN_TXT=""
+	[ "$I2I_ESN" = 1 ] && ESN_TXT='		ext_sequence on;
+'
+
 	if [ "$PEER_R" = charon ]; then
 	# charon responder: shared helper writes the swanctl conn (PSK hex read
 	# from the existing matrix psk, never printed); iked responder.conf below
@@ -112,13 +164,14 @@ remote matrix_resp {
 		my_id fqdn "racoon2-matrix";
 		peers_id fqdn "$PEER_ID";
 		peers_ipaddr "$HI";
-		kmp_enc_alg { aes_gcm; };
-		kmp_prf_alg { hmac_sha2_256; };
-		kmp_hash_alg { hmac_sha2_256; };
+		kmp_enc_alg { $I2I_IKE_ENC; };
+		kmp_prf_alg { $I2I_IKE_PRF; };
+		kmp_hash_alg { $I2I_IKE_PRF; };
 		kmp_dh_group { $I2I_DH_GROUP; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 $PPK_TXT
+$CHILDLESS_TXT_R
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -144,12 +197,12 @@ policy pol {
 };
 ipsec ipsec_e {
 	ipsec_sa_lifetime_time $I2I_LIFETIME sec;
-	sa_index esp_e;
+$ESN_TXT	sa_index esp_e;
 };
 sa esp_e {
 	sa_protocol esp;
-	esp_enc_alg { aes_gcm; };
-	esp_auth_alg { non_auth; };
+	esp_enc_alg { $I2I_ESP_ENC; };
+	esp_auth_alg { $I2I_ESP_AUTH; };
 $(i2i_sa_addke_lines "$name")
 	};
 EOF
@@ -174,9 +227,9 @@ remote matrix_init {
 		my_id fqdn "r2init-matrix";
 		peers_id fqdn "racoon2-matrix";
 		peers_ipaddr "$HR";
-		kmp_enc_alg { aes_gcm; };
-		kmp_prf_alg { hmac_sha2_256; };
-		kmp_hash_alg { hmac_sha2_256; };
+		kmp_enc_alg { $I2I_IKE_ENC; };
+		kmp_prf_alg { $I2I_IKE_PRF; };
+		kmp_hash_alg { $I2I_IKE_PRF; };
 		kmp_dh_group { $I2I_DH_GROUP; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
@@ -206,14 +259,13 @@ policy pol {
 };
 ipsec ipsec_e {
 	ipsec_sa_lifetime_time $I2I_LIFETIME sec;
-	sa_index esp_e;
+$ESN_TXT	sa_index esp_e;
 };
 sa esp_e {
 	sa_protocol esp;
-	esp_enc_alg { aes_gcm; };
-	esp_auth_alg { non_auth; };
-	esp_addke_alg { mlkem768; };
-};
+	esp_enc_alg { $I2I_ESP_ENC; };
+	esp_auth_alg { $I2I_ESP_AUTH; };
+$I2I_ADDKE_TXT};
 EOF
 fi
 
@@ -418,8 +470,109 @@ fi
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
-	if [ "$up" -ne 1 ] || [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] || [ "$cpl" -ne 0 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; }; then
-		log "FAIL: i2iinit incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl ppk_ok=${ppk_ok:-0} pfsrekey_ok=${pfsrekey_ok:-0} peeri=${PEER} peerr=${PEER_R})"
+	# Classical (proposal-shape) rows: only *-ike-cbc256* runs a CBC IKE_SA,
+	# which has no AEAD so the RFC 9242 IntAuth_A round cannot run — that row
+	# MUST have zero round markers (a stray round is a defect for the shape)
+	# and the PQC requirement is waived (need_pqc=0).  PRF / ESP-shape / ESN
+	# rows keep aes_gcm on the IKE_SA, so they stay full PQC rows (need_pqc=1)
+	# and still gate on the IKE_INTERMEDIATE ADDKE round.
+	need_pqc=1
+	if [ "$I2I_CLASSICAL" = 1 ]; then
+		need_pqc=0
+		if grep -qE 'IKE_INTERMEDIATE ADDKE round complete|KE1_ML_KEM_768' "$D/resp-iked.log" "$D/init-iked.log" "$D/charon-init.log" "$D/charon-resp.log" 2>/dev/null; then
+			log 'FAIL: classical-CBC row shows an ADDKE round (RFC 9242 IntAuth_A cannot run on CBC IKE)'
+		fi
+	fi
+
+	# Proposal-shape SAD gate: rows that change ESP shape must show the
+	# negotiated kernel SAD cipher, else a row could PASS with the child
+	# up on the DEFAULT aes_gcm (a knob that silently failed to apply).
+	# -esp-gcm256 -> aead rfc4106 keylen 32   -esp-cbc256 -> enc cbc(aes) 32
+	# + auth hmac(sha256)                      -esn         -> 'flag E' on
+	# the ESP state (ESN replay counter).  Only the responder netns SAD is
+	# checked (the peer seat mirrors it).
+	shape_ok=1
+	case "$name" in
+	*-esp-gcm256)
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'aead rfc4106\(gcm\(aes\)\).* 32$'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD aead rfc4106(gcm(aes)) keylen 32 (AES-256-GCM)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-gcm256 row but responder SAD lacks aead rfc4106 keylen 32'
+		fi
+		;;
+	*-esp-cbc256)
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc cbc\(aes\).* 32' \
+		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'auth hmac\(sha256\)'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc cbc(aes) keylen 32 + auth hmac(sha256) (AES-CBC-256 + separate integrity)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-cbc256 row but responder SAD lacks cbc(aes)32 + hmac(sha256)'
+		fi
+		;;
+	*-esn)
+		# ESN shows as a replay-window flag E on the ESP state (iproute2).
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE '\bE\b|flag E| replay-window' \
+		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'proto esp'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD carries ESN (ext_sequence on)'
+		else
+			shape_ok=0
+			log 'FAIL: -esn row but responder SAD shows no ESN flag'
+		fi
+		;;
+	*)
+		shape_ok=1
+		;;
+	esac
+	if [ "$shape_ok" -ne 1 ]; then
+		log 'FAIL: proposal-shape SAD gate rejected the row'
+	fi
+
+	# RFC 6023 childless rows (Feature A):
+	#   i2iinit-childless-charon  charon INITIATOR childless=force -> iked
+	#                             responder childless on accepts the SA-less
+	#                             (modified) IKE_AUTH and answers SA-less
+	#                             AUTH; the knob must also be exercised on
+	#                             the responder only.
+	#   i2iinit-childless         iked<->iked, responder childless on: the
+	#                             iked initiator does NOT send a modified
+	#                             IKE_AUTH (racoon2 initiator has no
+	#                             childless-init), so this validates the
+	#                             knob does not break a CLASSICAL IKE_AUTH
+	#                             (advertise 16418 + still accept SA-full).
+	childless_ok=0
+	case "$name" in
+	*-childless-charon)
+		# the responder must ACCEPT a true SA-less IKE_AUTH and answer
+		# SA-less; charon then adds the child via a separate CREATE_CHILD_SA.
+		if grep -q 'received childless (SA-less) IKE_AUTH' "$D/resp-iked.log" 2>/dev/null && \
+		   grep -q 'advertising childless IKE_SA support (16418)' "$D/resp-iked.log" 2>/dev/null; then
+			childless_ok=1
+			log 'RFC 6023: responder accepted SA-less (modified) IKE_AUTH + advertised 16418; child via CREATE_CHILD_SA'
+		else
+			log 'FAIL: responder childless accept path not exercised (no 16418 advertise / no SA-less accept)'
+		fi
+		;;
+	*-childless)
+		# iked<->iked: responder knob ON; initiator still sends a classical
+		# (SA-full) IKE_AUTH which must be accepted normally.
+		if grep -q 'advertising childless IKE_SA support (16418)' "$D/resp-iked.log" 2>/dev/null; then
+			childless_ok=1
+			log 'RFC 6023: childless knob ON advertised 16418; classical IKE_AUTH still accepted'
+		else
+			log 'FAIL: childless knob ON did not advertise 16418'
+		fi
+		;;
+	*)
+		childless_ok=1
+		;;
+	esac
+
+	if [ "$up" -ne 1 ] || { [ "$need_pqc" = 1 ] && { [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; }; } || [ "$cpl" -ne 0 ] || [ "${childless_ok:-0}" -ne 1 ] || [ "${shape_ok:-1}" -ne 1 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; }; then
+		log "FAIL: i2iinit incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl childless_ok=${childless_ok:-0} shape_ok=${shape_ok:-1} ppk_ok=${ppk_ok:-0} pfsrekey_ok=${pfsrekey_ok:-0} peeri=${PEER} peerr=${PEER_R})"
 		if [ "$PEER" = charon ]; then
 			log "--- charon-init.log ---"
 			i2i_peer_i_diag "$D" charon
