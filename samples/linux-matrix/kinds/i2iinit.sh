@@ -26,19 +26,50 @@ kind_i2iinit() {
 	D=/tmp/r2-i2init; C=/tmp/r2-i2init-conf
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
-	# RFC 8784 PPK rows (i2iinit-ppk): both seats enable USE_PPK with a
-	# shared ppk_id (test default = SHA-256(ppk_id), no secret files on the
-	# box).  TRACE must be on (0x0003) for the kind's USE_PPK/PPK_IDENTITY
-	# evidence lines to land in the iked logs.
+	# RFC 8784 PPK rows (i2iinit-ppk, i2iinit-ppk-charon): seats enable
+	# USE_PPK with a shared ppk_id (test default = SHA-256(ppk_id), no
+	# secret files on the box).  TRACE must be on (0x0003) for the kind's
+	# USE_PPK/PPK_IDENTITY evidence lines to land in the iked logs.  A
+	# -ppk-charon suffix additionally drops the charon initiator into
+	# PPK (ppk_id/ppk_required + secrets.ppk matching the iked test
+	# default) — re-arbitrating the s5.1 typed PPK_IDENTITY against a
+	# second implementation.
 	I2I_DBG=0x0001
 	I2I_PPK=0
 	case "$name" in
-	*-ppk) I2I_PPK=1; I2I_DBG=0x0003 ;;
+	*-ppk*) I2I_PPK=1; I2I_DBG=0x0003 ;;
 	esac
 	PPK_TXT=""
 	[ "$I2I_PPK" = 1 ] && PPK_TXT='		use_ppk on;
 		ppk_mandatory off;
 		ppk_id "rfc8784-mat";'
+
+	# RFC 7296 2.18 PFS rekey row (i2iinit-pfsrekey-charon): the charon
+	# seat REQUIRES a DH transform in every child proposal it accepts
+	# (I2I_ESP='aes128gcm16-ecp256!'), so the AUTH child is PFS and a
+	# later rekey of it MUST carry DH (implemented by mirroring the
+	# peer-offered DH into my_proposal — ee60cda).  Shorten the iked
+	# responder lifetime so iked mints the child rekey mid-row; gate on
+	# g_ir_present=Y in the rekey keymat + SPI change + no
+	# NO_PROPOSAL_CHOSEN (would fail pre-fix: no KE payload).
+	I2I_LIFETIME=300
+	# DH-group variants first (unconditional; see below why they must win):
+	# I2I_PROPOSAL resolves at source time, so a row that changes the group
+	# MUST set the full charon IKE proposal itself (skill: a later
+	# I2I_DH_GROUP alone never propagates into I2I_PROPOSAL).  The child
+	# PFS group comes from I2I_ESP's '-<grp>!' suffix, and the iked confs
+	# now offer kmp_dh_group $I2I_DH_GROUP so the KMP DH overlaps.  These
+	# arms override I2I_ESP unconditionally so a '-dh384-pfsrekey' name
+	# lands on ecp384, not the -pfsrekey default ecp256.
+	case "$name" in
+	*-dh384*) I2I_DH_GROUP=ecp384; I2I_PROPOSAL=aes256gcm16-prfsha256-ecp384-ke1_mlkem768
+	          I2I_ESP=aes128gcm16-ecp384! ;;
+	*-dh521*) I2I_DH_GROUP=ecp521; I2I_PROPOSAL=aes256gcm16-prfsha256-ecp521-ke1_mlkem768
+	          I2I_ESP=aes128gcm16-ecp521! ;;
+	esac
+	case "$name" in
+	*-pfsrekey*) I2I_LIFETIME=25; I2I_ESP=${I2I_ESP:-aes128gcm16-ecp256!} ;;
+	esac
 
 	if [ "$PEER_R" = charon ]; then
 	# charon responder: shared helper writes the swanctl conn (PSK hex read
@@ -63,7 +94,7 @@ remote matrix_resp {
 		kmp_enc_alg { aes_gcm; };
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
-		kmp_dh_group { ecp256; };
+		kmp_dh_group { $I2I_DH_GROUP; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 $PPK_TXT
@@ -91,14 +122,14 @@ policy pol {
 	my_sa_ipaddr "$HR";
 };
 ipsec ipsec_e {
-	ipsec_sa_lifetime_time 300 sec;
+	ipsec_sa_lifetime_time $I2I_LIFETIME sec;
 	sa_index esp_e;
 };
 sa esp_e {
 	sa_protocol esp;
 	esp_enc_alg { aes_gcm; };
 	esp_auth_alg { non_auth; };
-	esp_addke_alg { mlkem768; };
+$(i2i_sa_addke_lines "$name")
 	};
 EOF
 fi
@@ -125,7 +156,7 @@ remote matrix_init {
 		kmp_enc_alg { aes_gcm; };
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
-		kmp_dh_group { ecp256; };
+		kmp_dh_group { $I2I_DH_GROUP; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 $PPK_TXT
@@ -153,7 +184,7 @@ policy pol {
 	my_sa_ipaddr "$HI";
 };
 ipsec ipsec_e {
-	ipsec_sa_lifetime_time 300 sec;
+	ipsec_sa_lifetime_time $I2I_LIFETIME sec;
 	sa_index esp_e;
 };
 sa esp_e {
@@ -275,16 +306,72 @@ fi
 	# confirmed the PPK_IDENTITY (TRACE level, enabled by I2I_DBG=0x0003).
 	ppk_ok=0
 	if [ "$I2I_PPK" = 1 ]; then
-		gre=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/resp-iked.log" 2>/dev/null)
-		gie=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/init-iked.log" 2>/dev/null)
-		gid=$(grep -c "RFC 8784: responder confirmed PPK_IDENTITY" "$D/init-iked.log" 2>/dev/null)
+		# responder-seat USE_PPK evidence (iked: its log; charon: its own
+		# 'using PPK for PPK_ID' line).  Init-seat markers likewise; the
+		# iked-only 'responder confirmed PPK_IDENTITY' TRACE line only
+		# exists when the RESPONDER seat is iked.
+		if [ "$PEER_R" = charon ]; then
+			gre=$(grep -c "using PPK for PPK_ID '" "$D/charon-resp.log" 2>/dev/null)
+		else
+			gre=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/resp-iked.log" 2>/dev/null)
+		fi
+		if [ "$PEER" = charon ]; then
+			gie=$(grep -c "using PPK for PPK_ID '" "$D/charon-init.log" 2>/dev/null)
+			gid=1
+		else
+			gie=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/init-iked.log" 2>/dev/null)
+			gid=$(grep -c "RFC 8784: responder confirmed PPK_IDENTITY" "$D/init-iked.log" 2>/dev/null)
+		fi
 		if [ "${gre:-0}" -ge 1 ] && [ "${gie:-0}" -ge 1 ] && [ "${gid:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
 			ppk_ok=1
 			log "RFC 8784 PPK: USE_PPK echoed both seats + PPK_IDENTITY confirmed; child up => PPK-mixed SK_d matched"
 		else
-			log "FAIL: RFC 8784 PPK markers absent (resp_use_ppk=${gre:-0} init_use_ppk=${gie:-0} init_id_confirm=${gid:-0})"
+			log "FAIL: RFC 8784 PPK markers absent (resp_use_ppk=${gre:-0} init_use_ppk=${gie:-0} init/charon_id_confirm=${gid:-0})"
 		fi
 	fi
+
+	# RFC 7296 2.18 PFS rekey rows: after the initial child lands, the iked
+	# RESPONDER (short I2I_LIFETIME) mints a CREATE_CHILD_SA child rekey of
+	# the PFS-negotiated child.  The fix (ee60cda) mirrors the peer-offered
+	# DH into my_proposal so the rekey proposal carries DH and KEi is sent;
+	# charon (esp -ecp256!) demands that DH.  Pre-fix: no KE payload ->
+	# charon answers NO_PROPOSAL_CHOSEN, SPI never changes.  Gate: fresh
+	# rekey on the iked responder log, a PFS keymat (g_ir_present=Y),
+	# SPI change, and no responder NO_PROPOSAL_CHOSEN.
+	pfsrekey_ok=0
+	case "$name" in
+	*-pfsrekey*)
+		# The storm seat: which iked mints the rekey.  -charon (charon
+		# INITIATOR, iked responder) reproduces the live storm exactly.  In
+		# the reverse -charonr the iked INITIATOR mints it (charon responder
+		# still requires PFS).  Gate on THAT iked's log + THAT netns' SPI.
+		if [ "$PEER" = charon ]; then
+			ike_log="$D/resp-iked.log"; spi_ns="$NSR"
+		else
+			ike_log="$D/init-iked.log"; spi_ns="$NSI"
+		fi
+		spi_before=$(ip netns exec "$spi_ns" ip xfrm state 2>/dev/null | grep 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '
+' ' ')
+		sleep 40
+		# that iked must mint the rekey (child soft lifetime ~20s)
+		if ! grep -q 'initiating CREATE_CHILD_SA rekey' "$ike_log" 2>/dev/null; then
+			log "FAIL: iked did not initiate child rekey ($ike_log)"
+		elif grep -q 'NO_PROPOSAL_CHOSEN' "$ike_log" 2>/dev/null; then
+			log "FAIL: rekey answered NO_PROPOSAL_CHOSEN (KE-less rekey?)"
+		elif ! grep -qE 'g_ir_present=Y' "$ike_log" 2>/dev/null; then
+			log "FAIL: no PFS (g_ir_present=Y) keymat after rekey ($ike_log)"
+		else
+			spi_after=$(ip netns exec "$spi_ns" ip xfrm state 2>/dev/null | grep 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '
+' ' ')
+			if [ "$spi_before" != "$spi_after" ]; then
+				pfsrekey_ok=1
+				log "PFS rekey OK: iked rekey carried DH (KEi), charon accepted, SPI $spi_before -> $spi_after"
+			else
+				log "FAIL: ESP SPI unchanged after PFS rekey wait ($spi_before)"
+			fi
+		fi
+		;;
+	esac
 
 	# NDcPP v3.0e compliance report for this row (A/B cells) — runs while
 	# the netnss + SADB are still live (A1/A2/A3 read xfrm policy/state)
@@ -304,8 +391,8 @@ fi
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
-	if [ "$up" -ne 1 ] || [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] || [ "$cpl" -ne 0 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; }; then
-		log "FAIL: PQC initial-IKE_SA ADDKE incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl ppk_ok=${ppk_ok:-0} peeri=${PEER} peerr=${PEER_R})"
+	if [ "$up" -ne 1 ] || [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] || [ "$cpl" -ne 0 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; }; then
+		log "FAIL: i2iinit incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl ppk_ok=${ppk_ok:-0} pfsrekey_ok=${pfsrekey_ok:-0} peeri=${PEER} peerr=${PEER_R})"
 		if [ "$PEER" = charon ]; then
 			log "--- charon-init.log ---"
 			i2i_peer_i_diag "$D" charon

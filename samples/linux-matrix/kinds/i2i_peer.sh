@@ -18,6 +18,20 @@ I2I_SWANCTL_BIN=${I2I_SWANCTL_BIN:-/usr/bin/swanctl}
 I2I_CHARON_VDIR=${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}
 I2I_DH_GROUP=${I2I_DH_GROUP:-ecp256}	# charon IKE proposal DH group
 I2I_PROPOSAL=${I2I_PROPOSAL:-aes256gcm16-prfsha256-${I2I_DH_GROUP}-ke1_mlkem768}	# full charon IKE proposal string
+# Child (ESP) proposal: ${I2I_ESP:-aes128gcm16} default.  PFS-child rows
+# (i2iinit-charonr-pfsrekey) set I2I_ESP='aes128gcm16-ecp256!' so charon
+# REQUIRES a DH transform on any child SA it accepts (RFC 7296 2.18.
+# rekey-of-PFS-child MUST re-key with PFS; charon answers NO_PROPOSAL_CHOSEN
+# to a KE-less rekey).
+I2I_ESP=${I2I_ESP:-aes128gcm16}
+# RFC 8784 PPK on a charon seat: I2I_PPK=1 adds ppk_id/ppk_required to the
+# conn and a secrets.ppk block whose secret is the SAME test default the
+# iked seat derives (SHA-256('rfc8784-mat')) — charon sends the typed
+# PPK_ID_FIXED (0x02) identity, re-arbitrating our s5.1 type-octet fix
+# against a second implementation.  No secret files are created.
+I2I_PPK=${I2I_PPK:-0}
+I2I_PPK_ID=${I2I_PPK_ID:-rfc8784-mat}
+I2I_PPK_HEX=1e9546cc8758e5f4bf1f5d3476f79bfea60c7bd4822a32058e23cf16107eef0b
 
 # i2i_peer <name> — INITIATOR-seat backend for a case: charon when the name
 # carries a -charon suffix (or R2_PEER_I=charon globally), else iked.
@@ -42,6 +56,45 @@ i2i_peer_r() {
 # i2i_peer_resp_id <peer> — the responder's peers_id for this initiator id.
 i2i_peer_resp_id() {
 	if [ "$1" = charon ]; then echo "$I2I_CHARON_ID"; else echo "r2init-matrix"; fi
+}
+
+# ppk_secret_block <name> — emit a swanctl secrets.ppk block when I2I_PPK=1.
+# The secret is the SAME deterministic test default the iked seat derives
+# (SHA-256(ppk_id)); charon will send the typed PPK_ID_FIXED identity.
+# Emits nothing otherwise (so a non-PPK row's secrets{} stays single-cased).
+ppk_secret_block() {
+	_name=$1
+	[ "$I2I_PPK" = 1 ] || return 0
+	cat <<SEOF
+	ppk-$_name {
+		secret = "0x$I2I_PPK_HEX"
+		id = "$I2I_PPK_ID"
+	}
+SEOF
+	return 0
+}
+
+# i2i_sa_addke_lines <name> — the esp_addke_alg line for an iked sa block.
+# pfsrekey rows drop it: the charon peer's esp proposal is plain
+# aes128gcm16-ecp256! (no type-6) and a type-6 on a child rekey proposal is
+# RFC 9370 CREATE_CHILD-only; keeping the row purely PFS isolates the
+# RFC 7296 2.18 DH rekey fix from charon's ADDKE handling.
+i2i_sa_addke_lines() {
+	case "$1" in
+	*-pfsrekey*) return 0 ;;
+	esac
+	printf '	esp_addke_alg { mlkem768; };
+'
+	return 0
+}
+
+ppk_conn_lines() {
+	[ "$I2I_PPK" = 1 ] || return 0
+	cat <<PPKL
+		ppk_id = "$I2I_PPK_ID"
+		ppk_required = yes
+PPKL
+	return 0
 }
 
 # i2i_peer_i_conf <C> <HI> <HR> <name> <peer> — write a swanctl conn for a
@@ -70,11 +123,12 @@ connections {
 			id = racoon2-matrix
 			auth = psk
 		}
+$(ppk_conn_lines)
 		children {
 			ch {
 				local_ts = $_HI/32
 				remote_ts = $_HR/32
-				esp_proposals = aes128gcm16
+				esp_proposals = ${I2I_ESP}
 				rekey_time = 0s
 			}
 		}
@@ -84,6 +138,7 @@ secrets {
 	ike-$_name {
 		secret = "0x$_pskhex"
 	}
+$(ppk_secret_block "$_name")
 }
 EOF
 	return 0
@@ -171,11 +226,12 @@ connections {
 			id = r2init-matrix
 			auth = psk
 		}
+$(ppk_conn_lines)
 		children {
 			ch {
 				local_ts = $_HR/32
 				remote_ts = $_HI/32
-				esp_proposals = aes128gcm16
+				esp_proposals = ${I2I_ESP}
 				rekey_time = 0s
 			}
 		}
@@ -185,6 +241,7 @@ secrets {
 	ike-$_name {
 		secret = "0x$_pskhex"
 	}
+$(ppk_secret_block "$_name")
 }
 EOF
 	return 0
