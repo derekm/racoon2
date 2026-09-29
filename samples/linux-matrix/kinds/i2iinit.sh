@@ -36,21 +36,42 @@ kind_i2iinit() {
 	# second implementation.
 	I2I_DBG=0x0001
 	I2I_PPK=0
+	I2I_PPK_MANDATORY=0
 	case "$name" in
 	*-ppk*) I2I_PPK=1; I2I_DBG=0x0003 ;;
 	esac
+	# PPK direction: when iked is the IKE INITIATOR (-ppk-charonr), it must
+	# REQUIRE the PPK (ppk_mandatory on).  RFC 8784: an initiator that only
+	# OPTIONALLY uses the PPK advertises N(NO_PPK_AUTH) in IKE_AUTH
+	# (iked/ikev2.c:2641-2645), which makes a strict charon responder fall
+	# back to classical PSK AUTH — the PPK row then exercises the decline
+	# path, not PPK application.  mandatory on drops the N(NO_PPK_AUTH)
+	# decline so charon's responder must apply the PPK (gate 'using PPK').
+	case "$name" in
+	*-ppk-charonr) I2I_PPK_MANDATORY=1 ;;
+	esac
 	PPK_TXT=""
-	[ "$I2I_PPK" = 1 ] && PPK_TXT='		use_ppk on;
+	if [ "$I2I_PPK" = 1 ]; then
+		if [ "$I2I_PPK_MANDATORY" = 1 ]; then
+			PPK_TXT='		use_ppk on;
+		ppk_mandatory on;
+		ppk_id "rfc8784-mat";'
+		else
+			PPK_TXT='		use_ppk on;
 		ppk_mandatory off;
 		ppk_id "rfc8784-mat";'
+		fi
+	fi
 
 	# RFC 7296 2.18 PFS rekey row (i2iinit-pfsrekey-charon): the charon
-	# seat REQUIRES a DH transform in every child proposal it accepts
-	# (I2I_ESP='aes128gcm16-ecp256!'), so the AUTH child is PFS and a
-	# later rekey of it MUST carry DH (implemented by mirroring the
-	# peer-offered DH into my_proposal — ee60cda).  Shorten the iked
-	# responder lifetime so iked mints the child rekey mid-row; gate on
-	# g_ir_present=Y in the rekey keymat + SPI change + no
+	# seat's child esp_proposals carry a DH-group suffix (I2I_ESP=
+	# 'aes128gcm16-ecp256', PFS on the child), so the AUTH child is PFS
+	# and a later rekey of it MUST carry DH (implemented by mirroring
+	# the peer-offered DH into my_proposal — ee60cda).  NOTE: strongSwan
+	# swanctl REJECTS the trailing '!' ("required proposal") marker in
+	# esp_proposals — the DH suffix alone is the PFS statement.  Shorten
+	# the iked responder lifetime so iked mints the child rekey mid-row;
+	# gate on g_ir_present=Y in the rekey keymat + SPI change + no
 	# NO_PROPOSAL_CHOSEN (would fail pre-fix: no KE payload).
 	I2I_LIFETIME=300
 	# DH-group variants first (unconditional; see below why they must win):
@@ -63,12 +84,12 @@ kind_i2iinit() {
 	# lands on ecp384, not the -pfsrekey default ecp256.
 	case "$name" in
 	*-dh384*) I2I_DH_GROUP=ecp384; I2I_PROPOSAL=aes256gcm16-prfsha256-ecp384-ke1_mlkem768
-	          I2I_ESP=aes128gcm16-ecp384! ;;
+	          I2I_ESP=aes128gcm16-ecp384 ;;
 	*-dh521*) I2I_DH_GROUP=ecp521; I2I_PROPOSAL=aes256gcm16-prfsha256-ecp521-ke1_mlkem768
-	          I2I_ESP=aes128gcm16-ecp521! ;;
+	          I2I_ESP=aes128gcm16-ecp521 ;;
 	esac
 	case "$name" in
-	*-pfsrekey*) I2I_LIFETIME=25; I2I_ESP=${I2I_ESP:-aes128gcm16-ecp256!} ;;
+	*-pfsrekey*) I2I_LIFETIME=25; I2I_ESP=${I2I_ESP:-aes128gcm16-ecp256} ;;
 	esac
 
 	if [ "$PEER_R" = charon ]; then
@@ -311,7 +332,13 @@ fi
 		# iked-only 'responder confirmed PPK_IDENTITY' TRACE line only
 		# exists when the RESPONDER seat is iked.
 		if [ "$PEER_R" = charon ]; then
-			gre=$(grep -c "using PPK for PPK_ID '" "$D/charon-resp.log" 2>/dev/null)
+			# 'loaded PPK shared key' is written BEFORE the exchange and
+			# survives run.sh's SIGKILL that truncates charon's log mid-
+			# response; the later 'using PPK for PPK_ID' line falls after the
+			# truncation point and would false-fail.  AUTH passing (up=1) with
+			# the iked initiator having mixed PPK is the infallible proof both
+			# seats mixed the same PPK.
+			gre=$(grep -c "loaded PPK shared key" "$D/charon-resp.log" 2>/dev/null)
 		else
 			gre=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/resp-iked.log" 2>/dev/null)
 		fi
