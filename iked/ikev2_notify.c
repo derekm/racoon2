@@ -373,9 +373,29 @@ resp_ike_sa_auth_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			dlen = get_payload_length(&notify->header) -
 			    sizeof(struct ikev2payl_notify);
 		}
-		if (my_id && my_id->l == dlen &&
-		    memcmp(my_id->v, kt, dlen) == 0) {
+		/* RFC 8784 s5.1: the initiator's PPK_ID has its first octet as the
+		 * PPK_ID type (1=PPK_ID_OPAQUE, 2=PPK_ID_FIXED) with the remaining
+		 * octets the configured value -- so a compliant peer (iOS,
+		 * strongSwan) sends 1-octet type + ppk_id.  Accept BOTH that typed
+		 * form and the bare-id form (what racoon2's own initiator sends;
+		 * the iked<->iked matrix is self-consistent on the bare form and
+		 * must keep passing).  Any other length/type mismatch rejects as
+		 * before. */
+		int ok = 0;
+		if (my_id) {
+			if (my_id->l == dlen && kt &&
+			    memcmp(my_id->v, kt, dlen) == 0)
+				ok = 1;	/* bare id (racoon2 initiator) */
+			else if (dlen == my_id->l + 1 && kt &&
+				 (kt[0] == 1 || kt[0] == 2) &&
+				 memcmp(my_id->v, kt + 1, my_id->l) == 0)
+				ok = 1;	/* RFC 8784 s5.1 typed (type + id) */
+		}
+		if (ok) {
 			ike_sa->peer_ppk_identity_ok = 1;
+			TRACE((PLOGLOC,
+			       "RFC 8784: PPK_IDENTITY %s matches my ppk_id\n",
+			       dlen == my_id->l ? "(bare)" : "(typed s5.1)"));
 		} else {
 			isakmp_log(ike_sa, 0, 0, msg,
 				   PLOG_PROTOERR, PLOGLOC,

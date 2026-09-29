@@ -2622,11 +2622,22 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	if (ike_sa->ppk_active) {
 		rc_vchar_t *ppk_id = ikev2_ppk_id(ike_sa->rmconf);
 		if (ppk_id && ppk_id->l > 0) {
-			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
-					    ikev2_notify_payload(0, 0, 0,
-								 IKEV2_PPK_IDENTITY,
-								 (uint8_t *)ppk_id->v, ppk_id->l),
-					    TRUE);
+			/* RFC 8784 s5.1: the PPK_ID we send has its first octet as the
+			 * PPK_ID type (2=PPK_ID_FIXED) with the remaining octets the
+			 * configured ppk_id -- a strict responder (iOS, strongSwan)
+			 * derives the identifier from the octets AFTER the type byte
+			 * and would not match a bare id. */
+			rc_vchar_t *typed = rc_vmalloc(ppk_id->l + 1);
+			if (typed) {
+				typed->v[0] = 2;	/* PPK_ID_FIXED */
+				memcpy(typed->v + 1, ppk_id->v, ppk_id->l);
+				ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+						    ikev2_notify_payload(0, 0, 0,
+									 IKEV2_PPK_IDENTITY,
+									 typed->v, typed->l),
+						    TRUE);
+				rc_vfree(typed);
+			}
 			if (ikev2_ppk_mandatory(ike_sa->rmconf) ==
 			    RCT_BOOL_OFF)
 				ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
