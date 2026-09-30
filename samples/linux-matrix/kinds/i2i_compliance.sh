@@ -448,6 +448,36 @@ i2i_compliance() {
 		PLOG A13 FAIL "peer auth not declared on both seats (conf)"
 	fi
 
+	# ---- A13b  RFC 7427 actually negotiated (not a silent method-1 fallback) --
+	# A charon seat that pins `auth = ike:pubkey-*` only signs SHA-2 when
+	# EXT_SIGNATURE_AUTH negotiates: another implementation offers
+	# N(SIG_HASH_ALGORITHMS) 16431, the iked responder echoes it
+	# (ikev2.c:2014 TRACE) and both sides use AUTH method 14 (DS).  If that
+	# negotiation silently fell back to classic method 1 with hardcoded
+	# SHA-1, Fedora-44/OpenSSL-3.5 would refuse the signature and the row
+	# could still look "established" on a configured-peer lookalike -- so
+	# when a seat pins the ike:pubkey scheme, the iked responder log MUST
+	# carry both the 16431 echo and 'auth method 14' or this cell FAILs.
+	a13b_pin=0
+	if grep -qE "auth[[:space:]]*=[[:space:]]*ike:pubkey" \
+	    "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then
+		a13b_pin=1
+	fi
+	if [ "$a13b_pin" -eq 1 ] && [ "$_per" = iked ]; then
+		# charon initiator vs iked responder: the responder seat echoes.
+		_iked_log="$_D/resp-iked.log"
+		if ! grep -q "echoing SIG_HASH_ALGORITHMS (16431)" "$_iked_log" 2>/dev/null \
+		   || ! grep -q "auth method 14" "$_iked_log" 2>/dev/null; then
+			PLOG A13b FAIL "RFC 7427 pin declared but responder did not echo 16431 / use AUTH method 14 (silent classic fallback)"
+		else
+			PLOG A13b PASS "RFC 7427 negotiated: 16431 echoed + AUTH method 14 in responder log"
+		fi
+	elif [ "$a13b_pin" -eq 1 ]; then
+		PLOG A13b INFO "RFC 7427 pin on a charonr/initiator seat: iked initiator 16431 offer not yet implemented (reviewer finding #1)"
+	else
+		PLOG A13b INFO "no ike:pubkey pin on this row; RFC 7427 negotiation cell not wired"
+	fi
+
 	# ---- A14  reference identifier binding (peer id vs configured) ----------
 	# conf pins peers_id (fqdn) and the SA established => the authenticated
 	# peer id matched the configured reference (charon logs the id).
