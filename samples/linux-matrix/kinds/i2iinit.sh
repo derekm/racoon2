@@ -512,9 +512,18 @@ fi
 		# responder-seat evidence (iked responder or charon responder)
 		i2i_peer_r_evidence "$D" "$PEER_R"
 		n_r=$?
-		# initiator-seat evidence (iked initiator or charon initiator)
-		i2i_peer_i_evidence "$D" "$PEER"
-		n_p=$?
+		# initiator-seat evidence (iked initiator or charon initiator).
+		# A -cfgneg row is REFUSED at the childless cfg gate (after the
+		# IKE_INTERMEDIATE ADDKE round), so the charon initiator NEVER
+		# reaches ESTABLISHED — requiring it here would false-fail a
+		# correct refusal (skill: cfgneg-charon nint gate).  For that seat
+		# the round is proven by the selected ML-KEM proposal instead.
+		if [ "$I2I_CFGNEG" = 1 ] && [ "$PEER" = charon ]; then
+			grep -q 'selected proposal: IKE:.*KE1_ML_KEM_768' "$D/charon-init.log" 2>/dev/null; n_p=$?
+		else
+			i2i_peer_i_evidence "$D" "$PEER"
+			n_p=$?
+		fi
 		if [ "$n_r" -eq 0 ] && [ "$n_p" -eq 0 ]; then
 			log "IKE_INTERMEDIATE ADDKE round completed: responder(seat=${PEER_R}) + ${PEER} initiator at ${i}s"
 			nint=1; break

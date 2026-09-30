@@ -190,7 +190,22 @@ $(ppk_conn_lines)
 secrets {
 EOF
 	if [ "$I2I_RSA" = 1 ]; then
-		printf '	private-%s {\n		file = "%s/key-i.pem"\n	}\n' "$_name" "$_C" >> "$I2I_CHARON_CONF"
+		# strongSwan discovers private keys from the swanctl private/
+		# dir (swanctlDir: private/rsa/ecdsa/pkcs8) and matches them to
+		# the conn-local cert by public key.  A `secrets.private-*`
+		# block is ONLY a passphrase provider ("decrypt file X in
+		# private/ with this secret") — it can never load a key from an
+		# arbitrary path.  Writing `private-$name { file = ...key-i.pem }`
+		# left charon with the cert (id=CN=charon-i2i) but NO private key
+		# -> `no private key found for 'CN=charon-i2i'` right at IKE_AUTH.
+		# Install the in-row key into private/ so auto-discovery matches it.
+		_privdir="${I2I_CHARON_KEYS_DIR:-/etc/strongswan/swanctl/private}"
+		mkdir -p "$_privdir" || { log "FAIL: no $I2I_CHARON_VDIR private key dir $I2I_CHARON_KEYS_DIR"; return 1; }
+		cp "$_C/key-i.pem" "$_privdir/r2-${_name}-key-i.pem" || { log "FAIL: cp key-i->$_privdir"; return 1; }
+		chmod 644 "$_privdir/r2-${_name}-key-i.pem" 2>/dev/null || true
+		# passphrase block is unnecessary (key is unencrypted) and would be
+		# misparsed as "decrypt STALEKEY in private/"; skip it entirely.
+		:
 	else
 		cat >> "$I2I_CHARON_CONF" <<EOF
 	ike-$_name {
@@ -267,6 +282,11 @@ i2i_peer_i_cleanup() {
 	killall -9 charon 2>/dev/null || true
 	rm -f /var/run/charon.pid /var/run/charon.ctl
 	rm -f "${I2I_CHARON_CONF:-/nonexistent}"
+	# remove any key file the RSA arm installed into swanctl private/ so a
+	# stale peer key cannot linger for the next case's auto-discovery.
+	_bname="${I2I_CHARON_CONF##*/}"      # r2-<name>.conf
+	_bname="${_bname%.conf}"             # r2-<name>
+	rm -f "/etc/strongswan/swanctl/private/${_bname}-key-i.pem" 2>/dev/null || true
 	return 0
 }
 # ==== responder seat: charon answers, racoon2 iked initiates ============
