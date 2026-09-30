@@ -3156,6 +3156,8 @@ eay_aes_cmac_one(rc_vchar_t *key, rc_vchar_t *data)
 	caddr_t ctx;
 
 	ctx = eay_aes_cmac_init(key);
+	if (ctx == NULL)
+		return NULL;	/* OOM: update would deref NULL */
 	eay_aes_cmac_update(ctx, data);
 	res = eay_aes_cmac_final(ctx);
 
