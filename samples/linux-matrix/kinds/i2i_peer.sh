@@ -161,7 +161,7 @@ i2i_peer_i_conf() {
 		}
 		remote {
 			auth = ike:pubkey-sha256-sha384-sha512
-			cacerts = "'"$_C"'/cert-r.pem"
+			pubkeys = "'"$_C"'/cert-r.pem"
 		}'
 		_pskhex=""
 	else
