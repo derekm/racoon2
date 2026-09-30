@@ -45,14 +45,33 @@ i2i_compliance() {
 	# NEG-waived INFO because their precondition (an established SA) is
 	# intentionally absent.  The refusal itself is the row's own gate.
 	if case "$_name" in *-cfgneg*) true ;; *) false ;; esac; then
-		a1_ok=1
-		for _ns in "$_NSR" "$_NSI"; do
+	# On a refused childless exchange every seat keeps its IKE-port BYPASS
+	# (500/4500) rows; the ESP PROTECT row can only exist on a seat whose
+	# SPD is statically installed.  iked programs PROTECT(esp tunnel) from
+	# its conf regardless of SA state; charon only installs PROTECT when
+	# the CHILD_SA establishes -- which a -cfgneg refusal prevents, so a
+	# charon seat carries BYPASS + no-clear-path (A2) by design and there
+	# is nothing for it to protect.  Requiring esp PROTECT on a charon
+	# seat here would false-fail every correct refusal (same precondition
+	# logic that waives A3/A4/A5 on these rows).
+	a1_ok=1
+	for _ns in "$_NSR" "$_NSI"; do
+		_pol=$(ip netns exec "$_ns" ip xfrm policy 2>/dev/null || true)
+		if ! printf '%s\n' "$_pol" | grep -q "proto udp"; then a1_ok=0; PLOG A1 FAIL "NEG row: ${_ns}_seat lost its IKE-port BYPASS(udp) row"; fi
+	done
+	# iked seats must still carry the static ESP PROTECT tunnel row
+	for _ns in "$_NSR" "$_NSI"; do
+		_seat=init
+		[ "$_ns" = "$_NSR" ] && _seat=resp
+		_kind=$_pei; _pol=""
+		case "$_seat" in resp) _kind=$_per;; esac
+		if [ "$_kind" = iked ]; then
 			_pol=$(ip netns exec "$_ns" ip xfrm policy 2>/dev/null || true)
-			if ! printf '%s\n' "$_pol" | grep -q "proto udp"; then a1_ok=0; fi
-			if ! printf '%s\n' "$_pol" | grep -q "proto esp.*mode tunnel"; then a1_ok=0; fi
-		done
-		[ "$a1_ok" -eq 1 ] && PLOG A1 PASS "NEG row: SPD still has BYPASS(udp 500/4500) + PROTECT(esp tunnel) both ${_NSR}/${_NSI}"
-		[ "$a1_ok" -eq 0 ] && PLOG A1 FAIL "NEG row: SPD missing BYPASS(udp) or PROTECT(esp) row"
+			if ! printf '%s\n' "$_pol" | grep -q "proto esp.*mode tunnel"; then a1_ok=0; PLOG A1 FAIL "NEG row: iked $_seat seat lost its static PROTECT(esp tunnel) row"; fi
+		fi
+	done
+	[ "$a1_ok" -eq 1 ] && PLOG A1 PASS "NEG row: SPD has IKE-port BYPASS(udp) on both ${_NSR}/${_NSI} + static PROTECT(esp tunnel) on iked seat(s); charon seat's absent PROTECT is the refusal's expected consequence (A2 covers no-clear-path)"
+	[ "$a1_ok" -eq 0 ] && PLOG A1 FAIL "NEG row: SPD missing BYPASS(udp) or iked-seat PROTECT(esp) row"
 		# A2: same no-clear-path negative shape as the positive path.
 		a2_ok=1
 		_pol=$(ip netns exec "$_NSI" ip xfrm policy 2>/dev/null || true)
