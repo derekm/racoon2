@@ -42,6 +42,15 @@ I2I_ESP="${I2I_ESP:-}"
 I2I_PPK=${I2I_PPK:-0}
 I2I_PPK_ID=${I2I_PPK_ID:-rfc8784-mat}
 I2I_PPK_HEX=1e9546cc8758e5f4bf1f5d3476f79bfea60c7bd4822a32058e23cf16107eef0b
+# RSASIG seat flag.  Only i2iinit.sh (i2idh-* and other i2i kinds call the
+# same peer funcs without the RSA arm) sets I2I_RSA at its own runtime, so
+# keep a safe default here; an assignment inside kind_i2iinit still wins.
+I2I_RSA=${I2I_RSA:-0}
+# CFG/childless flags: also i2iinit-runtime-only; safe defaults for callers
+# (i2idh, i2ike, ...) that never set them.
+I2I_CFG=${I2I_CFG:-0}
+I2I_CHILDLESS=${I2I_CHILDLESS:-0}
+I2I_CLASSICAL=${I2I_CLASSICAL:-0}
 
 # i2i_peer <name> — INITIATOR-seat backend for a case: charon when the name
 # carries a -charon suffix (or R2_PEER_I=charon globally), else iked.
