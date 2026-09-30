@@ -996,8 +996,8 @@ ikev2_process_config_informational(struct ikev2_sa *ike_sa,
 		for (attr = (struct ikev2cfg_attrib *)(cfg + 1),
 			 bytes = get_payload_length(cfg) - sizeof(*cfg);
 		     bytes > 0;
-		     attr = IKEV2CFG_ATTR_NEXT(attr),
-			 bytes -= IKEV2CFG_ATTR_TOTALLENGTH(attr)) {
+		     bytes -= IKEV2CFG_ATTR_TOTALLENGTH(attr),
+			 attr = IKEV2CFG_ATTR_NEXT(attr)) {
 			attr_type = IKEV2CFG_ATTR_TYPE(attr);
 			attr_len = IKEV2CFG_ATTR_LENGTH(attr);
 			TRACE((PLOGLOC, "attribute type %d length %d\n",
