@@ -79,7 +79,7 @@ policy pol {
 	my_sa_ipaddr "$HR";
 };
 ipsec ipsec_e {
-	ipsec_sa_lifetime_time 60 sec;
+	ipsec_sa_lifetime_time 3600 sec;
 	sa_index esp_e;
 };
 sa esp_e {
