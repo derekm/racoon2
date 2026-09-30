@@ -353,6 +353,45 @@ ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 			goto fail;
 		}
 		break;
+	case IKEV2_AUTH_DS:
+		/* (RFC7427)
+		 * Digital Signature (14) - RSA signature over SHA-256, with the
+		 * auth data prefixed by [1-octet length][AlgorithmIdentifier].
+		 */
+	/* RFC 7427 Appendix A.1.2: sha256WithRSAEncryption AlgorithmIdentifier,
+	 * DER-encoded (15 bytes: SEQUENCE{ OID 1.2.840.113549.1.1.11, NULL }). */
+	static const uint8_t rfc7427_sha256_ai[] = {
+		0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+		0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
+	};
+		privkey = ikev2_private_key(sa, id);
+		if (!privkey) {
+			isakmp_log(sa, 0, 0, 0,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed to get private key\n");
+			goto fail;
+		}
+		{
+			rc_vchar_t *ori;
+		const size_t _ai_len = sizeof(rfc7427_sha256_ai);
+			ori = eay_rsassa_pkcs1_v1_5_sign("SHA256", octets, privkey);
+			if (!ori) {
+				isakmp_log(sa, 0, 0, 0,
+					   PLOG_INTERR, PLOGLOC,
+					   "failed calculating RSA signature\n");
+				goto fail;
+			}
+			authdata = rc_vmalloc(1 + _ai_len + ori->l);
+			if (!authdata) {
+				rc_vfree(ori);
+				goto fail_nomem;
+			}
+			authdata->u[0] = (uint8_t)_ai_len;
+			memcpy(authdata->u + 1, rfc7427_sha256_ai, _ai_len);
+			memcpy(authdata->u + 1 + _ai_len, ori->v, ori->l);
+			rc_vfree(ori);
+		}
+		break;
 	case IKEV2_AUTH_DSS:
 		/* (draft-17)
 		 * DSS Digital Signature (3) - Computed as specified in section
@@ -549,6 +588,42 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 		else
 			result = VERIFIED_FAILURE;
 		break;
+	case IKEV2_AUTH_DS:
+		/* (RFC7427)
+		 * Digital Signature (14) - auth data = [1-octet len][AI][signature].
+		 * Only SHA-256 is advertised, so match the known sha256WithRSA
+		 * AlgorithmIdentifier blob and verify the trailing signature. */
+		pubkey = ikev2_public_key(sa, id, &sa->due_time);
+		if (!pubkey) {
+			isakmp_log(sa, 0, 0, 0,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed to get public key\n");
+			goto fail;
+		}
+		{
+		const size_t _ai_len = sizeof(rfc7427_sha256_ai);
+			if (authdata->l < 1 + _ai_len ||
+			    authdata->u[0] != _ai_len ||
+			    memcmp(authdata->u + 1, rfc7427_sha256_ai, _ai_len) != 0) {
+				isakmp_log(sa, 0, 0, 0,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "unsupported RFC 7427 signature algorithm\n");
+				result = VERIFIED_FAILURE;
+				break;
+			}
+			{
+				rc_vchar_t sig_view;
+				memset(&sig_view, 0, sizeof(sig_view));
+				sig_view.l = authdata->l - 1 - _ai_len;
+				sig_view.u = authdata->u + 1 + _ai_len;
+				if (eay_rsassa_pkcs1_v1_5_verify("SHA256", octets,
+								 &sig_view, pubkey) == 0)
+					result = VERIFIED_SUCCESS;
+				else
+					result = VERIFIED_FAILURE;
+			}
+		}
+		break;
 	case IKEV2_AUTH_DSS:
 		/* (draft-17)
 		 * DSS Digital Signature (3) - Computed as specified in section
@@ -692,6 +767,13 @@ ikev2_auth_method(struct ikev2_sa *sa)
 	case RCT_ALG_DSS:
 		return IKEV2_AUTH_DSS;
 	case RCT_ALG_RSASIG:
+		/* RFC 7427: when N(SIG_HASH_ALGORITHMS) was exchanged with the peer,
+		 * use AUTH method 14 (DS) so the signature can carry a SHA-2 hash.
+		 * Classic method 1 is SHA-1-only and OpenSSL >=3.5 refuses SHA-1
+		 * signing.  Only negotiated when the PEER offered 16431 (charon);
+		 * iked<->iked rows keep method 1. */
+		if (sa->sig_hash_algos_ds)
+			return IKEV2_AUTH_DS;
 		return IKEV2_AUTH_RSASIG;
 	case RCT_ALG_ECDSA:
 #ifdef HAVE_SIGNING_C

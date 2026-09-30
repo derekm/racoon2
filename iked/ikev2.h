@@ -462,6 +462,7 @@ struct ikev2payl_auth {
 #define	IKEV2_AUTH_RSASIG	1
 #define	IKEV2_AUTH_SHARED_KEY	2
 #define	IKEV2_AUTH_DSS		3
+#define	IKEV2_AUTH_DS		14	/* (RFC7427) */
 /*	Reserved		4-8 */
 #define	IKEV2_AUTH_ECDSA_SHA256_P256	9
 #define	IKEV2_AUTH_ECDSA_SHA384_P384	10
@@ -580,6 +581,7 @@ struct ikev2payl_notify {
 /* RFC 9242: negotiated in IKE_SA_INIT (request + response) before any
  * IKE_INTERMEDIATE (exch 43) exchange runs.  Status type; Proto/SPI 0. */
 #define	IKEV2_INTERMEDIATE_EXCHANGE_SUPPORTED	16438
+#define	IKEV2_SIG_HASH_ALGORITHMS	16431	/* (RFC7427) */
 /* RFC 9370: links IKE_FOLLOWUP_KE exchanges to the CREATE_CHILD_SA
  * that started the additional key exchanges (status type). */
 #define	IKEV2_ADDITIONAL_KEY_EXCHANGE	16441

@@ -145,12 +145,21 @@ i2i_peer_i_conf() {
 	if [ "$I2I_RSA" = 1 ]; then
 		# RSASIG initiator seat: local certs = our self-signed cert+key,
 		# remote cacerts = the iked responder's cert (peer trust anchor).
+		# `auth = ike:pubkey-sha256-sha384-sha512` pins an RFC 7427
+		# signature scheme (sha-2 only) instead of the legacy AUTH_RSA
+		# default.  The legacy path signs with SIGN_RSA_EMSA_PKCS1_SHA1
+		# hardcoded (no sha-2 fallback), and Fedora 44 / OpenSSL 3.5.8
+		# refuses sha-1 signatures (crypto policy DEFAULT: "Error setting
+		# context ... invalid digest") -> `authentication of
+		# 'CN=charon-i2i' (myself) with RSA signature failed` right at
+		# IKE_AUTH, after the ADDKE round.  The responder must speak RFC
+		# 7427 to match; sha-256 is what iked negotiates.
 		_auth_local='		local {
-			auth = pubkey
+			auth = ike:pubkey-sha256-sha384-sha512
 			certs = "'"$_C"'/cert-i.pem"
 		}
 		remote {
-			auth = pubkey
+			auth = ike:pubkey-sha256-sha384-sha512
 			cacerts = "'"$_C"'/cert-r.pem"
 		}'
 		_pskhex=""

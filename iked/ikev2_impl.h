@@ -290,6 +290,17 @@ struct ikev2_sa {
 	int peer_ppk_identity_ok;
 	int ppk_deferred;	/* PPK mix deferred past IKE_INTERMEDIATE rounds */
 
+	/* RFC 7427: SIG_HASH_ALGORITHMS (16431) negotiation in IKE_SA_INIT.
+	 * peer_sent_sig_hash_algos = the PEER offered the notify (a signal that
+	 * it supports the Digital Signature AUTH method 14); sig_hash_algos_ds,
+	 * set when this side echoes it back, makes an RSASIG seat send/verify
+	 * AUTH method 14 (DS) with the RFC 7427 [len][AlgorithmIdentifier][sig]
+	 * envelope instead of classic method 1 (SIGN_RSA_EMSA_PKCS1_SHA1, which
+	 * OpenSSL >=3.5 refuses for signing). Only negotiated when BOTH sides
+	 * offer it, so plain iked<->iked rows stay on method 1. */
+	int peer_sent_sig_hash_algos;
+	int sig_hash_algos_ds;
+
 	int behind_nat;
 	int peer_behind_nat;
 	int crypto_pending;

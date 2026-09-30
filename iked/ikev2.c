@@ -1998,6 +1998,28 @@ responder_state0_after_gen(int rc, void *arg)
 				    TRUE);
 	}
 
+
+	/* RFC 7427 s4: echo N(SIG_HASH_ALGORITHMS) only if the initiator
+	 * offered it AND this responder's seat is RSASIG (only then can we
+	 * honor the method-14 DS AUTH the notify commits both sides to).
+	 * Data = our supported IKEv2 hash-algorithm IDs (16-bit): SHA2-256=2.
+	 * iked<->iked rows never send 16431, so they stay on classic method 1
+	 * (i2ipubkey-rsa gate greps 'auth method 1'); only charon peers that
+	 * offer the notify take the RFC 7427 path. */
+	if (ike_sa->peer_sent_sig_hash_algos) {
+		struct rc_alglist *_kmp = ikev2_kmp_auth_method(ike_sa->rmconf);
+		if (_kmp && _kmp->algtype == RCT_ALG_RSASIG) {
+			static const uint8_t sig_hash_sha2_256[] = { 0x00, 0x02 };
+			ike_sa->sig_hash_algos_ds = 1;
+			TRACE((PLOGLOC, "echoing SIG_HASH_ALGORITHMS (16431)\n"));
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+								 IKEV2_SIG_HASH_ALGORITHMS,
+								 (uint8_t *)sig_hash_sha2_256,
+								 sizeof(sig_hash_sha2_256)),
+					    TRUE);
+		}
+	}
 	/* RFC 6023 s4: advertise childless IKE_SA support when configured for
 	 * this peer (protocol id 1 = IKE, spi size 0).  A supporting initiator
 	 * MAY then send a modified IKE_AUTH request without SAi2/TSi/TSr,
