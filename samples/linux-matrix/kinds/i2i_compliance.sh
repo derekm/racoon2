@@ -445,13 +445,30 @@ i2i_compliance() {
 	# ---- B1..B6 crypto-support SFRs: KAT-covered, not wire-observable ------
 	# FCS_CKM.1 (keygen), FCS_CKM.4 (destruction), FCS_COP.1 (AES/siggen) and
 	# FCS_RBG_EXT.1 are unit/KAT rows (kmtest, and lib crypto KATs) — the
-	# netns row proves B2 (key establishment: DH keymat matched both sides).
+	# keymat sha256 line proves B2 (key establishment: DH keymat matched both
+	# sides).  The oracle log ("CHILD_RESP keymat") is compiled in ONLY under
+	# --enable-keymat-oracle (prod/Ubuntu default off; the i2i matrix prefix
+	# turns it on).  So B2 is build-aware: no oracle in the installed iked =>
+	# INFO (evidence not observable in this build, same honesty class as the
+	# source-level cells), oracle present but no sha256 match => real FAIL.
 	b2_ok=0
-	for _lg in "$_D/resp-iked.log" "$_D/init-iked.log"; do
-		[ -f "$_lg" ] && grep -qE "keymat .*sha256=[0-9a-f]{64}" "$_lg" && b2_ok=1
-	done
-	[ "$b2_ok" -eq 1 ] && PLOG B2 PASS "key establishment: matching keymat sha256 both sides"
-	[ "$b2_ok" -eq 0 ] && PLOG B2 FAIL "no keymat sha256 evidence"
+	_bin="${PREFIX:-/usr/local/racoon2}/sbin/iked"
+	_bin2="$(command -v iked 2>/dev/null)"
+	_b2_cap=0
+	if [ -f "$_bin" ] && grep -aq "CHILD_RESP keymat" "$_bin" 2>/dev/null; then
+		_b2_cap=1
+	elif [ -n "$_bin2" ] && [ "x$_bin2" != "x$_bin" ] && grep -aq "CHILD_RESP keymat" "$_bin2" 2>/dev/null; then
+		_b2_cap=1
+	fi
+	if [ "$_b2_cap" -eq 1 ]; then
+		for _lg in "$_D/resp-iked.log" "$_D/init-iked.log"; do
+			[ -f "$_lg" ] && grep -qE "keymat .*sha256=[0-9a-f]{64}" "$_lg" && b2_ok=1
+		done
+		[ "$b2_ok" -eq 1 ] && PLOG B2 PASS "key establishment: matching keymat sha256 both sides"
+		[ "$b2_ok" -eq 0 ] && PLOG B2 FAIL "no keymat sha256 evidence"
+	else
+		PLOG B2 INFO "keymat sha256 oracle not built into this iked (WITH_KEYMAT_ORACLE off); key-establishment evidence not observable - covered by KAT unit rows"
+	fi
 	PLOG B1 INFO "FCS_CKM.1 keygen covered by KAT unit rows"
 	PLOG B3 INFO "FCS_CKM.4 zeroization covered by unit OPENSSL_cleanse checks + source reference; scope: primitive/static proof, not a live teardown-path observation on the daemon (see the unit KAT)"
 	PLOG B4 INFO "FCS_COP.1 AES ciphers covered by KAT unit rows"
