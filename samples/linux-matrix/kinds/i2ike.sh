@@ -206,38 +206,57 @@ EOF
 	# init, so assert a NEW ESP SPI (init-child SPI replaced) on BOTH netnss.
 	spi(){ ip netns exec "$1" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort; }
 	SR0=$(spi "$NSR"); SI0=$(spi "$NSI")
+	# baseline: the initial PQC child's own KEM install already logs a
+	# matching g_ir_present=Y sha256 before any rekey; the ADDKE rekey must
+	# produce a NEW KEM keymat (fresh SK(1)), so require the matched Y-hash to
+	# DIFFER from this baseline or the poll would break on the OLD install.
+	YI0=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/init-iked.log" 2>/dev/null \
+		| grep -oE 'sha256=[0-9a-f]+' | tail -1)
+	YR0=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null \
+		| grep -oE 'sha256=[0-9a-f]+' | tail -1)
 	rekeyed=0; i=0
 	while [ "$i" -lt 120 ]; do
 		SRn=$(spi "$NSR"); SIn=$(spi "$NSI")
 		nr=$(comm -13 <(printf '%s\n' "$SR0") <(printf '%s\n' "$SRn") | grep -c spi)
 		ni=$(comm -13 <(printf '%s\n' "$SI0") <(printf '%s\n' "$SIn") | grep -c spi)
-		if [ "${nr:-0}" -ge 1 ] && [ "${ni:-0}" -ge 1 ]; then
-			log "INIT SA -> child-SA rekey: new SPI both sides at ${i}s (old: $(echo $SR0 | tr '\n' ' '))"
+		# The ADDKE rekey is the one that installs a REAL ML-KEM keymat: a new
+		# ESP SPI on both sides AND a matching `g_ir_present=Y` keymat sha256
+		# line on each side.  The plain IKE_AUTH child's own rekey (no DH,
+		# g_ir_present=n, soft 53s) can land a second before the ADDKE child's
+		# rekey (DH-19+type-6, soft 48s); stopping at the first new SPI and
+		# then grepping g_ir_present=n samples the PLAIN install and mis-flags
+		# the row.  Keep polling until the ADDKE rekey's Y-keymat has set.
+		ky_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/init-iked.log" 2>/dev/null \
+			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
+		ky_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null \
+			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
+		if [ "${nr:-0}" -ge 1 ] && [ "${ni:-0}" -ge 1 ] \
+		   && [ -n "$ky_i" ] && [ -n "$ky_r" ] \
+		   && [ "$ky_i" = "$ky_r" ] && [ "$ky_i" != "$YI0" ]; then
+			log "INIT SA -> child-SA ADDKE rekey: new SPI + matching KEM keymat both sides at ${i}s (old: $(echo $SR0 | tr '\n' ' '))"
 			rekeyed=1; break
 		fi
 		i=$((i+1)); sleep 1
 	done
-	[ "$rekeyed" -eq 1 ] || log "FAIL: child-SA rekey not seen in 120s; resp SPIs now: $(spi "$NSR" | tr '\n' ' ')"
+	[ "$rekeyed" -eq 1 ] || log "FAIL: ADDKE child-SA rekey not seen in 120s; resp SPIs now: $(spi "$NSR" | tr '\n' ' ')"
 
 	# PQC proof — a NEW SPI alone is not ML-KEM (a plain rekey passes that).
-	# The rekey must (a) offer type-06 ADDKE (0x24 = mlkem768) in its
-	# CREATE_CHILD SA, (b) derive ML-KEM keymat on BOTH sides — the ADDKE
-	# install logs 'sha256=<hash> g_ir_present=n' (no per-child DH in the
-	# KEM keymat), and the LAST such line on each side must MATCH (both
-	# decapsulate the same SK(1)).  Using tail -1 (not sort|head) so a
-	# no-PFS AUTH child that also logs g_ir_present=n cannot be mistaken
-	# for the rekey.  (c) not abort the pending rekey child.
-	t6=$(grep -c "$T6" "$D/init-iked.log" 2>/dev/null || true)
+	# (a) type-06 ADDKE offer: count $T6 in the RESPONDER's full request
+	# SA_hex dump (ikev2.c:4830), which always prints the whole wire SA incl.
+	# the type-6 transform.  The initiator's own REKEY_REQ dump is a
+	# 12-byte-strided header walker whose type-6 visibility depends on SA
+	# alignment - it can MISS a type-6 that is provably on the wire.
+	# (b) KEM keymat: the matching `g_ir_present=Y` sha256 line captured by the
+	# poll above (n-polarity lines are the no-DH AUTH child's plain installs).
+	# (c) not abort the pending rekey child.
+	t6=$(grep -c "SA_hex=.*$T6" "$D/resp-iked.log" 2>/dev/null || true)
 	abt=$(grep -cE 'ADDKE followup timeout; abort' "$D/resp-iked.log" 2>/dev/null || true)
-	kh_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/init-iked.log" 2>/dev/null \
-		| grep -oE 'sha256=[0-9a-f]+' | tail -1)
-	kh_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/resp-iked.log" 2>/dev/null \
-		| grep -oE 'sha256=[0-9a-f]+' | tail -1)
+	kh_i=$ky_i; kh_r=$ky_r
 	pqc=0
 	if [ "${t6:-0}" -ge 1 ] && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
 	   && [ "${abt:-0}" -eq 0 ]; then
 		pqc=1
-		log "PQC rekey: type-6 offered (x$t6), last KEM keymat sha256=$kh_i matches both sides, no followup abort"
+		log "PQC rekey: type-6 offered (x$t6), KEM keymat sha256=$kh_i matches both sides, no followup abort"
 	else
 		log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
 	fi

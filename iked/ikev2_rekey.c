@@ -325,8 +325,26 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 	}
 
 	/* the clone/config proposal is plain (initial IKE_AUTH child has no
-	 * type-6); re-offer ADDKE so this CREATE_CHILD rekey can negotiate it */
-	ikev2_child_maybe_reoffer_addke(new_child_sa);
+	 * type-6); re-offer ADDKE so this CREATE_CHILD rekey can negotiate it.
+	 *
+	 * Only when the rekey proposal actually carries a DH transform.
+	 * ikev2_createchild_initiator_send_tail() computes pfs from
+	 * ikev2_child_dhdef(my_proposal[1], NULL): with no DH transform it
+	 * sends no KEi (RFC 7296 2.18) and the KEM round can never start, so
+	 * a type-6 offered on a DH-less proposal just gets echoed by the
+	 * peer while BOTH sides install plain ESP keymat -- a silent ADDKE
+	 * downgrade.  The 60s soft lifetime rekeys the plain AUTH child as
+	 * well as the PQC child; the AUTH child's clone has no DH transform,
+	 * so it must not be sent type-6 (this is the exact shape the
+	 * i2ike-addke matrix FAIL was miscounting: matching plain keymat,
+	 * type6 present on the wire, but no KEM mixed).
+	 */
+	if (ikev2_child_dhdef(new_child_sa->my_proposal[1], NULL) != NULL) {
+		ikev2_child_maybe_reoffer_addke(new_child_sa);
+	} else {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		    "rekey proposal has no DH transform; not re-offering ADDKE\n");
+	}
 
 	/*
 	 * Carry the child's negotiated PFS group onto the rekeyed
