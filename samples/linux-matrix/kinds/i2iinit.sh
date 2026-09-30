@@ -429,8 +429,10 @@ fi
 			log "FAIL: no openssl for -rsa cert gen"; return 1
 		fi
 		openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$I_CN" \
+		    -addext "subjectAltName=DNS:$I_CN" \
 		    -keyout "$C/key-i.pem" -out "$C/cert-i.pem" >/dev/null 2>&1 || { log "FAIL: openssl cert-i"; return 1; }
 		openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$R_CN" \
+		    -addext "subjectAltName=DNS:$R_CN" \
 		    -keyout "$C/key-r.pem" -out "$C/cert-r.pem" >/dev/null 2>&1 || { log "FAIL: openssl cert-r"; return 1; }
 		sudo chmod 644 "$C"/*.pem 2>/dev/null || chmod 644 "$C"/*.pem
 		# charon discovers its private key from the swanctl private/ dir
