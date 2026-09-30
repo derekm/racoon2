@@ -144,7 +144,10 @@ i2i_peer_i_conf() {
 	mkdir -p "$I2I_CHARON_VDIR" || return 1
 	if [ "$I2I_RSA" = 1 ]; then
 		# RSASIG initiator seat: local certs = our self-signed cert+key,
-		# remote cacerts = the iked responder's cert (peer trust anchor).
+		# remote pubkeys = the iked responder's bare public key (peer trust
+		# anchor; CERT_TRUSTED_PUBKEY, not an x509 cert — swanctl pubkeys
+		# builds a raw public key, so i2iinit.sh emits pub-r.pem alongside
+		# the cert pair and charon trusts that key directly for method-14 DS).
 		# `auth = ike:pubkey-sha256-sha384-sha512` pins an RFC 7427
 		# signature scheme (sha-2 only) instead of the legacy AUTH_RSA
 		# default.  The legacy path signs with SIGN_RSA_EMSA_PKCS1_SHA1
@@ -161,7 +164,7 @@ i2i_peer_i_conf() {
 		}
 		remote {
 			auth = ike:pubkey-sha256-sha384-sha512
-			pubkeys = "'"$_C"'/cert-r.pem"
+			pubkeys = "'"$_C"'/pub-r.pem"
 		}'
 		_pskhex=""
 	else

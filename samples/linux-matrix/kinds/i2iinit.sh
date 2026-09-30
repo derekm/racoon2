@@ -434,6 +434,13 @@ fi
 		openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$R_CN" \
 		    -addext "subjectAltName=DNS:$R_CN" \
 		    -keyout "$C/key-r.pem" -out "$C/cert-r.pem" >/dev/null 2>&1 || { log "FAIL: openssl cert-r"; return 1; }
+		# strongSwan swanctl remote { pubkeys } takes a CERT_TRUSTED_PUBKEY
+		# blob (the pem plugin builds a raw public key), NOT an x509 cert --
+		# pointing it at cert-*.pem makes charon fail the vici load with
+		# "parsing request failed".  Emit the bare public keys with the
+		# charon side (cert-r -> responder, cert-i -> initiator seat).
+		openssl x509 -in "$C/cert-r.pem" -pubkey -noout > "$C/pub-r.pem" 2>/dev/null || { log "FAIL: openssl pub-r"; return 1; }
+		openssl x509 -in "$C/cert-i.pem" -pubkey -noout > "$C/pub-i.pem" 2>/dev/null || { log "FAIL: openssl pub-i"; return 1; }
 		sudo chmod 644 "$C"/*.pem 2>/dev/null || chmod 644 "$C"/*.pem
 		# charon discovers its private key from the swanctl private/ dir
 		# (auto-matched to the conn-local cert by public key); a
