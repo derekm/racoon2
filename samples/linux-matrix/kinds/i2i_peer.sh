@@ -163,6 +163,7 @@ i2i_peer_i_conf() {
 			certs = "'"$_C"'/cert-i.pem"
 		}
 		remote {
+			id = racoon2-matrix
 			auth = ike:pubkey-sha256-sha384-sha512
 			pubkeys = "'"$_C"'/pub-r.pem"
 		}'
