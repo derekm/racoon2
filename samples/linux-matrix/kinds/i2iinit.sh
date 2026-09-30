@@ -71,18 +71,31 @@ kind_i2iinit() {
 	*-childless*) I2I_CHILDLESS=1; I2I_DBG=0x0003 ;;   # TRACE markers (16418 advertise) need DEBUG_FLAG_TRACE=0x0002
 	esac
 	case "$name" in
+	*-ike-cbc128*) I2I_IKE_ENC="aes128_cbc" ;;
+	*-ike-cbc192*) I2I_IKE_ENC="aes192_cbc" ;;
 	*-ike-cbc256*) I2I_IKE_ENC="aes256_cbc" ;;
+	*-ike-ctr*)    I2I_IKE_ENC="aes_ctr, 128" ;;
+	*-ike-gcm256*) I2I_IKE_ENC="aes_gcm, 256" ;;
 	esac
 	case "$name" in
 	*-prfsha384*) I2I_IKE_PRF="hmac_sha2_384" ;;
 	*-prfsha512*) I2I_IKE_PRF="hmac_sha2_512" ;;
+	*-prfxcbc*)   I2I_IKE_PRF="aes_xcbc" ;;
+	*-prfcmac*)   I2I_IKE_PRF="aes_cmac" ;;
 	esac
 	case "$name" in
 	*-esp-gcm256*) I2I_ESP_ENC="aes_gcm, 256" ;;
+	*-esp-cbc128*) I2I_ESP_ENC="aes128_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
+	*-esp-cbc192*) I2I_ESP_ENC="aes192_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
 	*-esp-cbc256*) I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
+	*-esp-sha384*) I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="hmac_sha2_384" ;;
+	*-esp-sha512*) I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="hmac_sha2_512" ;;
+	*-esp-xcbc*)   I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="aes_xcbc" ;;
+	*-esp-cmac*)   I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="aes_cmac" ;;
+	*-esp-ctr*)    I2I_ESP_ENC="aes_ctr";    I2I_ESP_AUTH="non_auth" ;;
 	esac
 	case "$name" in
-	*-ike-cbc256*) I2I_CLASSICAL=1 ;;
+	*-ike-cbc128*|*-ike-cbc192*|*-ike-cbc256*|*-ike-ctr*) I2I_CLASSICAL=1 ;;
 	esac
 	case "$name" in
 	*-esn*) I2I_ESN=1 ;;
@@ -651,6 +664,90 @@ fi
 		else
 			shape_ok=0
 			log 'FAIL: -esp-cbc256 row but responder SAD lacks cbc(aes)64-hex + auth-trunc hmac(sha256)'
+		fi
+		;;
+	*-esp-cbc128)
+		# AES-128-CBC: enc "cbc(aes) 0x<32hex>" (16 B key).
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc cbc\(aes\) 0x[0-9a-f]{32}$' \
+		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'auth-trunc hmac\(sha256\) 0x[0-9a-f]{64}'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc cbc(aes) 32-hex + auth-trunc hmac(sha256) (AES-CBC-128 + separate integrity)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-cbc128 row but responder SAD lacks cbc(aes)32-hex + auth-trunc hmac(sha256)'
+		fi
+		;;
+	*-esp-cbc192)
+		# AES-192-CBC: enc "cbc(aes) 0x<48hex>" (24 B key).
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc cbc\(aes\) 0x[0-9a-f]{48}$' \
+		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'auth-trunc hmac\(sha256\) 0x[0-9a-f]{64}'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc cbc(aes) 48-hex + auth-trunc hmac(sha256) (AES-CBC-192 + separate integrity)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-cbc192 row but responder SAD lacks cbc(aes)48-hex + auth-trunc hmac(sha256)'
+		fi
+		;;
+	*-esp-sha384)
+		# RFC 4868 ESP integrity HMAC-SHA2-384: auth "hmac(sha384) 0x<96hex>"
+		# (48 B key, 192-bit ICV).  AES-256-CBC carries the separate integrity.
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc cbc\(aes\) 0x[0-9a-f]{64}$' \
+		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'auth-trunc hmac\(sha384\) 0x[0-9a-f]{96}'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc cbc(aes)64-hex + auth-trunc hmac(sha384) (AES-CBC-256 + HMAC-SHA2-384)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-sha384 row but responder SAD lacks cbc(aes)64-hex + auth-trunc hmac(sha384)'
+		fi
+		;;
+	*-esp-sha512)
+		# RFC 4868 ESP integrity HMAC-SHA2-512: auth "hmac(sha512) 0x<128hex>"
+		# (64 B key, 256-bit ICV).
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc cbc\(aes\) 0x[0-9a-f]{64}$' \
+		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'auth-trunc hmac\(sha512\) 0x[0-9a-f]{128}'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc cbc(aes)64-hex + auth-trunc hmac(sha512) (AES-CBC-256 + HMAC-SHA2-512)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-sha512 row but responder SAD lacks cbc(aes)64-hex + auth-trunc hmac(sha512)'
+		fi
+		;;
+	*-esp-xcbc)
+		# RFC 3566 AES-XCBC-MAC-96 as ESP integrity: auth "xcbc(aes) 0x<32hex>"
+		# (16 B key).
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc cbc\(aes\) 0x[0-9a-f]{64}$' \
+		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'auth-trunc xcbc\(aes\) 0x[0-9a-f]{32}'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc cbc(aes)64-hex + auth-trunc xcbc(aes) (AES-CBC-256 + AES-XCBC-MAC-96)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-xcbc row but responder SAD lacks cbc(aes)64-hex + auth-trunc xcbc(aes)'
+		fi
+		;;
+	*-esp-cmac)
+		# RFC 4494 AES-CMAC-96 as ESP integrity: auth "cmac(aes) 0x<32hex>"
+		# (16 B key).
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc cbc\(aes\) 0x[0-9a-f]{64}$' \
+		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'auth-trunc cmac\(aes\) 0x[0-9a-f]{32}'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc cbc(aes)64-hex + auth-trunc cmac(aes) (AES-CBC-256 + AES-CMAC-96)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-cmac row but responder SAD lacks cbc(aes)64-hex + auth-trunc cmac(aes)'
+		fi
+		;;
+	*-esp-ctr)
+		# RFC 5930 AES-CTR for ESP: racoon2 maps RCT_ALG_AES_CTR to the
+		# kernel AEAD "rfc3686(ctr(aes))" (lib/if_xfrm.c enc_map) — an AEAD
+		# with a 4-octet salt (RFC 3686 counters), so esp_auth_alg is
+		# non_auth and the SAD renders "enc rfc3686(ctr(aes)) 0x…"
+		# (iproute2 prints the AEAD as enc, not "aead").
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qF 'enc rfc3686(ctr(aes))'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc rfc3686(ctr(aes)) (AES-CTR AEAD, RFC 5930/3686)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-ctr row but responder SAD lacks enc rfc3686(ctr(aes))'
 		fi
 		;;
 	*-esn)

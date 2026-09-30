@@ -231,7 +231,7 @@ jobs:
           # i2ike-drop576 is box-green once and container-red (36204006963:
           # new Y never landed).  It stays out of this default until a
           # container run passes the same counted gate.
-          [ -n "$CASES" ] || CASES='^(i2iinit-addke |i2iinit-nointermediate |i2iinit-childless |i2iinit-childless-init |i2iinit-childless-init-rsa |i2iinit-childless-init-cfg |i2iinit-childless-init-cfgneg |i2iinit-pfsrekey |i2iinit-pfsrekey-dh384 |i2iinit-pfsrekey-dh521 |i2idh-modp2048 |i2idh-modp3072 |i2idh-modp4096 |i2idh-modp6144 |i2idh-modp8192 |i2idh-ecp256 |i2idh-ecp384 |i2idh-ecp521 |i2ike-addke |i2ikesa-addke |i2ike-drop |i2iinit-drop576 )'
+          [ -n "$CASES" ] || CASES='^(i2iinit-addke |i2iinit-nointermediate |i2iinit-childless |i2iinit-childless-init |i2iinit-childless-init-rsa |i2iinit-childless-init-cfg |i2iinit-childless-init-cfgneg |i2iinit-pfsrekey |i2iinit-pfsrekey-dh384 |i2iinit-pfsrekey-dh521 |i2iinit-ike-gcm256 |i2iinit-prfxcbc |i2iinit-prfcmac |i2iinit-esp-cbc128 |i2iinit-esp-cbc192 |i2iinit-esp-sha384 |i2iinit-esp-sha512 |i2iinit-esp-xcbc |i2iinit-esp-cmac |i2iinit-esp-ctr |i2idh-modp2048 |i2idh-modp3072 |i2idh-modp4096 |i2idh-modp6144 |i2idh-modp8192 |i2idh-ecp256 |i2idh-ecp384 |i2idh-ecp521 |i2ike-addke |i2ikesa-addke |i2ike-drop |i2iinit-drop576 )'
           # run.sh splits ARGS on IFS.  A --cases value with spaces (the
           # anchored names above) must be one argv: pass it quoted.
           bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" --cases "$CASES" | tee /tmp/r2-matrix.log

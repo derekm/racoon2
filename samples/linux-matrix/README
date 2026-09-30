@@ -39,7 +39,7 @@ the Ubuntu/NetBSD full matrix and the Fedora container default until a
 counted-gate PASS exists on the box AND a container run admits them —
 same rule as `i2ike-drop576`.
 
-RFC 6023 childless coverage (2026-09-29, all gate=box): the DAEMON now
+RFC 6023 childless coverage (2026-09-29): the DAEMON now
 implements the SA-less (modified) IKE_AUTH INITIATOR — `childless on`
 on the iked initiator seat sends a SA-less IKE_AUTH (no SAi2/TSi/TSr)
 and accepts the no-SAr2 response, the first ESP child landing via a
@@ -60,6 +60,32 @@ CFG_REQUEST, and is always OFF by default (no behavior change for rows
 that do not opt in).  The `-cfgneg` rows are NEG PASSes: the refusal IS
 the gate, ESP must NOT land, and the NDcPP compliance report demotes
 the established/ESP-dependent cells to waived INFO.
+
+Classical + deprecated cipher-suite coverage (2026-09-30): the i2iinit
+kind gained exhaustive proposal-shape arms beyond the base
+AES-GCM-128 IKE / AES-GCM-128 ESP.  IKE-ENCR arms: `-ike-cbc128/-cbc192/
+-cbc256` (AES-CBC at each key size), `-ike-ctr` (AES-CTR, explicit
+keylen — a CONF-variable-keylen alg requires `aes_ctr, 128` or conf-check
+rejects it), `-ike-gcm256` (explicit `aes_gcm, 256`).  PRF/HASH arms:
+`-prfxcbc/-prfcmac` (AES-MAC PRF, `aes_xcbc`/`aes_cmac`),
+`-prfsha384/-prfsha512`.  ESP/child arms: `-esp-cbc128/-cbc192/-cbc256`
+(AES-CBC + separate RFC 4868 HMAC-SHA2-256 integrity), `-esp-ctr`
+(AES-CTR via the kernel AEAD — the SAD renders `enc rfc3686(ctr(aes))`,
+not `aead …`), `-esp-sha384/-esp-sha512/-esp-xcbc/-esp-cmac` (HMAC-SHA2
+384/512 and AES-XCBC/CMAC-96 integrity over AES-256-CBC), `-esp-gcm256`,
+`-esn`.  Classical arms (IKE CBC/CTR) are not AEAD, so they waive the
+PQC round (`I2I_CLASSICAL=1`); AEAD/PRF/ESP arms keep it and are
+`gate=addke` (Fedora PQC leg).  The NSA/CNSSP-15 check is now a family
+(`i2i-nsawarn` kind): every `nsa_deprecated_alg` token is exercised with
+a REAL transform (3des_cbc IKE-ENCR; hmac_md5/hmac_sha1 as PRF+HASH;
+modp768/1024/1536 as IKE DH; 3des_cbc + hmac_sha1 ESP-side) asserting
+the `configuring obsolete algorithm <rct2str>` warning fires on BOTH
+seats while negotiation still lands compliant (advisory-only), plus the
+fail-closed `i2i-nsawarn-des` row (DES-CBC: commented out of the IKE
+transform table, so `kmp_enc_alg DES-CBC unsupported` at conf-check —
+DES cannot be offered at all).  A4/A6/A12 compliance cells report
+AES-192-CBC and AES-CTR rows as INFO (not PASS/FAIL) because those
+ciphers are NOT in the NDcPP v3.0e claimed set.
 
 Build manifest: the box runs `git archive HEAD`, scp'd as
 `~/r2-matrix.tar.gz`; the archive hash is printed next to the iked

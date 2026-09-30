@@ -178,9 +178,14 @@ i2i_compliance() {
 	# explicit keylen/alg; the SADB log shows enctype=AES-GCM / enctype=AES-CBC.
 	a4_ok=0
 	_aa4=
+	_a4c=
 	case "$name" in
-	*-esp-cbc256) _aa4="enctype=AES-CBC|enc cbc\\(aes\\)" ;;
-	*)            _aa4="enctype=AES-GCM|aead rfc4106\\|gcm\\|aes_gcm" ;;
+	*-esp-cbc128|*-esp-cbc192|*-esp-cbc256|*-esp-sha384|*-esp-sha512|*-esp-xcbc|*-esp-cmac)
+		_aa4="enctype=AES(128|192|256)?-CBC|enc cbc\(aes\)"; _a4c='AES-CBC (RFC 4868)' ;;
+	*-esp-ctr)
+		_aa4="enctype=AES-CTR"; _a4c='AES-CTR (RFC 5930)' ;;
+	*)
+		_aa4="enctype=AES-GCM|aead rfc4106\|gcm\|aes_gcm"; _a4c='AES-GCM' ;;
 	esac
 	for _lg in "$_D/resp-iked.log" "$_D/init-iked.log"; do
 		[ -f "$_lg" ] && grep -qE "$_aa4" "$_lg" && a4_ok=1
@@ -188,8 +193,19 @@ i2i_compliance() {
 	for _cl in "$_D/charon-resp.log" "$_D/charon-init.log"; do
 		[ -f "$_cl" ] && grep -qE "aes(128|192|256)(gcm|cbc)" "$_cl" && a4_ok=1
 	done
-	[ "$a4_ok" -eq 1 ] && PLOG A4 PASS "ESP cipher in claimed set ($_aa4 for $name)"
-	[ "$a4_ok" -eq 0 ] && PLOG A4 FAIL "ESP cipher absent from logs (wanted $_aa4)"
+	# AES-192-CBC and AES-CTR are NOT in the NDcPP v3.0e claimed set (the
+	# -esp-cbc192 / -esp-ctr rows are interop/classical coverage, so they
+	# report INFO (established, outside the claim), never PASS.
+	case "$name" in
+	*-esp-cbc192|*-esp-ctr)
+		[ "$a4_ok" -eq 1 ] && PLOG A4 INFO "ESP cipher $_a4c established but outside v3.0e claimed set ($_aa4 for $name)"
+		[ "$a4_ok" -eq 0 ] && PLOG A4 FAIL "ESP cipher absent from logs (wanted $_aa4)"
+		;;
+	*)
+		[ "$a4_ok" -eq 1 ] && PLOG A4 PASS "ESP cipher in claimed set ($_a4c via $_aa4 for $name)"
+		[ "$a4_ok" -eq 0 ] && PLOG A4 FAIL "ESP cipher absent from logs (wanted $_aa4)"
+		;;
+	esac
 
 	# -------------- A5  IKEv2 (RFC 7296) + NAT-T socket + established --------
 	# NAT-T: iked binds 4500 ('used for NAT-T'); ESTABLISHED on both seats is
@@ -231,15 +247,32 @@ i2i_compliance() {
 	# IKE SA, i2iinit aes_gcm.  charon seat: selected IKE proposal string is
 	# authoritative; iked seat: negotiated from the conf kmp_enc_alg and the
 	# SA established (A5).
-	a6_ok=0
+	a6_det=0; a6_claim=0
+	# claim-agnostic first: did ANY IKE cipher negotiate / get configured?
+	# (charon selected-proposal line, or a kmp_enc_alg in either conf).
 	for _cl in "$_D/charon-resp.log" "$_D/charon-init.log"; do
-		[ -f "$_cl" ] && grep -qE "selected proposal: IKE:AES" "$_cl" && a6_ok=1
+		[ -f "$_cl" ] && grep -qE "selected proposal: IKE:AES" "$_cl" && a6_det=1
 	done
 	for _c in responder.conf initiator.conf; do
-		[ -f "$_C/$_c" ] && grep -qE "kmp_enc_alg \{ (aes256_cbc|aes_gcm)" "$_C/$_c" && a6_ok=1
+		[ -f "$_C/$_c" ] && grep -qE "kmp_enc_alg \{" "$_C/$_c" && a6_det=1
 	done
-	[ "$a6_ok" -eq 1 ] && PLOG A6 PASS "IKE payload cipher (aes256_cbc|aes_gcm) in claimed set (charon selected / iked conf)"
-	[ "$a6_ok" -eq 0 ] && PLOG A6 FAIL "IKE payload cipher not in {aes256_cbc,aes_gcm} (no charon proposal / conf)"
+	# claimed-set check: aes_gcm / aes128_cbc / aes256_cbc are the v3.0e
+	# claims; aes192_cbc and aes_ctr are NOT (interop coverage rows only).
+	for _c in responder.conf initiator.conf; do
+		# closed group, substring (non-anchored): matches "kmp_enc_alg { aes256_cbc"
+		[ -f "$_C/$_c" ] && grep -qE "kmp_enc_alg \{ (aes128_cbc|aes256_cbc|aes_gcm)" "$_C/$_c" && a6_claim=1
+	done
+	# AES-192-CBC / AES-CTR: negotiated (a6_det) but outside the claim -> INFO.
+	case "$name" in
+	*-ike-cbc192|*-ike-ctr)
+		[ "$a6_det" -eq 1 ] && PLOG A6 INFO "IKE payload cipher aes192_cbc/aes_ctr (via $name) established but outside v3.0e claimed IKE set"
+		[ "$a6_det" -eq 0 ] && PLOG A6 FAIL "IKE payload cipher not detected (no charon proposal / conf kmp_enc_alg)"
+		;;
+	*)
+		[ "$a6_claim" -eq 1 ] && PLOG A6 PASS "IKE payload cipher (aes128_cbc|aes256_cbc|aes_gcm) in claimed set (charon selected / iked conf)"
+		[ "$a6_claim" -eq 0 ] && PLOG A6 FAIL "IKE payload cipher not in claimed set (no charon proposal / conf)"
+		;;
+	esac
 
 	# ---- A7  IKE_SA lifetime admin-configurable, within [.. 24h] -----------
 	# The default 24h IKE_SA lifetime is honored — the resume log's
@@ -321,9 +354,24 @@ i2i_compliance() {
 	else
 		for _c in responder.conf initiator.conf; do
 			[ -f "$_C/$_c" ] || continue
+				# IKE_SA cipher (kmp_enc_alg).  aes_gcm bare = 128-bit default;
+			# aes_gcm, 256 is the -ike-gcm256 arm; a _ctr row negotiates the
+			# first common keylen (128).  aes192_cbc is outside the v3.0e
+			# claimed set, so a -ike-cbc192 row reports 192 honestly here.
 			if grep -q "kmp_enc_alg { aes256_cbc" "$_C/$_c"; then _ikesz=256; fi
-			if grep -q "kmp_enc_alg { aes_gcm" "$_C/$_c"; then _ikesz=128; fi
-			if grep -q "esp_enc_alg { aes_gcm" "$_C/$_c"; then _childsz=128; fi
+			if grep -q "kmp_enc_alg { aes192_cbc" "$_C/$_c"; then _ikesz=192; fi
+			if grep -q "kmp_enc_alg { aes128_cbc" "$_C/$_c"; then _ikesz=128; fi
+			if grep -q "kmp_enc_alg { aes_gcm, 256" "$_C/$_c"; then _ikesz=256; fi
+			if grep -q "kmp_enc_alg { aes_gcm" "$_C/$_c"; then [ "$_ikesz" -eq 0 ] && _ikesz=128; fi
+			if grep -q "kmp_enc_alg { aes_ctr" "$_C/$_c"; then [ "$_ikesz" -eq 0 ] && _ikesz=128; fi
+			# CHILD_SA cipher (esp_enc_alg): AEAD aes_gcm default 128; the
+			# -esp-shape arms pin aes{128,192,256}_cbc / aes_ctr(or aes_gcm, 256).
+			if grep -q "esp_enc_alg { aes_gcm, 256" "$_C/$_c"; then _childsz=256; fi
+			if grep -q "esp_enc_alg { aes256_cbc" "$_C/$_c"; then _childsz=256; fi
+			if grep -q "esp_enc_alg { aes192_cbc" "$_C/$_c"; then _childsz=192; fi
+			if grep -q "esp_enc_alg { aes_ctr" "$_C/$_c"; then _childsz=128; fi
+			if grep -q "esp_enc_alg { aes128_cbc" "$_C/$_c"; then _childsz=128; fi
+			if [ "$_childsz" -eq 0 ] && grep -q "esp_enc_alg { aes_gcm" "$_C/$_c"; then _childsz=128; fi
 		done
 	fi
 	if [ "$_childsz" -eq 0 ]; then
@@ -332,12 +380,22 @@ i2i_compliance() {
 	fi
 	# fallbacks must never fabricate a pass/fail: if we truly could not
 	# measure a side, report INFO instead of guessing.
+	# A stronger CHILD_SA (child > parent) is REFUSED only when
+	# parent_child_strength (per-remote knob, default OFF) is on — RFC 7296
+	# permits a stronger child, so under the permissive default the honest
+	# cell is INFO, not FAIL (the strict refusal is i2ineg-a12strict).
+	a12_strict=0
+	for _c in responder.conf initiator.conf; do
+		[ -f "$_C/$_c" ] && grep -q "parent_child_strength on" "$_C/$_c" && a12_strict=1
+	done
 	if [ "$_ikesz" -eq 0 ] || [ "$_childsz" -eq 0 ]; then
 		PLOG A12 INFO "key strengths not fully determined (ikesz=$_ikesz childsz=$_childsz) — no fabricated verdict"
 	elif [ "$_ikesz" -ge "$_childsz" ]; then
 		PLOG A12 PASS "IKE_SA $_ikesz-bit >= CHILD_SA $_childsz-bit"
+	elif [ "$a12_strict" -eq 1 ]; then
+		PLOG A12 FAIL "IKE_SA $_ikesz-bit weaker than CHILD_SA $_childsz-bit with parent_child_strength on (no refusal)"
 	else
-		PLOG A12 FAIL "IKE_SA $_ikesz-bit weaker than CHILD_SA $_childsz-bit"
+		PLOG A12 INFO "CHILD_SA $_childsz-bit exceeds IKE_SA $_ikesz-bit under RFC 7296 permissive default (parent_child_strength off); strict refusal covered by i2ineg-a12strict"
 	fi
 
 	# ---- A13  peer authentication: PSK exercised, both seats ----------------

@@ -1,21 +1,31 @@
 #!/bin/sh
-# kinds/i2i_nsawarn.sh — NSA/CNSSP-15 hardening check: an obsolete algorithm
-# (3DES-CBC) MUST emit the iked deprecation warning at proposal-build AND
-# must NOT block a compliant exchange (advisory-only, never fails closed).
+# kinds/i2i_nsawarn.sh — NSA/CNSSP-15 hardening check family: EVERY obsolete
+# algorithm (nsa_deprecated_alg in iked/ike_conf.c) MUST emit the iked
+# deprecation warning at proposal-build AND must NOT silently downgrade the
+# negotiated suite.  Two outcome classes:
+#
+#   advisory  (3des_cbc, hmac_md5, hmac_sha1, modp768/1024/1536, ESP-side
+#              variants): the weak token has a real transform, so the warning
+#              fires but negotiation still lands on the compliant first-common
+#              offer and the ESP child establishes (advisory-only, never
+#              fails closed).  PASS = warning in BOTH iked logs + child up.
+#
+#   fail-closed (des_cbc): RCT_ALG_DES_CBC is commented OUT of the IKE
+#              transform table (iked/ike_conf.c), so iked refuses the config
+#              at ike_conf_check_ikev2 with "kmp_enc_alg DES-CBC
+#              unsupported" BEFORE proposal build -- there is no
+#              "configuring obsolete algorithm" warning for DES.  PASS =
+#              that conf-check reject string in BOTH logs + child did NOT
+#              establish (DES cannot be offered at all).
 #
 # Topology: two netnss + P2P veth, iked<->iked (192.0.9.x) — copy of the
 # i2iinit/i2i_neg shape with distinct netns/socket/resume names.
 #
-# Both seats list `kmp_enc_alg { aes256_cbc; 3des_cbc; }` — the 3DES row
-# builds its transform (so `alglist_to_proppair` runs
-# `nsa_deprecated_alg()` and plogs "configuring obsolete algorithm
-# 3DES-CBC - remove the suite (NSA/CNSSP-15...)"), while negotiation still
-# lands on AES-256-CBC (the first common offer).  A PASS requires BOTH:
-#   * the warning line in BOTH iked logs (proposal-build warning->log),
-#   * an ESP child up in both netnss (the warning never blocks).
-# A FAIL when either log lacks the warning OR the child did not establish
-# (blaming the advisory for a legit exchange), or when the exchange picked
-# 3DES (expected suite walk must stay compliant).
+# Each row configures the deprecated token in ONE proposal position (IKE
+# ENCR / IKE PRF / IKE HASH / IKE DH / ESP ENCR / ESP AUTH); every other
+# position stays compliant.  The weak token is always listed AFTER the
+# compliant one so "first common" negotiation picks the compliant suite —
+# the warning fires at build, the child lands compliant.
 #
 # Not an NDcPP cell — this is the NSA-hardening adjunct (mk_report Appendix
 # A notes the obsolete-alg warning).  No gate: runs on any build.
@@ -26,9 +36,60 @@ kind_i2i_nsawarn() {
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 
+	# Weak-algorithm placement per row.  WARN_STR is the REAL rct2str output
+	# (lib/rc_type.c); EXPECT_FAILCLOSED=1 flips the gate for des_cbc.
+	WEAK_ENC='kmp_enc_alg { aes256_cbc; };'
+	WEAK_PRF='kmp_prf_alg { hmac_sha2_256; };'
+	WEAK_HASH='kmp_hash_alg { hmac_sha2_256; };'
+	WEAK_DH='kmp_dh_group { ecp256; };'
+	WEAK_ESP_ENC='esp_enc_alg { aes_gcm; };'
+	WEAK_ESP_AUTH='esp_auth_alg { non_auth; };'
+	WARN_STR=
+	EXPECT_FAILCLOSED=0
 	case "$name" in
-	i2i-nsawarn) ;;
-	*) log "FAIL: unknown NSA warning case $name"; return 1 ;;
+	i2i-nsawarn)
+		WARN_STR="3DES-CBC"
+		WEAK_ENC='kmp_enc_alg { aes256_cbc; 3des_cbc; };'
+		;;
+	i2i-nsawarn-md5)
+		WARN_STR="HMAC-MD5"
+		WEAK_PRF='kmp_prf_alg { hmac_sha2_256; hmac_md5; };'
+		WEAK_HASH='kmp_hash_alg { hmac_sha2_256; hmac_md5; };'
+		;;
+	i2i-nsawarn-sha1)
+		WARN_STR="HMAC-SHA-1"
+		WEAK_PRF='kmp_prf_alg { hmac_sha2_256; hmac_sha1; };'
+		WEAK_HASH='kmp_hash_alg { hmac_sha2_256; hmac_sha1; };'
+		;;
+	i2i-nsawarn-modp768)
+		WARN_STR="MODP768"
+		WEAK_DH='kmp_dh_group { ecp256; modp768; };'
+		;;
+	i2i-nsawarn-modp1024)
+		WARN_STR="MODP1024"
+		WEAK_DH='kmp_dh_group { ecp256; modp1024; };'
+		;;
+	i2i-nsawarn-modp1536)
+		WARN_STR="MODP1536"
+		WEAK_DH='kmp_dh_group { ecp256; modp1536; };'
+		;;
+	i2i-nsawarn-esp3des)
+		WARN_STR="3DES-CBC"
+		WEAK_ESP_ENC='esp_enc_alg { aes256_cbc; 3des_cbc; };'
+		WEAK_ESP_AUTH='esp_auth_alg { hmac_sha2_256; };'
+		;;
+	i2i-nsawarn-espsha1)
+		WARN_STR="HMAC-SHA-1"
+		WEAK_ESP_ENC='esp_enc_alg { aes256_cbc; };'
+		WEAK_ESP_AUTH='esp_auth_alg { hmac_sha2_256; hmac_sha1; };'
+		;;
+	i2i-nsawarn-des)
+		WARN_STR="DES-CBC"
+		EXPECT_FAILCLOSED=1
+		WEAK_ENC='kmp_enc_alg { aes256_cbc; des_cbc; };'
+		;;
+	*)
+		log "FAIL: unknown NSA warning case $name"; return 1 ;;
 	esac
 
 	NSR=i2nw-r; NSI=i2nw-i; VR=i2nwr; VI=i2nwi
@@ -36,11 +97,6 @@ kind_i2i_nsawarn() {
 	PRIVRES_R=/tmp/r2-i2nw-resume-r; PRIVRES_I=/tmp/r2-i2nw-resume-i
 	D=/tmp/r2-i2nw; C=/tmp/r2-i2nw-conf
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
-
-	# Shared IKE suite: AES-256-CBC + HMAC-SHA2-256 + P-256, auth PSK,
-	# tunnel ESP child (aes_gcm like the i2i-family rows).  BOTH seats add
-	# 3des_cbc as a trailing offer so the deprecation warning must fire.
-	WEAK_ENC='kmp_enc_alg { aes256_cbc; 3des_cbc; };'
 
 	cat > "$C/responder.conf" <<EOF
 interface {
@@ -57,9 +113,9 @@ remote matrix_resp {
 		peers_id fqdn "r2init-matrix";
 		peers_ipaddr "$HI";
 		$WEAK_ENC
-		kmp_prf_alg { hmac_sha2_256; };
-		kmp_hash_alg { hmac_sha2_256; };
-		kmp_dh_group { ecp256; };
+		$WEAK_PRF
+		$WEAK_HASH
+		$WEAK_DH
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
@@ -91,8 +147,8 @@ ipsec ipsec_e {
 };
 sa esp_e {
 	sa_protocol esp;
-	esp_enc_alg { aes_gcm; };
-	esp_auth_alg { non_auth; };
+	$WEAK_ESP_ENC
+	$WEAK_ESP_AUTH
 };
 EOF
 
@@ -111,9 +167,9 @@ remote matrix_init {
 		peers_id fqdn "racoon2-matrix";
 		peers_ipaddr "$HR";
 		$WEAK_ENC
-		kmp_prf_alg { hmac_sha2_256; };
-		kmp_hash_alg { hmac_sha2_256; };
-		kmp_dh_group { ecp256; };
+		$WEAK_PRF
+		$WEAK_HASH
+		$WEAK_DH
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
@@ -145,8 +201,8 @@ ipsec ipsec_e {
 };
 sa esp_e {
 	sa_protocol esp;
-	esp_enc_alg { aes_gcm; };
-	esp_auth_alg { non_auth; };
+	$WEAK_ESP_ENC
+	$WEAK_ESP_AUTH
 };
 EOF
 
@@ -202,30 +258,52 @@ EOF
 	re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 	ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 
-	# The warning must appear in BOTH iked logs at proposal-build, and the
-	# text is the real rct2str of the deprecated token ("3DES-CBC").
-	warn_r=$(grep -c "configuring obsolete algorithm 3DES-CBC" "$D/resp-iked.log" 2>/dev/null || true)
-	warn_i=$(grep -c "configuring obsolete algorithm 3DES-CBC" "$D/init-iked.log" 2>/dev/null || true)
+	# The warning must appear in BOTH iked logs at proposal-build; the text
+	# is the real rct2str of the deprecated token (lib/rc_type.c).
+	warn_r=$(grep -c "configuring obsolete algorithm $WARN_STR" "$D/resp-iked.log" 2>/dev/null || true)
+	warn_i=$(grep -c "configuring obsolete algorithm $WARN_STR" "$D/init-iked.log" 2>/dev/null || true)
 
-	gote=0
-	if [ "$up" -eq 1 ] && [ "${warn_r:-0}" -ge 1 ] && [ "${warn_i:-0}" -ge 1 ]; then
-		gote=1
-		printf 'CPL A4: PASS obsolete-alg warning emitted on both seats (resp %s, init %s) yet ESP child established (esp resp=%s init=%s) — advisory-only\n' \
-		    "$warn_r" "$warn_i" "${re:-0}" "${ie:-0}"
-		log "PASS $name: warning fired both seats (r=$warn_r i=$warn_i) and child up (resp=${re} init=${ie})"
-	else
-		if [ "${warn_r:-0}" -eq 0 ] || [ "${warn_i:-0}" -eq 0 ]; then
-			log "FAIL $name: deprecation warning missing (resp_warn=${warn_r} init_warn=${warn_i}, up=$up)"
+	if [ "$EXPECT_FAILCLOSED" = 1 ]; then
+		# des_cbc is rejected at IKE_CONF CHECK time (ike_conf.c
+		# ike_conf_check_ikev2 -> "kmp_enc_alg DES-CBC unsupported",
+		# since the DES transform row is commented out), so iked refuses
+		# the config before any proposal-build -- there is no
+		# "configuring obsolete" warning for DES.  PASS requires the
+		# conf-check reject string on both seats and NO child.
+		uns_r=$(grep -c "kmp_enc_alg $WARN_STR unsupported" "$D/resp-iked.log" 2>/dev/null || true)
+		uns_i=$(grep -c "kmp_enc_alg $WARN_STR unsupported" "$D/init-iked.log" 2>/dev/null || true)
+		gote=0
+		if [ "$up" -eq 0 ] && [ "${uns_r:-0}" -ge 1 ] && [ "${uns_i:-0}" -ge 1 ]; then
+			gote=1
+			printf 'CPL A4: PASS fail-closed DES refusal at conf-check on both seats (unsupported r=%s i=%s; no child) — obsolete DES-CBC cannot be offered\n' \
+			    "$uns_r" "$uns_i"
+			log "PASS $name: conf-check refusal of DES-CBC both seats (r=$uns_r i=$uns_i), no child"
 		else
-			log "FAIL $name: warning fired but exchange did not establish (resp=${re} init=${ie})"
+			log "FAIL $name: fail-closed DES alloy — up=$up unsupported(r=$uns_r i=$uns_i)"
+		fi
+	else
+		# advisory: warning fires on both seats AND the exchange still lands
+		# a compliant ESP child (the weak offer never blocks / downgrades).
+		gote=0
+		if [ "$up" -eq 1 ] && [ "${warn_r:-0}" -ge 1 ] && [ "${warn_i:-0}" -ge 1 ]; then
+			gote=1
+			printf 'CPL A4: PASS obsolete-alg warning emitted on both seats (resp %s, init %s) yet ESP child established (esp resp=%s init=%s) — advisory-only\n' \
+			    "$warn_r" "$warn_i" "${re:-0}" "${ie:-0}"
+			log "PASS $name: $WARN_STR warning fired both seats (r=$warn_r i=$warn_i) and child up (resp=${re} init=${ie})"
+		else
+			if [ "${warn_r:-0}" -eq 0 ] || [ "${warn_i:-0}" -eq 0 ]; then
+				log "FAIL $name: deprecation warning missing (resp_warn=${warn_r} init_warn=${warn_i}, up=$up)"
+			else
+				log "FAIL $name: warning fired but exchange did not establish (resp=${re} init=${ie})"
+			fi
 		fi
 	fi
 
 	if [ "$gote" -eq 0 ]; then
 		log "--- resp-iked.log (warning grep) ---"
-		grep -E 'configuring obsolete algorithm|ESTABLISHED|NO_PROPOSAL|abort|err=' "$D/resp-iked.log" 2>/dev/null | tail -6
+		grep -E 'configuring obsolete algorithm|unsupported algorithm|ESTABLISHED|NO_PROPOSAL|abort|err=' "$D/resp-iked.log" 2>/dev/null | tail -6
 		log "--- init-iked.log (warning grep) ---"
-		grep -E 'configuring obsolete algorithm|ESTABLISHED|NO_PROPOSAL|abort|err=' "$D/init-iked.log" 2>/dev/null | tail -6
+		grep -E 'configuring obsolete algorithm|unsupported algorithm|ESTABLISHED|NO_PROPOSAL|abort|err=' "$D/init-iked.log" 2>/dev/null | tail -6
 	fi
 
 	pkill -9 -f "$C/" 2>/dev/null || true
