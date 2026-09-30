@@ -198,13 +198,12 @@ EOF
 		# arbitrary path.  Writing `private-$name { file = ...key-i.pem }`
 		# left charon with the cert (id=CN=charon-i2i) but NO private key
 		# -> `no private key found for 'CN=charon-i2i'` right at IKE_AUTH.
-		# Install the in-row key into private/ so auto-discovery matches it.
-		_privdir="${I2I_CHARON_KEYS_DIR:-/etc/strongswan/swanctl/private}"
-		mkdir -p "$_privdir" || { log "FAIL: no $I2I_CHARON_VDIR private key dir $I2I_CHARON_KEYS_DIR"; return 1; }
-		cp "$_C/key-i.pem" "$_privdir/r2-${_name}-key-i.pem" || { log "FAIL: cp key-i->$_privdir"; return 1; }
-		chmod 644 "$_privdir/r2-${_name}-key-i.pem" 2>/dev/null || true
-		# passphrase block is unnecessary (key is unencrypted) and would be
-		# misparsed as "decrypt STALEKEY in private/"; skip it entirely.
+		# The key is installed into private/ by the i2iinit.sh -rsa arm
+		# AFTER openssl generates it (i2i_peer_i_conf runs before the
+		# cert-gen block, so the cp cannot live here).  The conn-local
+		# certs= path stays as-is; charon auto-matches key<->cert by pubkey.
+		# No passphrase block: the key is unencrypted and a `private-*`
+		# block would be misparsed as a passphrase lookup.
 		:
 	else
 		cat >> "$I2I_CHARON_CONF" <<EOF

@@ -433,6 +433,20 @@ fi
 		openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$R_CN" \
 		    -keyout "$C/key-r.pem" -out "$C/cert-r.pem" >/dev/null 2>&1 || { log "FAIL: openssl cert-r"; return 1; }
 		sudo chmod 644 "$C"/*.pem 2>/dev/null || chmod 644 "$C"/*.pem
+		# charon discovers its private key from the swanctl private/ dir
+		# (auto-matched to the conn-local cert by public key); a
+		# `secrets.private-*` block is only a passphrase lookup and never
+		# loads a key from an arbitrary path — without this install charon
+		# reaches IKE_AUTH with the cert but `no private key found for
+		# 'CN=charon-i2i'`.  Install the charon INITIATOR seat's key (PEER
+		# = charon) into private/.  Both seats are generated above, so this
+		# must come AFTER the openssl pairs.
+		if [ "$PEER" = charon ]; then
+			_privdir="${I2I_CHARON_KEYS_DIR:-/etc/strongswan/swanctl/private}"
+			mkdir -p "$_privdir" || { log "FAIL: no charon private key dir $_privdir"; return 1; }
+			cp "$C/key-i.pem" "$_privdir/r2-${name}-key-i.pem" || { log "FAIL: cp key-i->$_privdir"; return 1; }
+			chmod 644 "$_privdir/r2-${name}-key-i.pem" 2>/dev/null || true
+		fi
 	fi
 
 	for NS in "$NSR" "$NSI"; do
