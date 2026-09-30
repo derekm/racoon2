@@ -155,6 +155,7 @@ i2i_peer_i_conf() {
 		# IKE_AUTH, after the ADDKE round.  The responder must speak RFC
 		# 7427 to match; sha-256 is what iked negotiates.
 		_auth_local='		local {
+			id = '"$I2I_CHARON_ID"'
 			auth = ike:pubkey-sha256-sha384-sha512
 			certs = "'"$_C"'/cert-i.pem"
 		}
