@@ -3112,7 +3112,7 @@ eay_aes_cmac_init(rc_vchar_t *key)
 	if (!c)
 		goto fail;
 
-	if (AES_set_encrypt_key((unsigned char *)key->v, key->l * 8, &c->k1)
+	if (AES_set_encrypt_key((unsigned char *)k->v, k->l * 8, &c->k1)
 	    != 0)
 		goto fail;
 	AES_encrypt(zero, L, &c->k1);
