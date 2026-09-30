@@ -418,11 +418,11 @@ i2i_compliance() {
 		   ! grep -q "my_public_key"  "$_C/responder.conf" 2>/dev/null; then a13_ok=0; fi
 	fi
 	if [ "$_pei" = charon ] && \
-	   ! grep -q "auth = psk" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null && \
-	   ! grep -q "auth = pubkey" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
+	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|ike:pubkey)" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null && \
+	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|ike:pubkey)" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
 	if [ "$_per" = charon ] && \
-	   ! grep -q "auth = psk" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null && \
-	   ! grep -q "auth = pubkey" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
+	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|ike:pubkey)" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null && \
+	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|ike:pubkey)" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
 	if [ "$a13_ok" -eq 1 ]; then
 		PLOG A13 PASS "peer auth (PSK or public key) declared on both seats (conf invariant; A5 proves it ran)"
 	else
