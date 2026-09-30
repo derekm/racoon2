@@ -594,6 +594,11 @@ ikev2_spec
 			MKRCFDIR($$, CFD_CHILDLESS);
 			$$->nextp = $2;
 		}
+	|	REQUIRE_CONFIG boolean
+		{
+			MKRCFDIR($$, CFD_REQUIRE_CONFIG);
+			$$->nextp = $2;
+		}
 	|	PPK_ID string
 		{
 			MKRCFDIR($$, CFD_PPK_ID);

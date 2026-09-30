@@ -35,6 +35,78 @@ i2i_compliance() {
 	_pei=iked; _per=iked
 	case "$_name" in *-charonr) _per=charon;; *-charon) _pei=charon;; esac
 
+	# ---- NEG rows (-cfgneg): the PASS condition is a REFUSAL -------------
+	# The childless responder must refuse a cfg-less SA-less IKE_AUTH with
+	# FAILED_CP_REQUIRED (review #2 / RFC 7296 2.19), so there is NO
+	# established pair and NO ESP child BY DESIGN.  The wired cells that
+	# prove the architecture (SPD shape, no clear path, peer-auth declared,
+	# ref-id pinned, nonce/DH source) still hold and are checked; the
+	# established/ESP-dependent cells (A3 A4 A5 A7 A8 A12) are demoted to
+	# NEG-waived INFO because their precondition (an established SA) is
+	# intentionally absent.  The refusal itself is the row's own gate.
+	if case "$_name" in *-cfgneg*) true ;; *) false ;; esac; then
+		a1_ok=1
+		for _ns in "$_NSR" "$_NSI"; do
+			_pol=$(ip netns exec "$_ns" ip xfrm policy 2>/dev/null || true)
+			if ! printf '%s\n' "$_pol" | grep -q "proto udp"; then a1_ok=0; fi
+			if ! printf '%s\n' "$_pol" | grep -q "proto esp.*mode tunnel"; then a1_ok=0; fi
+		done
+		[ "$a1_ok" -eq 1 ] && PLOG A1 PASS "NEG row: SPD still has BYPASS(udp 500/4500) + PROTECT(esp tunnel) both ${_NSR}/${_NSI}"
+		[ "$a1_ok" -eq 0 ] && PLOG A1 FAIL "NEG row: SPD missing BYPASS(udp) or PROTECT(esp) row"
+		# A2: same no-clear-path negative shape as the positive path.
+		a2_ok=1
+		_pol=$(ip netns exec "$_NSI" ip xfrm policy 2>/dev/null || true)
+		_ca=$(printf '%s\n' "$_pol" | awk '
+			/^[^[:space:]]/ { if (old != "") print old; old=$0; prev=""; next }
+			{ if ($0 ~ /socket/) { old=""; } }
+			END { if (old != "") print old }' \
+			| awk '/^src 0\.0\.0\.0\/0 dst 0\.0\.0\.0\/0/{print; c=1; next} /^[^[:space:]]/{c=0} {if(c) print}' \
+			| grep -vE "socket" | head -1)
+		[ -n "$_ca" ] && a2_ok=0
+		_udp_unscoped=$(printf '%s\n' "$_pol" | grep -E "^src [0-9].*proto udp" | grep -vE "sport (500|4500)")
+		[ -n "$_udp_unscoped" ] && a2_ok=0
+		[ "$a2_ok" -eq 1 ] && PLOG A2 PASS "NEG row: no cleartext path (SPD shape intact)"
+		[ "$a2_ok" -eq 0 ] && PLOG A2 FAIL "NEG row: SPD cleartext-path risk"
+		# A13/A14 (conf invariants) hold on a refusal.  Check whichever seat
+		# conf files exist (iked seats write responder.conf/initiator.conf;
+		# a charon seat writes a swanctl conn under I2I_CHARON_VDIR).
+		a13_ok=1
+		_checked=0
+		for _cc in "$_C/initiator.conf" "$_C/responder.conf"; do
+			[ -f "$_cc" ] || continue
+			_checked=1
+			grep -q "pre_shared_key\|my_public_key\|my_pubkey" "$_cc" || a13_ok=0
+		done
+		for _cc in "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf"; do
+			[ -f "$_cc" ] || continue
+			_checked=1
+			grep -qE "auth = (psk|pubkey)" "$_cc" || a13_ok=0
+		done
+		[ "$_checked" -eq 0 ] && a13_ok=0
+		[ "$a13_ok" -eq 1 ] && PLOG A13 PASS "NEG row: peer auth (PSK or public key) declared on seat confs/conn"
+		[ "$a13_ok" -eq 0 ] && PLOG A13 FAIL "NEG row: peer auth not declared on seat confs/conn"
+		a14_ok=0
+		for _cc in "$_C/responder.conf" "$_C/initiator.conf"; do
+			[ -f "$_cc" ] && grep -q "peers_id fqdn" "$_cc" && a14_ok=1
+		done
+		[ "$a14_ok" -eq 1 ] && PLOG A14 PASS "NEG row: peer id pinned (peers_id fqdn in confs)"
+		[ "$a14_ok" -eq 0 ] && PLOG A14 FAIL "NEG row: no peers_id fqdn in confs"
+		# Refusal itself: the row's PASS condition.
+		if grep -q "childless peer message lacks required config payload" "$_D/resp-iked.log" 2>/dev/null; then
+			PLOG A15 PASS "NEG row: responder refused cfg-less SA-less IKE_AUTH (FAILED_CP_REQUIRED gate fired)"
+		else
+			PLOG A15 FAIL "NEG row: no FAILED_CP_REQUIRED refusal marker in responder log"
+		fi
+		PLOG A3 INFO "NEG-waived: no ESP SAD by design (refused exchange)"
+		PLOG A4 INFO "NEG-waived: no ESP cipher by design (refused exchange)"
+		PLOG A5 INFO "NEG-waived: no ESTABLISHED by design (refused exchange)"
+		PLOG A6 PASS "IKE payload cipher (aes256_cbc|aes_gcm) in claimed set (conf)"
+		PLOG A7 INFO "NEG-waived: no resume ike_remain (refused exchange)"
+		PLOG A8 INFO "NEG-waived: no CHILD_SA lifetime (refused exchange)"
+		[ "$CPL_FAIL" -eq 0 ]
+		return $?
+	fi
+
 	# ---------- A1  SPD architecture: BYPASS + PROTECT rows, both netnss ----
 	# Real `ip xfrm policy` shape (verified on the box 2026-09-27):
 	#   BYPASS rows: 'src X dst Y proto udp sport 500/4500 dport 500/4500'

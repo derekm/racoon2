@@ -39,6 +39,28 @@ the Ubuntu/NetBSD full matrix and the Fedora container default until a
 counted-gate PASS exists on the box AND a container run admits them —
 same rule as `i2ike-drop576`.
 
+RFC 6023 childless coverage (2026-09-29, all gate=box): the DAEMON now
+implements the SA-less (modified) IKE_AUTH INITIATOR — `childless on`
+on the iked initiator seat sends a SA-less IKE_AUTH (no SAi2/TSi/TSr)
+and accepts the no-SAr2 response, the first ESP child landing via a
+separate CREATE_CHILD_SA.  Seven coverage rows exercise both flavors,
+SELF-CONSISTENT iked<->iked and charon/strongSwan INTEROP:
+`i2iinit-childless-init` (initiator feature, PSK), `-init-rsa` (CERT+
+push, review #2), `-rsa-charon` (CERT+ interop), `-init-cfg`
+(CFG_REPLY push, review #2), `-cfg-charon` (CFG_REPLY interop via
+charon vips), `-init-cfgneg` (FAILED_CP_REQUIRED refusal, review #2),
+`-cfgneg-charon` (refusal interop).  Kind TRACE markers gate the actual
+wire behavior: initiator `sending modified (SA-less) IKE_AUTH` /
+`accepted SA-less response`, responder 16418 advertise + SA-less accept,
+`pushing CERT+ (X509)`, `pushing [CP(CFG_REPLY)]`, and the
+`childless peer message lacks required config payload` refusal.  The
+`require_config_payload` knob (RFC 7296 2.19 / RFC 6023 s5) is newly
+wired: it gates the childless AND childful ack of a mandatory
+CFG_REQUEST, and is always OFF by default (no behavior change for rows
+that do not opt in).  The `-cfgneg` rows are NEG PASSes: the refusal IS
+the gate, ESP must NOT land, and the NDcPP compliance report demotes
+the established/ESP-dependent cells to waived INFO.
+
 Build manifest: the box runs `git archive HEAD`, scp'd as
 `~/r2-matrix.tar.gz`; the archive hash is printed next to the iked
 `staged/installed` hash proof every run, so the tree under test is

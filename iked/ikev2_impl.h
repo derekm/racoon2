@@ -156,6 +156,7 @@ struct ikev2_sa {
 	int version;
 	int is_initiator;	/* side */
 	int is_rekeyed_sa;
+	int childless_established;	/* RFC 6023: SA-less AUTH settled config */
 
 	struct sockaddr *remote;
 	struct sockaddr *local;

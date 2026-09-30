@@ -322,6 +322,7 @@ struct rcf_kmp {
 	 * exposed -- no secret may live in a committed config. */
 	rc_type use_ppk;
 	rc_type childless;	/* RFC 6023: accept SA-less IKE_AUTH */
+	rc_type require_config;	/* RFC 6023: require CP(CFG_REQUEST) in IKE_AUTH */
 	rc_type ppk_mandatory;
 	rc_vchar_t *ppk_id;
 };

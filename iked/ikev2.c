@@ -2665,11 +2665,17 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	}
 
 	/*
-	 * SA, TSi, TSr
+	 * SA, TSi, TSr -- RFC 6023 s3: a childless initiator sends a MODIFIED
+	 * (SA-less) IKE_AUTH that MUST NOT carry SAi2/TSi/TSr; the first child is
+	 * added afterwards via a separate CREATE_CHILD_SA (woken at ESTABLISHED).
 	 */
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa_i2, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_TS_I, ts_i, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_TS_R, ts_r, FALSE);
+	if (ikev2_childless(ike_sa->rmconf) != RCT_BOOL_ON) {
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa_i2, FALSE);
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_TS_I, ts_i, FALSE);
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_TS_R, ts_r, FALSE);
+	} else {
+		TRACE((PLOGLOC, "childless IKE_AUTH (initiator): sending modified (SA-less) IKE_AUTH, no SAi2/TS (RFC 6023)\n"));
+	}
 
 	assert(ike_sa->sk_e_i);
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_AUTH, IKEV2FLAG_INITIATOR,
@@ -3216,6 +3222,7 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
 			   "received childless (SA-less) IKE_AUTH, establishing IKE_SA with zero children\n");
+		ike_sa->childless_established = 1;	/* config requirement settled at SA-less IKE_AUTH */
 		ikev2_update_message_id(ike_sa, message_id, FALSE);
 		if (ikev2_responder_childless_auth_send(ike_sa, message_id,
 						    child_param.cfg_payload) != 0) {
@@ -3388,8 +3395,10 @@ ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
 		}
 	}
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_R, id_r, FALSE);
-	if (my_cert)
+	if (my_cert) {
+		TRACE((PLOGLOC, "childless IKE_AUTH (responder): pushing CERT+ (X509)\n"));
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CERT, my_cert, FALSE);
+	}
 	if (ikev2_send_initial_contact(ike_sa))
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(0, 0, 0,
@@ -3398,8 +3407,10 @@ ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_AUTH, auth, FALSE);
 
 	/* [CP(CFG_REPLY)] RFC 6023 s5: answer a permitted CP(CFG_REQUEST). */
-	if (cfg_payload)
+	if (cfg_payload) {
+		TRACE((PLOGLOC, "childless IKE_AUTH (responder): pushing [CP(CFG_REPLY)]\n"));
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CONFIG, cfg_payload, FALSE);
+	}
 
 	/* RFC 8784 s2.3: acknowledge the PPK session (as in the childful path). */
 	if (ike_sa->ppk_active)
@@ -4045,6 +4056,15 @@ initiator_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	}
 
 	if (!(sa_r2 && ts_i && ts_r)) {
+		/* RFC 6023 s3: a childless initiator sent no SAi2/TSi/TSr, so the
+		 * responder SA-less IKE_AUTH response legitimately carries no SAr2/TS.
+		 * Accept it and establish the IKE_SA with zero children (the pending
+		 * child is then created via CREATE_CHILD_SA below). */
+		if (ikev2_childless(ike_sa->rmconf) == RCT_BOOL_ON) {
+			ike_sa->childless_established = 1;	/* childless_established_init */
+			TRACE((PLOGLOC, "childless IKE_AUTH (initiator): accepted SA-less response (no SAr2), establishing IKE_SA\n"));
+			goto established;
+		}
 		if (acceptable)
 			goto established;
 
@@ -4988,7 +5008,7 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 	if (! old_child_sa &&
 	    ikev2_config_required(ike_sa->rmconf) == RCT_BOOL_ON &&
-	    ! cfg) {
+	    !ike_sa->childless_established && !cfg) {
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
 			   "peer message lacks required Configuration payload\n");

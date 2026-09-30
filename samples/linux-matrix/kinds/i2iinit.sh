@@ -66,6 +66,7 @@ kind_i2iinit() {
 	I2I_LIFETIME=300
 	I2I_DBG=0x0001
 	I2I_ESP=
+	up_req=1   # default: ESP child must land (up=1); -cfgneg flips to 0
 	case "$name" in
 	*-childless*) I2I_CHILDLESS=1; I2I_DBG=0x0003 ;;   # TRACE markers (16418 advertise) need DEBUG_FLAG_TRACE=0x0002
 	esac
@@ -182,6 +183,93 @@ kind_i2iinit() {
 	[ "$I2I_ESN" = 1 ] && ESN_TXT='		ext_sequence on;
 '
 
+	# RFC 6023 s3 SA-less IKE_AUTH INITIATOR feature (2026-09-29): a
+	# -childless-init row turns the knob on the iked INITIATOR seat TOO, so
+	# iked itself sends a MODIFIED (SA-less) IKE_AUTH (no SAi2/TSi/TSr) and
+	# accepts the no-SAr2 response -- self-consistent proof of the daemon
+	# initiator feature (charon's childless=force is the interop flavor).
+	# The responder seat keeps childless on (accept SA-less) as before.
+	I2I_CHILDLESS_INIT=0
+	CHILDLESS_TXT_I=""
+	case "$name" in
+	*-childless-init*)
+		I2I_CHILDLESS_INIT=1
+		I2I_CHILDLESS=1
+		I2I_DBG=0x0003
+		CHILDLESS_TXT_I='		childless on;
+'
+		;;
+	esac
+
+	# RSASIG cert/auth arms (review #2 CERT+ coverage): a -rsa row drives
+	# kmp_auth_method { rsa; } + self-signed X509 on BOTH seats (my_pubkey
+	# x509pem our-cert+our-key, peers_pubkey x509pem peer-cert), so the
+	# childless responder pushes CERT+ (the IKED TRACE gate).  In-row
+	# self-signed certs are valid: eay_check_x509cert(cert, NULL) runs the
+	# system trust store, but cb_check_cert (crypto_openssl.c) accepts
+	# DEPTH_ZERO_SELF_SIGNED_CERT -> ok=1, so no CA-store setup is needed.
+	I2I_RSA=0
+	RSA_TXT_I=""
+	RSA_TXT_R=""
+	case "$name" in
+	*-rsa*)
+		I2I_RSA=1
+		;;
+	esac
+	# RFC 7296 s2.19 / review #2 CFG coverage: -cfg rows request a
+	# configuration payload in IKE_AUTH (initiator request {
+	# application_version; } -> CFG_REQUEST) and the responder replies
+	# (provide { application_version ...; } -> CFG_REPLY).  The
+	# require_config_payload knob (newly wired require_config) makes the
+	# responder REFUSE a cfg-less request with FAILED_CP_REQUIRED -- the
+	# -cfgneg sibling proves that gate.  TRACE markers on the pushes let the
+	# matrix gate on the actual wire payloads.
+	I2I_CFG=0
+	I2I_CFGNEG=0
+	CFG_REQ_TXT_I=""
+	CFG_PROV_TXT_R=""
+	CFG_REQUIRE_TXT_R=""
+	case "$name" in
+	*-cfgneg*)
+		I2I_CFGNEG=1
+		CFG_REQUIRE_TXT_R='		require_config_payload on;
+'
+		;;
+	*-cfg*)
+		I2I_CFG=1
+		CFG_REQ_TXT_I='		request { application_version; };
+'
+		CFG_PROV_TXT_R='		provide { application_version "racoon2-i2i-cfg"; };
+'
+		CFG_REQUIRE_TXT_R='		require_config_payload on;
+'
+		;;
+	esac
+
+	# Auth method + any PSK line: RSA rows emit kmp_auth_method { rsa; } +
+	# my_pubkey/peers_pubkey; every other row keeps the PSK pair.  Emit the
+	# method and psk together so a row can never carry both or neither.
+	AUTH_TXT_I=""
+	AUTH_TXT_R=""
+	if [ "$I2I_RSA" = 1 ]; then
+		AUTH_TXT_I='		kmp_auth_method { rsasig; };
+		my_public_key x509pem "'"$C"'/cert-i.pem" "'"$C"'/key-i.pem";
+		peers_public_key x509pem "'"$C"'/cert-r.pem";'
+		# RSA peer also needs my_pubkey cert+key on the OTHER seat when iked;
+		# the responder conf template already got $I2I_PKI via AUTH_TXT_R.
+		AUTH_TXT_R='		kmp_auth_method { rsasig; };
+		my_public_key x509pem "'"$C"'/cert-r.pem" "'"$C"'/key-r.pem";
+		peers_public_key x509pem "'"$C"'/cert-i.pem";'
+	else
+		AUTH_TXT_I='		kmp_auth_method { psk; };
+		pre_shared_key "'"$ETC"'/psk/macos.psk";'
+		AUTH_TXT_R='		kmp_auth_method { psk; };
+		pre_shared_key "'"$ETC"'/psk/macos.psk";'
+	fi
+	# peer identifiers stay the same under RSA (iked accepts any cert that
+	# verifies against peers_pubkey -- ikev2_public_key peer-ID check is
+	# #if 0'd out, so id<->cert binding is not enforced).
+
 	if [ "$PEER_R" = charon ]; then
 	# charon responder: shared helper writes the swanctl conn (PSK hex read
 	# from the existing matrix psk, never printed); iked responder.conf below
@@ -206,10 +294,11 @@ remote matrix_resp {
 		kmp_prf_alg { $I2I_IKE_PRF; };
 		kmp_hash_alg { $I2I_IKE_PRF; };
 		kmp_dh_group { $I2I_DH_GROUP; };
-		kmp_auth_method { psk; };
-		pre_shared_key "$ETC/psk/macos.psk";
+$AUTH_TXT_R
 $PPK_TXT
 $CHILDLESS_TXT_R
+$CFG_REQUIRE_TXT_R
+$CFG_PROV_TXT_R
 $NEED_PFS_TXT_R
 		dpd_delay 60 sec;
 	};
@@ -270,9 +359,10 @@ remote matrix_init {
 		kmp_prf_alg { $I2I_IKE_PRF; };
 		kmp_hash_alg { $I2I_IKE_PRF; };
 		kmp_dh_group { $I2I_DH_GROUP; };
-		kmp_auth_method { psk; };
-		pre_shared_key "$ETC/psk/macos.psk";
+$AUTH_TXT_I
 $PPK_TXT
+$CHILDLESS_TXT_I
+$CFG_REQ_TXT_I
 $NEED_PFS_TXT_I
 		dpd_delay 60 sec;
 	};
@@ -312,6 +402,25 @@ fi
 	# kill daemons by the unique per-run conf dir (it IS in their argv)
 	pkill -9 -f "$C/" 2>/dev/null || true
 	rm -f /tmp/spmif-i2init-r /tmp/spmif-i2init-i /tmp/iked.sock-i2init-r /tmp/iked.sock-i2init-i
+
+	# RSA rows: generate the two seat pairs of self-signed cert+key IN-ROW.
+	# CN = the seat's my_id; iked does not enforce id<->cert (peers_pubkey
+	# is the trust anchor), but charon derives its own identity from the
+	# cert subject, so the charon initiator seat must carry CN=charon-i2i.
+	# Self-signed is fine: eay_check_x509cert's cb_check_cert accepts
+	# DEPTH_ZERO_SELF_SIGNED_CERT (ok=1); no CA store on either box.
+	if [ "$I2I_RSA" = 1 ]; then
+		I_CN=${I2I_CHARON_ID}; [ "$PEER" = iked ] && I_CN=r2init-matrix
+		R_CN=${I2I_CHARON_ID}; [ "$PEER_R" = iked ] && R_CN=racoon2-matrix
+		if ! command -v openssl >/dev/null 2>&1; then
+			log "FAIL: no openssl for -rsa cert gen"; return 1
+		fi
+		openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$I_CN" \
+		    -keyout "$C/key-i.pem" -out "$C/cert-i.pem" >/dev/null 2>&1 || { log "FAIL: openssl cert-i"; return 1; }
+		openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$R_CN" \
+		    -keyout "$C/key-r.pem" -out "$C/cert-r.pem" >/dev/null 2>&1 || { log "FAIL: openssl cert-r"; return 1; }
+		sudo chmod 644 "$C"/*.pem 2>/dev/null || chmod 644 "$C"/*.pem
+	fi
 
 	for NS in "$NSR" "$NSI"; do
 		ip netns del "$NS" 2>/dev/null || true
@@ -411,7 +520,7 @@ fi
 	elif [ "${I2I_CLASSICAL:-0}" != 1 ]; then
 		log "FAIL: initial IKE_SA not ADDKE/ML-KEM (nint=${nint:-0})"
 	else
-		log "waived: classical-CBC row has no ADDKE round (need_pqc=0, expected)"
+		log "waived: classical-CBC row has no ADDKE round (I2I_CLASSICAL=1, expected)"
 	fi
 
 	# RFC 8784 PPK rows: with USE_PPK on both seats the child only lands if
@@ -601,7 +710,7 @@ fi
 
 
 
-	# RFC 6023 childless rows (Feature A):
+	# RFC 6023 childless rows (Feature A + the 2026-09-29 SA-less INITIATOR):
 	#   i2iinit-childless-charon  charon INITIATOR childless=force -> iked
 	#                             responder childless on accepts the SA-less
 	#                             (modified) IKE_AUTH and answers SA-less
@@ -613,35 +722,110 @@ fi
 	#                             childless-init), so this validates the
 	#                             knob does not break a CLASSICAL IKE_AUTH
 	#                             (advertise 16418 + still accept SA-full).
-	childless_ok=0
+	#   i2iinit-childless-init    SELF-CONSISTENT SA-less INITIATOR: childless
+	#                             on BOTH seats -- the iked initiator sends a
+	#                             MODIFIED (SA-less) IKE_AUTH (no SAi2/TSi/TSr,
+	#                             TRACE marker) and ACCEPTS the no-SAr2
+	#                             response (second TRACE marker), the iked
+	#                             responder advertises 16418 and accepts it;
+	#                             first child lands via CREATE_CHILD_SA.
+	#   i2iinit-childless-init-rsa   same + RSASIG auth with in-row self-signed
+	#                             certs -> responder pushes CERT+ (TRACE).
+	#   i2iinit-childless-rsa-charon charon childless=force + RSASIG (its own
+	#                             cert) -> iked responder pushes CERT+ interop.
+	#   i2iinit-childless-init-cfg   same + initiator request{app_version},
+	#                             responder require_config_payload on +
+	#                             provide app_version -> CFG_REPLY pushed.
+	#   i2iinit-childless-cfg-charon charon childless=force + config request
+	#                             -> iked responder pushes CFG_REPLY interop.
+	#   i2iinit-childless-init-cfgneg NEG: same but initiator sends NO config
+	#                             request; responder (require_config on) MUST
+	#                             refuse with FAILED_CP_REQUIRED (NEG PASS).
+	# Evidence is computed independently per feature (init-send / init-accept
+	# / responder 16418 advertise / responder SA-less accept / CERT+ push /
+	# CFG_REPLY push / FAILED_CP refusal) and combined per row below -- a
+	# self-consistent -init-rsa row must prove the initiator path AND the
+	# CERT+ push, not just one or the other.
+	init_send=0; init_accept=0; resp_advert=0; resp_accept=0
+	cert_push=0; cfg_push=0; cp_refuse=0
+	childless_ok=1   # non-childless rows pass unconditionally
 	case "$name" in
-	*-childless-charon)
-		# the responder must ACCEPT a true SA-less IKE_AUTH and answer
-		# SA-less; charon then adds the child via a separate CREATE_CHILD_SA.
-		if grep -q 'received childless (SA-less) IKE_AUTH' "$D/resp-iked.log" 2>/dev/null && \
-		   grep -q 'advertising childless IKE_SA support (16418)' "$D/resp-iked.log" 2>/dev/null; then
+	*-childless*)
+		# Evidence markers, computed only for childless rows.
+		grep -q 'childless IKE_AUTH (initiator): sending modified (SA-less) IKE_AUTH' "$D/init-iked.log" 2>/dev/null && init_send=1
+		grep -q 'childless IKE_AUTH (initiator): accepted SA-less response' "$D/init-iked.log" 2>/dev/null && init_accept=1
+		grep -q 'advertising childless IKE_SA support (16418)' "$D/resp-iked.log" 2>/dev/null && resp_advert=1
+		grep -q 'received childless (SA-less) IKE_AUTH' "$D/resp-iked.log" 2>/dev/null && resp_accept=1
+		grep -q 'childless IKE_AUTH (responder): pushing CERT+ (X509)' "$D/resp-iked.log" 2>/dev/null && cert_push=1
+		grep -qF 'childless IKE_AUTH (responder): pushing [CP(CFG_REPLY)]' "$D/resp-iked.log" 2>/dev/null && cfg_push=1
+		grep -q 'childless peer message lacks required config payload' "$D/resp-iked.log" 2>/dev/null && cp_refuse=1
+
+		# Per-row evidence requirements (explicit per arm, evaluated in order — a
+		# -cfgneg row is a REFUSAL regardless of seat, so it wins over both the
+		# -charon and -childless-init arms below):
+		#   resp_advert   responder advertised 16418 in the IKE_SA_INIT response
+		#                 (EVERY childless row must have it)
+		#   -cfgneg       NEG: the responder REFUSES with FAILED_CP_REQUIRED,
+		#                 so resp_accept (SA-less IKE_AUTH established) and
+		#                 init_accept are IMMPOSSIBLE — only the initiator
+		#                 SEND marker (SA-less drive) + cp_refuse are checked.
+		#   -charon       charon childless=force INITIATOR: no iked init log, so
+		#                 init_* N/A; responder MUST see the SA-less IKE_AUTH
+		#   -childless-init (positive): iked SA-less init >= both init markers +
+		#                 responder SA-less accept
+		#   plain -childless        classical iked initiator: responder knob ON,
+		#                 SA-full IKE_AUTH accepted; NO SA-less markers expected
+		#                 (init_* and resp_accept are 0 by definition)
+		#   need_cert=1  (-rsa)    childless responder pushes CERT+
+		#   need_cfg=1   (-cfg pos) childless responder pushes CFG_REPLY
+		need_resp_accept=0; need_init_send=0; need_init_accept=0
+		need_cert=0; need_cfg=0; need_refuse=0
+		case "$name" in
+		*-cfgneg*)
+			need_refuse=1
+			case "$name" in *-childless-init*) need_init_send=1 ;; esac
+			;;
+		*-charon*)
+			need_resp_accept=1
+			;;
+		*-childless-init*)
+			need_resp_accept=1
+			need_init_send=1
+			need_init_accept=1
+			;;
+		*-childless)
+			: ;;  # plain classical row: resp_advert only
+		esac
+		[ "$I2I_RSA" = 1 ] && need_cert=1
+		[ "$I2I_CFG" = 1 ] && need_cfg=1
+		[ "$I2I_CFGNEG" = 1 ] && need_refuse=1
+		ok=1
+		[ "$resp_advert"  = 1 ] || ok=0
+		[ "$need_resp_accept" = 1 ] && { [ "$resp_accept"    = 1 ] || ok=0; }
+		[ "$need_init_send"   = 1 ] && { [ "$init_send"      = 1 ] || ok=0; }
+		[ "$need_init_accept" = 1 ] && { [ "$init_accept"    = 1 ] || ok=0; }
+		[ "$need_cert"   = 1 ] && { [ "$cert_push"  = 1 ] || ok=0; }
+		[ "$need_cfg"    = 1 ] && { [ "$cfg_push"   = 1 ] || ok=0; }
+		[ "$need_refuse" = 1 ] && { [ "$cp_refuse"  = 1 ] || ok=0; }
+		# cfgneg: ESP must NOT land (refused SA); every other childless row must
+		# land the child via CREATE_CHILD_SA (up=1).
+		if [ "$ok" = 1 ]; then
 			childless_ok=1
-			log 'RFC 6023: responder accepted SA-less (modified) IKE_AUTH + advertised 16418; child via CREATE_CHILD_SA'
+			log "RFC 6023 childless OK (init_send=$init_send init_accept=$init_accept resp_advert=$resp_advert resp_accept=$resp_accept cert_push=$cert_push cfg_push=$cfg_push cp_refuse=$cp_refuse)"
 		else
-			log 'FAIL: responder childless accept path not exercised (no 16418 advertise / no SA-less accept)'
-		fi
-		;;
-	*-childless)
-		# iked<->iked: responder knob ON; initiator still sends a classical
-		# (SA-full) IKE_AUTH which must be accepted normally.
-		if grep -q 'advertising childless IKE_SA support (16418)' "$D/resp-iked.log" 2>/dev/null; then
-			childless_ok=1
-			log 'RFC 6023: childless knob ON advertised 16418; classical IKE_AUTH still accepted'
-		else
-			log 'FAIL: childless knob ON did not advertise 16418'
+			childless_ok=0
+			log "FAIL: childless evidence incomplete (init_send=$init_send init_accept=$init_accept resp_advert=$resp_advert resp_accept=$resp_accept cert_push=$cert_push cfg_push=$cfg_push cp_refuse=$cp_refuse need_resp_accept=$need_resp_accept need_init_send=$need_init_send need_init_accept=$need_init_accept need_cert=$need_cert need_cfg=$need_cfg need_refuse=$need_refuse)"
 		fi
 		;;
 	*)
 		childless_ok=1
+		up_req=1
 		;;
 	esac
+	up_req=${up_req:-1}
+	[ "$I2I_CFGNEG" = 1 ] && up_req=0
 
-	if [ "$up" -ne 1 ] || { [ "$need_pqc" = 1 ] && { [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; }; } || [ "$cpl" -ne 0 ] || [ "${childless_ok:-0}" -ne 1 ] || [ "${shape_ok:-1}" -ne 1 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; }; then
+	if { [ "${up_req:-1}" = 1 ] && [ "$up" -ne 1 ]; } || { [ "${up_req:-1}" = 0 ] && { [ "$up" -ne 0 ] || [ "${cp_refuse:-0}" -ne 1 ]; }; } || { [ "$need_pqc" = 1 ] && { [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; }; } || [ "$cpl" -ne 0 ] || [ "${childless_ok:-0}" -ne 1 ] || [ "${shape_ok:-1}" -ne 1 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; }; then
 		log "FAIL: i2iinit incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl childless_ok=${childless_ok:-0} shape_ok=${shape_ok:-1} ppk_ok=${ppk_ok:-0} pfsrekey_ok=${pfsrekey_ok:-0} peeri=${PEER} peerr=${PEER_R})"
 		if [ "$PEER" = charon ]; then
 			log "--- charon-init.log ---"

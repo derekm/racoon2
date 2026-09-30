@@ -215,6 +215,7 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_ON,		/* offer_intermediate (RFC 9242 capability notify) */
 	RCT_BOOL_OFF,		/* use_ppk (RFC 8784 PPK mixing) */
 	RCT_BOOL_OFF,		/* childless (RFC 6023 SA-less IKE_AUTH) */
+	RCT_BOOL_OFF,		/* require_config (RFC 6023 mandatory CP(CFG_REQUEST)) */
 	RCT_BOOL_OFF,		/* ppk_mandatory (RFC 8784 mandatory_or_not) */
 	NULL,			/* ppk_id (RFC 8784 PPK_IDENTIFIER) */
 };
@@ -443,6 +444,7 @@ IKEV2_CONF_ATTR(rc_type, addke_unrequested)
 IKEV2_CONF_ATTR(rc_type, offer_intermediate)
 IKEV2_CONF_ATTR(rc_type, use_ppk)
 IKEV2_CONF_ATTR(rc_type, childless)
+IKEV2_CONF_ATTR(rc_type, require_config)
 IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
 IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)
 IKEV2_CONF_ATTR(struct rc_addrlist *, natd_public_address)
@@ -452,7 +454,7 @@ IKEV2_CONF_ATTR(int, dpd_interval)
 
 rc_type ikev2_config_required(struct rcf_remote *conf)
 {
-	return RCT_BOOL_OFF;
+	return ikev2_require_config(conf);
 }
 
 /* RFC 8784 s5: obtain the PPK secret bytes for a remote.  The secret is

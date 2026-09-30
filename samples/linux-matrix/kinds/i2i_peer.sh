@@ -118,8 +118,18 @@ PPKL
 # via I2I_CHILDLESS (set by i2iinit.sh suffix).  Off for every base row.
 childless_conn_lines() {
 	[ "$I2I_CHILDLESS" = 1 ] || return 0
-	printf '		childless = force
-'
+	printf '		childless = force\n'
+	return 0
+}
+
+# cfg_conn_lines — RFC 7296 2.19 / review #2 CFG coverage: a -cfg charon
+# initiator requests a configuration payload in IKE_AUTH (vips = 0.0.0.0 ->
+# charon sends CP(CFG_REQUEST) INTERNAL_IP4_ADDRESS).  The iked responder's
+# childless path answers with a CFG_REPLY (TRACE gate).  Soft request:
+# if the server omits the address charon still completes the SA.
+cfg_conn_lines() {
+	[ "$I2I_CFG" = 1 ] || return 0
+	printf '		vips = 0.0.0.0\n'
 	return 0
 }
 
@@ -132,24 +142,40 @@ i2i_peer_i_conf() {
 	[ "$_peer" = charon ] || return 0
 	I2I_CHARON_CONF="$I2I_CHARON_VDIR/r2-${_name}.conf"
 	mkdir -p "$I2I_CHARON_VDIR" || return 1
-	_pskhex=$(psk_file_hex "$ETC/psk/macos.psk") || { log "FAIL: charon psk hex"; return 1; }
+	if [ "$I2I_RSA" = 1 ]; then
+		# RSASIG initiator seat: local certs = our self-signed cert+key,
+		# remote cacerts = the iked responder's cert (peer trust anchor).
+		_auth_local='		local {
+			auth = pubkey
+			certs = "'"$_C"'/cert-i.pem"
+		}
+		remote {
+			auth = pubkey
+			cacerts = "'"$_C"'/cert-r.pem"
+		}'
+		_pskhex=""
+	else
+		_pskhex=$(psk_file_hex "$ETC/psk/macos.psk") || { log "FAIL: charon psk hex"; return 1; }
+		_auth_local='		local {
+			id = '$I2I_CHARON_ID'
+			auth = psk
+		}
+		remote {
+			id = racoon2-matrix
+			auth = psk
+		}'
+	fi
 	cat > "$I2I_CHARON_CONF" <<EOF
 connections {
 	$_name {
 		version = 2
 		rekey_time = 0s
 $(childless_conn_lines)
+$(cfg_conn_lines)
 		proposals = ${I2I_PROPOSAL}
 		local_addrs = $_HI
 		remote_addrs = $_HR
-		local {
-			id = $I2I_CHARON_ID
-			auth = psk
-		}
-		remote {
-			id = racoon2-matrix
-			auth = psk
-		}
+$_auth_local
 $(ppk_conn_lines)
 		children {
 			ch {
@@ -162,9 +188,17 @@ $(ppk_conn_lines)
 	}
 }
 secrets {
+EOF
+	if [ "$I2I_RSA" = 1 ]; then
+		printf '	private-%s {\n		file = "%s/key-i.pem"\n	}\n' "$_name" "$_C" >> "$I2I_CHARON_CONF"
+	else
+		cat >> "$I2I_CHARON_CONF" <<EOF
 	ike-$_name {
 		secret = "0x$_pskhex"
 	}
+EOF
+	fi
+	cat >> "$I2I_CHARON_CONF" <<EOF
 $(ppk_secret_block "$_name")
 }
 EOF
