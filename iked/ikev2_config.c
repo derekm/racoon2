@@ -44,6 +44,7 @@
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 #include "debug.h"
+#include "ikev2cfg_walk.h"
 
 /*
  * Configuration Payload
@@ -343,7 +344,8 @@ ikev2_process_cfg_request_attribs(struct ikev2_sa *ike_sa,
 
 	for (bytes = get_payload_length(cfg) - sizeof(*cfg),
 		 attr = (struct ikev2cfg_attrib *)(cfg + 1);
-	     bytes > 0;
+	     bytes > 0 &&
+	     ikev2cfg_attr_len(attr, bytes) > 0;
 	     bytes -= IKEV2CFG_ATTR_TOTALLENGTH(attr),
 		 attr = IKEV2CFG_ATTR_NEXT(attr)) {
 		attr_type = IKEV2CFG_ATTR_TYPE(attr);
@@ -816,7 +818,8 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 
 	for (bytes = get_payload_length(cfg) - sizeof(*cfg),
 		 attr = (struct ikev2cfg_attrib *)(cfg + 1);
-	     bytes > 0;
+	     bytes > 0 &&
+	     ikev2cfg_attr_len(attr, bytes) > 0;
 	     bytes -= IKEV2CFG_ATTR_TOTALLENGTH(attr),
 		 attr = IKEV2CFG_ATTR_NEXT(attr)) {
 		assert(bytes >= sizeof(struct ikev2cfg_attrib));
@@ -995,7 +998,8 @@ ikev2_process_config_informational(struct ikev2_sa *ike_sa,
 		TRACE((PLOGLOC, "CFG_REQUEST\n"));
 		for (attr = (struct ikev2cfg_attrib *)(cfg + 1),
 			 bytes = get_payload_length(cfg) - sizeof(*cfg);
-		     bytes > 0;
+		     bytes > 0 &&
+		     ikev2cfg_attr_len(attr, bytes) > 0;
 		     bytes -= IKEV2CFG_ATTR_TOTALLENGTH(attr),
 			 attr = IKEV2CFG_ATTR_NEXT(attr)) {
 			attr_type = IKEV2CFG_ATTR_TYPE(attr);
