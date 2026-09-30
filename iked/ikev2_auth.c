@@ -593,6 +593,10 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 		 * Digital Signature (14) - auth data = [1-octet len][AI][signature].
 		 * Only SHA-256 is advertised, so match the known sha256WithRSA
 		 * AlgorithmIdentifier blob and verify the trailing signature. */
+	static const uint8_t rfc7427_sha256_ai[] = {
+		0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+		0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
+	};
 		pubkey = ikev2_public_key(sa, id, &sa->due_time);
 		if (!pubkey) {
 			isakmp_log(sa, 0, 0, 0,
