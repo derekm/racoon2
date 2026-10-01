@@ -39,13 +39,13 @@ AC_MSG_CHECKING(if ipv6 is available)
 AC_RUN_IFELSE([AC_LANG_SOURCE([[ /* AF_INET6 avalable check */
 #include <sys/types.h>
 #include <sys/socket.h>
-main()
+int
+main(void)
 {
-  exit(0);
  if (socket(AF_INET6, SOCK_STREAM, 0) < 0)
-   exit(1);
+   return 1;
  else
-   exit(0);
+   return 0;
 }
 ]])],[AC_MSG_RESULT(yes)
   AC_DEFINE(INET6, 1, [define if IPv6 is enabled])
