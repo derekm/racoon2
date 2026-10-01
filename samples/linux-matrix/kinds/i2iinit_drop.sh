@@ -17,16 +17,14 @@ kind_i2iinit_drop() {
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 
-	NSR=i2idrop-r; NSI=i2idrop-i; VR=i2iv-r; VI=i2iv-i
+	row_ns "$name"
 	HR=192.0.6.1; HI=192.0.6.2
-	PRIVRES_R=/tmp/r2-i2idrop-resume-r; PRIVRES_I=/tmp/r2-i2idrop-resume-i
-	D=/tmp/r2-i2idrop; C=/tmp/r2-i2idrop-conf
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
 	cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
-	spmd { unix "/tmp/spmif-i2idrop-r"; };
+	spmd { unix "$SPMIF_R"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -80,7 +78,7 @@ EOF
 	cat > "$C/initiator.conf" <<EOF
 interface {
 	ike { "$HI"; };
-	spmd { unix "/tmp/spmif-i2idrop-i"; };
+	spmd { unix "$SPMIF_I"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -133,7 +131,7 @@ sa esp_e {
 EOF
 
 	pkill -9 -f "$C/" 2>/dev/null || true
-	rm -f /tmp/spmif-i2idrop-r /tmp/spmif-i2idrop-i /tmp/iked.sock-i2idrop-r /tmp/iked.sock-i2idrop-i
+	rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
 
 	for NS in "$NSR" "$NSI"; do
 		ip netns del "$NS" 2>/dev/null || true
@@ -174,7 +172,7 @@ EOF
 
 		# fresh daemons => fresh IKE_SA (intermediate runs on the initial SA only)
 		pkill -9 -f "$C/" 2>/dev/null || true
-		rm -f /tmp/spmif-i2idrop-r /tmp/spmif-i2idrop-i /tmp/iked.sock-i2idrop-r /tmp/iked.sock-i2idrop-i
+		rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
 		rm -rf "$PRIVRES_R" "$PRIVRES_I"
 		# clear the previous attempt's child ESP so "child UP" is not trivially
 		# true from stale xfrm state on the retry.
@@ -183,13 +181,13 @@ EOF
 		: >"$D/resp-iked.log"; : >"$D/init-iked.log"
 
 		( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
-		i=0; until [ -S /tmp/spmif-i2idrop-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-		( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2idrop-r RACOON2_RESUME_DIR="$PRIVRES_R" \
+		i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+		( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 		    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 
 		( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
-		i=0; until [ -S /tmp/spmif-i2idrop-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-		( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2idrop-i RACOON2_RESUME_DIR="$PRIVRES_I" \
+		i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+		( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK="$SOCK_I" RACOON2_RESUME_DIR="$PRIVRES_I" \
 		    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 
 		sleep 2
@@ -209,7 +207,7 @@ EOF
 		d0=$(tc_dropped "$NSR" "$VR" || true)
 		ndrop=0
 
-		"$SBIN/ikedctl" -s /tmp/iked.sock-i2idrop-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+		"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 
 		# keep the high-loss window over the fragmented intermediate exchange
 		# (SA_INIT reply + gen-0 intermediate response), then ease off.
@@ -263,3 +261,4 @@ EOF
 	fi
 	return 0
 }
+

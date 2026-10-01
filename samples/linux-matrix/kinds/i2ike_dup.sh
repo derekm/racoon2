@@ -49,16 +49,14 @@ kind_i2ike_dup() {
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 
-	NSR=i2ikedup-r; NSI=i2ikedup-i; VR=i2vdup-r; VI=i2vdup-i
+	row_ns "$name"
 	HR=192.0.10.1; HI=192.0.10.2
-	PRIVRES_R=/tmp/r2-i2ikedup-resume-r; PRIVRES_I=/tmp/r2-i2ikedup-resume-i
-	D=/tmp/r2-i2ikedup; C=/tmp/r2-i2ikedup-conf
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
 	cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
-	spmd { unix "/tmp/spmif-i2ikedup-r"; };
+	spmd { unix "$SPMIF_R"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -114,7 +112,7 @@ EOF
 	cat > "$C/initiator.conf" <<EOF
 interface {
 	ike { "$HI"; };
-	spmd { unix "/tmp/spmif-i2ikedup-i"; };
+	spmd { unix "$SPMIF_I"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -170,8 +168,8 @@ EOF
 	for attempt in $(seq 1 "$attempts"); do
 		# kill daemons by the unique per-run conf dir (it IS in their argv).
 		pkill -9 -f "$C/" 2>/dev/null || true
-		rm -f /tmp/spmif-i2ikedup-r /tmp/spmif-i2ikedup-i \
-		      /tmp/iked.sock-i2ikedup-r /tmp/iked.sock-i2ikedup-i
+		rm -f "$SPMIF_R" "$SPMIF_I" \
+		      "$SOCK_R" "$SOCK_I"
 		# Fresh SAs and empty logs: a leftover 'dropping unordered',
 		# 'R2 replay' or 'CREATE_CHILD_SA request' line from a previous
 		# attempt would pass the gate without exercising this attempt.
@@ -204,17 +202,17 @@ EOF
 		done
 
 		( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
-		i=0; until [ -S /tmp/spmif-i2ikedup-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-		( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ikedup-r RACOON2_RESUME_DIR="$PRIVRES_R" \
+		i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+		( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 		    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 
 		( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
-		i=0; until [ -S /tmp/spmif-i2ikedup-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-		( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ikedup-i RACOON2_RESUME_DIR="$PRIVRES_I" \
+		i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+		( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK="$SOCK_I" RACOON2_RESUME_DIR="$PRIVRES_I" \
 		    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 
 		sleep 2
-		"$SBIN/ikedctl" -s /tmp/iked.sock-i2ikedup-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+		"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 
 		up=0
 		i=0
@@ -396,3 +394,4 @@ EOF
 	fi
 	return 0
 }
+

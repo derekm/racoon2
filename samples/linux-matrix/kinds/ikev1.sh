@@ -9,10 +9,8 @@ kind_ikev1() {
 	require_root || return 1
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 
-	NSR=ikev1-r; NSI=ikev1-i; VR=i2v1a-vr; VI=i2v1a-vi
+	row_ns "$name"
 	HR=192.0.15.1; HI=192.0.15.2
-	PRIVRES_R=/tmp/r2-ikev1-resume-r
-	D=/tmp/r2-ikev1; C=/tmp/r2-ikev1-conf
 	NS="$NSI"; VETH_H="$VI"; CIP="$HI"
 	rm -rf "$PRIVRES_R" "$D" "$C"; mkdir -p "$PRIVRES_R" "$D" "$C"
 	charon_reset
@@ -20,7 +18,7 @@ kind_ikev1() {
 	cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
-	spmd { unix "/tmp/spmif-i2v1-r"; };
+	spmd { unix "$SPMIF_R"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -71,7 +69,7 @@ sa esp_e {
 EOF
 
 	pkill -9 -f "$C/" 2>/dev/null || true
-	rm -f /tmp/spmif-i2v1-r /tmp/spmif-i2v1-i /tmp/iked.sock-i2v1-r /tmp/iked.sock-i2v1-i
+	rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
 	for NSX in "$NSR" "$NSI"; do
 		ip netns del "$NSX" 2>/dev/null || true
 		ip netns add "$NSX"
@@ -95,10 +93,10 @@ EOF
 
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	RSPMD=$!
-	i=0; until [ -S /tmp/spmif-i2v1-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	_WK=""
 	[ -n "${R2_WORKERS-}" ] && _WK="RACOON2_CRYPTO_WORKERS=$R2_WORKERS"
-	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2v1-r \
+	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" \
 	    RACOON2_RESUME_DIR="$PRIVRES_R" $_WK \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 	R2_IKED_EPHEMERAL_PID=$!
@@ -193,7 +191,7 @@ EOF
 		return 1
 	fi
 
-	show=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v1-r show-sa isakmp) || {
+	show=$("$SBIN/ikedctl" -s "$SOCK_R" show-sa isakmp) || {
 		log "FAIL: show-sa (NSR)"
 		charon_reset; _ikev1_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
@@ -208,12 +206,12 @@ EOF
 		charon_reset; _ikev1_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	}
-	"$SBIN/ikedctl" -s /tmp/iked.sock-i2v1-r vpn-disconnect "$HI" || {
+	"$SBIN/ikedctl" -s "$SOCK_R" vpn-disconnect "$HI" || {
 		log "FAIL: vpn-disconnect"
 		charon_reset; _ikev1_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	}
-	show2=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v1-r show-sa isakmp) || {
+	show2=$("$SBIN/ikedctl" -s "$SOCK_R" show-sa isakmp) || {
 		log "FAIL: show-sa after disconnect"
 		charon_reset; _ikev1_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
@@ -246,3 +244,4 @@ _ikev1_clean() {
 	rm -rf "$_PRR"
 	R2_IKED_EPHEMERAL_PID=
 }
+

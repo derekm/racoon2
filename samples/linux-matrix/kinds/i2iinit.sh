@@ -20,10 +20,8 @@ kind_i2iinit() {
 		[ "$S" = charon ] && ! command -v "$I2I_CHARON_BIN" >/dev/null 2>&1 && { log "FAIL: no charon binary $I2I_CHARON_BIN"; return 1; }
 	done
 
-	NSR=i2init-r; NSI=i2init-i; VR=i2iv-r; VI=i2iv-i
+	row_ns "$name"
 	HR=192.0.5.1; HI=192.0.5.2
-	PRIVRES_R=/tmp/r2-i2init-resume-r; PRIVRES_I=/tmp/r2-i2init-resume-i
-	D=/tmp/r2-i2init; C=/tmp/r2-i2init-conf
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
 	# RFC 8784 PPK rows (i2iinit-ppk, i2iinit-ppk-charon): seats enable
@@ -292,7 +290,7 @@ else
 cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
-	spmd { unix "/tmp/spmif-i2init-r"; };
+	spmd { unix "$SPMIF_R"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -357,7 +355,7 @@ else
 cat > "$C/initiator.conf" <<EOF
 interface {
 	ike { "$HI"; };
-	spmd { unix "/tmp/spmif-i2init-i"; };
+	spmd { unix "$SPMIF_I"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -414,7 +412,7 @@ fi
 
 	# kill daemons by the unique per-run conf dir (it IS in their argv)
 	pkill -9 -f "$C/" 2>/dev/null || true
-	rm -f /tmp/spmif-i2init-r /tmp/spmif-i2init-i /tmp/iked.sock-i2init-r /tmp/iked.sock-i2init-i
+	rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
 
 	# RSA rows: generate the two seat pairs of self-signed cert+key IN-ROW.
 	# CN = the seat's my_id; iked does not enforce id<->cert (peers_pubkey
@@ -485,8 +483,8 @@ if [ "$PEER_R" = charon ]; then
 else
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	RSPMD=$!
-	i=0; until [ -S /tmp/spmif-i2init-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2init-r RACOON2_RESUME_DIR="$PRIVRES_R" \
+	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D "$I2I_DBG" -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 fi
 
@@ -495,8 +493,8 @@ if [ "$PEER" = charon ]; then
 else
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
 	ISPMD=$!
-	i=0; until [ -S /tmp/spmif-i2init-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2init-i RACOON2_RESUME_DIR="$PRIVRES_I" \
+	i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK="$SOCK_I" RACOON2_RESUME_DIR="$PRIVRES_I" \
 	    "$SBIN/iked" -F -f "$C/initiator.conf" -D "$I2I_DBG" -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 fi
 
@@ -509,7 +507,7 @@ fi
 	if [ "$PEER" = charon ]; then
 	i2i_peer_i_trigger "$D" "$NSI" charon "$name"
 else
-	"$SBIN/ikedctl" -s /tmp/iked.sock-i2init-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 fi
 
 	up=0
@@ -976,3 +974,4 @@ fi
 	fi
 	return 0
 }
+

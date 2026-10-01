@@ -51,6 +51,28 @@ die() {
 	return 1
 }
 
+# Per-row resource names derived from the case NAME (run.sh passes it as
+# kind_* $1).  Two rows of the SAME kind get distinct netns / veth / unix
+# socket / log / resume-dir names, so they can run concurrently on one host
+# (round-robin --shard fan-out, box sweeps) exactly like CI's separate
+# containers.  Call at the top of every two-netns kind:
+#     row_ns "$name"
+# netns names have no 15-char cap (they are /var/run/netns symlinks); veth
+# names DO (IFNAMSIZ), so VR/VI get a short 6-hex tag.  HR/HI addresses are
+# deliberately NOT namespaced: they bind inside each row's own netns pair,
+# so many rows of one kind may reuse the same subnet.  charon rows keep
+# their host-global /var/run/charon.ctl and are pinned to one sweep shard.
+row_ns() {
+	_n=$1
+	_tag=$(printf '%s' "$_n" | cksum | awk '{printf "%06x", $1}')
+	NSR="n${_n}-r"; NSI="n${_n}-i"
+	VR="v${_tag}1"; VI="v${_tag}2"
+	SPMIF_R="/tmp/spmif-${_n}-r"; SPMIF_I="/tmp/spmif-${_n}-i"
+	SOCK_R="/tmp/iked.sock-${_n}-r"; SOCK_I="/tmp/iked.sock-${_n}-i"
+	PRIVRES_R="/tmp/r2-${_n}-resume-r"; PRIVRES_I="/tmp/r2-${_n}-resume-i"
+	D="/tmp/r2-${_n}"; C="/tmp/r2-${_n}-conf"
+}
+
 require_root() {
 	if [ "$(id -u)" -ne 0 ]; then
 		die "need root (wsl.exe -d Ubuntu -u root)"

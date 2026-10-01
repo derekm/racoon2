@@ -62,19 +62,17 @@ kind_i2idh() {
 		I2I_PROPOSAL="aes256gcm16-prfsha256-${G}-ke1_mlkem768"
 		export I2I_PROPOSAL
 	fi
-	NSR=i2idh-r; NSI=i2idh-i; VR=i2dh-vr; VI=i2dh-vi
+	row_ns "$name"
 	# responder's peers_id must match THIS row's initiator id: charon
 	# identifies as charon-i2i, iked as r2init-matrix.
 	PEER_ID=$(i2i_peer_resp_id "$PEER_I")
 	HR=192.0.14.1; HI=192.0.14.2
-	PRIVRES_R=/tmp/r2-i2idh-resume-r; PRIVRES_I=/tmp/r2-i2idh-resume-i
-	D=/tmp/r2-i2idh-$G; C=/tmp/r2-i2idh-conf-$G
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
 	cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
-	spmd { unix "/tmp/spmif-i2idh-r"; };
+	spmd { unix "$SPMIF_R"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -128,7 +126,7 @@ EOF
 	cat > "$C/initiator.conf" <<EOF
 interface {
 	ike { "$HI"; };
-	spmd { unix "/tmp/spmif-i2idh-i"; };
+	spmd { unix "$SPMIF_I"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -181,7 +179,7 @@ EOF
 
 	# kill daemons by the unique per-run conf dir (it IS in their argv).
 	pkill -9 -f "$C/" 2>/dev/null || true
-	rm -f /tmp/spmif-i2idh-r /tmp/spmif-i2idh-i /tmp/iked.sock-i2idh-r /tmp/iked.sock-i2idh-i
+	rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
 
 	for NS in "$NSR" "$NSI"; do
 		ip netns del "$NS" 2>/dev/null || true
@@ -208,26 +206,26 @@ EOF
 	i2i_peer_r_conf "$C" "$HR" "$HI" "$name" "$PEER_R"
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	RSPMD=$!
-	i=0; until [ -S /tmp/spmif-i2idh-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	i2i_peer_r_start "$D" "$NSR" "$PEER_R" "$name"
 	[ "$PEER_R" = charon ] || \
-	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2idh-r RACOON2_RESUME_DIR="$PRIVRES_R" \
+	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
-	i=0; until [ -S /tmp/spmif-i2idh-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 
 	i2i_peer_i_conf "$C" "$HI" "$HR" "$name" "$PEER_I"
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
 	ISPMD=$!
-	i=0; until [ -S /tmp/spmif-i2idh-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	i2i_peer_i_start "$D" "$NSI" "$PEER_I" "$name"
 	[ "$PEER_I" = charon ] || \
-	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2idh-i RACOON2_RESUME_DIR="$PRIVRES_I" \
+	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK="$SOCK_I" RACOON2_RESUME_DIR="$PRIVRES_I" \
 	    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 
 	sleep 2
 	i2i_peer_r_trigger "$D" "$NSR" "$PEER_R" "$name"
 	[ "$PEER_R" = charon ] || true
-	"$SBIN/ikedctl" -s /tmp/iked.sock-i2idh-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 	i2i_peer_i_trigger "$D" "$NSI" "$PEER_I" "$name"
 
 	up=0
@@ -288,3 +286,4 @@ EOF
 	fi
 	return 0
 }
+

@@ -92,16 +92,14 @@ kind_i2i_nsawarn() {
 		log "FAIL: unknown NSA warning case $name"; return 1 ;;
 	esac
 
-	NSR=i2nw-r; NSI=i2nw-i; VR=i2nwr; VI=i2nwi
+	row_ns "$name"
 	HR=192.0.9.1; HI=192.0.9.2
-	PRIVRES_R=/tmp/r2-i2nw-resume-r; PRIVRES_I=/tmp/r2-i2nw-resume-i
-	D=/tmp/r2-i2nw; C=/tmp/r2-i2nw-conf
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
 	cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
-	spmd { unix "/tmp/spmif-i2nw-r"; };
+	spmd { unix "$SPMIF_R"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -155,7 +153,7 @@ EOF
 	cat > "$C/initiator.conf" <<EOF
 interface {
 	ike { "$HI"; };
-	spmd { unix "/tmp/spmif-i2nw-i"; };
+	spmd { unix "$SPMIF_I"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -207,7 +205,7 @@ sa esp_e {
 EOF
 
 	pkill -9 -f "$C/" 2>/dev/null || true
-	rm -f /tmp/spmif-i2nw-r /tmp/spmif-i2nw-i /tmp/iked.sock-i2nw-r /tmp/iked.sock-i2nw-i
+	rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
 
 	for NS in "$NSR" "$NSI"; do
 		ip netns del "$NS" 2>/dev/null || true
@@ -233,17 +231,17 @@ EOF
 
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	RSPMD=$!
-	i=0; until [ -S /tmp/spmif-i2nw-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2nw-r RACOON2_RESUME_DIR="$PRIVRES_R" \
+	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
 	ISPMD=$!
-	i=0; until [ -S /tmp/spmif-i2nw-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2nw-i RACOON2_RESUME_DIR="$PRIVRES_I" \
+	i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK="$SOCK_I" RACOON2_RESUME_DIR="$PRIVRES_I" \
 	    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 
 	sleep 2
-	"$SBIN/ikedctl" -s /tmp/iked.sock-i2nw-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 
 	up=0
 	i=0
@@ -316,3 +314,4 @@ EOF
 	[ "$gote" -eq 1 ]
 	return $?
 }
+

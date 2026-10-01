@@ -14,10 +14,8 @@ kind_ikev2() {
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 
 	# --- two-netns P2P topology (i2idh-style) --------------------------------
-	NSR=ikev2-r; NSI=ikev2-i; VR=i2v2a-vr; VI=i2v2a-vi
+	row_ns "$name"
 	HR=192.0.14.1; HI=192.0.14.2
-	PRIVRES_R=/tmp/r2-ikev2-resume-r
-	D=/tmp/r2-ikev2; C=/tmp/r2-ikev2-conf
 	# legacy names charon_reset still reads
 	NS="$NSI"; VETH_H="$VI"; CIP="$HI"
 	rm -rf "$PRIVRES_R" "$D" "$C"; mkdir -p "$PRIVRES_R" "$D" "$C"
@@ -30,7 +28,7 @@ kind_ikev2() {
 	cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
-	spmd { unix "/tmp/spmif-i2v2-r"; };
+	spmd { unix "$SPMIF_R"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -119,7 +117,7 @@ EOF
 
 	# clean any once-used netns, then build the pair + P2P veth
 	pkill -9 -f "$C/" 2>/dev/null || true
-	rm -f /tmp/spmif-i2v2-r /tmp/spmif-i2v2-i /tmp/iked.sock-i2v2-r /tmp/iked.sock-i2v2-i
+	rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
 	for NSX in "$NSR" "$NSI"; do
 		ip netns del "$NSX" 2>/dev/null || true
 		ip netns add "$NSX"
@@ -146,12 +144,12 @@ EOF
 	# SUT iked in NSR, with the workers knob via env and its own admin sock.
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	RSPMD=$!
-	i=0; until [ -S /tmp/spmif-i2v2-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	# iked_apply_workers exports RACOON2_CRYPTO_WORKERS only for numeric
 	# cells; empty mean "live", and iked treats unset as its default.
 	_WK=""
 	[ -n "${R2_WORKERS-}" ] && _WK="RACOON2_CRYPTO_WORKERS=$R2_WORKERS"
-	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2v2-r \
+	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" \
 	    RACOON2_RESUME_DIR="$PRIVRES_R" $_WK \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 	R2_IKED_EPHEMERAL_PID=$!
@@ -299,7 +297,7 @@ EOF
 		return 1
 	fi
 
-	show=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r show-sa isakmp) || {
+	show=$("$SBIN/ikedctl" -s "$SOCK_R" show-sa isakmp) || {
 		log "FAIL: show-sa (NSR)"
 		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
@@ -355,7 +353,7 @@ EOF
 			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
-		showr=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r show-sa isakmp) || true
+		showr=$("$SBIN/ikedctl" -s "$SOCK_R" show-sa isakmp) || true
 		echo "$showr" | grep -q "$HI" || {
 			log "FAIL: IKE_SA gone after rekey wait"
 			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
@@ -365,7 +363,7 @@ EOF
 	*-childrekey)
 		spi_before=$(ip netns exec "$NSR" ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
 		sleep 35
-		showr=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r show-sa isakmp) || true
+		showr=$("$SBIN/ikedctl" -s "$SOCK_R" show-sa isakmp) || true
 		echo "$showr" | grep -q "$HI" || {
 			log "FAIL: IKE_SA gone after child rekey wait"
 			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
@@ -397,7 +395,7 @@ EOF
 			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
-		showr=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r show-sa isakmp) || true
+		showr=$("$SBIN/ikedctl" -s "$SOCK_R" show-sa isakmp) || true
 		echo "$showr" | grep -q "$HI" || {
 			log "FAIL: IKE_SA gone after r2 child rekey"
 			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
@@ -421,12 +419,12 @@ EOF
 		;;
 	esac
 
-	"$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r vpn-disconnect "$HI" || {
+	"$SBIN/ikedctl" -s "$SOCK_R" vpn-disconnect "$HI" || {
 		log "FAIL: vpn-disconnect"
 		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	}
-	show2=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r show-sa isakmp) || {
+	show2=$("$SBIN/ikedctl" -s "$SOCK_R" show-sa isakmp) || {
 		log "FAIL: show-sa after disconnect"
 		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
@@ -460,3 +458,4 @@ _ikev2_clean() {
 	# clear ephemeral pid so iked_restore (run.sh EXIT trap) does nothing
 	R2_IKED_EPHEMERAL_PID=
 }
+

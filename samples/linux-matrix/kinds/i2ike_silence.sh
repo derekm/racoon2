@@ -19,17 +19,15 @@ kind_i2ike_silence() {
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 
-	NSR=i2ikesil-r; NSI=i2ikesil-i; VR=i2vsilr; VI=i2vsili
+	row_ns "$name"
 	HR=192.0.8.1; HI=192.0.8.2
-	PRIVRES_R=/tmp/r2-i2ikesil-resume-r; PRIVRES_I=/tmp/r2-i2ikesil-resume-i
-	D=/tmp/r2-i2ikesil; C=/tmp/r2-i2ikesil-conf
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 	mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
 	cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
-	spmd { unix "/tmp/spmif-i2ikesil-r"; };
+	spmd { unix "$SPMIF_R"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -82,7 +80,7 @@ EOF
 	cat > "$C/initiator.conf" <<EOF
 interface {
 	ike { "$HI"; };
-	spmd { unix "/tmp/spmif-i2ikesil-i"; };
+	spmd { unix "$SPMIF_I"; };
 	spmd_password "$ETC/spmd.pwd";
 };
 resolver { resolver off; };
@@ -135,8 +133,8 @@ EOF
 
 	pass_ok=0
 	pkill -9 -f "$C/" 2>/dev/null || true
-	rm -f /tmp/spmif-i2ikesil-r /tmp/spmif-i2ikesil-i \
-	      /tmp/iked.sock-i2ikesil-r /tmp/iked.sock-i2ikesil-i
+	rm -f "$SPMIF_R" "$SPMIF_I" \
+	      "$SOCK_R" "$SOCK_I"
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 	mkdir -p "$PRIVRES_R" "$PRIVRES_I"
 	: >"$D/resp-iked.log"
@@ -166,17 +164,17 @@ EOF
 	done
 
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
-	i=0; until [ -S /tmp/spmif-i2ikesil-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ikesil-r RACOON2_RESUME_DIR="$PRIVRES_R" \
+	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
-	i=0; until [ -S /tmp/spmif-i2ikesil-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2ikesil-i RACOON2_RESUME_DIR="$PRIVRES_I" \
+	i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK="$SOCK_I" RACOON2_RESUME_DIR="$PRIVRES_I" \
 	    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 
 	sleep 2
-	"$SBIN/ikedctl" -s /tmp/iked.sock-i2ikesil-i establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 
 	up=0
 	i=0
@@ -258,3 +256,4 @@ EOF
 	ip link del "$VI" 2>/dev/null || true
 	[ "$pass_ok" -eq 1 ]
 }
+
