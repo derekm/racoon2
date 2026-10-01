@@ -79,7 +79,7 @@ jobs:
         run: make -C lib check
 
       - name: 'Unit suite (iked: full TESTS, incl. resumetest + addketest + ndcppkats)'
-        run: make -C iked check TESTS="eaytest evlooptest workerstest resumetest fragtest ndcppkats"
+        run: make -C iked check
 
       - name: 'Generate compliance report (KAT + full unit evidence)'
         run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/${{ github.job }}-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
