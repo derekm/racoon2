@@ -41,13 +41,18 @@ jail -r $ji 2>/dev/null || true
 echo "=== ONE epair, both ends into the two vnet jails ==="
 set +e; ifconfig epair create 2>/dev/null > /tmp/freeb-epair.txt; r=$?; set -e
 [ "$r" -eq 0 ] || { echo "FAIL: ifconfig epair create (does GENERIC have VIMAGE/if_epair?)"; cat /tmp/freeb-epair.txt; exit 1; }
-e=$(cat /tmp/freeb-epair.txt)
-# e is "epair0a epair0b"; a goes to responder jail (hr), b to initiator (hi).
-ea=$(echo "$e" | awk '{print $1}')
-eb=$(echo "$e" | awk '{print $2}')
+# `ifconfig epair create` prints the PRIMARY end's name only (e.g. epair0a);
+# the peer is its sibling: epair pairs are always <name>a / <name>b, so swap
+# the trailing letter.  Never parse a second column (FreeBSD 15.1 prints one).
+ea=$(head -1 /tmp/freeb-epair.txt | awk '{print $1}' | tr -d ':')
+case "$ea" in
+	*a) eb="${ea%a}b" ;;
+	*b) eb="${ea%b}a" ;;
+	*) echo "FAIL: unexpected epair name '$ea'"; exit 1 ;;
+esac
 echo "epair ends: $ea (resp) / $eb (init)"
-jail -c name=$jr persist vnet vnet.interface="$ea" || { echo "FAIL: jail -c $jr"; exit 1; }
-jail -c name=$ji persist vnet vnet.interface="$eb" || { echo "FAIL: jail -c $ji"; exit 1; }
+jail -c name=$jr persist vnet vnet.interface="$ea" || { echo "FAIL: jail -c $jr (vnet.interface=$ea)"; exit 1; }
+jail -c name=$ji persist vnet vnet.interface="$eb" || { echo "FAIL: jail -c $ji (vnet.interface=$eb)"; exit 1; }
 jexec $jr ifconfig "$ea" inet "$hr/24" up || { echo "FAIL: $jr addr"; exit 1; }
 jexec $ji ifconfig "$eb" inet "$hi/24" up || { echo "FAIL: $ji addr"; exit 1; }
 jexec $jr ifconfig lo0 inet 127.0.0.1/8 up 2>/dev/null || true
@@ -177,7 +182,17 @@ echo "=== start spmd + iked per seat (inside their vnet jails) ==="
 # spmif (the Linux kinds use the same pattern).
 jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $SBIN/spmd -F -f /tmp/freeb/responder.conf > /tmp/freeb/resp-spmd.log 2>&1 &" || true
 jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl RACOON2_RESUME_DIR=/tmp/freeb/init-resume $SBIN/spmd -F -f /tmp/freeb/initiator.conf > /tmp/freeb/init-spmd.log 2>&1 &" || true
-sleep 2
+# Wait for BOTH spmif sockets before starting iked (iked connects to spmd at
+# startup; the Linux kinds gate the same way with `until [ -S $SPMIF ]`).
+i=0
+while [ "$i" -lt 15 ]; do
+	if [ -S /tmp/freeb/resp-spmif ] && [ -S /tmp/freeb/init-spmif ]; then
+		break
+	fi
+	i=$((i+1)); sleep 1
+done
+[ -S /tmp/freeb/resp-spmif ] && [ -S /tmp/freeb/init-spmif ] || echo "note: spmif sockets slow (resp=$([ -S /tmp/freeb/resp-spmif ] && echo yes || echo no) init=$([ -S /tmp/freeb/init-spmif ] && echo yes || echo no))"
+sleep 1
 jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $SBIN/iked -F -f /tmp/freeb/responder.conf -D 0x0001 -l /tmp/freeb/resp-iked.log > /tmp/freeb/resp-iked.out 2>&1 &" || true
 jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl RACOON2_RESUME_DIR=/tmp/freeb/init-resume $SBIN/iked -F -f /tmp/freeb/initiator.conf -D 0x0001 -l /tmp/freeb/init-iked.log > /tmp/freeb/init-iked.out 2>&1 &" || true
 sleep 3
