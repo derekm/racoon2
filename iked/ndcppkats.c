@@ -706,6 +706,63 @@ out:
 		kat_fail("RFC8784-PPK-KAT", "prf+(PPK,SK_d') mismatch");
 }
 
+/* SP800-38B AES-CMAC-128 known-answer vector (RFC 4493 / SP800-38B
+ * F.1 example vector): key 2b7e1516..., one-block message 6bc1bee2...,
+ * expected tag 070a16b46b4d4144f79bdd9dd04a287c.  Drives the daemon's
+ * aes_cmac_hash_method keyed_hash pipeline -- the exact path the
+ * i2iinit-esp-cmac / i2ike-*cmac matrix rows exercise for ESP-CMAC.
+ * Kept separate from B4 (AES block cipher KAT) because CMAC is a MAC,
+ * not a block cipher, and its PRF transform is RFC 4493 ciphertext-UG.
+ */
+static void
+test_aes_cmac(void)
+{
+	static const unsigned char cmac_key[16] = {
+		0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
+		0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
+	};
+	static const unsigned char cmac_msg[16] = {
+		0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96,
+		0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93, 0x17, 0x2a,
+	};
+	static const unsigned char cmac_expected[16] = {
+		0x07, 0x0a, 0x16, 0xb4, 0x6b, 0x4d, 0x41, 0x44,
+		0xf7, 0x9b, 0xdd, 0x9d, 0xd0, 0x4a, 0x28, 0x7c,
+	};
+	rc_vchar_t k, m;
+	rc_vchar_t *out = 0;
+	struct keyed_hash *mac;
+	int ok = 0;
+
+	k = kat_vnew_copy(cmac_key, sizeof(cmac_key));
+	m = kat_vnew_copy(cmac_msg, sizeof(cmac_msg));
+
+	mac = aescmac_new();
+	if (!mac)
+		goto out;
+	if (mac->method->key(mac, &k) != 0)
+		goto out;
+	mac->method->start(mac);
+	mac->method->update(mac, &m);
+	out = mac->method->finish(mac);
+	if (out && out->l == sizeof(cmac_expected) &&
+	    memcmp(out->v, cmac_expected, sizeof(cmac_expected)) == 0) {
+		kat_pass("CMAC-KAT", "AES-CMAC-128 070a16b4... (SP800-38B "
+			 "vector via daemon aes_cmac_hash_method keyed_hash "
+			 "pipeline)");
+		ok = 1;
+	}
+out:
+	if (mac)
+		keyed_hash_dispose(mac);
+	if (out)
+		rc_vfree(out);
+	rc_free(k.v);
+	rc_free(m.v);
+	if (!ok)
+		kat_fail("CMAC-KAT", "AES-CMAC-128 mismatch");
+}
+
 int
 main(int ac, char **av)
 {
@@ -728,6 +785,7 @@ main(int ac, char **av)
 	test_dh_xlen_ecp();
 	test_zeroize();
 	test_rfc8784_ppk();
+	test_aes_cmac();
 
 	eay_cleanup();
 	if (failures) {
