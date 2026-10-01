@@ -372,8 +372,12 @@ EOF
 			return 1
 		}
 		spi_after=$(ip netns exec "$NSR" ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
-		[ "$spi_before" != "$spi_after" ] || {
-			log "FAIL: ESP SPI unchanged after childrekey wait (no rekey fired)"
+		# gate both: (a) the SPI set changed AND (b) both directions are
+		# still live after the wait — a delete-without-rekey would change
+		# the set too, so (b) is what rules out the false positive.
+		_nspi=$(ip netns exec "$NSR" ip xfrm state | grep -cE 'proto esp')
+		[ "$spi_before" != "$spi_after" ] && [ "${_nspi:-0}" -ge 2 ] || {
+			log "FAIL: ESP SPI unchanged or ESP state missing after childrekey wait (nspi=${_nspi:-0})"
 			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
@@ -400,8 +404,9 @@ EOF
 			return 1
 		}
 		spi_after=$(ip netns exec "$NSR" ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
-		[ "$spi_before" != "$spi_after" ] || {
-			log "FAIL: ESP SPI unchanged after r2rekey wait"
+		_nspi=$(ip netns exec "$NSR" ip xfrm state | grep -cE 'proto esp')
+		[ "$spi_before" != "$spi_after" ] && [ "${_nspi:-0}" -ge 2 ] || {
+			log "FAIL: ESP SPI unchanged or ESP state missing after r2rekey wait (nspi=${_nspi:-0})"
 			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
