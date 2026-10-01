@@ -17,6 +17,12 @@
 #                 (mirrors kinds/i2i_neg.sh): a NEG(refuse) row PASSES when
 #                 NO child SA appears in the window AND the refusal reason
 #                 is in the responder log where expected.
+#   expected-reject rows (neg=x): XCBC/CMAC ESP transforms that the FreeBSD
+#                 15.1 kernel supported_aalgs[] does NOT ship.  racoon2 must
+#                 refuse them at config-check ("not supported by kernel"),
+#                 and the verdict requires that marker - so a future kernel
+#                 that ADDS them turns the row red (child appears) and tells
+#                 us to flip it to a positive accept test.  Never a SKIP.
 #   i2iv6-esp     same tunnel over AF_INET6 (mirrors kinds/i2iv6.sh)
 # Rows that are Linux-BOUND are deliberately NOT replicated: charon/
 # strongSwan interop (no strongSwan in this testbed), netem drop/dup rows
@@ -143,6 +149,23 @@ run_row() {
 	_eesp=$8 _eaut=$9 _lfti=${10} _lftr=${11} _rekey=${12} _neg=${13} _str=${14}
 	echo "$SEP"
 	echo "=== ROW $_name (fam=$_fam ike=$_ienc/$_iprf/$_idh esp=$_eesp/$_eaut neg=$_neg) ==="
+	# kernel PF_KEY DPRINTFs (esp_init keylen/AEAD rejects) go to the console
+	# when net.key.debug is set; set it BEFORE any SADB_ADD so a kernel
+	# refusal on GCM/CTR/etc is visible in `dmesg` - never guess the reason.
+	key_debug_on() {
+		jexec $jr sysctl net.key.debug=7 >/dev/null 2>&1 || true
+		jexec $ji sysctl net.key.debug=7 >/dev/null 2>&1 || true
+		sleep 1
+	}
+	diag() {
+		echo "--- raw responder SADB ---"; sed -n '1,30p' /tmp/freeb/resp-sadb.txt 2>/dev/null || true
+		echo "--- raw initiator SADB ---"; sed -n '1,30p' /tmp/freeb/init-sadb.txt 2>/dev/null || true
+		echo "--- responder SPD ---"; sed -n '1,20p' /tmp/freeb/resp-spd.txt 2>/dev/null || true
+		echo "--- responder iked (tail) ---"; tail -25 /tmp/freeb/resp-iked.log 2>/dev/null || true
+		echo "--- initiator iked (tail) ---"; tail -25 /tmp/freeb/init-iked.log 2>/dev/null || true
+		echo "--- dmesg PF_KEY/ESP (net.key.debug=7) ---"
+		jexec $jr dmesg 2>/dev/null | grep -iE 'esp|ipsec|sadb|pfkey|gcm|keylen|auth' | tail -15 || true
+	}
 	# seed the endpoint locals from args; the inet6 branch overrides them.
 	hr=$_hr; hi=$_hi
 	# per row: keep a seat-local admin-sock suffix so the two seats never
@@ -202,6 +225,9 @@ run_row() {
 	# NB: ipsec lifetime for the initiator is short on rekey rows (below we
 	# pass LFT_INIT < LFT_RESP so the initiator fires the CREATE_CHILD).
 
+	# haul in kernel PF_KEY DPRINTFs (esp_init etc) BEFORE any SADB_ADD
+	key_debug_on
+
 	echo "=== start spmd + iked per seat (inside their vnet jails) ==="
 	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $SBIN/spmd -F -f /tmp/freeb/$jr.conf > /tmp/freeb/resp-spmd.log 2>&1 &" || true
 	jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $SBIN/spmd -F -f /tmp/freeb/$ji.conf > /tmp/freeb/init-spmd.log 2>&1 &" || true
@@ -221,8 +247,12 @@ run_row() {
 
 	up=0
 	i=0
-	if [ "$_neg" = r ]; then
-		# NEG(refuse) gate: child must NOT appear within the window.
+	if [ "$_neg" = r ] || [ "$_neg" = x ]; then
+		# NEG(refuse) / expected-reject gate: child must NOT appear.
+		# `r` = auth/id NEG (wrongpsk, idmismatch).  `x` = expected kernel
+		# -gap rejection (XCBC/CMAC absent from supported_aalgs[]): refusal
+		# must ALSO be proven by the config-check marker below, else a bare
+		# timeout would fake a pass.
 		rn=0; in=0
 		while [ "$i" -lt 20 ]; do
 			rn=$(esp_up $jr); in=$(esp_up $ji)
@@ -233,6 +263,7 @@ run_row() {
 			echo "FAIL (NEG): child SA appeared; refused exchange must stay empty"
 		else
 			grep -q "does not match peers id" /tmp/freeb/resp-iked.log 2>/dev/null && echo "row $_name: refusal reason in responder log (id/cert/psk)"
+			grep -q "not supported by kernel" /tmp/freeb/resp-iked.log 2>/dev/null && echo "row $_name: kernel-gap refusal (config-check) confirmed"
 			up=1
 		fi
 	else
@@ -248,7 +279,7 @@ run_row() {
 	# the tunnel.  Under in/out `require` SPD a successful echo proves both
 	# directions' SAs decrypt+encrypt — the real parity bar.
 	TUN_OK=0
-	if [ "$up" -eq 1 ] && [ "$_neg" != r ]; then
+	if [ "$up" -eq 1 ] && [ "$_neg" != r ] && [ "$_neg" != x ]; then
 		# FreeBSD /sbin/ping is IPv4-only; v6 rows must use ping6.
 		if [ "$_fam" = inet6 ] && command -v ping6 >/dev/null 2>&1; then
 			jexec $ji ping6 -c 1 -t 5 "$hr" > /tmp/freeb/ping-tun.txt 2>&1 || true
@@ -265,7 +296,7 @@ run_row() {
 		fi
 	fi
 
-	if [ "$up" -eq 1 ] && [ "$_neg" != r ] && [ "$_rekey" -eq 1 ]; then
+	if [ "$up" -eq 1 ] && [ "$_neg" != r ] && [ "$_neg" != x ] && [ "$_rekey" -eq 1 ]; then
 		echo "=== row $_name: child UP; assert CREATE_CHILD rekey (new ESP SPI both seats) ==="
 		R0=$(spi $jr); I0=$(spi $ji)
 		echo "initial SPIs R=[$(echo $R0 | tr '\n' ' ')] I=[$(echo $I0 | tr '\n' ' ')]"
@@ -310,6 +341,9 @@ run_row() {
 	# SA count is INFORMATIONAL ONLY (a healthy bidir tunnel can show 1
 	# esp line per jail).  The authoritative gate is the data-plane ping /
 	# NEG refusal, never the SA count.
+	# On any FAILURE diag() (defined at top of run_row) dumps raw SADB,
+	# both iked logs, and the kernel's netipsec dmesg reason - never guess
+	# from the SA count alone.
 	if [ "$_neg" = r ]; then
 		if [ "$up" -eq 1 ]; then
 			echo "PASS freebsd-vnet $_name (NEG: no child SA, refusal as required)"
@@ -319,6 +353,32 @@ run_row() {
 		fi
 		echo "FAIL freebsd-vnet $_name (NEG: child appeared / no refusal)"
 		cat /tmp/freeb/ctl.out 2>/dev/null || true
+		diag
+		echo "$SEP"
+		jails_teardown
+		return 1
+	fi
+	if [ "$_neg" = x ]; then
+		# expected-reject (kernel gap): the transform is absent from the
+		# FreeBSD kernel supported_aalgs[], so racoon2 MUST refuse at
+		# config-check (ike_conf.c:4636 "not supported by kernel").  A PASS
+		# requires BOTH no child AND that marker — a bare timeout must not
+		# count as rejection.  When FreeBSD later ships XCBC/CMAC, the
+		# config-check passes, a child appears and this FAILs: that red is
+		# the signal to flip the row to a positive accept test (run ... a).
+		if [ "$up" -eq 1 ] && grep -q "not supported by kernel" /tmp/freeb/resp-iked.log 2>/dev/null; then
+			echo "PASS freebsd-vnet $_name (expected reject: kernel-gap refusal confirmed by config-check)"
+			echo "CPL-XR : PASS $_name (expected kernel-gap rejection, non-vacuous: 'not supported by kernel' in responder log)"
+			jails_teardown
+			return 0
+		fi
+		echo "FAIL freebsd-vnet $_name (expected reject: kernel-gap refusal NOT confirmed)"
+		if [ "$up" -eq 1 ]; then
+			echo "WARN: no child SA but 'not supported by kernel' absent — refusal may be from a different cause; see diag"
+		else
+			echo "ALERT: child SA appeared — this transform is now accepted (FreeBSD kernel added support?); convert row from expected-reject to a positive accept test"
+		fi
+		diag
 		echo "$SEP"
 		jails_teardown
 		return 1
@@ -332,8 +392,7 @@ run_row() {
 	fi
 	echo "FAIL freebsd-vnet $_name: no ESP tunnel SAs in either per-vnet SADB after timeout"
 	echo "--- initiator ikedctl output ---"; cat /tmp/freeb/ctl.out 2>/dev/null || true
-	echo "--- spmd logs ---"; cat /tmp/freeb/resp-spmd.log /tmp/freeb/init-spmd.log 2>/dev/null || true
-	echo "--- responder iked (tail) ---"; tail -15 /tmp/freeb/resp-iked.log 2>/dev/null || true
+	diag
 	echo "$SEP"
 	jails_teardown
 	return 1
@@ -353,8 +412,13 @@ case "$ROW" in
 		run i2iinit-esp-gcm256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a ""
 		run i2iinit-esp-sha384 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_384 300 300 0 a ""
 		run i2iinit-esp-sha512 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_512 300 300 0 a ""
-		run i2iinit-esp-xcbc   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_xcbc" 300 300 0 a ""
-		run i2iinit-esp-cmac   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_cmac" 300 300 0 a ""
+		# xcbc/cmac rows are EXPECTED-REJECT: FreeBSD 15.1 supported_aalgs[]
+		# (sys/netipsec/key.c) lacks AES-XCBC-MAC/AES-CMAC, so racoon2 must
+		# refuse at config-check.  The verdict gates on that marker, so when a
+		# future FreeBSD kernel ships these transforms the row goes red (child
+		# appears) and must be converted to a positive accept run.
+		run i2iinit-esp-xcbc   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_xcbc" 300 300 0 x ""
+		run i2iinit-esp-cmac   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_cmac" 300 300 0 x ""
 		run i2iinit-esp-ctr    inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ctr" "non_auth" 300 300 0 a ""
 		# --- i2iinit ike/prf vectors (mirror linux i2iinit-ike-*/prf-*) ---
 		run i2iinit-ike-cbc192 inet 192.0.5.2 192.0.5.1 aes192_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
