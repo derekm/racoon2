@@ -242,6 +242,27 @@ EOF
 		i=$((i+1)); sleep 1
 	done
 
+	# DATA-PLANE gate: require a real post-establishment ping THROUGH the
+	# tunnel (each jail must hold BOTH the outbound ESP SA seen in setkey -D
+	# AND the matching inbound SA, else the reply never decrypts).  The mere
+	# presence of an outbound ESP SA proves negotiation, not transit.
+	TUN_OK=0
+	if [ "$up" -eq 1 ]; then
+		# SPD is `in/out ipsec ... require`: after SAs exist, an ICMP echo
+		# from the initiator to the responder MUST cross the ESP tunnel.
+		jexec $ji ping -c 1 -t 5 $hr > /tmp/freeb/ping-tun.txt 2>&1 || true
+		# FreeBSD ping: "1 packets transmitted, 1 packets received"; Linux:
+		# "1 received".  Success = >0 received AND not total loss.
+		if grep -qE '[1-9][0-9]* (packets )?received' /tmp/freeb/ping-tun.txt 2>/dev/null \
+			&& ! grep -qE '0 packets received|100[.]0% packet loss|100% packet loss' /tmp/freeb/ping-tun.txt 2>/dev/null; then
+			echo "row $_name: data-plane OK (post-establishment $ji->$hr ping through tunnel)"
+			TUN_OK=1
+		else
+			echo "row $_name: FAIL data-plane (post-establishment ping did not transit the tunnel)"
+			cat /tmp/freeb/ping-tun.txt 2>/dev/null || true
+		fi
+	fi
+
 	if [ "$up" -eq 1 ] && [ "$_rekey" -eq 1 ]; then
 		# CREATE_CHILD child-SA rekey: a short initiator ipsec lifetime fires
 		# the soft boundary, a NEW ESP SPI replaces the initial child on BOTH
@@ -286,10 +307,19 @@ EOF
 	echo "--- initiator iked ---"; tail -25 /tmp/freeb/init-iked.log 2>/dev/null || true
 
 	echo "=== verdict (row $_name) ==="
-	if [ "$up" -eq 1 ]; then
+	# A bidirectional tunnel needs BOTH the outbound SA (own SPI) and the
+	# inbound SA (peer SPI) in EACH jail's per-vnet SADB: esp_up per jail
+	# counts `esp mode=tunnel` lines.  Assert >=2 per jail (a complete pair),
+	# over and above the data-plane ping.
+	rn2=$(grep -cE 'esp mode=tunnel' /tmp/freeb/resp-sadb.txt 2>/dev/null || echo 0)
+	in2=$(grep -cE 'esp mode=tunnel' /tmp/freeb/init-sadb.txt 2>/dev/null || echo 0)
+	if [ "$rn2" -lt 2 ] || [ "$in2" -lt 2 ]; then
+		echo "note: per-jail ESP count R=$rn2 I=$in2 (a full bidirectional pair is 2 per jail; informational unless the ping failed)"
+	fi
+	if [ "$up" -eq 1 ] && [ "$TUN_OK" -eq 1 ]; then
 		lines=$(grep -cE 'esp mode=tunnel' /tmp/freeb/resp-sadb.txt /tmp/freeb/init-sadb.txt 2>/dev/null | awk -F: '{s+=$2} END{print s}')
-		echo "PASS freebsd-vnet $_name (pfkey KM: $lines ESP tunnel SAs on $hr<->$hi in the per-vnet SADBs)"
-		echo "CPL B1: PASS freebsd pfkey KM ESP child up ($_enc, per-jail setkey -D evidence)"
+		echo "PASS freebsd-vnet $_name (pfkey KM: $lines ESP tunnel SAs + post-establishment data-plane $ji->$hr on $hr<->$hi)"
+		echo "CPL B1: PASS freebsd pfkey KM ESP child up AND transiting ($_enc, per-jail setkey -D + tunnel ping evidence)"
 		jails_teardown
 		return 0
 	fi
