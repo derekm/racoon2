@@ -46,9 +46,15 @@ echo "=== Bootstrapping build system ==="
 autoreconf -fi
 
 echo "=== Configure (sanitized compile probe) ==="
+# --enable-admin: defaults to no on non-Linux (iked/configure.ac:306-308),
+# which would leave iked WITHOUT the admin socket and ikedctl unbuilt -- and
+# the conformance matrix DRIVES establish-sa through ikedctl.  The NetBSD
+# legs never hit this (build+rc.d smoke only, no tunnel matrix).  admin.c/
+# ikedctl_unix.c are pure POSIX unix sockets, so this is the FreeBSD-leg
+# equivalent of the Linux default, not a porting hack.
 CFLAGS="-g -O2 ${SAN_CFLAGS}" \
 LDFLAGS="${SAN_LDFLAGS}" \
-./configure --prefix=/usr/local/racoon2
+./configure --prefix=/usr/local/racoon2 --enable-admin
 
 echo "=== Building (sanitized compile probe) ==="
 $MAKE -j2
@@ -64,10 +70,11 @@ echo "=== REBUILD non-sanitized daemons (production shape) ==="
 $MAKE clean >/dev/null
 SAN_CFLAGS= SAN_LDFLAGS= \
 CFLAGS="-g -O2" \
-./configure --prefix=/usr/local/racoon2 >/dev/null
+./configure --prefix=/usr/local/racoon2 --enable-admin >/dev/null
 $MAKE -j2 >/dev/null
 $SUDO $MAKE install
 test -x /usr/local/racoon2/sbin/iked
+test -x /usr/local/racoon2/sbin/ikedctl
 
 echo "=== Unit/KAT suites on the production-shaped build ==="
 $MAKE -C lib check
