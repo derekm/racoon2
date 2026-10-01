@@ -206,8 +206,8 @@ while [ "$i" -lt 45 ]; do
 	# SADB is PER-VNET on FreeBSD (sys/netipsec/key.c VNET-virtualizes the
 	# SAD/SPD): the jails' ESP SAs are visible only from INSIDE each jail,
 	# never in the host's setkey -D.  Count each seat's own kernel SADB.
-	rn=$(jexec $jr setkey -D 2>/dev/null | grep -cE 'esp mode=tunnel' || true)
-	in=$(jexec $ji setkey -D 2>/dev/null | grep -cE 'esp mode=tunnel' || true)
+	rn=$(jexec $jr /usr/local/sbin/setkey -D 2>/dev/null | grep -cE 'esp mode=tunnel' || true)
+	in=$(jexec $ji /usr/local/sbin/setkey -D 2>/dev/null | grep -cE 'esp mode=tunnel' || true)
 	if [ "$rn" -ge 1 ] && [ "$in" -ge 1 ]; then
 		up=1
 		break
@@ -216,10 +216,10 @@ while [ "$i" -lt 45 ]; do
 done
 
 echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
-jexec $jr setkey -D > /tmp/freeb/resp-sadb.txt 2>&1 || true
-jexec $ji setkey -D > /tmp/freeb/init-sadb.txt 2>&1 || true
-jexec $jr setkey -DP > /tmp/freeb/resp-spd.txt 2>&1 || true
-jexec $ji setkey -DP > /tmp/freeb/init-spd.txt 2>&1 || true
+jexec $jr /usr/local/sbin/setkey -D > /tmp/freeb/resp-sadb.txt 2>&1 || true
+jexec $ji /usr/local/sbin/setkey -D > /tmp/freeb/init-sadb.txt 2>&1 || true
+jexec $jr /usr/local/sbin/setkey -DP > /tmp/freeb/resp-spd.txt 2>&1 || true
+jexec $ji /usr/local/sbin/setkey -DP > /tmp/freeb/init-spd.txt 2>&1 || true
 echo "responder jail ESP tunnel SAs: $(grep -cE 'esp mode=tunnel' /tmp/freeb/resp-sadb.txt 2>/dev/null || echo 0)"
 echo "initiator jail ESP tunnel SAs: $(grep -cE 'esp mode=tunnel' /tmp/freeb/init-sadb.txt 2>/dev/null || echo 0)"
 echo "--- responder jail SADB ---"; sed -n '1,50p' /tmp/freeb/resp-sadb.txt 2>/dev/null || true
