@@ -161,10 +161,21 @@ run_row() {
 		echo "--- raw responder SADB ---"; sed -n '1,30p' /tmp/freeb/resp-sadb.txt 2>/dev/null || true
 		echo "--- raw initiator SADB ---"; sed -n '1,30p' /tmp/freeb/init-sadb.txt 2>/dev/null || true
 		echo "--- responder SPD ---"; sed -n '1,20p' /tmp/freeb/resp-spd.txt 2>/dev/null || true
-		echo "--- responder iked (tail) ---"; tail -25 /tmp/freeb/resp-iked.log 2>/dev/null || true
-		echo "--- initiator iked (tail) ---"; tail -25 /tmp/freeb/init-iked.log 2>/dev/null || true
-		echo "--- dmesg PF_KEY/ESP (net.key.debug=7) ---"
-		jexec $jr dmesg 2>/dev/null | grep -iE 'esp|ipsec|sadb|pfkey|gcm|keylen|auth' | tail -15 || true
+		# NEG rows: FULL iked logs matter (IKE_AUTH / ID-refusal lines are far
+		# from the tail); the 25-line tail hid exactly that for wrongpsk.
+		if [ "$_neg" = r ] || [ "$_neg" = x ]; then
+			echo "--- responder iked (FULL) ---"; cat /tmp/freeb/resp-iked.log 2>/dev/null || true
+			echo "--- initiator iked (FULL) ---"; cat /tmp/freeb/init-iked.log 2>/dev/null || true
+		else
+			echo "--- responder iked (tail) ---"; tail -25 /tmp/freeb/resp-iked.log 2>/dev/null || true
+			echo "--- initiator iked (tail) ---"; tail -25 /tmp/freeb/init-iked.log 2>/dev/null || true
+		fi
+		echo "--- spmd logs ---"; cat /tmp/freeb/resp-spmd.log /tmp/freeb/init-spmd.log 2>/dev/null || true
+		echo "--- host dmesg PF_KEY/ESP (net.key.debug=7, host buffer sees both vnets) ---"
+		dmesg 2>/dev/null | grep -iE 'esp|ipsec|sadb|pfkey|gcm|keylen|auth' | tail -20 || true
+		echo "--- per-jail dmesg (may be empty in a vnet jail; host reads above) ---"
+		jexec $jr dmesg 2>/dev/null | grep -iE 'esp|ipsec|sadb|pfkey|gcm|keylen|auth' | tail -10 || true
+		jexec $ji dmesg 2>/dev/null | grep -iE 'esp|ipsec|sadb|pfkey|gcm|keylen|auth' | tail -10 || true
 	}
 	# seed the endpoint locals from args; the inet6 branch overrides them.
 	hr=$_hr; hi=$_hi
@@ -220,8 +231,16 @@ run_row() {
 	# expectation, else the refusal could not fire.
 	gen_conf $jr "$_name" "$_fam" "$hr" "$hi" "$_ienc" "$_iprf" "$_idh" \
 		"$_eesp" "$_eaut" "racoon2-matrix" "r2init-matrix" "$_lftr" "/tmp/freeb/test.psk" "$_str"
-	gen_conf $ji "$_name" "$_fam" "$hi" "$_hr" "$_ienc" "$_iprf" "$_idh" \
+	gen_conf $ji "$_name" "$_fam" "$hi" "$hr" "$_ienc" "$_iprf" "$_idh" \
 		"$_eesp" "$_eaut" "$MYID_FI" "racoon2-matrix" "$_lfti" "$PSK_FI" "$_str"
+	# Conf-echo: prove the perturbed config is what iked loads (NEG rows
+	# mutate only the initiator seat).  On a surprise child-appears this
+	# shows whether the daemon really got the wrong PSK / foreign id.
+	if [ "$_neg" = r ]; then
+		echo "NEG conf-echo $_name: responder psk=$(ls -l /tmp/freeb/test.psk 2>/dev/null | awk '{print $5}')B initiator psk=$(ls -l "$PSK_FI" 2>/dev/null | awk '{print $5}')B"
+		echo "NEG conf-echo $_name: responder expects peers_id=r2init-matrix; initiator my_id=$MYID_FI"
+		grep -E 'pre_shared_key|my_id fqdn|peers_id fqdn' /tmp/freeb/r2vi.conf 2>/dev/null | sed 's/^/  init conf: /' || true
+	fi
 	# NB: ipsec lifetime for the initiator is short on rekey rows (below we
 	# pass LFT_INIT < LFT_RESP so the initiator fires the CREATE_CHILD).
 
@@ -262,8 +281,8 @@ run_row() {
 		if [ "$rn" -ge 1 ] || [ "$in" -ge 1 ]; then
 			echo "FAIL (NEG): child SA appeared; refused exchange must stay empty"
 		else
-			grep -q "does not match peers id" /tmp/freeb/resp-iked.log 2>/dev/null && echo "row $_name: refusal reason in responder log (id/cert/psk)"
-			grep -q "not supported by kernel" /tmp/freeb/resp-iked.log 2>/dev/null && echo "row $_name: kernel-gap refusal (config-check) confirmed"
+			grep -q "does not match peers id" /tmp/freeb/resp-iked.log 2>/dev/null && echo "row $_name: refusal reason in responder log (id/cert/psk)" || true
+			grep -q "not supported by kernel" /tmp/freeb/resp-iked.log 2>/dev/null && echo "row $_name: kernel-gap refusal (config-check) confirmed" || true
 			up=1
 		fi
 	else
@@ -345,13 +364,30 @@ run_row() {
 	# both iked logs, and the kernel's netipsec dmesg reason - never guess
 	# from the SA count alone.
 	if [ "$_neg" = r ]; then
-		if [ "$up" -eq 1 ]; then
-			echo "PASS freebsd-vnet $_name (NEG: no child SA, refusal as required)"
-			echo "CPL-ND : PASS $_name (pfkey KM, per-jail setkey -D empty)"
+		# NEG(auth/id/strength) rows: refusal must be PROVEN, not just
+		# inferred from an empty SADB.  A bare "no child" is coexistence
+		# with the refusal (could be a timeout or an unrelated kernel
+		# rejection, e.g. a12strict whose GCM child cannot install).  The
+		# PASS requires the row's own refusal marker in the responder log.
+		refusal=0
+		case "$_name" in
+			*i2ineg-wrongpsk*)   grep -q "authentication failure" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
+			*i2ineg-idmismatch*) grep -q "does not match peers id" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
+			*i2ineg-a12strict*)  grep -q "parent_child_strength on" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
+		esac
+		if [ "$up" -eq 1 ] && [ "$refusal" -eq 1 ]; then
+			echo "PASS freebsd-vnet $_name (NEG: refusal proven by responder log marker)"
+			echo "CPL-ND : PASS $_name (pfkey KM, per-jail setkey -D empty + refusal marker)"
 			jails_teardown
 			return 0
 		fi
-		echo "FAIL freebsd-vnet $_name (NEG: child appeared / no refusal)"
+		echo "FAIL freebsd-vnet $_name (NEG: refusal NOT proven)"
+		echo "  up=$up refusal_marker=$refusal (expected: up=1 AND responder-log marker)"
+		if [ "$up" -eq 0 ]; then
+			echo "  child SA appeared - refusal did not fire (see resp-iked.log tail in diag)"
+		else
+			echo "  no child but the expected refusal marker is absent - refusal came from another cause (e.g. kernel), not this gate"
+		fi
 		cat /tmp/freeb/ctl.out 2>/dev/null || true
 		diag
 		echo "$SEP"
@@ -448,6 +484,11 @@ case "$ROW" in
 		run i2iv6-esp          inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		;;
 	i2iinit-esp-cbc128) run_row i2iinit-esp-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-esp-gcm256) run_row i2iinit-esp-gcm256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a "" ;;
+	i2iinit-esp-xcbc)  run_row i2iinit-esp-xcbc   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_xcbc" 300 300 0 x "" ;;
+	i2iinit-esp-cmac)  run_row i2iinit-esp-cmac   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_cmac" 300 300 0 x "" ;;
+	i2ineg-wrongpsk)   run_row i2ineg-wrongpsk   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2ineg-idmismatch) run_row i2ineg-idmismatch inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
 	*) echo "unknown ROW=$ROW"; exit 2 ;;
 esac
 echo "$SEP"
