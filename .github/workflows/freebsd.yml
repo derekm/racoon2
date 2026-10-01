@@ -1,0 +1,59 @@
+# FreeBSD CI Build, Unit/KAT, and FIRST BSD TUNNEL CONFORMANCE for racoon2.
+# FreeBSD 15.1 via vmactions/freebsd-vm (the FreeBSD analogue of the
+# netbsd-vm legs).  FreeBSD auto-selects the pfkey KM backend (if_pfkeyv2.c)
+# so this is the real BSD PF_KEY SAD/SPD path, and 15.1 base OpenSSL 3.5.6
+# turns WITH_ADDKE on (Fedora-44 parity for the RFC 9370 PQC units).
+#
+# The vnet conformance (freebsd-vnet-smoke.sh) is NEW vs the NetBSD legs:
+# NetBSD is smoke-only ("no netns; npf/pf/ipf is packet filter, not
+# SAD/SPD"), whereas FreeBSD HAS virtual networking (vnet jails + epair(4))
+# so we can isolate two iked seats and run a real ESP tunnel through the
+# pfkey KM -- setkey -D evidence in the kernel SADB.
+#
+# Body lives in samples/freebsd-ci/ (build = build+units; then the vnet leg).
+
+name: FreeBSD build & test (pfkey KM + vnet conformance)
+
+on:
+  push:
+    branches: [linux-km, int/gsoc2026]
+  pull_request:
+    branches: [linux-km, int/gsoc2026]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freebsd-build-test-vnet:
+    name: 'FreeBSD 15.1 build & test (pfkey KM) + vnet conformance'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build and test on FreeBSD 15.1
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.1"
+          mem: 4096
+          cpu: 2
+          run: |
+            set -eu
+            sh samples/freebsd-ci/freebsd-vmactions-build.sh
+            echo "=== vnet conformance (iked<->iked ESP over pfkey KM) ==="
+            sh samples/freebsd-ci/freebsd-vnet-smoke.sh
+
+      - name: 'Generate compliance report (KAT evidence from FreeBSD 15.1 build)'
+        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/freebsd-build-test-151-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
+        working-directory: ${{ runner.workspace }}/racoon2
+
+      - name: 'Upload compliance report artifact'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report-freebsd-build-test-151
+          path: freebsd-build-test-151-compliance.md
+          overwrite: true
+          if-no-files-found: error
