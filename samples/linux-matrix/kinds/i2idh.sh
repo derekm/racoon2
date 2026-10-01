@@ -266,6 +266,14 @@ EOF
 		log "--- resp-iked.log (proposal/ESTABLISHED) ---"
 		[ -f "$D/resp-iked.log" ] && sed -n 's/.*\(ESTABLISHED\|no proposal\|unacceptable\|NO_PROPOSAL\|err=\).*/\1: &/p' \
 			"$D/resp-iked.log" 2>/dev/null | tail -6
+		if [ "$PEER_I" = charon ]; then
+			log "--- charon-init.log (tail) ---"
+			tail -25 "$D/charon-init.log" 2>/dev/null
+		fi
+		if [ "$PEER_R" = charon ]; then
+			log "--- charon-resp.log (tail) ---"
+			tail -25 "$D/charon-resp.log" 2>/dev/null
+		fi
 		return 1
 	fi
 	return 0

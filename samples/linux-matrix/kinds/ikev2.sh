@@ -187,11 +187,6 @@ EOF
 	# default stays aes128gcm16!
 	STRONG_ESP=aes128gcm16!
 	EXPECT_AUTH=
-	FRAG=
-	MOBIKE=
-	IKE_LIFE='ikelifetime=1h'
-	CHILD_LIFE='keylife=1h'
-	REKEY_EXTRA=
 	case "$name" in
 	*-s384) STRONG_ESP='aes256-sha384!'; EXPECT_AUTH='auth-trunc hmac(sha384).* 192$' ;;
 	*-s512) STRONG_ESP='aes256-sha512!'; EXPECT_AUTH='auth-trunc hmac(sha512).* 256$' ;;
@@ -203,29 +198,18 @@ EOF
 		;;
 	*-childrekey)
 		STRONG_ESP='aes128gcm16-ecp256!'
-		CHILD_LIFE='keylife=30s'
-		REKEY_EXTRA='reauth=no
-rekey=yes
-rekeymargin=8s
-rekeyfuzz=0%'
 		;;
 	*-r2rekey)
 		STRONG_ESP='aes128gcm16-ecp256!'
-		CHILD_LIFE='keylife=1h'
-		REKEY_EXTRA='reauth=no
-rekey=no'
 		;;
-	*-frag) FRAG='fragmentation=yes' ;;
-	*-mobike|*-cookie2) MOBIKE='mobike=yes' ;;
-	*-ikesa-rekey)
-		IKE_LIFE='ikelifetime=30s'
-		REKEY_EXTRA='reauth=no
-rekey=yes
-rekeymargin=8s
-rekeyfuzz=0%'
+	*-frag|*-mobike|*-cookie2)
 		;;
 	esac
-	pskhex=$(psk_file_hex "$ETC/psk/macos.psk") || { log "FAIL: empty PSK hex from $ETC/psk/macos.psk"; return 1; }
+	pskhex=$(psk_file_hex "$ETC/psk/macos.psk") || {
+		log "FAIL: empty PSK hex from $ETC/psk/macos.psk"
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
+		return 1
+	}
 	# charon defaults table: swanctl conn options mirror the ipsec.conf
 	# knobs the rows used to set (rekey drift, frag, mobike, child PFS).
 	_REKEY_TIME=0s
