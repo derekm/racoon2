@@ -82,7 +82,7 @@ i2i_compliance() {
 			| awk '/^src 0\.0\.0\.0\/0 dst 0\.0\.0\.0\/0/{print; c=1; next} /^[^[:space:]]/{c=0} {if(c) print}' \
 			| grep -vE "socket" | head -1)
 		[ -n "$_ca" ] && a2_ok=0
-		_udp_unscoped=$(printf '%s\n' "$_pol" | grep -E "^src [0-9].*proto udp" | grep -vE "sport (500|4500)")
+		_udp_unscoped=$(printf '%s\n' "$_pol" | grep -E "^src [0-9a-fA-F:].*proto udp" | grep -vE "sport (500|4500)")
 		[ -n "$_udp_unscoped" ] && a2_ok=0
 		[ "$a2_ok" -eq 1 ] && PLOG A2 PASS "NEG row: no cleartext path (SPD shape intact)"
 		[ "$a2_ok" -eq 0 ] && PLOG A2 FAIL "NEG row: SPD cleartext-path risk"
@@ -169,7 +169,7 @@ i2i_compliance() {
 		| grep -vE "socket" | head -1)
 	if [ -n "$_ca" ]; then a2_ok=0; fi
 	# (b) every udp row scoped to an IKE port — any uncovered udp line fails
-	_udp_unscoped=$(printf '%s\n' "$_pol" | grep -E "^src [0-9].*proto udp" | grep -vE "sport (500|4500)")
+	_udp_unscoped=$(printf '%s\n' "$_pol" | grep -E "^src [0-9a-fA-F:].*proto udp" | grep -vE "sport (500|4500)")
 	if [ -n "$_udp_unscoped" ]; then a2_ok=0; fi
 	if [ "$a2_ok" -eq 1 ]; then
 		PLOG A2 PASS "negative shape check: SPD has no clear path (no routing catch-all; udp BYPASS scoped to IKE ports 500/4500). Scope: this is a negative architecture check, not a positive discard-the-unmatched NEG proof (separate i2ineg rows cover packet-level refusal)"

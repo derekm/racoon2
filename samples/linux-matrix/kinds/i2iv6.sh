@@ -26,9 +26,15 @@ kind_i2iv6() {
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
-	# IPv6 must be compiled into the installed iked prefix.
+	# IPv6 must be compiled into the installed iked/spmd prefix (spmd too:
+	# a libracoon or spmd built without INET6 drops ports on the IPv6 IKE
+	# bypass rows — unscoped proto udp allow = the A2 cleartext FAIL).
 	if ! grep -aq "sin6_family" "$SBIN/iked" 2>/dev/null; then
 		log "FAIL: $SBIN/iked has no IPv6 (INET6) support"
+		return 1
+	fi
+	if ! grep -aq "sin6_family" "$SBIN/spmd" 2>/dev/null; then
+		log "FAIL: $SBIN/spmd has no IPv6 (INET6) support"
 		return 1
 	fi
 
@@ -203,7 +209,10 @@ EOF
 	i=0; until [ -S /tmp/spmif-i2iv6-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2iv6-r RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
-	i=0; until [ -S /tmp/spmif-i2iv6-i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+
+	# responder iked admin socket — NOT the initiator's spmif (-i), which
+	# cannot exist yet and would burn the full 15s poll.
+	i=0; until [ -S /tmp/iked.sock-i2iv6-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
 	ISPMD=$!
