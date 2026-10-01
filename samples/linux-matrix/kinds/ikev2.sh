@@ -1,66 +1,186 @@
 #!/bin/sh
-# kinds/ikev2.sh — strongSwan netns vs live racoon2 (r2_xfrm_e2e.sh).
-# One charon at a time. Workers cell: stop racoon2-iked only, not spmd.
+# kinds/ikev2.sh — strongSwan charon vs racoon2 iked, two isolated netnss.
+#
+# The SUT (racoon2 iked with the R2_WORKERS knob) runs in its OWN netns NSR
+# bound to the P2P veth address HR, never to the host :500 — so it never
+# collides with the live/prod iked (which may be a manual -F process not
+# stoppable via systemctl).  charon runs in netns NSI on HI.  All SAD/SPD
+# and show-sa assertions run inside the responder netns via
+# `ip netns exec "$NSR"` + the per-netns admin socket.
+# One charon at a time.  Workers cell applies to the NSR iked only.
 kind_ikev2() {
 	name=$1
 	require_root || return 1
-	detect_rip || return 1
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
+
+	# --- two-netns P2P topology (i2idh-style) --------------------------------
+	NSR=ikev2-r; NSI=ikev2-i; VR=i2v2a-vr; VI=i2v2a-vi
+	HR=192.0.14.1; HI=192.0.14.2
+	PRIVRES_R=/tmp/r2-ikev2-resume-r
+	D=/tmp/r2-ikev2; C=/tmp/r2-ikev2-conf
+	# legacy names charon_reset still reads
+	NS="$NSI"; VETH_H="$VI"; CIP="$HI"
+	rm -rf "$PRIVRES_R" "$D" "$C"; mkdir -p "$PRIVRES_R" "$D" "$C"
 	charon_reset
-	ip netns del "$NS" 2>/dev/null || true
-	ip link del "$VETH_H" 2>/dev/null || true
-	netns_up
-	# decapped tunnel traffic arrives on eth3 with src 192.0.2.2, which
-	# does not reverse-route via eth3 — rp_filter would drop it. The
-	# IKEv1 harness sets this; ikev2 needs it once the ping is a real
-	# ESP proof.
-	echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
-	echo 0 > /proc/sys/net/ipv4/conf/default/rp_filter
-	echo 0 > /proc/sys/net/ipv4/conf/"$VETH_H"/rp_filter
-	systemctl stop strongswan-starter.service 2>/dev/null || true
-	ip netns exec "$NS" ip xfrm state flush || true
-	ip netns exec "$NS" ip xfrm policy flush || true
+
+	# responder.conf — the SUT iked config, bound to HR inside NSR.  The
+	# remote{}/selector/policy/sa block mirrors the i2i kinds; the esp
+	# algs cover every STRONG_ESP the rows select (gcm16/gcm8/gcm12/CBC +
+	# sha1/sha2 family), matching the coverage macos_ikev2.conf once gave.
+	cat > "$C/responder.conf" <<EOF
+interface {
+	ike { "$HR"; };
+	spmd { unix "/tmp/spmif-i2v2-r"; };
+	spmd_password "$ETC/spmd.pwd";
+};
+resolver { resolver off; };
+remote matrix_resp {
+	acceptable_kmp { ikev2; };
+	ikev2 {
+		passive on;
+		my_id fqdn "racoon2-wsl";
+		peers_id fqdn "macos.client";
+		peers_ipaddr "$HI";
+		kmp_enc_alg { aes256_cbc; aes128_cbc; };
+		kmp_prf_alg { hmac_sha2_256; };
+		kmp_hash_alg { hmac_sha2_256; };
+		kmp_dh_group { ecp256; modp2048; };
+		kmp_auth_method { psk; };
+		pre_shared_key "$ETC/psk/macos.psk";
+		dpd_delay 60 sec;
+	};
+	selector_index sel_in;
+};
+selector sel_out {
+	direction outbound;
+	src "$HR"; dst "$HI";
+	policy_index pol;
+};
+selector sel_in {
+	direction inbound;
+	dst "$HR"; src "$HI";
+	policy_index pol;
+};
+policy pol {
+	action auto_ipsec;
+	remote_index matrix_resp;
+	ipsec_mode tunnel;
+	ipsec_index { ipsec_e_gcm; ipsec_e_gcm12; ipsec_e_gcm8; ipsec_e_sha2; };
+	ipsec_level require;
+	peers_sa_ipaddr "$HI";
+	my_sa_ipaddr "$HR";
+};
+ipsec ipsec_e_gcm {
+	ipsec_sa_lifetime_time 3600 sec;
+	sa_index esp_e_gcm;
+};
+ipsec ipsec_e_gcm12 {
+	ipsec_sa_lifetime_time 3600 sec;
+	sa_index esp_e_gcm12;
+};
+ipsec ipsec_e_gcm8 {
+	ipsec_sa_lifetime_time 3600 sec;
+	sa_index esp_e_gcm8;
+};
+ipsec ipsec_e_sha2 {
+	ipsec_sa_lifetime_time 3600 sec;
+	sa_index esp_e_sha2;
+};
+sa esp_e_gcm {
+	sa_protocol esp;
+	esp_enc_alg { aes_gcm; };
+	esp_auth_alg { non_auth; };
+};
+sa esp_e_gcm12 {
+	sa_protocol esp;
+	esp_enc_alg { aes_gcm12; };
+	esp_auth_alg { non_auth; };
+};
+sa esp_e_gcm8 {
+	sa_protocol esp;
+	esp_enc_alg { aes_gcm8; };
+	esp_auth_alg { non_auth; };
+};
+sa esp_e_sha2 {
+	sa_protocol esp;
+	esp_enc_alg { aes256_cbc; aes128_cbc; };
+	esp_auth_alg { hmac_sha2_256; hmac_sha2_384; hmac_sha2_512; };
+};
+EOF
+
 	# racoon2-initiated CHILD rekey: shorten our ipsec lifetime so we
-	# mint CREATE_CHILD; charon rekey=no. Restore conf on EXIT.
+	# mint CREATE_CHILD; charon rekey=no.  The conf is a per-run file (not
+	# the shipped macos_ikev2.conf), so no restore trap is needed.
 	case "$name" in
 	*-r2rekey)
-		if [ -f "$ETC/macos_ikev2.conf" ]; then
-			cp "$ETC/macos_ikev2.conf" /tmp/r2-macos_ikev2.conf.bak
-			sed -i 's/ipsec_sa_lifetime_time 3600 sec/ipsec_sa_lifetime_time 30 sec/' \
-				"$ETC/macos_ikev2.conf"
-			trap 'if [ -f /tmp/r2-macos_ikev2.conf.bak ]; then cp /tmp/r2-macos_ikev2.conf.bak "$ETC/macos_ikev2.conf"; rm -f /tmp/r2-macos_ikev2.conf.bak; fi' EXIT
-		fi
+		sed -i 's/ipsec_sa_lifetime_time 3600 sec/ipsec_sa_lifetime_time 30 sec/' "$C/responder.conf"
 		;;
 	esac
-	iked_apply_workers || return 1
 
-	# ICMP to the host's eth0 addr from the veth often fails (local-dest);
-	# IKE UDP still delivers. Gate on HIP only.
-	if ! command -v ping >/dev/null 2>&1; then
-		log "FAIL: ping(8) missing (install iputils-ping)"
-		return 1
-	fi
-	if ! ip netns exec "$NS" ping -c 1 -W 2 "$HIP" >/dev/null; then
-		log "FAIL: netns ping $HIP"
-		return 1
-	fi
-
-	# kill non-tunnel ICMP from the client: with no ESP SA a ping to RIP
-	# dies (the DROP matches iif r2h); through the tunnel the decapped
-	# reply path bypasses this rule — the inner ping is then a REAL ESP
-	# proof. Cleaned up by charon_reset.
-	iptables -t raw -C PREROUTING -i "$VETH_H" -s "${CIP}/32" -p icmp -j DROP 2>/dev/null ||
-		iptables -t raw -A PREROUTING -i "$VETH_H" -s "${CIP}/32" -p icmp -j DROP
-
-	# the in-SPD matches plain IKE UDP (XfrmInTmplMismatch) before
-	# iked sees it. Same-port allow rows; 500<->4500 float is
-	# installed by spmd_ike_bypass (RFC 3947), not here.
-	for p in 500 4500; do
-		ip xfrm policy add src "${CIP}/32" dst "${RIP}/32" proto udp \
-			sport "$p" dport "$p" dir in  ptype main action allow 2>/dev/null || true
-		ip xfrm policy add src "${RIP}/32" dst "${CIP}/32" proto udp \
-			sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
+	# clean any once-used netns, then build the pair + P2P veth
+	pkill -9 -f "$C/" 2>/dev/null || true
+	rm -f /tmp/spmif-i2v2-r /tmp/spmif-i2v2-i /tmp/iked.sock-i2v2-r /tmp/iked.sock-i2v2-i
+	for NSX in "$NSR" "$NSI"; do
+		ip netns del "$NSX" 2>/dev/null || true
+		ip netns add "$NSX"
+		ip netns exec "$NSX" ip link set lo up
 	done
+	ip link add "$VR" type veth peer name "$VI"
+	ip link set "$VR" netns "$NSR"
+	ip netns exec "$NSR" ip link set "$VR" up
+	ip netns exec "$NSR" ip addr add "$HR/24" dev "$VR"
+	ip link set "$VI" netns "$NSI"
+	ip netns exec "$NSI" ip link set "$VI" up
+	ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"
+
+	# UDP-allow rows BEFORE any spmd (first-in-bucket at prio 0) so IKE is
+	# not captured by the auto_ipsec tunnel input policy (XfrmInNoStates).
+	for ns in "$NSR:$HR:$HI" "$NSI:$HI:$HR"; do
+		NSX=${ns%%:*}; rest=${ns#*:}; LX=${rest%%:*}; PX=${rest#*:}
+		for p in 500 4500; do
+			ip netns exec "$NSX" ip xfrm policy add src "$PX"/32 dst "$LX"/32 proto udp sport "$p" dport "$p" dir in  ptype main action allow 2>/dev/null || true
+			ip netns exec "$NSX" ip xfrm policy add src "$LX"/32 dst "$PX"/32 proto udp sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
+		done
+	done
+
+	# SUT iked in NSR, with the workers knob via env and its own admin sock.
+	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
+	RSPMD=$!
+	i=0; until [ -S /tmp/spmif-i2v2-r ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	# iked_apply_workers exports RACOON2_CRYPTO_WORKERS only for numeric
+	# cells; empty mean "live", and iked treats unset as its default.
+	_WK=""
+	[ -n "${R2_WORKERS-}" ] && _WK="RACOON2_CRYPTO_WORKERS=$R2_WORKERS"
+	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2v2-r \
+	    RACOON2_RESUME_DIR="$PRIVRES_R" $_WK \
+	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
+	R2_IKED_EPHEMERAL_PID=$!
+	i=0
+	until kill -0 "$R2_IKED_EPHEMERAL_PID" 2>/dev/null || [ "$i" -ge 10 ]; do sleep 1; i=$((i+1)); done
+	if ! kill -0 "$R2_IKED_EPHEMERAL_PID" 2>/dev/null; then
+		log "FAIL: ephemeral iked died workers=${R2_WORKERS-} in NSR"
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
+		return 1
+	fi
+	# worker count proof: the NSR iked must log it (same gate as before).
+	# Poll — the -l logfile is block-buffered, so the line lands a moment
+	# after "starting iked"; a one-shot grep right after spawn races it.
+	if [ "${R2_WORKERS:-0}" -gt 0 ]; then
+		_wk_ok=0
+		for _ in $(seq 1 15); do
+			if grep -q "crypto workers: $R2_WORKERS" "$D/resp-iked.log" 2>/dev/null; then
+				_wk_ok=1
+				break
+			fi
+			sleep 1
+		done
+		if [ "$_wk_ok" != 1 ]; then
+			log "FAIL: no 'crypto workers: $R2_WORKERS' in NSR iked log"
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
+			return 1
+		fi
+	fi
+	log "NSR iked pid=$R2_IKED_EPHEMERAL_PID workers=${R2_WORKERS-} (netns $NSR, bind $HR)"
 
 	# ESP proposal selection: case name suffix drives the strongSwan
 	# esp= line -- -s384 -> aes256-sha384!, -s512 -> aes256-sha512!,
@@ -78,113 +198,99 @@ kind_ikev2() {
 	*-g8)  STRONG_ESP='aes128gcm8!';  EXPECT_AUTH='aead rfc4106(gcm(aes)).* 64$' ;;
 	*-g12) STRONG_ESP='aes128gcm12!'; EXPECT_AUTH='aead rfc4106(gcm(aes)).* 96$' ;;
 	*-dh19)
-		# ECP256 (DH group 19) in both IKE_AUTH and the CREATE_CHILD
-		# proposals; responder must accept KEi group 19 and bind it
-		# to the selected proposal DH (no INVALID_KE loop, no
-		# KEYMAT divergence).
 		STRONG_ESP='aes128gcm16-ecp256!'
 		EXPECT_AUTH='aead rfc4106(gcm(aes)).* 128$'
 		;;
 	*-childrekey)
-		# CHILD_SA rekey via CREATE_CHILD_SA + REKEY_SA at a 30s
-		# keylife (keylife=1h never fires in CI).  PFS-19: charon
-		# rekeys with KEi group 19.  Gate: SPI replaced, SA stays.
 		STRONG_ESP='aes128gcm16-ecp256!'
 		CHILD_LIFE='keylife=30s'
 		REKEY_EXTRA='reauth=no
-		rekey=yes
-		rekeymargin=8s
-		rekeyfuzz=0%'
+rekey=yes
+rekeymargin=8s
+rekeyfuzz=0%'
 		;;
 	*-r2rekey)
-		# racoon2 as original responder initiates CHILD rekey
-		# (our 30s ipsec_sa_lifetime_time).  charon rekey=no.
 		STRONG_ESP='aes128gcm16-ecp256!'
 		CHILD_LIFE='keylife=1h'
 		REKEY_EXTRA='reauth=no
-		rekey=no'
+rekey=no'
 		;;
 	*-frag) FRAG='fragmentation=yes' ;;
 	*-mobike|*-cookie2) MOBIKE='mobike=yes' ;;
 	*-ikesa-rekey)
-		# reauth=no: RFC 7296 CREATE_CHILD_SA, not DELETE+INITIAL_CONTACT
 		IKE_LIFE='ikelifetime=30s'
 		REKEY_EXTRA='reauth=no
-	rekey=yes
-	rekeymargin=8s
-	rekeyfuzz=0%'
+rekey=yes
+rekeymargin=8s
+rekeyfuzz=0%'
 		;;
 	esac
-	pskhex=$(psk_file_hex "$ETC/psk/macos.psk")
-	[ -n "$pskhex" ] || { log "FAIL: empty PSK hex from $ETC/psk/macos.psk"; return 1; }
-	mkdir -p /etc/strongswan.d/charon
-	cat >/etc/strongswan.d/charon/bypass-lan.conf <<'EOF'
-charon {
-	plugins {
-		bypass-lan {
-			load = no
+	pskhex=$(psk_file_hex "$ETC/psk/macos.psk") || { log "FAIL: empty PSK hex from $ETC/psk/macos.psk"; return 1; }
+	# charon defaults table: swanctl conn options mirror the ipsec.conf
+	# knobs the rows used to set (rekey drift, frag, mobike, child PFS).
+	_REKEY_TIME=0s
+	_CHILD_REKEY_TIME=0s
+	_FRAG_OPT=
+	_MOBIKE_OPT=
+	case "$name" in
+	*-childrekey) _CHILD_REKEY_TIME=30s ;;
+	*-ikesa-rekey) _REKEY_TIME=30s ;;
+	*-frag) _FRAG_OPT='fragmentation = yes' ;;
+	*-mobike|*-cookie2) _MOBIKE_OPT='mobike = yes' ;;
+	esac
+	# swanctl conn: IKE proposal = responder kmp (aes256-sha256-modp2048);
+	# child esp proposal per STRONG_ESP; local/remote ids match the iked
+	# responder's my_id/peers_id (fqdn, no @ prefix in swanctl ids).
+	CHARON_CONN="$I2I_CHARON_VDIR/r2-ikev2.conf"
+	rm -f "$CHARON_CONN"
+	cat > "$CHARON_CONN" <<EOF
+connections {
+	r2macos {
+		version = 2
+		rekey_time = $_REKEY_TIME
+		proposals = aes256-sha256-modp2048
+		local_addrs = $HI
+		remote_addrs = $HR
+		local {
+			id = macos.client
+			auth = psk
+		}
+		remote {
+			id = racoon2-wsl
+			auth = psk
+		}
+		$_FRAG_OPT
+		$_MOBIKE_OPT
+		children {
+			ch {
+				local_ts = $HI/32
+				remote_ts = $HR/32
+				esp_proposals = ${STRONG_ESP%!}
+				rekey_time = $_CHILD_REKEY_TIME
+			}
 		}
 	}
 }
+secrets {
+	ike-r2macos {
+		secret = "0x$pskhex"
+	}
+}
 EOF
-	# strongSwan sends its own TS (no CP request); racoon2 remote still
-	# needs the pool for Apple clients — present but unused here.
-	cat >/etc/ipsec.conf <<EOF
-config setup
-	uniqueids=no
-	charondebug="ike 1, knl 1"
+	chmod 600 "$CHARON_CONN"
 
-conn r2macos
-	keyexchange=ikev2
-	ike=aes256-sha256-modp2048!
-	esp=$STRONG_ESP
-	left=$CIP
-	leftid=@macos.client
-	leftsubnet=$CIP/32
-	right=$RIP
-	rightid=@racoon2.wsl
-	rightsubnet=$RIP/32
-	authby=secret
-	auto=add
-	type=tunnel
-	$IKE_LIFE
-	$REKEY_EXTRA
-	$CHILD_LIFE
-	keyingtries=1
-	$FRAG
-	$MOBIKE
-EOF
-	cat >/etc/ipsec.secrets <<EOF
-@macos.client @racoon2.wsl : PSK 0x${pskhex}
-EOF
-	chmod 600 /etc/ipsec.secrets
-
-	ip netns exec "$NS" ipsec start
+	( ip netns exec "$NSI" "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
+	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 ) >"$D/charon-init.log" 2>&1 &
+	_CHARON_PID=$!
 	sleep 2
-	# ipsec up can hang after the Child SA is already in; ping is the gate.
-	# Snapshot host SAD while IKE_AUTH runs. On some kernels charon-in-netns
-	# cannot XFRM_MSG_NEWSA (netlink 93) and immediately DELETEs the child;
-	# a post-up grep then misses the responder SA iked already installed.
-	: >/tmp/r2-sad-watch
-	(
-		# Bounded so it self-terminates even if the kill below is missed;
-		# 250*0.2s = 50s outlives the outer ~30s poll.
-		for _snap in $(seq 1 250); do
-			ip xfrm state >>/tmp/r2-sad-watch 2>/dev/null || true
-			sleep 0.2
-		done
-	) &
-	_sadwatch=$!
-	timeout 25 ip netns exec "$NS" ipsec up r2macos || true
+	( ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --load-all --debug 2 ) >"$D/swanctl-load.log" 2>&1
+	( ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --initiate --child ch --debug 2 >"$D/swanctl-init.log" 2>&1 ) || true
 	# NB: no inner-ping gate on the netns rows — charon-in-netns cannot
 	# install its side of the SAs on these kernels (mirrored WSL2 and
 	# GH-hosted; manual netns xfrm adds work, so it is charon's netlink
-	# path that fails, not the tree). The netns rows prove negotiation +
-	# the responder SAD/SPD with exact auth/trunc content.
-	# Poll for the responder SAD instead of one-shot-after-sleep: on the
-	# loaded GH-hosted runner the iked installs the SAD a moment after the
-	# first grep and a single check races it (observed: the debug dump a
-	# half-second later already shows the aead line).  Wait up to 30s.
+	# path that fails, not the tree).  The netns rows prove negotiation +
+	# the responder SAD/SPD with exact auth/trunc content — read from the
+	# RESPONDER netns, which iked owns.
 	if [ -n "$EXPECT_AUTH" ]; then
 		_sadpat="$EXPECT_AUTH"
 	else
@@ -192,155 +298,176 @@ EOF
 	fi
 	_sad_ok=0
 	for _ in $(seq 1 30); do
-		if ip xfrm state | grep -q "$_sadpat" ||
-		   grep -q "$_sadpat" /tmp/r2-sad-watch 2>/dev/null; then
+		if ip netns exec "$NSR" ip xfrm state | grep -q "$_sadpat"; then
 			_sad_ok=1
 			break
 		fi
 		sleep 1
 	done
-	kill "$_sadwatch" 2>/dev/null || true
-	wait "$_sadwatch" 2>/dev/null || true
 	if [ "$_sad_ok" != 1 ]; then
 		if [ -n "$EXPECT_AUTH" ]; then
-			log "FAIL: SAD missing $EXPECT_AUTH"
-			ip xfrm state | grep -E 'auth|aead' | head -6
+			log "FAIL: SAD missing $EXPECT_AUTH (NSR)"
+			ip netns exec "$NSR" ip xfrm state | grep -E 'auth|aead' | head -6
 		else
-			log "FAIL: no GCM SAD"
+			log "FAIL: no GCM SAD (NSR)"
 		fi
-		charon_reset
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	fi
 
-	show=$("$SBIN/ikedctl" show-sa isakmp) || {
-		log "FAIL: show-sa"
-		charon_reset
+	show=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r show-sa isakmp) || {
+		log "FAIL: show-sa (NSR)"
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	}
-	# FWD must mirror the IN tmpl (SSH-death regression, e2bd9ef)
-	if ! fwd_tmpl_check; then
-		log "FAIL: fwd tmpl != in tmpl"
-		charon_reset
+	echo "$show" | grep -q "$HI" || {
+		log "FAIL: show-sa missing $HI"
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
+		return 1
+	}
+	# FWD must mirror the IN tmpl (SSH-death regression, e2bd9ef) — in the
+	# responder netns, which iked owns.
+	if ! fwd_tmpl_check "$NSR"; then
+		log "FAIL: fwd tmpl != in tmpl (NSR)"
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	fi
-	echo "$show" | grep -q "$CIP" || {
-		log "FAIL: show-sa missing $CIP"
-		charon_reset
-		return 1
-	}
 
 	case "$name" in
 	*-resume-dump)
-		dump=$(find /var/lib/racoon2/resume /var/run/racoon2/resume /run/racoon2/resume -type f 2>/dev/null | head -1)
-		[ -n "$dump" ] || { log "FAIL: no resume dump after IKE_AUTH"; charon_reset; return 1; }
+		dump=$(find "$PRIVRES_R" -type f 2>/dev/null | head -1)
+		[ -n "$dump" ] || { log "FAIL: no resume dump after IKE_AUTH"; charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"; return 1; }
 		mag=$(od -An -tx1 -N4 "$dump" 2>/dev/null | tr -d ' \n')
 		echo "$mag" | grep -qi '^53523252' || {
 			log "FAIL: resume dump magic $mag want 53 52 32 52"
-			charon_reset
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
 		log "resume dump $dump magic SR2R"
 		;;
 	*-qcd)
-		grep -q 'sending QCD_TOKEN' /tmp/r2-iked-matrix.log || {
-			log "FAIL: no sending QCD_TOKEN in AUTH log"
-			charon_reset
+		grep -q 'sending QCD_TOKEN' "$D/resp-iked.log" || {
+			log "FAIL: no sending QCD_TOKEN in NSR iked log"
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
 		;;
 	*-ikesa-rekey)
-		sleep 28
-		grep -E 'received IKE_SA rekey request|initiating IKE_SA rekey' /tmp/r2-iked-matrix.log || {
-			log "FAIL: no IKE_SA rekey in log"
-			tail -30 /tmp/r2-iked-matrix.log
-			charon_reset
+		# charon rekey_time=30s starts at IKE_SA ESTABLISHED; on the fast
+		# P2P veth the SA lands quickly, so a fixed 28s sleep races the
+		# rekey (observed flake: passed first run, missed second).  Poll
+		# for the rekey marker up to 50s instead of a one-shot sleep.
+		_rk_ok=0
+		for _ in $(seq 1 50); do
+			if grep -Eq 'received IKE_SA rekey request|initiating IKE_SA rekey' "$D/resp-iked.log"; then
+				_rk_ok=1
+				break
+			fi
+			sleep 1
+		done
+		[ "$_rk_ok" = 1 ] || {
+			log "FAIL: no IKE_SA rekey in NSR iked log"
+			tail -30 "$D/resp-iked.log"
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
-		showr=$("$SBIN/ikedctl" show-sa isakmp) || true
-		echo "$showr" | grep -q "$CIP" || {
+		showr=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r show-sa isakmp) || true
+		echo "$showr" | grep -q "$HI" || {
 			log "FAIL: IKE_SA gone after rekey wait"
-			charon_reset
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
 		;;
 	*-childrekey)
-		# CHILD_SA rekey fires at keylife=30s; assert the ESP SPI
-		# actually changed (keylife=1h never fires in CI) and the
-		# tunnel stays up afterward.
-		spi_before=$(ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
+		spi_before=$(ip netns exec "$NSR" ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
 		sleep 35
-		showr=$("$SBIN/ikedctl" show-sa isakmp) || true
-		echo "$showr" | grep -q "$CIP" || {
+		showr=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r show-sa isakmp) || true
+		echo "$showr" | grep -q "$HI" || {
 			log "FAIL: IKE_SA gone after child rekey wait"
-			charon_reset
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
-		spi_after=$(ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
+		spi_after=$(ip netns exec "$NSR" ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
 		[ "$spi_before" != "$spi_after" ] || {
 			log "FAIL: ESP SPI unchanged after childrekey wait (no rekey fired)"
-			charon_reset
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
 		log "child rekey replaced SPI: $spi_before -> $spi_after"
 		;;
 	*-r2rekey)
-		# We mint CREATE_CHILD (30s lifetime). charon rekey=no.
-		spi_before=$(ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
+		spi_before=$(ip netns exec "$NSR" ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
 		sleep 35
-		grep -q 'initiating CREATE_CHILD_SA rekey' /tmp/r2-iked-matrix.log || {
+		grep -q 'initiating CREATE_CHILD_SA rekey' "$D/resp-iked.log" || {
 			log "FAIL: racoon2 did not initiate CHILD rekey"
-			tail -30 /tmp/r2-iked-matrix.log
-			charon_reset
+			tail -30 "$D/resp-iked.log"
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
-		grep -q INVALID_SYNTAX /tmp/r2-iked-matrix.log && {
+		grep -q INVALID_SYNTAX "$D/resp-iked.log" && {
 			log "FAIL: peer rejected CREATE_CHILD (INVALID_SYNTAX; msgid 0?)"
-			charon_reset
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
-		showr=$("$SBIN/ikedctl" show-sa isakmp) || true
-		echo "$showr" | grep -q "$CIP" || {
+		showr=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r show-sa isakmp) || true
+		echo "$showr" | grep -q "$HI" || {
 			log "FAIL: IKE_SA gone after r2 child rekey"
-			charon_reset
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
-		spi_after=$(ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
+		spi_after=$(ip netns exec "$NSR" ip xfrm state | grep -E 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
 		[ "$spi_before" != "$spi_after" ] || {
 			log "FAIL: ESP SPI unchanged after r2rekey wait"
-			charon_reset
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
 		log "r2-initiated child rekey replaced SPI: $spi_before -> $spi_after"
 		;;
 	*-cookie2)
-		grep -q 'NO_ADDITIONAL_ADDRESSES' /tmp/r2-iked-matrix.log || {
-			log "FAIL: no NO_ADDITIONAL_ADDRESSES in log"
-			charon_reset
+		grep -q 'NO_ADDITIONAL_ADDRESSES' "$D/resp-iked.log" || {
+			log "FAIL: no NO_ADDITIONAL_ADDRESSES in NSR iked log"
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
 		;;
 	esac
 
-	"$SBIN/ikedctl" vpn-disconnect "$CIP" || {
+	"$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r vpn-disconnect "$HI" || {
 		log "FAIL: vpn-disconnect"
-		charon_reset
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	}
-	show2=$("$SBIN/ikedctl" show-sa isakmp) || {
+	show2=$("$SBIN/ikedctl" -s /tmp/iked.sock-i2v2-r show-sa isakmp) || {
 		log "FAIL: show-sa after disconnect"
-		charon_reset
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	}
-	if echo "$show2" | grep -q "$CIP"; then
+	if echo "$show2" | grep -q "$HI"; then
 		log "FAIL: SA still listed after vpn-disconnect"
-		charon_reset
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	fi
-	iked_listening || {
-		log "FAIL: iked died after vpn-disconnect"
-		charon_reset
+	if ! kill -0 "$R2_IKED_EPHEMERAL_PID" 2>/dev/null; then
+		log "FAIL: NSR iked died after vpn-disconnect"
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
-	}
+	fi
 
 	charon_reset
+	_ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
+	return 0
+}
+
+# _ikev2_clean — tear down the two netnss, daemons, and resume dir.
+_ikev2_clean() {
+	_NSR=$1; _NSI=$2; _C=$3; _PRR=$4
+	pkill -9 -f "$_C/" 2>/dev/null || true
+	killall -9 charon 2>/dev/null || true
+	rm -f "$I2I_CHARON_VDIR/r2-ikev2.conf" 2>/dev/null || true
+	sleep 1
+	ip netns del "$_NSR" 2>/dev/null || true
+	ip netns del "$_NSI" 2>/dev/null || true
+	rm -rf "$_PRR"
+	# clear ephemeral pid so iked_restore (run.sh EXIT trap) does nothing
+	R2_IKED_EPHEMERAL_PID=
 }

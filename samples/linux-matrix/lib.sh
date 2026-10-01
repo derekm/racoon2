@@ -203,9 +203,16 @@ iked_restore() {
 # Linux FWD regression gate (spmd snapshot, e2bd9ef): the forwarded
 # tunnel policy must carry the SAME tmpl as the matching dir-in policy.
 # An inverted FWD (LAN→CP) breaks SSH-to-LAN while ping-to-box works.
+# $1 = optional netns to read the SPD from (netns-wrapped SUT rows).
 fwd_tmpl_check() {
-	ip xfrm policy 2>/dev/null | awk '
-		function norm(s){gsub(/[ 	]+/," ",s); gsub(/^ | $/,"",s); return s}
+	# read the SPD either from the caller's netns (netns-wrapped SUT) or the
+	# host -- the awk body is identical either way.
+	if [ -n "${1:-}" ]; then
+		ip netns exec "$1" ip xfrm policy 2>/dev/null
+	else
+		ip xfrm policy 2>/dev/null
+	fi | awk '
+		function norm(s){gsub(/[ \t]+/," ",s); gsub(/^ | $/,"",s); return s}
 		function flush(){
 			if (sel != "" && tmpl != "" && isesp && mode == "tunnel") {
 				key = norm(sel) "|" dir
@@ -214,13 +221,13 @@ fwd_tmpl_check() {
 			sel=""; dir=""; tmpl=""; isesp=0; mode=""
 		}
 		/^src /{ if (sel != "") flush(); sel=$0; next }
-		/^[ 	]*dst /{ sel=sel" "$0; next }
-		/^[ 	]*dir /{ dir=$2; next }
-		/^[ 	]*tmpl /{ tmpl=$0; next }
-		/^[ 	]*proto esp /{ isesp=1; if ($0 ~ /mode tunnel/) mode="tunnel"; next }
-		/^[ 	]*$/ { flush(); next }
-		/^[ 	]*ptype /{ next }
-		/^[ 	]*priority /{ next }
+		/^[ \t]*dst /{ sel=sel" "$0; next }
+		/^[ \t]*dir /{ dir=$2; next }
+		/^[ \t]*tmpl /{ tmpl=$0; next }
+		/^[ \t]*proto esp /{ isesp=1; if ($0 ~ /mode tunnel/) mode="tunnel"; next }
+		/^[ \t]*$/ { flush(); next }
+		/^[ \t]*ptype /{ next }
+		/^[ \t]*priority /{ next }
 		{ next }
 		END{
 			flush()
