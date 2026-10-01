@@ -57,6 +57,15 @@
 
 #include "debug.h"
 
+/* RFC 7427 A.1.2 sha256WithRSAEncryption AlgorithmIdentifier, DER-encoded
+ * (15 bytes: SEQUENCE{ OID 1.2.840.113549.1.1.11, NULL }).  File-scope so the
+ * AUTH sign/verify switch cases do not open with a declaration after a label
+ * (C89: label must be followed by a statement; clang errors, gcc tolerated). */
+static const uint8_t rfc7427_sha256_ai[] = {
+	0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+	0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
+};
+
 static rc_vchar_t *ikev2_auth_input(struct ikev2_sa *, int);
 
 /*
@@ -358,12 +367,6 @@ ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 		 * Digital Signature (14) - RSA signature over SHA-256, with the
 		 * auth data prefixed by [1-octet length][AlgorithmIdentifier].
 		 */
-	/* RFC 7427 Appendix A.1.2: sha256WithRSAEncryption AlgorithmIdentifier,
-	 * DER-encoded (15 bytes: SEQUENCE{ OID 1.2.840.113549.1.1.11, NULL }). */
-	static const uint8_t rfc7427_sha256_ai[] = {
-		0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
-		0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
-	};
 		privkey = ikev2_private_key(sa, id);
 		if (!privkey) {
 			isakmp_log(sa, 0, 0, 0,
@@ -593,10 +596,6 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 		 * Digital Signature (14) - auth data = [1-octet len][AI][signature].
 		 * Only SHA-256 is advertised, so match the known sha256WithRSA
 		 * AlgorithmIdentifier blob and verify the trailing signature. */
-	static const uint8_t rfc7427_sha256_ai[] = {
-		0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
-		0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
-	};
 		pubkey = ikev2_public_key(sa, id, &sa->due_time);
 		if (!pubkey) {
 			isakmp_log(sa, 0, 0, 0,
