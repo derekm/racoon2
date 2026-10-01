@@ -242,7 +242,7 @@ EOF
 	for _ns in "$NSR" "$NSI"; do
 		s=$(ip netns exec "$_ns" ip xfrm state 2>/dev/null | grep -E 'sel (src|dst) ')
 		printf '%s\n' "$s" | grep -qE 'sel src ::/0' || v6sel=0
-		printf '%s\n' "$s" | grep -qE 'sel dst ::/0' || v6sel=0
+		printf '%s\n' "$s" | grep -qE 'dst ::/0' || v6sel=0
 	done
 	if [ "$v6sel" -eq 1 ]; then
 		log "CPL X6: PASS IPv6 template family (xfrm sel ::/0) on both seats"
