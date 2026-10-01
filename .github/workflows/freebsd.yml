@@ -4,7 +4,7 @@
 # so this is the real BSD PF_KEY SAD/SPD path, and 15.1 base OpenSSL 3.5.6
 # turns WITH_ADDKE on (Fedora-44 parity for the RFC 9370 PQC units).
 #
-# The vnet conformance (freebsd-vnet-smoke.sh) is NEW vs the NetBSD legs:
+# The vnet conformance (freebsd-vnet-matrix.sh) is NEW vs the NetBSD legs:
 # NetBSD is smoke-only ("no netns; npf/pf/ipf is packet filter, not
 # SAD/SPD"), whereas FreeBSD HAS virtual networking (vnet jails + epair(4))
 # so we can isolate two iked seats and run a real ESP tunnel through the
@@ -43,7 +43,7 @@ jobs:
             set -eu
             sh samples/freebsd-ci/freebsd-vmactions-build.sh
             echo "=== vnet conformance (iked<->iked ESP over pfkey KM) ==="
-            ROW=all sh samples/freebsd-ci/freebsd-vnet-smoke.sh
+            ROW=all sh samples/freebsd-ci/freebsd-vnet-matrix.sh
 
       - name: 'Generate compliance report (KAT evidence from FreeBSD 15.1 build)'
         run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/freebsd-build-test-151-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
