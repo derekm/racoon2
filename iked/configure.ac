@@ -136,6 +136,11 @@ AC_MSG_RESULT(${kernel_build_dir})
 
 RC_CHECK_PFKEYV2_H
 RC_IF_NATT_ENABLE
+dnl IPv6 probe must run BEFORE the libracoon -L/-l link is set up below,
+dnl otherwise the AC_RUN_IFELSE conftest links against an unbuilt
+dnl ../lib/libracoon and the probe silently reports 'no' (mirrors spmd).
+RC_IF_IPV6_ENABLE
+
 
 if test x"$enable_natt" = x"yes"; then
   if test x"$ikev1" = x"yes"; then

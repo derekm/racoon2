@@ -26,17 +26,28 @@ kind_i2iv6() {
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
-	# IPv6 must be compiled into the installed iked/spmd prefix (spmd too:
-	# a libracoon or spmd built without INET6 drops ports on the IPv6 IKE
-	# bypass rows — unscoped proto udp allow = the A2 cleartext FAIL).
-	if ! grep -aq "sin6_family" "$SBIN/iked" 2>/dev/null; then
-		log "FAIL: $SBIN/iked has no IPv6 (INET6) support"
+	# IPv6 must be compiled into the lib/spmd/iked build.  Assert on the
+	# BUILD TREE's config.h (spmd/iked/lib), not on a struct name in the
+	# installed ELF: `sin6_family` appears in the binary even when INET6 is
+	# NOT defined (spmd/dns.c references it unconditionally), so an ELF grep
+	# cannot catch a rebuild that drops the macro and resurrects portless
+	# IPv6 bypass.  R2_SRC is exported by run.sh.
+	if ! grep -q '^#define INET6 1' "$R2_SRC/spmd/config.h" 2>/dev/null; then
+		log "FAIL: $R2_SRC/spmd/config.h lacks '#define INET6 1' (portless IPv6 bypass risk)"
 		return 1
 	fi
-	if ! grep -aq "sin6_family" "$SBIN/spmd" 2>/dev/null; then
-		log "FAIL: $SBIN/spmd has no IPv6 (INET6) support"
+	if ! grep -q '^#define INET6 1' "$R2_SRC/iked/config.h" 2>/dev/null; then
+		log "FAIL: $R2_SRC/iked/config.h lacks '#define INET6 1'"
 		return 1
 	fi
+	# the installed binaries must match the build tree they ship from; guard
+	# against a stale prefix (rebuild installed elsewhere).
+	for b in "$SBIN/iked" "$SBIN/spmd"; do
+		if ! grep -aq "sin6_family" "$b" 2>/dev/null; then
+			log "FAIL: $b lacks IPv6 support in the binary"
+			return 1
+		fi
+	done
 
 	# Reset row-scoped I2I_* knobs leaked into the shared run.sh shell by
 	# an earlier i2iinit-*ppk* row (see 6dd0c58 — PPK-leak fix).
