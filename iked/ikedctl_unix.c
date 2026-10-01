@@ -160,6 +160,10 @@ fill_index(struct admin_com_indexes *ndx, int family,
 		d4 = (struct sockaddr_in *)&ndx->dst;
 		s4->sin_family = AF_INET;
 		d4->sin_family = AF_INET;
+#ifdef HAVE_SA_LEN
+		s4->sin_len = sizeof(*s4);
+		d4->sin_len = sizeof(*d4);
+#endif
 		if (inet_pton(AF_INET, src, &s4->sin_addr) != 1)
 			errx(EXIT_FAILURE, "bad src %s", src);
 		if (inet_pton(AF_INET, dst, &d4->sin_addr) != 1)
@@ -169,6 +173,10 @@ fill_index(struct admin_com_indexes *ndx, int family,
 		d6 = (struct sockaddr_in6 *)&ndx->dst;
 		s6->sin6_family = AF_INET6;
 		d6->sin6_family = AF_INET6;
+#ifdef HAVE_SA_LEN
+		s6->sin6_len = sizeof(*s6);
+		d6->sin6_len = sizeof(*d6);
+#endif
 		if (inet_pton(AF_INET6, src, &s6->sin6_addr) != 1)
 			errx(EXIT_FAILURE, "bad src %s", src);
 		if (inet_pton(AF_INET6, dst, &d6->sin6_addr) != 1)
