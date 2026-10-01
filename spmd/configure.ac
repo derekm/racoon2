@@ -16,6 +16,13 @@ AC_PROG_CPP
 AC_PROG_INSTALL
 RC_PROG_MKDEP
 
+dnl IPv6 probe must run BEFORE the libracoon -L/-l link is set up below,
+dnl otherwise the AC_RUN_IFELSE conftest links against an unbuilt
+dnl ../lib/libracoon and the probe silently reports 'no' (and spmd's own
+dnl config.h then misses INET6, leaving the UDP 500/4500 bypass rows
+dnl portless on IPv6 SAs).
+RC_IF_IPV6_ENABLE
+
 INSTALL_LIB="\${INSTALL_DATA}"
 AC_SUBST(INSTALL_LIB)
 INSTALL_DIR="\${INSTALL} -d"
