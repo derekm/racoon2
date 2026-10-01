@@ -203,20 +203,29 @@ jexec $ji $SBIN/ikedctl -s /tmp/freeb/init-ctl establish-sa isakmp inet $hi $hr 
 up=0
 i=0
 while [ "$i" -lt 45 ]; do
-	# kernel-global PF_KEY SADB: count ESP tunnel SAs (one per direction).
-	n=$(setkey -D 2>/dev/null | grep -cE 'esp mode=tunnel' || true)
-	if [ "$n" -ge 2 ]; then
+	# SADB is PER-VNET on FreeBSD (sys/netipsec/key.c VNET-virtualizes the
+	# SAD/SPD): the jails' ESP SAs are visible only from INSIDE each jail,
+	# never in the host's setkey -D.  Count each seat's own kernel SADB.
+	rn=$(jexec $jr setkey -D 2>/dev/null | grep -cE 'esp mode=tunnel' || true)
+	in=$(jexec $ji setkey -D 2>/dev/null | grep -cE 'esp mode=tunnel' || true)
+	if [ "$rn" -ge 1 ] && [ "$in" -ge 1 ]; then
 		up=1
 		break
 	fi
 	i=$((i+1)); sleep 1
 done
 
-echo "=== SADB dump (retained for diagnosis) ==="
-setkey -D > /tmp/freeb/sadb-dump.txt 2>&1 || true
-setkey -DP > /tmp/freeb/spd-dump.txt 2>&1 || true
-echo "ESP tunnel SAs in kernel SADB: $(setkey -D 2>/dev/null | grep -cE 'esp mode=tunnel' || true)"
-sed -n '1,50p' /tmp/freeb/sadb-dump.txt 2>/dev/null || true
+echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
+jexec $jr setkey -D > /tmp/freeb/resp-sadb.txt 2>&1 || true
+jexec $ji setkey -D > /tmp/freeb/init-sadb.txt 2>&1 || true
+jexec $jr setkey -DP > /tmp/freeb/resp-spd.txt 2>&1 || true
+jexec $ji setkey -DP > /tmp/freeb/init-spd.txt 2>&1 || true
+echo "responder jail ESP tunnel SAs: $(grep -cE 'esp mode=tunnel' /tmp/freeb/resp-sadb.txt 2>/dev/null || echo 0)"
+echo "initiator jail ESP tunnel SAs: $(grep -cE 'esp mode=tunnel' /tmp/freeb/init-sadb.txt 2>/dev/null || echo 0)"
+echo "--- responder jail SADB ---"; sed -n '1,50p' /tmp/freeb/resp-sadb.txt 2>/dev/null || true
+echo "--- initiator jail SADB ---"; sed -n '1,50p' /tmp/freeb/init-sadb.txt 2>/dev/null || true
+echo "--- responder jail SPD ---"; sed -n '1,30p' /tmp/freeb/resp-spd.txt 2>/dev/null || true
+echo "--- initiator jail SPD ---"; sed -n '1,30p' /tmp/freeb/init-spd.txt 2>/dev/null || true
 
 echo "=== iked logs (tail) ==="
 echo "--- responder iked ---"; tail -25 /tmp/freeb/resp-iked.log 2>/dev/null || true
@@ -224,9 +233,9 @@ echo "--- initiator iked ---"; tail -25 /tmp/freeb/init-iked.log 2>/dev/null || 
 
 echo "=== verdict ==="
 if [ "$up" -eq 1 ]; then
-	lines=$(setkey -D 2>/dev/null | grep -cE 'esp mode=tunnel' || true)
-	echo "PASS freebsd-vnet i2iinit-esp (pfkey KM: $lines ESP tunnel SAs on $hr<->$hi in kernel SADB)"
-	echo "CPL B1: PASS freebsd pfkey KM ESP child up (AES-CBC-128, setkey -D evidence)"
+	lines=$(grep -cE 'esp mode=tunnel' /tmp/freeb/resp-sadb.txt /tmp/freeb/init-sadb.txt 2>/dev/null | awk -F: '{s+=$2} END{print s}')
+	echo "PASS freebsd-vnet i2iinit-esp (pfkey KM: $lines ESP tunnel SAs on $hr<->$hi in the per-vnet SADBs)"
+	echo "CPL B1: PASS freebsd pfkey KM ESP child up (AES-CBC-128, per-jail setkey -D evidence)"
 	# leave the dumps as artifacts, but stop the daemons and drop the jails
 	jexec $jr /bin/sh -c 'killall iked spmd 2>/dev/null' || true
 	jexec $ji /bin/sh -c 'killall iked spmd 2>/dev/null' || true
@@ -235,8 +244,7 @@ if [ "$up" -eq 1 ]; then
 	echo FREEBSD-VNET-OK
 	exit 0
 fi
-echo "FAIL freebsd-vnet i2iinit-esp: no ESP tunnel SAs in kernel SADB after 45s"
+echo "FAIL freebsd-vnet i2iinit-esp: no ESP tunnel SAs in either per-vnet SADB after 45s"
 echo "--- initiator ikedctl output ---"; cat /tmp/freeb/ctl.out 2>/dev/null || true
 echo "--- spmd logs ---"; cat /tmp/freeb/resp-spmd.log /tmp/freeb/init-spmd.log 2>/dev/null || true
-echo "--- spd dump ---"; sed -n '1,40p' /tmp/freeb/spd-dump.txt 2>/dev/null || true
 exit 1
