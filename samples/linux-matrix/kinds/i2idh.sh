@@ -40,6 +40,16 @@ kind_i2idh() {
 		;;
 	esac
 
+	# Reset row-scoped I2I_* knobs that another kind (i2iinit-*ppk*) may
+	# have exported into the shared run.sh shell in an earlier row.  Only
+	# the kinds that want PPK flip I2I_PPK on; i2idh never does.  Without
+	# this, a full sweep's i2iinit-ppk* leaves I2I_PPK=1 and the next
+	# i2idh-*-charon charon seat demands PPK (log: "PPK required but peer
+	# does not support PPK") -> AUTH_FAILED, no ESP child.  Isolated runs
+	# never trip it because no ppk row precedes them.
+	I2I_PPK=0
+	I2I_PPK_MANDATORY=0
+
 	I2I_DH_GROUP=$G
 	export I2I_DH_GROUP
 	PEER_I=$(i2i_peer "$name")
