@@ -43,7 +43,8 @@ jobs:
             set -eu
             sh samples/freebsd-ci/freebsd-vmactions-build.sh
             echo "=== vnet conformance (iked<->iked ESP over pfkey KM) ==="
-            sh samples/freebsd-ci/freebsd-vnet-smoke.sh
+            sh samples/freebsd-ci/freebsd-vnet-smoke.sh  # i2iinit-esp parity row
+            ROW=all sh samples/freebsd-ci/freebsd-vnet-smoke.sh
 
       - name: 'Generate compliance report (KAT evidence from FreeBSD 15.1 build)'
         run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/freebsd-build-test-151-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
