@@ -216,16 +216,19 @@ EOF
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	RSPMD=$!
 	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	[ -S "$SPMIF_R" ] || { log "FAIL: responder spmd did not open $SPMIF_R in 15s (see $D/resp-spmd.log)"; return 1; }
 	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 
 	# responder iked admin socket — NOT the initiator's spmif (-i), which
 	# cannot exist yet and would burn the full 15s poll.
 	i=0; until [ -S "$SOCK_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	[ -S "$SOCK_R" ] || { log "FAIL: responder iked did not open $SOCK_R in 15s (see $D/resp-iked.log)"; return 1; }
 
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
 	ISPMD=$!
 	i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	[ -S "$SPMIF_I" ] || { log "FAIL: initiator spmd did not open $SPMIF_I in 15s (see $D/init-spmd.log)"; return 1; }
 	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK="$SOCK_I" RACOON2_RESUME_DIR="$PRIVRES_I" \
 	    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 
@@ -258,9 +261,12 @@ EOF
 	# template with a v6 endpoint (the xfrm-tmpl-family cell).
 	v6sel=1
 	for _ns in "$NSR" "$NSI"; do
-		s=$(ip netns exec "$_ns" ip xfrm state 2>/dev/null | grep -E 'sel (src|dst) ')
-		printf '%s\n' "$s" | grep -qE 'sel src ::/0' || v6sel=0
-		printf '%s\n' "$s" | grep -qE 'dst ::/0' || v6sel=0
+		_xfrm=$(ip netns exec "$_ns" ip xfrm state 2>/dev/null)
+		esp=$(printf '%s\n' "$_xfrm" | grep -c 'proto esp'); esp=${esp:-0}
+		v6sels=$(printf '%s\n' "$_xfrm" | grep -cE 'sel src ::/0 dst ::/0'); v6sels=${v6sels:-0}
+		# EVERY ESP state must carry sel ::/0; a per-seat "src ::/0 exists"
+		# sample lets a stray v4-template SA (sel 192.0.2.1/32) slip through.
+		[ "$esp" -ge 2 ] && [ "$v6sels" -eq "$esp" ] || v6sel=0
 	done
 	if [ "$v6sel" -eq 1 ]; then
 		log "CPL X6: PASS IPv6 template family (xfrm sel ::/0) on both seats"
