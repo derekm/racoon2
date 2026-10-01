@@ -240,7 +240,7 @@ EOF
 	# template with a v6 endpoint (the xfrm-tmpl-family cell).
 	v6sel=1
 	for _ns in "$NSR" "$NSI"; do
-		s=$(ip netns exec "$_ns" ip xfrm state 2>/dev/null | grep -A2 'proto esp')
+		s=$(ip netns exec "$_ns" ip xfrm state 2>/dev/null | grep -E 'sel (src|dst) ')
 		printf '%s\n' "$s" | grep -qE 'sel src ::/0' || v6sel=0
 		printf '%s\n' "$s" | grep -qE 'sel dst ::/0' || v6sel=0
 	done

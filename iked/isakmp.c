@@ -516,12 +516,11 @@ isakmp_open_address(struct sockaddr *addr, int port)
 			int pktinfo;
 			const int yes = 1;
 
-			if (port == 0 || port == isakmp_port) {
+			if (port == 0) {
 				((struct sockaddr_in6 *)sa)->sin6_port =
 				    htons(isakmp_port);
 			} else {
-				/* XXX we don't expect to use other ports for now */
-				goto fail;
+				((struct sockaddr_in6 *)sa)->sin6_port = htons(port);
 			}
 
 #ifdef ADVAPI
@@ -597,8 +596,7 @@ isakmp_open_address(struct sockaddr *addr, int port)
 	SOCKET_LIST_LINK(&socket_list_head, p);
 
 #ifdef ENABLE_NATT
-	if (SOCKADDR_FAMILY(sa) == AF_INET
-	    && port == IKEV2_UDP_PORT_NATT) {
+	if (port == IKEV2_UDP_PORT_NATT) {
 		int option = UDP_ENCAP_ESPINUDP;
 
 		if (setsockopt(p->sock, SOL_UDP, UDP_ENCAP,
