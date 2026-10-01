@@ -40,6 +40,14 @@ kind_i2iv6() {
 		log "FAIL: $R2_SRC/iked/config.h lacks '#define INET6 1'"
 		return 1
 	fi
+	# libracoon carries the sa_to_xaddr / GETSPI path the CPL cells probe;
+	# a rebuild that drops INET6 from lib while keeping it in spmd/iked
+	# would otherwise pass the two gates above and fail every v6 row at
+	# GETSPI ("GETSPI addresses required", the stale-install failure class).
+	if ! grep -q '^#define INET6 1' "$R2_SRC/lib/config.h" 2>/dev/null; then
+		log "FAIL: $R2_SRC/lib/config.h lacks '#define INET6 1'"
+		return 1
+	fi
 	# the installed binaries must match the build tree they ship from; guard
 	# against a stale prefix (rebuild installed elsewhere).
 	for b in "$SBIN/iked" "$SBIN/spmd"; do
