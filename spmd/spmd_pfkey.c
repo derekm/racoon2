@@ -2533,12 +2533,10 @@ spmd_rsync_slid(const struct rcpfk_msg *rc, const char **slidp)
 			continue;
 		/* FQDN sides never carry a.ipaddr; sockcmp rejects garbage.
 		 * Macros (IP_RW/IP_ANY) are excluded by the type gate below,
-		 * so no wildcard check is needed here. */
-#ifdef INET6
-		if (mine->type != RCT_ADDR_INET && mine->type != RCT_ADDR_INET6)
-#else
+		 * so no wildcard check is needed here.  IPv6 socks are typed
+		 * RCT_ADDR_INET too (family lives in the sockaddr), so this
+		 * gate needs no INET6 split. */
 		if (mine->type != RCT_ADDR_INET)
-#endif
 			continue;
 		if (mine->prefixlen != pref)
 			continue;
