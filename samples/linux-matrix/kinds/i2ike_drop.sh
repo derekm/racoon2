@@ -208,16 +208,54 @@ EOF
 		d0=$(tc_dropped "$NSR" "$VR" || true)
 		ndrop=0
 
+		# Baseline: the initial ADDKE child's own KEM install already logs a
+		# matching g_ir_present=Y sha256 before any rekey.  The rekey must
+		# produce a NEW KEM keymat (fresh SK(1)), so the matched Y-hash must
+		# DIFFER from this baseline (same rule as i2ike.sh).
+		YI0=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/init-iked.log" 2>/dev/null \
+			| grep -oE 'sha256=[0-9a-f]+' | tail -1 || true)
+		YR0=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null \
+			| grep -oE 'sha256=[0-9a-f]+' | tail -1 || true)
+		# SPI baseline BEFORE the rekey (a rekeyed child shows a new SPI on
+		# top of the initial pair; the same comm-style new-SPI check i2ike.sh
+		# uses, so the plain child's rekey doesn't trip a >=3 esp-row test).
+		SR0=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort)
+		SI0=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort)
+		# The plain IKE_AUTH child rekeys on its OWN soft timer (53s) too.
+		# i2iinit-drop rows turn that off (child lifetime 3600), but here the
+		# 60s child ALSO has a 53s plain rekey that can land a second before
+		# the ADDKE rekey's install; stop only when a NEW SPI is present AND
+		# a matching changed-from-baseline Y-keymat has set on both sides.
 		rekeyed=0; i=0
+		relaxed=0
 		while [ "$i" -lt 130 ]; do
 			SRn=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort)
 			SIn=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort)
 			re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 			ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
-			# a rekeyed child shows 3 esp rows; expect >= 3 (old + new)
-			if [ "${re:-0}" -ge 3 ] && [ "${ie:-0}" -ge 3 ]; then
-				nreplay=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
-				log "rekey: new SPI rows both sides at ${i}s (resp=$re init=$ie) R2 replay=$nreplay (attempt $attempt)"
+			nr=$(comm -13 <(printf '%s\n' "$SR0") <(printf '%s\n' "$SRn") | grep -c spi)
+			ni=$(comm -13 <(printf '%s\n' "$SI0") <(printf '%s\n' "$SIn") | grep -c spi)
+			ky_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/init-iked.log" 2>/dev/null \
+				| grep -oE 'sha256=[0-9a-f]+' | tail -1 || true)
+			ky_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null \
+				| grep -oE 'sha256=[0-9a-f]+' | tail -1 || true)
+			# The 80% loss is held ONLY until the counted drop AND at least one
+			# R2 replay are both observed; then re-arm to 2% so the followup
+			# SK(1) exchange can actually complete inside the poll window.  A
+			# full-window 80% makes rekey completion a coin flip (the armed
+			# response is re-sent but every copy can be re-dropped) — the row
+			# is proving the REPLAY path, not that loss can be survived forever.
+			nreplay=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
+			d1a=$(tc_dropped "$NSR" "$VR" || true)
+			if [ "$relaxed" -eq 0 ] && [ "${nreplay:-0}" -ge 1 ] && [ $(( ${d1a:-0} - ${d0:-0} )) -ge 1 ]; then
+				ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 2% 2>/dev/null || true
+				relaxed=1
+				log "loss eased to 2% after counted drop=$((${d1a:-0}-${d0:-0})) replay=$nreplay (attempt $attempt)"
+			fi
+			if [ "${nr:-0}" -ge 1 ] && [ "${ni:-0}" -ge 1 ] \
+			   && [ -n "$ky_i" ] && [ -n "$ky_r" ] \
+			   && [ "$ky_i" = "$ky_r" ] && [ "$ky_i" != "$YI0" ]; then
+				log "rekey: new SPI + matching KEM keymat both sides at ${i}s (resp=$re init=$ie) R2 replay=$nreplay (attempt $attempt)"
 				rekeyed=1
 				break
 			fi
@@ -236,20 +274,18 @@ EOF
 
 		# PQC proof — identical to i2ike: the rekey must offer type-06 ADDKE
 		# (0x24 = mlkem768) in its CREATE_CHILD SA, derive ML-KEM keymat on
-		# BOTH sides (install logs 'sha256=<hash> g_ir_present=n'; the LAST
-		# such line on each side must MATCH), and not abort the pending rekey.
+		# BOTH sides (the ADDKE install logs 'sha256=<hash> g_ir_present=Y'; the
+		# LAST such line on each side must MATCH and differ from the pre-rekey
+		# baseline), and not abort the pending rekey.
 		t6=$(grep -c '06000024' "$D/init-iked.log" 2>/dev/null || true)
 		abt=$(grep -cE 'ADDKE followup timeout; abort' "$D/resp-iked.log" 2>/dev/null || true)
-		kh_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/init-iked.log" 2>/dev/null \
-			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
-		kh_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=n' "$D/resp-iked.log" 2>/dev/null \
-			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
+		kh_i=$ky_i; kh_r=$ky_r
 		nreplay=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
 		pqc=0
 		if [ "${t6:-0}" -ge 1 ] && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
-		   && [ "${abt:-0}" -eq 0 ]; then
+		   && [ "$kh_i" != "$YI0" ] && [ "${abt:-0}" -eq 0 ]; then
 			pqc=1
-			log "PQC rekey: type-6 offered (x$t6), last KEM keymat sha256=$kh_i matches both sides, no followup abort"
+			log "PQC rekey: type-6 offered (x$t6), KEM keymat sha256=$kh_i matches both sides (new, != baseline), no followup abort"
 		else
 			log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
 		fi
