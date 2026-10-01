@@ -32,8 +32,8 @@ trap 'rm -f "$TMP"' EXIT
 
 # CPL lines: `CPL <cell>: <VERDICT> <evidence>` and KAT lines:
 # `KAT <cell>: <VERDICT> <evidence>` (KAT evidence becomes the B-cell's).
-sed -n -e 's/^CPL \([A-Z][A-Za-z0-9]*\): \(PASS\|FAIL\|INFO\) /\1:\2:/p' \
-       -e 's/^KAT \([A-Z][A-Za-z0-9]*\): \(PASS\|FAIL\) /\1:\2:/p' \
+sed -n -e 's/^CPL \([A-Z][A-Za-z0-9-]*\): \(PASS\|FAIL\|INFO\) /\1:\2:/p' \
+       -e 's/^KAT \([A-Z][A-Za-z0-9-]*\): \(PASS\|FAIL\) /\1:\2:/p' \
     "$LOG" 2>/dev/null | sed 's/\\n/ /g' > "$TMP"
 
 n="$(wc -l < "$TMP" | tr -d ' ')"

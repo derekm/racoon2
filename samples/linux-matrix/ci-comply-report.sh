@@ -29,9 +29,9 @@ trap 'rm -f "$ev" "$raw"' 0
 
 for src in "$@"; do
 	if [ -f "$src" ]; then
-		grep -ahE '^(CPL |KAT )[A-Za-z0-9]+: (PASS|FAIL|INFO) ' "$src" >> "$raw" || true
+		grep -ahE '^(CPL |KAT )[A-Za-z0-9-]+: (PASS|FAIL|INFO) ' "$src" >> "$raw" || true
 	elif [ -d "$src" ]; then
-		grep -ahrE '^(CPL |KAT )[A-Za-z0-9]+: (PASS|FAIL|INFO) ' "$src" >> "$raw" || true
+		grep -ahrE '^(CPL |KAT )[A-Za-z0-9-]+: (PASS|FAIL|INFO) ' "$src" >> "$raw" || true
 	fi
 done
 
