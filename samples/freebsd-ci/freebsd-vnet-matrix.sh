@@ -68,6 +68,18 @@ jails_teardown() {
 	# stale admin/spmif sockets would block the NEXT row's daemons from binding
 	rm -f /tmp/freeb/*-ctl* /tmp/freeb/*-spmif*
 	rm -f /tmp/freeb-epair.txt
+	# Per-row isolation: iked's resume dir (RACOON2_RESUME_DIR) is a
+	# persistent host/shared path.  Left alone, EVERY row's iked restores the
+	# PREVIOUS row's already-established IKE_SA (children=8 in the logs) and
+	# rides resume/rekey instead of running a fresh IKE_AUTH - so NEG rows
+	# (wrongpsk / idmismatch / strength) can never produce their refusal
+	# marker because no authentication ever runs.  Clear the dumps per row so
+	# every row is a virgin daemon with a clean SADB.
+	rm -rf /tmp/freeb/init-resume /tmp/freeb/resp-resume
+	# Truncate per-seat iked logs so diag()'s full-log greps only ever see
+	# the CURRENT row's lines, never a previous row's pskey/ESTABLISHED/etc.
+	rm -f /tmp/freeb/resp-iked.log /tmp/freeb/init-iked.log \
+	      /tmp/freeb/resp-spmd.log /tmp/freeb/init-spmd.log
 }
 
 # gen_conf $SEAT $NAME $FAM $MY $PEER $IKE_ENC $IKE_PRF $IKE_DH \

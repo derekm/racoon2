@@ -208,14 +208,23 @@ rct2pfk_enctype(int type)
 #ifdef SADB_X_EALG_AES_GCM_ICV16
 	case RCT_ALG_AES_GCM:
 		return SADB_X_EALG_AES_GCM_ICV16;
+#elif defined(SADB_X_EALG_AESGCM16)
+	case RCT_ALG_AES_GCM:
+		return SADB_X_EALG_AESGCM16;
 #endif
 #ifdef SADB_X_EALG_AES_GCM_ICV8
 	case RCT_ALG_AES_GCM8:
 		return SADB_X_EALG_AES_GCM_ICV8;
+#elif defined(SADB_X_EALG_AESGCM8)
+	case RCT_ALG_AES_GCM8:
+		return SADB_X_EALG_AESGCM8;
 #endif
 #ifdef SADB_X_EALG_AES_GCM_ICV12
 	case RCT_ALG_AES_GCM12:
 		return SADB_X_EALG_AES_GCM_ICV12;
+#elif defined(SADB_X_EALG_AESGCM12)
+	case RCT_ALG_AES_GCM12:
+		return SADB_X_EALG_AESGCM12;
 #endif
 	case RCT_ALG_TWOFISH_CBC:
 		return SADB_X_EALG_TWOFISHCBC;
