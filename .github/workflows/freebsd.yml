@@ -57,11 +57,15 @@ jobs:
             # FreeBSD /bin/sh has no pipefail, so tee would mask the matrix
             # exit status; capture to a file, cat the stream, then exit the
             # matrix's own code (the report job sums the per-shard logs).
+            # The log goes in the synced workspace (CWD = checkout root), NOT
+            # /tmp: vmactions syncs the workspace host<->VM bidirectionally
+            # (same mechanism as the KAT logs) but /tmp is VM-local, so the
+            # host-side upload step below could never see it.
             rc=0
             ROW=all sh samples/freebsd-ci/freebsd-vnet-matrix.sh \
               --shard ${{ matrix.shard }} 3 \
-              > /tmp/r2-freebsd-matrix-shard-${{ matrix.shard }}.log 2>&1 || rc=$?
-            cat /tmp/r2-freebsd-matrix-shard-${{ matrix.shard }}.log
+              > r2-freebsd-matrix-shard-${{ matrix.shard }}.log 2>&1 || rc=$?
+            cat r2-freebsd-matrix-shard-${{ matrix.shard }}.log
             exit $rc
 
       - name: Upload shard matrix log
@@ -69,7 +73,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: freebsd-matrix-shard-${{ matrix.shard }}
-          path: /tmp/r2-freebsd-matrix-shard-${{ matrix.shard }}.log
+          path: r2-freebsd-matrix-shard-${{ matrix.shard }}.log
           overwrite: true
           if-no-files-found: error
 
@@ -85,7 +89,10 @@ jobs:
           name: compliance-report-freebsd-build-test-151
           path: freebsd-build-test-151-compliance.md
           overwrite: true
-          if-no-files-found: error
+          # warn, not error: when the matrix has red rows the report
+          # generation step is skipped (not always()), so the file may not
+          # exist — that must not add a second unrelated red reason.
+          if-no-files-found: warn
 
   freebsd-vnet-report:
     name: 'FreeBSD vnet merged report (all shards)'
