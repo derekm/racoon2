@@ -61,12 +61,19 @@ jobs:
             # /tmp: vmactions syncs the workspace host<->VM bidirectionally
             # (same mechanism as the KAT logs) but /tmp is VM-local, so the
             # host-side upload step below could never see it.
+            # The step MUST exit 0 even when the matrix is red: vmactions
+            # only runs its reverse copyback rsync after a *successful* run
+            # step, so a non-zero exit aborts the action before the log is
+            # copied back to the host runner.  The report job is the gate
+            # (it fails the run on any FAIL row) — same division of labor as
+            # the Fedora/Ubuntu matrices, whose shard steps tee the log.
             rc=0
             ROW=all sh samples/freebsd-ci/freebsd-vnet-matrix.sh \
               --shard ${{ matrix.shard }} 3 \
               > r2-freebsd-matrix-shard-${{ matrix.shard }}.log 2>&1 || rc=$?
             cat r2-freebsd-matrix-shard-${{ matrix.shard }}.log
-            exit $rc
+            [ "$rc" -eq 0 ] || echo "matrix rc=$rc (red rows; the merged report job gates the run)"
+            exit 0
 
       - name: Upload shard matrix log
         if: always()
