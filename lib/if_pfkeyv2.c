@@ -633,7 +633,16 @@ rcpfk_send_addx(struct rcpfk_msg *rc, int type)
 	    rcpfk_set_sadbkey(&buf, rc, SADB_EXT_KEY_ENCRYPT))
 		goto err;
 
-	if (rcpfk_set_sadbkey(&buf, rc, SADB_EXT_KEY_AUTH))
+	/*
+	 * KEY_AUTH: only when there is a real integrity algorithm.
+	 * FreeBSD kernel rejects an empty SADB_EXT_KEY_AUTH (key.c
+	 * key_setsaval: len == sizeof(sadb_key) && alg_auth != NULL
+	 * => EINVAL, and sadb_key_bits==0 => EINVAL), and AEAD suites
+	 * (non_auth) have no separate auth key to send.  Emitting the
+	 * extension with authkeylen=0 was the FreeBSD EINVAL trigger.
+	 */
+	if (rc->authtype != RCT_ALG_NON_AUTH &&
+	    rcpfk_set_sadbkey(&buf, rc, SADB_EXT_KEY_AUTH))
 		goto err;
 
 #ifdef ENABLE_NATT
@@ -1091,7 +1100,22 @@ rcpfk_set_sadbsa(rc_vchar_t **msg, struct rcpfk_msg *rc, int spionly)
 	} else {
 		p->sadb_sa_replay = rc->wsize;
 		p->sadb_sa_state = SADB_SASTATE_MATURE;
-		p->sadb_sa_auth = rct2pfk_authtype(rc->authtype);
+		/*
+		 * AEAD (GCM/CTR/ChaCha) carries integrity inside the cipher:
+		 * FreeBSD esp_init() treats alg_auth != 0 as a separate AH
+		 * transform and EINVALs it via ah_init0 ->
+		 * auth_algorithm_lookup() — the NULL auth id 251 that
+		 * rct2pfk_authtype(RCT_ALG_NON_AUTH) returns is advertised
+		 * in SADB_REGISTER but has no materializable auth_hash, so
+		 * the lookup returns NULL.  Use SADB_AALG_NONE for non_auth;
+		 * esp_init() then derives the GMAC variant from key length.
+		 * Keep rct2pfk_authtype() as-is so rcpfk_supported_auth()
+		 * (keyed on the same register advertisement) still passes.
+		 */
+		if (rc->authtype == RCT_ALG_NON_AUTH)
+			p->sadb_sa_auth = SADB_AALG_NONE;
+		else
+			p->sadb_sa_auth = rct2pfk_authtype(rc->authtype);
 		if (rc->satype == RCT_SATYPE_AH)
 			p->sadb_sa_encrypt = SADB_EALG_NONE;
 		else
