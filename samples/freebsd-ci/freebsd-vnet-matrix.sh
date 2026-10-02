@@ -56,8 +56,13 @@ command -v setkey >/dev/null 2>&1 || { echo "FAIL: setkey not found (install ips
 spi() { # spi $JAIL : sorted SPI set in that jail's per-vnet SADB
 	jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null | grep -oE 'spi=[0-9]+' | sort -u
 }
-esp_up() { # esp_up $JAIL : count of esp tunnel SAs in that jail's SADB
-	jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null | grep -cE 'esp mode=tunnel' || true
+esp_up() { # esp_up $JAIL : count of *mature* esp tunnel SAs in that jail's SADB
+	# A refused exchange leaves a `state=larval` SAD entry on the initiator
+	# (no SADB_DELETE on abort) - that is expected, not an established child,
+	# so count only entries whose state line says `mature`.
+	jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null \
+		| grep -A1 'esp mode=tunnel' 2>/dev/null \
+		| grep -c 'state=mature' || true
 }
 
 jails_teardown() {

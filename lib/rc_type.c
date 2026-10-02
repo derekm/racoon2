@@ -173,6 +173,21 @@ rct2pfk_authtype(int type)
 		return SADB_X_AALG_SHA2_512;
 	case RCT_ALG_AES_XCBC:
 		return SADB_X_AALG_AES_XCBC_MAC;
+#ifdef SADB_X_AALG_AES_CMAC_96
+	case RCT_ALG_AES_CMAC:
+		return SADB_X_AALG_AES_CMAC_96;
+#else
+	case RCT_ALG_AES_CMAC:
+		/* No pfkey AALG exists for AES-CMAC on FreeBSD/NetBSD:
+		   slot 10 is unallocated (9=XCBC, 11/12/13=GMAC) and the
+		   kernel's supported_aalgs[] never advertises it, so
+		   rcpfk_supported_auth() cleanly refuses with
+		   "not supported by kernel" instead of errx() killing
+		   iked at config-check.  If a future kernel allocates
+		   AES-CMAC as 10 and advertises it, findsupportedalg()
+		   matches and the expected-reject row turns red. */
+		return 10;
+#endif
 	case RCT_ALG_KPDK_MD5:
 		return SADB_X_AALG_MD5;
 	case RCT_ALG_KPDK_SHA1:
