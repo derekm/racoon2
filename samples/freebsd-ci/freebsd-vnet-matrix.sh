@@ -475,7 +475,16 @@ run_row() {
 		jails_teardown
 		return 0
 	fi
-	echo "FAIL freebsd-vnet $_name: no ESP tunnel SAs in either per-vnet SADB after timeout"
+	# Distinguish kernel-rejected SADB writes from a plain timeout: when the
+	# kernel rejects spmd's SADB_ADD/UPDATE (ike_pfkey.c:217 sadb_poll
+	# "error at the kernel on ADD/UPDATE, Invalid argument"), the row is not
+	# "no SAs after timeout" - it is a kernel refusal, and that needs its own
+	# verdict so the EINVAL mechanism is visible at a glance without grepping.
+	if [ "$up" -eq 0 ] && grep -q 'Invalid argument' /tmp/freeb/resp-iked.log /tmp/freeb/init-iked.log 2>/dev/null; then
+		echo "FAIL freebsd-vnet $_name (kernel rejected SADB ADD/UPDATE: EINVAL - see diag for the first sadb_poll error)"
+	else
+		echo "FAIL freebsd-vnet $_name: no ESP tunnel SAs in either per-vnet SADB after timeout"
+	fi
 	echo "--- initiator ikedctl output ---"; cat /tmp/freeb/ctl.out 2>/dev/null || true
 	diag
 	echo "$SEP"
