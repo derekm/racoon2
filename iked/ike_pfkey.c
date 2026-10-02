@@ -311,12 +311,15 @@ sadb_log_add(const char *op, struct rcpfk_msg *param)
 {
 	if (param->satype == RCT_SATYPE_ESP) {
 		INFO((PLOGLOC,
-		      "%s ul_proto=%d src=%s dst=%s satype=%s samode=%s spi=0x%08x authtype=%s enctype=%s lifetime soft time=%"
+		      "%s ul_proto=%d src=%s dst=%s satype=%s samode=%s spi=0x%08x authtype=%s enctype=%s(enct=%d/auth=%d) "
+		      "enckeylen=%zu authkeylen=%zu lifetime soft time=%"
 		      PRIu64 " bytes=%" PRIu64 " hard time=%" PRIu64 " bytes=%" PRIu64 "\n",
 		      op, param->ul_proto, rcs_sa2str(param->sa_src),
 		      rcs_sa2str(param->sa_dst), rct2str(param->satype),
 		      rct2str(param->samode), ntohl(param->spi),
 		      rct2str(param->authtype), rct2str(param->enctype),
+		      (int)param->enctype, (int)param->authtype,
+		      param->enckeylen, param->authkeylen,
 		      param->lft_soft_time, param->lft_soft_bytes,
 		      param->lft_hard_time, param->lft_hard_bytes));
 	} else {
