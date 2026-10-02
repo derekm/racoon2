@@ -161,6 +161,13 @@ run_row() {
 		echo "--- raw responder SADB ---"; sed -n '1,30p' /tmp/freeb/resp-sadb.txt 2>/dev/null || true
 		echo "--- raw initiator SADB ---"; sed -n '1,30p' /tmp/freeb/init-sadb.txt 2>/dev/null || true
 		echo "--- responder SPD ---"; sed -n '1,20p' /tmp/freeb/resp-spd.txt 2>/dev/null || true
+		# Instrument markers (proposal emit / wire transform / psk verify)
+		# can sit far from the tail even on pos rows; grep FULL logs always.
+		echo "--- iked instrument lines (full logs) ---"
+		grep -E 'alg_to_proppair|child ENCR|pskey path|psk verify|keylen|transform_id' \
+			/tmp/freeb/resp-iked.log 2>/dev/null | grep -vE '^[0-9a-f]{8}( |$)' | tail -25 || true
+		grep -E 'alg_to_proppair|child ENCR|pskey path|psk verify|keylen|transform_id' \
+			/tmp/freeb/init-iked.log 2>/dev/null | grep -vE '^[0-9a-f]{8}( |$)' | tail -25 || true
 		# NEG rows: FULL iked logs matter (IKE_AUTH / ID-refusal lines are far
 		# from the tail); the 25-line tail hid exactly that for wrongpsk.
 		if [ "$_neg" = r ] || [ "$_neg" = x ]; then
