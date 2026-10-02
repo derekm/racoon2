@@ -708,6 +708,10 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 				result = VERIFIED_SUCCESS;
 			else
 				result = VERIFIED_FAILURE;
+			plog(PLOG_DEBUG, PLOGLOC, NULL,
+			     "psk verify result=%d prf_out_len=%lu authdata_len=%lu\n",
+			     result, (unsigned long)prf_output->l,
+			     (unsigned long)authdata->l);
 		}
 		break;
 	default:

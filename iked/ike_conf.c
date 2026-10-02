@@ -936,6 +936,8 @@ ikev2_pre_shared_key(struct ikev2_sa *ike_sa)
 	if (!path)
 		return 0;
 
+	plog(PLOG_DEBUG, PLOGLOC, NULL, "pskey path: %s\n", path);
+
 	retbuf = rcf_readfile(path, PLOGLOC, 1);
 
 	return retbuf;
