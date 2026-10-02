@@ -126,6 +126,10 @@ jobs:
           echo "FREEBSD-VNET-FAIL=$FAIL"
           grep -E '^FAIL freebsd-vnet ' /tmp/r2-freebsd-matrix.log || true
           # Shards ran disjoint row slices; merged counts must equal the
-          # full 30-row matrix.  Any FAIL -> red (4 known rows may stay red:
-          # cmac + wrongpsk/idmismatch/a12strict under the current gate).
-          [ "$FAIL" -eq 0 ]
+          # full 30-row matrix.  A matrix that aborted before any verdict
+          # would otherwise merge to empty and PASS — gate on observed row
+          # count AND zero FAIL.  (NO red rows are tolerated: the
+          # expected-reject rows xcbc/cmac and the NEG rows pass on their
+          # config markers, so any FAIL is a real conformance break.)
+          TOTAL=$((PASS + FAIL))
+          [ -s /tmp/r2-freebsd-matrix.log ] && [ "$TOTAL" -eq 30 ] && [ "$FAIL" -eq 0 ]
