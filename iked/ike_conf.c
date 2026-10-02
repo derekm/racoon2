@@ -3112,19 +3112,22 @@ alg_to_proppair(struct rc_alglist *alg, int type,
 	const int BITS = 8;
 
 	if (alg->keylen) {
-		/* explicit keylen: a single transform carrying that
-		 * KEY_LENGTH attribute, its id from the matching row. */
-		for (def = translation_table; def->racoon_code != 0; ++def) {
-			if (alg->algtype != def->racoon_code)
-				continue;
-			if (KEYLEN(*def) * BITS == (size_t)alg->keylen) {
-				code = def->transform_id;
-				break;
-			}
+	/* explicit keylen: a single transform carrying that
+	 * KEY_LENGTH attribute, its id from the matching row. */
+	for (def = translation_table; def->racoon_code != 0; ++def) {
+		if (alg->algtype != def->racoon_code)
+			continue;
+		if (KEYLEN(*def) * BITS == (size_t)alg->keylen) {
+			code = def->transform_id;
+			break;
 		}
-		if (code == 0)
-			code = ikeconf_rcf_alg(alg->algtype,
-					       translation_table);
+	}
+	if (code == 0)
+		code = ikeconf_rcf_alg(alg->algtype,
+				       translation_table);
+	plog(PLOG_DEBUG, PLOGLOC, NULL,
+	     "alg_to_proppair: %s keylen=%d -> type=%d transform_id=%d\n",
+	     rct2str(alg->algtype), alg->keylen, type, code);
 		t = transform_new(type, code, alg->keylen, 0);
 		if (!t)
 			goto fail;
@@ -3895,9 +3898,21 @@ ikev2_proposal_to_ipsec(struct ikev2_child_sa *child_sa,
 			case IKEV2TRANSFORM_TYPE_ENCR:
 				alg = ikeconf_find_alg(get_uint16(&trns->transform_id),
 						       &ikev2_transf_encr[0]);
-				if (!alg)
+				if (!alg) {
+					isakmp_log(child_sa->parent, 0, 0, 0,
+						   PLOG_INTERR, PLOGLOC,
+						   "ENCR transform_id %u not in table\n",
+						   get_uint16(&trns->transform_id));
 					goto fail;
+				}
 				param.enctype = alg->racoon_code;
+				isakmp_log(child_sa->parent, 0, 0, 0,
+					   PLOG_DEBUG, PLOGLOC,
+					   "child ENCR transform_id=%u -> rcf=%u (%s) "
+					   "wire_keylen=%u\n",
+					   get_uint16(&trns->transform_id),
+					   alg->racoon_code, rct2str(alg->racoon_code),
+					   keylen);
 				if (IS_PROTO_VARIABLE_KEYLEN(*alg)) {
 					if (keylen == 0)
 						isakmp_log(child_sa->parent, 0,
