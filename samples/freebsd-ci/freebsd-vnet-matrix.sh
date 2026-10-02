@@ -60,9 +60,17 @@ esp_up() { # esp_up $JAIL : count of *mature* esp tunnel SAs in that jail's SADB
 	# A refused exchange leaves a `state=larval` SAD entry on the initiator
 	# (no SADB_DELETE on abort) - that is expected, not an established child,
 	# so count only entries whose state line says `mature`.
-	jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null \
-		| grep -A1 'esp mode=tunnel' 2>/dev/null \
-		| grep -c 'state=mature' || true
+	# CRITICAL (F2): pfkey_sadump() prints E:/A: key lines BETWEEN the
+	# `esp mode=tunnel` header and the `seq=... state=...` line (state is at
+	# +3, not +1, for an established keyed SA).  A -A1 window therefore can
+	# never match `state=mature` and every positive row times out.  Use awk:
+	# remember a pending esp tunnel header for 3 following lines.  `mature` at
+	# +1 (unkeyed larval can't say mature) or +3 (keyed) both count.
+	jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null | awk '
+		/esp mode=tunnel/ { pend=3; next }
+		pend && /state=mature/ { c++ }
+		pend { pend-- }
+		END { print c+0 }' || true
 }
 
 jails_teardown() {
