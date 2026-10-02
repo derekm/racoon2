@@ -10,6 +10,13 @@
 # so we can isolate two iked seats and run a real ESP tunnel through the
 # pfkey KM -- setkey -D evidence in the kernel SADB.
 #
+# The matrix is sharded exactly like the Fedora/Ubuntu matrices
+# (integration.yml linux-matrix / fedora-pqc-matrix): M shards, each its own
+# GitHub job (own VM, so jail names / epair / /tmp/freeb never collide across
+# jobs), running rows whose dispatcher index % M == K via
+# freebsd-vnet-matrix.sh --shard K M.  A report job merges the per-shard
+# logs, tallies PASS/FAIL, and fails the workflow if any monitored row FAIL.
+#
 # Body lives in samples/freebsd-ci/ (build = build+units; then the vnet leg).
 
 name: FreeBSD build & test (pfkey KM + vnet conformance)
@@ -26,14 +33,20 @@ permissions:
 
 jobs:
   freebsd-build-test-vnet:
-    name: 'FreeBSD 15.1 build & test (pfkey KM) + vnet conformance'
+    name: 'FreeBSD 15.1 vnet shard ${{ matrix.shard }}/${{ env.SHARDS }}'
     runs-on: ubuntu-latest
+    env:
+      SHARDS: 3
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build and test on FreeBSD 15.1
+      - name: Build and test on FreeBSD 15.1 (shard)
         uses: vmactions/freebsd-vm@v1
         with:
           release: "15.1"
@@ -42,18 +55,65 @@ jobs:
           run: |
             set -eu
             sh samples/freebsd-ci/freebsd-vmactions-build.sh
-            echo "=== vnet conformance (iked<->iked ESP over pfkey KM) ==="
-            ROW=all sh samples/freebsd-ci/freebsd-vnet-matrix.sh
+            echo "=== vnet conformance (iked<->iked ESP over pfkey KM), shard ${{ matrix.shard }}/${{ env.SHARDS }} ==="
+            # FreeBSD /bin/sh has no pipefail, so tee would mask the matrix
+            # exit status; capture to a file, cat the stream, then exit the
+            # matrix's own code (the report job sums the per-shard logs).
+            rc=0
+            ROW=all sh samples/freebsd-ci/freebsd-vnet-matrix.sh \
+              --shard ${{ matrix.shard }} ${{ env.SHARDS }} \
+              > /tmp/r2-freebsd-matrix-shard-${{ matrix.shard }}.log 2>&1 || rc=$?
+            cat /tmp/r2-freebsd-matrix-shard-${{ matrix.shard }}.log
+            exit $rc
+
+      - name: Upload shard matrix log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-matrix-shard-${{ matrix.shard }}
+          path: /tmp/r2-freebsd-matrix-shard-${{ matrix.shard }}.log
+          overwrite: true
+          if-no-files-found: error
 
       - name: 'Generate compliance report (KAT evidence from FreeBSD 15.1 build)'
+        if: matrix.shard == 0
         run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/freebsd-build-test-151-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
         working-directory: ${{ runner.workspace }}/racoon2
 
       - name: 'Upload compliance report artifact'
-        if: always()
+        if: always() && matrix.shard == 0
         uses: actions/upload-artifact@v4
         with:
           name: compliance-report-freebsd-build-test-151
           path: freebsd-build-test-151-compliance.md
           overwrite: true
           if-no-files-found: error
+
+  freebsd-vnet-report:
+    name: 'FreeBSD vnet merged report (all shards)'
+    runs-on: ubuntu-latest
+    needs: freebsd-build-test-vnet
+    if: always()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download shard matrix logs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: freebsd-matrix-shard-*
+          path: /tmp/shards
+          merge-multiple: true
+
+      - name: Merge shard logs + gate on monitored FAIL
+        run: |
+          cat /tmp/shards/r2-freebsd-matrix-shard-*.log > /tmp/r2-freebsd-matrix.log
+          PASS=$(grep -cE '^PASS freebsd-vnet ' /tmp/r2-freebsd-matrix.log || true)
+          FAIL=$(grep -cE '^FAIL freebsd-vnet ' /tmp/r2-freebsd-matrix.log || true)
+          echo "FREEBSD-VNET-PASS=$PASS"
+          echo "FREEBSD-VNET-FAIL=$FAIL"
+          grep -E '^FAIL freebsd-vnet ' /tmp/r2-freebsd-matrix.log || true
+          # Shards ran disjoint row slices; merged counts must equal the
+          # full 30-row matrix.  Any FAIL -> red (4 known rows may stay red:
+          # cmac + wrongpsk/idmismatch/a12strict under the current gate).
+          [ "$FAIL" -eq 0 ]

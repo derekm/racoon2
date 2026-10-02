@@ -44,6 +44,23 @@ SBIN="${PREFIX}/sbin"
 export PATH="$PATH:/usr/local/sbin"
 ROW="${ROW:-all}"
 
+# Shard support, mirroring samples/linux-matrix/run.sh --shard K M: run only
+# the rows whose dispatcher index % SHARD_M == SHARD_K.  Each shard is its own
+# GitHub job / VM (jail+epair+/tmp/freeb names never collide across jobs), and
+# a report job merges the per-shard logs and sums the PASS/FAIL lines.  An
+# isolated row is a disjoint slice, so `pass=` totals add back to the full
+# matrix run.
+SHARD_K="${SHARD_K:-0}"
+SHARD_M="${SHARD_M:-1}"
+_shard_idx=0
+while [ $# -gt 0 ]; do
+	case $1 in
+		--shard) SHARD_K=$2; SHARD_M=$3; shift 3 ;;
+		*) echo "unknown arg: $1"; exit 2 ;;
+	esac
+done
+
+
 jr=r2vr   # responder vnet jail
 ji=r2vi   # initiator vnet jail
 SEP="======================================================"
@@ -467,7 +484,13 @@ run_row() {
 }
 
 fail=0
-run() { run_row "$@" || fail=1; }
+run() {
+	# 0-based dispatcher index, matching linux run.sh --shard K M
+	if [ $((_shard_idx % SHARD_M)) -eq "$SHARD_K" ]; then
+		run_row "$@" || fail=1
+	fi
+	_shard_idx=$((_shard_idx + 1))
+}
 
 # Matrix rows.  Tokens match the Linux kinds verbatim so pfkey/xfrm parity
 # is asserted on identical config.  REKEY rows: initiator lifetime short.
@@ -525,8 +548,8 @@ case "$ROW" in
 esac
 echo "$SEP"
 if [ "$fail" -eq 0 ]; then
-	echo "FREEBSD-VNET-OK (matrix: $ROW)"
+	echo "FREEBSD-VNET-OK (matrix: $ROW, shard $SHARD_K/$SHARD_M, rows dispatched=$_shard_idx)"
 	exit 0
 fi
-echo "FREEBSD-VNET-FAIL (matrix: $ROW)"
+echo "FREEBSD-VNET-FAIL (matrix: $ROW, shard $SHARD_K/$SHARD_M, rows dispatched=$_shard_idx)"
 exit 1
