@@ -79,12 +79,15 @@ esp_up() { # esp_up $JAIL : count of *mature* esp tunnel SAs in that jail's SADB
 	# so count only entries whose state line says `mature`.
 	# CRITICAL (F2): pfkey_sadump() prints E:/A: key lines BETWEEN the
 	# `esp mode=tunnel` header and the `seq=... state=...` line (state is at
-	# +3, not +1, for an established keyed SA).  A -A1 window therefore can
-	# never match `state=mature` and every positive row times out.  Use awk:
-	# remember a pending esp tunnel header for 3 following lines.  `mature` at
-	# +1 (unkeyed larval can't say mature) or +3 (keyed) both count.
+	# +3 for an established SA whose keys fit one line).  A -A1 window can
+	# therefore never match `state=mature` and every positive row times out.
+	# Use awk: remember a pending esp tunnel header across the key-dump
+	# lines.  A 384/512-bit auth key wraps to a SECOND key line (E: / A: on
+	# one line, continuation on the next), so the state line sits at +4, not
+	# +3 - the window must span the longest possible key dump (E one line +
+	# A up to two lines = state at +4).  `mature` at +1..+4 all count.
 	jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null | awk '
-		/esp mode=tunnel/ { pend=3; next }
+		/esp mode=tunnel/ { pend=5; next }
 		pend && /state=mature/ { c++ }
 		pend { pend-- }
 		END { print c+0 }' || true
@@ -252,6 +255,19 @@ run_row() {
 		jexec $jr ifconfig "$ea" inet6 "2001:db8:1::1/64" up || { echo "FAIL: $jr v6"; exit 1; }
 		jexec $ji ifconfig "$eb" inet6 "2001:db8:1::2/64" up || { echo "FAIL: $ji v6"; exit 1; }
 		hi="2001:db8:1::2"; hr="2001:db8:1::1"
+		# FreeBSD ND6 fix (mirrors linux-matrix i2iv6.sh static-neigh): the
+		# responder's kernel-generated ICMPv6 NA is swallowed by its OWN
+		# outbound `[any] require esp/tunnel` SPD (netipsec inspects ICMPv6 at
+		# L3; v4 ARP is L2 so v4 IKE is never ND-gated). Result: the initiator
+		# can't resolve the peer, IKE_SA_INIT never leaves — verified via
+		# `keydbg1/snd` + tcpdump (NS-only, no NA, no UDP/500 wire). Program
+		# BOTH peers' MACs statically (FreeBSD: ndp -n -s addr mac), so no
+		# NS/NA ever needs to traverse the SPD (same fix as Linux).
+		vr_mac=$(jexec $jr ifconfig "$ea" 2>/dev/null | awk '/ether/{print $2}')
+		vi_mac=$(jexec $ji ifconfig "$eb" 2>/dev/null | awk '/ether/{print $2}')
+		echo "ND6: $hr <-> $hi static neigh ($vr_mac / $vi_mac)"
+		jexec $ji ndp -n -s "$hr" "$vr_mac" 2>/dev/null || true
+		jexec $jr ndp -n -s "$hi" "$vi_mac" 2>/dev/null || true
 	else
 		jexec $jr ifconfig "$ea" inet "$hr/24" up || { echo "FAIL: $jr addr"; exit 1; }
 		jexec $ji ifconfig "$eb" inet "$hi/24" up || { echo "FAIL: $ji addr"; exit 1; }
@@ -548,11 +564,16 @@ case "$ROW" in
 		run i2iv6-esp          inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		;;
 	i2iinit-esp-cbc128) run_row i2iinit-esp-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-esp-cbc192) run_row i2iinit-esp-cbc192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes192_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-esp-cbc256) run_row i2iinit-esp-cbc256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-esp-gcm256) run_row i2iinit-esp-gcm256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a "" ;;
+	i2iinit-esp-sha384) run_row i2iinit-esp-sha384 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_384 300 300 0 a "" ;;
+	i2iinit-esp-sha512) run_row i2iinit-esp-sha512 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_512 300 300 0 a "" ;;
 	i2iinit-esp-xcbc)  run_row i2iinit-esp-xcbc   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_xcbc" 300 300 0 x "" ;;
 	i2iinit-esp-cmac)  run_row i2iinit-esp-cmac   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_cmac" 300 300 0 x "" ;;
 	i2ineg-wrongpsk)   run_row i2ineg-wrongpsk   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
 	i2ineg-idmismatch) run_row i2ineg-idmismatch inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2iv6-esp)         run_row i2iv6-esp         inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	*) echo "unknown ROW=$ROW"; exit 2 ;;
 esac
 echo "$SEP"
