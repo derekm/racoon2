@@ -150,6 +150,18 @@ timeout 1200 ssh -i fb16-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/
   -o IdentitiesOnly=yes -p "$SSHPORT" -l root 127.0.0.1 \
   'cd /root/rc2 && sh samples/freebsd-ci/freebsd-vmactions-build.sh'
 
+echo "=== copy KAT/CPL evidence back (for the compliance report) ==="
+# Same three evidence files the 15.1 leg feeds to ci-comply-report.sh, so the
+# merged/compliance step renders an NDcPP report for this CURRENT snapshot too.
+# Scp the files the build emitted; missing ones are simply not shipped (the
+# reporter treats an unobserved cell as NO EVIDENCE).
+for f in iked/ndcppkats.log iked/test-suite.log lib/test-suite.log; do
+  timeout 60 scp -q -i fb16-key -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes \
+    -P "$SSHPORT" "root@127.0.0.1:/root/rc2/$f" "$WORK/$f" \
+    2>/dev/null && echo "evidence: $f" || echo "evidence: $f MISSING (ok)"
+done
+
 echo "=== vnet conformance (iked<->iked ESP over pfkey KM) === $SHARD_K/$SHARD_M"
 # Capture the matrix log inside the guest, then copy it back.  A non-zero
 # matrix exit is fine here (we copy the log out and gate on its contents,

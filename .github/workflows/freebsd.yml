@@ -187,6 +187,25 @@ jobs:
           overwrite: true
           if-no-files-found: error
 
+      - name: 'Generate compliance report (KAT evidence from FreeBSD 16.0-CURRENT build)'
+        # The script copies the three evidence logs back into the checkout
+        # root; shard 0 renders the merged NDcPP report the same way the
+        # 15.1 leg does (shard 0 only, so the artifact is not produced 3x).
+        if: matrix.shard == 0
+        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/freebsd-16-current-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
+
+      - name: 'Upload compliance report artifact'
+        if: always() && matrix.shard == 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report-freebsd-16-current
+          path: freebsd-16-current-compliance.md
+          overwrite: true
+          # warn, not error: same rationale as the 15.1 report — when the
+          # matrix is red the generation step may be skipped, and that must
+          # not add a second unrelated red reason.
+          if-no-files-found: warn
+
   freebsd-16-current-report:
     name: 'FreeBSD 16.0-CURRENT vnet merged report (all shards)'
     runs-on: ubuntu-latest
