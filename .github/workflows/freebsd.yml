@@ -149,3 +149,32 @@ jobs:
           # config markers, so any FAIL is a real conformance break.)
           TOTAL=$((PASS + FAIL))
           [ -s /tmp/r2-freebsd-matrix.log ] && [ "$TOTAL" -eq 32 ] && [ "$FAIL" -eq 0 ]
+
+  # FreeBSD 16.0-CURRENT amd64 - the SAME build + 32-row vnet conformance,
+  # but booted from the OFFICIAL project snapshot instead of the vmactions
+  # 15.1 turnkey image.  vmactions/freebsd-vm has no 16.0 config yet (the
+  # builder shelves 16.0), so this job self-hosts QEMU+KVM on the runner
+  # (same mechanism vmactions uses internally) via freebsd-16-current-ci.sh:
+  # download snapshot -> nuageinit seed (SSH key, disable firstboot pkg
+  # upgrade) -> boot -> run freebsd-vmactions-build.sh + the full matrix ->
+  # copy the log back.  Every run boots the live "Latest" snapshot, like the
+  # vmactions fresh-VM semantics.  root@runner, no locked-in guest state.
+  freebsd-16-current-vnet:
+    name: 'FreeBSD 16.0-CURRENT vnet conformance'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build + vnet matrix on FreeBSD 16.0-CURRENT (official snapshot, QEMU+KVM)
+        run: bash samples/freebsd-ci/freebsd-16-current-ci.sh
+
+      - name: Upload 16.0-CURRENT vnet matrix log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-16-current-matrix
+          path: freebsd-16-current-matrix.log
+          overwrite: true
+          if-no-files-found: error
