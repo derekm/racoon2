@@ -31,6 +31,7 @@ HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/kinds/i2i_nsawarn.sh"
 . "$HERE/kinds/i2idh.sh"
 . "$HERE/kinds/i2iv6.sh"
+. "$HERE/kinds/i2io4.sh"
 . "$HERE/kinds/i2iinit_nointermediate.sh"
 
 FILTER=
