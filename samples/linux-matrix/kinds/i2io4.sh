@@ -229,9 +229,12 @@ EOF
 	fi
 
 	# Data plane: ping6 of the inner v6 through the v4 ESP tunnel.
+	# Modern iputils dropped the separate `ping6` binary; fall back to
+	# `ping -6` when ping6 is absent (Fedora 44+ / newer Ubuntu).
 	TUN_OK=0
+	if command -v ping6 >/dev/null 2>&1; then PING6=ping6; elif command -v ping >/dev/null 2>&1; then PING6='ping -6'; fi
 	if [ "$up" -eq 1 ]; then
-		if ip netns exec "$NSI" ping6 -c 2 -W 2 "$S6R" > "$D/ping-tun.txt" 2>&1; then
+		if ip netns exec "$NSI" $PING6 -c 2 -W 2 "$S6R" > "$D/ping-tun.txt" 2>&1; then
 			log "data-plane OK (inner $S6I -> $S6R ping6 through v4 tunnel)"
 			TUN_OK=1
 		else

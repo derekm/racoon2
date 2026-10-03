@@ -71,6 +71,13 @@ while [ $# -gt 0 ]; do
 	*) usage; exit 2 ;;
 	esac
 done
+# 0-based shard contract: a K >= M can never match `idx % M == K`, which
+# would silently dispatch zero rows and exit 0 (a vacuous PASS/PASS summary).
+# Reject it up front so a mistyped --shard 1 1 cannot fake a green full run.
+if [ -n "${SHARD_M:-}" ] && [ "${SHARD_K:-0}" -ge "$SHARD_M" ]; then
+	echo "error: --shard $SHARD_K $SHARD_M is an EMPTY shard (0 <= K < M required); use --shard 0 1 for a single full run" >&2
+	exit 2
+fi
 export R2_SRC PREFIX ETC SBIN
 
 # RFC 9370 ADDKE availability gate (env/configure-specific).

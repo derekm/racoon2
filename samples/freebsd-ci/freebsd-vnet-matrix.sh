@@ -214,6 +214,9 @@ EOF
 run_row() {
 	_name=$1 _fam=$2 _hi=$3 _hr=$4 _ienc=$5 _iprf=$6 _idh=$7 \
 	_eesp=$8 _eaut=$9 _lfti=${10} _lftr=${11} _rekey=${12} _neg=${13} _str=${14}
+	# i2io4* rows set s6r/s6i as v6 selector overrides; reset per row so a
+	# v4 row dispatched after an i2io4 row never inherits stale v6 selectors.
+	s6r=""; s6i=""
 	echo "$SEP"
 	echo "=== ROW $_name (fam=$_fam ike=$_ienc/$_iprf/$_idh esp=$_eesp/$_eaut neg=$_neg) ==="
 	# kernel PF_KEY DPRINTFs (esp_init keylen/AEAD rejects) go to the console
