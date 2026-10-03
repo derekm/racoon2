@@ -156,25 +156,63 @@ jobs:
   # builder shelves 16.0), so this job self-hosts QEMU+KVM on the runner
   # (same mechanism vmactions uses internally) via freebsd-16-current-ci.sh:
   # download snapshot -> nuageinit seed (SSH key, disable firstboot pkg
-  # upgrade) -> boot -> run freebsd-vmactions-build.sh + the full matrix ->
+  # upgrade) -> boot -> run freebsd-vmactions-build.sh + the matrix shard ->
   # copy the log back.  Every run boots the live "Latest" snapshot, like the
   # vmactions fresh-VM semantics.  root@runner, no locked-in guest state.
+  #
+  # Sharded exactly like the 15.1 vnet job: M=3 jobs, each its own VM, rows
+  # whose dispatcher index % 3 == shard, disjoint slices; the merged report
+  # job below sums them and gates the 32-row total.
   freebsd-16-current-vnet:
-    name: 'FreeBSD 16.0-CURRENT vnet conformance'
+    name: 'FreeBSD 16.0-CURRENT vnet shard ${{ matrix.shard }}/3'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build + vnet matrix on FreeBSD 16.0-CURRENT (official snapshot, QEMU+KVM)
-        run: bash samples/freebsd-ci/freebsd-16-current-ci.sh
+      - name: Build + vnet matrix shard on FreeBSD 16.0-CURRENT (official snapshot, QEMU+KVM)
+        run: bash samples/freebsd-ci/freebsd-16-current-ci.sh --shard ${{ matrix.shard }} 3
 
-      - name: Upload 16.0-CURRENT vnet matrix log
+      - name: Upload 16.0-CURRENT shard matrix log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: freebsd-16-current-matrix
-          path: freebsd-16-current-matrix.log
+          name: freebsd-16-current-matrix-shard-${{ matrix.shard }}
+          path: freebsd-16-current-matrix-shard-${{ matrix.shard }}.log
           overwrite: true
           if-no-files-found: error
+
+  freebsd-16-current-report:
+    name: 'FreeBSD 16.0-CURRENT vnet merged report (all shards)'
+    runs-on: ubuntu-latest
+    needs: freebsd-16-current-vnet
+    if: always()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download 16.0-CURRENT shard matrix logs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: freebsd-16-current-matrix-shard-*
+          path: /tmp/shards16
+          merge-multiple: true
+
+      - name: Merge 16.0-CURRENT shard logs + gate on monitored FAIL
+        run: |
+          cat /tmp/shards16/freebsd-16-current-matrix-shard-*.log > /tmp/r2-freebsd-16-current-matrix.log
+          PASS=$(grep -cE '^PASS freebsd-vnet ' /tmp/r2-freebsd-16-current-matrix.log || true)
+          FAIL=$(grep -cE '^FAIL freebsd-vnet ' /tmp/r2-freebsd-16-current-matrix.log || true)
+          echo "FREEBSD-16-VNET-PASS=$PASS"
+          echo "FREEBSD-16-VNET-FAIL=$FAIL"
+          grep -E '^FAIL freebsd-vnet ' /tmp/r2-freebsd-16-current-matrix.log || true
+          # Same semantics as the 15.1 report: disjoint shard slices, so the
+          # merged count must equal the full 32-row matrix and there must be
+          # zero FAIL (every FAIL is a real conformance break).
+          TOTAL=$((PASS + FAIL))
+          [ -s /tmp/r2-freebsd-16-current-matrix.log ] && [ "$TOTAL" -eq 32 ] && [ "$FAIL" -eq 0 ]

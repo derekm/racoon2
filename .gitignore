@@ -99,3 +99,9 @@ lib/xfrmnatt.log
 lib/xfrmtmpl.log
 lib/test-suite.log
 r2-*.t*gz
+
+# FreeBSD 16.0-CURRENT self-booted CI leg (samples/freebsd-ci/freebsd-16-current-ci.sh)
+# guest disk/seed/key and per-shard matrix logs land in the checkout root
+# when the script is run manually; never commit them
+fb16-*
+freebsd-16-current-matrix-shard-*.log
