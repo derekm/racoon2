@@ -52,6 +52,13 @@ ROW="${ROW:-all}"
 # matrix run.
 SHARD_K="${SHARD_K:-0}"
 SHARD_M="${SHARD_M:-1}"
+# Guard the 0-based shard contract: K must be < M, else `x % M == K` never
+# matches and the run silently dispatches ZERO rows (a vacuous PASS).  The
+# freebsd CI matrix and ssh users must use --shard 0 1 for a full run.
+if [ "$SHARD_K" -ge "$SHARD_M" ]; then
+	echo "FAIL: --shard K M requires 0 <= K < M (got $SHARD_K/$SHARD_M) - shard would dispatch no rows"
+	exit 2
+fi
 _shard_idx=0
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -59,6 +66,11 @@ while [ $# -gt 0 ]; do
 		*) echo "unknown arg: $1"; exit 2 ;;
 	esac
 done
+# re-validate after CLI override
+if [ "$SHARD_K" -ge "$SHARD_M" ]; then
+	echo "FAIL: --shard K M requires 0 <= K < M (got $SHARD_K/$SHARD_M) - shard would dispatch no rows"
+	exit 2
+fi
 
 
 jr=r2vr   # responder vnet jail
@@ -122,6 +134,16 @@ jails_teardown() {
 gen_conf() {
 	_seat=$1 _name=$2 _fam=$3 _my=$4 _peer=$5 _ienc=$6 _iprf=$7 _idh=$8 \
 	_eesp=$9 _eaut=${10} _myid=${11} _peerid=${12} _lft=${13} _pskf=${14} _str=${15}
+	# i2io4 rows: $_my/$_peer are the IPv4 IKE + outer SA endpoints, and
+	# $_smy/$_speer are the IPv6 inner selectors (v6-inside-v4 tunnel).
+	# For every other row $_smy=$_my / $_speer=$_peer (same family).
+	# NOTE: defaulting must happen AFTER the assignment line — in POSIX sh
+	# every expansion in a simple command runs before the assignments land,
+	# so "${16:-$_my}" would see an unset $_my (breaks set -u when arg16 is
+	# the empty string from a non-i2io4 row).
+	_smy=${16:-}; _speer=${17:-}
+	[ -n "$_smy" ] || _smy=$_my
+	[ -n "$_speer" ] || _speer=$_peer
 	# responder (jr) is passive: only the initiator's establish-sa triggers
 	# the exchange, matching the proven matrix topology.
 	_passive="off"; [ "$_seat" = "$jr" ] && _passive="on"
@@ -153,12 +175,12 @@ remote matrix_$_seat {
 };
 selector sel_out {
 	direction outbound;
-	src $_my; dst $_peer;
+	src $_smy; dst $_speer;
 	policy_index pol;
 };
 selector sel_in {
 	direction inbound;
-	dst $_my; src $_peer;
+	dst $_smy; src $_speer;
 	policy_index pol;
 };
 policy pol {
@@ -249,6 +271,23 @@ run_row() {
 	jail -c name=$jr persist vnet vnet.interface="$ea" || { echo "FAIL: jail -c $jr"; exit 1; }
 	jail -c name=$ji persist vnet vnet.interface="$eb" || { echo "FAIL: jail -c $ji"; exit 1; }
 
+	case "$_name" in
+	i2io4*)
+		# IPv6-over-IPv4: the epair carries BOTH a v4 pair (IKE + outer SA
+		# endpoints, 192.0.5.x) and a v6 /64 (inner selectors,
+		# 2001:db8:1::x).  The inner v6 packet is wrapped before output, so
+		# only the v4 outer needs link resolution (ARP, L2) — no ND6 gate
+		# at all, unlike i2iv6.  Racoan2 separates selector from sa_ipaddr,
+		# so this is config-only (no daemon code).
+		jexec $jr ifconfig "$ea" inet 192.0.5.1/24 up || { echo "FAIL: $jr v4"; exit 1; }
+		jexec $ji ifconfig "$eb" inet 192.0.5.2/24 up || { echo "FAIL: $ji v4"; exit 1; }
+		jexec $jr ifconfig "$ea" inet6 2001:db8:1::1/64 up || { echo "FAIL: $jr v6"; exit 1; }
+		jexec $ji ifconfig "$eb" inet6 2001:db8:1::2/64 up || { echo "FAIL: $ji v6"; exit 1; }
+		hr=192.0.5.1; hi=192.0.5.2
+		s6r=2001:db8:1::1; s6i=2001:db8:1::2
+		# _fam stays inet (IKE/SA family); the selector family is v6 via s6*.
+		;;
+	*)
 	if [ "$_fam" = inet6 ]; then
 		# IPv6 row: assign v4 (for tooling) + a v6 /64 on each epair end; the
 		# addresses ARE the IKE endpoints (2001:db8:1::1 / ::2).
@@ -272,6 +311,8 @@ run_row() {
 		jexec $jr ifconfig "$ea" inet "$hr/24" up || { echo "FAIL: $jr addr"; exit 1; }
 		jexec $ji ifconfig "$eb" inet "$hi/24" up || { echo "FAIL: $ji addr"; exit 1; }
 	fi
+	;;
+	esac
 	jexec $jr ifconfig lo0 inet 127.0.0.1/8 up 2>/dev/null || true
 	jexec $ji ifconfig lo0 inet 127.0.0.1/8 up 2>/dev/null || true
 
@@ -295,9 +336,11 @@ run_row() {
 	# initiator's presented my_id (or its PSK file), never the responder's
 	# expectation, else the refusal could not fire.
 	gen_conf $jr "$_name" "$_fam" "$hr" "$hi" "$_ienc" "$_iprf" "$_idh" \
-		"$_eesp" "$_eaut" "racoon2-matrix" "r2init-matrix" "$_lftr" "/tmp/freeb/test.psk" "$_str"
+		"$_eesp" "$_eaut" "racoon2-matrix" "r2init-matrix" "$_lftr" "/tmp/freeb/test.psk" "$_str" \
+		"${s6r:-}" "${s6i:-}"
 	gen_conf $ji "$_name" "$_fam" "$hi" "$hr" "$_ienc" "$_iprf" "$_idh" \
-		"$_eesp" "$_eaut" "$MYID_FI" "racoon2-matrix" "$_lfti" "$PSK_FI" "$_str"
+		"$_eesp" "$_eaut" "$MYID_FI" "racoon2-matrix" "$_lfti" "$PSK_FI" "$_str" \
+		"${s6i:-}" "${s6r:-}"
 	# Conf-echo: prove the perturbed config is what iked loads (NEG rows
 	# mutate only the initiator seat).  On a surprise child-appears this
 	# shows whether the daemon really got the wrong PSK / foreign id.
@@ -364,15 +407,20 @@ run_row() {
 	# directions' SAs decrypt+encrypt — the real parity bar.
 	TUN_OK=0
 	if [ "$up" -eq 1 ] && [ "$_neg" != r ] && [ "$_neg" != x ]; then
-		# FreeBSD /sbin/ping is IPv4-only; v6 rows must use ping6.
-		if [ "$_fam" = inet6 ] && command -v ping6 >/dev/null 2>&1; then
-			jexec $ji ping6 -c 1 -t 5 "$hr" > /tmp/freeb/ping-tun.txt 2>&1 || true
+		# FreeBSD /sbin/ping is IPv4-only; v6 rows (and i2io4's inner v6)
+		# must use ping6.  For i2io4 the ping target is the INNER v6
+		# selector (s6r), not the v4 hr — the whole point is that the v6
+		# packet transits inside the v4 ESP tunnel.
+		ping6_needed=0
+		if [ "$_fam" = inet6 ] || [ "${_name#i2io4}" != "$_name" ]; then ping6_needed=1; fi
+		if [ "$ping6_needed" -eq 1 ] && command -v ping6 >/dev/null 2>&1; then
+			jexec $ji ping6 -c 1 -t 5 "${s6r:-$hr}" > /tmp/freeb/ping-tun.txt 2>&1 || true
 		else
 			jexec $ji ping -c 1 -t 5 "$hr" > /tmp/freeb/ping-tun.txt 2>&1 || true
 		fi
 		if grep -qE '[1-9][0-9]* (packets )?received' /tmp/freeb/ping-tun.txt 2>/dev/null \
 			&& ! grep -qE '0 packets received|100[.]0% packet loss|100% packet loss' /tmp/freeb/ping-tun.txt 2>/dev/null; then
-			echo "row $_name: data-plane OK (post-establishment $ji->$hr ping through tunnel)"
+			echo "row $_name: data-plane OK (post-establishment $ji->${s6r:-$hr} ping through tunnel)"
 			TUN_OK=1
 		else
 			echo "row $_name: FAIL data-plane (post-establishment ping did not transit)"
@@ -486,7 +534,7 @@ run_row() {
 	fi
 	if [ "$up" -eq 1 ] && [ "$TUN_OK" -eq 1 ]; then
 		lines=$(grep -cE 'esp mode=tunnel' /tmp/freeb/resp-sadb.txt /tmp/freeb/init-sadb.txt 2>/dev/null | awk -F: '{s+=$2} END{print s}')
-		echo "PASS freebsd-vnet $_name (pfkey KM: $lines ESP tunnel SAs + data-plane $ji->$hr)"
+		echo "PASS freebsd-vnet $_name (pfkey KM: $lines ESP tunnel SAs + data-plane $ji->${s6r:-$hr})"
 		echo "CPL B1: PASS $_name (pfkey KM ESP child up AND transiting, per-jail setkey -D + tunnel ping)"
 		jails_teardown
 		return 0
@@ -562,6 +610,11 @@ case "$ROW" in
 		run i2ineg-a12permit  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a ""
 		# --- IPv6 row (mirror linux i2iv6-esp) ---
 		run i2iv6-esp          inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+		# --- IPv6-over-IPv4 rows: v4 IKE + outer SA pair (192.0.5.x),
+		#     v6 inner selectors (2001:db8:1::x).  The inner v6 rides inside
+		#     the v4 ESP tunnel; only v4 ARP (L2) is needed, so no ND6 gate.
+		run i2io4-cbc128        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+		run i2io4-gcm256        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a ""
 		;;
 	i2iinit-esp-cbc128) run_row i2iinit-esp-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-esp-cbc192) run_row i2iinit-esp-cbc192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes192_cbc hmac_sha2_256 300 300 0 a "" ;;
@@ -571,6 +624,8 @@ case "$ROW" in
 	i2iinit-esp-sha512) run_row i2iinit-esp-sha512 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_512 300 300 0 a "" ;;
 	i2iinit-esp-xcbc)  run_row i2iinit-esp-xcbc   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_xcbc" 300 300 0 x "" ;;
 	i2iinit-esp-cmac)  run_row i2iinit-esp-cmac   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_cmac" 300 300 0 x "" ;;
+	i2io4-cbc128)      run_row i2io4-cbc128       inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2io4-gcm256)      run_row i2io4-gcm256       inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a "" ;;
 	i2ineg-wrongpsk)   run_row i2ineg-wrongpsk   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
 	i2ineg-idmismatch) run_row i2ineg-idmismatch inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
 	i2iv6-esp)         run_row i2iv6-esp         inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
