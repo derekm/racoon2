@@ -70,7 +70,7 @@ if [ ! -f "$IMG" ]; then
   # -f fail on HTTP error, --retry for flaky pipes, -S show errors, bounded
   # connect-timeout so a stalled download fails loudly instead of hanging
   # the job until the 90-minute job timeout.
-  curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$IMG.xz" "$SNAP_URL"
+  curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 --speed-limit 1024 --speed-time 60 -o "$IMG.xz" "$SNAP_URL"
   unxz -f "$IMG.xz"
 fi
 qemu-img info "$IMG" >/dev/null || { echo "FAIL: bad guest image"; exit 1; }
