@@ -82,6 +82,18 @@ for S in "$SBIN/iked" "$SBIN/spmd" "$SBIN/ikedctl"; do
 done
 command -v setkey >/dev/null 2>&1 || { echo "FAIL: setkey not found (install ipsec-tools)"; exit 1; }
 
+# netipsec is NOT compiled into the base kernel on the vmactions CI image:
+# it is ipsec.ko, auto-loaded only by the first PF_KEY socket open.  Our rows
+# run entirely INSIDE vnet jails, and a jail can never kldload - so on a
+# fresh CI VM the module stays unloaded and every SADB_ADD/UPDATE is answered
+# EINVAL ("kernel rejected SADB ADD/UPDATE").  Explicitly load it here, in
+# HOST context (idempotent; -n is a no-op when already loaded), before any
+# jail exists.  Locally this is normally already loaded by a prior setkey;
+# CI has no such history, hence the divergence.
+if ! kldstat -q -n ipsec 2>/dev/null; then
+	kldload -n ipsec || { echo "FAIL: cannot load ipsec.ko (netipsec)"; exit 1; }
+fi
+
 spi() { # spi $JAIL : sorted SPI set in that jail's per-vnet SADB
 	jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null | grep -oE 'spi=[0-9]+' | sort -u
 }
