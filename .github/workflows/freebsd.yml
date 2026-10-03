@@ -84,6 +84,22 @@ jobs:
           overwrite: true
           if-no-files-found: error
 
+      # A red row must fail THIS shard job directly, not only the merged
+      # report job.  The vmactions run step above MUST exit 0 so the log is
+      # rsynced back to the host runner; by the time we reach here the log
+      # is in the synced workspace AND uploaded as an artifact (the upload
+      # step is if: always(), so a later failure still preserves evidence).
+      # The report job remains a belt-and-suspenders second gate.
+      - name: Fail shard on red matrix rows
+        if: always()
+        run: |
+          if grep -qE '^FAIL freebsd-vnet ' "r2-freebsd-matrix-shard-${{ matrix.shard }}.log"; then
+            echo "::error::shard ${{ matrix.shard }} has FAIL freebsd-vnet rows (see r2-freebsd-matrix-shard-${{ matrix.shard }}.log)"
+            grep -E '^FAIL freebsd-vnet ' "r2-freebsd-matrix-shard-${{ matrix.shard }}.log" || true
+            exit 1
+          fi
+          echo "shard ${{ matrix.shard }}: no red rows"
+
       - name: 'Generate compliance report (KAT evidence from FreeBSD 15.1 build)'
         if: matrix.shard == 0
         run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/freebsd-build-test-151-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
@@ -126,10 +142,10 @@ jobs:
           echo "FREEBSD-VNET-FAIL=$FAIL"
           grep -E '^FAIL freebsd-vnet ' /tmp/r2-freebsd-matrix.log || true
           # Shards ran disjoint row slices; merged counts must equal the
-          # full 30-row matrix.  A matrix that aborted before any verdict
+          # full 32-row matrix.  A matrix that aborted before any verdict
           # would otherwise merge to empty and PASS — gate on observed row
           # count AND zero FAIL.  (NO red rows are tolerated: the
           # expected-reject rows xcbc/cmac and the NEG rows pass on their
           # config markers, so any FAIL is a real conformance break.)
           TOTAL=$((PASS + FAIL))
-          [ -s /tmp/r2-freebsd-matrix.log ] && [ "$TOTAL" -eq 30 ] && [ "$FAIL" -eq 0 ]
+          [ -s /tmp/r2-freebsd-matrix.log ] && [ "$TOTAL" -eq 32 ] && [ "$FAIL" -eq 0 ]
