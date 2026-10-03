@@ -648,8 +648,8 @@ case "$ROW" in
 esac
 echo "$SEP"
 if [ "$fail" -eq 0 ]; then
-	echo "FREEBSD-VNET-OK (matrix: $ROW, shard $SHARD_K/$SHARD_M, rows dispatched=$_shard_idx)"
+	echo "FREEBSD-VNET-OK (matrix: $ROW, shard $SHARD_K/$SHARD_M, rows iterated=$_shard_idx)"
 	exit 0
 fi
-echo "FREEBSD-VNET-FAIL (matrix: $ROW, shard $SHARD_K/$SHARD_M, rows dispatched=$_shard_idx)"
+echo "FREEBSD-VNET-FAIL (matrix: $ROW, shard $SHARD_K/$SHARD_M, rows iterated=$_shard_idx)"
 exit 1

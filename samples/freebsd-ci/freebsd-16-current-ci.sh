@@ -67,7 +67,10 @@ fi
 
 if [ ! -f "$IMG" ]; then
   echo "downloading official 16.0-CURRENT amd64 snapshot (~701MB)..."
-  curl -sL -o "$IMG.xz" "$SNAP_URL"
+  # -f fail on HTTP error, --retry for flaky pipes, -S show errors, bounded
+  # connect-timeout so a stalled download fails loudly instead of hanging
+  # the job until the 90-minute job timeout.
+  curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$IMG.xz" "$SNAP_URL"
   unxz -f "$IMG.xz"
 fi
 qemu-img info "$IMG" >/dev/null || { echo "FAIL: bad guest image"; exit 1; }
