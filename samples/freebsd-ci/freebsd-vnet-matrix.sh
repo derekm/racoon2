@@ -379,6 +379,10 @@ gen_conf() {
 		esac
 		_auth_lines="		kmp_auth_method { $_auth; };\n		my_public_key x509pem \"$_cdir/$_my_cert.crt\" \"$_cdir/$_my_cert.key\";\n		peers_public_key x509pem \"$_cdir/$_peer_cert.crt\";"
 	fi
+	# per-seat rekey-family extras (set by run_row; empty for other rows):
+	# FB_IKE_[IR] go into the remote ikev2 block, FB_POL_[IR] into the policy.
+	if [ "$_seat" = "$jr" ]; then _xike=$FB_IKE_R _xpol=$FB_POL_R
+	else _xike=$FB_IKE_I _xpol=$FB_POL_I; fi
 	_addke_line=""
 	[ -z "$_addke" ] || _addke_line="	esp_addke_alg { $_addke; };"
 	_eesp_emit=$(printf '%b\n' "$_addke_line")
@@ -402,6 +406,7 @@ remote matrix_$_seat {
 		kmp_dh_group { $_idh; };
 $(printf '%b\n' "$_auth_lines")
 		$_str
+$(printf '%b\n' "$_xike")
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -424,6 +429,7 @@ policy pol {
 	ipsec_level require;
 	peers_sa_ipaddr $_peer;
 	my_sa_ipaddr $_my;
+$(printf '%b\n' "$_xpol")
 };
 ipsec ipsec_e {
 	ipsec_sa_lifetime_time $_lft sec;
@@ -597,6 +603,26 @@ run_row() {
 	*i2ike-addke-512*) ADDKE="mlkem512" ;;
 	*i2ike-addke-1024*) ADDKE="mlkem1024" ;;
 	*i2iinit-addke*|*i2ike-addke*|*i2iinit-ike-gcm*|*nointermediate*|*pfsrekey*) ADDKE="mlkem768" ;;
+	*-immediate*|*-firstchild*|*-clresp*|*-childless-init*|*-gens*|*-ikerekey*) ADDKE="mlkem768" ;;
+	esac
+	# Rekey-family rows (same tokens as the Linux i2iinit kind, see
+	# samples/linux-matrix/kinds/i2i_rekey.sh):
+	#   -immediate        initiator policy initial_child_ke immediate
+	#   -firstchild       initiator initial_child_ke childless, responder
+	#                     childless on (16418); -nocl: responder without it
+	#   -clresp           responder childless on + initial_child_ke
+	#                     immediate, initiator childless on; -legacy: not
+	#   -childless-init   remote childless on on both seats (RFC 6023)
+	#   -gens / -ikerekey >= 2 ADDKE child / IKE_SA rekeys
+	FB_IKE_I=""; FB_IKE_R=""; FB_POL_I=""; FB_POL_R=""; FB_DBG3=0
+	case "$_name" in
+	*-immediate*)        FB_POL_I="	initial_child_ke immediate;" ;;
+	*-firstchild-nocl*)  FB_POL_I="	initial_child_ke childless;"; FB_DBG3=1 ;;
+	*-firstchild*)       FB_POL_I="	initial_child_ke childless;"; FB_IKE_R="		childless on;"; FB_DBG3=1 ;;
+	*-clresp-legacy*)    FB_IKE_R="		childless on;"; FB_POL_R="	initial_child_ke immediate;"; FB_DBG3=1 ;;
+	*-clresp*)           FB_IKE_R="		childless on;"; FB_POL_R="	initial_child_ke immediate;"; FB_IKE_I="		childless on;"; FB_DBG3=1 ;;
+	*-childless-init*)   FB_IKE_I="		childless on;"; FB_IKE_R="		childless on;"; FB_DBG3=1 ;;
+	*-ikerekey*)         FB_IKE_I="		kmp_sa_lifetime_time 30 sec;" ;;
 	esac
 	# generated only when a pubkey row needs it (skip for PSK rows = no
 	# openssl dependency on the classic matrix)
@@ -662,6 +688,7 @@ run_row() {
 	# as linux i2ipubkey's I2I_DBG override.
 	_dbg=0x0001
 	[ "$AUTH" = psk ] || _dbg=0x0003
+	[ "$FB_DBG3" = 1 ] && _dbg=0x0003   # RFC 6023 TRACE markers
 	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $_sslenv $SBIN/iked -F -f /tmp/freeb/$jr.conf -D $_dbg > /tmp/freeb/resp-iked.log 2>&1 &" || true
 	jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $_sslenv $SBIN/iked -F -f /tmp/freeb/$ji.conf -D $_dbg > /tmp/freeb/init-iked.log 2>&1 &" || true
 	sleep 3
@@ -932,6 +959,106 @@ case "$_name" in
 	;;
 esac
 
+# --- rekey-family gates (initial_child_ke, RFC 6023 first child, multi-
+# generation ADDKE, IKE_SA ADDKE rekey); Linux twin: kinds/i2i_rekey.sh ---
+fb_ys() { grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" "$1" 2>/dev/null | grep -oE "[0-9a-f]{64}" | awk '!s[$0]++'; }
+fb_first() { grep -oE "g_ir_present=[Yn]" "$1" 2>/dev/null | head -1; }
+FI=/tmp/freeb/init-iked.log; FR=/tmp/freeb/resp-iked.log
+rk_fail() { echo "FAIL row $_name: $*"; gate_why="rekey-family gate: $*"; up=0; }
+case "$_name" in
+*-immediate*|*-firstchild-nocl*|*-clresp-legacy*)
+	# the plain IKE_AUTH child (n) is rekeyed at once with KE + type-6 by
+	# the seat carrying initial_child_ke; both seats then share a Y keymat
+	case "$_name" in
+	*-clresp-legacy*) _kl=$FR _pl=$FI _why=immediate ;;
+	*-firstchild-nocl*) _kl=$FI _pl=$FR _why=childless ;;
+	*) _kl=$FI _pl=$FR _why=immediate ;;
+	esac
+	_bad=""
+	grep -q "initial_child_ke $_why: rekeying the IKE_AUTH child" "$_kl" || _bad="no initial_child_ke $_why rekey line"
+	[ "$(fb_first $FI)" = "g_ir_present=n" ] && [ "$(fb_first $FR)" = "g_ir_present=n" ] || _bad="${_bad:+$_bad; }first child not the plain IKE_AUTH child (i=$(fb_first $FI) r=$(fb_first $FR))"
+	_yi=$(fb_ys $FI | head -1); _yr=$(fb_ys $FR | head -1)
+	[ -n "$_yi" ] && [ "$_yi" = "$_yr" ] || _bad="${_bad:+$_bad; }no matching first Y keymat (i=${_yi:-none} r=${_yr:-none})"
+	[ "$(grep -cE 'CREATE_CHILD_SA request SA_hex=.*06000024' "$_pl" 2>/dev/null || true)" -ge 1 ] || _bad="${_bad:+$_bad; }no type-6 in the rekey request"
+	case "$_name" in
+	*-firstchild-nocl*)
+		grep -q "childless requested but the responder did not send CHILDLESS_IKEV2_SUPPORTED" $FI || _bad="${_bad:+$_bad; }no RFC 6023 fallback line"
+		grep -q "sending modified (SA-less) IKE_AUTH" $FI && _bad="${_bad:+$_bad; }childless IKE_AUTH sent without 16418" ;;
+	*-clresp-legacy*)
+		grep -q "received childless (SA-less) IKE_AUTH" $FR && _bad="${_bad:+$_bad; }legacy initiator but childless IKE_AUTH seen" ;;
+	esac
+	if [ -z "$_bad" ]; then
+		echo "row $_name: initial_child_ke $_why OK - IKE_AUTH child rekeyed at once with KE + type-6, Y keymat $_yi on both seats"
+	else
+		rk_fail "$_bad"
+	fi
+	;;
+*-firstchild*|*-clresp*|*-childless-init*)
+	# childless IKE_SA: the first child comes from CREATE_CHILD with KE +
+	# type-6, so the first keymat is already Y and nobody rekeys it
+	_bad=""
+	grep -q "sending modified (SA-less) IKE_AUTH" $FI || _bad="initiator sent no childless IKE_AUTH"
+	grep -q "received childless (SA-less) IKE_AUTH" $FR || _bad="${_bad:+$_bad; }responder saw no childless IKE_AUTH"
+	[ "$(fb_first $FI)" = "g_ir_present=Y" ] && [ "$(fb_first $FR)" = "g_ir_present=Y" ] || _bad="${_bad:+$_bad; }first child keymat not Y (i=$(fb_first $FI) r=$(fb_first $FR))"
+	_yi=$(fb_ys $FI | head -1); _yr=$(fb_ys $FR | head -1)
+	[ -n "$_yi" ] && [ "$_yi" = "$_yr" ] || _bad="${_bad:+$_bad; }Y keymat mismatch (i=${_yi:-none} r=${_yr:-none})"
+	grep -qE 'CREATE_CHILD_SA request: .*proto=ESP rekey_proto=0 ' $FR || _bad="${_bad:+$_bad; }no new-child CREATE_CHILD_SA"
+	[ "$(grep -cE 'CREATE_CHILD_SA request SA_hex=.*06000024' $FR 2>/dev/null || true)" -ge 1 ] || _bad="${_bad:+$_bad; }first child CREATE_CHILD had no type-6"
+	grep -qE "initial_child_ke [a-z]*: rekeying the IKE_AUTH child" $FI $FR && _bad="${_bad:+$_bad; }initial_child_ke rekey on a childless IKE_SA"
+	if [ -z "$_bad" ]; then
+		echo "row $_name: RFC 6023 childless first child OK - SA-less IKE_AUTH, CREATE_CHILD with KE + type-6, Y keymat $_yi on both seats, no rekey"
+	else
+		rk_fail "$_bad"
+	fi
+	;;
+*-gens*)
+	# >= 2 ADDKE child rekeys, each a NEW KE + ML-KEM keymat on both seats
+	i=0
+	while [ "$i" -lt 150 ]; do
+		_li=$(fb_ys $FI | tr '\n' ' '); _lr=$(fb_ys $FR | tr '\n' ' ')
+		[ "$(echo $_li | wc -w)" -ge 2 ] && [ "$_li" = "$_lr" ] && break
+		i=$((i+1)); sleep 1
+	done
+	if [ "$i" -lt 150 ] && ! grep -qE "ADDKE followup timeout; abort|NO_PROPOSAL_CHOSEN" $FI $FR; then
+		echo "row $_name: multi-generation ADDKE OK - $(echo $_li | wc -w) distinct KE + ML-KEM keymats on both seats [$(echo $_li | cut -c1-30)...] at ${i}s"
+	else
+		rk_fail "< 2 matching ADDKE generations (i=[$_li] r=[$_lr]) or abort/NO_PROPOSAL_CHOSEN"
+	fi
+	;;
+*-ikerekey*)
+	# >= 2 IKE_SA rekeys with the ADDKE round on both seats, child kept
+	i=0
+	while [ "$i" -lt 150 ]; do
+		_ni=$(grep -c 'IKE_SA rekey ADDKE SK(1)' $FI 2>/dev/null || true); _nr=$(grep -c 'IKE_SA rekey ADDKE SK(1)' $FR 2>/dev/null || true)
+		[ "${_ni:-0}" -ge 2 ] && [ "${_nr:-0}" -ge 2 ] && break
+		i=$((i+1)); sleep 1
+	done
+	_ri=$(grep -c 'initiating IKE_SA rekey' $FI 2>/dev/null || true)
+	if [ "$i" -lt 150 ] && [ "${_ri:-0}" -ge 2 ] \
+	   && ! grep -qE 'grace period expired|failed processing IKE_SA rekey' $FI $FR \
+	   && [ "$(esp_up $jr)" -ge 1 ] && [ "$(esp_up $ji)" -ge 1 ]; then
+		jexec $ji ping -c 1 -t 5 "$hr" > /tmp/freeb/ping-ikerekey.txt 2>&1 || true
+		if grep -qE '[1-9][0-9]* (packets )?received' /tmp/freeb/ping-ikerekey.txt && ! grep -qE ' 0 packets received|100[.]0% packet loss' /tmp/freeb/ping-ikerekey.txt; then
+			echo "row $_name: IKE_SA ADDKE rekeys OK - SK(1) x$_ni init / x$_nr resp, child kept and transiting"
+		else
+			rk_fail "child not transiting after the IKE_SA rekeys"
+		fi
+	else
+		rk_fail "IKE_SA ADDKE rekeys (init SK1=$_ni resp SK1=$_nr initiated=$_ri) / grace / child lost"
+	fi
+	;;
+esac
+# one-child invariant: a row whose IKE_AUTH carries the child must never see
+# a new-child CREATE_CHILD_SA (the Linux spurious-ACQUIRE child, b8c7ce8)
+case "$_name" in
+*-firstchild-nocl*|*-clresp-legacy*) _onechk=1 ;;
+*-firstchild*|*-clresp*|*-childless*) _onechk=0 ;;
+*) _onechk=1 ;;
+esac
+if [ "$_onechk" = 1 ] && [ "$_neg" = a ] && grep -qE 'CREATE_CHILD_SA request: .*proto=ESP rekey_proto=0 ' $FR 2>/dev/null; then
+	rk_fail "responder saw a new-child CREATE_CHILD_SA on a row whose child is negotiated in IKE_AUTH"
+fi
+
 echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 	jexec $jr /usr/local/sbin/setkey -D > /tmp/freeb/resp-sadb.txt 2>&1 || true
 	jexec $ji /usr/local/sbin/setkey -D > /tmp/freeb/init-sadb.txt 2>&1 || true
@@ -1045,9 +1172,9 @@ run() {
 
 # Matrix rows.  Tokens match the Linux kinds verbatim so pfkey/xfrm parity
 # is asserted on identical config.  REKEY rows: initiator lifetime short.
-# 47 rows.  Still Linux-only (not replicated): charon/strongSwan, netem
-# drop/dup, mobike/cookie2, xfrm-only cells, PPK, childless, ESN,
-# IKE-SA rekey (i2ikesa-addke), DPD silence, NSA-warn.  Those need a
+# 55 rows.  Still Linux-only (not replicated): charon/strongSwan, netem
+# drop/dup, mobike/cookie2, xfrm-only cells, PPK, ESN, zero-child IKE_SA
+# (needs a charon childless = force initiator), DPD silence, NSA-warn.  Those need a
 # peer or a conf knob this harness does not emit.
 case "$ROW" in
 	all)
@@ -1092,6 +1219,17 @@ case "$ROW" in
 		run i2ike-addke     inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a ""
 		run i2ike-addke-512  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a ""
 		run i2ike-addke-1024 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a ""
+		# --- rekey-family rows (policy initial_child_ke, RFC 6023 first
+		#     child + fallback, multi-generation ADDKE, IKE_SA ADDKE rekey).
+		#     i2ike-addke-immediate also runs the strict i2ike-addke gate. ---
+		run i2ike-addke-immediate inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a ""
+		run i2iinit-firstchild      inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-firstchild-nocl inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-clresp          inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-clresp-legacy   inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-childless-init  inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-gens            inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 30 300 1 a ""
+		run i2iinit-ikerekey        inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		# --- PQC rows (OpenSSL 3.5 build = WITH_ADDKE: RATOON2 out-of-band
 		#      RFC 9370, not netbsd-style kernel ESP).  i2iinit-addke proves
 		#      ML-KEM-768 on the INITIAL IKE_SA (type-06 offer + matching
@@ -1145,6 +1283,10 @@ case "$ROW" in
 	i2ike-addke)       run_row i2ike-addke        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a "" ;;
 	i2ike-addke-512)   run_row i2ike-addke-512    inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a "" ;;
 	i2ike-addke-1024)  run_row i2ike-addke-1024   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a "" ;;
+	i2ike-addke-immediate) run_row i2ike-addke-immediate inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a "" ;;
+	i2iinit-firstchild|i2iinit-firstchild-nocl|i2iinit-clresp|i2iinit-clresp-legacy|i2iinit-childless-init|i2iinit-ikerekey)
+		run_row "$ROW" inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a "" ;;
+	i2iinit-gens) run_row i2iinit-gens inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 30 300 1 a "" ;;
 	i2iinit-addke)     run_row i2iinit-addke      inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 60 60 0 a "" ;;
 	i2iinit-ike-cbc128) run_row i2iinit-ike-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-ike-ctr)   run_row i2iinit-ike-ctr    inet 192.0.5.2 192.0.5.1 "aes_ctr, 128" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
