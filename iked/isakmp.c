@@ -1162,8 +1162,24 @@ isakmp_handler(int so_isakmp)
 	if (ISAKMP_GETMAJORV(isakmp.v) == ISAKMP_MAJOR_VERSION &&
 	    buf->l >= sizeof(struct isakmp) &&
 	    ((struct isakmp *)buf->v)->np == ISAKMP_NPTYPE_FRAG) {
+		if (buf->l < sizeof(struct isakmp) +
+		    sizeof(struct isakmp_frag_hdr)) {
+			/* the fragment header below is read before
+			 * isakmp_frag_recv() gets to validate lengths */
+			plog(PLOG_PROTOERR, PLOGLOC, 0,
+			     "IKE fragment too short (%zu)\n", buf->l);
+			++isakmpstat.malformed_message;
+			error = -1;
+			goto end;
+		}
+	}
+	if (ISAKMP_GETMAJORV(isakmp.v) == ISAKMP_MAJOR_VERSION &&
+	    buf->l >= sizeof(struct isakmp) +
+	    sizeof(struct isakmp_frag_hdr) &&
+	    ((struct isakmp *)buf->v)->np == ISAKMP_NPTYPE_FRAG) {
 		isakmp_index_t *index = (isakmp_index_t *)&isakmp;
 		struct ph1handle *frag_iph1 = getph1byindex(index);
+		int frag_temp = 0;	/* frag_iph1 is a temporary context */
 		rc_vchar_t *reassembled;
 
 		if (frag_iph1 == NULL) {
@@ -1190,6 +1206,7 @@ isakmp_handler(int so_isakmp)
 				goto end;
 			}
 
+			frag_temp = 1;
 			frag_iph1->side = RESPONDER;
 			frag_iph1->etype = isakmp.etype;
 			frag_iph1->flags = isakmp.flags;
@@ -1244,8 +1261,14 @@ isakmp_handler(int so_isakmp)
 		buf = reassembled;
 		memcpy(&isakmp, buf->v, sizeof(isakmp));
 
-		remph1(frag_iph1);
-		delph1(frag_iph1);
+		/* Only tear down the temporary context created above; a
+		 * live Phase 1 found by getph1byindex() (e.g. fragmented
+		 * MM5/MM6 with certificates) must survive reassembly --
+		 * delph1() does not unbind its ph2tree. */
+		if (frag_temp) {
+			remph1(frag_iph1);
+			delph1(frag_iph1);
+		}
 		frag_iph1 = NULL;
 	}
 	switch (ISAKMP_GETMAJORV(isakmp.v)) {
