@@ -33,6 +33,7 @@
 
 #include <assert.h>
 #include <string.h>
+#include <openssl/crypto.h>	/* CRYPTO_memcmp */
 #include <sys/types.h>
 #if TIME_WITH_SYS_TIME
 #  include <sys/time.h>
@@ -245,7 +246,7 @@ ikev2_check_request_cookie(rc_vchar_t *packet, struct sockaddr *remote,
 	if (get_payload_length(&notify->header) !=
 	    cookie->l + sizeof(struct ikev2payl_notify))
 		goto bailout;
-	if (memcmp(notify + 1, cookie->v, cookie->l) != 0)
+	if (CRYPTO_memcmp(notify + 1, cookie->v, cookie->l) != 0)
 		goto bailout;
 
 	retval = 0;

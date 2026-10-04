@@ -33,6 +33,7 @@
 
 #include <assert.h>
 #include <string.h>
+#include <openssl/crypto.h>	/* CRYPTO_memcmp */
 #include <sys/types.h>
 #if TIME_WITH_SYS_TIME
 #  include <sys/time.h>
@@ -703,7 +704,7 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 					 prf_output->l);
 			});
 			if (prf_output->l == authdata->l &&
-			    memcmp(prf_output->v, authdata->v,
+			    CRYPTO_memcmp(prf_output->v, authdata->v,
 				      prf_output->l) == 0)
 				result = VERIFIED_SUCCESS;
 			else

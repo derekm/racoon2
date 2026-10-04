@@ -33,6 +33,7 @@
 
 #include <assert.h>
 #include <string.h>
+#include <openssl/crypto.h>	/* CRYPTO_memcmp */
 #include <sys/types.h>
 #if TIME_WITH_SYS_TIME
 #  include <sys/time.h>
@@ -482,7 +483,7 @@ ikev2_check_icv(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 		TRACE((PLOGLOC, "auth calculate output %s\n", buf->s));
 	});
 
-	if (memcmp(icv, auth_output->v, icv_len) != 0)
+	if (CRYPTO_memcmp(icv, auth_output->v, icv_len) != 0)
 		goto fail;
 
 	retval = 0;

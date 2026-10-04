@@ -41,6 +41,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <string.h>
+#include <openssl/crypto.h>	/* CRYPTO_memcmp */
 #include <sys/types.h>
 #if TIME_WITH_SYS_TIME
 #  include <sys/time.h>
@@ -596,7 +597,7 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			     "ikev2_frag_recv: auth_calculate failed\n");
 			return NULL;
 		}
-		if (memcmp(icv_ptr, auth_output->v, icv_len) != 0) {
+		if (CRYPTO_memcmp(icv_ptr, auth_output->v, icv_len) != 0) {
 			TRACE((PLOGLOC,
 			       "ikev2_frag_recv: ICV check failed (frag %u/%u)\n",
 			       frag_no, total_frags));
