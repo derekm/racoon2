@@ -1690,6 +1690,27 @@ ikev2_child_addke_arm_timeout(struct ikev2_child_sa *child_sa)
  * path (ikev2_add_ipsec_sa reads child_sa->addke_sk).  Called from
  * ikev2_followup_ke_recv().  Returns 0 on success, -1 on failure.
  */
+/*
+ * A deferred (RFC 9370 IKE_FOLLOWUP_KE) install is the point where the
+ * child SA becomes usable, exactly like the plain path's
+ * ikev2_add_ipsec_sa() + IKEV2_CHILD_STATE_MATURE in
+ * ikev2_createchild_initiator_recv.  The initiator's ADDKE child sat in
+ * WAIT_RESPONSE forever: ikev2_expired() matches only MATURE children
+ * ("child_sa %p state 3 skipped"), so its soft/hard expire found no owner
+ * ("SADB_EXPIRE message does not have corresponding request"), the child
+ * was never rekeyed again, and the PQC lineage died after one ADDKE
+ * generation.  A responder child is already MATURE here (entering MATURE
+ * is what ran ikev2_create_child_responder_cont and deferred the install),
+ * so only move a child that is not; re-entering MATURE on a responder
+ * would re-run that dispatcher.
+ */
+static void
+ikev2_child_addke_mature(struct ikev2_child_sa *child_sa)
+{
+	if (child_sa->state != IKEV2_CHILD_STATE_MATURE)
+		ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_MATURE);
+}
+
 int
 ikev2_child_addke_install(struct ikev2_child_sa *child_sa)
 {
@@ -1717,6 +1738,7 @@ ikev2_child_addke_install(struct ikev2_child_sa *child_sa)
 	if (child_sa->timer)
 		SCHED_KILL(child_sa->timer);
 	child_sa->addke_pending = 0;
+	ikev2_child_addke_mature(child_sa);
 	ikev2_child_start_lifetime_timer(child_sa);
 	return 0;
 }
@@ -1754,6 +1776,7 @@ ikev2_addke_wait_timeout(void *param)
 			ikev2_child_abort(child_sa, ETIMEDOUT);
 			return;
 		}
+		ikev2_child_addke_mature(child_sa);
 		ikev2_child_start_lifetime_timer(child_sa);
 		return;
 	}
