@@ -93,6 +93,15 @@ command -v setkey >/dev/null 2>&1 || { echo "FAIL: setkey not found (install ips
 if ! kldstat -q -n ipsec 2>/dev/null; then
 	kldload -n ipsec || { echo "FAIL: cannot load ipsec.ko (netipsec)"; exit 1; }
 fi
+# Backstop for the 16.0 seed, which kldloads if_epair before the base
+# upgrade can replace the .ko.  If that did not run (15.1, or a local
+# boot), load it here.  A kldload failure is not fatal: 15.1 may have the
+# cloner built-in, and a mismatched .ko must surface on the ifconfig
+# line below with its stderr kept.
+if ! kldstat -q -n if_epair 2>/dev/null; then
+	kldload -n if_epair 2>/tmp/freeb-epair-kld.err || \
+		echo "WARN: kldload if_epair failed (built-in, or see /tmp/freeb-epair-kld.err)"
+fi
 
 spi() { # spi $JAIL : sorted SPI set in that jail's per-vnet SADB
 	jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null | grep -oE 'spi=[0-9]+' | sort -u
@@ -471,8 +480,15 @@ run_row() {
 	jails_teardown
 
 	echo "=== ONE epair, both ends into the two vnet jails ==="
-	set +e; ifconfig epair create 2>/dev/null > /tmp/freeb-epair.txt; r=$?; set -e
-	[ "$r" -eq 0 ] || { echo "FAIL: ifconfig epair create"; cat /tmp/freeb-epair.txt; exit 1; }
+	set +e; ifconfig epair create > /tmp/freeb-epair.txt 2>/tmp/freeb-epair.err; r=$?; set -e
+	[ "$r" -eq 0 ] || {
+		echo "FAIL: ifconfig epair create"
+		echo "--- kldstat if_epair ---"; kldstat -n if_epair 2>&1 || true
+		echo "--- kldload ---"; cat /tmp/freeb-epair-kld.err 2>/dev/null || true
+		echo "--- ifconfig stderr ---"; cat /tmp/freeb-epair.err 2>/dev/null || true
+		echo "--- ifconfig stdout ---"; cat /tmp/freeb-epair.txt 2>/dev/null || true
+		exit 1
+	}
 	ea=$(head -1 /tmp/freeb-epair.txt | awk '{print $1}' | tr -d ':')
 	case "$ea" in
 		*a) eb="${ea%a}b" ;;

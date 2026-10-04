@@ -93,13 +93,17 @@ mkdir -p /root/.ssh
 echo "$KEY" >> /root/.ssh/authorized_keys
 chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys
 sed -i .bak -E 's/^#?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-# nuageinit_user_data_script (this) runs BEFORE firstboot_pkg_upgrade
-# (REQUIRE: local / BEFORE: firstboot_* in rc.d), and the seed's own
-# `service sshd restart` gives us SSH before the upgrade finishes.  Try to
-# skip the baked-in base-repo pkg upgrade (327 pkgs on the 16.0-CURRENT
-# snapshot) - it is BEST-EFFORT: the base image may still run it (observed
-# on some snapshots), so the 900s wait below budgets for the worst case and
-# sshd availability never depends on it.
+# nuageinit_user_data_script (this) runs BEFORE firstboot_pkg_upgrade.
+# sysrc cannot stop that upgrade: /etc/rc sources rc.conf once
+# (_rc_conf_loaded) while the flag is still YES, and CURRENT does not
+# reboot after the upgrade.  The upgrade replaces FreeBSD-kernel-generic,
+# which owns if_epair.ko, under the running kernel.  A later
+# `ifconfig epair create` then autoloads a module that does not match and
+# exits non-zero (the matrix used to discard that stderr).  Load the
+# matching module now, and lock the package so the upgrade cannot replace it.
+kldload -n if_epair 2>/dev/null || true
+kldload -n ipsec 2>/dev/null || true
+pkg lock -y FreeBSD-kernel-generic 2>/dev/null || true
 sysrc firstboot_pkg_upgrade_enable=NO
 rm -f /var/db/firstboot-pkg-upgrade /firstboot-pkg-upgrade 2>/dev/null || true
 service sshd restart
