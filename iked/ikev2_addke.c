@@ -490,6 +490,28 @@ ikev2_initiator_followup_send(struct ikev2_child_sa *child_sa,
 }
 
 /*
+ * After the IKE_FOLLOWUP_KE response is processed and the send window is
+ * committed, start the next queued request.  Completing the ADDKE install
+ * queues the DELETE of the rekeyed child (or of the old IKE SA) while this
+ * response still holds the window, so ikev2_request_initiator_start() could
+ * not send it.  The generic response path (ikev2.c, informational and
+ * CREATE_CHILD responses) wakes the next pending child at this point; the
+ * followup path returned without doing so, and the DELETE then waited for
+ * the next unrelated exchange (DPD or the next rekey) while the old SAs
+ * stayed installed on both peers (RFC 7296 s2.8: the rekey initiator
+ * deletes the old SA once the new one is in place).
+ */
+static void
+ikev2_followup_wakeup_next(struct ikev2_sa *ike_sa)
+{
+	struct ikev2_child_sa *next_child_sa;
+
+	next_child_sa = ikev2_choose_pending_child(ike_sa, TRUE);
+	if (next_child_sa)
+		ikev2_wakeup_child_sa(next_child_sa);
+}
+
+/*
  * Initiator side: complete the ADDKE child once the followup response
  * carried the peer's KEr(1) ciphertext.  Decapsulate to SK(1), then
  * install the child with the ADDKE keymat (same path as the
@@ -664,6 +686,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 					    "initiator IKE_SA-rekey "
 					    "ADDKE\n");
 				ikev2_update_message_id(ike_sa, rmsgid, TRUE);
+				ikev2_followup_wakeup_next(ike_sa);
 				rc_vfree(rct);
 				return;
 			}
@@ -698,6 +721,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * (review 2026-09-24: was never committed, retransmit never
 		 * stopped -- the matrix initiator stalled here). */
 		ikev2_update_message_id(ike_sa, rmsgid, TRUE);
+		ikev2_followup_wakeup_next(ike_sa);
 		rc_vfree(rct);
 		return;
 	}
