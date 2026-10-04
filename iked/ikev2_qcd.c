@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#include <openssl/crypto.h>	/* CRYPTO_memcmp */
 #include <stdio.h>
 #include <unistd.h>
 
@@ -198,8 +199,11 @@ ikev2_qcd_taker_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 			continue;
 		dlen = tot - hdr;
 		data = get_notify_data(n);
+		if (n->nh.spi_size != 0 ||
+		    dlen < IKEV2_QCD_TOKEN_MIN || dlen > IKEV2_QCD_TOKEN_MAX)
+			continue;	/* RFC 6290 4.1 / 5 */
 		if (ike_sa->qcd_token_peer->l == dlen &&
-		    memcmp(ike_sa->qcd_token_peer->v, data, dlen) == 0) {
+		    CRYPTO_memcmp(ike_sa->qcd_token_peer->v, data, dlen) == 0) {
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 				   "QCD_TOKEN match, deleting IKE_SA\n");
 			return 1;

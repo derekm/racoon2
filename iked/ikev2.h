@@ -577,6 +577,8 @@ struct ikev2payl_notify {
 #define	IKEV2_LINK_ID			16414	/* (draft-ietf-ipsecme-ikev2-ipv6-config-03) */
 #define	IKEV2_USE_WESP_MODE		16415	/* (draft-ietf-ipsecme-traffic-visibility-12.txt) */
 #define	IKEV2_QCD_TOKEN			16419	/* (RFC6290) */
+#define	IKEV2_QCD_TOKEN_MIN	16	/* RFC 6290 section 5 */
+#define	IKEV2_QCD_TOKEN_MAX	128
 #define	IKEV2_FRAGMENTATION_SUPPORTED	16430	/* (RFC7383) */
 /* RFC 9242: negotiated in IKE_SA_INIT (request + response) before any
  * IKE_INTERMEDIATE (exch 43) exchange runs.  Status type; Proto/SPI 0. */

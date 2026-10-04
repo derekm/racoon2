@@ -32,6 +32,7 @@
 #include <config.h>
 #include <assert.h>
 #include <string.h>
+#include <openssl/crypto.h>	/* CRYPTO_memcmp */
 #include <sys/types.h>
 #if TIME_WITH_SYS_TIME
 #  include <sys/time.h>
@@ -965,12 +966,14 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 			return 0;
 		dlen = tot - hdr;
 		data = get_notify_data(n);
-		if (dlen < 8)
+		/* RFC 6290 5: 16..128 octets; 4.1: SPI Size MUST be zero */
+		if (n->nh.spi_size != 0 ||
+		    dlen < IKEV2_QCD_TOKEN_MIN || dlen > IKEV2_QCD_TOKEN_MAX)
 			return 0;
 		if (!is_safe) {
 			if (ike_sa->qcd_token_peer &&
 			    ike_sa->qcd_token_peer->l == dlen &&
-			    memcmp(ike_sa->qcd_token_peer->v, data, dlen) == 0) {
+			    CRYPTO_memcmp(ike_sa->qcd_token_peer->v, data, dlen) == 0) {
 				isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 					   "QCD_TOKEN match, deleting IKE_SA\n");
 				return 1;
