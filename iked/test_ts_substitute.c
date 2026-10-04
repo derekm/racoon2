@@ -343,6 +343,150 @@ test_selector_without_policy_untouched(void)
 	    TS_I_ADDR4, TS_R_ADDR4);
 }
 
+/* Build a TS payload with n single-address entries of addr (n may be 0). */
+static rc_vchar_t *
+make_ts_payload_n(uint8_t ts_type, int n, const char *addr)
+{
+	rc_vchar_t *v;
+	struct ikev2payl_traffic_selector *payl;
+	size_t addrlen, one, len;
+	int i;
+
+	addrlen = (ts_type == IKEV2_TS_IPV6_ADDR_RANGE) ? sizeof(struct in6_addr)
+	                                                : sizeof(struct in_addr);
+	one = sizeof(struct ikev2_traffic_selector) + 2 * addrlen;
+	len = sizeof(*payl) + (size_t)n * one;
+	v = rc_vmalloc(len);	/* exact size: ASan sees any read past it */
+	if (v == NULL)
+		exit(1);
+	memset(v->v, 0, v->l);
+	payl = (struct ikev2payl_traffic_selector *)v->v;
+	payl->header.payload_length = htons((uint16_t)len);
+	payl->tsh.num_ts = (uint8_t)n;
+	for (i = 0; i < n; i++) {
+		struct ikev2_traffic_selector *ts = (struct ikev2_traffic_selector *)
+		    ((uint8_t *)(payl + 1) + (size_t)i * one);
+		uint8_t *a = (uint8_t *)(ts + 1);
+
+		ts->ts_type = ts_type;
+		ts->selector_length = htons((uint16_t)one);
+		ts->protocol_id = IKEV2_TS_PROTO_ANY;
+		ts->start_port = htons(IKEV2_TS_PORT_MIN);
+		ts->end_port = htons(IKEV2_TS_PORT_MAX);
+		ts_pton(a, ts_type, addr);
+		ts_pton(a + addrlen, ts_type, addr);
+	}
+	return v;
+}
+
+/* Does TS entry k (single-address entries of equal size) carry addr? */
+static int
+ts_entry_is(rc_vchar_t *v, int k, const char *addr)
+{
+	struct ikev2_traffic_selector *ts0 = (struct ikev2_traffic_selector *)
+	    ((uint8_t *)v->v + sizeof(struct ikev2payl_traffic_selector));
+	size_t addrlen = (ts0->ts_type == IKEV2_TS_IPV6_ADDR_RANGE)
+	    ? sizeof(struct in6_addr) : sizeof(struct in_addr);
+	size_t one = sizeof(*ts0) + 2 * addrlen;
+	uint8_t *a = (uint8_t *)(ts0 + 1) + (size_t)k * one;
+	uint8_t expect[sizeof(struct in6_addr)];
+
+	ts_pton(expect, ts0->ts_type, addr);
+	return memcmp(a, expect, addrlen) == 0 &&
+	    memcmp(a + addrlen, expect, addrlen) == 0;
+}
+
+/* Every TS entry is substituted, not only the first (RFC 7296 2.23.1). */
+static void
+test_all_ts_entries_substituted(void)
+{
+	struct ts_fixture f;
+
+	fixture_init_v4(&f, TRUE, TRUE, TRUE, TRUE);
+	rc_vfree(f.ts_i);
+	rc_vfree(f.ts_r);
+	f.ts_i = make_ts_payload_n(IKEV2_TS_IPV4_ADDR_RANGE, 3, TS_I_ADDR4);
+	f.ts_r = make_ts_payload_n(IKEV2_TS_IPV4_ADDR_RANGE, 2, TS_R_ADDR4);
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(ts_entry_is(f.ts_i, 0, LOCAL4_ADDR));
+	TEST_CHECK(ts_entry_is(f.ts_i, 1, LOCAL4_ADDR));
+	TEST_CHECK(ts_entry_is(f.ts_i, 2, LOCAL4_ADDR));
+	TEST_CHECK(ts_entry_is(f.ts_r, 0, REMOTE4_ADDR));
+	TEST_CHECK(ts_entry_is(f.ts_r, 1, REMOTE4_ADDR));
+	fixture_free(&f);
+}
+
+/*
+ * An IPv6 TS over an IPv4 IKE SA must be left alone, and must not read
+ * 16 address bytes out of a 16-byte sockaddr_in.  The IKE SA endpoints
+ * are exact-size heap copies (as iked's are), so ASan builds catch it.
+ */
+static void
+test_family_mismatch_untouched(void)
+{
+	struct ts_fixture f;
+	struct sockaddr *hl, *hr;
+
+	fixture_init(&f, FALSE, TRUE, TRUE, TRUE, AF_INET,
+	    IKEV2_TS_IPV6_ADDR_RANGE, TS_I_ADDR6, TS_R_ADDR6);
+	hl = rcs_sadup((struct sockaddr *)&f.local);
+	hr = rcs_sadup((struct sockaddr *)&f.remote);
+	if (hl == NULL || hr == NULL)
+		exit(1);
+	f.parent.local = hl;
+	f.parent.remote = hr;
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(ts_addr_is(f.ts_i, TS_I_ADDR6, TS_I_ADDR6));
+	TEST_CHECK(ts_addr_is(f.ts_r, TS_R_ADDR6, TS_R_ADDR6));
+	rc_free(hl);
+	rc_free(hr);
+	fixture_free(&f);
+}
+
+/* num_ts = 0 passes ikev2_check_ts_payload(); it must not be read. */
+static void
+test_num_ts_zero_rejected(void)
+{
+	struct ts_fixture f;
+
+	fixture_init_v4(&f, FALSE, TRUE, TRUE, TRUE);
+	rc_vfree(f.ts_i);
+	f.ts_i = make_ts_payload_n(IKEV2_TS_IPV4_ADDR_RANGE, 0, TS_I_ADDR4);
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == -1);
+	TEST_CHECK(ts_addr_is(f.ts_r, TS_R_ADDR4, TS_R_ADDR4));
+	fixture_free(&f);
+}
+
+/* A num_ts that overruns the payload length is rejected, not walked. */
+static void
+test_overrunning_num_ts_rejected(void)
+{
+	struct ts_fixture f;
+
+	fixture_init_v4(&f, FALSE, TRUE, TRUE, TRUE);
+	((struct ikev2payl_traffic_selector *)f.ts_i->v)->tsh.num_ts = 2;
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == -1);
+	fixture_free(&f);
+}
+
+/* A child without a parent IKE SA is an error, not a NULL dereference. */
+static void
+test_no_parent_rejected(void)
+{
+	struct ts_fixture f;
+
+	fixture_init_v4(&f, TRUE, TRUE, TRUE, TRUE);
+	f.child.parent = NULL;
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == -1);
+	TEST_CHECK(ts_addr_is(f.ts_i, TS_I_ADDR4, TS_I_ADDR4));
+	fixture_free(&f);
+}
+
 static void
 test_null_args(void)
 {
@@ -380,6 +524,11 @@ main(int argc, char *argv[])
 	RUN_TEST(test_invalid_ts_type_untouched);
 	RUN_TEST(test_selector_without_policy_untouched);
 	RUN_TEST(test_null_args);
+	RUN_TEST(test_all_ts_entries_substituted);
+	RUN_TEST(test_family_mismatch_untouched);
+	RUN_TEST(test_num_ts_zero_rejected);
+	RUN_TEST(test_overrunning_num_ts_rejected);
+	RUN_TEST(test_no_parent_rejected);
 
 	plog_clean();
 
