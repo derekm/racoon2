@@ -237,7 +237,7 @@ endif
 
 if USE_EPOLL
 addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
-	ike_deprecated.$(OBJEXT) \
+	ike_deprecated.$(OBJEXT) blocklist_peer.$(OBJEXT) \
 	isakmp.$(OBJEXT) authenticator.$(OBJEXT) encryptor.$(OBJEXT) \
 	crypto_openssl.$(OBJEXT) crypto_workers.$(OBJEXT) str2val.$(OBJEXT) \
 	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
@@ -248,7 +248,7 @@ addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	$(addtest_admin)
 else
 addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
-	ike_deprecated.$(OBJEXT) \
+	ike_deprecated.$(OBJEXT) blocklist_peer.$(OBJEXT) \
 	isakmp.$(OBJEXT) authenticator.$(OBJEXT) encryptor.$(OBJEXT) \
 	crypto_openssl.$(OBJEXT) crypto_workers.$(OBJEXT) str2val.$(OBJEXT) \
 	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
