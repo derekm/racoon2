@@ -2340,7 +2340,13 @@ static int ikev2_retreive_ts_addr(struct ikev2_traffic_selector* ts,
             addrlen = sizeof(struct in_addr);
             uint8_t *addr = (uint8_t*)(ts + 1);
             ((struct sockaddr_in*)&ss)->sin_family = AF_INET;
+#ifdef HAVE_SA_LEN
+            ((struct sockaddr_in*)&ss)->sin_len = sizeof(struct sockaddr_in);
+#endif
             ((struct sockaddr_in*)&es)->sin_family = AF_INET;
+#ifdef HAVE_SA_LEN
+            ((struct sockaddr_in*)&es)->sin_len = sizeof(struct sockaddr_in);
+#endif
             memcpy(&((struct sockaddr_in*)&ss)->sin_addr, addr, sizeof(struct in_addr));
             memcpy(&((struct sockaddr_in*)&es)->sin_addr, addr + addrlen, sizeof(struct in_addr));
             break; 
@@ -2350,7 +2356,13 @@ static int ikev2_retreive_ts_addr(struct ikev2_traffic_selector* ts,
             addrlen = sizeof(struct in6_addr);
             uint8_t *addr = (uint8_t*)(ts + 1);
             ((struct sockaddr_in6*)&ss)->sin6_family = AF_INET6;
+#ifdef HAVE_SA_LEN
+            ((struct sockaddr_in6*)&ss)->sin6_len = sizeof(struct sockaddr_in6);
+#endif
             ((struct sockaddr_in6*)&es)->sin6_family = AF_INET6;
+#ifdef HAVE_SA_LEN
+            ((struct sockaddr_in6*)&es)->sin6_len = sizeof(struct sockaddr_in6);
+#endif
             memcpy(&((struct sockaddr_in6*)&ss)->sin6_addr, addr, sizeof(struct in6_addr));
             memcpy(&((struct sockaddr_in6*)&es)->sin6_addr, addr + addrlen, sizeof(struct in6_addr));
             break;

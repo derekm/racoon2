@@ -466,6 +466,9 @@ idpl_addr2sa(int id_type, caddr_t data, struct sockaddr_storage* ss)
         case IPSECDOI_ID_IPV4_ADDR_SUBNET:
         {
             ((struct sockaddr_in*)ss)->sin_family = AF_INET;
+#ifdef HAVE_SA_LEN
+            ((struct sockaddr_in*)ss)->sin_len = sizeof(struct sockaddr_in);
+#endif
             memcpy(&((struct sockaddr_in*)ss)->sin_addr, data, sizeof(struct in_addr));
             return 0;
         }
@@ -473,6 +476,9 @@ idpl_addr2sa(int id_type, caddr_t data, struct sockaddr_storage* ss)
         case IPSECDOI_ID_IPV6_ADDR_SUBNET:
         {
             ((struct sockaddr_in6*)ss)->sin6_family = AF_INET6;
+#ifdef HAVE_SA_LEN
+            ((struct sockaddr_in6*)ss)->sin6_len = sizeof(struct sockaddr_in6);
+#endif
             memcpy(&((struct sockaddr_in6*)ss)->sin6_addr, data, sizeof(struct in6_addr));
             return 0;
         }
@@ -652,6 +658,9 @@ int parse_natoa(void *packet, size_t packet_len, struct sockaddr_storage *ss)
             }
 
             sin->sin_family = AF_INET;
+#ifdef HAVE_SA_LEN
+            sin->sin_len = sizeof(*sin);
+#endif
 
             sa = (caddr_t)((char *)id_b + sizeof(*id_b));
 
@@ -679,6 +688,9 @@ int parse_natoa(void *packet, size_t packet_len, struct sockaddr_storage *ss)
             }
 
             sin6->sin6_family = AF_INET6;
+#ifdef HAVE_SA_LEN
+            sin6->sin6_len = sizeof(*sin6);
+#endif
 
             sa = (caddr_t)((char *)id_b + sizeof(*id_b));
 
@@ -817,6 +829,9 @@ natoa_vbuf_to_sockaddr(struct sockaddr_storage *ss, rc_vchar_t *vbuf)
             struct sockaddr_in *sin = (struct sockaddr_in *)ss;
             sin->sin_family = AF_INET;
             sin->sin_port = 0;
+#ifdef HAVE_SA_LEN
+            sin->sin_len = sizeof(*sin);
+#endif
             memcpy(&sin->sin_addr, vbuf->v + sizeof(struct ph2natoa),
                    sizeof(struct in_addr));
         }
@@ -826,6 +841,9 @@ natoa_vbuf_to_sockaddr(struct sockaddr_storage *ss, rc_vchar_t *vbuf)
             struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)ss;
             sin6->sin6_family = AF_INET6;
             sin6->sin6_port = 0;
+#ifdef HAVE_SA_LEN
+            sin6->sin6_len = sizeof(*sin6);
+#endif
             memcpy(&sin6->sin6_addr, vbuf->v + sizeof(struct ph2natoa),
                    sizeof(struct in6_addr));
         }

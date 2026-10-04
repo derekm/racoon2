@@ -135,6 +135,9 @@ test_make_addr(struct sockaddr_storage *ss, int family, const char *addr,
 
 		sin->sin_family = AF_INET;
 		sin->sin_port = htons(port);
+#ifdef HAVE_SA_LEN
+		sin->sin_len = sizeof(*sin);
+#endif
 		if (inet_pton(AF_INET, addr, &sin->sin_addr) != 1)
 			exit(1);
 	} else {
@@ -142,6 +145,9 @@ test_make_addr(struct sockaddr_storage *ss, int family, const char *addr,
 
 		sin6->sin6_family = AF_INET6;
 		sin6->sin6_port = htons(port);
+#ifdef HAVE_SA_LEN
+		sin6->sin6_len = sizeof(*sin6);
+#endif
 		if (inet_pton(AF_INET6, addr, &sin6->sin6_addr) != 1)
 			exit(1);
 	}
