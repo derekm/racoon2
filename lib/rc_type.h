@@ -97,6 +97,9 @@ typedef enum {
 	RCT_SATYPE_AH_ESP, RCT_SATYPE_AH_IPCOMP,
 	RCT_SATYPE_ESP_IPCOMP, RCT_SATYPE_AH_ESP_IPCOMP,
 
+		/* policy: initial_child_ke */
+	RCT_ICKE_OFF, RCT_ICKE_IMMEDIATE, RCT_ICKE_CHILDLESS,
+
 		/* NAT-T: distinct from RCT_BOOL_ON/OFF and 0=unset */
 	RCT_NATT_FORCE = 0x00FE,
 
@@ -350,6 +353,7 @@ struct rcf_policy {
 	rc_vchar_t *rm_index;
 	rc_type ipsec_mode;
 	rc_type ipsec_level;
+	rc_type initial_child_ke;	/* how the first child gets its own KE */
 	struct rc_addrlist *my_sa_ipaddr;	/* always a single entry */
 	struct rc_addrlist *peers_sa_ipaddr;	/* always a single entry */
 

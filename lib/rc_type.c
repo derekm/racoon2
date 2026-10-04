@@ -582,6 +582,12 @@ rct2str(int type)
 		return "require";
 	case RCT_IPSL_USE:
 		return "use";
+	case RCT_ICKE_OFF:
+		return "off";
+	case RCT_ICKE_IMMEDIATE:
+		return "immediate";
+	case RCT_ICKE_CHILDLESS:
+		return "childless";
 
 		/* sa */
 	case RCT_SATYPE_ESP:

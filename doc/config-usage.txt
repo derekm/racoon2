@@ -740,7 +740,8 @@ remote
 		then negotiates the first child with CREATE_CHILD_SA.
 		A childless IKE SA is rekeyed at its lifetime like any
 		other; kmp_sa_grace_period (if set) still removes an
-		IKE SA that has no child.
+		IKE SA that has no child.  See also the policy directive
+		initial_child_ke.
 		default is off.
 
 	need_pfs (on|off) ;
@@ -1017,6 +1018,36 @@ policy
 
 	ipsec_mode (transport|tunnel) ;
 		It defines a IPsec mode.
+
+	initial_child_ke (off|immediate|childless) ;
+		It controls how the first child SA of this policy gets a
+		key exchange of its own.  The child negotiated inside
+		IKE_AUTH is keyed from the IKE SA without a KE payload
+		(RFC 7296 section 1.2) and cannot carry RFC 9370
+		additional key exchanges, so its ESP keys have no
+		post-quantum or PFS component of their own.
+		off
+			The IKE_AUTH child is used as negotiated; the
+			first CREATE_CHILD_SA rekey adds KE and the
+			esp_addke_alg exchanges (when configured).
+		immediate
+			Right after the IKE_AUTH child is installed, rekey
+			it with CREATE_CHILD_SA carrying a KE payload
+			(kmp_dh_group) plus the esp_addke_alg transforms.
+			Works with any peer and in either role; set it on
+			one side only.
+		childless
+			As initiator, use RFC 6023: send an IKE_AUTH
+			without a child and negotiate the first child
+			with CREATE_CHILD_SA (KE plus esp_addke_alg) when
+			the responder advertised CHILDLESS_IKEV2_SUPPORTED;
+			otherwise fall back to immediate.  As responder
+			it behaves as immediate (only the responder's
+			remote "childless on" decides whether childless
+			initiation is offered).
+		Not inferred from esp_addke_alg.  "immediate" is a
+		reserved word in the configuration grammar.
+		default is off.
 
 ipsec
 =====

@@ -3758,16 +3758,18 @@ ikev2_child_maybe_reoffer_addke(struct ikev2_child_sa *child_sa)
  * path offers (ikev2_ipsec_sa_to_proplist).  A child without
  * esp_addke_alg is left exactly as negotiated (classic RFC 7296 behaviour:
  * a PFS-less child stays PFS-less unless need_pfs is set).
+ * force: append it even without esp_addke_alg (the policy's
+ * initial_child_ke asks for the IKE_AUTH child to get its own KE).
  * Returns 1 if a DH transform was appended, 0 otherwise.
  */
 int
-ikev2_child_add_rekey_dh(struct ikev2_child_sa *child_sa)
+ikev2_child_add_rekey_dh(struct ikev2_child_sa *child_sa, int force)
 {
 	struct rcf_ipsec *conf;
 	struct rcf_sa *proto_info;
 	struct rc_alglist *addke_alg;
 	struct prop_pair *tail, *p, *dh;
-	int want = 0;
+	int want = force ? 1 : 0;
 
 	if (!child_sa || !child_sa->my_proposal ||
 	    !child_sa->my_proposal[1] || !child_sa->parent ||
@@ -3806,9 +3808,34 @@ ikev2_child_add_rekey_dh(struct ikev2_child_sa *child_sa)
 	else
 		tail->next = dh;
 	isakmp_log(child_sa->parent, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-		   "rekey-DH: esp_addke_alg configured; appended kmp_dh_group "
-		   "to the DH-less rekey proposal so KE+ADDKE can run\n");
+		   "rekey-DH: %s; appended kmp_dh_group "
+		   "to the DH-less rekey proposal so KE+ADDKE can run\n",
+		   force ? "initial_child_ke" : "esp_addke_alg configured");
 	return 1;
+}
+
+/*
+ * Policy setting initial_child_ke (off | immediate | childless): how the
+ * first child of a policy gets keying material of its own.  RFC 7296 s1.2
+ * keys the IKE_AUTH child from SKEYSEED without a KE, and RFC 9370 s2.2.2
+ * forbids additional key exchanges in IKE_AUTH, so a post-quantum child
+ * needs a CREATE_CHILD_SA: "immediate" rekeys the IKE_AUTH child right after
+ * it is installed, "childless" negotiates it with CREATE_CHILD_SA after an
+ * RFC 6023 childless IKE_AUTH (falling back to "immediate" when the peer did
+ * not advertise CHILDLESS_IKEV2_SUPPORTED).  Unset reads as off.
+ */
+rc_type
+ikev2_initial_child_ke(struct ikev2_child_sa *child_sa)
+{
+	if (!child_sa || !child_sa->selector || !child_sa->selector->pl)
+		return RCT_ICKE_OFF;
+	switch (child_sa->selector->pl->initial_child_ke) {
+	case RCT_ICKE_IMMEDIATE:
+	case RCT_ICKE_CHILDLESS:
+		return child_sa->selector->pl->initial_child_ke;
+	default:
+		return RCT_ICKE_OFF;
+	}
 }
 
 #ifdef WITH_ADDKE
