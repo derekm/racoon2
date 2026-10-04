@@ -200,6 +200,21 @@ ikev2_update_message_id(struct ikev2_sa *sa, uint32_t id, int is_response)
 	(void)sa; (void)id; (void)is_response;
 }
 
+/* ikev2_followup_wakeup_next() (after the IKE_FOLLOWUP_KE window commit)
+ * calls into the request queue; the crypto self-test never reaches it. */
+struct ikev2_child_sa *
+ikev2_choose_pending_child(struct ikev2_sa *sa, int initiator_only)
+{
+	(void)sa; (void)initiator_only;
+	return NULL;
+}
+
+void
+ikev2_wakeup_child_sa(struct ikev2_child_sa *child_sa)
+{
+	(void)child_sa;
+}
+
 int
 ikev2_child_addke_install(struct ikev2_child_sa *child_sa)
 {
