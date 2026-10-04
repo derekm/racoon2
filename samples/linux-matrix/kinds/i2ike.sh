@@ -1,8 +1,9 @@
 #!/bin/sh
 # kinds/i2ike.sh — PQC ADDKE case: iked<->iked on 192.0.4.x, each in its OWN
 # netns on a P2P veth (separate socket+XFRM stack), so the case is fully
-# self-contained and systemd-free — the only kind that runs the RFC 9370
-# ADDKE path end-to-end (strongSwan charon has no ML-KEM to peer with).
+# self-contained and systemd-free.  It proves the RFC 9370 ADDKE path on a
+# CREATE_CHILD_SA child rekey; the charon interop rows for the same paths
+# live in the i2iinit kind (-charon / -charonr, kinds/i2i_rekey.sh).
 # Gate: run.sh only dispatches this case when ADDKE is available (gate=addke,
 # R2_ADDKE=yes / xfrm-addke build), so it runs on Fedora 44 (OpenSSL 3.5) and
 # skips on an OpenSSL 3.0 Ubuntu build.
@@ -27,6 +28,14 @@ kind_i2ike() {
 	512)  T6=06000023 ;;
 	768)  T6=06000024 ;;
 	1024) T6=06000025 ;;
+	esac
+
+	# -immediate: initiator policy initial_child_ke immediate, so the plain
+	# IKE_AUTH child is rekeyed with KE + type-6 right after it is installed
+	# instead of at its 60 s lifetime (the strict gate below is unchanged).
+	ICKE_TXT=""
+	case "$name" in
+	*-immediate*) ICKE_TXT='	initial_child_ke immediate;' ;;
 	esac
 
 	row_ns "$name"
@@ -129,6 +138,7 @@ policy pol {
 	ipsec_level require;
 	peers_sa_ipaddr "$HR";
 	my_sa_ipaddr "$HI";
+$ICKE_TXT
 };
 ipsec ipsec_e {
 	ipsec_sa_lifetime_time 60 sec;
@@ -202,12 +212,17 @@ EOF
 	# INIT SA is up.  Now exercise the CREATE_CHILD child-SA rekey (ADDKE):
 	# the 60s ipsec lifetime soft boundary fires a child rekey shortly after
 	# init, so assert a NEW ESP SPI (init-child SPI replaced) on BOTH netnss.
+	# There is exactly one child: the IKE_AUTH child, keyed from SKEYSEED
+	# without a KE (g_ir_present=n).  Its rekey carries KE + type-6 because
+	# the policy has esp_addke_alg (374ff5f).  Before b8c7ce8 a spurious
+	# kernel ACQUIRE added a second, CREATE_CHILD-born child with KE, and
+	# that accidental child was what made this gate pass on Linux.
 	spi(){ ip netns exec "$1" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort; }
 	SR0=$(spi "$NSR"); SI0=$(spi "$NSI")
-	# baseline: the initial PQC child's own KEM install already logs a
-	# matching g_ir_present=Y sha256 before any rekey; the ADDKE rekey must
-	# produce a NEW KEM keymat (fresh SK(1)), so require the matched Y-hash to
-	# DIFFER from this baseline or the poll would break on the OLD install.
+	# baseline: any g_ir_present=Y keymat already installed (none for the
+	# plain IKE_AUTH child; the -immediate rekey's when that one has landed);
+	# the lifetime ADDKE rekey must produce a NEW KEM keymat (fresh SK(1)),
+	# so require the matched Y-hash to DIFFER from this baseline.
 	YI0=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/init-iked.log" 2>/dev/null \
 		| grep -oE 'sha256=[0-9a-f]+' | tail -1)
 	YR0=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null \
@@ -219,11 +234,8 @@ EOF
 		ni=$(comm -13 <(printf '%s\n' "$SI0") <(printf '%s\n' "$SIn") | grep -c spi)
 		# The ADDKE rekey is the one that installs a REAL ML-KEM keymat: a new
 		# ESP SPI on both sides AND a matching `g_ir_present=Y` keymat sha256
-		# line on each side.  The plain IKE_AUTH child's own rekey (no DH,
-		# g_ir_present=n, soft 53s) can land a second before the ADDKE child's
-		# rekey (DH-19+type-6, soft 48s); stopping at the first new SPI and
-		# then grepping g_ir_present=n samples the PLAIN install and mis-flags
-		# the row.  Keep polling until the ADDKE rekey's Y-keymat has set.
+		# line on each side, different from the baseline.  Keep polling until
+		# that Y keymat is set; a new SPI alone is not enough.
 		ky_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/init-iked.log" 2>/dev/null \
 			| grep -oE 'sha256=[0-9a-f]+' | tail -1)
 		ky_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null \
@@ -273,8 +285,36 @@ EOF
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
-	if [ "$up" -ne 1 ] || [ "${rekeyed:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] || [ "$cpl" -ne 0 ]; then
-		log "FAIL: PQC init-SA + child-SA rekey incomplete (up=${up:-0} rekeyed=${rekeyed:-0} pqc=${pqc:-0} cpl=$cpl)"
+	# -immediate: the knob fired, the FIRST keymat on each seat is the plain
+	# IKE_AUTH child (n), and the first KE + ML-KEM keymat landed long before
+	# the 60 s lifetime could have triggered a rekey (it is in place by the
+	# time the child-up poll finished, so YI0 above is already Y).
+	icke=1
+	case "$name" in
+	*-immediate*)
+		icke=0
+		fi_=$(grep -oE 'g_ir_present=[Yn]' "$D/init-iked.log" | head -1)
+		fr_=$(grep -oE 'g_ir_present=[Yn]' "$D/resp-iked.log" | head -1)
+		y1i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/init-iked.log" | head -1)
+		y1r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/resp-iked.log" | head -1)
+		# seconds between the plain IKE_AUTH child install and the first
+		# KE+ML-KEM install on the initiator (log timestamps)
+		tn=$(grep -m1 'g_ir_present=n' "$D/init-iked.log" | cut -c1-19)
+		ty=$(grep -m1 'g_ir_present=Y' "$D/init-iked.log" | cut -c1-19)
+		dt=999
+		[ -n "$tn" ] && [ -n "$ty" ] && dt=$(( $(date -d "$ty" +%s) - $(date -d "$tn" +%s) ))
+		if grep -q 'initial_child_ke immediate: rekeying the IKE_AUTH child' "$D/init-iked.log" \
+		   && [ "$fi_" = g_ir_present=n ] && [ "$fr_" = g_ir_present=n ] \
+		   && [ -n "$y1i" ] && [ "$y1i" = "$y1r" ] && [ "$dt" -le 20 ]; then
+			icke=1
+			log "initial_child_ke immediate: IKE_AUTH child (n) rekeyed ${dt}s after install (60s lifetime), first KE+ML-KEM keymat ${y1i%% *} on both seats"
+		else
+			log "FAIL: initial_child_ke immediate evidence (first i=$fi_ r=$fr_ y1i=${y1i:-none} y1r=${y1r:-none} n->Y ${dt}s)"
+		fi ;;
+	esac
+
+	if [ "$up" -ne 1 ] || [ "${rekeyed:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] || [ "$cpl" -ne 0 ] || [ "$icke" -ne 1 ]; then
+		log "FAIL: PQC init-SA + child-SA rekey incomplete (up=${up:-0} rekeyed=${rekeyed:-0} pqc=${pqc:-0} cpl=$cpl icke=$icke)"
 		log "--- init-iked.log (followup/ESTABLISHED) ---"
 		sed -n 's/.*\(ESTABLISHED\|FOLLOWUP\|ADDKE\|abort\|err=\|GETSPI\).*/\1: &/p' \
 			"$D/init-iked.log" 2>/dev/null | tail -6
