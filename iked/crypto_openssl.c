@@ -75,6 +75,17 @@
 
 static const char *eay_provider_name;
 static const char *eay_engine_id;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+/*
+ * Provider references taken by eay_init(), released by eay_cleanup().
+ * OSSL_PROVIDER_load() takes a reference that must be dropped with
+ * OSSL_PROVIDER_unload(); otherwise the provider's internal state is
+ * never freed (seen as leaked CRYPTO_malloc blocks under LeakSanitizer).
+ */
+static OSSL_PROVIDER *eay_prov_default;
+static OSSL_PROVIDER *eay_prov_extra;
+static int eay_initialized;
+#endif
 #ifdef WITH_OPENSSL_ENGINE
 static ENGINE *eay_engine;
 #endif
@@ -95,12 +106,18 @@ void
 eay_init(void)
 {
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	/* idempotent: eaytest (and re-entrant callers) may call twice */
+	if (eay_initialized)
+		return;
+	eay_initialized = 1;
 	OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, NULL);
-	if (OSSL_PROVIDER_load(NULL, "default") == NULL)
+	eay_prov_default = OSSL_PROVIDER_load(NULL, "default");
+	if (eay_prov_default == NULL)
 		plog(PLOG_INTWARN, PLOGLOC, NULL,
 		    "OpenSSL default provider failed to load\n");
 	if (eay_provider_name && *eay_provider_name) {
-		if (OSSL_PROVIDER_load(NULL, eay_provider_name) == NULL)
+		eay_prov_extra = OSSL_PROVIDER_load(NULL, eay_provider_name);
+		if (eay_prov_extra == NULL)
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 			    "OpenSSL provider '%s' failed to load\n",
 			    eay_provider_name);
@@ -113,7 +130,8 @@ eay_init(void)
 		 * map the legacy RACOON2_OPENSSL_ENGINE knob onto
 		 * provider loading so existing configs keep working
 		 * (OpenSSL 3.5 removed <openssl/engine.h> entirely). */
-		if (OSSL_PROVIDER_load(NULL, eay_engine_id) == NULL)
+		eay_prov_extra = OSSL_PROVIDER_load(NULL, eay_engine_id);
+		if (eay_prov_extra == NULL)
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 			    "OpenSSL provider '%s' (from engine setting) "
 			    "failed to load\n", eay_engine_id);
@@ -159,6 +177,23 @@ eay_init(void)
 void
 eay_cleanup(void)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	/*
+	 * Symmetric with eay_init(): drop the provider references we took so
+	 * OpenSSL frees their internal state at shutdown (otherwise they
+	 * leak -- visible as indirect CRYPTO_malloc leaks in eaytest under
+	 * AddressSanitizer/LeakSanitizer).
+	 */
+	if (eay_prov_extra != NULL) {
+		OSSL_PROVIDER_unload(eay_prov_extra);
+		eay_prov_extra = NULL;
+	}
+	if (eay_prov_default != NULL) {
+		OSSL_PROVIDER_unload(eay_prov_default);
+		eay_prov_default = NULL;
+	}
+	eay_initialized = 0;
+#endif
 #ifdef WITH_OPENSSL_ENGINE
 	if (eay_engine) {
 		ENGINE_finish(eay_engine);
