@@ -276,15 +276,15 @@ i2i_compliance() {
 		[ -f "$_C/$_c" ] && grep -qE "kmp_enc_alg \{" "$_C/$_c" && a6_det=1
 	done
 	# claimed-set check: aes_gcm / aes128_cbc / aes256_cbc are the v3.0e
-	# claims; aes192_cbc and aes_ctr are NOT (interop coverage rows only).
+	# claims. AES-192-CBC and AES-CTR (any key length) are coverage rows
+	# only — INFO, not FAIL, or the merged report reddens a passed shard.
 	for _c in responder.conf initiator.conf; do
 		# closed group, substring (non-anchored): matches "kmp_enc_alg { aes256_cbc"
 		[ -f "$_C/$_c" ] && grep -qE "kmp_enc_alg \{ (aes128_cbc|aes256_cbc|aes_gcm)" "$_C/$_c" && a6_claim=1
 	done
-	# AES-192-CBC / AES-CTR: negotiated (a6_det) but outside the claim -> INFO.
 	case "$name" in
-	*-ike-cbc192|*-ike-ctr)
-		[ "$a6_det" -eq 1 ] && PLOG A6 INFO "IKE payload cipher aes192_cbc/aes_ctr (via $name) established but outside v3.0e claimed IKE set"
+	*-ike-cbc192|*-ike-ctr*)
+		[ "$a6_det" -eq 1 ] && PLOG A6 INFO "IKE payload cipher outside v3.0e claimed IKE set (via $name)"
 		[ "$a6_det" -eq 0 ] && PLOG A6 FAIL "IKE payload cipher not detected (no charon proposal / conf kmp_enc_alg)"
 		;;
 	*)
