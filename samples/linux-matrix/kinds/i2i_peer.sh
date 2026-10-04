@@ -51,6 +51,45 @@ I2I_RSA=${I2I_RSA:-0}
 I2I_CFG=${I2I_CFG:-0}
 I2I_CHILDLESS=${I2I_CHILDLESS:-0}
 I2I_CLASSICAL=${I2I_CLASSICAL:-0}
+# Rekey / RFC 6023 knobs for the charon seats (i2iinit.sh sets them per row
+# AFTER sourcing; these are only the defaults for the other kinds).
+#   I2I_CHARON_CHILDLESS  swanctl `childless` value (force|prefer|allow|never)
+#                         on the charon seat; empty keeps the historical
+#                         behaviour (initiator: force when I2I_CHILDLESS=1,
+#                         responder: strongSwan default `allow`).
+#   I2I_CHARON_IKE_REKEY  conn rekey_time (0s = charon never rekeys the IKE_SA)
+#   I2I_CHARON_CHILD_REKEY child rekey_time (0s = charon never rekeys the child)
+#   I2I_CHARON_INIT_IKE=1 initiate the IKE_SA only (swanctl --initiate --ike),
+#                         i.e. a zero-child IKE_SA with childless = force.
+I2I_CHARON_CHILDLESS=${I2I_CHARON_CHILDLESS:-}
+I2I_CHARON_IKE_REKEY=${I2I_CHARON_IKE_REKEY:-0s}
+I2I_CHARON_CHILD_REKEY=${I2I_CHARON_CHILD_REKEY:-0s}
+I2I_CHARON_INIT_IKE=${I2I_CHARON_INIT_IKE:-0}
+
+# i2i_charon_run <NS> <log> — spawn charon in a netns with its stdout/stderr
+# loggers LINE-buffered.  charon's file logger writes through stdio; with
+# stdout redirected to a file it is fully buffered, and the SIGKILL in the
+# cleanup helpers discards whatever is still in the buffer.  That is what
+# truncated charon logs mid-IKE_AUTH (no 'CONNECTING => ESTABLISHED' line on
+# the initiator seat, no late 'using PPK for PPK_ID' line) even though the
+# exchange completed and the ESP SAs were installed.
+i2i_charon_run() {
+	_ns=$1 _log=$2
+	_sb=""
+	command -v stdbuf >/dev/null 2>&1 && _sb="stdbuf -oL -eL"
+	( ip netns exec "$_ns" $_sb "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
+	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) >"$_log" 2>&1 &
+}
+
+# i2i_charon_list_sas <D> <NS> <tag> — snapshot charon's own view of its SAs
+# (swanctl --list-sas) into $D/charon-sas-<tag>.txt.  Called by the kind
+# while charon is still alive, so a gate can check what charon (not iked)
+# negotiated: the IKE/ESP proposals incl. KE1_ML_KEM_768, the IKE_SA
+# unique id (bumps on every IKE_SA rekey) and the CHILD_SA count.
+i2i_charon_list_sas() {
+	_D=$1 _NS=$2 _tag=$3
+	ip netns exec "$_NS" "$I2I_SWANCTL_BIN" --list-sas >"$_D/charon-sas-$_tag.txt" 2>&1 || true
+}
 
 # i2i_peer <name> — INITIATOR-seat backend for a case: charon when the name
 # carries a -charon suffix (or R2_PEER_I=charon globally), else iked.
@@ -126,8 +165,21 @@ PPKL
 # initiator seat emits this (a responder never advertises it).  Gate rows
 # via I2I_CHILDLESS (set by i2iinit.sh suffix).  Off for every base row.
 childless_conn_lines() {
+	if [ -n "$I2I_CHARON_CHILDLESS" ]; then
+		printf '		childless = %s\n' "$I2I_CHARON_CHILDLESS"
+		return 0
+	fi
 	[ "$I2I_CHILDLESS" = 1 ] || return 0
 	printf '		childless = force\n'
+	return 0
+}
+
+# childless_conn_lines_r — RESPONDER-seat counterpart: only an explicit
+# I2I_CHARON_CHILDLESS is emitted (allow = advertise 16418 and accept a
+# childless IKE_AUTH, never = no 16418, the RFC 6023 fallback case).
+childless_conn_lines_r() {
+	[ -n "$I2I_CHARON_CHILDLESS" ] || return 0
+	printf '		childless = %s\n' "$I2I_CHARON_CHILDLESS"
 	return 0
 }
 
@@ -192,7 +244,7 @@ i2i_peer_i_conf() {
 connections {
 	$_name {
 		version = 2
-		rekey_time = 0s
+		rekey_time = ${I2I_CHARON_IKE_REKEY}
 $(childless_conn_lines)
 $(cfg_conn_lines)
 		proposals = ${I2I_PROPOSAL}
@@ -205,7 +257,7 @@ $(ppk_conn_lines)
 				local_ts = $_HI/32
 				remote_ts = $_HR/32
 				esp_proposals = ${I2I_ESP:-aes128gcm16}
-				rekey_time = 0s
+				rekey_time = ${I2I_CHARON_CHILD_REKEY}
 			}
 		}
 	}
@@ -247,8 +299,7 @@ EOF
 i2i_peer_i_start() {
 	_D=$1 _NSI=$2 _peer=$3 _name=$4
 	[ "$_peer" = charon ] || return 0
-	( ip netns exec "$_NSI" "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
-	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 ) >"$_D/charon-init.log" 2>&1 &
+	i2i_charon_run "$_NSI" "$_D/charon-init.log"
 	sleep 2
 	return 0
 }
@@ -267,6 +318,13 @@ i2i_peer_i_trigger() {
 	# request ... KE" in strongSwan's evaltest.dat).  The only path where
 	# charon genuinely offers child DH/PFS — the exact production rekey-storm
 	# shape this row exists to exercise.
+	# Zero-child rows (I2I_CHARON_INIT_IKE=1, childless = force): initiate
+	# the IKE_SA alone, so the IKE_SA is established with no CHILD_SA at all
+	# and stays that way (RFC 6023 s3).
+	if [ "$I2I_CHARON_INIT_IKE" = 1 ]; then
+		( ip netns exec "$_NSI" "$I2I_SWANCTL_BIN" --initiate --ike "$_name" --debug 2 ) >"$_D/swanctl-init.log" 2>&1
+		return 0
+	fi
 	( ip netns exec "$_NSI" "$I2I_SWANCTL_BIN" --initiate --child ch --debug 2 ) >"$_D/swanctl-init.log" 2>&1
 	return 0
 }
@@ -325,7 +383,8 @@ i2i_peer_r_conf() {
 connections {
 	$_name {
 		version = 2
-		rekey_time = 0s
+		rekey_time = ${I2I_CHARON_IKE_REKEY}
+$(childless_conn_lines_r)
 		proposals = ${I2I_PROPOSAL}
 		local_addrs = $_HR
 		remote_addrs = $_HI
@@ -343,7 +402,7 @@ $(ppk_conn_lines)
 				local_ts = $_HR/32
 				remote_ts = $_HI/32
 				esp_proposals = ${I2I_ESP:-aes128gcm16}
-				rekey_time = 0s
+				rekey_time = ${I2I_CHARON_CHILD_REKEY}
 			}
 		}
 	}
@@ -364,8 +423,7 @@ EOF
 i2i_peer_r_start() {
 	_D=$1 _NSR=$2 _peer=$3 _name=$4
 	[ "$_peer" = charon ] || return 0
-	( ip netns exec "$_NSR" "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
-	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 ) >"$_D/charon-resp.log" 2>&1 &
+	i2i_charon_run "$_NSR" "$_D/charon-resp.log"
 	sleep 2
 	return 0
 }

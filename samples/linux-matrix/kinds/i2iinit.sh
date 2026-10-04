@@ -214,6 +214,94 @@ kind_i2iinit() {
 		;;
 	esac
 
+	# Rekey-family rows (gates in kinds/i2i_rekey.sh).  Tokens avoid the
+	# *-childless* / *-pfsrekey* globs above.  On a charon row the knob goes
+	# on the iked seat; "driver" = who initiates the rekeys (-cr: charon).
+	#   -immediate[-r]   policy initial_child_ke immediate on the initiator
+	#                    (iked<->iked -immediate-r: on the responder)
+	#   -firstchild      initiator policy initial_child_ke childless; the
+	#                    responder advertises 16418 (iked childless on /
+	#                    charon childless = allow); -nocl: it does not (iked
+	#                    default / charon childless = never) -> RFC 6023 s3
+	#                    fallback to a normal IKE_AUTH + immediate rekey
+	#   -clresp          responder remote childless on + policy
+	#                    initial_child_ke immediate; a supporting initiator
+	#                    (iked childless on / charon childless = prefer)
+	#                    gets a childless IKE_SA, -legacy (iked default /
+	#                    charon childless = never) gets the immediate rekey
+	#   -gens            >= 2 ADDKE child rekeys (25 s child lifetime on the
+	#                    driver; -cr: charon child rekey_time 20s)
+	#   -ikerekey        >= 2 IKE_SA ADDKE rekeys with the child kept
+	#                    (kmp_sa_lifetime_time 30 s; -cr: charon rekey_time)
+	#   -zerochild       charon childless = force + swanctl --initiate --ike:
+	#                    a zero-child IKE_SA that must be rekeyed (ADDKE),
+	#                    not deleted (iked responder childless on)
+	#   -noacq           no harness port-500/4500 allow policies: the IKE
+	#                    sockets' own XFRM bypass must carry IKE, with zero
+	#                    kernel ACQUIREs (TRACE) and no second child
+	# charon seats on these rows offer esp aes128gcm16-ecp256-ke1_mlkem768
+	# so charon accepts (and itself sends) KE + ML-KEM child rekeys.
+	I2I_RK=""; I2I_RK_SEAT=""; I2I_RK_CR=0; I2I_RK_NOCL=0; I2I_NOBYPASS=0
+	POL_TXT_I=""; POL_TXT_R=""; IKE_TXT_I=""; IKE_TXT_R=""
+	I2I_LIFETIME_I=""; I2I_LIFETIME_R=""
+	I2I_CHARON_CHILDLESS=""; I2I_CHARON_IKE_REKEY=0s; I2I_CHARON_CHILD_REKEY=0s; I2I_CHARON_INIT_IKE=0
+	IKED_SEAT=i; [ "$PEER" = charon ] && IKED_SEAT=r
+	case "$name" in
+	*-immediate-r*) I2I_RK=immediate; I2I_RK_SEAT=r ;;
+	*-immediate*)   I2I_RK=immediate; I2I_RK_SEAT=$IKED_SEAT ;;
+	*-firstchild*)  I2I_RK=firstchild; I2I_RK_SEAT=i ;;
+	*-clresp*)      I2I_RK=clresp; I2I_RK_SEAT=r ;;
+	*-gens*)        I2I_RK=gens ;;
+	*-ikerekey*)    I2I_RK=ikerekey ;;
+	*-zerochild*)   I2I_RK=zerochild ;;
+	esac
+	case "$name" in *-nocl*|*-legacy*) I2I_RK_NOCL=1 ;; esac
+	case "$name" in *-cr-*|*-cr) I2I_RK_CR=1 ;; esac
+	case "$name" in *-noacq*) I2I_NOBYPASS=1; I2I_DBG=0x0003 ;; esac
+	[ -n "$I2I_RK" ] && [ "$PEER$PEER_R" != ikediked ] && I2I_ESP=aes128gcm16-ecp256-ke1_mlkem768
+	_pol_txt() { printf '	initial_child_ke %s;\n' "$1"; }
+	case "$I2I_RK" in
+	immediate)
+		[ "$I2I_RK_SEAT" = i ] && POL_TXT_I=$(_pol_txt immediate) || POL_TXT_R=$(_pol_txt immediate) ;;
+	firstchild)
+		I2I_DBG=0x0003
+		[ "$PEER" = iked ] || { log "FAIL: -firstchild needs an iked initiator"; return 1; }
+		POL_TXT_I=$(_pol_txt childless)
+		if [ "$PEER_R" = charon ]; then
+			[ "$I2I_RK_NOCL" = 1 ] && I2I_CHARON_CHILDLESS=never || I2I_CHARON_CHILDLESS=allow
+		elif [ "$I2I_RK_NOCL" != 1 ]; then
+			IKE_TXT_R='		childless on;'
+		fi ;;
+	clresp)
+		I2I_DBG=0x0003
+		[ "$PEER_R" = iked ] || { log "FAIL: -clresp needs an iked responder"; return 1; }
+		IKE_TXT_R='		childless on;'
+		POL_TXT_R=$(_pol_txt immediate)
+		if [ "$PEER" = charon ]; then
+			[ "$I2I_RK_NOCL" = 1 ] && I2I_CHARON_CHILDLESS=never || I2I_CHARON_CHILDLESS=prefer
+		elif [ "$I2I_RK_NOCL" != 1 ]; then
+			IKE_TXT_I='		childless on;'
+		fi ;;
+	gens)
+		if [ "$I2I_RK_CR" = 1 ]; then
+			I2I_CHARON_CHILD_REKEY=20s
+		elif [ "$IKED_SEAT" = i ]; then I2I_LIFETIME_I=25
+		else I2I_LIFETIME_R=25; fi ;;
+	ikerekey)
+		if [ "$I2I_RK_CR" = 1 ]; then
+			I2I_CHARON_IKE_REKEY=30s
+		elif [ "$IKED_SEAT" = i ]; then IKE_TXT_I='		kmp_sa_lifetime_time 30 sec;'
+		else IKE_TXT_R='		kmp_sa_lifetime_time 30 sec;'; fi ;;
+	zerochild)
+		I2I_DBG=0x0003
+		[ "$PEER" = charon ] && [ "$PEER_R" = iked ] || { log "FAIL: -zerochild needs a charon initiator and an iked responder"; return 1; }
+		I2I_CHARON_CHILDLESS=force; I2I_CHARON_INIT_IKE=1
+		IKE_TXT_R='		childless on;'
+		if [ "$I2I_RK_CR" = 1 ]; then I2I_CHARON_IKE_REKEY=30s
+		else IKE_TXT_R='		childless on;
+		kmp_sa_lifetime_time 30 sec;'; fi ;;
+	esac
+
 	# RSASIG cert/auth arms (review #2 CERT+ coverage): a -rsa row drives
 	# kmp_auth_method { rsa; } + self-signed X509 on BOTH seats (my_pubkey
 	# x509pem our-cert+our-key, peers_pubkey x509pem peer-cert), so the
@@ -310,6 +398,7 @@ remote matrix_resp {
 $AUTH_TXT_R
 $PPK_TXT
 $CHILDLESS_TXT_R
+$IKE_TXT_R
 $CFG_REQUIRE_TXT_R
 $CFG_PROV_TXT_R
 $NEED_PFS_TXT_R
@@ -335,9 +424,10 @@ policy pol {
 	ipsec_level require;
 	peers_sa_ipaddr "$HI";
 	my_sa_ipaddr "$HR";
+$POL_TXT_R
 };
 ipsec ipsec_e {
-	ipsec_sa_lifetime_time $I2I_LIFETIME sec;
+	ipsec_sa_lifetime_time ${I2I_LIFETIME_R:-$I2I_LIFETIME} sec;
 $ESN_TXT	sa_index esp_e;
 };
 sa esp_e {
@@ -375,6 +465,7 @@ remote matrix_init {
 $AUTH_TXT_I
 $PPK_TXT
 $CHILDLESS_TXT_I
+$IKE_TXT_I
 $CFG_REQ_TXT_I
 $NEED_PFS_TXT_I
 		dpd_delay 60 sec;
@@ -399,9 +490,10 @@ policy pol {
 	ipsec_level require;
 	peers_sa_ipaddr "$HR";
 	my_sa_ipaddr "$HI";
+$POL_TXT_I
 };
 ipsec ipsec_e {
-	ipsec_sa_lifetime_time $I2I_LIFETIME sec;
+	ipsec_sa_lifetime_time ${I2I_LIFETIME_I:-$I2I_LIFETIME} sec;
 $ESN_TXT	sa_index esp_e;
 };
 sa esp_e {
@@ -471,7 +563,9 @@ fi
 	ip netns exec "$NSI" ip link set "$VI" up
 	ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"
 
-	# UDP-allow rows BEFORE any spmd so IKE is not captured by the tunnel
+	# UDP-allow rows BEFORE any spmd so IKE is not captured by the tunnel.
+	# -noacq rows skip them: iked's own per-socket XFRM bypass must do it.
+	[ "$I2I_NOBYPASS" = 1 ] || \
 	for ns in "$NSR:$HR:$HI" "$NSI:$HI:$HR"; do
 		NSX=${ns%%:*}; rest=${ns#*:}; LX=${rest%%:*}; PX=${rest#*:}
 		for p in 500 4500; do
@@ -514,6 +608,24 @@ fi
 
 	up=0
 	i=0
+	if [ "$I2I_RK" = zerochild ]; then
+		# zero-child IKE_SA: "up" = the iked responder established it with
+		# no child and neither SAD holds an ESP state.
+		while [ "$i" -lt 45 ]; do
+			if grep -q 'establishing IKE_SA with zero children' "$D/resp-iked.log" 2>/dev/null; then
+				sleep 2
+				if [ "$(rk_esp "$NSR")" -eq 0 ] && [ "$(rk_esp "$NSI")" -eq 0 ]; then
+					log "zero-child IKE_SA UP after ${i}s (no ESP state on either side)"
+					up=1
+				else
+					log "FAIL: zero-child row has ESP states (resp=$(rk_esp "$NSR") init=$(rk_esp "$NSI"))"
+				fi
+				break
+			fi
+			i=$((i+1)); sleep 1
+		done
+		i=45
+	fi
 	while [ "$i" -lt 45 ]; do
 		re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
@@ -604,6 +716,20 @@ fi
 			log "FAIL: RFC 8784 PPK markers absent (resp_use_ppk=${gre:-0} init_use_ppk=${gie:-0} init/charon_id_confirm=${gid:-0})"
 		fi
 	fi
+
+	# Rekey-family gates (kinds/i2i_rekey.sh) and the one-child invariant:
+	# every row whose IKE_AUTH carries the child must see no new-child
+	# CREATE_CHILD_SA (Linux spurious-ACQUIRE regression, b8c7ce8).
+	rk_ok=1
+	[ "$up" -eq 1 ] && i2i_rekey_gates
+	onechild_ok=1
+	case "$I2I_CHILDLESS$I2I_RK" in
+	0|0immediate|0gens|0ikerekey) i2i_onechild_gate ;;
+	esac
+	case "$I2I_RK" in
+	clresp|firstchild) [ "$I2I_RK_NOCL" = 1 ] && i2i_onechild_gate ;;
+	esac
+	[ "$PEER" = charon ] || [ "$PEER_R" = charon ] && i2i_charon_list_sas "$D" "$(rk_cns)" end
 
 	# RFC 7296 2.18 PFS rekey rows: after the initial child lands, the iked
 	# RESPONDER (short I2I_LIFETIME) mints a CREATE_CHILD_SA child rekey of
@@ -808,7 +934,14 @@ fi
 	# NDcPP v3.0e compliance report for this row (A/B cells) — runs while
 	# the netnss + SADB are still live (A1/A2/A3 read xfrm policy/state)
 	# and before charon conn files are removed (A13/A14 read the conn).
-	i2i_compliance "$D" "$C" "$NSR" "$NSI" "$HR" "$HI" "$name"; cpl=$?
+	if [ "$I2I_RK" = zerochild ]; then
+		# the NDcPP cells read the ESP SAD/SPD of a child; a zero-child
+		# IKE_SA has none by construction (the row's own gate proves that)
+		cpl=0
+		log "CPL: N/A on a zero-child IKE_SA row (no CHILD_SA by design)"
+	else
+		i2i_compliance "$D" "$C" "$NSR" "$NSI" "$HR" "$HI" "$name"; cpl=$?
+	fi
 
 	# kill daemons by the unique per-run conf dir; charon on either seat is
 	# torn down via the peer helpers (swanctl conn file removed, charon
@@ -954,8 +1087,8 @@ fi
 	up_req=${up_req:-1}
 	[ "$I2I_CFGNEG" = 1 ] && up_req=0
 
-	if { [ "${up_req:-1}" = 1 ] && [ "$up" -ne 1 ]; } || { [ "${up_req:-1}" = 0 ] && { [ "$up" -ne 0 ] || [ "${cp_refuse:-0}" -ne 1 ]; }; } || { [ "$need_pqc" = 1 ] && { [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; }; } || [ "$cpl" -ne 0 ] || [ "${childless_ok:-0}" -ne 1 ] || [ "${shape_ok:-1}" -ne 1 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; }; then
-		log "FAIL: i2iinit incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl childless_ok=${childless_ok:-0} shape_ok=${shape_ok:-1} ppk_ok=${ppk_ok:-0} pfsrekey_ok=${pfsrekey_ok:-0} peeri=${PEER} peerr=${PEER_R})"
+	if { [ "${up_req:-1}" = 1 ] && [ "$up" -ne 1 ]; } || { [ "${up_req:-1}" = 0 ] && { [ "$up" -ne 0 ] || [ "${cp_refuse:-0}" -ne 1 ]; }; } || { [ "$need_pqc" = 1 ] && { [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; }; } || [ "$cpl" -ne 0 ] || [ "${childless_ok:-0}" -ne 1 ] || [ "${shape_ok:-1}" -ne 1 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; } || [ "${rk_ok:-0}" -ne 1 ] || [ "${onechild_ok:-0}" -ne 1 ]; then
+		log "FAIL: i2iinit incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl childless_ok=${childless_ok:-0} shape_ok=${shape_ok:-1} ppk_ok=${ppk_ok:-0} pfsrekey_ok=${pfsrekey_ok:-0} rk_ok=${rk_ok:-0} onechild_ok=${onechild_ok:-0} peeri=${PEER} peerr=${PEER_R})"
 		if [ "$PEER" = charon ]; then
 			log "--- charon-init.log ---"
 			i2i_peer_i_diag "$D" charon
