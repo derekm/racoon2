@@ -2756,14 +2756,15 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 		   struct ikev2_payload_header *ts_i,
 		   struct ikev2_payload_header *ts_r,
 		   struct ikev2_child_param *param)
-		   {
-		   /* IKE_AUTH-embedded child: RFC 9370 s2.2 ADDKE/type-6 is a
-		   * CREATE_CHILD (rekey/new child) exchange only — never offered on the
-		   * initial IKE_AUTH child (else the arm-to-followup + no type-6 interop
-		   * bites: 'IKE_AUTH still has no type-6'). */
-		   child_sa->in_ike_auth = 1;
-		   struct prop_pair **parsed_sa;
-		   struct prop_pair *matching_proposal = 0;
+{
+	/*
+	 * Called for the IKE_AUTH child and for CREATE_CHILD_SA responses
+	 * alike, so it must not touch in_ike_auth: the IKE_AUTH send paths
+	 * set it (initiator_state1_send, ikev2_responder_state1_send),
+	 * and a CREATE_CHILD_SA child is never an IKE_AUTH child.
+	 */
+	struct prop_pair **parsed_sa;
+	struct prop_pair *matching_proposal = 0;
 	struct prop_pair *matching_my_proposal = 0;
 	struct prop_pair **new_my_proposal_list = 0;
 #ifdef notyet
