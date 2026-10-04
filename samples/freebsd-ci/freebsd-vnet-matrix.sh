@@ -1032,7 +1032,7 @@ run() {
 
 # Matrix rows.  Tokens match the Linux kinds verbatim so pfkey/xfrm parity
 # is asserted on identical config.  REKEY rows: initiator lifetime short.
-# 45 rows.  Still Linux-only (not replicated): charon/strongSwan, netem
+# 47 rows.  Still Linux-only (not replicated): charon/strongSwan, netem
 # drop/dup, mobike/cookie2, xfrm-only cells, PPK, childless, ESN,
 # IKE-SA rekey (i2ikesa-addke), DPD silence, NSA-warn.  Those need a
 # peer or a conf knob this harness does not emit.
@@ -1058,6 +1058,8 @@ case "$ROW" in
 		run i2iinit-ike-cbc256 inet 192.0.5.2 192.0.5.1 aes256_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-ike-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-ike-ctr    inet 192.0.5.2 192.0.5.1 "aes_ctr, 128" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2iinit-ike-ctr192 inet 192.0.5.2 192.0.5.1 "aes_ctr, 192" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2iinit-ike-ctr256 inet 192.0.5.2 192.0.5.1 "aes_ctr, 256" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-ike-gcm256 inet 192.0.5.2 192.0.5.1 "aes_gcm, 256" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfsha384  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_384 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfsha512  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_512 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
@@ -1133,6 +1135,8 @@ case "$ROW" in
 	i2iinit-addke)     run_row i2iinit-addke      inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 60 60 0 a "" ;;
 	i2iinit-ike-cbc128) run_row i2iinit-ike-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-ike-ctr)   run_row i2iinit-ike-ctr    inet 192.0.5.2 192.0.5.1 "aes_ctr, 128" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-ctr192) run_row i2iinit-ike-ctr192 inet 192.0.5.2 192.0.5.1 "aes_ctr, 192" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-ctr256) run_row i2iinit-ike-ctr256 inet 192.0.5.2 192.0.5.1 "aes_ctr, 256" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-nointermediate) run_row i2iinit-nointermediate inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "offer_intermediate off;" ;;
 	i2iinit-pfsrekey)  run_row i2iinit-pfsrekey   inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 60 60 1 a "need_pfs on;" ;;
 	i2iinit-dh384-pfsrekey) run_row i2iinit-dh384-pfsrekey inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp384 aes_gcm non_auth 60 60 1 a "need_pfs on;" ;;

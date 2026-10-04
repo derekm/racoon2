@@ -72,6 +72,8 @@ kind_i2iinit() {
 	*-ike-cbc128*) I2I_IKE_ENC="aes128_cbc" ;;
 	*-ike-cbc192*) I2I_IKE_ENC="aes192_cbc" ;;
 	*-ike-cbc256*) I2I_IKE_ENC="aes256_cbc" ;;
+	*-ike-ctr192*) I2I_IKE_ENC="aes_ctr, 192" ;;
+	*-ike-ctr256*) I2I_IKE_ENC="aes_ctr, 256" ;;
 	*-ike-ctr*)    I2I_IKE_ENC="aes_ctr, 128" ;;
 	*-ike-gcm256*) I2I_IKE_ENC="aes_gcm, 256" ;;
 	esac
