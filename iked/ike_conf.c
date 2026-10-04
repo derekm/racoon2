@@ -2374,8 +2374,19 @@ int ikev2_ts_substitute(struct ikev2_traffic_selector *ts, struct sockaddr *sub)
     size_t addrlen;
     int ts_type;
 
-    if (ts == NULL)
+    if (ts == NULL || sub == NULL)
         return -1;
+
+    /*
+     * Only a TS of the IKE SA's own address family can be substituted:
+     * the replacement bytes are read from sub with the TS type's address
+     * length, so an IPv6 TS over an IPv4 IKE SA would read 16 bytes at
+     * sin6_addr of a 16-byte sockaddr_in (heap over-read).  A TS of the
+     * other family cannot name this IKE SA's endpoints; leave it alone.
+     */
+    if ((ts->ts_type == IKEV2_TS_IPV4_ADDR_RANGE && sub->sa_family != AF_INET) ||
+        (ts->ts_type == IKEV2_TS_IPV6_ADDR_RANGE && sub->sa_family != AF_INET6))
+        return 0;
 
     if (ikev2_retreive_ts_addr(ts, &curr_saddr, &curr_eaddr) != 0)
     {
@@ -2431,12 +2442,58 @@ int ikev2_ts_substitute(struct ikev2_traffic_selector *ts, struct sockaddr *sub)
     return 0;
 }
 
+/*
+ * Substitute every Traffic Selector of one TS payload (RFC 7296 2.23.1:
+ * all TSi/TSr entries of a NAT transport-mode SA name the IKE endpoints,
+ * and there MAY be several).  The walk is bounded by the payload length
+ * itself, so it is safe even if ikev2_check_ts_payload() did not run; a
+ * payload with no TS at all is malformed for this purpose.
+ */
+static int
+ikev2_ts_payload_substitute(struct ikev2_payload_header *pl,
+                            struct sockaddr *sub)
+{
+    struct ikev2payl_traffic_selector *payl;
+    uint8_t *p, *end;
+    unsigned int i, num_ts, ts_len, addrsize;
+    size_t pl_len;
+
+    payl = (struct ikev2payl_traffic_selector *)pl;
+    pl_len = get_payload_length(pl);
+    if (pl_len < sizeof(*payl))
+        return -1;
+    num_ts = payl->tsh.num_ts;
+    if (num_ts == 0) {
+        plog(PLOG_PROTOERR, PLOGLOC, NULL,
+             "TS payload carries no Traffic Selector\n");
+        return -1;
+    }
+
+    p = (uint8_t *)(payl + 1);
+    end = (uint8_t *)pl + pl_len;
+    for (i = 0; i < num_ts; ++i) {
+        struct ikev2_traffic_selector *ts;
+
+        if ((size_t)(end - p) < sizeof(struct ikev2_traffic_selector))
+            return -1;
+        ts = (struct ikev2_traffic_selector *)p;
+        addrsize = ikev2_ts_addr_size(ts->ts_type);
+        ts_len = get_uint16(&ts->selector_length);
+        if (addrsize == 0 ||
+            ts_len < sizeof(struct ikev2_traffic_selector) + 2 * addrsize ||
+            (size_t)(end - p) < ts_len)
+            return -1;
+        if (ikev2_ts_substitute(ts, sub) != 0)
+            return -1;
+        p += ts_len;
+    }
+    return 0;
+}
+
 int ikev2_addr_substitute(struct ikev2_child_sa *child_sa, 
                           struct ikev2_payload_header *ts_i_pl,
                           struct ikev2_payload_header *ts_r_pl)
 {
-    struct ikev2payl_traffic_selector *ts_i_payl, *ts_r_payl;
-    struct ikev2_traffic_selector *ts_i, *ts_r;
     struct sockaddr *sub_i, *sub_r;
     struct ikev2_sa* ike_sa;
     int err = -1;
@@ -2445,6 +2502,8 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
         return err;
 
     ike_sa = child_sa->parent;
+    if (ike_sa == NULL)
+        return err;
 
     if (ike_sa->behind_nat == 0 && ike_sa->peer_behind_nat == 0)
         return 0;
@@ -2459,19 +2518,13 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
             return 0;                                                                                                                                                                        
     }
 
-    ts_i_payl = (struct ikev2payl_traffic_selector*)ts_i_pl;
-    ts_r_payl = (struct ikev2payl_traffic_selector*)ts_r_pl;
-
-    ts_i = (struct ikev2_traffic_selector*)(ts_i_payl + 1);
-    ts_r = (struct ikev2_traffic_selector*)(ts_r_payl + 1);
-
     sub_i = ike_sa->is_initiator ? ike_sa->local : ike_sa->remote;
     sub_r = ike_sa->is_initiator ? ike_sa->remote : ike_sa->local; 
 
-    err = ikev2_ts_substitute(ts_i, sub_i);
+    err = ikev2_ts_payload_substitute(ts_i_pl, sub_i);
 
     if (err == 0)
-        err = ikev2_ts_substitute(ts_r, sub_r);
+        err = ikev2_ts_payload_substitute(ts_r_pl, sub_r);
 
     return err;
 }
