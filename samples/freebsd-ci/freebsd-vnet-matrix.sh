@@ -178,9 +178,17 @@ fbsd_comply() {
 	[ "$_a2" -eq 0 ] && _plog A2 FAIL "SPD cleartext-path risk (non-esp/tunnel policy row present)" || true
 
 	# ---- A3  tunnel-mode ESP SAs both jails (SADB dump) ------------------
+	# state=mature prints +1..+4 lines AFTER the 'esp mode=tunnel' header
+	# (E:/A: key slices) - the esp_up() awk window (pend=5) is the proven
+	# matcher (see F2 in freebsd-pfkey-matrix-debug); a same-line grep
+	# would never match and A3 would always be INFO.
 	_a3=1
 	for _sa in resp-sadb.txt init-sadb.txt; do
-		if ! grep -qE 'esp mode=tunnel .*state=mature' "/tmp/freeb/$_sa" 2>/dev/null; then _a3=0; fi
+		_c=$(awk '/esp mode=tunnel/ { pend=5; next }
+			pend && /state=mature/ { c++ }
+			pend { pend-- }
+			END { print c+0 }' "/tmp/freeb/$_sa" 2>/dev/null || echo 0)
+		[ "${_c:-0}" -ge 1 ] || _a3=0
 	done
 	[ "$_a3" -eq 1 ] && _plog A3 PASS "esp mode=tunnel state=mature SAs in both jails (setkey -D)"
 	[ "$_a3" -eq 0 ] && _plog A3 INFO "no mature tunnel ESP SA on a jail (NEG-refusal or dump timing); not a FAIL"
@@ -191,14 +199,22 @@ fbsd_comply() {
 	case "$_name" in
 	*-esp-ctr*)   : ;;
 	esac
+	# claimed set = {AES-CBC (12), AES-GCM-ICV16 (20)}.  This tree's
+	# aes_gcm maps to ICV16 id 20 (ike_conf.c:2779: keylens 16/24/32 ->
+	# id 20); ids 7/8/9 (Blowfish/3DES/DES) and 13 (AES-CTR) are NOT in
+	# the NDcPP v3.0e claim set and must not count as PASS.  A CTR cipher
+	# observed on the wire (id 13) is downgraded to INFO below.
+	# _a4=1 claimed-set cipher (12/20); _a4c=1 AES-CTR observed (id 13).
+	# None of 7/8/9 (Blowfish/3DES/DES) count toward the claim.
+	_a4=0; _a4c=0
 	for _lg in resp-iked.log init-iked.log; do
-		AF "/tmp/freeb/$_lg" | grep -qE 'child ENCR transform_id=(12|13|20|7|8 |9)|AES-GCM' && _a4=1 || true
+		AF "/tmp/freeb/$_lg" | grep -qE 'child ENCR transform_id=(12|20)|AES-GCM' && _a4=1 || true
+		AF "/tmp/freeb/$_lg" | grep -qE 'child ENCR transform_id=13' && _a4c=1 || true
 	done
 	if [ "$_a4" -eq 1 ]; then
-		case "$_name" in
-		*-esp-ctr*) _plog A4 INFO "ESP cipher AES-CTR established but outside v3.0e claimed set ($_name)" ;;
-		*)          _plog A4 PASS "ESP cipher in claimed set (iked child ENCR: AES-GCM/AES-CBC, row $_name)" ;;
-		esac
+		_plog A4 PASS "ESP cipher in claimed set (iked child ENCR: AES-GCM/AES-CBC, row $_name)"
+	elif [ "$_a4c" -eq 1 ]; then
+		_plog A4 INFO "ESP cipher AES-CTR established but outside v3.0e claimed set ($_name)"
 	else
 		_plog A4 INFO "no ESP cipher transform observed for $_name (NEG-refusal expected)"
 	fi
@@ -877,44 +893,41 @@ case "$_name" in
 	fi
 	;;
 *i2ike-addke*)
-	# CBC IKE cannot echo 16438, and the soft rekey has no DH, so ADDKE
-	# is not re-offered.  The row's pass is the CREATE_CHILD rekey already
-	# asserted above (new SPI both seats + post-rekey ping).  Demanding
-	# SA_hex type-6 and a new g_ir_present=Y here zeros up after the SAs
-	# exist, and the verdict then lies that there were no ESP SAs.
-	# Type-6 + Y stays the proof on the AEAD rows (i2iinit-addke, pfsrekey).
-	if grep -qE 'kmp_enc_alg \{ aes(128|192|256)_cbc' /tmp/freeb/r2vr.conf 2>/dev/null; then
-		if [ "$up" -eq 1 ]; then
-			echo "row $_name: CBC IKE rekey OK (ADDKE not re-offered without DH; AEAD not met)"
+	# ADDKE on the CREATE_CHILD child rekey is NOT cipher-gated: the daemon
+	# re-offers type-6 whenever this side is the initiator of-record or the
+	# peer offered ADDKE (ikev2_child_maybe_reoffer_addke).  Only the INITIAL
+	# IKE_SA's IKE_INTERMEDIATE (16438) echo needs AEAD IKE (a CBC initial SA
+	# falls back to classical IKE_AUTH).  i2ike-addke rekeys the CHILD, so a
+	# CBC-IKE row must STILL produce SA_hex type-6 + a fresh matching
+	# g_ir_present=Y keymat - exactly the linux i2ike kind (aes256_cbc).
+	# Assert the full proof unconditionally; a CBC demotion would prove zero
+	# PQC child rekeys on this matrix.
+	pqc=0
+	i=0
+	t6id=06000024
+	case "$_name" in
+	*-512*) t6id=06000023 ;;
+	*-1024*) t6id=06000025 ;;
+	esac
+	t6r=$(grep -cE "SA_hex=.*$t6id" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	YI0=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/init-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1 || true)
+	while [ "$i" -lt 90 ]; do
+		ky_i=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/init-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1)
+		ky_r=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/resp-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1)
+		abt=$(grep -cE "ADDKE followup timeout; abort" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+		if [ -n "$ky_i" ] && [ -n "$ky_r" ] && [ "$ky_i" = "$ky_r" ] \
+		   && { [ -z "$YI0" ] || [ "$ky_i" != "$YI0" ]; } \
+		   && [ "$abt" -eq 0 ]; then
+			pqc=1; break
 		fi
+		i=$((i+1)); sleep 1
+	done
+	if [ "${t6r:-0}" -ge 1 ] && [ "$pqc" -eq 1 ]; then
+		echo "row $_name: PQC ADDKE rekey OK - type-6 offer (x$t6r), KEM keymat sha256=$ky_i matches both seats (new, != baseline ${YI0:-none}), no followup abort (at ${i}s)"
 	else
-		pqc=0
-		i=0
-		t6id=06000024
-		case "$_name" in
-		*-512*) t6id=06000023 ;;
-		*-1024*) t6id=06000025 ;;
-		esac
-		t6r=$(grep -cE "SA_hex=.*$t6id" /tmp/freeb/resp-iked.log 2>/dev/null || true)
-		YI0=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/init-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1 || true)
-		while [ "$i" -lt 90 ]; do
-			ky_i=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/init-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1)
-			ky_r=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/resp-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1)
-			abt=$(grep -cE "ADDKE followup timeout; abort" /tmp/freeb/resp-iked.log 2>/dev/null || true)
-			if [ -n "$ky_i" ] && [ -n "$ky_r" ] && [ "$ky_i" = "$ky_r" ] \
-			   && { [ -z "$YI0" ] || [ "$ky_i" != "$YI0" ]; } \
-			   && [ "$abt" -eq 0 ]; then
-				pqc=1; break
-			fi
-			i=$((i+1)); sleep 1
-		done
-		if [ "${t6r:-0}" -ge 1 ] && [ "$pqc" -eq 1 ]; then
-			echo "row $_name: PQC ADDKE rekey OK - type-6 offer (x$t6r), KEM keymat sha256=$ky_i matches both seats (new, != baseline ${YI0:-none}), no followup abort (at ${i}s)"
-		else
-			echo "FAIL row $_name: ADDKE/PQC gate (t6=$t6r ky_i=${ky_i:-none} ky_r=${ky_r:-none} abt=${abt:-0} base=${YI0:-none}); need wire type-6 + NEW matching Y-keymat + no abort"
-			gate_why="ADDKE/PQC latch (t6=${t6r:-0})"
-			up=0
-		fi
+		echo "FAIL row $_name: ADDKE/PQC gate (t6=$t6r ky_i=${ky_i:-none} ky_r=${ky_r:-none} abt=${abt:-0} base=${YI0:-none}); need wire type-6 + NEW matching Y-keymat + no abort"
+		gate_why="ADDKE/PQC latch (t6=${t6r:-0})"
+		up=0
 	fi
 	;;
 esac
