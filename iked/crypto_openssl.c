@@ -2351,6 +2351,9 @@ eay_aes_ctr(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv)
 	 */
 
 	int len;
+	size_t aes_len;
+	const EVP_CIPHER *ciph;
+	unsigned char ctrblk[AES_BLOCK_SIZE];
 	rc_vchar_t *resultbuf = NULL;
 	EVP_CIPHER_CTX *ctx = NULL;
 
@@ -2358,10 +2361,45 @@ eay_aes_ctr(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv)
 	 * if (data->l > AES_BLOCK_SIZE * UINT32_MAX) return 0;
 	 */
 
-	if (iv->l != AES_CTR_IV_SIZE) {
+	if (!key || !iv || iv->l != AES_CTR_IV_SIZE) {
 		plog(PLOG_INTERR, PLOGLOC, 0, "bad iv size");
 		return 0;
 	}
+	/*
+	 * RFC 3686: KEYMAT is AES key || 4-octet nonce.  The counter block
+	 * is nonce || IV || block counter, and the block counter starts at 1.
+	 * OpenSSL CTR takes that 16-octet block as its IV and a bare AES key.
+	 * Passing the 8-octet IV and the nonce-bearing key makes each seat
+	 * read a different keystream, so IKE_AUTH decrypts to garbage and
+	 * ikev2_check_payloads reports malformed payload format.
+	 */
+	if (key->l < 4) {
+		plog(PLOG_INTERR, PLOGLOC, 0, "AES-CTR key missing nonce");
+		return 0;
+	}
+	aes_len = key->l - 4;
+	switch (aes_len) {
+	case 16:
+		ciph = EVP_aes_128_ctr();
+		break;
+	case 24:
+		ciph = EVP_aes_192_ctr();
+		break;
+	case 32:
+		ciph = EVP_aes_256_ctr();
+		break;
+	default:
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "unsupported AES-CTR key length %lu\n",
+		     (unsigned long)aes_len * 8);
+		return 0;
+	}
+	memcpy(ctrblk, key->v + aes_len, 4);
+	memcpy(ctrblk + 4, iv->v, AES_CTR_IV_SIZE);
+	ctrblk[12] = 0;
+	ctrblk[13] = 0;
+	ctrblk[14] = 0;
+	ctrblk[15] = 1;
 
 	ctx = EVP_CIPHER_CTX_new();
 	if (ctx == NULL) {
@@ -2369,10 +2407,11 @@ eay_aes_ctr(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv)
 		goto fail;
 	}
 
-	if (!EVP_EncryptInit_ex(ctx, EVP_aes_128_ctr(), NULL, (unsigned char *)key->v, (unsigned char *)iv->v)) {
+	if (!EVP_EncryptInit_ex(ctx, ciph, NULL, (unsigned char *)key->v, ctrblk)) {
 		plog(PLOG_INTERR, PLOGLOC, 0, "EVP_EncryptInit_ex failed");
 		goto fail;
 	}
+	EVP_CIPHER_CTX_set_padding(ctx, 0);
 
 	resultbuf = rc_vmalloc(data->l);
 	if (!resultbuf) {

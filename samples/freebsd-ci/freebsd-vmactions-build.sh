@@ -54,7 +54,7 @@ echo "=== Configure (sanitized compile probe) ==="
 # equivalent of the Linux default, not a porting hack.
 CFLAGS="-g -O2 ${SAN_CFLAGS}" \
 LDFLAGS="${SAN_LDFLAGS}" \
-./configure --prefix=/usr/local/racoon2 --enable-admin
+./configure --prefix=/usr/local/racoon2 --enable-admin --enable-keymat-oracle
 
 echo "=== Building (sanitized compile probe) ==="
 $MAKE -j2
@@ -70,7 +70,7 @@ echo "=== REBUILD non-sanitized daemons (production shape) ==="
 $MAKE clean >/dev/null
 SAN_CFLAGS= SAN_LDFLAGS= \
 CFLAGS="-g -O2" \
-./configure --prefix=/usr/local/racoon2 --enable-admin >/dev/null
+./configure --prefix=/usr/local/racoon2 --enable-admin --enable-keymat-oracle >/dev/null
 $MAKE -j2 >/dev/null
 $SUDO $MAKE install
 test -x /usr/local/racoon2/sbin/iked

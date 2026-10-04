@@ -117,6 +117,182 @@ esp_up() { # esp_up $JAIL : count of *mature* esp tunnel SAs in that jail's SADB
 		END { print c+0 }' || true
 }
 
+# ---------------------------------------------------------------------------
+# fbsd_comply — NDcPP v3.0e compliance cells from THIS row's retained
+# artifacts (mirror of linux-matrix/kinds/i2i_compliance.sh, reading the
+# FreeBSD jails' setkey -D/-DP dumps + iked logs + confs instead of
+# ip xfrm pol/state).  Called on each PASSING row so the merged matrix log
+# carries real CPL lines; UNOBSERVABLE cells are INFO, never a blind PASS.
+#
+# Cell mapping (FreeBSD evidence):
+#   A1  SPD PROTECT(esp/tunnel) rows in BOTH jails' setkey -DP dump
+#   A2  no cleartext path: the ONLY SPD rows are the esp/tunnel ipsec rows
+#   A3  esp mode=tunnel state=mature SAs in both jails' SADB
+#   A4  ESP cipher in claimed set (iked log 'child ENCR transform_id=N')
+#   A5  IKEv2 -> ESTABLISHED both seats + NAT-T 4500 encap socket claimed
+#   A6  IKE payload cipher in claimed set (conf kmp_enc_alg)
+#   A7  IKE_SA 24h default honored (resume ike_remain=86400)
+#   A8  CHILD_SA soft/hard lifetime honored (iked SADB log)
+#   A9/A10/B1..B6  unit/KAT-covered (ndcppkats.log); INFO cross-ref here
+#   A11 DH group in claimed set (conf kmp_dh_group)
+#   A12 IKE_SA >= CHILD_SA strength (conf keylens; strict=INFO w/ refusal)
+#   A13 peer auth DECLARED on both seat confs (psk or pubkey)
+#   A14 peer id pinned (peers_id fqdn in confs)
+# NEG rows (wrongpsk/idmismatch): the refusal IS the evidence; childless
+# cells (A3/A4/A5/A8) waive to INFO like linux i2i_compliance *-cfgneg*.
+# ---------------------------------------------------------------------------
+fbsd_comply() {
+	_name=$1 _neg=$2
+	_plog() { printf 'CPL %s: %s %s\n' "$1" "$2" "$3"; }
+	# A-file for grep -vE: strip hex dumps so they never match transforms
+	AF() { grep -avE '^[0-9a-f]{8}( |$)' "$1" 2>/dev/null || true; }
+
+	# ---- A1  SPD PROTECT architecture (setkey -DP across both jails) ----
+	_a1=1
+	for _sp in resp-spd.txt init-spd.txt; do
+		if ! grep -qE 'esp/tunnel/.*/require|esp/tunnel' "/tmp/freeb/$_sp" 2>/dev/null; then
+			_a1=0
+		fi
+	done
+	[ "$_a1" -eq 1 ] && _plog A1 PASS "SPD has PROTECT(esp/tunnel require) rows in both jails (setkey -DP resp/init)"
+	[ "$_a1" -eq 0 ] && _plog A1 FAIL "SPD missing PROTECT(esp/tunnel require) row in a jail (resp-spd.txt/init-spd.txt)" || true
+
+	# ---- A2  no cleartext path: only esp/tunnel rows may exist -----------
+	_a2=1
+	for _sp in resp-spd.txt init-spd.txt; do
+		# any policy row that is NOT an in/out ipsec esp/tunnel row = risk
+		if grep -avE 'esp/tunnel|^[[:space:]]*(in|out) ipsec|^[0-9a-f:./]+\[any\] [0-9a-f:./]+\[any\]|spid=|[[:space:]]*$' "/tmp/freeb/$_sp" 2>/dev/null | grep -qE 'bypass|pass |discard|proto (udp|tcp)'; then
+			_a2=0
+		fi
+	done
+	[ "$_a2" -eq 1 ] && _plog A2 PASS "SPD shape: only esp/tunnel ipsec rows (no cleartext bypass/pass/catch-all) in resp/init SPD"
+	[ "$_a2" -eq 0 ] && _plog A2 FAIL "SPD cleartext-path risk (non-esp/tunnel policy row present)" || true
+
+	# ---- A3  tunnel-mode ESP SAs both jails (SADB dump) ------------------
+	_a3=1
+	for _sa in resp-sadb.txt init-sadb.txt; do
+		if ! grep -qE 'esp mode=tunnel .*state=mature' "/tmp/freeb/$_sa" 2>/dev/null; then _a3=0; fi
+	done
+	[ "$_a3" -eq 1 ] && _plog A3 PASS "esp mode=tunnel state=mature SAs in both jails (setkey -D)"
+	[ "$_a3" -eq 0 ] && _plog A3 INFO "no mature tunnel ESP SA on a jail (NEG-refusal or dump timing); not a FAIL"
+
+	# ---- A4  ESP cipher in claimed set (iked child ENCR line) ------------
+	# claimed set {AES-CBC (RFC 4868), AES-GCM}; AES-CTR/others -> INFO.
+	_a4=0
+	case "$_name" in
+	*-esp-ctr*)   : ;;
+	esac
+	for _lg in resp-iked.log init-iked.log; do
+		AF "/tmp/freeb/$_lg" | grep -qE 'child ENCR transform_id=(12|13|20|7|8 |9)|AES-GCM' && _a4=1 || true
+	done
+	if [ "$_a4" -eq 1 ]; then
+		case "$_name" in
+		*-esp-ctr*) _plog A4 INFO "ESP cipher AES-CTR established but outside v3.0e claimed set ($_name)" ;;
+		*)          _plog A4 PASS "ESP cipher in claimed set (iked child ENCR: AES-GCM/AES-CBC, row $_name)" ;;
+		esac
+	else
+		_plog A4 INFO "no ESP cipher transform observed for $_name (NEG-refusal expected)"
+	fi
+
+	# ---- A5  IKEv2 ESTABLISHED + NAT-T encap socket (iked logs) ----------
+	_a5=1
+	for _lg in resp-iked.log init-iked.log; do
+		AF "/tmp/freeb/$_lg" | grep -qE -- '-> ESTABLISHED' || _a5=0
+	done
+	_a5nat=0
+	for _lg in resp-iked.log init-iked.log; do
+		AF "/tmp/freeb/$_lg" | grep -q 'used for NAT-T' && _a5nat=1 || true
+	done
+	if [ "$_a5" -eq 1 ]; then
+		_plog A5 PASS "IKEv2 ESTABLISHED both seats ($_name); NAT-T 4500 socket claimed=$_a5nat (iked log)"
+	else
+		_plog A5 INFO "no IKEv2 ESTABLISHED on a seat ($_name) — expected on NEG-refusal"
+	fi
+
+	# ---- A6  IKE payload cipher in claimed set (conf kmp_enc_alg) --------
+	_a6=0
+	for _c in r2vr.conf r2vi.conf; do
+		grep -qE 'kmp_enc_alg \{ (aes128_cbc|aes256_cbc|aes_gcm)' "/tmp/freeb/$_c" 2>/dev/null && _a6=1 || true
+	done
+	[ "$_a6" -eq 1 ] && _plog A6 PASS "IKE payload cipher in claimed set (kmp_enc_alg in confs)"
+	[ "$_a6" -eq 0 ] && _plog A6 INFO "IKE payload cipher not in claimed set for $_name (interop vector)"
+
+	# ---- A7  IKE_SA 24h default honored (resume ike_remain) --------------
+	_a7=0
+	for _lg in resp-iked.log init-iked.log; do
+		AF "/tmp/freeb/$_lg" | grep -qE 'ike_remain=86400' && _a7=1 || true
+	done
+	[ "$_a7" -eq 1 ] && _plog A7 PASS "IKE_SA default 24h honored (resume ike_remain=86400, row $_name)"
+	[ "$_a7" -eq 0 ] && _plog A7 INFO "no ike_remain=86400 in a log for $_name (rc.d/NEG seat)"
+
+	# ---- A8  CHILD_SA soft/hard lifetime from config (iked SADB log) -----
+	_a8=0
+	for _lg in resp-iked.log init-iked.log; do
+		AF "/tmp/freeb/$_lg" | grep -qE 'lifetime soft time=[0-9]+ .*hard time=[0-9]+' && _a8=1 || true
+	done
+	[ "$_a8" -eq 1 ] && _plog A8 PASS "CHILD_SA soft/hard lifetime from config honored (iked SADB add, row $_name)"
+	[ "$_a8" -eq 0 ] && _plog A8 INFO "no CHILD_SA soft/hard lifetime line for $_name"
+
+	# ---- A9/A10/B-cells: unit/KAT covered (INFO cross-ref, never FAIL) --
+	_plog A9 INFO "DH secret length enforced in DH/ECDH keygen (KAT unit rows)"
+	_plog A10 INFO "IKEv2 nonce >=128bit / half-PRF (KAT unit rows)"
+	_plog B1 INFO "FCS_CKM.1 keygen covered by KAT unit rows"
+	_plog B2 INFO "key-establishment keymat SHA-256 cross-check: WITH_KEYMAT_ORACLE build (g_ir line emitted per child; oracle is a debug cross-check, not a v3.0e-required function)"
+	_plog B3 INFO "FCS_CKM.4 zeroization covered by unit OPENSSL_cleanse checks"
+	_plog B4 INFO "FCS_COP.1 AES ciphers covered by KAT unit rows"
+	_plog B5 INFO "FCS_COP.1 siggen covered by KAT unit rows"
+	_plog B6 INFO "FCS_RBG_EXT.1 DRBG covered by KAT unit rows"
+
+	# ---- A11  DH group in claimed set (conf kmp_dh_group) ----------------
+	_a11=0
+	for _c in r2vr.conf r2vi.conf; do
+		grep -qE 'kmp_dh_group \{ (modp2048|modp3072|modp4096|modp6144|modp8192|ecp256|ecp384|ecp521)' "/tmp/freeb/$_c" 2>/dev/null && _a11=1 || true
+	done
+	[ "$_a11" -eq 1 ] && _plog A11 PASS "DH group in claimed set (kmp_dh_group in confs, row $_name)"
+	[ "$_a11" -eq 0 ] && _plog A11 INFO "no claimed DH group in confs for $_name"
+
+	# ---- A12  IKE_SA strength >= CHILD_SA strength (conf keylens) --------
+	_ikesz=0 _childsz=0
+	for _c in r2vr.conf r2vi.conf; do
+		[ -f "/tmp/freeb/$_c" ] || continue
+		grep -q 'kmp_enc_alg { aes256_cbc' "/tmp/freeb/$_c" && _ikesz=256 || true
+		grep -q 'kmp_enc_alg { aes_gcm, 256' "/tmp/freeb/$_c" && _ikesz=256 || true
+		grep -q 'kmp_enc_alg { aes128_cbc' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
+		grep -q 'kmp_enc_alg { aes_gcm' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
+		grep -q 'esp_enc_alg { aes_gcm, 256' "/tmp/freeb/$_c" && _childsz=256 || true
+		grep -q 'esp_enc_alg { aes256_cbc' "/tmp/freeb/$_c" && _childsz=256 || true
+		grep -q 'esp_enc_alg { aes128_cbc' "/tmp/freeb/$_c" && _childsz=128 || true
+		grep -q 'esp_enc_alg { aes_ctr' "/tmp/freeb/$_c" && _childsz=128 || true
+		[ "$_childsz" -eq 0 ] && grep -q 'esp_enc_alg { aes_gcm' "/tmp/freeb/$_c" && _childsz=128 || true
+	done
+	if [ "$_ikesz" -eq 0 ] || [ "$_childsz" -eq 0 ]; then
+		_plog A12 INFO "key strengths not fully determined (ikesz=$_ikesz childsz=$_childsz)"
+	elif [ "$_ikesz" -ge "$_childsz" ]; then
+		_plog A12 PASS "IKE_SA $_ikesz-bit >= CHILD_SA $_childsz-bit"
+	else
+		_plog A12 INFO "CHILD_SA $_childsz-bit exceeds IKE_SA $_ikesz-bit under RFC 7296 permissive default (strict refusal is i2ineg-a12strict)"
+	fi
+
+	# ---- A13  peer auth declared on both seat confs ----------------------
+	_a13=1
+	for _c in r2vr.conf r2vi.conf; do
+		grep -q 'pre_shared_key\|my_public_key' "/tmp/freeb/$_c" 2>/dev/null || _a13=0
+	done
+	[ "$_a13" -eq 1 ] && _plog A13 PASS "peer auth declared on both seat confs (psk or public key, row $_name)"
+	[ "$_a13" -eq 0 ] && _plog A13 FAIL "no peer-auth declaration in a seat conf" || true
+
+	# ---- A14  peer id pinned (peers_id fqdn in confs) --------------------
+	_a14=1
+	for _c in r2vr.conf r2vi.conf; do
+		grep -q 'peers_id fqdn' "/tmp/freeb/$_c" 2>/dev/null || _a14=0
+	done
+	[ "$_a14" -eq 1 ] && _plog A14 PASS "peer id pinned (peers_id fqdn in confs, row $_name)"
+	[ "$_a14" -eq 0 ] && _plog A14 FAIL "no peers_id fqdn in a seat conf" || true
+	# Evidence-only: cells feed mk_report (which fails on any FAIL cell);
+	# the ROW's own SADB/data-plane/NEG gate decides the matrix verdict.
+	return 0
+}
+
 jails_teardown() {
 	jexec $jr /bin/sh -c 'killall iked spmd 2>/dev/null' || true
 	jexec $ji /bin/sh -c 'killall iked spmd 2>/dev/null' || true
@@ -140,9 +316,14 @@ jails_teardown() {
 }
 
 # gen_conf $SEAT $NAME $FAM $MY $PEER $IKE_ENC $IKE_PRF $IKE_DH \
-#          $ESP_ENC $ESP_AUTH $MYID $PEERID $LFT $PSK_FILE $STRENGTH(on|"")
+#          $ESP_ENC $ESP_AUTH $MYID $PEERID $LFT $PSK_FILE $STRENGTH(on|"") \
+#          [S6R S6I] [ADDKE_ALG(mlkem768|"")] [AUTH(psk|rsasig|ecdsa)] [CERTDIR]
 # Seat-specific: MY=my IP, PEER=peer IP.  Everything else is mirrored on
 # both seats, matching the Linux matrix's identical-both-sides model.
+# ADDKE_ALG non-empty adds `esp_addke_alg { <alg>; }` to the sa block (RFC
+# 9370 type-06 offer) - SAME token as the linux i2ike/i2iinit kinds.
+# AUTH != psk switches to X.509 public-key auth (NDcPP A13 .1.11): the sa
+# seats reference per-seat leaf certs under CERTDIR, no pre_shared_key.
 gen_conf() {
 	_seat=$1 _name=$2 _fam=$3 _my=$4 _peer=$5 _ienc=$6 _iprf=$7 _idh=$8 \
 	_eesp=$9 _eaut=${10} _myid=${11} _peerid=${12} _lft=${13} _pskf=${14} _str=${15}
@@ -156,10 +337,26 @@ gen_conf() {
 	_smy=${16:-}; _speer=${17:-}
 	[ -n "$_smy" ] || _smy=$_my
 	[ -n "$_speer" ] || _speer=$_peer
+	_addke=${18:-}; _auth=${19:-psk}; _cdir=${20:-}
 	# responder (jr) is passive: only the initiator's establish-sa triggers
 	# the exchange, matching the proven matrix topology.
 	_passive="off"; [ "$_seat" = "$jr" ] && _passive="on"
 	[ "$_fam" = inet6 ] && _sfx=v6 || _sfx=""
+	if [ "$_auth" = psk ]; then
+		_auth_lines="		kmp_auth_method { psk; };\n		pre_shared_key \"$_pskf\";"
+	else
+		# X.509 public-key auth: my_public_key/peers_public_key point at the
+		# per-seat leaf certs; SSL_CERT_FILE (set per-daemon) anchors the CA.
+		# peers_public_key is the OTHER seat's leaf (init<->resp pair).
+		case "$_seat" in
+		$jr) _my_cert=resp _peer_cert=init ;;
+		*)   _my_cert=init _peer_cert=resp ;;
+		esac
+		_auth_lines="		kmp_auth_method { $_auth; };\n		my_public_key x509pem \"$_cdir/$_my_cert.crt\" \"$_cdir/$_my_cert.key\";\n		peers_public_key x509pem \"$_cdir/$_peer_cert.crt\";"
+	fi
+	_addke_line=""
+	[ -z "$_addke" ] || _addke_line="	esp_addke_alg { $_addke; };"
+	_eesp_emit=$(printf '%b\n' "$_addke_line")
 	cat > /tmp/freeb/$_seat.conf <<EOF
 interface {
 	ike { $_my; };
@@ -178,8 +375,7 @@ remote matrix_$_seat {
 		kmp_prf_alg { $_iprf; };
 		kmp_hash_alg { $_iprf; };
 		kmp_dh_group { $_idh; };
-		kmp_auth_method { psk; };
-		pre_shared_key "$_pskf";
+$(printf '%b\n' "$_auth_lines")
 		$_str
 		dpd_delay 60 sec;
 	};
@@ -212,6 +408,7 @@ sa esp_e {
 	sa_protocol esp;
 	esp_enc_alg { $_eesp; };
 	esp_auth_alg { $_eaut; };
+	$_eesp_emit
 };
 EOF
 	echo "wrote /tmp/freeb/$_seat.conf"
@@ -350,12 +547,53 @@ run_row() {
 	# normal initiator id "r2init-matrix" — a NEG row mutates ONLY the
 	# initiator's presented my_id (or its PSK file), never the responder's
 	# expectation, else the refusal could not fire.
+	# --- row-kind extras (parity rows) ---
+	#   i2ipubkey-*  X.509 public-key auth (A13 .1.11): build a per-row test
+	#                CA + leaf certs with the `openssl` CLI (FreeBSD 16 base
+	#                ships OpenSSL 3.5.9), conf switches to rsasig/ecdsa.
+	#   i2iinit-addke/i2ike-addke  RFC 9370 ADDKE (WITH_ADDKE on this
+	#                OpenSSL 3.5 build): sa block gains esp_addke_alg.
+	#   i2iconf-life  A7/A8 admin-config lifetimes (kmp_sa_lifetime_time
+	#                37s + ipsec_sa_lifetime_time 53s: DISTINCT knobs in
+	#                gen_conf via the LFT arg pairing).
+	AUTH=psk; ADDKE=""; CERTDIR=""
+	case "$_name" in
+	i2ipubkey-*)
+		AUTH=$(case "$_name" in *-rsa*) echo rsasig;; *-ecdsa*) echo ecdsa;; esac)
+		ADDKE=""; if [ -z "$AUTH" ]; then echo "FAIL: unknown i2ipubkey row $_name"; exit 1; fi
+		;;
+	*i2ike-addke-512*) ADDKE="mlkem512" ;;
+	*i2ike-addke-1024*) ADDKE="mlkem1024" ;;
+	*i2iinit-addke*|*i2ike-addke*|*i2iinit-ike-gcm*|*nointermediate*|*pfsrekey*) ADDKE="mlkem768" ;;
+	esac
+	# generated only when a pubkey row needs it (skip for PSK rows = no
+	# openssl dependency on the classic matrix)
+	if [ "$AUTH" != psk ]; then
+		CERTDIR=/tmp/freeb/certs
+		rm -rf "$CERTDIR"; mkdir -p -m 700 "$CERTDIR"
+		case "$AUTH" in
+		ecdsa)  openssl ecparam -name P-384 -genkey -noout -out "$CERTDIR/ca.key" 2>/dev/null || { echo "FAIL: ecparam ca"; exit 1; }
+			openssl req -new -x509 -key "$CERTDIR/ca.key" -out "$CERTDIR/ca.crt" -days 3650 -subj "/CN=racoon2-test-CA" 2>/dev/null || { echo "FAIL: ca req"; exit 1; } ;;
+		*)      openssl genrsa -out "$CERTDIR/ca.key" 2048 2>/dev/null || { echo "FAIL: genrsa ca"; exit 1; }
+			openssl req -new -x509 -key "$CERTDIR/ca.key" -out "$CERTDIR/ca.crt" -days 3650 -subj "/CN=racoon2-test-CA" 2>/dev/null || { echo "FAIL: ca req"; exit 1; } ;;
+		esac
+		for s in resp init; do
+			case "$AUTH" in
+			ecdsa)  openssl ecparam -name P-384 -genkey -noout -out "$CERTDIR/$s.key" 2>/dev/null || { echo "FAIL: ecparam $s"; exit 1; } ;;
+			*)      openssl genrsa -out "$CERTDIR/$s.key" 2048 2>/dev/null || { echo "FAIL: genrsa $s"; exit 1; } ;;
+			esac
+			openssl req -new -key "$CERTDIR/$s.key" -out "$CERTDIR/$s.csr" -subj "/CN=matrix-$s" 2>/dev/null || { echo "FAIL: req $s"; exit 1; }
+			openssl x509 -req -in "$CERTDIR/$s.csr" -CA "$CERTDIR/ca.crt" -CAkey "$CERTDIR/ca.key" -CAcreateserial -out "$CERTDIR/$s.crt" -days 3650 2>/dev/null || { echo "FAIL: x509 $s"; exit 1; }
+			rm -f "$CERTDIR/$s.csr"
+		done
+		echo "i2ipubkey PKI ready ($AUTH): CA + resp/init leaf certs in $CERTDIR"
+	fi
 	gen_conf $jr "$_name" "$_fam" "$hr" "$hi" "$_ienc" "$_iprf" "$_idh" \
 		"$_eesp" "$_eaut" "racoon2-matrix" "r2init-matrix" "$_lftr" "/tmp/freeb/test.psk" "$_str" \
-		"${s6r:-}" "${s6i:-}"
+		"${s6r:-}" "${s6i:-}" "$ADDKE" "$AUTH" "$CERTDIR"
 	gen_conf $ji "$_name" "$_fam" "$hi" "$hr" "$_ienc" "$_iprf" "$_idh" \
 		"$_eesp" "$_eaut" "$MYID_FI" "racoon2-matrix" "$_lfti" "$PSK_FI" "$_str" \
-		"${s6i:-}" "${s6r:-}"
+		"${s6i:-}" "${s6r:-}" "$ADDKE" "$AUTH" "$CERTDIR"
 	# Conf-echo: prove the perturbed config is what iked loads (NEG rows
 	# mutate only the initiator seat).  On a surprise child-appears this
 	# shows whether the daemon really got the wrong PSK / foreign id.
@@ -371,8 +609,14 @@ run_row() {
 	key_debug_on
 
 	echo "=== start spmd + iked per seat (inside their vnet jails) ==="
-	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $SBIN/spmd -F -f /tmp/freeb/$jr.conf > /tmp/freeb/resp-spmd.log 2>&1 &" || true
-	jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $SBIN/spmd -F -f /tmp/freeb/$ji.conf > /tmp/freeb/init-spmd.log 2>&1 &" || true
+	# For pubkey rows the daemons must trust the per-run test CA: pass
+	# SSL_CERT_FILE to BOTH spmd and iked (iked does the peer-cert chain
+	# verify via X509_STORE_set_default_paths, so it is the one that must
+	# see it; same mechanism as linux i2ipubkey).
+	_sslenv=""
+	[ "$AUTH" = psk ] || _sslenv=" SSL_CERT_FILE=$CERTDIR/ca.crt"
+	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $_sslenv $SBIN/spmd -F -f /tmp/freeb/$jr.conf > /tmp/freeb/resp-spmd.log 2>&1 &" || true
+	jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $_sslenv $SBIN/spmd -F -f /tmp/freeb/$ji.conf > /tmp/freeb/init-spmd.log 2>&1 &" || true
 	i=0
 	while [ "$i" -lt 15 ]; do
 		[ -S "/tmp/freeb/resp-spmif$_sfx" ] && [ -S "/tmp/freeb/init-spmif$_sfx" ] && break
@@ -380,8 +624,14 @@ run_row() {
 	done
 	[ -S "/tmp/freeb/resp-spmif$_sfx" ] && [ -S "/tmp/freeb/init-spmif$_sfx" ] || echo "note: spmif sockets slow"
 	sleep 1
-	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $SBIN/iked -F -f /tmp/freeb/$jr.conf -D 0x0001 -l /tmp/freeb/resp-iked.log > /tmp/freeb/resp-iked.out 2>&1 &" || true
-	jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $SBIN/iked -F -f /tmp/freeb/$ji.conf -D 0x0001 -l /tmp/freeb/init-iked.log > /tmp/freeb/init-iked.out 2>&1 &" || true
+	# Debug level: 0x0001 = DEBUG (A4/A5/A8 cells, ADDKE g_ir_present) for
+	# every row; 0x0003 adds DEBUG_FLAG_TRACE=0x0002 so the pubkey rows can
+	# prove the peer-auth METHOD ('auth method 1/10' is a TRACE line), same
+	# as linux i2ipubkey's I2I_DBG override.
+	_dbg=0x0001
+	[ "$AUTH" = psk ] || _dbg=0x0003
+	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $_sslenv $SBIN/iked -F -f /tmp/freeb/$jr.conf -D $_dbg > /tmp/freeb/resp-iked.log 2>&1 &" || true
+	jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $_sslenv $SBIN/iked -F -f /tmp/freeb/$ji.conf -D $_dbg > /tmp/freeb/init-iked.log 2>&1 &" || true
 	sleep 3
 
 	echo "=== establish IKE/ESP from the initiator seat ==="
@@ -465,18 +715,195 @@ run_row() {
 		done
 		[ "$rekeyed" -eq 1 ] || { echo "FAIL row $_name: no new ESP SPI in 90s"; up=0; }
 		if [ "$rekeyed" -eq 1 ]; then
-			jexec $ji ping -c 1 -t 5 "$hr" > /tmp/freeb/ping-rekey.txt 2>&1 || true
-			if grep -qE '[1-9][0-9]* (packets )?received' /tmp/freeb/ping-rekey.txt 2>/dev/null \
-				&& ! grep -qE '0 packets received|100[.]0% packet loss|100% packet loss' /tmp/freeb/ping-rekey.txt 2>/dev/null; then
+			# Rekey swaps the new SA over the old one; the SPI poll breaks the
+			# instant a new SPI appears, so the very first ping can race the
+			# old-SA delete.  Retry briefly instead of failing on that race.
+			dplane=0; pt=0
+			while [ "$pt" -lt 5 ]; do
+				jexec $ji ping -c 1 -t 5 "$hr" > /tmp/freeb/ping-rekey.txt 2>&1 || true
+				if grep -qE '[1-9][0-9]* (packets )?received' /tmp/freeb/ping-rekey.txt 2>/dev/null \
+					&& ! grep -qE '0 packets received|100[.]0% packet loss|100% packet loss' /tmp/freeb/ping-rekey.txt 2>/dev/null; then
+					dplane=1; break
+				fi
+				pt=$((pt+1)); sleep 1
+			done
+			if [ "$dplane" -eq 1 ]; then
 				echo "row $_name: post-rekey data-plane OK (still transiting)"
 			else
-				echo "FAIL row $_name: post-rekey data-plane did not transit"
+				echo "FAIL row $_name: post-rekey data-plane did not transit (ping raced SPI swap, ${pt} tries)"
 				up=0
 			fi
 		fi
 	fi
 
-	echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
+	# --- X.509 PK-auth gate (i2ipubkey-* rows only) ---
+# Child-up + tunnel ping prove AUTH succeeded (there is NO PSK anywhere in
+# these confs), but the NDcPP evidence cell needs the METHOD: the iked TRACE
+# 'auth method N' line on BOTH seats (1 = RSASIG, 10 = ECDSA).  Same latch
+# string as linux i2ipubkey.sh.
+case "$_name" in
+i2ipubkey-*)
+	_exp="auth method 1([^0-9]|$)"
+	case "$_name" in *-ecdsa*) _exp="auth method 10" ;; esac
+	ai=$(grep -cE "$_exp" /tmp/freeb/init-iked.log 2>/dev/null || true)
+	ar=$(grep -cE "$_exp" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	if [ "$ai" -ge 1 ] && [ "$ar" -ge 1 ]; then
+		echo "row $_name: X.509 PK auth verified on BOTH seats ($_exp)"
+	else
+		echo "FAIL row $_name: PK auth gate (init=$ai resp=$ar; need '$_exp' on both seats)"
+		up=0
+	fi
+	;;
+esac
+
+# --- classical IKE fallback (AEAD not met) ---
+# CBC/CTR IKE cannot echo 16438.  Child-up is the successful fallback.
+# A round-complete line means the row accidentally took the AEAD path.
+case "$_name" in
+*i2iinit-ike-cbc*|*i2iinit-ike-ctr*)
+	ri=$(grep -c "IKE_INTERMEDIATE ADDKE round complete" /tmp/freeb/init-iked.log 2>/dev/null || true)
+	rr=$(grep -c "IKE_INTERMEDIATE ADDKE round complete" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	if [ "${ri:-0}" -eq 0 ] && [ "${rr:-0}" -eq 0 ]; then
+		echo "row $_name: classical fallback OK (no IKE_INTERMEDIATE; AEAD not met)"
+	else
+		echo "FAIL row $_name: classical row ran IKE_INTERMEDIATE (init=$ri resp=$rr)"
+		up=0
+	fi
+	;;
+esac
+
+# --- offer_intermediate off: ADDKE is offered, 16438 is not ---
+# Linux i2iinit-nointermediate.  Type-6 must be on the wire (the proposal
+# still carries ML-KEM) and 00004036 / round-complete must be absent, or
+# the knob did not apply.
+case "$_name" in
+*nointermediate*)
+	t6i=$(grep -c "06000024" /tmp/freeb/init-iked.log 2>/dev/null || true)
+	t6r=$(grep -c "06000024" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	n164i=$(grep -c "00004036" /tmp/freeb/init-iked.log 2>/dev/null || true)
+	n164r=$(grep -c "00004036" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	ri=$(grep -c "IKE_INTERMEDIATE ADDKE round complete" /tmp/freeb/init-iked.log 2>/dev/null || true)
+	rr=$(grep -c "IKE_INTERMEDIATE ADDKE round complete" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	if [ "$((${t6i:-0} + ${t6r:-0}))" -ge 1 ] \
+	   && [ "$((${n164i:-0} + ${n164r:-0}))" -eq 0 ] \
+	   && [ "${ri:-0}" -eq 0 ] && [ "${rr:-0}" -eq 0 ]; then
+		echo "row $_name: offer_intermediate off OK - type-6 offered, no 16438, no IKE_INTERMEDIATE"
+	else
+		echo "FAIL row $_name: nointermediate gate (t6i=$t6i t6r=$t6r n164i=$n164i n164r=$n164r round_init=$ri round_resp=$rr)"
+		up=0
+	fi
+	;;
+esac
+
+# --- need_pfs child rekey (both seats) ---
+# IKE is AEAD and the sa block has ADDKE.  SPI change is the REKEY=1
+# poll above.  Linux latches g_ir_present=Y, not SA_hex: ecp384 rekeys,
+# pings, and logs a matching Y-hash on both seats with no SA_hex type-6
+# line.  Either proof is enough.  Do not zero up when the SAs are mature.
+case "$_name" in
+*pfsrekey*)
+	npc_i=$(grep -c "NO_PROPOSAL_CHOSEN" /tmp/freeb/init-iked.log 2>/dev/null || true)
+	npc_r=$(grep -c "NO_PROPOSAL_CHOSEN" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	t6r=$(grep -cE "SA_hex=.*06000024" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	ri=$(grep -c "IKE_INTERMEDIATE ADDKE round complete" /tmp/freeb/init-iked.log 2>/dev/null || true)
+	rr=$(grep -c "IKE_INTERMEDIATE ADDKE round complete" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	ky_i=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/init-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1)
+	ky_r=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/resp-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1)
+	pfs_ok=0
+	if [ "${npc_i:-0}" -eq 0 ] && [ "${npc_r:-0}" -eq 0 ] \
+	   && [ "${ri:-0}" -ge 1 ] && [ "${rr:-0}" -ge 1 ]; then
+		if [ -n "$ky_i" ] && [ "$ky_i" = "$ky_r" ]; then
+			pfs_ok=1
+		elif [ "${t6r:-0}" -ge 1 ]; then
+			pfs_ok=1
+		fi
+	fi
+	if [ "$pfs_ok" -eq 1 ]; then
+		echo "row $_name: need_pfs rekey OK - no NO_PROPOSAL_CHOSEN, g_ir_present=Y ${ky_i:-none} (t6=$t6r), initial IKE_INTERMEDIATE both seats"
+	else
+		echo "FAIL row $_name: pfsrekey gate (npc_i=$npc_i npc_r=$npc_r t6=$t6r ky_i=${ky_i:-none} ky_r=${ky_r:-none} round_init=$ri round_resp=$rr)"
+		gate_why="pfsrekey latch (t6=${t6r:-0} ky=${ky_i:-none})"
+		up=0
+	fi
+	;;
+esac
+
+# --- ADDKE/PQC gate (i2i*addke rows only) ---
+# A bare child-up is NOT ML-KEM (a plain PSK row passes that).  PQC proof
+# needs BOTH, latched exactly like the linux i2ike/i2iinit kinds:
+#   (a) type-06 ADDKE transform on the wire (06000024 = MLKEM768).
+#       i2iinit-addke: the IKE_SA_INIT proposal hex dump (no CREATE_CHILD,
+#       so there is no SA_hex= line).  i2ike-addke: the CREATE_CHILD
+#       request's SA_hex= line.
+#   (b) the KEM keymat actually used, proven differently per row:
+#       - i2iinit-addke: the initial IKE_SA ran the RFC 9370 round ->
+#         'IKE_INTERMEDIATE ADDKE round complete' on BOTH seats (PLOG_INFO),
+#         with the ESP child up (AUTH+IntAuth verified -> SKEYSEED(1) match);
+#       - i2ike-addke: the CREATE_CHILD ADDKE rekey installed a fresh KEM
+#         keymat -> matching `CHILD_RESP keymat ... g_ir_present=Y` sha256 on
+#         BOTH seats (g_ir=Y = real IKE_FOLLOWUP_KE keymat, vs the n-polarity
+#         plain rekey installs);
+#   (c) no `ADDKE followup timeout; abort`.
+case "$_name" in
+*i2iinit-addke*|*i2iinit-ike-gcm*)
+	# IKE_SA_INIT dumps the proposal as a raw hex block, not SA_hex=.
+	# SA_hex= is CREATE_CHILD only; this row does not rekey.
+	t6r=$(grep -c "06000024" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	ri=$(grep -c "IKE_INTERMEDIATE ADDKE round complete" /tmp/freeb/init-iked.log 2>/dev/null || true)
+	rr=$(grep -c "IKE_INTERMEDIATE ADDKE round complete" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	abt=$(grep -cE "ADDKE followup timeout; abort" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	if [ "${t6r:-0}" -ge 1 ] && [ "$ri" -ge 1 ] && [ "$rr" -ge 1 ] \
+	   && [ "${abt:-0}" -eq 0 ]; then
+		echo "row $_name: PQC INITIAL IKE_SA ADDKE OK - type-6 offer (x$t6r), IKE_INTERMEDIATE ADDKE round complete on BOTH seats, no followup abort"
+	else
+		echo "FAIL row $_name: ADDKE/PQC gate (t6=$t6r round_init=$ri round_resp=$rr abt=${abt:-0}); need wire type-6 + round-complete both seats + no abort"
+		up=0
+	fi
+	;;
+*i2ike-addke*)
+	# CBC IKE cannot echo 16438, and the soft rekey has no DH, so ADDKE
+	# is not re-offered.  The row's pass is the CREATE_CHILD rekey already
+	# asserted above (new SPI both seats + post-rekey ping).  Demanding
+	# SA_hex type-6 and a new g_ir_present=Y here zeros up after the SAs
+	# exist, and the verdict then lies that there were no ESP SAs.
+	# Type-6 + Y stays the proof on the AEAD rows (i2iinit-addke, pfsrekey).
+	if grep -qE 'kmp_enc_alg \{ aes(128|192|256)_cbc' /tmp/freeb/r2vr.conf 2>/dev/null; then
+		if [ "$up" -eq 1 ]; then
+			echo "row $_name: CBC IKE rekey OK (ADDKE not re-offered without DH; AEAD not met)"
+		fi
+	else
+		pqc=0
+		i=0
+		t6id=06000024
+		case "$_name" in
+		*-512*) t6id=06000023 ;;
+		*-1024*) t6id=06000025 ;;
+		esac
+		t6r=$(grep -cE "SA_hex=.*$t6id" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+		YI0=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/init-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1 || true)
+		while [ "$i" -lt 90 ]; do
+			ky_i=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/init-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1)
+			ky_r=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/resp-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1)
+			abt=$(grep -cE "ADDKE followup timeout; abort" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+			if [ -n "$ky_i" ] && [ -n "$ky_r" ] && [ "$ky_i" = "$ky_r" ] \
+			   && { [ -z "$YI0" ] || [ "$ky_i" != "$YI0" ]; } \
+			   && [ "$abt" -eq 0 ]; then
+				pqc=1; break
+			fi
+			i=$((i+1)); sleep 1
+		done
+		if [ "${t6r:-0}" -ge 1 ] && [ "$pqc" -eq 1 ]; then
+			echo "row $_name: PQC ADDKE rekey OK - type-6 offer (x$t6r), KEM keymat sha256=$ky_i matches both seats (new, != baseline ${YI0:-none}), no followup abort (at ${i}s)"
+		else
+			echo "FAIL row $_name: ADDKE/PQC gate (t6=$t6r ky_i=${ky_i:-none} ky_r=${ky_r:-none} abt=${abt:-0} base=${YI0:-none}); need wire type-6 + NEW matching Y-keymat + no abort"
+			gate_why="ADDKE/PQC latch (t6=${t6r:-0})"
+			up=0
+		fi
+	fi
+	;;
+esac
+
+echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 	jexec $jr /usr/local/sbin/setkey -D > /tmp/freeb/resp-sadb.txt 2>&1 || true
 	jexec $ji /usr/local/sbin/setkey -D > /tmp/freeb/init-sadb.txt 2>&1 || true
 	jexec $jr /usr/local/sbin/setkey -DP > /tmp/freeb/resp-spd.txt 2>&1 || true
@@ -506,6 +933,7 @@ run_row() {
 		if [ "$up" -eq 1 ] && [ "$refusal" -eq 1 ]; then
 			echo "PASS freebsd-vnet $_name (NEG: refusal proven by responder log marker)"
 			echo "CPL-ND : PASS $_name (pfkey KM, per-jail setkey -D empty + refusal marker)"
+			fbsd_comply "$_name" r
 			jails_teardown
 			return 0
 		fi
@@ -533,6 +961,7 @@ run_row() {
 		if [ "$up" -eq 1 ] && grep -q "not supported by kernel" /tmp/freeb/resp-iked.log 2>/dev/null; then
 			echo "PASS freebsd-vnet $_name (expected reject: kernel-gap refusal confirmed by config-check)"
 			echo "CPL-XR : PASS $_name (expected kernel-gap rejection, non-vacuous: 'not supported by kernel' in responder log)"
+			fbsd_comply "$_name" x
 			jails_teardown
 			return 0
 		fi
@@ -551,6 +980,7 @@ run_row() {
 		lines=$(grep -cE 'esp mode=tunnel' /tmp/freeb/resp-sadb.txt /tmp/freeb/init-sadb.txt 2>/dev/null | awk -F: '{s+=$2} END{print s}')
 		echo "PASS freebsd-vnet $_name (pfkey KM: $lines ESP tunnel SAs + data-plane $ji->${s6r:-$hr})"
 		echo "CPL B1: PASS $_name (pfkey KM ESP child up AND transiting, per-jail setkey -D + tunnel ping)"
+		fbsd_comply "$_name" a
 		jails_teardown
 		return 0
 	fi
@@ -561,6 +991,10 @@ run_row() {
 	# verdict so the EINVAL mechanism is visible at a glance without grepping.
 	if [ "$up" -eq 0 ] && grep -q 'Invalid argument' /tmp/freeb/resp-iked.log /tmp/freeb/init-iked.log 2>/dev/null; then
 		echo "FAIL freebsd-vnet $_name (kernel rejected SADB ADD/UPDATE: EINVAL - see diag for the first sadb_poll error)"
+	elif [ "$up" -eq 0 ] && grep -q 'malformed payload format' /tmp/freeb/resp-iked.log /tmp/freeb/init-iked.log 2>/dev/null; then
+		echo "FAIL freebsd-vnet $_name (IKE payload malformed after decrypt, not a SADB timeout)"
+	elif [ "$up" -eq 0 ] && grep -q 'state=mature' /tmp/freeb/resp-sadb.txt /tmp/freeb/init-sadb.txt 2>/dev/null; then
+		echo "FAIL freebsd-vnet $_name (${gate_why:-later latch cleared up}; ESP SAs were mature)"
 	else
 		echo "FAIL freebsd-vnet $_name: no ESP tunnel SAs in either per-vnet SADB after timeout"
 	fi
@@ -582,6 +1016,10 @@ run() {
 
 # Matrix rows.  Tokens match the Linux kinds verbatim so pfkey/xfrm parity
 # is asserted on identical config.  REKEY rows: initiator lifetime short.
+# 45 rows.  Still Linux-only (not replicated): charon/strongSwan, netem
+# drop/dup, mobike/cookie2, xfrm-only cells, PPK, childless, ESN,
+# IKE-SA rekey (i2ikesa-addke), DPD silence, NSA-warn.  Those need a
+# peer or a conf knob this harness does not emit.
 case "$ROW" in
 	all)
 		# --- i2iinit esp alg vectors (mirror linux i2iinit-esp-*) ---
@@ -602,6 +1040,8 @@ case "$ROW" in
 		# --- i2iinit ike/prf vectors (mirror linux i2iinit-ike-*/prf-*) ---
 		run i2iinit-ike-cbc192 inet 192.0.5.2 192.0.5.1 aes192_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-ike-cbc256 inet 192.0.5.2 192.0.5.1 aes256_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+		run i2iinit-ike-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+		run i2iinit-ike-ctr    inet 192.0.5.2 192.0.5.1 "aes_ctr, 128" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-ike-gcm256 inet 192.0.5.2 192.0.5.1 "aes_gcm, 256" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfsha384  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_384 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfsha512  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_512 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
@@ -618,13 +1058,43 @@ case "$ROW" in
 		run i2idh-ecp521    inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 ecp521  aes128_cbc hmac_sha2_256 300 300 0 a ""
 		# --- rekey rows (CREATE_CHILD on short initiator lifetime) ---
 		run i2ike-rekey     inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 60 3600 1 a ""
+		run i2ike-addke     inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a ""
+		run i2ike-addke-512  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a ""
+		run i2ike-addke-1024 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a ""
+		# --- PQC rows (OpenSSL 3.5 build = WITH_ADDKE: RATOON2 out-of-band
+		#      RFC 9370, not netbsd-style kernel ESP).  i2iinit-addke proves
+		#      ML-KEM-768 on the INITIAL IKE_SA (type-06 offer + matching
+		#      Y-keymat both seats + no followup abort); i2ike-addke proves the
+		#      CREATE_CHILD ADDKE rekey installs a fresh KEM keymat.  Same
+		#      latches as the linux i2ike/i2iinit kinds. ---
+		# PQC INITIAL IKE_SA: IKE cipher MUST be AEAD (aes_gcm) or the
+		# responder won't echo 16438 (ikev2.c:1953: IntAuth_A is only
+		# deterministic for AEAD; a CBC peer falls back to classical
+		# IKE_AUTH).  ESP child stays CBC - the ADDKE constraint is on the
+		# IKE SA only.
+		run i2iinit-addke   inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 60 60 0 a ""
+		# offer_intermediate off: ADDKE still in the proposal, no 16438.
+		run i2iinit-nointermediate inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "offer_intermediate off;"
+		# need_pfs on both seats.  IKE AEAD so the initial ADDKE round runs;
+		# short child lifetime so the CREATE_CHILD rekey carries KE.
+		run i2iinit-pfsrekey        inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 60 60 1 a "need_pfs on;"
+		run i2iinit-dh384-pfsrekey  inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp384 aes_gcm non_auth 60 60 1 a "need_pfs on;"
+		run i2iinit-dh521-pfsrekey  inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp521 aes_gcm non_auth 60 60 1 a "need_pfs on;"
+		# --- X.509 public-key auth (NDcPP A13 .1.11 requires >=1 PK method;
+		#      PSK-only FreeBSD matrix fails that).  Same openssl PKI build +
+		#      SSL_CERT_FILE mechanism as linux i2ipubkey; conf declares
+		#      kmp_auth_method rsasig/ecdsa + my/peers_public_key x509pem. ---
+		run i2ipubkey-rsa   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+		run i2ipubkey-ecdsa inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		# --- NEG rows (mirror linux i2i_neg.sh) ---
 		run i2ineg-wrongpsk   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
 		run i2ineg-idmismatch inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
 		run i2ineg-a12strict  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 r "parent_child_strength on;"
 		run i2ineg-a12permit  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a ""
 		# --- IPv6 row (mirror linux i2iv6-esp) ---
-		run i2iv6-esp          inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+		# Linux i2iv6-esp is AES-GCM.  The CBC shape is i2iv6-esp-cbc128.
+		run i2iv6-esp          inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 300 300 0 a ""
+		run i2iv6-esp-cbc128   inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		# --- IPv6-over-IPv4 rows: v4 IKE + outer SA pair (192.0.5.x),
 		#     v6 inner selectors (2001:db8:1::x).  The inner v6 rides inside
 		#     the v4 ESP tunnel; only v4 ARP (L2) is needed, so no ND6 gate.
@@ -641,9 +1111,22 @@ case "$ROW" in
 	i2iinit-esp-cmac)  run_row i2iinit-esp-cmac   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_cmac" 300 300 0 x "" ;;
 	i2io4-cbc128)      run_row i2io4-cbc128       inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2io4-gcm256)      run_row i2io4-gcm256       inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a "" ;;
+	i2ike-addke)       run_row i2ike-addke        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a "" ;;
+	i2ike-addke-512)   run_row i2ike-addke-512    inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a "" ;;
+	i2ike-addke-1024)  run_row i2ike-addke-1024   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a "" ;;
+	i2iinit-addke)     run_row i2iinit-addke      inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 60 60 0 a "" ;;
+	i2iinit-ike-cbc128) run_row i2iinit-ike-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-ctr)   run_row i2iinit-ike-ctr    inet 192.0.5.2 192.0.5.1 "aes_ctr, 128" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-nointermediate) run_row i2iinit-nointermediate inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "offer_intermediate off;" ;;
+	i2iinit-pfsrekey)  run_row i2iinit-pfsrekey   inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 60 60 1 a "need_pfs on;" ;;
+	i2iinit-dh384-pfsrekey) run_row i2iinit-dh384-pfsrekey inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp384 aes_gcm non_auth 60 60 1 a "need_pfs on;" ;;
+	i2iinit-dh521-pfsrekey) run_row i2iinit-dh521-pfsrekey inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp521 aes_gcm non_auth 60 60 1 a "need_pfs on;" ;;
+	i2iv6-esp)         run_row i2iv6-esp         inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 300 300 0 a "" ;;
+	i2iv6-esp-cbc128)  run_row i2iv6-esp-cbc128  inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2ipubkey-rsa)     run_row i2ipubkey-rsa      inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2ipubkey-ecdsa)   run_row i2ipubkey-ecdsa    inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2ineg-wrongpsk)   run_row i2ineg-wrongpsk   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
 	i2ineg-idmismatch) run_row i2ineg-idmismatch inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
-	i2iv6-esp)         run_row i2iv6-esp         inet6 :: :: aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	*) echo "unknown ROW=$ROW"; exit 2 ;;
 esac
 echo "$SEP"

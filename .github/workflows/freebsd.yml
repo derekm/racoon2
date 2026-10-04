@@ -100,9 +100,16 @@ jobs:
           fi
           echo "shard ${{ matrix.shard }}: no red rows"
 
-      - name: 'Generate compliance report (KAT evidence from FreeBSD 15.1 build)'
+      - name: 'Generate compliance report (KAT + matrix CPL evidence from FreeBSD 15.1 build)'
         if: matrix.shard == 0
-        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/freebsd-build-test-151-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
+        # The matrix log now carries per-row CPL A1-A14/B1-B6 cells (the
+        # fbsd_comply emitter), so it joins the KAT files as evidence: the
+        # SHARED ci-comply-report.sh dedups CPL/KAT lines and mk_report.sh
+        # renders the same 20-cell report the Linux leg produces.
+        run: |
+          bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/freebsd-build-test-151-compliance.md" \
+            r2-freebsd-matrix-shard-0.log \
+            iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
         working-directory: ${{ runner.workspace }}/racoon2
 
       - name: 'Upload compliance report artifact'
@@ -142,15 +149,15 @@ jobs:
           echo "FREEBSD-VNET-FAIL=$FAIL"
           grep -E '^FAIL freebsd-vnet ' /tmp/r2-freebsd-matrix.log || true
           # Shards ran disjoint row slices; merged counts must equal the
-          # full 32-row matrix.  A matrix that aborted before any verdict
+          # full 45-row matrix.  A matrix that aborted before any verdict
           # would otherwise merge to empty and PASS — gate on observed row
           # count AND zero FAIL.  (NO red rows are tolerated: the
           # expected-reject rows xcbc/cmac and the NEG rows pass on their
           # config markers, so any FAIL is a real conformance break.)
           TOTAL=$((PASS + FAIL))
-          [ -s /tmp/r2-freebsd-matrix.log ] && [ "$TOTAL" -eq 32 ] && [ "$FAIL" -eq 0 ]
+          [ -s /tmp/r2-freebsd-matrix.log ] && [ "$TOTAL" -eq 45 ] && [ "$FAIL" -eq 0 ]
 
-  # FreeBSD 16.0-CURRENT amd64 - the SAME build + 32-row vnet conformance,
+  # FreeBSD 16.0-CURRENT amd64 - the SAME build + 45-row vnet conformance,
   # but booted from the OFFICIAL project snapshot instead of the vmactions
   # 15.1 turnkey image.  vmactions/freebsd-vm has no 16.0 config yet (the
   # builder shelves 16.0), so this job self-hosts QEMU+KVM on the runner
@@ -162,7 +169,7 @@ jobs:
   #
   # Sharded exactly like the 15.1 vnet job: M=3 jobs, each its own VM, rows
   # whose dispatcher index % 3 == shard, disjoint slices; the merged report
-  # job below sums them and gates the 32-row total.
+  # job below sums them and gates the 45-row total.
   freebsd-16-current-vnet:
     name: 'FreeBSD 16.0-CURRENT vnet shard ${{ matrix.shard }}/3'
     runs-on: ubuntu-latest
@@ -187,12 +194,17 @@ jobs:
           overwrite: true
           if-no-files-found: error
 
-      - name: 'Generate compliance report (KAT evidence from FreeBSD 16.0-CURRENT build)'
+      - name: 'Generate compliance report (KAT + matrix CPL evidence from FreeBSD 16.0-CURRENT build)'
         # The script copies the three evidence logs back into the checkout
         # root; shard 0 renders the merged NDcPP report the same way the
         # 15.1 leg does (shard 0 only, so the artifact is not produced 3x).
+        # The per-shard matrix log adds the fbsd_comply CPL cells (same
+        # shared ci-comply-report.sh + mk_report.sh pipeline as Linux).
         if: matrix.shard == 0
-        run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/freebsd-16-current-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
+        run: |
+          bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/freebsd-16-current-compliance.md" \
+            freebsd-16-current-matrix-shard-0.log \
+            iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
 
       - name: 'Upload compliance report artifact'
         if: always() && matrix.shard == 0
@@ -231,7 +243,7 @@ jobs:
           echo "FREEBSD-16-VNET-FAIL=$FAIL"
           grep -E '^FAIL freebsd-vnet ' /tmp/r2-freebsd-16-current-matrix.log || true
           # Same semantics as the 15.1 report: disjoint shard slices, so the
-          # merged count must equal the full 32-row matrix and there must be
+          # merged count must equal the full 45-row matrix and there must be
           # zero FAIL (every FAIL is a real conformance break).
           TOTAL=$((PASS + FAIL))
-          [ -s /tmp/r2-freebsd-16-current-matrix.log ] && [ "$TOTAL" -eq 32 ] && [ "$FAIL" -eq 0 ]
+          [ -s /tmp/r2-freebsd-16-current-matrix.log ] && [ "$TOTAL" -eq 45 ] && [ "$FAIL" -eq 0 ]
