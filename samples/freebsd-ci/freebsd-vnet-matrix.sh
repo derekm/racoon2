@@ -1147,6 +1147,25 @@ case "$ROW" in
 	i2ipubkey-ecdsa)   run_row i2ipubkey-ecdsa    inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2ineg-wrongpsk)   run_row i2ineg-wrongpsk   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
 	i2ineg-idmismatch) run_row i2ineg-idmismatch inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2iinit-esp-ctr) run_row i2iinit-esp-ctr inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ctr" "non_auth" 300 300 0 a "" ;;
+	i2iinit-ike-cbc192) run_row i2iinit-ike-cbc192 inet 192.0.5.2 192.0.5.1 aes192_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-cbc256) run_row i2iinit-ike-cbc256 inet 192.0.5.2 192.0.5.1 aes256_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-gcm256) run_row i2iinit-ike-gcm256 inet 192.0.5.2 192.0.5.1 "aes_gcm, 256" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-prfsha384) run_row i2iinit-prfsha384 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_384 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-prfsha512) run_row i2iinit-prfsha512 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_512 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-prfxcbc) run_row i2iinit-prfxcbc inet 192.0.5.2 192.0.5.1 aes128_cbc aes_xcbc modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-prfcmac) run_row i2iinit-prfcmac inet 192.0.5.2 192.0.5.1 aes128_cbc aes_cmac modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2idh-modp2048) run_row i2idh-modp2048 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2idh-modp3072) run_row i2idh-modp3072 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp3072 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2idh-modp4096) run_row i2idh-modp4096 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp4096 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2idh-modp6144) run_row i2idh-modp6144 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp6144 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2idh-modp8192) run_row i2idh-modp8192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp8192 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2idh-ecp256) run_row i2idh-ecp256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 ecp256  aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2idh-ecp384) run_row i2idh-ecp384 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 ecp384  aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2idh-ecp521) run_row i2idh-ecp521 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 ecp521  aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2ike-rekey) run_row i2ike-rekey inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 60 3600 1 a "" ;;
+	i2ineg-a12strict) run_row i2ineg-a12strict inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 r "parent_child_strength on;" ;;
+	i2ineg-a12permit) run_row i2ineg-a12permit inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a "" ;;
 	*) echo "unknown ROW=$ROW"; exit 2 ;;
 esac
 echo "$SEP"
