@@ -40,6 +40,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <assert.h>
 #include <unistd.h>
 #include <openssl/sha.h>
@@ -1226,37 +1227,31 @@ ike_identifier_data(struct rc_idlist *id, int *id_type)
 	return data;
 }
 
-int ikev2_handle_ip_rw(rc_vchar_t *id_val, struct rc_idlist *id)
+int ikev2_handle_ip_any(rc_vchar_t *id_val, struct rc_idlist *id)
 {
-    rc_vchar_t *data, *p;
-    size_t data_size;
+    char addrstr[INET6_ADDRSTRLEN];
+    const char *ip;
 
-    if (id_val == NULL || id == NULL)
+    if (id_val == NULL || id == NULL || id->id == NULL)
         return -1;
 
-    p = id->id;
-
-    data_size = id_val->l;
-
-    data = rc_vmalloc(sizeof(rc_vchar_t));
-
-    if (!data)
-        return -1;
-
-    data->s = rc_malloc(data_size);
-
-    if (!data->s)
+    switch (id_val->l)
     {
-        rc_vfree(data);
-        return -1;
+        case sizeof(struct in_addr):
+            ip = inet_ntop(AF_INET, id_val->v, (char *)&addrstr, sizeof(addrstr));
+            break;
+        case sizeof(struct in6_addr):
+            ip = inet_ntop(AF_INET6, id_val->v, (char *)&addrstr, sizeof(addrstr));
+            break;
+        default:
+            return -1;
     }
 
-    memcpy(data->s, id_val->s, data_size);
-    data->l = data_size;
+    if (ip == NULL)
+        return -1;
 
-    *p = *data;
-
-    rc_vfree(data);
+    rc_vfree(id->id);
+    id->id = rc_str2vmem(addrstr);
 
     return 0;
 }
@@ -1277,27 +1272,26 @@ int
 ike_compare_id(rc_type rc_id_type, rc_vchar_t *id_val, struct rc_idlist *id)
 {
 	rc_vchar_t *data;
-    char* is_ip_rw;
 	int cmp;
 	int dummy;
 
-    is_ip_rw = (char*)rc_vmem2str(id->id);
-
-    if (is_ip_rw)
-    {
-        if (strncmp(is_ip_rw, "IP_RW", strlen(is_ip_rw)) == 0)
-        {
-            if (ikev2_handle_ip_rw(id_val, id) != 0)
-            {
-                plog(PLOG_INTERR, PLOGLOC, NULL,
-                     "could not handle IP_RW macro\n");
-                return -1;
-            }
-        }
-    }
-
 	if (rc_id_type != id->idtype)
 		return -1;
+
+	/* IP_ANY / IP_RW: pin the wildcard id to the peer's address
+	 * (RFC 7296 §2.23.1 style substitution at the ID level; IP_RW is
+	 * the historic racoon2 synonym retained for old configs). */
+	if (rc_id_type == RCT_IDT_IPADDR && id->id != NULL &&
+	    ((id->id->l == 6 && memcmp(id->id->v, "IP_ANY", 6) == 0) ||
+	     (id->id->l == 5 && memcmp(id->id->v, "IP_RW", 5) == 0)))
+	{
+		if (ikev2_handle_ip_any(id_val, id) != 0)
+		{
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "could not handle IP_ANY/IP_RW macro\n");
+			return -1;
+		}
+	}
 
 	data = ike_identifier_data(id, &dummy);
 	if (!data)
@@ -2322,6 +2316,183 @@ free_selectorlist(struct rcf_selector *s)
 		 * as heap-use-after-free in IKEv2 child-SA selection). */
 	}
 }
+
+#ifdef ENABLE_NATT
+
+static int ikev2_retreive_ts_addr(struct ikev2_traffic_selector *ts,
+                           struct sockaddr **saddr, struct sockaddr **eaddr)
+{
+    struct sockaddr_storage ss, es;
+    int ts_type;
+    size_t addrlen;
+
+    if (ts == NULL)
+    {
+        plog(PLOG_INTERR, PLOGLOC, NULL,
+             "Traffic Selector payload must not be null\n");
+        return -1;
+    }
+
+    memset(&ss, 0, sizeof(struct sockaddr_storage));
+    memset(&es, 0, sizeof(struct sockaddr_storage));
+
+    ts_type = ts->ts_type;
+
+    switch(ts_type)
+    {
+        case IKEV2_TS_IPV4_ADDR_RANGE:
+        {
+            addrlen = sizeof(struct in_addr);
+            uint8_t *addr = (uint8_t*)(ts + 1);
+            ((struct sockaddr_in*)&ss)->sin_family = AF_INET;
+            ((struct sockaddr_in*)&es)->sin_family = AF_INET;
+            memcpy(&((struct sockaddr_in*)&ss)->sin_addr, addr, sizeof(struct in_addr));
+            memcpy(&((struct sockaddr_in*)&es)->sin_addr, addr + addrlen, sizeof(struct in_addr));
+            break;
+        }
+        case IKEV2_TS_IPV6_ADDR_RANGE:
+        {
+            addrlen = sizeof(struct in6_addr);
+            uint8_t *addr = (uint8_t*)(ts + 1);
+            ((struct sockaddr_in6*)&ss)->sin6_family = AF_INET6;
+            ((struct sockaddr_in6*)&es)->sin6_family = AF_INET6;
+            memcpy(&((struct sockaddr_in6*)&ss)->sin6_addr, addr, sizeof(struct in6_addr));
+            memcpy(&((struct sockaddr_in6*)&es)->sin6_addr, addr + addrlen, sizeof(struct in6_addr));
+            break;
+        }
+        default:
+            return -1;
+    }
+
+    *saddr = rcs_sadup((struct sockaddr*)&ss);
+    *eaddr = rcs_sadup((struct sockaddr*)&es);
+
+    if (*saddr == NULL || *eaddr == NULL)
+    {
+        if (*saddr != NULL)
+            rc_free(*saddr);
+        if (*eaddr != NULL)
+            rc_free(*eaddr);
+        *saddr = NULL;
+        *eaddr = NULL;
+        return -1;
+    }
+
+    return 0;
+}
+
+static
+int ikev2_ts_substitute(struct ikev2_traffic_selector *ts, struct sockaddr *sub)
+{
+    struct sockaddr *curr_saddr, *curr_eaddr;
+    uint8_t *addr, *saddr;
+    size_t addrlen;
+    int ts_type;
+
+    if (ts == NULL)
+        return -1;
+
+    if (ikev2_retreive_ts_addr(ts, &curr_saddr, &curr_eaddr) != 0)
+    {
+        plog(PLOG_INTERR, PLOGLOC, NULL,
+             "Could not retreive current addresses from TS payload\n");
+        return -1;
+    }
+
+    if (rcs_cmpsa_wop(curr_saddr, sub) == 0)
+    {
+        rc_free(curr_saddr);
+        rc_free(curr_eaddr);
+        return 0;
+    }
+
+    if (rcs_cmpsa_wop(curr_saddr, curr_eaddr) != 0)
+    {
+        plog(PLOG_INTWARN, PLOGLOC, NULL,
+             "IP addresses are range, skipping address substitution\n");
+        rc_free(curr_saddr);
+        rc_free(curr_eaddr);
+        return -1;
+    }
+
+    ts_type = ts->ts_type;
+
+    switch(ts_type)
+    {
+        case IKEV2_TS_IPV4_ADDR_RANGE:
+            {
+                addrlen = sizeof(struct in_addr);
+                addr = (uint8_t*)&((struct sockaddr_in*)sub)->sin_addr;
+                break;
+            }
+        case IKEV2_TS_IPV6_ADDR_RANGE:
+            {
+                addrlen = sizeof(struct in6_addr);
+                addr = (uint8_t*)&((struct sockaddr_in6*)sub)->sin6_addr;
+                break;
+            }
+        default:
+            rc_free(curr_saddr);
+            rc_free(curr_eaddr);
+            return -1;
+    }
+
+    saddr = (uint8_t*)(ts + 1);
+    memcpy(saddr, addr, addrlen);
+    memcpy(saddr + addrlen, addr, addrlen);
+
+    rc_free(curr_saddr);
+    rc_free(curr_eaddr);
+    return 0;
+}
+
+int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
+                          struct ikev2_payload_header *ts_i_pl,
+                          struct ikev2_payload_header *ts_r_pl)
+{
+    struct ikev2payl_traffic_selector *ts_i_payl, *ts_r_payl;
+    struct ikev2_traffic_selector *ts_i, *ts_r;
+    struct sockaddr *sub_i, *sub_r;
+    struct ikev2_sa *ike_sa;
+    int err = -1;
+
+    if (child_sa == NULL || ts_i_pl == NULL || ts_r_pl == NULL)
+        return err;
+
+    ike_sa = child_sa->parent;
+
+    if (ike_sa->behind_nat == 0 && ike_sa->peer_behind_nat == 0)
+        return 0;
+
+    if (ike_sa->is_initiator)
+    {
+        if (child_sa->selector == NULL ||
+            ike_ipsec_mode(child_sa->selector->pl) != RCT_IPSM_TRANSPORT)
+            return 0;
+    } else
+    {
+        if (!child_sa->child_param.use_transport_mode)
+            return 0;
+    }
+
+    ts_i_payl = (struct ikev2payl_traffic_selector*)ts_i_pl;
+    ts_r_payl = (struct ikev2payl_traffic_selector*)ts_r_pl;
+
+    ts_i = (struct ikev2_traffic_selector*)(ts_i_payl + 1);
+    ts_r = (struct ikev2_traffic_selector*)(ts_r_payl + 1);
+
+    sub_i = ike_sa->is_initiator ? ike_sa->local : ike_sa->remote;
+    sub_r = ike_sa->is_initiator ? ike_sa->remote : ike_sa->local;
+
+    err = ikev2_ts_substitute(ts_i, sub_i);
+
+    if (err == 0)
+        err = ikev2_ts_substitute(ts_r, sub_r);
+
+    return err;
+}
+
+#endif /* ENABLE_NATT */
 
 struct rcf_selector *
 ike_conf_find_ikev2sel_by_ts(struct ikev2_payload_header *ts_remoteside,

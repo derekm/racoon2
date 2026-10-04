@@ -371,7 +371,7 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 				}
 			}
 		} else if (policy && policy->peers_sa_ipaddr &&
-			   rcs_is_addr_rw(policy->peers_sa_ipaddr)) {
+			   rcs_is_addr_wildcard(policy->peers_sa_ipaddr)) {
 			if (selector && spmif_post_policy_delete(ike_spmif_socket(),
 						     NULL, NULL,
 						     selector->sl_index,
@@ -1087,9 +1087,32 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 					   child_sa, AF_INET6,
 					   ike_sa->rmconf);
 	if (!sel4 && !sel6) {
+#ifdef ENABLE_NATT
+		/* RFC 7296 §2.23.1: if the TS addresses don't line up with
+		 * the config selector because of NAT-T transport mode,
+		 * substitute the addresses observed on the wire and retry. */
+		if (ikev2_addr_substitute(child_sa, proposed_ts_i, proposed_ts_r) != 0)
+		{
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "Could not perform address substitution on responder's side\n");
+			goto ts_unacceptable;
+		}
+
+		sel4 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i, proposed_ts_r,
+						    child_sa, AF_INET,
+						    ike_sa->rmconf);
+		sel6 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i, proposed_ts_r,
+						    child_sa, AF_INET6,
+						    ike_sa->rmconf);
+
+		if (!sel4 && !sel6)
+			goto ts_unacceptable;
+
+#else
 		/* additional_ts_possible? */
 		/* single_pair_required? */
 		goto ts_unacceptable;
+#endif
 	}
 	if (sel4)
 		child_sa->selector = sel4;
@@ -2764,6 +2787,15 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 	}
 
 	/* confirm TSi and TSr do not contradict with my proposal */
+#ifdef ENABLE_NATT
+	if (ikev2_addr_substitute(child_sa, ts_i, ts_r) != 0)
+	{
+		plog(PLOG_INFO, PLOGLOC, NULL,
+		     "Could not perform address substitution on initiator's side\n");
+		err = -1;
+		goto abort;
+	}
+#endif
 	switch (ikev2_confirm_ts(ts_i, ts_r, child_sa->selector)) {
 	case -1:
 		isakmp_log(child_sa->parent, 0, 0, 0,

@@ -74,6 +74,21 @@ addketest_SOURCES = addketest.c ikev2_addke.c
 addkekat_SOURCES = addkekat.c
 endif
 
+# RFC 7296 2.23.1 NAT-T transport TS/ID address-substitution unit tests
+# (upstream gsoc2026 work, ported): TS substitution (ike_conf.c), the
+# IKEv1 NAT-OA payload helpers (ikev1_natt.c) and the IP_ANY wildcard
+# (formerly IP_RW) ID handling.  Each links all iked objects except
+# main.o (the tests provide their own main() plus the main.o globals).
+TESTS += test_ts_substitute test_natoa test_ip_any
+check_PROGRAMS += test_ts_substitute test_natoa test_ip_any
+test_ts_substitute_SOURCES = test_ts_substitute.c
+test_ts_substitute_LDADD = $(filter-out main.$(OBJEXT),$(am_iked_OBJECTS)) $(LDADD)
+test_natoa_SOURCES = test_natoa.c
+test_natoa_CPPFLAGS = $(AM_CPPFLAGS) -Iikev1
+test_natoa_LDADD = $(filter-out main.$(OBJEXT),$(am_iked_OBJECTS)) $(LDADD)
+test_ip_any_SOURCES = test_ip_any.c
+test_ip_any_LDADD = $(filter-out main.$(OBJEXT),$(am_iked_OBJECTS)) $(LDADD)
+
 LIBS = @LIBS@
 
 man_MANS = iked.8
