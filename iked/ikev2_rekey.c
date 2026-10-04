@@ -2022,6 +2022,17 @@ ikev2_child_adopt(struct ikev2_sa *old_sa, struct ikev2_sa *new_sa)
 {
 	struct ikev2_child_sa *child, *next_child;
 
+	/*
+	 * The rekeyed IKE SA takes over the old one's lineage.  Both the
+	 * soft-lifetime rekey and ikev2_sa_expire() gate on child_created
+	 * (or childless_established); a new SA starting from 0 was never
+	 * rekeyed again and at its hard lifetime deleted itself together
+	 * with every adopted child.
+	 */
+	new_sa->child_created += old_sa->child_created;
+	if (old_sa->childless_established)
+		new_sa->childless_established = 1;
+
 	for (child = IKEV2_CHILD_LIST_FIRST(&old_sa->children);
 	     !IKEV2_CHILD_LIST_END(child);
 	     child = next_child) {
