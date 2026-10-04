@@ -52,6 +52,7 @@
 #include "ikev2.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "blocklist_peer.h"
 #include "ike_conf.h"
 #include "crypto_impl.h"
 
@@ -846,7 +847,18 @@ ikev2_verify(struct verified_info *info)
 	if (info->result == VERIFIED_FAILURE) {
 		isakmp_log(ike_sa, info->local, info->remote, info->packet,
 			   PLOG_PROTOERR, PLOGLOC, "authentication failure\n");
+		/* responder side only: a peer we initiated to is not
+		 * a scanner (site-to-site misconfig must not ban it) */
+		if (!info->is_initiator)
+			iked_blocklist_peer(IKED_BL_AUTH_FAIL,
+			    isakmp_find_socket_blocklist(info->local),
+			    info->remote, "iked AUTH_FAILED");
 		++isakmpstat.authentication_failed;
+	} else if (info->result == VERIFIED_SUCCESS) {
+		if (!info->is_initiator)
+			iked_blocklist_peer(IKED_BL_AUTH_OK,
+			    isakmp_find_socket_blocklist(info->local),
+			    info->remote, "iked AUTH_OK");
 	} else if (info->result == VERIFIED_WAITING)
 		return;
 

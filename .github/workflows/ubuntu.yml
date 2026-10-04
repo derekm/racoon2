@@ -146,7 +146,7 @@ jobs:
           cd _blocklist/port
           autoreconf -fi
           ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
-                      --with-pf-backend=nft
+                      --runstatedir=/run/blocklistd --with-pf-backend=nft
           make -j2
           sudo make install
           test -f /usr/include/blocklist.h
@@ -163,6 +163,11 @@ jobs:
       - name: Assert HAVE_BLOCKLIST
         run: |
           grep -E '^#define HAVE_BLOCKLIST 1' iked/config.h
+
+      - name: Assert libblocklist socket path matches blocklistd.socket
+        run: |
+          lib=$(ls /usr/lib/libblocklist.so.* /usr/lib/x86_64-linux-gnu/libblocklist.so.* 2>/dev/null | head -1)
+          strings "$lib" | grep -qx '/run/blocklistd/blocklistd.sock'
 
       - name: Build
         run: make -j2

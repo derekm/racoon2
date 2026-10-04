@@ -72,6 +72,7 @@
 #endif
 #include "evloop.h"
 #include "crypto_workers.h"
+#include "blocklist_peer.h"
 
 const char *racoon_config_path = RACOON_CONF;
 int opt_foreground = FALSE;
@@ -421,6 +422,7 @@ main(int argc, char **argv)
 		     "failed initializing isakmp handling\n");
 		iked_exit(IKED_EXIT_FAILURE);
 	}
+	iked_blocklist_init();
 	ikev2_resume_load();
 
 	if (!opt_foreground) {
