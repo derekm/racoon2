@@ -3744,6 +3744,73 @@ ikev2_child_maybe_reoffer_addke(struct ikev2_child_sa *child_sa)
 	}
 }
 
+/*
+ * RFC 9370 s2.2.4 / RFC 7296 s1.3.3: a CHILD_SA rekey can run the ADDKE
+ * rounds only when the CREATE_CHILD_SA carries a KE payload, i.e. when the
+ * rekey proposal has a Transform Type 4 (DH).  ikev2_rekey_childsa() clones
+ * the child's negotiated proposal, so a child negotiated without DH (the
+ * IKE_AUTH child, which cannot carry KE - RFC 7296 s1.2) would be rekeyed
+ * without DH forever and never get ML-KEM, even though the operator
+ * configured esp_addke_alg for it.  When the sa block that produced this
+ * child configures esp_addke_alg (an explicit request for post-quantum
+ * keying of this child) and the clone has no DH transform, append the
+ * configured kmp_dh_group - the same group set the need_pfs / CREATE_CHILD
+ * path offers (ikev2_ipsec_sa_to_proplist).  A child without
+ * esp_addke_alg is left exactly as negotiated (classic RFC 7296 behaviour:
+ * a PFS-less child stays PFS-less unless need_pfs is set).
+ * Returns 1 if a DH transform was appended, 0 otherwise.
+ */
+int
+ikev2_child_add_rekey_dh(struct ikev2_child_sa *child_sa)
+{
+	struct rcf_ipsec *conf;
+	struct rcf_sa *proto_info;
+	struct rc_alglist *addke_alg;
+	struct prop_pair *tail, *p, *dh;
+	int want = 0;
+
+	if (!child_sa || !child_sa->my_proposal ||
+	    !child_sa->my_proposal[1] || !child_sa->parent ||
+	    !child_sa->parent->rmconf)
+		return 0;
+	for (p = child_sa->my_proposal[1]->tnext; p; p = p->next)
+		if (p->trns &&
+		    ((struct ikev2transform *)p->trns)->transform_type ==
+		    IKEV2TRANSFORM_TYPE_DH)
+			return 0;	/* already PFS: keep the negotiated group */
+	for (conf = (child_sa->selector && child_sa->selector->pl)
+		    ? child_sa->selector->pl->ips : NULL;
+	     conf && !want; conf = conf->next) {
+		proto_info = conf->sa_esp ? conf->sa_esp : conf->sa_ah;
+		if (!proto_info)
+			continue;
+		SA_CONF(addke_alg, proto_info, addke_alg, 0);
+		if (addke_alg)
+			want = 1;
+	}
+	if (!want)
+		return 0;
+	dh = alglist_to_proppair(ike_conf_dhgrp(child_sa->parent->rmconf,
+						IKEV2_MAJOR_VERSION),
+				 IKEV2TRANSFORM_TYPE_DH, &ikev2_transf_dh[0]);
+	if (!dh) {
+		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "rekey-DH: failed converting kmp_dh_group\n");
+		return 0;
+	}
+	for (tail = child_sa->my_proposal[1]->tnext;
+	     tail && tail->next; tail = tail->next)
+		/* find end of the transform chain */;
+	if (!tail)
+		child_sa->my_proposal[1]->tnext = dh;
+	else
+		tail->next = dh;
+	isakmp_log(child_sa->parent, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		   "rekey-DH: esp_addke_alg configured; appended kmp_dh_group "
+		   "to the DH-less rekey proposal so KE+ADDKE can run\n");
+	return 1;
+}
+
 #ifdef WITH_ADDKE
 /*
  * RFC 9370 ADDKE offer on an IKE_SA-rekey CREATE_CHILD request: append a
