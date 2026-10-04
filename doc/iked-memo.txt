@@ -4,7 +4,8 @@ racoon2 iked implementation status
 
 
 Regarding the IKEv2 specification
-- CERT payload handling not implemented (ignored or an error when received);
+- CERT payload is sent and accepted on IKE_AUTH (X.509 rsasig/ecdsa).
+  Hash-and-URL and a four-certificate chain are not claimed.
   CERTREQ is parsed and matched (a request for the locally configured
   certificate type is answered; other types are ignored)
    Implementations MUST be capable of being configured to send and
@@ -16,8 +17,8 @@ Regarding the IKEv2 specification
    contain the public key used to sign the AUTH payload. The other
    certificates may be sent in any order.
 - HTTP_CERT_LOOKUP_SUPPORTED and NON_FIRST_FRAGMENTS_ALSO not supported (ignored when received)
-- RSASIG hash is SHA1
-- In CREATE_CHILD_SA, a DH different from that of the IKE SA cannot be handled correctly in DH negotiation (bug)
+- RSASIG hash is SHA-256 (RFC 8247), not SHA-1
+- CREATE_CHILD_SA DH follows the proposal's DH transform (ikev2_child_dhdef), not a borrowed IKE-SA group
 - Optional features not supported / only minimally supported by iked
 	- No EAP (likewise)
 	- window is minimum (1)

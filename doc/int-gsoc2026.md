@@ -233,7 +233,15 @@ landed ML-KEM and iOS implements it (live-testable against the phone), whereas
   Matrix `i2iinit-ppk` still green on BOTH forms.  Phone acceptance is the
   IKE_AUTH passing the PPK_IDENTITY gate to authenticated.
 
-## Still this chunk (do not start EAP/8784)
+## Netem kill-tests
+
+Matrix rows, not a README inventory. `i2ike-drop` / `i2iinit-drop` replay a
+netem-dropped response from the armed cache. `i2ike-reqdrop` counts a dropped
+CREATE_CHILD request. `i2ike-dup` requires one handler entry when the wire
+shows duplicate copies. `i2ike-silence` is the DPD exhaustion row.
+`i2ike-drop576` is not in the CI default (`samples/linux-matrix/cases.tsv`).
+
+## Still open
 
 1. iOS-initiated CHILD rekey (~1440s) with the shared PFS gate. The
    20:01:34 attempt was the first ever to complete the exchange (no
@@ -273,7 +281,6 @@ workstream and never conflict with the "Do not" list.
 ## Later
 
 - IKEv2 EAP-MSCHAPv2 + RADIUS.
-- QCD token-taker (unknown-SA crash path).
 - **ASan/UBSan + valgrind over the Linux netns matrix — DONE (2026-09-28).** Box
   runner `r2-memcheck-run.sh` (R2_SAN asan,ubsan; R2_VG units; R2_VG_MATRIX over
   daemon shims) with all 11 unit binaries + full 7-row matrix genuinely valgrind-
@@ -288,6 +295,7 @@ workstream and never conflict with the "Do not" list.
   a stale `.so.0 → *.bak` symlink made the new iked die
   `unsupported kmp_auth_method (PresharedKey)` and spmd login `550` (enum/ABI
   mismatch, not a code regression).
+- That deploy line is the 2026-09-28 snapshot. Branch HEAD has moved; do not treat `c2a8380` as current.
 - **NIAP Functional Package for IPsec v1.0 (2022-03-29) validation gaps**
   (`https://commoncriteria.github.io/pp/ipsec/ipsec.html`). The suite's
   `FCS_IPSEC_EXT.1` element map (cases.tsv A-cells) is directly comparable

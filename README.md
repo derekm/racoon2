@@ -6,7 +6,7 @@
 
 <p align="center">
 <strong>The Racoon2 IPsec server continuation</strong><br/>
-<em>IKEv1 + IKEv2 · RFC 7383 fragmentation · RFC 9242 IKE_INTERMEDIATE · RFC 9370 ADDKE (ML-KEM-768) · NAT-T / NAT-OA · MOBIKE (UPDATE_SA_ADDRESSES) · crash-safe IKE_SA dump/resume · Linux NETLINK_XFRM · netem kill-test netns matrix · iked / spmd / kinkd</em>
+<em>IKEv1 + IKEv2 · Linux NETLINK_XFRM · BSD PF_KEY · iked / spmd / kinkd</em>
 </p>
 
 <p align="center">
@@ -104,14 +104,23 @@ after iked+spmd show that sel. Please refer to NEWS and BUGS.
 
 ## CI
 
-GitHub Actions builds and tests the tree on NetBSD 10 (pfkey KM,
-QEMU VM) and Ubuntu (NETLINK_XFRM KM), running the same unit suite
-(`kmtest`, `eaytest`, `evlooptest`, `workerstest`) on both — a
-validated distribution across the pfkey and netlink backends. See
-`.github/workflows/`. The upstream README's claim that Linux is
-"limited functionality … pfkeyv2 only" predates the NETLINK_XFRM
-backend (`lib/if_xfrm.c`, Linux default) and this week's live Apple
-and IKEv1 NAT-T results.
+GitHub Actions (`.github/workflows/`) builds this tree on:
+
+- Ubuntu (`ubuntu.yml`): NETLINK_XFRM is the default KM build. It runs
+  the unit suite, then the live netns matrix (`integration.yml`). The
+  Linux pfkey job is compile-sanity only. PQC rows are skipped
+  (OpenSSL 3.0 has no ML-KEM).
+- Fedora 44 (`fedora44.yml`): OpenSSL 3.5 container. Same units, plus
+  the ADDKE matrix.
+- NetBSD 10.1 (`netbsd.yml`): pfkey KM, units and rc.d smoke. Not a
+  tunnel matrix.
+- FreeBSD 15.1 and 16.0-CURRENT (`freebsd.yml`): pfkey KM and a
+  vnet-jail ESP matrix, three shards each. The merged report fails
+  the run unless every monitored row passes.
+
+The upstream claim that Linux is "limited functionality … pfkeyv2
+only" predates the NETLINK_XFRM backend (`lib/if_xfrm.c`, Linux
+default).
 
 On Linux, `make install` ships systemd units under
 `/usr/lib/systemd/system` (socket activation + ProtectSystem=strict,
@@ -120,24 +129,14 @@ spmd.socket then iked. Daemons use `-F`; no init.d `sleep 1`.
 
 ## Combined tree (`int/gsoc2026`)
 
-This branch is the 3-way merge of **`linux-km`** (NETLINK_XFRM, NAT-T
-three-state, Apple/IKEv1 proofs, CI) and **`origin/gsoc2026`** (RFC 7383
-IKEv2 fragmentation, IKEv1 fragmentation, NAT-OA, `IP_RW`). Production
-stays **`linux-km`** until GitHub units+matrix on this branch stay green.
-
-GSoC protocol work that is **in this tree**:
-RFC 7383 SKF (AEAD AAD, ICV inside payload_length like SK), IKEv1 FRAG,
-NAT-OA on PF_KEY and Linux `XFRMA_ENCAP encap_oa` (`lib/xfrmnatt`).
-`ikev1-strongswan` is a netns negotiation+SAD row (not a live NAT-OA peer).
-`ikev2-netns-frag` / `ikev2-netns-mobike` are knobs, not reassembly/roam proofs.
-IP_ANY is IP_RW for SA endpoints (no mixed-family XFRM tmpl).
-MOBIKE responder: N(MOBIKE_SUPPORTED) + UPDATE_SA_ADDRESSES migrate.
-COOKIE2 is echoed; ADDITIONAL_* stored. QCD_TOKEN in IKE_AUTH.
-IKE_SA dump on SIGTERM (`/var/lib/racoon2/resume`, systemd StateDirectory);
-2026-09-08 bounce restored IKE, left ESP (same SPI), iPhone stayed Connected.
-Host reboot: dump survives tmpfs; kernel ESP does not — load rekeys CHILD
-if the dump predates this boot. Not RFC 5723.
-Remaining work: [doc/int-gsoc2026.md](doc/int-gsoc2026.md).
+This branch is the merge of **`linux-km`** (NETLINK_XFRM, NAT-T, CI)
+and **`origin/gsoc2026`** (RFC 7383 fragmentation, IKEv1 fragmentation,
+NAT-OA, `IP_RW`). It is the line the workflows above build.
+`IP_ANY` is `IP_RW` for SA endpoints (no mixed-family XFRM tmpl).
+NAT-OA fills PF_KEY `SADB_X_NAT_OA` and Linux `XFRMA_ENCAP` `encap_oa`;
+a live IKEv1 NAT-OA peer is not a matrix pass.
+`ikev2-netns-frag` / `ikev2-netns-mobike` are knobs, not reassembly
+or roam proofs. Open items: [doc/int-gsoc2026.md](doc/int-gsoc2026.md).
 
 GSoC upstream: **`origin/gsoc2026`** (zoulasc/racoon2) and
 https://github.com/ssszcmawo/racoon2/tree/gsoc2026
@@ -184,6 +183,18 @@ Currently, the system supports the following specifications:
 	RFC 4718, IKEv2 Clarifications and Implementation Guidelines
 	RFC 5282, Using Authenticated Encryption Algorithms
 	          with the Encrypted Payload of IKEv2 (AES-GCM-16)
+	RFC 7383, Internet Key Exchange Protocol Version 2 (IKEv2)
+	          Message Fragmentation
+	RFC 9242, Intermediate Exchange in the Internet Key Exchange
+	          Protocol Version 2 (IKEv2)
+	RFC 9370, Multiple Key Exchanges in the Internet Key Exchange
+	          Protocol Version 2 (IKEv2)
+	          (ML-KEM-512/768/1024; one intermediate round)
+	RFC 4555, IKEv2 Mobility and Multihoming Protocol (MOBIKE)
+	RFC 6290, A Quick Crash Detection Method for the Internet
+	          Key Exchange Protocol (IKEv2)
+	RFC 8784, Mixing Preshared Keys in the Internet Key Exchange
+	          Protocol Version 2 (IKEv2) for Post-quantum Security
 
 	The Internet Key Exchange (IKE)
 	RFC 2409, The Internet Key Exchange (IKE)
@@ -193,80 +204,23 @@ Currently, the system supports the following specifications:
 	IPsec
 	RFC 4303, IP Encapsulating Security Payload (ESP)
 	RFC 4106, The Use of Galois/Counter Mode (GCM) in IPsec ESP
-	          (AES-GCM-8/12/16 ICV; proven via netns matrix, aead icv 64/96/128)
+	          (AES-GCM-8/12/16)
 	RFC 4868, Using HMAC-SHA-256/384/512 with IPsec ESP and AH
-	          (HMAC-SHA2-256/384/512 ESP integrity; ICV 128/192/256 —
-	          proven via netns matrix, auth-trunc in the SAD)
+	RFC 3686, Using Advanced Encryption Standard (AES) Counter Mode
+	          With IPsec ESP
+	          (IKE AES-CTR uses the same counter block)
 
 	Kerberized Internet Negotiation of Keys (KINK)
 	RFC 4430, Kerberized Internet Negotiation of Keys (KINK)
-	          (in tree; live KDC validation pending — see AAA item)
+	          (in tree; live KDC validation pending)
 
 	RFC 3526, More Modular Exponential (MODP) Diffie-Hellman groups
 	          for Internet Key Exchange (IKE)
 	RFC 2367, PF_KEY Key Management API, Version 2
 
-	RFC 7383 IKEv2 fragmentation and IKEv1 fragmentation are in
-	this tree. Reassembly: 60s timeout, max 4 assemblies per SA,
-	64k cap (CVE-2016-10396 class). NAT-OA (RFC 3947 §4) fills
-	PF_KEY SADB_X_NAT_OA and Linux XFRMA_ENCAP encap_oa.
-	Kernel round-trip is `lib/xfrmnatt`; live IKEv1 NAT-OA peer
-	is not a matrix pass yet.
-
-	RFC 4555 MOBIKE: N(MOBIKE_SUPPORTED) + UPDATE_SA_ADDRESSES
-	migrate; COOKIE2 is echoed on INFORMATIONAL; ADDITIONAL_IP4/IP6
-	are stored (single-IP gateway does not advertise extras).
-	RFC 6290 QCD_TOKEN is sent in IKE_AUTH; unknown IKE_SA gets an
-	unprotected QCD+INVALID_IKE_SPI. Secret is
-	`/var/lib/racoon2/qcd.secret`.
-	RFC 7296 §2.8 IKE_SA rekey is in code (soft lifetime + responder
-	CREATE_CHILD with IKE proposal). Matrix row is a log grep.
-
-	Implemented: RFC 9242 (IKE_INTERMEDIATE) and RFC 9370 (ADDKE /
-	multiple key exchanges) via OpenSSL 3.5's native `<openssl/ml_kem.h>`
-	(ML-KEM-768), a single pre-IKE_AUTH intermediate round on the initial
-	IKE_SA plus type-6 ADDKE on IKE_SA and CHILD rekeys, and RFC 9242
-	IntAuth_A into IKE_AUTH. Netns matrix (`samples/linux-matrix`, rows
-	`i2ike-addke` / `i2ikesa-addke` / `i2iinit-addke`, plus the
-	response-loss kill-tests `i2ike-drop` (R2 replay) and
-	`i2iinit-drop` / `i2iinit-drop576` (H1 replay)) proves it
-	iked<->iked: a netem-dropped CREATE_CHILD or IKE_INTERMEDIATE
-	response is replayed from the armed cache (gated on the replay
-	marker, so a clean completion without a drop cannot pass), the new
-	SPI takes packets on both sides, and the ML-KEM keymat hash matches.
-	Review-arbitration rows (box gate 2026-09-26; box-only until a
-	container run passes their counted gates): `i2ike-reqdrop` nets the
-	INITIATOR egress so the CREATE_CHILD REQUEST itself is the counted
-	loss (netem-dropped >= 1, request logged strictly after qdisc
-	removal, recovery on the initiator's own retransmit ladder, new
-	keymat g_ir_present=Y both sides with matching sha); `i2ike-dup`
-	duplicates the CREATE_CHILD REQUEST 100% and requires exactly ONE
-	handler entry while a tcpdump msgid scan proves >= 2 copies reached
-	the socket — dispatch short-circuits the second copy pre-handler;
-	the box proved this pre-arm drop path is silent (completed rekey,
-	zero marker lines), so the wire count is the direct measurement;
-	`i2ike-silence` (gate=dpd) proves responder exhaustion on a silent
-	peer (retransmit ladder 1,2,4,8,16,32,64 fires the 11th timer at
-	383 s, abort err=110, zero inbound accepted during the silence).
-	`i2ike-drop576` is not box-stable and stays out of the CI default
-	(see samples/linux-matrix/cases.tsv).
-	Not implemented yet: RFC 8784 PPK (next protocol item),
-	EAP, ADDKE rounds 2+, and a non-racoon2 ML-KEM peer for cross-implementation
-	interop.
-
-	Partial statuses (scope beyond the supported core):
-	RFC 7296 — IKEv2 EAP (section 2.16) absent until the AAA item;
-	          iked restart resume measured 2026-09-08 (same SPI,
-	          iPhone Connected); dump is StateDirectory
-	          `/var/lib/racoon2/resume`. Host reboot rekeys CHILD
-	          (no kernel ESP). Not RFC 5723.
-	RFC 2409 — IKEv1 mode-config/XAuth is ENABLE_HYBRID scaffolding
-	          only (headers referenced, no sources, no configure
-	          hook) — not buildable. L2TP/IPsec therefore holds for
-	          PSK main-mode clients with PPP-internal auth (e.g. iOS);
-	          Windows L2TP (EAP/XAuth machine auth) is out of scope
-	          until the AAA item.
-	RFC 4430 — kinkd in tree; live KDC validation pending.
+	Not in this tree: RFC 5723 session resumption, IKEv2 EAP,
+	IKEv1 XAuth/mode-config (ENABLE_HYBRID scaffolding only),
+	ADDKE rounds 2+.
 
 
 The system provides three daemons: iked, kinkd and spmd.

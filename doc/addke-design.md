@@ -53,7 +53,7 @@ Done and verified (Fedora 44, OpenSSL 3.5, `WITH_ADDKE`):
 - **Unit tests**: `addketest` (algorithm selection, responder followup,
   sequential ADDKE, implicit-rejection, teardown) and `addkekat` (below).
 
-Not implemented (honest list — do not claim these):
+Landed (do not re-open these as gaps):
 
 - **Outbound** fragmentation of our own IKE_FOLLOWUP_KE is **NOT a gap**: the
   followup is sent through `ikev2_transmit`/`ikev2_transmit_response`, which
@@ -144,21 +144,22 @@ Success signature for the soak (all of these on the SAME daemon, NRestarts=0):
 
 Already satisfied by the live state: WITH_ADDKE binary genuinely in service (not
 just built), ~6.5 h NRestarts=0, config parses and runs type-6-enabled every
-start. The gate that is genuinely still open is the **live completed ADDKE child
-rekey** (above) — until one is observed end-to-end on a crash-free daemon,
-"phone-ready" is not established, per the standing bar that a green `make check`
-is not a live proof. That single event, plus a clean multi-rekey soak, closes
-item 8.
+start. The netns matrix has since proved child-rekey ADDKE (`i2ike-addke`). The
+bar this note still does not claim is a phone soak: a green `make check`
+is not that proof.
 
-## Roadmap (remaining, not the landed path)
+## Roadmap (remaining)
 
 1. **ADDKE rounds 2-7** as config. One ML-KEM round is implemented and
    matrix-proven (`i2iinit-addke`, `i2ikesa-addke`, `i2ike-addke`).
-2. **RFC 8784 PPK** mixed into SKEYSEED. Not started.
-3. A non-racoon2 ML-KEM peer (strongSwan 6.0+ built with ML-KEM).
-4. Fragmented-response loss recovery is now cached in `response_info`
+2. Fragmented-response loss recovery is cached in `response_info`
    (not intermediate-only). A 576-MTU kill test that drops a FOLLOWUP
    fragment and gates on the replay is still TODO.
+
+Landed, not remaining: RFC 8784 PPK (`use_ppk` / `ppk_mandatory`;
+iked↔iked row `i2iinit-ppk`; a phone proving it is not claimed here).
+A non-racoon2 ML-KEM peer is a box row (`i2iinit-charon`, strongSwan
+6.0), not the Ubuntu CI default (OpenSSL 3.0 has no ML-KEM).
 
 ## Dependencies & reproducible proof
 

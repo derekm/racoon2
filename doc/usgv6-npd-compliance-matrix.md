@@ -127,7 +127,8 @@ USGv6 Profile."  That content is the same SFR surface the NDcPP v3.0e
 | parent≥child strength | A12 |
 | crypto KATs (keygen/establish/destroy, AES, sig, RBG) | B1–B6 |
 
-Open items carried from the FP cross-check also apply here: DH group 20
-(P-384) is not implemented, and there is no live public-key IKE_AUTH row
-(see `mk_report.sh` Appendix A, G1/G2) — both are required for a strict
-claim under the USGv6 Profile IPsec content referenced by §2.3.2.
+The two items this note used to carry as open are closed in the tree:
+DH group 20 (P-384) is implemented (`ecp384`, `i2idh-ecp384`), and live
+public-key IKE_AUTH rows exist (`i2ipubkey-rsa`, `i2ipubkey-ecdsa`).
+See `mk_report.sh` Appendix A, G1/G2. This file is a mapping, not an
+evaluation claim under the USGv6 Profile.

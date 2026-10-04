@@ -59,7 +59,7 @@ Apple IKE SA payload defaults (MDM `IKESecurityAssociationParameters` when the p
 - DH: `14` (modp2048). Groups `1,2,5` gone on 26+. Group **19** (ECP256) is implemented here (RFC 5903) and accepted from Apple clients — `kmp_dh_group { ecp256; ... }` in the sample config offers it first. If the Mac proposes only 19, this responder negotiates 19 instead of failing.
 - Child SA: prefer ESP AES-GCM-16 here; CBC+SHA2-256 is the fallback.
 
-macOS 26+ MDM can set `Post Quantum Key Exchange Methods` (RFC 9370 ADDKE1–7) and RFC 8784 PPK. **RFC 9370 ADDKE is implemented** (type-6, ML-KEM-768 via OpenSSL 3.5; one IKE_INTERMEDIATE round on the IKE_SA, type-6 on rekey) — a Mac offering ADDKE/ML-KEM negotiates hybrid here. **RFC 8784 PPK is NOT implemented**; leave PPK unset on the client until it lands.
+macOS 26+ MDM can set `Post Quantum Key Exchange Methods` (RFC 9370 ADDKE1–7) and RFC 8784 PPK. **RFC 9370 ADDKE is implemented** (type-6, ML-KEM-512/768/1024 via OpenSSL 3.5; one IKE_INTERMEDIATE round on the IKE_SA, type-6 on rekey; rounds 2+ are not in this tree) — a Mac offering ADDKE/ML-KEM negotiates hybrid here. **RFC 8784 PPK is implemented** (`use_ppk` / `ppk_mandatory`). A phone proving that path is not claimed here.
 
 macOS 27 MDM adds `Network Routing` on the IKEv2 declaration. Manual Settings UI is not expected to expose it. Ignore until a 27 client is in hand.
 
@@ -67,7 +67,7 @@ Do **not** use L2TP/IPsec on 26/27 against this box. The L2TP UI may still exist
 
 ## What this first install will not do
 
-- IKE AES-GCM (RFC 5282) and RFC 9370 ML-KEM hybrid — both **implemented** (one IKE_INTERMEDIATE round; see `macos_ikev2.conf`). Not yet: RFC 8784 PPK, ADDKE rounds 2-7, EAP.
+- IKE AES-GCM (RFC 5282), RFC 9370 ML-KEM hybrid, and RFC 8784 PPK — **implemented** (one IKE_INTERMEDIATE round; see `macos_ikev2.conf`). Not yet: ADDKE rounds 2-7, EAP.
 - IPv6-in-IPv4
 - Host reboot not measured. Dump is StateDirectory (`/var/lib/racoon2/resume`); kernel ESP still dies. iked restart with a live IKE_SA kept the iPhone Connected 2026-09-08.
 
