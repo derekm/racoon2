@@ -124,24 +124,26 @@ test_compare_id_ip_any(void)
 	struct rc_idlist id;
 	rc_vchar_t *val;
 
-	/* IPv4: the wildcard matches and pins itself to the peer's address */
+	/* IPv4: the wildcard matches any presented address and never mutates
+	 * the config entry (RFC 4301 s4.4.3: PAD match must not change the
+	 * config; RFC 7296 s2.15: ID not trusted before AUTH).  A different
+	 * address still matches, and the entry stays "IP_ANY" after both. */
 	val = make_ip_id_val4(PEER4_A);
 	make_id(&id, RCT_IDT_IPADDR, "IP_ANY");
 	TEST_CHECK(ike_compare_id(RCT_IDT_IPADDR, val, &id) == 0);
-	TEST_CHECK(id_is(&id, PEER4_A));
-	/* the pinned entry no longer matches a different address */
 	rc_vfree(val);
 	val = make_ip_id_val4(PEER4_B);
-	TEST_CHECK(ike_compare_id(RCT_IDT_IPADDR, val, &id) != 0);
+	TEST_CHECK(ike_compare_id(RCT_IDT_IPADDR, val, &id) == 0);
 	rc_vfree(val);
+	TEST_CHECK(id_is(&id, "IP_ANY"));
 	free_id(&id);
 
 	/* IPv6: same, with a fresh wildcard entry */
 	val = make_ip_id_val6(PEER6);
 	make_id(&id, RCT_IDT_IPADDR, "IP_ANY");
 	TEST_CHECK(ike_compare_id(RCT_IDT_IPADDR, val, &id) == 0);
-	TEST_CHECK(id_is(&id, PEER6));
 	rc_vfree(val);
+	TEST_CHECK(id_is(&id, "IP_ANY"));
 	free_id(&id);
 
 	/*
