@@ -318,6 +318,14 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		TRACE((PLOGLOC, "peer supports MOBIKE\n"));
 		break;
 
+	case IKEV2_CHILDLESS_IKEV2_SUPPORTED:
+		/* RFC 6023 s3: the initiator MAY send a modified (SA-less)
+		 * IKE_AUTH only if the IKE_SA_INIT response carried this,
+		 * and MUST NOT otherwise. */
+		ike_sa->peer_childless = 1;
+		TRACE((PLOGLOC, "peer supports childless IKE_SA (16418)\n"));
+		break;
+
 	default:
 		/* else, unexpected unauthenticated notify */
 

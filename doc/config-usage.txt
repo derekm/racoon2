@@ -727,6 +727,22 @@ remote
 		default is off (a peer that never offered ADDKE gets a plain
 		response and no followup).
 
+	childless (on|off) ;
+		It is valid for the ikev2 directive.
+		RFC 6023 childless IKE_SA initiation.  As a responder,
+		when on, iked sends CHILDLESS_IKEV2_SUPPORTED in its
+		IKE_SA_INIT response and accepts an IKE_AUTH without
+		SAi2/TSi/TSr, establishing an IKE SA with no child; when
+		off it does not advertise and answers such a request with
+		INVALID_SYNTAX.  As an initiator, when on, iked sends the
+		SA-less IKE_AUTH only if the responder advertised
+		CHILDLESS_IKEV2_SUPPORTED (otherwise a normal IKE_AUTH),
+		then negotiates the first child with CREATE_CHILD_SA.
+		A childless IKE SA is rekeyed at its lifetime like any
+		other; kmp_sa_grace_period (if set) still removes an
+		IKE SA that has no child.
+		default is off.
+
 	need_pfs (on|off) ;
 		It is valid for both directives of the ikev1 and ikev2.
 		It controls to enable PFS or not.
