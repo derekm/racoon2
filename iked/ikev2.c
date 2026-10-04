@@ -4831,6 +4831,11 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			   "CREATE_CHILD_SA request SA_hex=%s\n", hx);
 	}
 
+	/* RFC 7296 1.3: every CREATE_CHILD_SA request carries SA and Ni;
+	 * sa is dereferenced unconditionally below. */
+	if (!sa || !nonce)
+		goto malformed_message;
+
 	/* check if rekeying IKE_SA */
 	if (get_payload_data_length(sa) > sizeof(struct ikev2proposal) &&
 	    ((struct ikev2proposal *)(((struct ikev2payl_sa *)sa) + 1))->protocol_id == IKEV2PROPOSAL_IKE) {
