@@ -3159,14 +3159,16 @@ eay_aes_cmac_init(rc_vchar_t *key)
 	//gf_mult(&c->k2, &c->k3, R128);
 	gf_mult(L, c->k2, R128);
 	gf_mult(c->k2, c->k3, R128);
+	OPENSSL_cleanse(L, sizeof(L));
 
+	rc_vfreez(k);		/* key copy is only needed for k1 schedule */
 	return (caddr_t)c;
 
       fail:
 	if (c)
 		racoon_free(c);
 	if (k)
-		racoon_free(k);
+		rc_vfreez(k);
 	return 0;
 }
 
