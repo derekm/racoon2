@@ -73,6 +73,7 @@
 #include "var.h"
 #include "sockmisc.h"
 #include "debug.h"
+#include "blocklist_peer.h"
 
 /* #include "remote_info.h" */
 #include "isakmp.h"
@@ -682,6 +683,58 @@ isakmp_find_socket(struct sockaddr *sa)
 		return -1;
 	return a->sock;
 }
+
+/*
+ * Socket to hand blocklistd for a datagram that arrived on "local".
+ * blocklistd only getsockname()s it to match the [local] port rule,
+ * so when the exact address is not bound (wildcard bind, or a NAT-T
+ * float) any iked socket of the same family + port is equivalent.
+ */
+int
+isakmp_find_socket_blocklist(struct sockaddr *local)
+{
+	struct socket_list *p;
+	in_port_t *want, *got;
+	int s;
+
+	if (local == NULL)
+		return -1;
+	if ((s = isakmp_find_socket(local)) >= 0)
+		return s;
+	want = rcs_getsaport(local);
+	if (want == NULL)
+		return -1;
+	for (p = SOCKET_LIST_FIRST(&socket_list_head); p;
+	     p = SOCKET_LIST_NEXT(p)) {
+		if (!p->addr || p->addr->sa_family != local->sa_family)
+			continue;
+		got = rcs_getsaport(p->addr);
+		if (got && *got == *want)
+			return p->sock;
+	}
+	return -1;
+}
+
+/*
+ * blocklist guard for the NAT-T port: with UDP_ENCAP_ESPINUDP set the
+ * kernel consumes ESP, so iked never sees it.  If that setsockopt
+ * failed (logged at startup) ESP-in-UDP from real clients would land
+ * here without a non-ESP marker and look "malformed"; never report
+ * those -- a misconfigured socket must not ban the client base.
+ */
+static int
+isakmp_bl_esp_like(struct sockaddr *local, int len, int extralen)
+{
+#ifdef ENABLE_NATT
+	in_port_t *port = rcs_getsaport(local);
+
+	if (port != NULL && *port == htons(IKEV2_UDP_PORT_NATT) &&
+	    extralen == 0 && len >= 8)
+		return 1;
+#endif
+	return 0;
+}
+
 /*
  * Free a fragment context and all of the per-fragment buffers that it
  * owns.  Safe to call with a NULL pointer.
@@ -1059,6 +1112,10 @@ isakmp_handler(int so_isakmp)
 		plog(PLOG_PROTOERR, PLOGLOC, 0,
 		     "packet (%d) shorter than isakmp header size. (%zu+%d)\n",
 		     len, sizeof(isakmp), extralen);
+		if (!isakmp_bl_esp_like((struct sockaddr *)&local, len,
+		    extralen))
+			iked_blocklist_peer(IKED_BL_AUTH_FAIL, so_isakmp,
+			    (struct sockaddr *)&remote, "iked shortpacket");
 		++isakmpstat.shortpacket;
 	dummy_receive:
 		/* dummy receive */
@@ -1076,6 +1133,10 @@ isakmp_handler(int so_isakmp)
 		plog(PLOG_PROTOERR, PLOGLOC, 0,
 		     "ISAKMP message length field value (%u) too small\n",
 		     ntohl(isakmp.len));
+		if (!isakmp_bl_esp_like((struct sockaddr *)&local, len,
+		    extralen))
+			iked_blocklist_peer(IKED_BL_AUTH_FAIL, so_isakmp,
+			    (struct sockaddr *)&remote, "iked malformed_len");
 		++isakmpstat.malformed_message;
 		goto dummy_receive;
 	}
@@ -1083,6 +1144,10 @@ isakmp_handler(int so_isakmp)
 		plog(PLOG_PROTOERR, PLOGLOC, 0,
 		     "ISAKMP message length field value (%u) too large\n",
 		     ntohl(isakmp.len));
+		if (!isakmp_bl_esp_like((struct sockaddr *)&local, len,
+		    extralen))
+			iked_blocklist_peer(IKED_BL_AUTH_FAIL, so_isakmp,
+			    (struct sockaddr *)&remote, "iked malformed_len");
 		++isakmpstat.malformed_message;
 		goto dummy_receive;
 	}
