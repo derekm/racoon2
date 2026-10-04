@@ -78,6 +78,20 @@
 #  include <unistd.h>
 #endif
 
+#ifdef __linux__
+/* XFRM per-socket policy (IP_XFRM_POLICY): the native Linux form of the
+ * per-socket IPsec bypass.  The PF_KEY form (IP_IPSEC_POLICY +
+ * struct sadb_x_policy) is only compiled by the af_key module; on an
+ * XFRM-only kernel (no af_key, the NETLINK_XFRM backend of lib/if_xfrm.c)
+ * xfrm_user rejects it with EOPNOTSUPP. */
+#include <linux/xfrm.h>
+#ifndef IP_XFRM_POLICY
+#define IP_XFRM_POLICY		17
+#endif
+#ifndef IPV6_XFRM_POLICY
+#define IPV6_XFRM_POLICY	35
+#endif
+#endif
 #include "racoon.h"
 #include "var.h"
 #include "sockmisc.h"
@@ -515,6 +529,59 @@ sendfromto(int s, const void *buf, size_t buflen,
 	}
 }
 
+#ifdef __linux__
+/*
+ * XFRM-native per-socket bypass: one XFRM_POLICY_ALLOW socket policy per
+ * direction with an empty (match-all) selector and no templates.  A socket
+ * policy is consulted before the SPD, so iked's IKE sockets AND the
+ * getlocaladdr() dummy-connect probe are exempt from spmd's `require`
+ * policies.  Without this the probe's connect() (ip4_datagram_connect ->
+ * xfrm_lookup) matched the require policy with no state and the kernel
+ * sent a spurious ACQUIRE that iked turned into an extra child SA.
+ */
+static int
+setsockopt_bypass_xfrm(int fd, int family)
+{
+	struct xfrm_userpolicy_info xp;
+	int level, optname;
+	int dir;
+
+	switch (family) {
+	case AF_INET:
+		level = IPPROTO_IP;
+		optname = IP_XFRM_POLICY;
+		break;
+	case AF_INET6:
+		level = IPPROTO_IPV6;
+		optname = IPV6_XFRM_POLICY;
+		break;
+	default:
+		errno = EAFNOSUPPORT;
+		return -1;
+	}
+
+	for (dir = XFRM_POLICY_IN; dir <= XFRM_POLICY_OUT; dir++) {
+		memset(&xp, 0, sizeof(xp));
+		xp.sel.family = family;
+		xp.lft.soft_byte_limit = XFRM_INF;
+		xp.lft.hard_byte_limit = XFRM_INF;
+		xp.lft.soft_packet_limit = XFRM_INF;
+		xp.lft.hard_packet_limit = XFRM_INF;
+		xp.dir = dir;
+		xp.action = XFRM_POLICY_ALLOW;
+		xp.share = XFRM_SHARE_ANY;
+		if (setsockopt(fd, level, optname, &xp, sizeof(xp)) == -1) {
+			plog(PLOG_INTERR, PLOGLOC, 0,
+			     "setsockopt(XFRM_POLICY %s): %s\n",
+			     dir == XFRM_POLICY_IN ? "in" : "out",
+			     strerror(errno));
+			return -1;
+		}
+	}
+	return 0;
+}
+#endif
+
 int
 setsockopt_bypass(int fd, int family)
 {
@@ -542,6 +609,10 @@ setsockopt_bypass(int fd, int family)
 	policy.sadb_x_policy_type = IPSEC_POLICY_BYPASS;
 	policy.sadb_x_policy_dir = IPSEC_DIR_INBOUND;
 	if (setsockopt(fd, level, optname, &policy, sizeof(policy)) == -1) {
+#ifdef __linux__
+		if (errno == EOPNOTSUPP)
+			return setsockopt_bypass_xfrm(fd, family);
+#endif
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "setsockopt: %s\n", strerror(errno));
 		return -1;
