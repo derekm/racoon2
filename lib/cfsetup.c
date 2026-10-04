@@ -4078,6 +4078,7 @@ rcf_get_remotebyaddr(struct sockaddr *s, rc_type proto, struct rcf_remote **dst)
 						continue;
 					}
 					if (!rcs_matchaddr(addrlist, s)) {
+						rcs_free_addrlist(addrlist);
 						continue;
 					}
 					rcs_free_addrlist(addrlist);

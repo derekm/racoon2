@@ -200,8 +200,7 @@ rcs_getaddrlistbymacro(const rc_vchar_t *m, struct rc_addrlist **al0)
 	}
 
 	*al0 = al;
-
-	return 0;
+	error = 0;		/* fall through to free buf/mname */
 
     end:
 	if (mname_allocated)

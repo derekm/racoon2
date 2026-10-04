@@ -4844,6 +4844,7 @@ ike_determine_sa_endpoint(struct sockaddr_storage *ss,
 		if (!rcs_matchaddr(addrlist, actual_addr)) {
 		    plog(PLOG_INTERR, PLOGLOC, 0,
 			    "rcs_matchaddr() failed\n");
+			rcs_free_addrlist(addrlist);
 			return NULL;
 		}
 
