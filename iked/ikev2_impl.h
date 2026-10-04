@@ -157,6 +157,10 @@ struct ikev2_sa {
 	int is_initiator;	/* side */
 	int is_rekeyed_sa;
 	int childless_established;	/* RFC 6023: SA-less AUTH settled config */
+	int peer_childless;	/* RFC 6023 s3: responder sent N(16418) in IKE_SA_INIT */
+	int childless_advertised;	/* RFC 6023 s3: we sent N(16418) in our IKE_SA_INIT response */
+	int childless_requested;	/* we sent a modified (SA-less) IKE_AUTH request */
+	int grace_expired;	/* kmp_sa_grace_period ran out: delete, do not rekey */
 
 	struct sockaddr *remote;
 	struct sockaddr *local;
@@ -667,6 +671,7 @@ extern struct ikev2_child_sa *ikev2_find_child_sa_by_spi(struct ikev2_sa *,
 							 unsigned int, uint32_t,
 							 enum peer_mine);
 
+extern int ikev2_child_childless_prepare(struct ikev2_child_sa *);
 extern struct ikev2_child_sa *ikev2_choose_pending_child(struct ikev2_sa *,
 							 int);
 extern struct ikev2_child_sa *ikev2_find_child_sa(struct ikev2_sa *, int,

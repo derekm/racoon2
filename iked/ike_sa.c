@@ -712,7 +712,11 @@ ikev2_sa_lifetime_soft_callback(void *param)
 	TRACE((PLOGLOC, "soft lifetime expired %p\n", ike_sa));
 	SCHED_KILL(ike_sa->soft_expire_timer);
 	ike_sa->soft_expired = TRUE;
-	if (ike_sa->child_created > 0 && !ike_sa->rekey_inprogress)
+	/* RFC 6023: a childless IKE SA is a legitimate SA with zero
+	 * children and is rekeyed like any other (child_created counts
+	 * only children this side allocated, 0 on a childless responder) */
+	if ((ike_sa->child_created > 0 || ike_sa->childless_established) &&
+	    !ike_sa->rekey_inprogress)
 		ikev2_rekey_ikesa_initiate(ike_sa);
 	child_sa = ikev2_choose_pending_child(ike_sa, TRUE);
 	if (child_sa)
@@ -726,6 +730,11 @@ ikev2_sa_start_grace_period(struct ikev2_sa *sa)
 {
 	int grace_period;
 
+	/* the periodic sweep calls this on every tick while the SA has no
+	 * children; arm the timer once instead of stacking a new one each
+	 * tick (the overwritten timers kept firing) */
+	if (sa->grace_timer)
+		return;
 	grace_period = ikev2_kmp_sa_grace_period(sa->rmconf);
 	if (grace_period <= 0)
 		return;
@@ -749,6 +758,7 @@ ikev2_sa_grace_period_callback(void *param)
 	ike_sa = (struct ikev2_sa *)param;
 	TRACE((PLOGLOC, "grace period expired %p\n", ike_sa));
 	SCHED_KILL(ike_sa->grace_timer);
+	ike_sa->grace_expired = 1;	/* delete, do not rekey, a childless SA */
 	ikev2_sa_expire(ike_sa, TRUE);
 	child_sa = ikev2_choose_pending_child(ike_sa, TRUE);
 	if (child_sa)
@@ -773,7 +783,8 @@ ikev2_sa_expire(struct ikev2_sa *ike_sa, int send_delete)
 		ikev2_abort(ike_sa, ETIMEDOUT);
 		break;
 	case IKEV2_STATE_ESTABLISHED:
-		if (ike_sa->child_created > 0) {
+		if (ike_sa->child_created > 0 ||
+		    (ike_sa->childless_established && !ike_sa->grace_expired)) {
 			if (!ike_sa->rekey_inprogress)
 				ikev2_rekey_ikesa_initiate(ike_sa);
 		} else {

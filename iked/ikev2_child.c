@@ -3043,6 +3043,60 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
  * timer callback for child_sa expiration — rekey at soft lifetime
  * instead of DELETE (Apple does not CREATE_CHILD first).
  */
+/*
+ * RFC 6023 s3: after a childless IKE_AUTH the first child, whose SPI the
+ * kernel already allocated (GETSPI_DONE), is negotiated with
+ * CREATE_CHILD_SA.  Its proposal was built for IKE_AUTH
+ * (ikev2_ipsec_conf_to_proplist(..., FALSE): no D-H, no type-6), so a
+ * CREATE_CHILD_SA sent from it would carry no KE.  Rebuild it as a
+ * CREATE_CHILD_SA proposal (D-H from kmp_dh_group, plus esp_addke_alg
+ * type-6 now that the IKE SA is ESTABLISHED) and carry the GETSPI SPIs
+ * over, per protocol.  Returns 0 on success, -1 if the old proposal was
+ * kept.
+ */
+int
+ikev2_child_childless_prepare(struct ikev2_child_sa *child_sa)
+{
+	struct prop_pair **np, *p, *q;
+	int i;
+
+	if (!child_sa || !child_sa->my_proposal || !child_sa->my_proposal[1])
+		return -1;
+	child_sa->in_ike_auth = 0;
+	np = ikev2_ipsec_conf_to_proplist(child_sa, TRUE);
+	if (!np) {
+		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "childless: failed rebuilding the first child's "
+			   "proposal; sending it without KE\n");
+		return -1;
+	}
+	for (i = 1; i < MAXPROPPAIRLEN; ++i) {
+		for (p = np[i]; p; p = p->next) {
+			uint32_t spi = 0;
+
+			if (!p->prop || p->prop->spi_size != sizeof(uint32_t))
+				continue;
+			for (q = child_sa->my_proposal[i] ?
+			     child_sa->my_proposal[i] : child_sa->my_proposal[1];
+			     q && spi == 0; q = q->next)
+				if (q->prop && q->prop->proto_id == p->prop->proto_id)
+					spi = get_uint32(q->prop + 1);
+			for (q = child_sa->my_proposal[1]; q && spi == 0;
+			     q = q->next)
+				if (q->prop && q->prop->proto_id == p->prop->proto_id)
+					spi = get_uint32(q->prop + 1);
+			put_uint32(p->prop + 1, spi);
+		}
+	}
+	proplist_discard(child_sa->my_proposal);
+	child_sa->my_proposal = np;
+	isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		   "childless: sending the first child %p as CREATE_CHILD_SA "
+		   "(D-H %s)\n", child_sa,
+		   ikev2_child_dhdef(np[1], NULL) ? "offered" : "not configured");
+	return 0;
+}
+
 static void
 ikev2_child_start_lifetime_timer(struct ikev2_child_sa *child_sa)
 {
