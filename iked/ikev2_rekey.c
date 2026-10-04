@@ -339,6 +339,14 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 	 * i2ike-addke matrix FAIL was miscounting: matching plain keymat,
 	 * type6 present on the wire, but no KEM mixed).
 	 */
+	/*
+	 * esp_addke_alg configured but the cloned proposal is DH-less (the
+	 * IKE_AUTH child): add the configured DH group so this rekey carries
+	 * KEi and the ADDKE rounds can run (ike_conf.c
+	 * ikev2_child_add_rekey_dh).  Without it every rekey of such a child
+	 * stayed classical for the life of the IKE_SA.
+	 */
+	ikev2_child_add_rekey_dh(new_child_sa);
 	if (ikev2_child_dhdef(new_child_sa->my_proposal[1], NULL) != NULL) {
 		ikev2_child_maybe_reoffer_addke(new_child_sa);
 	} else {

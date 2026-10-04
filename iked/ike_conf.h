@@ -195,6 +195,7 @@ extern rc_type ikev2_ppk_mandatory(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ppk_id(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ppk_load(struct rcf_remote *);
 extern void ikev2_child_maybe_reoffer_addke(struct ikev2_child_sa *);
+extern int ikev2_child_add_rekey_dh(struct ikev2_child_sa *);
 extern int ikev2_maybe_offer_ikesa_addke(struct prop_pair **);
 extern int ikev2_natk_interval(struct rcf_remote *);
 extern struct rc_addrlist *ikev2_natd_public_address(struct rcf_remote *);
