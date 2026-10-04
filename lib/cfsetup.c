@@ -261,6 +261,7 @@ static int rcf_fix_ipsec_mode (struct cf_list *, void *);
 static int rcf_fix_my_sa_ipaddr (struct cf_list *, void *);
 static int rcf_fix_peers_sa_ipaddr (struct cf_list *, void *);
 static int rcf_fix_ipsec_level (struct cf_list *, void *);
+static int rcf_fix_initial_child_ke (struct cf_list *, void *);
 	/* ipsec */
 static int rcf_fix_ipsec (rc_vchar_t *ips_index, struct rcf_ipsec **);
 static void rcf_clean_ipsec_list (struct rcf_ipsec *head);
@@ -422,6 +423,7 @@ struct rcf_tdf_t {
 	{ CFD_MY_SA_IPADDR,		rcf_fix_my_sa_ipaddr, },
 	{ CFD_PEERS_SA_IPADDR,		rcf_fix_peers_sa_ipaddr, },
 	{ CFD_IPSEC_LEVEL,		rcf_fix_ipsec_level, },
+	{ CFD_INITIAL_CHILD_KE,		rcf_fix_initial_child_ke, },
 	/* ipsec */
 	{ CFD_IPSEC_SA_LIFETIME_TIME,	rcf_fix_ipsec_sa_lifetime_time, },
 	{ CFD_IPSEC_SA_LIFETIME_BYTE,	rcf_fix_ipsec_sa_lifetime_byte, },
@@ -2293,6 +2295,7 @@ rcf_fix_policy(rc_vchar_t *pl_index, struct rcf_policy **dst0)
 	if (rcf_fix_string(head, &new->pl_index))
 		return -1;
 	new->install = RCT_BOOL_ON;
+	new->initial_child_ke = RCT_ICKE_OFF;
 	for (n = head->nextp; n; n = n->nexts)
 		RCF_CALL_TDF(n, new);
 	*dst0 = new;
@@ -2333,6 +2336,7 @@ rcf_deepcopy_policy(struct rcf_policy *src)
 	new->install = src->install;
 	new->ipsec_mode = src->ipsec_mode;
 	new->ipsec_level = src->ipsec_level;
+	new->initial_child_ke = src->initial_child_ke;
 	DEEPCOPY_VDUP(src->rm_index, new->rm_index);
 	DEEPCOPY_VDUP(src->pl_index, new->pl_index);
 	DEEPCOPY_ADDRLIST(src->my_sa_ipaddr, new->my_sa_ipaddr);
@@ -2456,6 +2460,19 @@ rcf_fix_ipsec_level(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_IPSEC_LEVEL))
 		return -1;
 	if (rcf_fix_value(head->nextp, &dst->ipsec_level))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_initial_child_ke(struct cf_list *head, void *dst0)
+{
+	struct rcf_policy *dst = (struct rcf_policy *)dst0;
+
+	if (rcf_check_cfd(head, CFD_INITIAL_CHILD_KE))
+		return -1;
+	if (rcf_fix_value(head->nextp, &dst->initial_child_ke))
 		return -1;
 
 	return 0;

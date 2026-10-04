@@ -346,7 +346,9 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 	 * ikev2_child_add_rekey_dh).  Without it every rekey of such a child
 	 * stayed classical for the life of the IKE_SA.
 	 */
-	ikev2_child_add_rekey_dh(new_child_sa);
+	ikev2_child_add_rekey_dh(new_child_sa,
+	    old_child_sa->in_ike_auth &&
+	    ikev2_initial_child_ke(old_child_sa) != RCT_ICKE_OFF);
 	if (ikev2_child_dhdef(new_child_sa->my_proposal[1], NULL) != NULL) {
 		ikev2_child_maybe_reoffer_addke(new_child_sa);
 	} else {

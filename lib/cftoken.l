@@ -398,6 +398,8 @@ discard			{ DP; return(DISCARD); }
 none			{ DP; return(NONE); }
 bypass			{ DP; return(NONE); }	/* to be removed on day */
 install			{ DP; return(INSTALL); }
+initial_child_ke	{ DP; return(INITIAL_CHILD_KE); }
+immediate		{ DP; return(IMMEDIATE); }
 remote_index		{ DP; return(REMOTE_INDEX); }
 ipsec_index		{ DP; return(IPSEC_INDEX); }
 	/* ipsec mode */

@@ -162,6 +162,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 	/* policy */
 %token POLICY ACTION AUTO_IPSEC STATIC_IPSEC DISCARD NONE
 %token INSTALL REMOTE_INDEX IPSEC_INDEX CHECK_REMOTE
+%token INITIAL_CHILD_KE IMMEDIATE
 	/* ipsec */
 %token IPSEC MY_SA_IPADDR PEERS_SA_IPADDR
 %token IPSEC_SA_LIFETIME_TIME IPSEC_SA_LIFETIME_BYTE EXT_SEQUENCE
@@ -227,6 +228,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %type <list> policy_list policy_spec action_string
 %type <list> ipsec_list ipsec_spec ipsec_mode_string
 %type <list> ipsec_level_string
+%type <list> initial_child_ke_string
 %type <list> sa_list sa_spec sa_proto_string
 %type <list> addr_range_list addr_range
 %type <list> default_list default_spec
@@ -1176,6 +1178,16 @@ policy_spec
 			MKRCFDIR($$, CFD_IPSEC_LEVEL);
 			$$->nextp = $2;
 		}
+	|	INITIAL_CHILD_KE initial_child_ke_string
+		{
+			MKRCFDIR($$, CFD_INITIAL_CHILD_KE);
+			$$->nextp = $2;
+		}
+	;
+initial_child_ke_string
+	:	BOOL_OFF	{ MKRCFVAL($$, RCT_ICKE_OFF); }
+	|	IMMEDIATE	{ MKRCFVAL($$, RCT_ICKE_IMMEDIATE); }
+	|	CHILDLESS	{ MKRCFVAL($$, RCT_ICKE_CHILDLESS); }
 	;
 action_string
 	:	AUTO_IPSEC	{ MKRCFVAL($$, RCT_ACT_AUTO_IPSEC); }

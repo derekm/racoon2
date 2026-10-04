@@ -2693,12 +2693,14 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	 * added afterwards via a separate CREATE_CHILD_SA (woken at ESTABLISHED).
 	 * It MAY do so only if the IKE_SA_INIT response carried
 	 * CHILDLESS_IKEV2_SUPPORTED and MUST NOT otherwise.  The remote's
-	 * "childless on" asks for it; without the peer's 16418 send a
-	 * normal IKE_AUTH.
+	 * "childless on" or the policy's "initial_child_ke childless" asks for
+	 * it; without the peer's 16418 send a normal IKE_AUTH (and, for
+	 * initial_child_ke childless, rekey that child right away instead).
 	 */
 	{
 		int want_childless =
-		    ikev2_childless(ike_sa->rmconf) == RCT_BOOL_ON;
+		    ikev2_childless(ike_sa->rmconf) == RCT_BOOL_ON ||
+		    ikev2_initial_child_ke(child_sa) == RCT_ICKE_CHILDLESS;
 
 		ike_sa->childless_requested =
 		    want_childless && ike_sa->peer_childless;

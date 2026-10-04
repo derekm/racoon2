@@ -77,6 +77,7 @@ static int ikev2_add_ipsec_sa(struct ikev2_child_sa *,
 			      struct prop_pair *);
 static void ikev2_child_expire_callback(void *);
 static void ikev2_child_start_lifetime_timer(struct ikev2_child_sa *);
+static void ikev2_child_maybe_initial_ke(struct ikev2_child_sa *);
 void ikev2_child_arm_expire(struct ikev2_child_sa *, time_t);
 static void ikev2_expire_child(struct ikev2_child_sa *);
 static void ikev2_expire_sa(struct ikev2_child_sa *child_sa,
@@ -1838,6 +1839,7 @@ ikev2_create_child_responder_cont(struct ikev2_child_sa *child_sa)
 	switch (ike_sa->state) {
 	case IKEV2_STATE_RES_IKE_AUTH_RCVD:
 		ikev2_responder_state1_send(ike_sa, child_sa);
+		ikev2_child_maybe_initial_ke(child_sa);
 		break;
 	case IKEV2_STATE_ESTABLISHED:
 		ikev2_createchild_responder_send(ike_sa, child_sa);
@@ -2978,6 +2980,7 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 	ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_MATURE);
 
 	ikev2_child_start_lifetime_timer(child_sa);
+	ikev2_child_maybe_initial_ke(child_sa);
 
       done:
 	if (new_my_proposal_list)
@@ -3043,6 +3046,33 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
  * timer callback for child_sa expiration — rekey at soft lifetime
  * instead of DELETE (Apple does not CREATE_CHILD first).
  */
+/*
+ * initial_child_ke immediate (and childless when the IKE SA was not
+ * childless): the IKE_AUTH child is keyed from SKEYSEED only (RFC 7296
+ * s1.2) and cannot run additional key exchanges (RFC 9370 s2.2.2).  Rekey
+ * it with CREATE_CHILD_SA as soon as it is installed; that rekey carries
+ * KE (ikev2_child_add_rekey_dh force) plus the configured esp_addke_alg
+ * type-6 transforms.  The 1 s delay lets an IKE_AUTH response go out
+ * first when we are the responder.  Configure it on one peer only; with
+ * both sides rekeying at once the RFC 7296 s2.8.1 collision rules apply.
+ */
+static void
+ikev2_child_maybe_initial_ke(struct ikev2_child_sa *child_sa)
+{
+	rc_type mode;
+
+	if (!child_sa || !child_sa->in_ike_auth || !child_sa->parent)
+		return;
+	mode = ikev2_initial_child_ke(child_sa);
+	if (mode == RCT_ICKE_OFF)
+		return;
+	isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		   "initial_child_ke %s: rekeying the IKE_AUTH child %p now "
+		   "so it gets its own key exchange\n",
+		   rct2str(mode), child_sa);
+	ikev2_child_arm_expire(child_sa, 1);
+}
+
 /*
  * RFC 6023 s3: after a childless IKE_AUTH the first child, whose SPI the
  * kernel already allocated (GETSPI_DONE), is negotiated with
