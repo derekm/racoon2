@@ -241,6 +241,25 @@ natt_process_natd(struct ikev2_sa *ike_sa, struct ikev2payl_notify *n,
 		return -1;
 	}
 
+	/*
+	 * RFC 7296 2.23: the notification data is a SHA-1 digest.  The
+	 * payload walker only guarantees the fixed notify header + SPI, so
+	 * validate the data length before comparing; a short NATD (even
+	 * zero-length, pre-auth in IKE_SA_INIT) must not be read past.
+	 */
+	{
+		size_t plen = get_payload_length(&n->header);
+		size_t hlen = sizeof(struct ikev2payl_notify) + n->nh.spi_size;
+
+		if (plen < hlen || plen - hlen != hash->l) {
+			plog(PLOG_PROTOERR, PLOGLOC, NULL,
+			     "NAT_DETECTION notify data length %zu != %zu\n",
+			     plen < hlen ? (size_t)0 : plen - hlen, hash->l);
+			rc_vfree(hash);
+			return -1;
+		}
+	}
+
 	ret = memcmp(n_data, hash->v, hash->l);
 
 	rc_vfree(hash);
