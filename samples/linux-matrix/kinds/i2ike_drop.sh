@@ -143,6 +143,13 @@ EOF
 		pkill -9 -f "$C/" 2>/dev/null || true
 		rm -f "$SPMIF_R" "$SPMIF_I" \
 		      "$SOCK_R" "$SOCK_I"
+		# every attempt starts from empty logs and resume dirs: iked -l
+		# appends, so a previous attempt's abort/replay lines would otherwise
+		# fail (or falsely satisfy) this attempt's gates.
+		rm -rf "$PRIVRES_R" "$PRIVRES_I"
+		mkdir -p "$PRIVRES_R" "$PRIVRES_I"
+		: >"$D/resp-iked.log"
+		: >"$D/init-iked.log"
 
 		for NS in "$NSR" "$NSI"; do
 			ip netns del "$NS" 2>/dev/null || true
