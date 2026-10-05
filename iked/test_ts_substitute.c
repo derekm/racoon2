@@ -168,6 +168,10 @@ fixture_free(struct ts_fixture *f)
 {
 	rc_vfree(f->ts_i);
 	rc_vfree(f->ts_r);
+	if (f->parent.oa_i)
+		rc_free(f->parent.oa_i);
+	if (f->parent.oa_r)
+		rc_free(f->parent.oa_r);
 }
 
 static struct ikev2_payload_header *
@@ -533,6 +537,57 @@ test_null_args(void)
 	fixture_free(&f);
 }
 
+static int
+oa_is(struct sockaddr *sa, const char *expect)
+{
+	struct in_addr a4;
+
+	if (sa == NULL || sa->sa_family != AF_INET)
+		return 0;
+	test_pton4(expect, &a4);
+	return memcmp(&((struct sockaddr_in *)sa)->sin_addr, &a4,
+	    sizeof(a4)) == 0;
+}
+
+/*
+ * N4 (RFC 3948 s3.1.2, RFC 7296 s2.23.1): oa_i/oa_r are the ORIGINAL
+ * addresses carried in the received TS payloads, before substitution, on
+ * BOTH roles.  The receiver of a transport-mode ESP-in-UDP packet fixes
+ * the TCP/UDP checksum from the address the sender used (the TS it sent)
+ * to the address on the wire, so the initiator's OA for its own side is
+ * the post-NAT TSi the responder narrowed to, never its local address.
+ */
+static void
+test_natoa_originals(void)
+{
+	struct ts_fixture f;
+
+	/* responder, initiator NATed: oa_i = proposed TSi, oa_r unset */
+	fixture_init_v4(&f, FALSE, TRUE, FALSE, TRUE);
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(oa_is(f.parent.oa_i, TS_I_ADDR4));
+	TEST_CHECK(f.parent.oa_r == NULL);
+	fixture_free(&f);
+
+	/* initiator behind NAT: oa_i = received TSi, NOT the local addr */
+	fixture_init_v4(&f, TRUE, TRUE, TRUE, FALSE);
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(oa_is(f.parent.oa_i, TS_I_ADDR4));
+	TEST_CHECK(!oa_is(f.parent.oa_i, LOCAL4_ADDR));
+	TEST_CHECK(f.parent.oa_r == NULL);
+	fixture_free(&f);
+
+	/* both NATed, initiator: oa_r = received TSr, not the remote addr */
+	fixture_init_v4(&f, TRUE, TRUE, TRUE, TRUE);
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(oa_is(f.parent.oa_i, TS_I_ADDR4));
+	TEST_CHECK(oa_is(f.parent.oa_r, TS_R_ADDR4));
+	fixture_free(&f);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -557,6 +612,7 @@ main(int argc, char *argv[])
 	RUN_TEST(test_overrunning_num_ts_rejected);
 	RUN_TEST(test_no_parent_rejected);
 	RUN_TEST(test_per_side_nat_substitution);
+	RUN_TEST(test_natoa_originals);
 
 	plog_clean();
 

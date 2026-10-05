@@ -2556,20 +2556,20 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     sub_r = ike_sa->is_initiator ? ike_sa->remote : ike_sa->local; 
 
     /*
-     * N4 (RFC 3948 §3.1.2 / 7296 §2.23.1): stash the original TS addresses
-     * into oa_i/oa_r before rewriting, for PF_KEY SADB_X_EXT_NAT_T_OA
-     * checksum fixup.  Responder: originals are what the peer sent (private
-     * IP).  Initiator: originals are the substitute targets (our/peer
-     * endpoints), because the response TSs already carry post-NAT addresses.
+     * N4 (RFC 3948 §3.1.2 / 7296 §2.23.1): stash the ORIGINAL addresses
+     * carried in the received TS payloads into oa_i/oa_r BEFORE rewriting.
+     * FreeBSD (and Linux) compute the TCP/UDP checksum delta from
+     * (OA, SA endpoint); the OA must be the address the peer used when it
+     * computed the checksum — i.e. the TS it put on the wire — never our
+     * local SA endpoint.  Stashing the substitute target on the initiator
+     * made FreeBSD apply a non-zero delta of (local_addr − post-NAT_addr)
+     * and drop every TCP segment (ICMP kept working because its checksum
+     * does not cover the IP addresses).
      */
     err = 0;
     if (init_nated) {
-        if (ike_sa->oa_i == NULL) {
-            if (ike_sa->is_initiator)
-                ike_sa->oa_i = rcs_sadup(sub_i);
-            else
-                ike_sa->oa_i = ikev2_ts_payload_first_addr(ts_i_pl);
-        }
+        if (ike_sa->oa_i == NULL)
+            ike_sa->oa_i = ikev2_ts_payload_first_addr(ts_i_pl);
         err = ikev2_ts_payload_substitute(ts_i_pl, sub_i);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
@@ -2577,12 +2577,8 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
                  rcs_sa2str_wop(sub_i));
     }
     if (err == 0 && resp_nated) {
-        if (ike_sa->oa_r == NULL) {
-            if (ike_sa->is_initiator)
-                ike_sa->oa_r = rcs_sadup(sub_r);
-            else
-                ike_sa->oa_r = ikev2_ts_payload_first_addr(ts_r_pl);
-        }
+        if (ike_sa->oa_r == NULL)
+            ike_sa->oa_r = ikev2_ts_payload_first_addr(ts_r_pl);
         err = ikev2_ts_payload_substitute(ts_r_pl, sub_r);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
