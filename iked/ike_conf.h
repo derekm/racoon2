@@ -305,3 +305,7 @@ int addrlist_equal(struct rc_addrlist *, struct rc_addrlist *);
 
 void ikev2_dump_ts(const char *, struct ikev2payl_traffic_selector *);
 void ikev2_dump_traffic_selector_h(const char *, void *);
+
+/* RFC 7296 §2.23.1: single-address TS payload from a TS payload's first
+ * address (post-NAT narrowing for the NAT-T transport response). */
+rc_vchar_t *ikev2_ts_payload_single(struct ikev2_payload_header *);

@@ -193,6 +193,17 @@ EOF
 			_bad="N4: no NAT-OA with original TSi 10.9.0.2 in responder log"
 		fi
 	fi
+	# M1 (RFC 7296 s2.23.1): the initiator's OA is the TSi the responder
+	# returned (post-NAT 192.0.5.254), never its own SA endpoint.
+	if [ -z "$_bad" ]; then
+		if ! grep -qE 'NAT-T OA for outbound SA: src=192\.0\.5\.254 ' "$D/init-iked.log" 2>/dev/null; then
+			_bad="M1: initiator OA is not the returned post-NAT TSi 192.0.5.254"
+		elif grep -qE 'NAT-T OA for (inbound|outbound) SA:.*=10\.9\.0\.2( |$)' "$D/init-iked.log" 2>/dev/null; then
+			_bad="M1: initiator OA equals its own SA endpoint 10.9.0.2"
+		else
+			log "M1 OK - initiator OA is the returned post-NAT TSi 192.0.5.254"
+		fi
+	fi
 
 	if [ -z "$_bad" ]; then
 		if [ "$_wild" = 1 ]; then

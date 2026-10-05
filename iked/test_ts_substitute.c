@@ -586,6 +586,63 @@ test_natoa_originals(void)
 	TEST_CHECK(oa_is(f.parent.oa_i, TS_I_ADDR4));
 	TEST_CHECK(oa_is(f.parent.oa_r, TS_R_ADDR4));
 	fixture_free(&f);
+
+	/* both NATed, responder: oa_i/oa_r = proposed TSi/TSr, never the
+	 * SA endpoints (an OA equal to the endpoint is dropped by FreeBSD
+	 * key_setnatt and disables the TCP checksum check) */
+	fixture_init_v4(&f, FALSE, TRUE, TRUE, TRUE);
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(oa_is(f.parent.oa_i, TS_I_ADDR4));
+	TEST_CHECK(oa_is(f.parent.oa_r, TS_R_ADDR4));
+	TEST_CHECK(!oa_is(f.parent.oa_i, REMOTE4_ADDR));
+	TEST_CHECK(!oa_is(f.parent.oa_r, LOCAL4_ADDR));
+	fixture_free(&f);
+}
+
+/* A range TS has no single original address: the OA stays unset rather
+ * than taking the range start (0.0.0.0 for a wildcard) as a bogus OA. */
+static void
+test_natoa_range_unset(void)
+{
+	struct ts_fixture f;
+
+	fixture_init_v4(&f, FALSE, TRUE, FALSE, TRUE);
+	rc_vfree(f.ts_i);
+	f.ts_i = make_ts_payload(IKEV2_TS_IPV4_ADDR_RANGE, "0.0.0.0",
+	    "255.255.255.255");
+	(void)ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r));
+	TEST_CHECK(f.parent.oa_i == NULL);
+	fixture_free(&f);
+}
+
+/* IPv6: same originals rule as IPv4. */
+static void
+test_natoa_originals_v6(void)
+{
+	struct ts_fixture f;
+	struct in6_addr a6;
+
+	fixture_init(&f, TRUE, TRUE, TRUE, TRUE, AF_INET6,
+	    IKEV2_TS_IPV6_ADDR_RANGE, TS_I_ADDR6, TS_R_ADDR6);
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(f.parent.oa_i != NULL &&
+	    f.parent.oa_i->sa_family == AF_INET6);
+	TEST_CHECK(f.parent.oa_r != NULL &&
+	    f.parent.oa_r->sa_family == AF_INET6);
+	if (f.parent.oa_i && f.parent.oa_i->sa_family == AF_INET6) {
+		test_pton6(TS_I_ADDR6, &a6);
+		TEST_CHECK(memcmp(&((struct sockaddr_in6 *)f.parent.oa_i)
+		    ->sin6_addr, &a6, sizeof(a6)) == 0);
+	}
+	if (f.parent.oa_r && f.parent.oa_r->sa_family == AF_INET6) {
+		test_pton6(TS_R_ADDR6, &a6);
+		TEST_CHECK(memcmp(&((struct sockaddr_in6 *)f.parent.oa_r)
+		    ->sin6_addr, &a6, sizeof(a6)) == 0);
+	}
+	fixture_free(&f);
 }
 
 int
@@ -613,6 +670,8 @@ main(int argc, char *argv[])
 	RUN_TEST(test_no_parent_rejected);
 	RUN_TEST(test_per_side_nat_substitution);
 	RUN_TEST(test_natoa_originals);
+	RUN_TEST(test_natoa_range_unset);
+	RUN_TEST(test_natoa_originals_v6);
 
 	plog_clean();
 
