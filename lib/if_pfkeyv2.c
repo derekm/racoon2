@@ -646,12 +646,16 @@ rcpfk_send_addx(struct rcpfk_msg *rc, int type)
 		goto err;
 
 #ifdef ENABLE_NATT
-	if (rc->natt_type ||
-	    (rc->sa_src && rc->sa_dst &&
-	     rc->sa_src->sa_family == AF_INET &&
-	     rc->sa_dst->sa_family == AF_INET &&
-	     (*rcs_getsaport(rc->sa_src) == htons(RC_PORT_IKE_NATT) ||
-	      *rcs_getsaport(rc->sa_dst) == htons(RC_PORT_IKE_NATT)))) {
+	/*
+	 * UDP-encapsulate only when the caller asked for it (natt_type,
+	 * set by iked when a NAT was detected or NAT-T is forced), as the
+	 * xfrm backend does.  IKE on port 4500 alone is not NAT-T: an
+	 * initiator may float to 4500 with no NAT in the path (RFC 7296
+	 * s2.23, strongSwan always does), and then ESP is not
+	 * UDP-encapsulated.  Keying this on the port installed esp-udp SAs
+	 * against a peer that sends plain ESP.
+	 */
+	if (rc->natt_type) {
 		if (rcpfk_set_sadb_x_nattype(&buf, rc))
 			goto err;
 
