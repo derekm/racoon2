@@ -1497,6 +1497,7 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 	struct ikev2_sa *new_sa = 0;
 	rc_vchar_t *g_ir = 0;
 	struct ikev2_rekey_init_recv_ctx *ctx;
+	struct ikev2payl_notify *addke_n = 0;	/* responder's N(16441) */
 
 	ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_EXPIRED);
 
@@ -1529,6 +1530,12 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 			ke = (struct ikev2payl_ke *)p;
 			break;
 		case IKEV2_PAYLOAD_NOTIFY:
+			if (get_notify_type((struct ikev2payl_notify *)p) ==
+			    IKEV2_ADDITIONAL_KEY_EXCHANGE) {
+				if (addke_n)
+					goto duplicate;
+				addke_n = (struct ikev2payl_notify *)p;
+			}
 			if (ikev2_process_notify(old_sa, p, TRUE) != 0)
 				goto done;
 			break;
@@ -1634,7 +1641,38 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		ctx->addke_deferred = 1;
 		ctx->addke_priv = kp;
 		ctx->addke_method = new_sa->negotiated_sa->addke;
-		ctx->addke_link = random_bytes(16);
+		/*
+		 * RFC 9370 s2.2.2: the link is the responder's opaque blob
+		 * from N(ADDITIONAL_KEY_EXCHANGE) in this CREATE_CHILD_SA
+		 * response, and the initiator MUST send it back intact.  A
+		 * locally minted link (as before) matches nothing on a
+		 * strict responder: charon answers STATE_NOT_FOUND and the
+		 * rekey dies.  No usable 16441 means the responder broke
+		 * the MUST to include it; fail the rekey.
+		 */
+		{
+			int dl = -1;
+
+			if (addke_n &&
+			    get_payload_length(&addke_n->header) >=
+			    (int)(sizeof(*addke_n) + addke_n->nh.spi_size))
+				dl = get_payload_length(&addke_n->header) -
+				     (int)sizeof(*addke_n) -
+				     addke_n->nh.spi_size;
+			if (dl <= 0 || dl > 64) {
+				isakmp_log(old_sa, 0, 0, msg,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "IKE_SA rekey response selected "
+					   "ADDKE but carries no usable "
+					   "ADDITIONAL_KEY_EXCHANGE link "
+					   "(len %d)\n", dl);
+				rc_vfree(pub);
+				ikev2_rekey_init_recv_ctx_free(ctx);
+				goto fail;
+			}
+			ctx->addke_link = rc_vnew(get_notify_data(addke_n),
+						  (size_t)dl);
+		}
 		if (!ctx->addke_link) {
 			rc_vfree(pub);
 			ikev2_rekey_init_recv_ctx_free(ctx);
