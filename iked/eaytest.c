@@ -52,6 +52,7 @@
 
 #include <openssl/bio.h>
 #include <openssl/pem.h>
+#include <openssl/bn.h>
 
 #include "var.h"
 #ifdef RACOON2
@@ -97,6 +98,7 @@ int hmactest __P((int, char **));
 int sha1test __P((int, char **));
 int md5test __P((int, char **));
 int dhtest __P((int, char **));
+int dhrangetest __P((int, char **));
 int bntest __P((int, char **));
 #ifndef RACOON2
 #ifndef CERTTEST_BROKEN
@@ -1030,12 +1032,105 @@ bntest(ac, av)
 	return 0;
 }
 
+/*
+ * RFC 6989 s2.1: the peer's MODP public value r MUST satisfy 1 < r < p-1.
+ * eay_dh_compute() must reject 0, 1, p-1, p and anything >= p, and must
+ * still accept the valid values 2 and p-2.
+ */
+static vchar_t *
+dhrange_value(const vchar_t *p, int kind)
+{
+	BIGNUM *bn;
+	vchar_t *v;
+
+	if ((v = vmalloc(p->l)) == NULL)
+		return NULL;
+	if ((bn = BN_bin2bn((unsigned char *)p->v, p->l, NULL)) == NULL)
+		return NULL;
+	switch (kind) {
+	case 0: BN_zero(bn); break;			/* 0 */
+	case 1: BN_one(bn); break;			/* 1 */
+	case 2: BN_sub_word(bn, 1); break;		/* p-1 */
+	case 3: break;					/* p */
+	case 4: BN_add_word(bn, 1); break;		/* p+1 */
+	case 5: BN_add_word(bn, 2); break;		/* p+2 (= 2 mod p) */
+	case 6: BN_zero(bn);				/* 2^n - 1 */
+		BN_set_bit(bn, 8 * p->l); BN_sub_word(bn, 1); break;
+	case 7: BN_set_word(bn, 2); break;		/* 2 (valid) */
+	case 8: BN_sub_word(bn, 2); break;		/* p-2 (valid) */
+	}
+	if (BN_bn2binpad(bn, (unsigned char *)v->v, v->l) < 0) {
+		BN_free(bn);
+		vfree(v);
+		return NULL;
+	}
+	BN_free(bn);
+	return v;
+}
+
+int
+dhrangetest(ac, av)
+	int ac;
+	char **av;
+{
+	static const struct {
+		const char *name;
+		int want;	/* expected eay_dh_compute() rc */
+	} cases[] = {
+		{ "r = 0", -1 },
+		{ "r = 1", -1 },
+		{ "r = p-1", -1 },
+		{ "r = p", -1 },
+		{ "r = p+1", -1 },
+		{ "r = p+2", -1 },
+		{ "r = 2^n-1", -1 },
+		{ "r = 2", 0 },
+		{ "r = p-2", 0 },
+	};
+	vchar_t p, *pub, *priv, *gxy, *r;
+	size_t i;
+	int fails = 0;
+
+	printf("\n**Test for DH public-value range (RFC 6989).**\n");
+
+	p.v = str2val(OAKLEY_PRIME_MODP2048, 16, &p.l);
+	if (eay_dh_generate(&p, 2, 0, &pub, &priv) < 0) {
+		printf("error\n");
+		return -1;
+	}
+	for (i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+		int rc;
+
+		if ((r = dhrange_value(&p, (int)i)) == NULL) {
+			printf("error\n");
+			return -1;
+		}
+		gxy = vmalloc(p.l);
+		memset(gxy->v, 0, gxy->l);
+		rc = eay_dh_compute(&p, 2, pub, priv, r, &gxy);
+		if (rc != cases[i].want) {
+			printf("FAIL: %s: eay_dh_compute rc=%d, want %d\n",
+			    cases[i].name, rc, cases[i].want);
+			fails++;
+		} else
+			printf("ok: %s: rc=%d\n", cases[i].name, rc);
+		vfree(gxy);
+		vfree(r);
+	}
+	vfree(pub);
+	vfree(priv);
+	free(p.v);
+
+	return fails ? -1 : 0;
+}
+
 struct {
 	char *name;
 	int (*func) __P((int, char **));
 } func[] = {
 	{ "random", bntest, },
 	{ "dh", dhtest, },
+	{ "dhrange", dhrangetest, },
 	{ "md5", md5test, },
 	{ "sha1", sha1test, },
 	{ "hmac", hmactest, },

@@ -3646,6 +3646,23 @@ eay_dh_generate(rc_vchar_t *prime, uint32_t gg, unsigned int publen, rc_vchar_t 
 	return (error);
 }
 
+/* 0 iff 1 < r < p-1 (RFC 6989 s2.1) */
+static int
+eay_dh_pub_in_range(const BIGNUM *r, const BIGNUM *p)
+{
+	BIGNUM *pm1;
+	int ok;
+
+	if (r == NULL || p == NULL)
+		return -1;
+	if ((pm1 = BN_dup(p)) == NULL)
+		return -1;
+	ok = BN_sub_word(pm1, 1) && BN_cmp(r, BN_value_one()) > 0 &&
+	    BN_cmp(r, pm1) < 0;
+	BN_free(pm1);
+	return ok ? 0 : -1;
+}
+
 int
 eay_dh_compute (rc_vchar_t *prime, uint32_t gg, rc_vchar_t *pub,
 		rc_vchar_t *priv, rc_vchar_t *pub2, rc_vchar_t **key)
@@ -3689,6 +3706,17 @@ eay_dh_compute (rc_vchar_t *prime, uint32_t gg, rc_vchar_t *pub,
 	/* make public number to compute */
 	if (eay_v2bn(&dh_pub, pub2) < 0)
 		goto end;
+
+	/*
+	 * RFC 6989 s2.1: the peer's public value r MUST satisfy
+	 * 1 < r < p-1.  OpenSSL only rejects a degenerate shared secret,
+	 * so a value >= p (e.g. p+2, which reduces to 2) would be used.
+	 */
+	if (eay_dh_pub_in_range(dh_pub, DH_get0_p(dh)) != 0) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "peer DH public value out of range (RFC 6989)\n");
+		goto end;
+	}
 
 	if ((l = DH_compute_key(v, dh_pub, dh)) == -1)
 		goto end;
