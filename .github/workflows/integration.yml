@@ -224,6 +224,12 @@ jobs:
       - name: Run the PQC matrix (ADDKE i2ike)
         run: |
           export R2_ADDKE=yes
+          # charon interop rows (-charon: charon initiator, -charonr: charon
+          # responder) use Fedora's strongSwan 6.0.x package (ML-KEM through
+          # the openssl plugin on OpenSSL 3.5).  Resolve swanctl wherever
+          # the package put it instead of assuming the bin/sbin merge.
+          export I2I_SWANCTL_BIN=$(command -v swanctl || echo /usr/sbin/swanctl)
+          "$I2I_SWANCTL_BIN" --version || true
           CASES=${{ inputs.cases }}
           # run.sh's filter regex-matches case NAMES; 'i2ike' would also pull
           # in i2ikesa-addke (and 'i2ikesa-addke' is a separate ADDKE gate).
@@ -235,7 +241,7 @@ jobs:
           # i2ike-drop576 is box-green once and container-red (36204006963:
           # new Y never landed).  It stays out of this default until a
           # container run passes the same counted gate.
-          [ -n "$CASES" ] || CASES='^(i2iv6-esp |i2iv6-esp-cbc128 |i2iinit-addke |i2iinit-nointermediate |i2iinit-childless |i2iinit-childless-init |i2iinit-childless-init-rsa |i2iinit-childless-init-cfg |i2iinit-childless-init-cfgneg |i2iinit-pfsrekey |i2iinit-pfsrekey-dh384 |i2iinit-pfsrekey-dh521 |i2iinit-ike-gcm256 |i2iinit-prfxcbc |i2iinit-prfcmac |i2iinit-esp-cbc128 |i2iinit-esp-cbc192 |i2iinit-esp-sha384 |i2iinit-esp-sha512 |i2iinit-esp-xcbc |i2iinit-esp-cmac |i2iinit-esp-ctr |i2idh-modp2048 |i2idh-modp3072 |i2idh-modp4096 |i2idh-modp6144 |i2idh-modp8192 |i2idh-ecp256 |i2idh-ecp384 |i2idh-ecp521 |i2ike-addke |i2ikesa-addke |i2ike-drop |i2iinit-drop576 )'
+          [ -n "$CASES" ] || CASES='^(i2iv6-esp |i2iv6-esp-cbc128 |i2iinit-addke |i2iinit-nointermediate |i2iinit-childless |i2iinit-childless-init |i2iinit-childless-init-rsa |i2iinit-childless-init-cfg |i2iinit-childless-init-cfgneg |i2iinit-pfsrekey |i2iinit-pfsrekey-dh384 |i2iinit-pfsrekey-dh521 |i2iinit-ike-gcm256 |i2iinit-prfxcbc |i2iinit-prfcmac |i2iinit-esp-cbc128 |i2iinit-esp-cbc192 |i2iinit-esp-sha384 |i2iinit-esp-sha512 |i2iinit-esp-xcbc |i2iinit-esp-cmac |i2iinit-esp-ctr |i2idh-modp2048 |i2idh-modp3072 |i2idh-modp4096 |i2idh-modp6144 |i2idh-modp8192 |i2idh-ecp256 |i2idh-ecp384 |i2idh-ecp521 |i2ike-addke |i2ikesa-addke |i2ike-drop |i2iinit-drop576 |i2ike-addke-immediate |i2iinit-immediate |i2iinit-immediate-r |i2iinit-firstchild |i2iinit-firstchild-nocl |i2iinit-clresp |i2iinit-clresp-legacy |i2iinit-gens |i2iinit-ikerekey |i2iinit-noacq |i2iinit-charon |i2iinit-charonr |i2iinit-childless-charon |i2iinit-immediate-charon |i2iinit-immediate-charonr |i2iinit-firstchild-charonr |i2iinit-firstchild-nocl-charonr |i2iinit-clresp-charon |i2iinit-clresp-legacy-charon |i2iinit-gens-charon |i2iinit-gens-charonr |i2iinit-gens-cr-charon |i2iinit-gens-cr-charonr |i2iinit-ikerekey-charon |i2iinit-ikerekey-charonr |i2iinit-ikerekey-cr-charon |i2iinit-ikerekey-cr-charonr |i2iinit-zerochild-charon |i2iinit-zerochild-cr-charon )'
           # run.sh splits ARGS on IFS.  A --cases value with spaces (the
           # anchored names above) must be one argv: pass it quoted.
           # --shard partitions the filter-passing rows round-robin; each of
