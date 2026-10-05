@@ -104,6 +104,14 @@ sed -i .bak -E 's/^#?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_confi
 kldload -n if_epair 2>/dev/null || true
 kldload -n ipsec 2>/dev/null || true
 pkg lock -y FreeBSD-kernel-generic 2>/dev/null || true
+# Do not silently swallow a failed lock: verify it actually held, and
+# retry once, so an early-firstboot failure cannot quietly pass (review D2).
+if ! pkg lock -l 2>/dev/null | grep -q FreeBSD-kernel-generic; then
+	service pkg restart 2>/dev/null || true
+	pkg lock -y FreeBSD-kernel-generic 2>/dev/null || true
+	pkg lock -l 2>/dev/null | grep -q FreeBSD-kernel-generic \
+		|| echo "WARNING: could not lock FreeBSD-kernel-generic" >&2
+fi
 sysrc firstboot_pkg_upgrade_enable=NO
 rm -f /var/db/firstboot-pkg-upgrade /firstboot-pkg-upgrade 2>/dev/null || true
 service sshd restart
