@@ -609,6 +609,7 @@ run_row() {
 	# Rekey-family rows (same tokens as the Linux i2iinit kind, see
 	# samples/linux-matrix/kinds/i2i_rekey.sh):
 	#   -immediate        initiator policy initial_child_ke immediate
+	#   -immediate-r      the same knob on the RESPONDER policy only
 	#   -firstchild       initiator initial_child_ke childless, responder
 	#                     childless on (16418); -nocl: responder without it
 	#   -clresp           responder childless on + initial_child_ke
@@ -617,6 +618,7 @@ run_row() {
 	#   -gens / -ikerekey >= 2 ADDKE child / IKE_SA rekeys
 	FB_IKE_I=""; FB_IKE_R=""; FB_POL_I=""; FB_POL_R=""; FB_DBG3=0
 	case "$_name" in
+	*-immediate-r*)      FB_POL_R="	initial_child_ke immediate;" ;;
 	*-immediate*)        FB_POL_I="	initial_child_ke immediate;" ;;
 	*-firstchild-nocl*)  FB_POL_I="	initial_child_ke childless;"; FB_DBG3=1 ;;
 	*-firstchild*)       FB_POL_I="	initial_child_ke childless;"; FB_IKE_R="		childless on;"; FB_DBG3=1 ;;
@@ -990,7 +992,7 @@ case "$_name" in
 	# the plain IKE_AUTH child (n) is rekeyed at once with KE + type-6 by
 	# the seat carrying initial_child_ke; both seats then share a Y keymat
 	case "$_name" in
-	*-clresp-legacy*) _kl=$FR _pl=$FI _why=immediate ;;
+	*-clresp-legacy*|*-immediate-r*) _kl=$FR _pl=$FI _why=immediate ;;
 	*-firstchild-nocl*) _kl=$FI _pl=$FR _why=childless ;;
 	*) _kl=$FI _pl=$FR _why=immediate ;;
 	esac
@@ -1194,7 +1196,7 @@ run() {
 
 # Matrix rows.  Tokens match the Linux kinds verbatim so pfkey/xfrm parity
 # is asserted on identical config.  REKEY rows: initiator lifetime short.
-# 55 rows.  Still Linux-only (not replicated): charon/strongSwan, netem
+# 56 rows.  Still Linux-only (not replicated): charon/strongSwan, netem
 # drop/dup, mobike/cookie2, xfrm-only cells, PPK, ESN, zero-child IKE_SA
 # (needs a charon childless = force initiator), DPD silence, NSA-warn.  Those need a
 # peer or a conf knob this harness does not emit.
@@ -1245,6 +1247,7 @@ case "$ROW" in
 		#     child + fallback, multi-generation ADDKE, IKE_SA ADDKE rekey).
 		#     i2ike-addke-immediate also runs the strict i2ike-addke gate. ---
 		run i2ike-addke-immediate inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a ""
+		run i2iinit-immediate-r     inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		run i2iinit-firstchild      inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		run i2iinit-firstchild-nocl inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		run i2iinit-clresp          inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
@@ -1306,7 +1309,7 @@ case "$ROW" in
 	i2ike-addke-512)   run_row i2ike-addke-512    inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a "" ;;
 	i2ike-addke-1024)  run_row i2ike-addke-1024   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a "" ;;
 	i2ike-addke-immediate) run_row i2ike-addke-immediate inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 60 3600 1 a "" ;;
-	i2iinit-firstchild|i2iinit-firstchild-nocl|i2iinit-clresp|i2iinit-clresp-legacy|i2iinit-childless-init|i2iinit-ikerekey)
+	i2iinit-immediate-r|i2iinit-firstchild|i2iinit-firstchild-nocl|i2iinit-clresp|i2iinit-clresp-legacy|i2iinit-childless-init|i2iinit-ikerekey)
 		run_row "$ROW" inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a "" ;;
 	i2iinit-gens) run_row i2iinit-gens inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 30 300 1 a "" ;;
 	i2iinit-addke)     run_row i2iinit-addke      inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 60 60 0 a "" ;;
