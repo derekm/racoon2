@@ -24,8 +24,9 @@
 #                 that ADDS them turns the row red (child appears) and tells
 #                 us to flip it to a positive accept test.  Never a SKIP.
 #   i2iv6-esp     same tunnel over AF_INET6 (mirrors kinds/i2iv6.sh)
-# Rows that are Linux-BOUND are deliberately NOT replicated: charon/
-# strongSwan interop (no strongSwan in this testbed), netem drop/dup rows
+#   *-charon(r)   strongSwan charon (pkg) as the initiator / responder seat
+#                 in its vnet jail (mirrors the linux -charon/-charonr rows)
+# Rows that are Linux-BOUND are deliberately NOT replicated: netem drop/dup rows
 # (Linux 'tc' only), mobike/cookie2 multi-address rows (need 2 SA endpoints),
 # xfrm-only cells.  Every row PASSes only on a real per-jail SADB + a
 # post-establishment data-plane ping through the tunnel (in/out `require`).
@@ -322,6 +323,13 @@ fbsd_comply() {
 jails_teardown() {
 	jexec $jr /bin/sh -c 'killall iked spmd 2>/dev/null' || true
 	jexec $ji /bin/sh -c 'killall iked spmd 2>/dev/null' || true
+	# charon seat (jail -r below would reap it too; kill first so its
+	# pid file and vici socket go away before the next row's charon)
+	jexec $jr /bin/sh -c 'killall -9 charon 2>/dev/null' || true
+	jexec $ji /bin/sh -c 'killall -9 charon 2>/dev/null' || true
+	rm -f /var/run/charon.pid /var/run/charon.ctl /tmp/freeb/charon.vici \
+	      /tmp/freeb/charon.log /tmp/freeb/swanctl.conf /tmp/freeb/strongswan.conf \
+	      /tmp/freeb/swanctl-*.log /tmp/freeb/charon-sas*.txt
 	jail -r $jr 2>/dev/null || true
 	jail -r $ji 2>/dev/null || true
 	# stale admin/spmif sockets would block the NEXT row's daemons from binding
@@ -339,6 +347,190 @@ jails_teardown() {
 	# the CURRENT row's lines, never a previous row's pskey/ESTABLISHED/etc.
 	rm -f /tmp/freeb/resp-iked.log /tmp/freeb/init-iked.log \
 	      /tmp/freeb/resp-spmd.log /tmp/freeb/init-spmd.log
+}
+
+# ==== charon seat (strongSwan from pkg; Linux twin: kinds/i2i_peer.sh) =====
+# A row named *-charon puts a strongSwan charon INITIATOR in the initiator
+# jail instead of iked; *-charonr puts a charon RESPONDER in the responder
+# jail (iked initiates).  The other jail keeps the usual spmd+iked seat and
+# config.  charon uses kernel-pfkey/kernel-pfroute inside its vnet jail, so
+# its CHILD_SA lands in that jail's SADB exactly like iked's, and the same
+# esp_up/ping gates apply.  Same ids and PSK as the iked seats.
+CHARON_BIN=${CHARON_BIN:-/usr/local/libexec/ipsec/charon}
+SWANCTL_BIN=${SWANCTL_BIN:-/usr/local/sbin/swanctl}
+FB_VICI=unix:///tmp/freeb/charon.vici
+FB_CL=/tmp/freeb/charon.log
+FI=/tmp/freeb/init-iked.log; FR=/tmp/freeb/resp-iked.log
+
+# fb_charon_conf SEAT(i|r) MY PEER — strongswan.conf + swanctl.conf
+fb_charon_conf() {
+	_cs=$1 _cmy=$2 _cpeer=$3
+	_hex=$(od -An -tx1 -v /tmp/freeb/test.psk | tr -d ' \n')
+	[ "${#_hex}" -eq 64 ] || { echo "FAIL: charon psk hex"; return 1; }
+	if [ "$_cs" = i ]; then _lid=r2init-matrix _rid=racoon2-matrix
+	else _lid=racoon2-matrix _rid=r2init-matrix; fi
+	cat > /tmp/freeb/strongswan.conf <<SEOF
+charon {
+	install_routes = no
+	install_virtual_ip = no
+	plugins {
+		vici {
+			socket = $FB_VICI
+		}
+	}
+	filelog {
+		fb {
+			path = $FB_CL
+			time_format = %T
+			flush_line = yes
+			default = 1
+			ike = 3
+			knl = 1
+			cfg = 2
+			mgr = 2
+			chd = 2
+		}
+	}
+}
+SEOF
+	_cl_line=""
+	[ -z "$FB_CH_CHILDLESS" ] || _cl_line="		childless = $FB_CH_CHILDLESS"
+	cat > /tmp/freeb/swanctl.conf <<SEOF
+connections {
+	$_name {
+		version = 2
+		rekey_time = $FB_CH_IKE_REKEY
+$_cl_line
+		proposals = $FB_CH_PROP
+		local_addrs = $_cmy
+		remote_addrs = $_cpeer
+		local {
+			id = $_lid
+			auth = psk
+		}
+		remote {
+			id = $_rid
+			auth = psk
+		}
+		children {
+			ch {
+				local_ts = $_cmy/32
+				remote_ts = $_cpeer/32
+				esp_proposals = $FB_CH_ESP
+				rekey_time = $FB_CH_CHILD_REKEY
+			}
+		}
+	}
+}
+secrets {
+	ike-$_name {
+		secret = 0x$_hex
+	}
+}
+SEOF
+	chmod 600 /tmp/freeb/swanctl.conf
+	echo "wrote charon seat confs ($_cs: $_lid -> $_rid, ike=$FB_CH_PROP esp=$FB_CH_ESP childless=${FB_CH_CHILDLESS:-default})"
+}
+
+# fb_charon_start JAIL — run charon in the jail, then load the conn
+fb_charon_start() {
+	_cj=$1
+	jexec $_cj /bin/sh -c "env STRONGSWAN_CONF=/tmp/freeb/strongswan.conf $CHARON_BIN > /tmp/freeb/charon-stdout.log 2>&1 &" || true
+	_w=0
+	while [ "$_w" -lt 20 ] && [ ! -S /tmp/freeb/charon.vici ]; do _w=$((_w+1)); sleep 1; done
+	[ -S /tmp/freeb/charon.vici ] || { echo "FAIL: charon vici socket never appeared"; cat /tmp/freeb/charon-stdout.log "$FB_CL" 2>/dev/null | tail -20; return 1; }
+	jexec $_cj $SWANCTL_BIN --load-all --uri $FB_VICI --file /tmp/freeb/swanctl.conf > /tmp/freeb/swanctl-load.log 2>&1 || {
+		echo "FAIL: swanctl --load-all"; cat /tmp/freeb/swanctl-load.log; return 1; }
+	echo "charon seat up in $_cj ($(grep -c 'loaded' /tmp/freeb/swanctl-load.log) loaded lines)"
+}
+
+# fb_charon_initiate — charon initiator seat: the child (RFC 6023 force
+# rows establish the IKE_SA SA-less first) or the bare IKE_SA (zero-child)
+fb_charon_initiate() {
+	if [ "$FB_CH_INIT_IKE" = 1 ]; then _what="--ike $_name"; else _what="--child ch"; fi
+	jexec $ji /bin/sh -c "$SWANCTL_BIN --initiate $_what --uri $FB_VICI --timeout 40 > /tmp/freeb/swanctl-init.log 2>&1 &" || true
+}
+
+fb_charon_sas() { jexec "$1" $SWANCTL_BIN --list-sas --uri $FB_VICI > "/tmp/freeb/charon-sas-$2.txt" 2>&1 || true; }
+fb_grp() {
+	case "$1" in ecp384) echo ECP_384 ;; ecp521) echo ECP_521 ;; modp2048) echo MODP_2048 ;; *) echo ECP_256 ;; esac
+}
+fb_wait_one() {
+	_w=0
+	while [ "$_w" -lt 30 ]; do
+		[ -n "$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$1" 2>/dev/null | head -1)" ] && return 0
+		_w=$((_w+1)); sleep 1
+	done
+	return 1
+}
+fb_cnt() { _n=$(grep -cE "$1" "$2" 2>/dev/null || true); echo "${_n:-0}"; }
+fb_esp_any() { _n=$(jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null | grep -c 'esp mode=' || true); echo "${_n:-0}"; }
+
+# fb_charon_gate — what each charon row must prove beyond child-up + ping
+# (Linux twins: i2i_peer_[ir]_evidence, kinds/i2i_rekey.sh).  Sets
+# rk_fail on any miss.  _il = the iked seat's log.
+fb_charon_gate() {
+	_bad=""
+	if [ "$FB_CH" = i ]; then _il=$FR; _ij=$jr; else _il=$FI; _ij=$ji; fi
+	_g=$(fb_grp "$_idh")
+	grep -qE "selected proposal: IKE:[^ ]*$_g[^ ]*KE1_ML_KEM_768" $FB_CL || _bad="charon did not select IKE ...$_g...KE1_ML_KEM_768"
+	if [ "$FB_CH" = i ]; then
+		grep -q 'state change: CONNECTING => ESTABLISHED' $FB_CL || _bad="${_bad:+$_bad; }charon initiator never ESTABLISHED"
+	else
+		grep -q "authentication of 'r2init-matrix' with pre-shared key successful" $FB_CL || _bad="${_bad:+$_bad; }charon responder did not verify the iked AUTH"
+	fi
+	grep -q 'IKE_INTERMEDIATE ADDKE round complete' $_il || _bad="${_bad:+$_bad; }iked seat: no IKE_INTERMEDIATE ADDKE round"
+	grep -qE 'NO_PROPOSAL_CHOSEN|no acceptable proposal found|INVALID_KE_PAYLOAD' $FB_CL && _bad="${_bad:+$_bad; }charon refused a proposal"
+	grep -qE 'ADDKE followup timeout; abort|NO_PROPOSAL_CHOSEN' $_il && _bad="${_bad:+$_bad; }iked seat: ADDKE abort / NO_PROPOSAL_CHOSEN"
+	_what="IKE $_g+KE1_ML_KEM_768"
+	case "$_name" in
+	*-childless-charon)
+		# RFC 6023: SA-less IKE_AUTH, the child comes from CREATE_CHILD
+		grep -q 'received childless (SA-less) IKE_AUTH' $FR || _bad="${_bad:+$_bad; }iked responder saw no SA-less IKE_AUTH"
+		grep -qE 'CREATE_CHILD_SA request: .*proto=ESP rekey_proto=0 ' $FR || _bad="${_bad:+$_bad; }no new-child CREATE_CHILD_SA"
+		grep -q 'initial_child_ke [a-z]*: rekeying the IKE_AUTH child' $FR && _bad="${_bad:+$_bad; }initial_child_ke rekey on a childless IKE_SA"
+		_what="$_what, RFC 6023 SA-less IKE_AUTH + CREATE_CHILD first child" ;;
+	*-immediate-charon*)
+		# the iked seat rekeys the plain IKE_AUTH child at once with
+		# KE + ML-KEM; charon selects ESP ...ECP_256...KE1_ML_KEM_768
+		fb_wait_one "$_il" || true
+		grep -q 'initial_child_ke immediate: rekeying the IKE_AUTH child' $_il || _bad="${_bad:+$_bad; }iked seat: no initial_child_ke immediate rekey line"
+		[ "$(fb_first $_il)" = "g_ir_present=n" ] || _bad="${_bad:+$_bad; }first iked keymat is $(fb_first $_il), expected the plain IKE_AUTH child (n)"
+		[ -n "$(fb_ys $_il | head -1)" ] || _bad="${_bad:+$_bad; }iked seat: no g_ir_present=Y keymat after the rekey"
+		[ "$(fb_cnt 'initiating CREATE_CHILD_SA rekey' $_il)" -eq 1 ] || _bad="${_bad:+$_bad; }iked seat: expected exactly one child rekey, saw $(fb_cnt 'initiating CREATE_CHILD_SA rekey' $_il)"
+		_w=0; while [ "$_w" -lt 10 ] && [ "$(fb_cnt 'selected proposal: ESP:[^ ]*ECP_256[^ ]*KE1_ML_KEM_768' $FB_CL)" -lt 1 ]; do _w=$((_w+1)); sleep 1; done
+		[ "$(fb_cnt 'selected proposal: ESP:[^ ]*ECP_256[^ ]*KE1_ML_KEM_768' $FB_CL)" -ge 1 ] || _bad="${_bad:+$_bad; }charon never selected ESP ECP_256+KE1_ML_KEM_768"
+		_what="$_what, initial_child_ke immediate rekey (Y $(fb_ys $_il | head -1 | cut -c1-16)...) + charon ESP KE1_ML_KEM_768" ;;
+	*-zerochild*)
+		grep -q 'received childless (SA-less) IKE_AUTH, establishing IKE_SA with zero children' $FR || _bad="${_bad:+$_bad; }iked responder did not establish a zero-child IKE_SA"
+		_w=0
+		while [ "$_w" -lt 150 ] && [ "$(fb_cnt 'IKE_SA rekey ADDKE SK\(1\)' $FR)" -lt 2 ]; do _w=$((_w+1)); sleep 1; done
+		_nsk=$(fb_cnt 'IKE_SA rekey ADDKE SK\(1\)' $FR)
+		[ "$_nsk" -ge 2 ] || _bad="${_bad:+$_bad; }< 2 IKE_SA ADDKE rekeys on the iked responder ($_nsk)"
+		case "$_name" in
+		*-cr-*) [ "$(fb_cnt 'initiating IKE_SA rekey' $FR)" -eq 0 ] || _bad="${_bad:+$_bad; }iked initiated an IKE_SA rekey on a charon-driven row" ;;
+		*)      [ "$(fb_cnt 'initiating IKE_SA rekey' $FR)" -ge 2 ] || _bad="${_bad:+$_bad; }iked did not drive the IKE_SA rekeys" ;;
+		esac
+		grep -qE 'grace period expired|failed processing IKE_SA rekey' $FR && _bad="${_bad:+$_bad; }grace expiry / failed IKE_SA rekey"
+		sleep 3
+		fb_charon_sas $ji zerochild
+		_sas=/tmp/freeb/charon-sas-zerochild.txt
+		grep -q 'ESTABLISHED' $_sas || _bad="${_bad:+$_bad; }charon --list-sas: no ESTABLISHED IKE_SA"
+		grep -q 'KE1_ML_KEM_768' $_sas || _bad="${_bad:+$_bad; }charon --list-sas: IKE_SA lacks KE1_ML_KEM_768"
+		_uid=$(grep -oE '^[^ ]+: #[0-9]+' $_sas | head -1 | grep -oE '[0-9]+$')
+		[ "${_uid:-0}" -ge 3 ] || _bad="${_bad:+$_bad; }charon IKE_SA unique id ${_uid:-none} < 3 (expected >= 2 rekeys)"
+		[ "$(fb_cnt 'INSTALLED' $_sas)" -eq 0 ] || _bad="${_bad:+$_bad; }charon lists a CHILD_SA on a zero-child IKE_SA"
+		_er=$(fb_esp_any $jr); _ei=$(fb_esp_any $ji)
+		[ "$_er" -eq 0 ] && [ "$_ei" -eq 0 ] || _bad="${_bad:+$_bad; }zero-child IKE_SA has ESP SAs (resp=$_er init=$_ei)"
+		_what="$_what, zero-child IKE_SA rekeyed x$_nsk with ADDKE, charon IKE_SA #${_uid:-?} ESTABLISHED, no ESP" ;;
+	esac
+	if [ -z "$_bad" ]; then
+		echo "row $_name: charon seat ($FB_CH) OK - $_what"
+	else
+		rk_fail "$_bad"
+		echo "--- charon log (selected/state/errors) ---"
+		grep -E 'selected proposal|state change|KE1_ML|NO_PROPOSAL|no acceptable|INVALID_KE|authentication of|failed|error' $FB_CL 2>/dev/null | tail -25 || true
+	fi
 }
 
 # gen_conf $SEAT $NAME $FAM $MY $PEER $IKE_ENC $IKE_PRF $IKE_DH \
@@ -489,6 +681,10 @@ run_row() {
 			echo "--- initiator iked (tail) ---"; tail -25 /tmp/freeb/init-iked.log 2>/dev/null || true
 		fi
 		echo "--- spmd logs ---"; cat /tmp/freeb/resp-spmd.log /tmp/freeb/init-spmd.log 2>/dev/null || true
+		if [ -n "${FB_CH:-}" ]; then
+			echo "--- charon log (tail) ---"; tail -60 /tmp/freeb/charon.log 2>/dev/null || true
+			echo "--- swanctl ---"; cat /tmp/freeb/swanctl-load.log /tmp/freeb/swanctl-init.log 2>/dev/null | tail -20 || true
+		fi
 		echo "--- host dmesg PF_KEY/ESP (net.key.debug=7, host buffer sees both vnets) ---"
 		dmesg 2>/dev/null | grep -iE 'esp|ipsec|sadb|pfkey|gcm|keylen|auth' | tail -20 || true
 		echo "--- per-jail dmesg (may be empty in a vnet jail; host reads above) ---"
@@ -605,6 +801,7 @@ run_row() {
 	*i2ike-addke-1024*) ADDKE="mlkem1024" ;;
 	*i2iinit-addke*|*i2ike-addke*|*i2iinit-ike-gcm*|*nointermediate*|*pfsrekey*) ADDKE="mlkem768" ;;
 	*-immediate*|*-firstchild*|*-clresp*|*-childless-init*|*-gens*|*-ikerekey*) ADDKE="mlkem768" ;;
+	*-charon|*-charonr) ADDKE="mlkem768" ;;
 	esac
 	# Rekey-family rows (same tokens as the Linux i2iinit kind, see
 	# samples/linux-matrix/kinds/i2i_rekey.sh):
@@ -627,6 +824,45 @@ run_row() {
 	*-childless-init*)   FB_IKE_I="		childless on;"; FB_IKE_R="		childless on;"; FB_DBG3=1 ;;
 	*-ikerekey*)         FB_IKE_I="		kmp_sa_lifetime_time 30 sec;" ;;
 	esac
+	# charon seat knobs (Linux kinds/i2iinit.sh + i2i_peer.sh).  The iked
+	# seat keeps the row's own config; a rekey-family knob moves onto the
+	# iked seat (charon has no initial_child_ke).
+	#   -charon / -charonr   charon initiator / responder, PSK, IKE
+	#                        aes256gcm16-prfsha256-<grp>-ke1_mlkem768
+	#   -childless-charon    charon childless = force; iked responder
+	#                        childless on -> first child via CREATE_CHILD
+	#   -immediate-charon(r) iked seat policy initial_child_ke immediate,
+	#                        charon esp offers ecp256 + ke1_mlkem768
+	#   -zerochild[-cr]-charon  charon childless = force + initiate --ike:
+	#                        an IKE_SA with no child at all, rekeyed with
+	#                        ADDKE >= 2 times (iked kmp_sa_lifetime 30 s, or
+	#                        -cr: charon rekey_time 30s), never deleted
+	FB_CH=""; FB_ZERO=0
+	case "$_name" in *-charon) FB_CH=i ;; *-charonr) FB_CH=r ;; esac
+	FB_CH_PROP="aes256gcm16-prfsha256-$_idh-ke1_mlkem768"
+	FB_CH_ESP=aes128gcm16; FB_CH_CHILDLESS=""; FB_CH_INIT_IKE=0
+	FB_CH_IKE_REKEY=0s; FB_CH_CHILD_REKEY=0s
+	if [ -n "$FB_CH" ]; then
+		FB_POL_I=""; FB_POL_R=""; FB_IKE_I=""; FB_IKE_R=""
+		case "$_name" in
+		*-immediate*|*-zerochild*) FB_CH_ESP=aes128gcm16-ecp256-ke1_mlkem768 ;;
+		esac
+		case "$_name" in
+		*-immediate*)
+			if [ "$FB_CH" = i ]; then FB_POL_R="	initial_child_ke immediate;"
+			else FB_POL_I="	initial_child_ke immediate;"; fi ;;
+		*-childless*)
+			FB_CH_CHILDLESS=force; FB_IKE_R="		childless on;"; FB_DBG3=1 ;;
+		*-zerochild-cr*)
+			FB_CH_CHILDLESS=force; FB_CH_INIT_IKE=1; FB_CH_IKE_REKEY=30s
+			FB_IKE_R="		childless on;"; FB_DBG3=1; FB_ZERO=1 ;;
+		*-zerochild*)
+			FB_CH_CHILDLESS=force; FB_CH_INIT_IKE=1
+			FB_IKE_R="		childless on;\n		kmp_sa_lifetime_time 30 sec;"; FB_DBG3=1; FB_ZERO=1 ;;
+		esac
+		[ "$FB_ZERO" = 1 ] && [ "$FB_CH" != i ] && { echo "FAIL: $_name: a zero-child row needs a charon initiator"; exit 1; }
+		[ -x "$CHARON_BIN" ] && [ -x "$SWANCTL_BIN" ] || { echo "FAIL freebsd-vnet $_name (no charon/swanctl at $CHARON_BIN / $SWANCTL_BIN; pkg install strongswan)"; jails_teardown; return 1; }
+	fi
 	# generated only when a pubkey row needs it (skip for PSK rows = no
 	# openssl dependency on the classic matrix)
 	if [ "$AUTH" != psk ]; then
@@ -676,14 +912,18 @@ run_row() {
 	# see it; same mechanism as linux i2ipubkey).
 	_sslenv=""
 	[ "$AUTH" = psk ] || _sslenv=" SSL_CERT_FILE=$CERTDIR/ca.crt"
-	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $_sslenv $SBIN/spmd -F -f /tmp/freeb/$jr.conf > /tmp/freeb/resp-spmd.log 2>&1 &" || true
-	jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $_sslenv $SBIN/spmd -F -f /tmp/freeb/$ji.conf > /tmp/freeb/init-spmd.log 2>&1 &" || true
+	# a charon seat replaces spmd+iked in its jail
+	_run_r=1; _run_i=1
+	[ "$FB_CH" = r ] && _run_r=0
+	[ "$FB_CH" = i ] && _run_i=0
+	[ "$_run_r" = 0 ] || jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $_sslenv $SBIN/spmd -F -f /tmp/freeb/$jr.conf > /tmp/freeb/resp-spmd.log 2>&1 &" || true
+	[ "$_run_i" = 0 ] || jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $_sslenv $SBIN/spmd -F -f /tmp/freeb/$ji.conf > /tmp/freeb/init-spmd.log 2>&1 &" || true
 	i=0
 	while [ "$i" -lt 15 ]; do
-		[ -S "/tmp/freeb/resp-spmif$_sfx" ] && [ -S "/tmp/freeb/init-spmif$_sfx" ] && break
+		{ [ "$_run_r" = 0 ] || [ -S "/tmp/freeb/resp-spmif$_sfx" ]; } && { [ "$_run_i" = 0 ] || [ -S "/tmp/freeb/init-spmif$_sfx" ]; } && break
 		i=$((i+1)); sleep 1
 	done
-	[ -S "/tmp/freeb/resp-spmif$_sfx" ] && [ -S "/tmp/freeb/init-spmif$_sfx" ] || echo "note: spmif sockets slow"
+	[ "$i" -lt 15 ] || echo "note: spmif sockets slow"
 	sleep 1
 	# Debug level: 0x0001 = DEBUG (A4/A5/A8 cells, ADDKE g_ir_present) for
 	# every row; 0x0003 adds DEBUG_FLAG_TRACE=0x0002 so the pubkey rows can
@@ -692,12 +932,23 @@ run_row() {
 	_dbg=0x0001
 	[ "$AUTH" = psk ] || _dbg=0x0003
 	[ "$FB_DBG3" = 1 ] && _dbg=0x0003   # RFC 6023 TRACE markers
-	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $_sslenv $SBIN/iked -F -f /tmp/freeb/$jr.conf -D $_dbg > /tmp/freeb/resp-iked.log 2>&1 &" || true
-	jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $_sslenv $SBIN/iked -F -f /tmp/freeb/$ji.conf -D $_dbg > /tmp/freeb/init-iked.log 2>&1 &" || true
+	[ "$_run_r" = 0 ] || jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $_sslenv $SBIN/iked -F -f /tmp/freeb/$jr.conf -D $_dbg > /tmp/freeb/resp-iked.log 2>&1 &" || true
+	[ "$_run_i" = 0 ] || jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $_sslenv $SBIN/iked -F -f /tmp/freeb/$ji.conf -D $_dbg > /tmp/freeb/init-iked.log 2>&1 &" || true
+	if [ -n "$FB_CH" ]; then
+		if [ "$FB_CH" = i ]; then
+			fb_charon_conf i "$hi" "$hr" && fb_charon_start $ji || { echo "FAIL freebsd-vnet $_name (charon initiator seat did not start)"; jails_teardown; return 1; }
+		else
+			fb_charon_conf r "$hr" "$hi" && fb_charon_start $jr || { echo "FAIL freebsd-vnet $_name (charon responder seat did not start)"; jails_teardown; return 1; }
+		fi
+	fi
 	sleep 3
 
 	echo "=== establish IKE/ESP from the initiator seat ==="
-	jexec $ji $SBIN/ikedctl -s "/tmp/freeb/init-ctl$_sfx" establish-sa isakmp $_fam "$hi" "$hr" sel_out > /tmp/freeb/ctl.out 2>&1 || true
+	if [ "$FB_CH" = i ]; then
+		fb_charon_initiate
+	else
+		jexec $ji $SBIN/ikedctl -s "/tmp/freeb/init-ctl$_sfx" establish-sa isakmp $_fam "$hi" "$hr" sel_out > /tmp/freeb/ctl.out 2>&1 || true
+	fi
 
 	up=0
 	i=0
@@ -720,6 +971,14 @@ run_row() {
 			grep -q "not supported by kernel" /tmp/freeb/resp-iked.log 2>/dev/null && echo "row $_name: kernel-gap refusal (config-check) confirmed" || true
 			up=1
 		fi
+	elif [ "$FB_ZERO" = 1 ]; then
+		# zero-child IKE_SA: no child may ever exist, so "up" here means
+		# the iked responder established the IKE_SA with zero children;
+		# the zero-child gate below asserts the rest (rekeys, no ESP).
+		while [ "$i" -lt 45 ]; do
+			grep -q 'establishing IKE_SA with zero children' $FR 2>/dev/null && { up=1; break; }
+			i=$((i+1)); sleep 1
+		done
 	else
 		# positive / a12permit gate: child must come up.
 		while [ "$i" -lt 45 ]; do
@@ -733,11 +992,31 @@ run_row() {
 	# the tunnel.  Under in/out `require` SPD a successful echo proves both
 	# directions' SAs decrypt+encrypt — the real parity bar.
 	TUN_OK=0
-	if [ "$up" -eq 1 ] && [ "$_neg" != r ] && [ "$_neg" != x ]; then
+	if [ "$up" -eq 1 ] && [ "$_neg" != r ] && [ "$_neg" != x ] && [ "$FB_ZERO" != 1 ]; then
 		# FreeBSD /sbin/ping is IPv4-only; v6 rows (and i2io4's inner v6)
 		# must use ping6.  For i2io4 the ping target is the INNER v6
 		# selector (s6r), not the v4 hr — the whole point is that the v6
 		# packet transits inside the v4 ESP tunnel.
+		# A charon seat adds its SAs to the SADB before its SPD
+		# policies (spmd's policies exist before any SA), so the SAs can
+		# be mature while charon's outbound policy is still missing and
+		# the probe leaves in clear.  Ping once both jails have an
+		# outbound ipsec policy (bounded; the ping itself is unchanged).
+		_pw=0
+		while [ "$_pw" -lt 15 ]; do
+			jexec $ji /usr/local/sbin/setkey -DP 2>/dev/null | grep -q 'out ipsec' &&
+			jexec $jr /usr/local/sbin/setkey -DP 2>/dev/null | grep -q 'out ipsec' && break
+			_pw=$((_pw+1)); sleep 1
+		done
+		# -immediate rows replace the IKE_AUTH child right after it
+		# lands; probe the replacement (its Y keymat is installed), not
+		# the SA being deleted under the ping.
+		case "$_name" in
+		*-immediate*)
+			_il=$FI; [ "$FB_CH" = i ] && _il=$FR
+			fb_wait_one "$_il" || true
+			sleep 2 ;;
+		esac
 		ping6_needed=0
 		if [ "$_fam" = inet6 ] || [ "${_name#i2io4}" != "$_name" ]; then ping6_needed=1; fi
 		if [ "$ping6_needed" -eq 1 ] && command -v ping6 >/dev/null 2>&1; then
@@ -988,6 +1267,10 @@ fb_wait_first() {
 FI=/tmp/freeb/init-iked.log; FR=/tmp/freeb/resp-iked.log
 rk_fail() { echo "FAIL row $_name: $*"; gate_why="rekey-family gate: $*"; up=0; }
 case "$_name" in
+*-charon|*-charonr)
+	# charon seat rows: their own gate (the iked<->iked arms below read
+	# both iked logs)
+	[ "$up" -eq 1 ] && fb_charon_gate ;;
 *-immediate*|*-firstchild-nocl*|*-clresp-legacy*)
 	# the plain IKE_AUTH child (n) is rekeyed at once with KE + type-6 by
 	# the seat carrying initial_child_ke; both seats then share a Y keymat
@@ -1075,6 +1358,12 @@ esac
 # one-child invariant: a row whose IKE_AUTH carries the child must never see
 # a new-child CREATE_CHILD_SA (the Linux spurious-ACQUIRE child, b8c7ce8)
 case "$_name" in
+*-charonr) _onechk=0
+	# charon responder: count CREATE_CHILD requests that open a new
+	# child (TSi without N(REKEY_SA)), as the Linux i2i_onechild_gate does
+	_nc=$(grep -E 'parsed CREATE_CHILD_SA request [0-9]+ \[' $FB_CL 2>/dev/null | grep 'TSi' | grep -vc 'N(REKEY_SA)' || true)
+	[ "${_nc:-0}" -eq 0 ] || rk_fail "charon responder saw ${_nc} new-child CREATE_CHILD_SA on a row whose child is negotiated in IKE_AUTH" ;;
+*-zerochild*) _onechk=0 ;;
 *-firstchild-nocl*|*-clresp-legacy*) _onechk=1 ;;
 *-firstchild*|*-clresp*|*-childless*) _onechk=0 ;;
 *) _onechk=1 ;;
@@ -1156,6 +1445,13 @@ echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 		jails_teardown
 		return 1
 	fi
+	if [ "$FB_ZERO" = 1 ] && [ "$up" -eq 1 ]; then
+		# no CHILD_SA by construction: no data-plane, and no CPL cells
+		# (A1/A3 would read an empty SPD/SADB as a missing tunnel)
+		echo "PASS freebsd-vnet $_name (zero-child IKE_SA: charon childless = force, ADDKE IKE_SA rekeys, no ESP state)"
+		jails_teardown
+		return 0
+	fi
 	if [ "$up" -eq 1 ] && [ "$TUN_OK" -eq 1 ]; then
 		lines=$(grep -cE 'esp mode=tunnel' /tmp/freeb/resp-sadb.txt /tmp/freeb/init-sadb.txt 2>/dev/null | awk -F: '{s+=$2} END{print s}')
 		echo "PASS freebsd-vnet $_name (pfkey KM: $lines ESP tunnel SAs + data-plane $ji->${s6r:-$hr})"
@@ -1196,10 +1492,10 @@ run() {
 
 # Matrix rows.  Tokens match the Linux kinds verbatim so pfkey/xfrm parity
 # is asserted on identical config.  REKEY rows: initiator lifetime short.
-# 56 rows.  Still Linux-only (not replicated): charon/strongSwan, netem
-# drop/dup, mobike/cookie2, xfrm-only cells, PPK, ESN, zero-child IKE_SA
-# (needs a charon childless = force initiator), DPD silence, NSA-warn.  Those need a
-# peer or a conf knob this harness does not emit.
+# 65 rows.  Still Linux-only (not replicated): netem drop/dup,
+# mobike/cookie2, xfrm-only cells, PPK, ESN, DPD silence, NSA-warn, and
+# the charon rows that need RSA/PPK/CFG seats or the gens/ikerekey
+# drivers.  Those need a peer or a conf knob this harness does not emit.
 case "$ROW" in
 	all)
 		# --- i2iinit esp alg vectors (mirror linux i2iinit-esp-*) ---
@@ -1255,6 +1551,17 @@ case "$ROW" in
 		run i2iinit-childless-init  inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		run i2iinit-gens            inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 30 300 1 a ""
 		run i2iinit-ikerekey        inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		# --- charon seat rows (strongSwan 6.x from pkg in the vnet jail;
+		#     mirror the linux -charon/-charonr rows, PSK only) ---
+		run i2iinit-charon              inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-charonr             inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2idh-ecp384-charon         inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp384 aes_gcm non_auth 300 300 0 a ""
+		run i2idh-ecp521-charonr        inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp521 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-childless-charon    inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-immediate-charon    inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-immediate-charonr   inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-zerochild-charon    inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-zerochild-cr-charon inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		# --- PQC rows (OpenSSL 3.5 build = WITH_ADDKE: RATOON2 out-of-band
 		#      RFC 9370, not netbsd-style kernel ESP).  i2iinit-addke proves
 		#      ML-KEM-768 on the INITIAL IKE_SA (type-06 offer + matching
@@ -1346,6 +1653,10 @@ case "$ROW" in
 	i2ike-rekey) run_row i2ike-rekey inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 60 3600 1 a "" ;;
 	i2ineg-a12strict) run_row i2ineg-a12strict inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 r "parent_child_strength on;" ;;
 	i2ineg-a12permit) run_row i2ineg-a12permit inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a "" ;;
+	i2iinit-charon|i2iinit-charonr|i2iinit-childless-charon|i2iinit-immediate-charon|i2iinit-immediate-charonr|i2iinit-zerochild-charon|i2iinit-zerochild-cr-charon)
+		run_row "$ROW" inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a "" ;;
+	i2idh-ecp384-charon) run_row i2idh-ecp384-charon inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp384 aes_gcm non_auth 300 300 0 a "" ;;
+	i2idh-ecp521-charonr) run_row i2idh-ecp521-charonr inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp521 aes_gcm non_auth 300 300 0 a "" ;;
 	*) echo "unknown ROW=$ROW"; exit 2 ;;
 esac
 echo "$SEP"

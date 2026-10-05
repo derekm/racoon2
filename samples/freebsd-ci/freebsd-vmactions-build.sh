@@ -29,9 +29,12 @@ echo "=== Installing build dependencies (pkg) ==="
 # install below resolves current package versions.
 $SUDO env ASSUME_ALWAYS_YES=yes pkg update >/dev/null || true
 $SUDO env ASSUME_ALWAYS_YES=yes pkg install \
-	autoconf automake libtool pkgconf gmake m4 bison ipsec-tools
+	autoconf automake libtool pkgconf gmake m4 bison ipsec-tools strongswan
 # ipsec-tools provides /usr/local/sbin/setkey (SAD/SPD dump) - removed from
-# FreeBSD base in 12.0.  The vnet conformance leg uses it.
+# FreeBSD base in 12.0.  The vnet conformance leg uses it.  strongswan is
+# the charon seat of the *-charon/-charonr vnet rows (charon + swanctl,
+# kernel-pfkey, ML-KEM via its ml plugin); its rc.d service stays disabled,
+# the matrix starts charon by hand inside a vnet jail.
 
 echo "=== Sanitizer (ASan/UBSan compile probe) ==="
 # ASan is OpenSSL-provider incompatible under BSD toolchains on real crypto
