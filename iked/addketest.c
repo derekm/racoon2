@@ -14,6 +14,7 @@
 
 #ifdef WITH_ADDKE
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,8 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <openssl/evp.h>
 #include <openssl/ml_kem.h>
@@ -60,13 +63,25 @@ plog_location(const char *file, int line, const char *func)
  * the crypto self-test; stub so the TU links standalone. */
 struct isakmpstat isakmpstat;
 
+/* the followup-link tests below read back the last log line and the
+ * notify the handler answered with */
+static char last_log[256];
+static int n_respond_error;
+static unsigned int last_error_type;
+static int n_rekey_complete;
+
 void
 isakmp_log(struct ikev2_sa *ike_sa, struct sockaddr *local,
 	   struct sockaddr *remote, rc_vchar_t *msg, int query,
 	   const char *loc, const char *fmt, ...)
 {
+	va_list ap;
+
 	(void)ike_sa; (void)local; (void)remote; (void)msg;
-	(void)query; (void)loc; (void)fmt;
+	(void)query; (void)loc;
+	va_start(ap, fmt);
+	vsnprintf(last_log, sizeof(last_log), fmt, ap);
+	va_end(ap);
 }
 
 int
@@ -76,7 +91,9 @@ ikev2_respond_error(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		    void *e, size_t f)
 {
 	(void)ike_sa; (void)msg; (void)remote; (void)local;
-	(void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
+	(void)a; (void)b; (void)c; (void)e; (void)f;
+	++n_respond_error;
+	last_error_type = d;
 	return -1;
 }
 
@@ -233,6 +250,7 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *sa, rc_vchar_t *sk,
 				     rc_vchar_t *ct, uint32_t followup_msgid)
 {
 	(void)sa; (void)sk; (void)ct; (void)followup_msgid;
+	++n_rekey_complete;
 	return -1;
 }
 
@@ -416,6 +434,194 @@ read_file_rc(const char *path)
 	return rc_vnew(buf, n);
 }
 
+/*
+ * IKE_FOLLOWUP_KE responder: a followup whose N(ADDITIONAL_KEY_EXCHANGE)
+ * link matches no pending ADDKE state must be answered STATE_NOT_FOUND
+ * (RFC 9370 s2.2.4) and must not touch any pending state.  The message
+ * is the decrypted form ikev2_input hands the handler: IKE header,
+ * KEi(1), N(16441)(link).
+ */
+extern void ikev2_followup_ke_recv(struct ikev2_sa *, rc_vchar_t *,
+				   struct sockaddr *, struct sockaddr *);
+
+static rc_vchar_t *
+followup_msg(unsigned int method, const rc_vchar_t *pub,
+	     const void *link, size_t link_len)
+{
+	size_t ke_len = sizeof(struct ikev2payl_ke) + pub->l;
+	size_t n_len = sizeof(struct ikev2payl_notify) + link_len;
+	size_t total = sizeof(struct ikev2_header) + ke_len + n_len;
+	rc_vchar_t *m = rc_vmalloc(total);
+	struct ikev2_header *h;
+	struct ikev2payl_ke *ke;
+	struct ikev2payl_notify *n;
+
+	if (!m)
+		return NULL;
+	memset(m->v, 0, total);
+	h = (struct ikev2_header *)m->v;
+	h->next_payload = IKEV2_PAYLOAD_KE;
+	h->version = IKEV2_VERSION;
+	h->exchange_type = IKEV2EXCH_IKE_FOLLOWUP_KE;
+	h->flags = IKEV2FLAG_INITIATOR;
+	h->message_id = htonl(3);
+	h->length = htonl((uint32_t)total);
+	ke = (struct ikev2payl_ke *)(h + 1);
+	ke->header.next_payload = IKEV2_PAYLOAD_NOTIFY;
+	ke->header.payload_length = htons((uint16_t)ke_len);
+	ke->ke_h.dh_group_id = htons((uint16_t)method);
+	memcpy(ke + 1, pub->v, pub->l);
+	n = (struct ikev2payl_notify *)((uint8_t *)ke + ke_len);
+	n->header.next_payload = IKEV2_NO_NEXT_PAYLOAD;
+	n->header.payload_length = htons((uint16_t)n_len);
+	n->nh.protocol_id = IKEV2_NOTIFY_PROTO_NONE;
+	n->nh.spi_size = 0;
+	n->nh.notify_message_type = htons(IKEV2_ADDITIONAL_KEY_EXCHANGE);
+	memcpy(n + 1, link, link_len);
+	return m;
+}
+
+static struct ikev2_child_sa *
+pending_child(struct ikev2_sa *sa, unsigned int method, const char *link)
+{
+	struct ikev2_child_sa *c = calloc(1, sizeof(*c));
+
+	if (!c)
+		return NULL;
+	c->parent = sa;
+	c->addke_pending = 1;
+	c->addke_method = method;
+	c->addke_link = rc_vnew(link, strlen(link));
+	IKEV2_CHILD_LIST_LINK(&sa->children, c);
+	return c;
+}
+
+static void
+followup_reset(void)
+{
+	last_log[0] = '\0';
+	n_respond_error = 0;
+	last_error_type = 0;
+	n_rekey_complete = 0;
+}
+
+static int
+link_is(const struct ikev2_child_sa *c, const char *link)
+{
+	return c->addke_link && c->addke_link->l == strlen(link) &&
+	       memcmp(c->addke_link->v, link, strlen(link)) == 0;
+}
+
+#define NOT_FOUND_ANSWERED()						\
+	(n_respond_error == 1 &&					\
+	 last_error_type == IKEV2_STATE_NOT_FOUND &&			\
+	 strstr(last_log, "no pending ADDKE state for link") != NULL)
+
+static void
+followup_link_tests(void)
+{
+	const unsigned int m768 = IKEV2TRANSF_ADDKE_MLKEM768;
+	rc_vchar_t *pub = NULL, *msg = NULL;
+	EVP_PKEY *kp = NULL;
+	struct ikev2_sa *sa;
+	struct ikev2_child_sa *c1, *c2;
+	struct sockaddr_in loc, rem;
+
+	printf("--- IKE_FOLLOWUP_KE unknown link ---\n");
+	memset(&loc, 0, sizeof(loc));
+	memset(&rem, 0, sizeof(rem));
+	loc.sin_family = rem.sin_family = AF_INET;
+	CHECK(ikev2_addke_mlkem_keygen(m768, &pub, &kp) == 0 && pub,
+	      "followup: keygen ML-KEM-768 KEi");
+	if (!pub) {
+		fail = 1;
+		return;
+	}
+	sa = calloc(1, sizeof(*sa));
+	if (!sa) {
+		fail = 1;
+		return;
+	}
+	IKEV2_CHILD_LIST_INIT(&sa->children);
+	sa->recv_message_id = 3;
+
+	/* 1. no pending ADDKE state at all */
+	followup_reset();
+	msg = followup_msg(m768, pub, "unknown-link", 12);
+	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+			       (struct sockaddr *)&loc);
+	CHECK(NOT_FOUND_ANSWERED(),
+	      "followup: no pending state -> STATE_NOT_FOUND");
+	rc_vfree(msg);
+
+	/* 2. a pending IKE-SA rekey is no licence for another link */
+	followup_reset();
+	sa->addke_rekey_pending = 1;
+	sa->addke_rekey_link = rc_vnew("rekey-link", 10);
+	msg = followup_msg(m768, pub, "other-link", 10);
+	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+			       (struct sockaddr *)&loc);
+	CHECK(NOT_FOUND_ANSWERED() && n_rekey_complete == 0,
+	      "followup: rekey pending, link mismatch -> STATE_NOT_FOUND, "
+	      "rekey not completed");
+	rc_vfree(msg);
+	/* control: the rekey's own link reaches the rekey completion */
+	followup_reset();
+	msg = followup_msg(m768, pub, "rekey-link", 10);
+	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+			       (struct sockaddr *)&loc);
+	CHECK(n_rekey_complete == 1 &&
+	      strstr(last_log, "no pending ADDKE state") == NULL,
+	      "followup: rekey link match -> rekey completion");
+	rc_vfree(msg);
+	sa->addke_rekey_pending = 0;
+	rc_vfree(sa->addke_rekey_link);
+	sa->addke_rekey_link = NULL;
+
+	/* 3. two pending children of the same method: an unknown link is
+	 * ambiguous and must not be bound to either */
+	c1 = pending_child(sa, m768, "link-one");
+	c2 = pending_child(sa, m768, "link-two");
+	if (!c1 || !c2 || !c1->addke_link || !c2->addke_link) {
+		fail = 1;
+		return;
+	}
+	followup_reset();
+	msg = followup_msg(m768, pub, "link-three", 10);
+	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+			       (struct sockaddr *)&loc);
+	CHECK(NOT_FOUND_ANSWERED(),
+	      "followup: ambiguous pending children -> STATE_NOT_FOUND");
+	CHECK(link_is(c1, "link-one") && link_is(c2, "link-two") &&
+	      c1->addke_sk == NULL && c2->addke_sk == NULL &&
+	      c1->addke_pending && c2->addke_pending,
+	      "followup: unknown link left both children untouched");
+	rc_vfree(msg);
+
+	/* control: an exact link selects that child (SK(1) accumulated),
+	 * no error answered */
+	followup_reset();
+	msg = followup_msg(m768, pub, "link-two", 8);
+	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+			       (struct sockaddr *)&loc);
+	CHECK(n_respond_error == 0 && c2->addke_sk != NULL &&
+	      c2->addke_sk->l == OSSL_ML_KEM_SHARED_SECRET_BYTES &&
+	      c1->addke_sk == NULL,
+	      "followup: exact link -> that child, no error");
+	rc_vfree(msg);
+
+	IKEV2_CHILD_LIST_REMOVE(&sa->children, c1);
+	IKEV2_CHILD_LIST_REMOVE(&sa->children, c2);
+	rc_vfree(c1->addke_link);
+	rc_vfree(c2->addke_link);
+	rc_vfreez(c2->addke_sk);
+	free(c1);
+	free(c2);
+	free(sa);
+	rc_vfree(pub);
+	EVP_PKEY_free(kp);
+}
+
 int
 main(void)
 {
@@ -446,6 +652,7 @@ main(void)
 	fail = 0;
 
 	CHECK(ikev2_addke_selftest() == 0, "mlkem selftest (round-trip)");
+	followup_link_tests();
 
 	if (have_cli) {
 		for (s = 0; sets[s].alg != NULL; ++s) {
