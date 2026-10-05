@@ -18,6 +18,7 @@ HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/kinds/i2ike_drop.sh"
 . "$HERE/kinds/i2ike_drop576.sh"
 . "$HERE/kinds/i2ike_dup.sh"
+. "$HERE/kinds/i2ike_skfreplay.sh"
 . "$HERE/kinds/i2ike_reqdrop.sh"
 . "$HERE/kinds/i2ike_silence.sh"
 . "$HERE/kinds/i2ikesa.sh"
