@@ -353,9 +353,10 @@ jails_teardown() {
 # A row named *-charon puts a strongSwan charon INITIATOR in the initiator
 # jail instead of iked; *-charonr puts a charon RESPONDER in the responder
 # jail (iked initiates).  The other jail keeps the usual spmd+iked seat and
-# config.  charon uses kernel-pfkey/kernel-pfroute inside its vnet jail, so
-# its CHILD_SA lands in that jail's SADB exactly like iked's, and the same
-# esp_up/ping gates apply.  Same ids and PSK as the iked seats.
+# config.  charon must use kernel-pfkey/kernel-pfroute (not kernel-libipsec)
+# inside its vnet jail, so its CHILD_SA lands in that jail's SADB exactly
+# like iked's, and the same esp_up/ping gates apply.  Same ids and PSK as
+# the iked seats.  See fb_charon_conf for why libipsec must be load=no.
 CHARON_BIN=${CHARON_BIN:-/usr/local/libexec/ipsec/charon}
 SWANCTL_BIN=${SWANCTL_BIN:-/usr/local/sbin/swanctl}
 FB_VICI=unix:///tmp/freeb/charon.vici
@@ -369,11 +370,29 @@ fb_charon_conf() {
 	[ "${#_hex}" -eq 64 ] || { echo "FAIL: charon psk hex"; return 1; }
 	if [ "$_cs" = i ]; then _lid=r2init-matrix _rid=racoon2-matrix
 	else _lid=racoon2-matrix _rid=r2init-matrix; fi
+	# STRONGSWAN_CONF replaces the stock config entirely (no strongswan.d
+	# includes).  FreeBSD's strongswan pkg builds kernel-libipsec and, without
+	# the stock "load = no", it wins the kernel-interface slot.  Host-to-host
+	# TS (== IKE peer) then fail with:
+	#   can't install route ... conflicts with IKE traffic
+	#   unable to install IPsec policies (SPD) in kernel
+	# and charon answers N(TS_UNACCEPTABLE) even though the TS matched.
+	# Force the kernel PF_KEY stack so CHILD_SAs land in the jail SADB
+	# (setkey -D) like iked's — the matrix gates on that.
 	cat > /tmp/freeb/strongswan.conf <<SEOF
 charon {
 	install_routes = no
 	install_virtual_ip = no
 	plugins {
+		kernel-libipsec {
+			load = no
+		}
+		kernel-pfkey {
+			load = yes
+		}
+		kernel-pfroute {
+			load = yes
+		}
 		vici {
 			socket = $FB_VICI
 		}
