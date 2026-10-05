@@ -149,15 +149,15 @@ jobs:
           echo "FREEBSD-VNET-FAIL=$FAIL"
           grep -E '^FAIL freebsd-vnet ' /tmp/r2-freebsd-matrix.log || true
           # Shards ran disjoint row slices; merged counts must equal the
-          # full 65-row matrix.  A matrix that aborted before any verdict
+          # full 66-row matrix.  A matrix that aborted before any verdict
           # would otherwise merge to empty and PASS — gate on observed row
           # count AND zero FAIL.  (NO red rows are tolerated: the
           # expected-reject rows xcbc/cmac and the NEG rows pass on their
           # config markers, so any FAIL is a real conformance break.)
           TOTAL=$((PASS + FAIL))
-          [ -s /tmp/r2-freebsd-matrix.log ] && [ "$TOTAL" -eq 65 ] && [ "$FAIL" -eq 0 ]
+          [ -s /tmp/r2-freebsd-matrix.log ] && [ "$TOTAL" -eq 66 ] && [ "$FAIL" -eq 0 ]
 
-  # FreeBSD 16.0-CURRENT amd64 - the SAME build + 65-row vnet conformance,
+  # FreeBSD 16.0-CURRENT amd64 - the SAME build + 66-row vnet conformance,
   # but booted from the OFFICIAL project snapshot instead of the vmactions
   # 15.1 turnkey image.  vmactions/freebsd-vm has no 16.0 config yet (the
   # builder shelves 16.0), so this job self-hosts QEMU+KVM on the runner
@@ -169,7 +169,7 @@ jobs:
   #
   # Sharded exactly like the 15.1 vnet job: M=3 jobs, each its own VM, rows
   # whose dispatcher index % 3 == shard, disjoint slices; the merged report
-  # job below sums them and gates the 65-row total.
+  # job below sums them and gates the 66-row total.
   freebsd-16-current-vnet:
     name: 'FreeBSD 16.0-CURRENT vnet shard ${{ matrix.shard }}/3'
     runs-on: ubuntu-latest
@@ -243,7 +243,7 @@ jobs:
           echo "FREEBSD-16-VNET-FAIL=$FAIL"
           grep -E '^FAIL freebsd-vnet ' /tmp/r2-freebsd-16-current-matrix.log || true
           # Same semantics as the 15.1 report: disjoint shard slices, so the
-          # merged count must equal the full 65-row matrix and there must be
+          # merged count must equal the full 66-row matrix and there must be
           # zero FAIL (every FAIL is a real conformance break).
           TOTAL=$((PASS + FAIL))
-          [ -s /tmp/r2-freebsd-16-current-matrix.log ] && [ "$TOTAL" -eq 65 ] && [ "$FAIL" -eq 0 ]
+          [ -s /tmp/r2-freebsd-16-current-matrix.log ] && [ "$TOTAL" -eq 66 ] && [ "$FAIL" -eq 0 ]

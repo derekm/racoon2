@@ -1481,18 +1481,185 @@ echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 	return 1
 }
 
+# ==== NAT-T transport row (G5: live NAT-T on a BSD leg) ====================
+# Three vnet jails: initiator 10.9.0.2 -- NAT jail (pf, 10.9.0.1 /
+# 192.0.5.254) -- responder 192.0.5.1.  iked<->iked, transport mode,
+# nat_traversal on: NAT-D must detect the NAT, IKE floats to 4500, both
+# seats install esp-udp TRANSPORT SAs (RFC 3948), the responder has to
+# substitute the initiator's private TSi with the NAT address (RFC 7296
+# s2.23.1), and ICMP plus a TCP exchange must cross it.  TCP over
+# transport-mode NAT-T is where the checksum fixup (NAT-OA, review N4)
+# would matter: iked passes no NAT-OA, so this relies on FreeBSD's
+# default net.inet.ipsec.natt_cksum_policy=0 (TCP checksum marked valid,
+# UDP checksum zeroed) in udp_ipsec_adjust_cksum.
+jn=r2vn   # NAT jail
+run_nat_row() {
+	_name=$1
+	echo "$SEP"
+	echo "=== ROW $_name (NAT-T transport: 10.9.0.2 -> pf NAT 192.0.5.254 -> 192.0.5.1) ==="
+	jails_teardown
+	jexec $jn /bin/sh -c 'pfctl -d' >/dev/null 2>&1 || true
+	jail -r $jn 2>/dev/null || true
+	kldstat -q -n pf 2>/dev/null || kldload -n pf || { echo "FAIL freebsd-vnet $_name (cannot load pf.ko)"; return 1; }
+	_ea=$(ifconfig epair create) && _eb=$(ifconfig epair create) || { echo "FAIL freebsd-vnet $_name (epair create)"; return 1; }
+	_ea=${_ea%a}; _eb=${_eb%a}
+	jail -c name=$ji persist vnet vnet.interface="${_ea}b" &&
+	jail -c name=$jn persist vnet vnet.interface="${_ea}a" vnet.interface="${_eb}a" &&
+	jail -c name=$jr persist vnet vnet.interface="${_eb}b" || { echo "FAIL freebsd-vnet $_name (jail -c)"; return 1; }
+	for _j in $ji $jn $jr; do jexec $_j ifconfig lo0 inet 127.0.0.1/8 up; done
+	jexec $ji ifconfig "${_ea}b" inet 10.9.0.2/24 up
+	jexec $ji route -q add default 10.9.0.1
+	jexec $jn ifconfig "${_ea}a" inet 10.9.0.1/24 up
+	jexec $jn ifconfig "${_eb}a" inet 192.0.5.254/24 up
+	jexec $jn sysctl -q net.inet.ip.forwarding=1 >/dev/null
+	jexec $jr ifconfig "${_eb}b" inet 192.0.5.1/24 up
+	printf 'nat on %s inet from 10.9.0.0/24 to any -> 192.0.5.254\npass all\n' "${_eb}a" > /tmp/freeb-nat-pf.conf
+	jexec $jn pfctl -q -f /tmp/freeb-nat-pf.conf && jexec $jn pfctl -q -e || { echo "FAIL freebsd-vnet $_name (pf in the NAT jail)"; return 1; }
+	install -d -m 0755 /tmp/freeb
+	dd if=/dev/urandom of=/tmp/freeb/test.psk bs=32 count=1 2>/dev/null; chmod 600 /tmp/freeb/test.psk
+	printf 'ci-spmd-pw\n' > /tmp/freeb/spmd.pwd; chmod 600 /tmp/freeb/spmd.pwd
+	# seat conf: transport mode, selectors on the addresses each seat
+	# sees (the initiator its private address, the responder the NAT one)
+	_nat_conf() {
+		_seat=$1 _my=$2 _peer=$3 _myid=$4 _peerid=$5 _passive=$6
+		cat > /tmp/freeb/$_seat.conf <<NEOF
+interface {
+	ike { $_my; };
+	spmd { unix "/tmp/freeb/$_seat-spmif"; };
+	spmd_password "/tmp/freeb/spmd.pwd";
+};
+resolver { resolver off; };
+remote matrix_$_seat {
+	acceptable_kmp { ikev2; };
+	ikev2 {
+		passive $_passive;
+		my_id fqdn "$_myid";
+		peers_id fqdn "$_peerid";
+		peers_ipaddr $_peer;
+		nat_traversal on;
+		kmp_enc_alg { aes_gcm; };
+		kmp_prf_alg { hmac_sha2_256; };
+		kmp_hash_alg { hmac_sha2_256; };
+		kmp_dh_group { ecp256; };
+		kmp_auth_method { psk; };
+		pre_shared_key "/tmp/freeb/test.psk";
+		dpd_delay 60 sec;
+	};
+	selector_index sel_in;
+};
+selector sel_out {
+	direction outbound;
+	src $_my; dst $_peer;
+	policy_index pol;
+};
+selector sel_in {
+	direction inbound;
+	dst $_my; src $_peer;
+	policy_index pol;
+};
+policy pol {
+	action auto_ipsec;
+	remote_index matrix_$_seat;
+	ipsec_mode transport;
+	ipsec_index { ipsec_e; };
+	ipsec_level require;
+	peers_sa_ipaddr $_peer;
+	my_sa_ipaddr $_my;
+};
+ipsec ipsec_e {
+	ipsec_sa_lifetime_time 300 sec;
+	sa_index esp_e;
+};
+sa esp_e {
+	sa_protocol esp;
+	esp_enc_alg { aes_gcm; };
+	esp_auth_alg { non_auth; };
+};
+NEOF
+	}
+	_nat_conf $ji 10.9.0.2 192.0.5.1 r2init-matrix racoon2-matrix off
+	_nat_conf $jr 192.0.5.1 192.0.5.254 racoon2-matrix r2init-matrix on
+	for _sx in r:$jr:resp i:$ji:init; do
+		_j=${_sx#*:}; _j=${_j%%:*}; _t=${_sx##*:}
+		jexec $_j /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/$_t-ctl RACOON2_RESUME_DIR=/tmp/freeb/$_t-resume $SBIN/spmd -F -f /tmp/freeb/$_j.conf > /tmp/freeb/$_t-spmd.log 2>&1 &"
+	done
+	i=0; while [ "$i" -lt 15 ] && ! { [ -S /tmp/freeb/$jr-spmif ] && [ -S /tmp/freeb/$ji-spmif ]; }; do i=$((i+1)); sleep 1; done
+	sleep 1
+	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $SBIN/iked -F -f /tmp/freeb/$jr.conf -D 0x0003 > $FR 2>&1 &"
+	jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl RACOON2_RESUME_DIR=/tmp/freeb/init-resume $SBIN/iked -F -f /tmp/freeb/$ji.conf -D 0x0003 > $FI 2>&1 &"
+	sleep 3
+	jexec $ji $SBIN/ikedctl -s /tmp/freeb/init-ctl establish-sa isakmp inet 10.9.0.2 192.0.5.1 sel_out > /tmp/freeb/ctl.out 2>&1 || true
+	_up=0; i=0
+	while [ "$i" -lt 45 ]; do
+		[ "$(jexec $jr /usr/local/sbin/setkey -D 2>/dev/null | grep -c 'esp-udp mode=transport')" -ge 2 ] &&
+		[ "$(jexec $ji /usr/local/sbin/setkey -D 2>/dev/null | grep -c 'esp-udp mode=transport')" -ge 2 ] && { _up=1; break; }
+		i=$((i+1)); sleep 1
+	done
+	_bad=""
+	[ "$_up" = 1 ] || _bad="no esp-udp transport SA pair in both jails"
+	jexec $jr /usr/local/sbin/setkey -D > /tmp/freeb/resp-sadb.txt 2>&1 || true
+	jexec $ji /usr/local/sbin/setkey -D > /tmp/freeb/init-sadb.txt 2>&1 || true
+	jexec $jr /usr/local/sbin/setkey -DP > /tmp/freeb/resp-spd.txt 2>&1 || true
+	jexec $ji /usr/local/sbin/setkey -DP > /tmp/freeb/init-spd.txt 2>&1 || true
+	if [ "$_up" = 1 ]; then
+		jexec $ji ping -c 1 -t 5 192.0.5.1 > /tmp/freeb/ping-tun.txt 2>&1 || true
+		grep -q ' 1 packets received' /tmp/freeb/ping-tun.txt || _bad="ICMP did not cross the NAT-T transport SA"
+		# TCP through transport-mode NAT-T: the checksum the initiator
+		# computed covers its private address, the responder sees the
+		# NAT address
+		rm -f /tmp/freeb/tcp-recv.txt
+		jexec $jr /bin/sh -c "nc -l -w 15 5001 > /tmp/freeb/tcp-recv.txt 2>/dev/null &"
+		sleep 1
+		echo "racoon2-natt-tcp-$$" | jexec $ji nc -w 5 192.0.5.1 5001 > /tmp/freeb/tcp-send.txt 2>&1 || true
+		_w=0; while [ "$_w" -lt 10 ] && ! grep -q "racoon2-natt-tcp-$$" /tmp/freeb/tcp-recv.txt 2>/dev/null; do _w=$((_w+1)); sleep 1; done
+		grep -q "racoon2-natt-tcp-$$" /tmp/freeb/tcp-recv.txt 2>/dev/null || _bad="${_bad:+$_bad; }TCP payload did not cross the NAT-T transport SA"
+		# the probes must have used the SAs: both seats' SPD carries the
+		# transport policies, and every SA counted bytes (a missing
+		# policy would let ICMP/TCP cross in clear)
+		for _j in $jr $ji; do
+			jexec $_j /usr/local/sbin/setkey -DP 2>/dev/null | grep -q 'esp/transport//require' ||
+				_bad="${_bad:+$_bad; }no esp/transport require policy in $_j"
+		done
+		jexec $jr /usr/local/sbin/setkey -D > /tmp/freeb/resp-sadb.txt 2>&1 || true
+		jexec $ji /usr/local/sbin/setkey -D > /tmp/freeb/init-sadb.txt 2>&1 || true
+		for _f in /tmp/freeb/resp-sadb.txt /tmp/freeb/init-sadb.txt; do
+			_z=$(grep -E '^[[:space:]]*current: [0-9]+\(bytes\)' "$_f" | grep -c 'current: 0(bytes)' || true)
+			[ "${_z:-0}" -eq 0 ] || _bad="${_bad:+$_bad; }$_z SA(s) in $(basename $_f .txt) carried no bytes"
+		done
+	fi
+	if [ -z "$_bad" ]; then
+		echo "row $_name: NAT-T transport OK - esp-udp transport SAs both jails, ICMP + TCP across pf NAT"
+		echo "PASS freebsd-vnet $_name (NAT-T transport across pf NAT: esp-udp SAs, ICMP + TCP)"
+		jails_teardown; jail -r $jn 2>/dev/null || true
+		return 0
+	fi
+	echo "FAIL freebsd-vnet $_name ($_bad)"
+	echo "--- SADB resp ---"; cat /tmp/freeb/resp-sadb.txt; echo "--- SADB init ---"; cat /tmp/freeb/init-sadb.txt
+	echo "--- SPD resp ---"; cat /tmp/freeb/resp-spd.txt; echo "--- SPD init ---"; cat /tmp/freeb/init-spd.txt
+	echo "--- pf states ---"; jexec $jn pfctl -ss 2>&1 | head -20
+	echo "--- ping/tcp ---"; cat /tmp/freeb/ping-tun.txt /tmp/freeb/tcp-send.txt 2>/dev/null
+	echo "--- spmd logs ---"; cat /tmp/freeb/resp-spmd.log /tmp/freeb/init-spmd.log 2>/dev/null | tail -40
+	echo "--- resp iked (NAT/TS/SA lines) ---"; grep -iE 'nat|TS|substitut|sadb|error|fail' $FR | grep -vE '^[0-9a-f]{8}( |$)' | tail -40
+	echo "--- init iked (NAT/TS/SA lines) ---"; grep -iE 'nat|TS|substitut|sadb|error|fail' $FI | grep -vE '^[0-9a-f]{8}( |$)' | tail -40
+	jails_teardown; jail -r $jn 2>/dev/null || true
+	return 1
+}
+
 fail=0
 run() {
 	# 0-based dispatcher index, matching linux run.sh --shard K M
 	if [ $((_shard_idx % SHARD_M)) -eq "$SHARD_K" ]; then
-		run_row "$@" || fail=1
+		case "$1" in
+		i2inatt-*) run_nat_row "$1" || fail=1 ;;
+		*)         run_row "$@" || fail=1 ;;
+		esac
 	fi
 	_shard_idx=$((_shard_idx + 1))
 }
 
 # Matrix rows.  Tokens match the Linux kinds verbatim so pfkey/xfrm parity
 # is asserted on identical config.  REKEY rows: initiator lifetime short.
-# 65 rows.  Still Linux-only (not replicated): netem drop/dup,
+# 66 rows.  Still Linux-only (not replicated): netem drop/dup,
 # mobike/cookie2, xfrm-only cells, PPK, ESN, DPD silence, NSA-warn, and
 # the charon rows that need RSA/PPK/CFG seats or the gens/ikerekey
 # drivers.  Those need a peer or a conf knob this harness does not emit.
@@ -1600,6 +1767,8 @@ case "$ROW" in
 		#     v6 inner selectors (2001:db8:1::x).  The inner v6 rides inside
 		#     the v4 ESP tunnel; only v4 ARP (L2) is needed, so no ND6 gate.
 		run i2io4-cbc128        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+		# --- NAT-T transport across a pf NAT jail (G5; three jails) ---
+		run i2inatt-transport
 		run i2io4-gcm256        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a ""
 		;;
 	i2iinit-esp-cbc128) run_row i2iinit-esp-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
@@ -1657,6 +1826,7 @@ case "$ROW" in
 		run_row "$ROW" inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a "" ;;
 	i2idh-ecp384-charon) run_row i2idh-ecp384-charon inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp384 aes_gcm non_auth 300 300 0 a "" ;;
 	i2idh-ecp521-charonr) run_row i2idh-ecp521-charonr inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp521 aes_gcm non_auth 300 300 0 a "" ;;
+	i2inatt-transport) run_nat_row i2inatt-transport || fail=1 ;;
 	*) echo "unknown ROW=$ROW"; exit 2 ;;
 esac
 echo "$SEP"
