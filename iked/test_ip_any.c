@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -325,6 +326,114 @@ test_selector_by_addr(void)
 }
 
 
+/*
+ * The real pre-AUTH PAD path: rcf_read() a config, then
+ * rcf_get_remotebypeersid() -> ike_compare_id() for successive
+ * initiators.  F12 only shows with two or more distinct road-warrior
+ * addresses against one wildcard remote: the old pin behaviour rewrote
+ * the global peers_id to the first initiator's address, so the second
+ * initiator stopped matching (and the IP_RW helper freed the entry the
+ * config still pointed at).
+ */
+static char *
+write_conf(const char *body)
+{
+	static char path[64];
+	const char *tmp = getenv("TMPDIR");
+	FILE *fp;
+	int fd;
+
+	snprintf(path, sizeof(path), "%s/test_ip_any.XXXXXX",
+		 tmp && *tmp && strlen(tmp) < 32 ? tmp : "/tmp");
+	fd = mkstemp(path);
+	if (fd < 0)
+		exit(1);
+	fp = fdopen(fd, "w");
+	if (fp == NULL)
+		exit(1);
+	fputs(body, fp);
+	fclose(fp);
+	return path;
+}
+
+/* 0 iff the presented IPv4/IPv6 address selects the remote named want */
+static int
+lookup_remote(const char *addr, const char *want)
+{
+	rc_vchar_t *v;
+	struct rcf_remote *rm = NULL;
+	int r, ok;
+
+	v = strchr(addr, ':') ? make_ip_id_val6(addr) : make_ip_id_val4(addr);
+	r = rcf_get_remotebypeersid(RCT_IDT_IPADDR, v, RCT_KMP_IKEV2,
+				    ike_compare_id, &rm);
+	ok = (r == 0 && rm != NULL && rm->rm_index != NULL &&
+	      rm->rm_index->l == strlen(want) &&
+	      memcmp(rm->rm_index->v, want, strlen(want)) == 0);
+	if (rm != NULL)
+		rcf_free_remote(rm);
+	rc_vfree(v);
+	return ok ? 0 : -1;
+}
+
+/* the named remote's first configured peers_id still reads expect */
+static int
+config_peers_id_is(const char *name, const char *expect)
+{
+	struct rcf_remote *n;
+
+	for (n = rcf_remote_head; n; n = n->next) {
+		if (n->rm_index == NULL || n->rm_index->l != strlen(name) ||
+		    memcmp(n->rm_index->v, name, strlen(name)) != 0)
+			continue;
+		if (n->ikev2 == NULL || n->ikev2->peers_id == NULL)
+			return 0;
+		return id_is(n->ikev2->peers_id, expect);
+	}
+	return 0;
+}
+
+static void
+two_initiators(const char *macro)
+{
+	char body[256];
+	char *path;
+
+	snprintf(body, sizeof(body),
+		 "remote rw {\n"
+		 "\tacceptable_kmp { ikev2; };\n"
+		 "\tikev2 {\n"
+		 "\t\tpassive on;\n"
+		 "\t\tmy_id fqdn \"resp.test\";\n"
+		 "\t\tpeers_id ipaddr \"%s\";\n"
+		 "\t};\n"
+		 "};\n", macro);
+	path = write_conf(body);
+	TEST_CHECK(rcf_read(path, 0) == 0);
+	unlink(path);
+
+	TEST_CHECK(lookup_remote(PEER4_A, "rw") == 0);	/* initiator A */
+	TEST_CHECK(config_peers_id_is("rw", macro));
+	TEST_CHECK(lookup_remote(PEER4_B, "rw") == 0);	/* initiator B */
+	TEST_CHECK(lookup_remote(PEER6, "rw") == 0);	/* an IPv6 one */
+	TEST_CHECK(lookup_remote(PEER4_A, "rw") == 0);	/* A reconnects */
+	TEST_CHECK(config_peers_id_is("rw", macro));
+
+	rcf_clean();
+}
+
+static void
+test_lookup_two_initiators_ip_any(void)
+{
+	two_initiators("IP_ANY");
+}
+
+static void
+test_lookup_two_initiators_ip_rw(void)
+{
+	two_initiators("IP_RW");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -336,6 +445,8 @@ main(int argc, char *argv[])
 	RUN_TEST(test_compare_id_concrete);
 	RUN_TEST(test_determine_sa_endpoint);
 	RUN_TEST(test_selector_by_addr);
+	RUN_TEST(test_lookup_two_initiators_ip_any);
+	RUN_TEST(test_lookup_two_initiators_ip_rw);
 
 	rbuf_clean();
 	plog_clean();
