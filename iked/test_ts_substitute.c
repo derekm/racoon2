@@ -551,11 +551,14 @@ oa_is(struct sockaddr *sa, const char *expect)
 
 /*
  * N4 (RFC 3948 s3.1.2, RFC 7296 s2.23.1): oa_i/oa_r are the ORIGINAL
- * addresses carried in the received TS payloads, before substitution, on
- * BOTH roles.  The receiver of a transport-mode ESP-in-UDP packet fixes
- * the TCP/UDP checksum from the address the sender used (the TS it sent)
- * to the address on the wire, so the initiator's OA for its own side is
- * the post-NAT TSi the responder narrowed to, never its local address.
+ * (pre-NAT) addresses used in the checksum.  From the RESPONDER seat the
+ * initiator's original is read from the received TSi before substitution.
+ * From the INITIATOR seat the received TSi is the post-NAT address the
+ * responder already echoed back, so the initiator's OWN original must be
+ * taken from ike_sa->local.  Using the echoed post-NAT value makes
+ * FreeBSD's esp(4) apply a non-zero checksum delta (local - post-NAT) and
+ * drop every TCP segment (ICMP survives because its checksum does not
+ * cover the IP addresses) - the i2inatt-transport red.
  */
 static void
 test_natoa_originals(void)
@@ -570,21 +573,22 @@ test_natoa_originals(void)
 	TEST_CHECK(f.parent.oa_r == NULL);
 	fixture_free(&f);
 
-	/* initiator behind NAT: oa_i = received TSi, NOT the local addr */
+	/* initiator behind NAT: oa_i = the seat's own original (local),
+	 * NOT the post-NAT TSi the responder echoed back */
 	fixture_init_v4(&f, TRUE, TRUE, TRUE, FALSE);
 	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
 	    ts_payl(f.ts_r)) == 0);
-	TEST_CHECK(oa_is(f.parent.oa_i, TS_I_ADDR4));
-	TEST_CHECK(!oa_is(f.parent.oa_i, LOCAL4_ADDR));
+	TEST_CHECK(oa_is(f.parent.oa_i, LOCAL4_ADDR));
+	TEST_CHECK(!oa_is(f.parent.oa_i, TS_I_ADDR4));
 	TEST_CHECK(f.parent.oa_r == NULL);
 	fixture_free(&f);
 
-	/* both NATed, initiator: oa_r = received TSr, not the remote addr */
+	/* both NATed, initiator: oa_i = own original, oa_r = remote */
 	fixture_init_v4(&f, TRUE, TRUE, TRUE, TRUE);
 	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
 	    ts_payl(f.ts_r)) == 0);
-	TEST_CHECK(oa_is(f.parent.oa_i, TS_I_ADDR4));
-	TEST_CHECK(oa_is(f.parent.oa_r, TS_R_ADDR4));
+	TEST_CHECK(oa_is(f.parent.oa_i, LOCAL4_ADDR));
+	TEST_CHECK(oa_is(f.parent.oa_r, REMOTE4_ADDR));
 	fixture_free(&f);
 }
 

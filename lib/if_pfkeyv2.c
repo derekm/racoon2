@@ -129,7 +129,7 @@ static int rcpfk_set_sadbxtag (rc_vchar_t **, struct rcpfk_msg *);
 static int rcpfk_set_sadb_x_nattype (rc_vchar_t **, struct rcpfk_msg *);
 static int rcpfk_set_sadb_x_natport (rc_vchar_t **, struct rcpfk_msg *,
 					 int);
-static int rcpfk_set_sadb_x_natoa (rc_vchar_t **, struct rcpfk_msg*, struct sockaddr* natoa);
+static int rcpfk_set_sadb_x_natoa (rc_vchar_t **, struct rcpfk_msg*, struct sockaddr* natoa, int exttype);
 #endif
 
 static int rcpfk_recv_getspi (uint8_t **, struct rcpfk_msg *);
@@ -411,8 +411,11 @@ rcpfk_check_ext_content(struct sadb_ext *ext, uint8_t *ep)
 	case SADB_EXT_ADDRESS_SRC:
 	case SADB_EXT_ADDRESS_DST:
 	case SADB_EXT_ADDRESS_PROXY:
-#ifdef SADB_X_NAT_T_TYPE
+#ifdef SADB_X_EXT_NAT_T_OA
 	case SADB_X_EXT_NAT_T_OA:
+#endif
+#ifdef SADB_X_EXT_NAT_T_OAR
+	case SADB_X_EXT_NAT_T_OAR:
 #endif
 		addr = (void *)ext;
 		sa = (void *)(addr + 1);
@@ -665,10 +668,22 @@ rcpfk_send_addx(struct rcpfk_msg *rc, int type)
 		if (rcpfk_set_sadb_x_natport(&buf, rc, SADB_X_EXT_NAT_T_DPORT))
 			goto err;
 
-		if (rcpfk_set_sadb_x_natoa(&buf, rc, rc->sa_natoa_src))
+		if (rcpfk_set_sadb_x_natoa(&buf, rc, rc->sa_natoa_src,
+#ifdef SADB_X_EXT_NAT_T_OAI
+					    SADB_X_EXT_NAT_T_OAI
+#else
+					    SADB_X_EXT_NAT_T_OA
+#endif
+					    ))
 		    goto err;
 
-        if (rcpfk_set_sadb_x_natoa(&buf, rc, rc->sa_natoa_dst))
+        if (rcpfk_set_sadb_x_natoa(&buf, rc, rc->sa_natoa_dst,
+#ifdef SADB_X_EXT_NAT_T_OAR
+				    SADB_X_EXT_NAT_T_OAR
+#else
+				    SADB_X_EXT_NAT_T_OA
+#endif
+				    ))
             goto err;
 	}
 #endif
@@ -1766,7 +1781,8 @@ rcpfk_set_sadb_x_natport(rc_vchar_t **msg, struct rcpfk_msg *rc, int type)
 }
 
 static int
-rcpfk_set_sadb_x_natoa(rc_vchar_t **msg, struct rcpfk_msg *rc, struct sockaddr* natoa)
+rcpfk_set_sadb_x_natoa(rc_vchar_t **msg, struct rcpfk_msg *rc,
+		       struct sockaddr *natoa, int exttype)
 {
     rc_vchar_t* buf = NULL;
     struct sadb_address* addr;
@@ -1788,7 +1804,7 @@ rcpfk_set_sadb_x_natoa(rc_vchar_t **msg, struct rcpfk_msg *rc, struct sockaddr* 
     addr = (void*)((uint8_t*)buf->v + prevlen);
 
 	addr->sadb_address_len = PFKEY_UNIT64_U16(extlen);
-    addr->sadb_address_exttype = SADB_X_EXT_NAT_T_OA;
+    addr->sadb_address_exttype = exttype;
     addr->sadb_address_proto = rct2pfk_proto(rc->ul_proto) & 0xff;
     addr->sadb_address_prefixlen = pref;
     addr->sadb_address_reserved = 0;

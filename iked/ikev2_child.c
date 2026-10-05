@@ -1150,6 +1150,46 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 			rc_vfree(saved_ts_r);
 		if (!sel4 && !sel6)
 			goto ts_unacceptable;
+
+		/*
+		 * N3 (RFC 7296 §2.23.1): when the substituted (post-NAT)
+		 * lookup won, narrow the response TS to the single addresses
+		 * we actually matched on, instead of echoing whatever the
+		 * selector's srclist/dstlist expand to.  A wildcard SPD
+		 * (0.0.0.0/0) would otherwise make the response TSi/TSr a
+		 * full range, and the initiator (which runs
+		 * ikev2_ts_substitute on the received TS) aborts the child
+		 * on any range — "Could not perform address substitution",
+		 * no SAD entries on its side (i2inatt-transport-wild).
+		 */
+		if (did_subst && sel4 && !sel6) {
+			struct ikev2_child_param *n3param = &child_sa->child_param;
+			rc_vchar_t *n3i, *n3r;
+
+			/*
+			 * The already-substituted proposed_ts_i/ts_r now hold
+			 * the post-NAT single addresses (192.0.5.254 and
+			 * 192.0.5.1).  Rebuild the response TS as those exact
+			 * endpoints instead of the selector's expansion.
+			 */
+			n3i = ikev2_ts_payload_single(proposed_ts_i);
+			n3r = ikev2_ts_payload_single(proposed_ts_r);
+			if (n3i == NULL || n3r == NULL) {
+				if (n3i)
+					rc_vfree(n3i);
+				if (n3r)
+					rc_vfree(n3r);
+				goto fail_nomem;
+			}
+			if (n3param->ts_i)
+				rc_vfree(n3param->ts_i);
+			if (n3param->ts_r)
+				rc_vfree(n3param->ts_r);
+			n3param->ts_i = n3i;
+			n3param->ts_r = n3r;
+			TRACE((PLOGLOC,
+			    "N3 narrowed response TS to post-NAT endpoints\n"));
+		}
 	}
 #else
 	sel4 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i, proposed_ts_r,

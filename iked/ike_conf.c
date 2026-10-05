@@ -2513,6 +2513,27 @@ ikev2_ts_payload_first_addr(struct ikev2_payload_header *pl)
 	return saddr;
 }
 
+/* Single-address TS payload built from a TS payload's first selector, or
+ * NULL on failure.  RFC 7296 §2.23.1 post-NAT narrowing for the NAT-T
+ * transport response: the narrowed TSi/TSr must be the single endpoints we
+ * substituted, not whatever the (possibly wildcard) SPD selector expands
+ * to.  Caller owns the result. */
+rc_vchar_t *
+ikev2_ts_payload_single(struct ikev2_payload_header *pl)
+{
+	struct sockaddr *saddr;
+	rc_vchar_t *out;
+	int prefixlen;
+
+	saddr = ikev2_ts_payload_first_addr(pl);
+	if (saddr == NULL)
+		return NULL;
+	prefixlen = saddr->sa_family == AF_INET6 ? 128 : 32;
+	out = ts_add_return(NULL, IKEV2_TS_PROTO_ANY, saddr, prefixlen);
+	rc_free(saddr);
+	return out;
+}
+
 int ikev2_addr_substitute(struct ikev2_child_sa *child_sa, 
                           struct ikev2_payload_header *ts_i_pl,
                           struct ikev2_payload_header *ts_r_pl)
@@ -2568,8 +2589,19 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
      */
     err = 0;
     if (init_nated) {
-        if (ike_sa->oa_i == NULL)
-            ike_sa->oa_i = ikev2_ts_payload_first_addr(ts_i_pl);
+        /* N4: the OA must be the ORIGINAL (pre-NAT) address the peer used
+         * to compute the checksum.  From the responder seat that is the
+         * initiator's private address in the received TSi (read before
+         * rewrite); from the initiator seat the received TSi is the
+         * post-NAT address the responder already echoed back, so the
+         * original is the address we ourselves put on the wire:
+         * ike_sa->local. */
+        if (ike_sa->oa_i == NULL) {
+            if (ike_sa->is_initiator)
+                ike_sa->oa_i = rcs_sadup(ike_sa->local);
+            else
+                ike_sa->oa_i = ikev2_ts_payload_first_addr(ts_i_pl);
+        }
         err = ikev2_ts_payload_substitute(ts_i_pl, sub_i);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
@@ -2577,8 +2609,16 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
                  rcs_sa2str_wop(sub_i));
     }
     if (err == 0 && resp_nated) {
-        if (ike_sa->oa_r == NULL)
-            ike_sa->oa_r = ikev2_ts_payload_first_addr(ts_r_pl);
+        /* Symmetric: from the initiator seat the received TSr is the
+         * responder's post-NAT echo, so the responder's original is the
+         * remote address of this IKE SA; from the responder seat it is
+         * the private address in the received TSr before rewrite. */
+        if (ike_sa->oa_r == NULL) {
+            if (ike_sa->is_initiator)
+                ike_sa->oa_r = rcs_sadup(ike_sa->remote);
+            else
+                ike_sa->oa_r = ikev2_ts_payload_first_addr(ts_r_pl);
+        }
         err = ikev2_ts_payload_substitute(ts_r_pl, sub_r);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
