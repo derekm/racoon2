@@ -576,12 +576,58 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		       "(need >= %zu)\n", payload_len, overhead + 1));
 		return NULL;
 	}
-	if (payload_len > packet->l - sizeof(struct ikev2_header)) {
+	/*
+	 * The SKF payload is the first payload here and, like SK, must be
+	 * the last one (RFC 7383 s2.5, RFC 7296 s3.14): it has to end
+	 * exactly at the end of the datagram.  Trailing bytes would not be
+	 * covered by an AEAD tag, and with HMAC the ICV would be read from
+	 * the wrong place.
+	 */
+	if (payload_len != packet->l - sizeof(struct ikev2_header)) {
 		TRACE((PLOGLOC,
-		       "ikev2_frag_recv: payload_len %u exceeds packet\n",
-		       payload_len));
+		       "ikev2_frag_recv: payload_len %u != %zu (SKF must end "
+		       "the message)\n", payload_len,
+		       (size_t)(packet->l - sizeof(struct ikev2_header))));
 		return NULL;
 	}
+
+	/* RFC 7383 s2.5: fragmentation MUST NOT be used unless both peers
+	 * indicated support; the peer never sent FRAGMENTATION_SUPPORTED. */
+	if (!ike_sa->frag_supported) {
+		plog(PLOG_PROTOWARN, PLOGLOC, NULL,
+		     "ikev2_frag_recv: SKF from a peer that did not "
+		     "negotiate fragmentation; dropped\n");
+		return NULL;
+	}
+
+	/*
+	 * RFC 7383 s2.6 checks that need no key, against the queue as it
+	 * stands (nothing is changed until the fragment is authentic):
+	 *  - Total Fragments must not be smaller than the stored value;
+	 *  - same Message ID, Fragment Number and Total Fragments already
+	 *    queued = replay.
+	 */
+	for (item = ike_sa->frag_chain; item; item = item->next)
+		if (item->msgid == msgid)
+			break;
+	if (item) {
+		if (total_frags < item->total_fragments) {
+			TRACE((PLOGLOC,
+			       "ikev2_frag_recv: total_frags %u < stored %u "
+			       "msgid=%u; discarded\n",
+			       total_frags, item->total_fragments, msgid));
+			return NULL;
+		}
+		if (total_frags == item->total_fragments &&
+		    item->parts[frag_no] != NULL) {
+			TRACE((PLOGLOC,
+			       "ikev2_frag_recv: duplicate frag "
+			       "%u/%u msgid=%u\n",
+			       frag_no, total_frags, msgid));
+			return NULL;
+		}
+	}
+	item = NULL;
 
 	/* HMAC ICV is inside SKF payload_length (same as SK). AEAD tag is
 	 * in the ciphertext; skip separate ICV. */
@@ -611,75 +657,6 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 
 	TRACE((PLOGLOC, "ikev2_frag_recv: ICV OK (frag %u/%u)\n",
 	       frag_no, total_frags));
-
-	/* Find or create fragment item in chain */
-	item = ike_sa->frag_chain;
-	prev = &ike_sa->frag_chain;
-	while (item) {
-		if (item->msgid == msgid)
-			break;
-		prev = &item->next;
-		item = item->next;
-	}
-
-	if (item) {
-		/* Existing assembly context found */
-
-		/* Check for duplicate / retransmission */
-		if (frag_no <= item->total_fragments &&
-		    item->parts[frag_no] != NULL) {
-			TRACE((PLOGLOC,
-			       "ikev2_frag_recv: duplicate frag "
-			       "%u/%u msgid=%u\n",
-			       frag_no, total_frags, msgid));
-			return NULL;
-		}
-
-		/* PMTU probe: larger total_frags means smaller fragments */
-		if (total_frags > item->total_fragments) {
-			int i;
-			TRACE((PLOGLOC,
-			       "ikev2_frag_recv: total_frags changed "
-			       "%u -> %u, discarding old assembly\n",
-			       item->total_fragments, total_frags));
-			for (i = 1; i <= item->total_fragments; i++) {
-				if (item->parts[i]) {
-					rc_vfree(item->parts[i]);
-					item->parts[i] = NULL;
-				}
-			}
-			item->num_received = 0;
-			item->total_data_len = 0;
-			item->total_fragments = total_frags;
-			item->timeout = time(NULL) + IKEV2_FRAG_TIMEOUT;
-		}
-	} else {
-		/* Create new assembly context */
-		while (ikev2_frag_count(ike_sa) >= IKEV2_MAX_ASSEMBLIES &&
-		    ike_sa->frag_chain) {
-			item = ike_sa->frag_chain;
-			ike_sa->frag_chain = item->next;
-			ikev2_frag_item_free(item);
-		}
-		item = racoon_calloc(1, sizeof(struct ikev2_frag_item));
-		if (!item) {
-			plog(PLOG_INTERR, PLOGLOC, NULL,
-			     "ikev2_frag_recv: calloc failed\n");
-			return NULL;
-		}
-		item->msgid = msgid;
-		item->total_fragments = total_frags;
-		item->num_received = 0;
-		item->total_data_len = 0;
-		item->timeout = time(NULL) + IKEV2_FRAG_TIMEOUT;
-		memset(item->parts, 0, sizeof(item->parts));
-		item->next = NULL;
-		*prev = item;
-
-		TRACE((PLOGLOC,
-		       "ikev2_frag_recv: new assembly msgid=%u total=%u\n",
-		       msgid, total_frags));
-	}
 
 	/* Decrypt the fragment. HMAC: ICV is inside payload_length.
 	 * AEAD: tag is in ciphertext; AAD is IKE header + SKF header. */
@@ -740,6 +717,69 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		goto fail;
 	}
 	data_len = decrypted->l - pad_length - 1;
+
+	/*
+	 * The fragment is authentic (HMAC ICV checked above, AEAD tag by
+	 * the decrypt).  Only now may it change the queue: restart an
+	 * assembly for a larger Total Fragments, or evict for a new one.
+	 */
+	item = ike_sa->frag_chain;
+	prev = &ike_sa->frag_chain;
+	while (item) {
+		if (item->msgid == msgid)
+			break;
+		prev = &item->next;
+		item = item->next;
+	}
+
+	if (item) {
+		/* Existing assembly context found */
+
+		/* PMTU probe: larger total_frags means smaller fragments */
+		if (total_frags > item->total_fragments) {
+			int i;
+			TRACE((PLOGLOC,
+			       "ikev2_frag_recv: total_frags changed "
+			       "%u -> %u, discarding old assembly\n",
+			       item->total_fragments, total_frags));
+			for (i = 1; i <= item->total_fragments; i++) {
+				if (item->parts[i]) {
+					rc_vfree(item->parts[i]);
+					item->parts[i] = NULL;
+				}
+			}
+			item->num_received = 0;
+			item->total_data_len = 0;
+			item->total_fragments = total_frags;
+			item->timeout = time(NULL) + IKEV2_FRAG_TIMEOUT;
+		}
+	} else {
+		/* Create new assembly context */
+		while (ikev2_frag_count(ike_sa) >= IKEV2_MAX_ASSEMBLIES &&
+		    ike_sa->frag_chain) {
+			item = ike_sa->frag_chain;
+			ike_sa->frag_chain = item->next;
+			ikev2_frag_item_free(item);
+		}
+		for (prev = &ike_sa->frag_chain; *prev; prev = &(*prev)->next)
+			;
+		item = racoon_calloc(1, sizeof(struct ikev2_frag_item));
+		if (!item)
+			goto fail_nomem;
+		item->msgid = msgid;
+		item->total_fragments = total_frags;
+		item->num_received = 0;
+		item->total_data_len = 0;
+		item->timeout = time(NULL) + IKEV2_FRAG_TIMEOUT;
+		memset(item->parts, 0, sizeof(item->parts));
+		item->next = NULL;
+		*prev = item;
+
+		TRACE((PLOGLOC,
+		       "ikev2_frag_recv: new assembly msgid=%u total=%u\n",
+		       msgid, total_frags));
+	}
+
 	if (item->total_data_len + data_len > IKEV2_MAX_REASM) {
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "ikev2_frag_recv: reassembly exceeds %d\n",

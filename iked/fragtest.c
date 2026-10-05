@@ -393,6 +393,8 @@ sa_setup(struct ikev2_sa *sa, enum frag_mode mode)
 	sa->sk_a_i = rc_vnew("abcdefghijklmnopqrstuvwxyz012345", 32);
 	sa->sk_e_r = NULL;
 
+	/* both peers sent IKEV2_FRAGMENTATION_SUPPORTED (RFC 7383 s2.3) */
+	sa->frag_supported = 1;
 	sa->frag_chain = NULL;
 }
 
@@ -875,6 +877,174 @@ test_purge(void)
 	sa_teardown(&sa);
 }
 
+/*
+ * RFC 7383 s2.6: "if reassembling has already started, check that the
+ * value in the Total Fragments field is equal to or greater than the
+ * Total Fragments field in the fragments that have already been stored
+ * ... If any of these tests fail, the message MUST be silently
+ * discarded."  A fragment with a SMALLER total must not be stored.
+ */
+static void
+test_shrink_total(void)
+{
+	struct ikev2_sa sa;
+	uint8_t inner[30];
+	rc_vchar_t *pkt, *f1, *bad, *f2, *f3;
+	uint32_t msgid = 0x5151;
+
+	sa_setup(&sa, MODE_CBC);
+	inner_payload(inner, sizeof(inner), IKEV2_PAYLOAD_NOTIFY);
+	f1 = build_frag(&sa, MODE_CBC, msgid, IKEV2_PAYLOAD_NOTIFY, 1, 3,
+			inner, 10, 0, 0);
+	bad = build_frag(&sa, MODE_CBC, msgid, 0, 2, 2, inner + 10, 10, 0, 0);
+	f2 = build_frag(&sa, MODE_CBC, msgid, 0, 2, 3, inner + 10, 10, 0, 0);
+	f3 = build_frag(&sa, MODE_CBC, msgid, 0, 3, 3, inner + 20, 10, 0, 0);
+
+	ikev2_frag_recv(&sa, f1, NULL, NULL);
+	CHECK(ikev2_frag_recv(&sa, bad, NULL, NULL) == NULL &&
+	      sa.frag_chain != NULL && sa.frag_chain->num_received == 1 &&
+	      sa.frag_chain->parts[2] == NULL &&
+	      sa.frag_chain->total_fragments == 3,
+	      "smaller Total Fragments discarded, not stored (RFC 7383 s2.6)");
+	ikev2_frag_recv(&sa, f2, NULL, NULL);
+	pkt = ikev2_frag_recv(&sa, f3, NULL, NULL);
+	CHECK(pkt != NULL &&
+	      pkt->l == sizeof(struct ikev2_header) + 30 &&
+	      memcmp(pkt->v + sizeof(struct ikev2_header), inner, 30) == 0,
+	      "assembly completes after a discarded smaller-total fragment");
+	if (pkt)
+		rc_vfree(pkt);
+	rc_vfree(f1);
+	rc_vfree(bad);
+	rc_vfree(f2);
+	rc_vfree(f3);
+	sa_teardown(&sa);
+}
+
+/*
+ * RFC 7383 s2.6 orders "Verify IKE Fragment message authenticity" BEFORE
+ * "discard all received fragments and start the reassembly process over".
+ * With AEAD the tag is only checked by the decrypt, so a forged fragment
+ * with a larger Total Fragments (SPIs and Message ID are cleartext) must
+ * not wipe the queue.
+ */
+static void
+test_forged_larger_total_gcm(void)
+{
+	struct ikev2_sa sa;
+	uint8_t inner[20];
+	rc_vchar_t *pkt, *f1, *forged, *f2;
+	uint32_t msgid = 0x5252;
+
+	sa_setup(&sa, MODE_GCM);
+	inner_payload(inner, sizeof(inner), IKEV2_PAYLOAD_NOTIFY);
+	f1 = build_frag(&sa, MODE_GCM, msgid, IKEV2_PAYLOAD_NOTIFY, 1, 2,
+			inner, 10, 0, 0);
+	forged = build_frag(&sa, MODE_GCM, msgid, 0, 2, 3, inner, 10, 0, 0);
+	if (forged)
+		forged->u[forged->l - 1] ^= 0x01;	/* bad AEAD tag */
+	f2 = build_frag(&sa, MODE_GCM, msgid, 0, 2, 2, inner + 10, 10, 0, 0);
+
+	ikev2_frag_recv(&sa, f1, NULL, NULL);
+	CHECK(ikev2_frag_recv(&sa, forged, NULL, NULL) == NULL &&
+	      sa.frag_chain != NULL && sa.frag_chain->num_received == 1 &&
+	      sa.frag_chain->total_fragments == 2,
+	      "forged larger-total AEAD fragment does not reset the queue");
+	pkt = ikev2_frag_recv(&sa, f2, NULL, NULL);
+	CHECK(pkt != NULL &&
+	      pkt->l == sizeof(struct ikev2_header) + 20 &&
+	      memcmp(pkt->v + sizeof(struct ikev2_header), inner, 20) == 0,
+	      "genuine assembly completes after the forged fragment");
+	if (pkt)
+		rc_vfree(pkt);
+	rc_vfree(f1);
+	rc_vfree(forged);
+	rc_vfree(f2);
+	sa_teardown(&sa);
+}
+
+/*
+ * Same ordering rule for a NEW assembly: a forged AEAD fragment for an
+ * unseen Message ID must not evict a genuine in-progress assembly when
+ * the chain is full.
+ */
+static void
+test_forged_no_eviction_gcm(void)
+{
+	struct ikev2_sa sa;
+	uint8_t inner[8];
+	rc_vchar_t *p;
+	int i;
+
+	sa_setup(&sa, MODE_GCM);
+	inner_payload(inner, sizeof(inner), IKEV2_PAYLOAD_NOTIFY);
+	for (i = 1; i <= IKEV2_MAX_ASSEMBLIES; i++) {
+		p = build_frag(&sa, MODE_GCM, 0x5300 + i, IKEV2_PAYLOAD_NOTIFY,
+			       1, 2, inner, 8, 0, 0);
+		ikev2_frag_recv(&sa, p, NULL, NULL);
+		rc_vfree(p);
+	}
+	p = build_frag(&sa, MODE_GCM, 0x53ff, IKEV2_PAYLOAD_NOTIFY,
+		       1, 2, inner, 8, 0, 0);
+	if (p)
+		p->u[p->l - 1] ^= 0x01;	/* bad AEAD tag */
+	CHECK(ikev2_frag_recv(&sa, p, NULL, NULL) == NULL &&
+	      chain_count(&sa) == IKEV2_MAX_ASSEMBLIES &&
+	      chain_has_msgid(&sa, 0x5301) && !chain_has_msgid(&sa, 0x53ff),
+	      "forged new-msgid AEAD fragment evicts no genuine assembly");
+	rc_vfree(p);
+	sa_teardown(&sa);
+}
+
+/* RFC 7383 s2.5: no fragments unless both peers indicated support */
+static void
+test_not_negotiated(void)
+{
+	struct ikev2_sa sa;
+	uint8_t inner[8];
+	rc_vchar_t *p;
+
+	sa_setup(&sa, MODE_CBC);
+	sa.frag_supported = 0;
+	inner_payload(inner, sizeof(inner), IKEV2_PAYLOAD_NOTIFY);
+	p = build_frag(&sa, MODE_CBC, 0x5454, IKEV2_PAYLOAD_NOTIFY,
+		       1, 1, inner, 8, 0, 0);
+	CHECK(ikev2_frag_recv(&sa, p, NULL, NULL) == NULL &&
+	      sa.frag_chain == NULL,
+	      "SKF rejected when fragmentation was not negotiated");
+	rc_vfree(p);
+	sa_teardown(&sa);
+}
+
+/*
+ * The Encrypted Fragment payload is the last payload (RFC 7383 s2.5,
+ * RFC 7296 s3.14): bytes after it are not covered by the AEAD and must
+ * not be accepted.  A single-fragment GCM message with trailing junk
+ * still decrypts, so the reassembler must check the length itself.
+ */
+static void
+test_trailing_bytes_gcm(void)
+{
+	struct ikev2_sa sa;
+	uint8_t inner[8];
+	rc_vchar_t *p, *q, *pkt;
+
+	sa_setup(&sa, MODE_GCM);
+	inner_payload(inner, sizeof(inner), IKEV2_PAYLOAD_NOTIFY);
+	p = build_frag(&sa, MODE_GCM, 0x5555, IKEV2_PAYLOAD_NOTIFY,
+		       1, 1, inner, 8, 0, 0);
+	q = rc_vmalloc(p->l + 4);
+	memcpy(q->v, p->v, p->l);
+	memset(q->v + p->l, 0xee, 4);
+	pkt = ikev2_frag_recv(&sa, q, NULL, NULL);
+	CHECK(pkt == NULL, "bytes after the SKF payload rejected");
+	if (pkt)
+		rc_vfree(pkt);
+	rc_vfree(p);
+	rc_vfree(q);
+	sa_teardown(&sa);
+}
+
 int
 main(void)
 {
@@ -899,6 +1069,11 @@ main(void)
 	test_eviction();
 	test_expiry();
 	test_purge();
+	test_shrink_total();
+	test_forged_larger_total_gcm();
+	test_forged_no_eviction_gcm();
+	test_not_negotiated();
+	test_trailing_bytes_gcm();
 
 	printf("1..%d\n", checks);
 	if (failures) {
