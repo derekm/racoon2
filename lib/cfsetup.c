@@ -4141,8 +4141,10 @@ rcf_get_remotebypeersid(rc_type id_type, rc_vchar_t *id_val, rc_type proto,
 			    "invalid kmp type %s\n", rct2str(proto));
 			return -1;
 		}
+		/* a remote without this kmp or without peers_id cannot
+		 * match by ID; keep looking at the remotes after it */
 		if (!kmp || !kmp->peers_id)
-			return -1;
+			continue;
 		for (idp = kmp->peers_id; idp != 0; idp = idp->next) {
 			if (cmp(id_type, id_val, idp) == 0) {
 				src = n;

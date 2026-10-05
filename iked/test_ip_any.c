@@ -434,6 +434,44 @@ test_lookup_two_initiators_ip_rw(void)
 	two_initiators("IP_RW");
 }
 
+/*
+ * N7: a remote without peers_id (here one keyed by address only) listed
+ * before the wildcard remote must be skipped, not end the search.
+ */
+static void
+test_lookup_skips_remote_without_peers_id(void)
+{
+	char *path;
+
+	path = write_conf(
+	    "remote plain {\n"
+	    "\tacceptable_kmp { ikev2; };\n"
+	    "\tikev2 {\n"
+	    "\t\tpeers_ipaddr \"192.0.2.99\" port 500;\n"
+	    "\t\tmy_id fqdn \"resp.test\";\n"
+	    "\t};\n"
+	    "};\n"
+	    "remote rw {\n"
+	    "\tacceptable_kmp { ikev2; };\n"
+	    "\tikev2 {\n"
+	    "\t\tpassive on;\n"
+	    "\t\tmy_id fqdn \"resp.test\";\n"
+	    "\t\tpeers_id ipaddr \"IP_ANY\";\n"
+	    "\t};\n"
+	    "};\n");
+	TEST_CHECK(rcf_read(path, 0) == 0);
+	unlink(path);
+
+	TEST_CHECK(rcf_remote_head != NULL &&
+		   rcf_remote_head->ikev2 != NULL &&
+		   rcf_remote_head->ikev2->peers_id == NULL);
+	TEST_CHECK(lookup_remote(PEER4_A, "rw") == 0);
+	TEST_CHECK(lookup_remote(PEER4_B, "rw") == 0);
+
+	rcf_clean();
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -447,6 +485,7 @@ main(int argc, char *argv[])
 	RUN_TEST(test_selector_by_addr);
 	RUN_TEST(test_lookup_two_initiators_ip_any);
 	RUN_TEST(test_lookup_two_initiators_ip_rw);
+	RUN_TEST(test_lookup_skips_remote_without_peers_id);
 
 	rbuf_clean();
 	plog_clean();
