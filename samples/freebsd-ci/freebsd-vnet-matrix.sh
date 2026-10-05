@@ -200,12 +200,13 @@ fbsd_comply() {
 	*-esp-ctr*)   : ;;
 	esac
 	# claimed set = {AES-CBC (12), AES-GCM-ICV16 (20)}.  This tree's
-	# aes_gcm maps to ICV16 id 20 (ike_conf.c:2779: keylens 16/24/32 ->
-	# id 20); ids 7/8/9 (Blowfish/3DES/DES) and 13 (AES-CTR) are NOT in
+	# aes_gcm maps to ICV16 id 20 (the ALG_ENC(RCT_ALG_AES_GCM, ...) rows
+	# in iked/ike_conf.c: keylens 16/24/32 -> id 20); AES-GCM ICV8/ICV12
+	# (18/19), AES-CTR (13) and the legacy ids (3 = 3DES, 7 = BLOWFISH,
+	# 8 = 3IDEA, 9 = DES_IV32 per the IANA IKEv2 ENCR registry) are NOT in
 	# the NDcPP v3.0e claim set and must not count as PASS.  A CTR cipher
 	# observed on the wire (id 13) is downgraded to INFO below.
 	# _a4=1 claimed-set cipher (12/20); _a4c=1 AES-CTR observed (id 13).
-	# None of 7/8/9 (Blowfish/3DES/DES) count toward the claim.
 	_a4=0; _a4c=0
 	for _lg in resp-iked.log init-iked.log; do
 		AF "/tmp/freeb/$_lg" | grep -qE 'child ENCR transform_id=(12|20)|AES-GCM' && _a4=1 || true
