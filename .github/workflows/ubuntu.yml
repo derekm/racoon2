@@ -1,10 +1,12 @@
 # Ubuntu CI Build & Test for racoon2.
-# Two build jobs share the same unit suite:
+# Three build jobs share the same unit suite:
 #   - build-xfrm: NETLINK_XFRM (the Linux default). On success this
 #     triggers the live integration matrix (integration.yml).
 #   - build-pfkey: the Linux pfkey compat socket. Compile-sanity only —
 #     Linux pfkey is lossy (drops kernel->user datagrams on rcvbuf fill),
 #     so no live integration runs against this build.
+#   - build-asan: NETLINK_XFRM under ASan+UBSan, plus one-datagram
+#     pre-auth negative tests against the sanitized iked.
 # Same unit suite as netbsd.yml on both backends.
 
 name: Ubuntu build & test
@@ -113,6 +115,58 @@ jobs:
         if: failure()
         run: |
           for f in iked/test-suite.log iked/eaytest.log iked/evlooptest.log iked/workerstest.log; do
+            if [ -f "$f" ]; then echo "== $f =="; cat "$f"; fi
+          done
+
+  build-asan:
+    name: 'Ubuntu ASan+UBSan build (unit suite + pre-auth one-datagram negatives)'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
+            libssl-dev libkrb5-dev libpcap-dev bison flex python3
+
+      # gcc's ASan runtime cannot map its shadow with the 32-bit mmap
+      # randomisation of current runner kernels (random DEADLYSIGNAL at
+      # start-up); 28 bits is the value ASan supports.
+      - name: ASan-compatible mmap randomisation
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Bootstrap
+        run: autoreconf -fi
+
+      - name: Configure (ASan + UBSan, UBSan errors fatal)
+        run: |
+          ./configure --prefix=/usr/local/racoon2 \
+            CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined" \
+            LDFLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        run: make -j2
+
+      - name: 'Unit suite under ASan/UBSan (lib)'
+        run: make -C lib check
+
+      - name: 'Unit suite under ASan/UBSan (iked)'
+        run: make -C iked check
+
+      # F1 (zero-length NAT_DETECTION notify in IKE_SA_INIT) and F2 (IKEv1
+      # header announcing a fragment with no fragment header): one
+      # unauthenticated datagram each against a fresh ASan iked; iked must
+      # survive, log the guard and leave no sanitizer report.
+      - name: 'Pre-auth one-datagram negatives (F1, F2) against ASan iked'
+        run: sudo bash samples/linux-matrix/tools/preauth_oneshot.sh .
+
+      - name: 'Dump unit logs on failure'
+        if: failure()
+        run: |
+          for f in lib/test-suite.log iked/test-suite.log; do
             if [ -f "$f" ]; then echo "== $f =="; cat "$f"; fi
           done
 
