@@ -2210,8 +2210,9 @@ isakmp_send(struct ph1handle *iph1, rc_vchar_t *sbuf)
 	int s;
 	rc_vchar_t *vbuf = NULL;
 
+	size_t extralen = 0;
 #ifdef ENABLE_NATT
-	size_t extralen = NON_ESP_MARKER_USE(iph1) ? NON_ESP_MARKER_LEN : 0;
+	extralen = NON_ESP_MARKER_USE(iph1) ? NON_ESP_MARKER_LEN : 0;
 
 	/*
 	 * Do not add the non ESP marker for a packet that will

@@ -150,6 +150,11 @@ if test x"$enable_natt" = x"yes"; then
 	IKEV2_SRC="${IKEV2_SRC} \$(IKEV2_NATT_SRC)"
   fi
 fi
+# NAT-T unit tests (test_ts_substitute etc.) reference symbols that only
+# exist under ENABLE_NATT (ike_conf.c ikev2_addr_substitute), so they
+# must be gated like the source above: a --disable-natt build would
+# otherwise fail to link them (review G1).
+AM_CONDITIONAL([NATT], [test x"$enable_natt" = x"yes"])
 
 # Checks for typedefs, structures, and compiler characteristics.
 AC_C_CONST

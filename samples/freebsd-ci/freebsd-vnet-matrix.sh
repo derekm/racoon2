@@ -1151,6 +1151,13 @@ case "$_name" in
 	ky_i=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/init-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1)
 	ky_r=$(grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" /tmp/freeb/resp-iked.log 2>/dev/null | grep -oE "sha256=[0-9a-f]+" | tail -1)
 	pfs_ok=0
+	# Two proof arms (intentionally asymmetric vs the *i2ike-addke* gate
+	# below, which demands BOTH type-6 and matching Y): the strong arm is
+	# the matching g_ir_present=Y keymat hash on both seats -- the KEM was
+	# actually used and both sides derived the same SK(1).  The t6 arm
+	# covers rows where the responder rekey's SA_hex proposal dump is not
+	# captured (PLOG level), so requiring t6>=1 there would false-red a
+	# genuinely-PQC rekey.  Y-keymat match alone is the higher bar.
 	if [ "${npc_i:-0}" -eq 0 ] && [ "${npc_r:-0}" -eq 0 ] \
 	   && [ "${ri:-0}" -ge 1 ] && [ "${rr:-0}" -ge 1 ]; then
 		if [ -n "$ky_i" ] && [ "$ky_i" = "$ky_r" ]; then
