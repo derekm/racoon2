@@ -555,14 +555,30 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 				}
 				}
 
-				/* A reassembled SKF request skipped ICV/ordering/retransmit_forced
-			* above.  If it is a retransmission of a request we already
-			* answered, replay response_info and do not re-enter the handler
-			* (that path answers STATE_NOT_FOUND / mints a second child once
-			* the original exchange has completed). */
-			if (reassembled &&
-			ikev2_retransmit_forced(ike_sa, message_id, is_response) != 0)
-			goto end;
+		/*
+		 * A reassembled SKF message was authenticated and decrypted
+		 * fragment by fragment in ikev2_frag_recv(), so it skipped the
+		 * block above.  RFC 7383 s2.6: it "is processed as if it was
+		 * received, verified, and decrypted as a regular IKE message",
+		 * which includes the Message ID window (RFC 7296 s2.2).  A
+		 * retransmission of the request we last answered replays the
+		 * armed response; anything else outside the window is dropped,
+		 * or a captured old fragment set would re-enter its handler.
+		 */
+		if (reassembled) {
+			if (ikev2_retransmit_forced(ike_sa, message_id,
+			    is_response) != 0)
+				goto end;
+			if (ikev2_check_message_ordering(ike_sa, message_id,
+			    is_response, local, remote) != 0) {
+				isakmp_log(ike_sa, local, remote, packet,
+					   PLOG_DEBUG, PLOGLOC,
+					   "dropping unordered message (id %d)\n",
+					   message_id);
+				++isakmpstat.unordered;
+				goto end;
+			}
+		}
 
 			/* (draft-17)
 		 * Receipt of a fresh cryptographically protected message on an IKE_SA
@@ -808,11 +824,10 @@ ikev2_update_message_id(struct ikev2_sa *ike_sa, uint32_t message_id,
 	} else {
 		TRACE((PLOGLOC, "update request message_id 0x%x\n",
 		       message_id));
-		/* Fragmented messages skip ikev2_check_message_ordering()
-		 * (they are dispatched straight after reassembly), so an
-		 * out-of-order/duplicate fragmented request can reach here
-		 * with a stale id.  That must NOT abort the daemon: drop it
-		 * and leave recv_message_id untouched (review R2). */
+		/* ikev2_input() checks the window for SK and reassembled
+		 * SKF messages alike, so a stale id should not get here; if
+		 * one does, it must NOT abort the daemon: drop it and leave
+		 * recv_message_id untouched (review R2). */
 		if (ike_sa->recv_message_id != message_id) {
 			plog(PLOG_PROTOERR, PLOGLOC, NULL,
 			     "update_message_id: request id %u != expected %u; dropping (unordered) request\n",
