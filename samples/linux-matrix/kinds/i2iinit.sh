@@ -1107,7 +1107,7 @@ fi
 	# SHA-256 PKCS#1 v1.5), and the iked responder must have verified that
 	# AUTH as method 14.
 	sig_ok=1
-	sig_want=""; sig_iked=""
+	sig_want=""; sig_iked=""; sig_method=""
 	case "$name" in
 	*-rsa-pss-*)
 		sig_want='RSA_EMSA_PSS_SHA2_256_SALT_32'
@@ -1115,16 +1115,24 @@ fi
 	*-rsa-sha512-*)
 		sig_want='RSA_EMSA_PKCS1_SHA2_512'
 		sig_iked='RFC 7427 signature verified: RSASSA-PKCS1-v1_5 SHA512' ;;
+	*-rsa-sha1-*)
+		# F6: legacy AUTH_RSA (method 1, SHA-1).  Charon logs
+		# RSA_EMSA_PKCS1_NULL or RSA_EMSA_PKCS1_SHA1; iked must verify
+		# method 1 via DigestInfo (not the SHA256-only path).
+		sig_want='RSA_EMSA_PKCS1_(NULL|SHA1)'
+		sig_iked='AUTH method 1 signature verified: RSASSA-PKCS1-v1_5 SHA1'
+		sig_method='auth method 1' ;;
 	esac
 	if [ -n "$sig_want" ]; then
+		sig_method=${sig_method:-auth method 14}
 		if grep -qE "authentication of .* \(myself\) with $sig_want successful" \
 		       "$D/charon-init.log" 2>/dev/null &&
-		   grep -q 'auth method 14' "$D/resp-iked.log" 2>/dev/null &&
+		   grep -qF "$sig_method" "$D/resp-iked.log" 2>/dev/null &&
 		   grep -qF "$sig_iked" "$D/resp-iked.log" 2>/dev/null; then
-			log "RFC 7427 scheme OK: charon signed $sig_want, iked: $sig_iked"
+			log "signature scheme OK: charon signed $sig_want, iked $sig_method / $sig_iked"
 		else
 			sig_ok=0
-			log "FAIL: RFC 7427 scheme $sig_want not signed by charon / verified by iked"
+			log "FAIL: scheme $sig_want not signed by charon / verified by iked ($sig_method)"
 			grep -E '\(myself\) with|signature|AUTHENTICATION_FAILED' \
 			    "$D/charon-init.log" 2>/dev/null | tail -4
 			grep -iE 'auth method|RFC 7427|signature|verif' "$D/resp-iked.log" \

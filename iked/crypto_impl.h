@@ -75,6 +75,9 @@ extern rc_vchar_t *eay_rsassa_pkcs1_v1_5_sign (const char *, rc_vchar_t *,
 						   rc_vchar_t *);
 extern int eay_rsassa_pkcs1_v1_5_verify (const char *, rc_vchar_t *,
 					     rc_vchar_t *, rc_vchar_t *);
+/* IKEv2 AUTH method 1: recover DigestInfo, accept SHA-1 or SHA-256 */
+extern int eay_rsassa_pkcs1_v1_5_verify_auth (rc_vchar_t *, rc_vchar_t *,
+					     rc_vchar_t *);
 
 /* DSS */
 extern rc_vchar_t *eay_dss_sign (rc_vchar_t *, rc_vchar_t *);

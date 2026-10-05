@@ -219,13 +219,15 @@ i2i_peer_i_conf() {
 		# 'CN=charon-i2i' (myself) with RSA signature failed` right at
 		# IKE_AUTH, after the ADDKE round.  The responder must speak RFC
 		# 7427 to match; sha-256 is what iked negotiates.
-		# F7 rows pick charon's OWN signature scheme (what iked must
+		# F7/F6 rows pick charon's OWN signature scheme (what iked must
 		# verify): -rsa-pss = RSASSA-PSS/SHA-256, -rsa-sha512 =
-		# PKCS#1 v1.5/SHA-512 (needs iked to list SHA2-512 in 16431).
-		# The remote constraint stays what iked signs (SHA-256 v1.5).
+		# PKCS#1 v1.5/SHA-512 (needs iked to list SHA2-512 in 16431),
+		# -rsa-sha1 = legacy AUTH_RSA method 1 (SHA-1 DigestInfo).
+		# The remote constraint stays what iked signs (SHA-256 v1.5 / DS).
 		case "$_name" in
 		*-rsa-pss-*)    _lauth='ike:rsa/pss-sha256' ;;
 		*-rsa-sha512-*) _lauth='ike:pubkey-sha512' ;;
+		*-rsa-sha1-*)   _lauth='rsa' ;;
 		*)              _lauth='ike:pubkey-sha256-sha384-sha512' ;;
 		esac
 		_auth_local='		local {
