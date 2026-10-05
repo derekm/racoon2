@@ -123,6 +123,20 @@ kind_i2iinit() {
 	case "$name" in
 	*-ppk-charonr) I2I_PPK_MANDATORY=1 ;;
 	esac
+	# ppk_mandatory refuses the SHA-256(ppk_id) test default (a213b35:
+	# fail closed when the secret file is missing), so a mandatory row
+	# provisions $SYSCONFDIR/ppk/<ppk_id>.bin with the same 32 bytes the
+	# charon seat's secrets.ppk carries (I2I_PPK_HEX); removed at cleanup.
+	# Never inherit one: optional-PPK rows keep testing the default path.
+	PPK_FILE="$ETC/ppk/${I2I_PPK_ID}.bin"
+	rm -f "$PPK_FILE"
+	if [ "$I2I_PPK" = 1 ] && [ "$I2I_PPK_MANDATORY" = 1 ]; then
+		mkdir -p "$ETC/ppk"
+		( umask 077
+		  printf "$(printf '%s' "$I2I_PPK_HEX" | sed 's/../\\x&/g')" > "$PPK_FILE" )
+		[ "$(od -An -tx1 "$PPK_FILE" | tr -d ' \n')" = "$I2I_PPK_HEX" ] || {
+			log "FAIL: could not provision $PPK_FILE"; return 1; }
+	fi
 	PPK_TXT=""
 	if [ "$I2I_PPK" = 1 ]; then
 		if [ "$I2I_PPK_MANDATORY" = 1 ]; then
@@ -949,6 +963,7 @@ fi
 	i2i_peer_i_cleanup "$PEER"
 	i2i_peer_r_cleanup "$PEER_R" "$name"
 	pkill -9 -f "$C/" 2>/dev/null || true
+	rm -f "$PPK_FILE"
 	rm -f /etc/strongswan/swanctl/conf.d/r2-${name}.conf
 	sleep 1
 	ip netns del "$NSR" 2>/dev/null || true
