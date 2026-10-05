@@ -2509,6 +2509,52 @@ ikev2_sadb_zero_transport_ports(struct sockaddr *src, struct sockaddr *dst,
 		*p = 0;
 }
 
+
+#ifdef ENABLE_NATT
+/* N4: pass original TS addresses as SADB_X_EXT_NAT_T_OAI/OAR for checksum fixup. */
+static void
+ikev2_sadb_natt_oa(struct rcpfk_msg *param, struct ikev2_child_sa *child_sa,
+    int outbound)
+{
+	struct ikev2_sa *ike_sa;
+	struct sockaddr *my_oa, *peer_oa;
+
+	if (param == NULL || child_sa == NULL || child_sa->parent == NULL)
+		return;
+	/* natt_type is assigned later in ikev2_sadb_update; pfkey only
+	 * emits NAT_T_OA when natt_type is set, so fill the oa pointers
+	 * unconditionally when originals are known. */
+	ike_sa = child_sa->parent;
+	my_oa = ike_sa->is_initiator ? ike_sa->oa_i : ike_sa->oa_r;
+	peer_oa = ike_sa->is_initiator ? ike_sa->oa_r : ike_sa->oa_i;
+	if (outbound) {
+		if (my_oa) {
+			memcpy(&param->sa_natoa_src_storage, my_oa, SA_LEN(my_oa));
+			param->sa_natoa_src = (struct sockaddr *)&param->sa_natoa_src_storage;
+		}
+		if (peer_oa) {
+			memcpy(&param->sa_natoa_dst_storage, peer_oa, SA_LEN(peer_oa));
+			param->sa_natoa_dst = (struct sockaddr *)&param->sa_natoa_dst_storage;
+		}
+	} else {
+		if (peer_oa) {
+			memcpy(&param->sa_natoa_src_storage, peer_oa, SA_LEN(peer_oa));
+			param->sa_natoa_src = (struct sockaddr *)&param->sa_natoa_src_storage;
+		}
+		if (my_oa) {
+			memcpy(&param->sa_natoa_dst_storage, my_oa, SA_LEN(my_oa));
+			param->sa_natoa_dst = (struct sockaddr *)&param->sa_natoa_dst_storage;
+		}
+	}
+	if (param->sa_natoa_src || param->sa_natoa_dst)
+		plog(PLOG_INFO, PLOGLOC, NULL,
+		     "NAT-T OA for %s SA: src=%s dst=%s\n",
+		     outbound ? "outbound" : "inbound",
+		     param->sa_natoa_src ? rcs_sa2str_wop(param->sa_natoa_src) : "-",
+		     param->sa_natoa_dst ? rcs_sa2str_wop(param->sa_natoa_dst) : "-");
+}
+#endif
+
 static int
 ikev2_sadb_outbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 		    void *data)
@@ -2536,6 +2582,7 @@ ikev2_sadb_outbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 
 #ifdef ENABLE_NATT
 	ikev2_sadb_natt_snapshot(param, my_addr, peer_addr);
+	ikev2_sadb_natt_oa(param, child_sa, 1);
 #endif
 	ikev2_sadb_zero_transport_ports(my_addr, peer_addr,
 	    ike_ipsec_mode(p));
@@ -2581,6 +2628,7 @@ ikev2_sadb_inbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 
 #ifdef ENABLE_NATT
 	ikev2_sadb_natt_snapshot(param, peer_addr, my_addr);
+	ikev2_sadb_natt_oa(param, child_sa, 0);
 #endif
 	ikev2_sadb_zero_transport_ports(peer_addr, my_addr,
 	    ike_ipsec_mode(p));

@@ -2492,6 +2492,27 @@ ikev2_ts_payload_substitute(struct ikev2_payload_header *pl,
     return 0;
 }
 
+/* First start-address of a TS payload, or NULL.  Caller owns the copy. */
+static struct sockaddr *
+ikev2_ts_payload_first_addr(struct ikev2_payload_header *pl)
+{
+	struct ikev2payl_traffic_selector *payl;
+	struct ikev2_traffic_selector *ts;
+	struct sockaddr *saddr = NULL, *eaddr = NULL;
+
+	if (pl == NULL)
+		return NULL;
+	payl = (struct ikev2payl_traffic_selector *)pl;
+	if (payl->tsh.num_ts == 0)
+		return NULL;
+	ts = (struct ikev2_traffic_selector *)(payl + 1);
+	if (ikev2_retreive_ts_addr(ts, &saddr, &eaddr) != 0)
+		return NULL;
+	if (eaddr)
+		rc_free(eaddr);
+	return saddr;
+}
+
 int ikev2_addr_substitute(struct ikev2_child_sa *child_sa, 
                           struct ikev2_payload_header *ts_i_pl,
                           struct ikev2_payload_header *ts_r_pl)
@@ -2534,8 +2555,21 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     sub_i = ike_sa->is_initiator ? ike_sa->local : ike_sa->remote;
     sub_r = ike_sa->is_initiator ? ike_sa->remote : ike_sa->local; 
 
+    /*
+     * N4 (RFC 3948 §3.1.2 / 7296 §2.23.1): stash the original TS addresses
+     * into oa_i/oa_r before rewriting, for PF_KEY SADB_X_EXT_NAT_T_OA
+     * checksum fixup.  Responder: originals are what the peer sent (private
+     * IP).  Initiator: originals are the substitute targets (our/peer
+     * endpoints), because the response TSs already carry post-NAT addresses.
+     */
     err = 0;
     if (init_nated) {
+        if (ike_sa->oa_i == NULL) {
+            if (ike_sa->is_initiator)
+                ike_sa->oa_i = rcs_sadup(sub_i);
+            else
+                ike_sa->oa_i = ikev2_ts_payload_first_addr(ts_i_pl);
+        }
         err = ikev2_ts_payload_substitute(ts_i_pl, sub_i);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
@@ -2543,6 +2577,12 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
                  rcs_sa2str_wop(sub_i));
     }
     if (err == 0 && resp_nated) {
+        if (ike_sa->oa_r == NULL) {
+            if (ike_sa->is_initiator)
+                ike_sa->oa_r = rcs_sadup(sub_r);
+            else
+                ike_sa->oa_r = ikev2_ts_payload_first_addr(ts_r_pl);
+        }
         err = ikev2_ts_payload_substitute(ts_r_pl, sub_r);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,

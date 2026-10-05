@@ -1679,6 +1679,15 @@ NEOF
 			_bad="N3: no 'substituted TSi with 192.0.5.254' in responder log (wildcard SPD matched private TSi?)"
 		fi
 	fi
+	# N4: original TSi (10.9.0.2) must be installed as NAT-OA on the SA
+	# so TCP checksum fixup can use it (RFC 3948 §3.1.2).
+	if [ -z "$_bad" ]; then
+		if grep -qE 'NAT-T OA for (inbound|outbound) SA:.*10\.9\.0\.2' "$FR" 2>/dev/null; then
+			echo "row $_name: N4 OK - NAT-OA carries original TSi 10.9.0.2"
+		else
+			_bad="N4: no NAT-OA with original TSi 10.9.0.2 in responder log"
+		fi
+	fi
 	if [ -z "$_bad" ]; then
 		if [ "$_wild" = 1 ]; then
 			echo "row $_name: N3 NAT-T wildcard OK - esp-udp SAs, ICMP+TCP, TSi substituted to 192.0.5.254"
