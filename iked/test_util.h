@@ -72,7 +72,7 @@ do {                                                                           \
 } while (0)
 
 /* Print the summary and return the process exit status. */
-static int
+static inline int
 test_exit_status(void)
 {
 	printf("\n%d checks, %d failures\n", test_count, test_failures);

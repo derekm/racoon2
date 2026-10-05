@@ -1249,20 +1249,22 @@ ike_compare_id(rc_type rc_id_type, rc_vchar_t *id_val, struct rc_idlist *id)
 	if (rc_id_type != id->idtype)
 		return -1;
 
-    /* IP_ANY / IP_RW (historic racoon2 synonym, deprecated alias) match
-     * ANY presented peer ID-IPv4/IPv6 address.  This MUST be side-effect
-     * free: the config's rc_idlist entry is the GLOBAL remote's peers_id
-     * (reached pre-AUTH via rcf_get_remotebypeersid), so rewriting id->id
-     * to the peer-asserted address here (the old pin behaviour) let one
-     * unauthenticated peer poison the wildcard remote and break every
-     * other road-warrior until reload (RFC 4301 s4.4.3 PAD match must not
-     * mutate config; RFC 7296 s2.15 ID is not trusted before AUTH).
-     * Match iff the presented value is a plausible IPv4/IPv6 address. */
-    if (rc_id_type == RCT_IDT_IPADDR && id->id != NULL &&
-        ((id->id->l == 6 && memcmp(id->id->v, "IP_ANY", 6) == 0) ||
-         (id->id->l == 5 && memcmp(id->id->v, "IP_RW", 5) == 0)))
-        return (id_val && (id_val->l == sizeof(struct in_addr) ||
-                           id_val->l == sizeof(struct in6_addr))) ? 0 : -1;
+	/*
+	 * IP_ANY / IP_RW (historic racoon2 synonym, deprecated alias) match
+	 * ANY presented peer ID-IPv4/IPv6 address.  This MUST be side-effect
+	 * free: the config's rc_idlist entry is the GLOBAL remote's peers_id
+	 * (reached pre-AUTH via rcf_get_remotebypeersid), so rewriting id->id
+	 * to the peer-asserted address here (the old pin behaviour) let one
+	 * unauthenticated peer poison the wildcard remote and break every
+	 * other road-warrior until reload (RFC 4301 s4.4.3 PAD match must not
+	 * mutate config; RFC 7296 s2.15 ID is not trusted before AUTH).
+	 * Match iff the presented value is a plausible IPv4/IPv6 address.
+	 */
+	if (rc_id_type == RCT_IDT_IPADDR && id->id != NULL &&
+	    ((id->id->l == 6 && memcmp(id->id->v, "IP_ANY", 6) == 0) ||
+	     (id->id->l == 5 && memcmp(id->id->v, "IP_RW", 5) == 0)))
+		return (id_val && (id_val->l == sizeof(struct in_addr) ||
+				   id_val->l == sizeof(struct in6_addr))) ? 0 : -1;
 
 	data = ike_identifier_data(id, &dummy);
 	if (!data)
