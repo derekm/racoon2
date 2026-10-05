@@ -963,6 +963,22 @@ esac
 # generation ADDKE, IKE_SA ADDKE rekey); Linux twin: kinds/i2i_rekey.sh ---
 fb_ys() { grep -oE "sha256=[0-9a-f]+ g_ir_present=Y" "$1" 2>/dev/null | grep -oE "[0-9a-f]{64}" | awk '!s[$0]++'; }
 fb_first() { grep -oE "g_ir_present=[Yn]" "$1" 2>/dev/null | head -1; }
+# The keymat line is written at SA install (ikev2_add_ipsec_sa).  The rekey
+# RESPONDER can answer the last exchange and install a moment after the
+# rekey initiator has already logged, so a single read right after the
+# initiator finished can see the responder's line still missing (seen once
+# on 16.0-CURRENT, i2iinit-clresp-legacy: identical SA keys in both jails,
+# i=none).  Wait (bounded) for both seats' first Y keymat before the
+# unchanged match assertion; the -gens/-ikerekey branches already poll.
+fb_wait_first() {
+	_w=0
+	while [ "$_w" -lt 30 ]; do
+		_a=$(fb_ys $FI | head -1); _b=$(fb_ys $FR | head -1)
+		[ -n "$_a" ] && [ "$_a" = "$_b" ] && return 0
+		_w=$((_w+1)); sleep 1
+	done
+	return 1
+}
 FI=/tmp/freeb/init-iked.log; FR=/tmp/freeb/resp-iked.log
 rk_fail() { echo "FAIL row $_name: $*"; gate_why="rekey-family gate: $*"; up=0; }
 case "$_name" in
@@ -977,6 +993,7 @@ case "$_name" in
 	_bad=""
 	grep -q "initial_child_ke $_why: rekeying the IKE_AUTH child" "$_kl" || _bad="no initial_child_ke $_why rekey line"
 	[ "$(fb_first $FI)" = "g_ir_present=n" ] && [ "$(fb_first $FR)" = "g_ir_present=n" ] || _bad="${_bad:+$_bad; }first child not the plain IKE_AUTH child (i=$(fb_first $FI) r=$(fb_first $FR))"
+	fb_wait_first || true
 	_yi=$(fb_ys $FI | head -1); _yr=$(fb_ys $FR | head -1)
 	[ -n "$_yi" ] && [ "$_yi" = "$_yr" ] || _bad="${_bad:+$_bad; }no matching first Y keymat (i=${_yi:-none} r=${_yr:-none})"
 	[ "$(grep -cE 'CREATE_CHILD_SA request SA_hex=.*06000024' "$_pl" 2>/dev/null || true)" -ge 1 ] || _bad="${_bad:+$_bad; }no type-6 in the rekey request"
@@ -1000,6 +1017,7 @@ case "$_name" in
 	grep -q "sending modified (SA-less) IKE_AUTH" $FI || _bad="initiator sent no childless IKE_AUTH"
 	grep -q "received childless (SA-less) IKE_AUTH" $FR || _bad="${_bad:+$_bad; }responder saw no childless IKE_AUTH"
 	[ "$(fb_first $FI)" = "g_ir_present=Y" ] && [ "$(fb_first $FR)" = "g_ir_present=Y" ] || _bad="${_bad:+$_bad; }first child keymat not Y (i=$(fb_first $FI) r=$(fb_first $FR))"
+	fb_wait_first || true
 	_yi=$(fb_ys $FI | head -1); _yr=$(fb_ys $FR | head -1)
 	[ -n "$_yi" ] && [ "$_yi" = "$_yr" ] || _bad="${_bad:+$_bad; }Y keymat mismatch (i=${_yi:-none} r=${_yr:-none})"
 	grep -qE 'CREATE_CHILD_SA request: .*proto=ESP rekey_proto=0 ' $FR || _bad="${_bad:+$_bad; }no new-child CREATE_CHILD_SA"
