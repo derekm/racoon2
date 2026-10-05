@@ -230,20 +230,29 @@ test_no_nat_leaves_ts_alone(void)
 static void
 test_initiator_transport_substitutes(void)
 {
-	static const int nat[3][2] = { {1, 1}, {1, 0}, {0, 1} };
-	size_t i;
-
-	for (i = 0; i < 3; i++) {
-		run_ts_case_v4(TRUE, TRUE, nat[i][0], nat[i][1], NULL, 0,
-		    LOCAL4_ADDR, REMOTE4_ADDR);
-	}
+	/* Both NATed → both TSs rewritten. */
+	run_ts_case_v4(TRUE, TRUE, TRUE, TRUE, NULL, 0,
+	    LOCAL4_ADDR, REMOTE4_ADDR);
+	/* Only we (initiator) NATed → TSi only. */
+	run_ts_case_v4(TRUE, TRUE, TRUE, FALSE, NULL, 0,
+	    LOCAL4_ADDR, TS_R_ADDR4);
+	/* Only peer (responder) NATed → TSr only. */
+	run_ts_case_v4(TRUE, TRUE, FALSE, TRUE, NULL, 0,
+	    TS_I_ADDR4, REMOTE4_ADDR);
 }
 
 static void
 test_responder_transport_substitutes(void)
 {
+	/* Both NATed → TSi←remote, TSr←local. */
 	run_ts_case_v4(FALSE, TRUE, TRUE, TRUE, NULL, 0,
 	    REMOTE4_ADDR, LOCAL4_ADDR);
+	/* Only peer (initiator) NATed → TSi only. */
+	run_ts_case_v4(FALSE, TRUE, FALSE, TRUE, NULL, 0,
+	    REMOTE4_ADDR, TS_R_ADDR4);
+	/* Only we (responder) NATed → TSr only. */
+	run_ts_case_v4(FALSE, TRUE, TRUE, FALSE, NULL, 0,
+	    TS_I_ADDR4, LOCAL4_ADDR);
 
 	run_ts_case_v4(FALSE, TRUE, TRUE, TRUE, fixup_drop_selector, 0,
 	    REMOTE4_ADDR, NULL);
@@ -487,6 +496,24 @@ test_no_parent_rejected(void)
 	fixture_free(&f);
 }
 
+
+/* N3: RFC 7296 §2.23.1 per-side substitution — only the NATed party's TS. */
+static void
+test_per_side_nat_substitution(void)
+{
+	/* responder, peer behind NAT only */
+	run_ts_case_v4(FALSE, TRUE, FALSE, TRUE, NULL, 0,
+	    REMOTE4_ADDR, TS_R_ADDR4);
+	/* responder, self behind NAT only */
+	run_ts_case_v4(FALSE, TRUE, TRUE, FALSE, NULL, 0,
+	    TS_I_ADDR4, LOCAL4_ADDR);
+	/* initiator, self behind NAT only */
+	run_ts_case_v4(TRUE, TRUE, TRUE, FALSE, NULL, 0,
+	    LOCAL4_ADDR, TS_R_ADDR4);
+	/* initiator, peer behind NAT only */
+	run_ts_case_v4(TRUE, TRUE, FALSE, TRUE, NULL, 0,
+	    TS_I_ADDR4, REMOTE4_ADDR);
+}
 static void
 test_null_args(void)
 {
@@ -529,6 +556,7 @@ main(int argc, char *argv[])
 	RUN_TEST(test_num_ts_zero_rejected);
 	RUN_TEST(test_overrunning_num_ts_rejected);
 	RUN_TEST(test_no_parent_rejected);
+	RUN_TEST(test_per_side_nat_substitution);
 
 	plog_clean();
 

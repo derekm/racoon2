@@ -1521,8 +1521,14 @@ echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 jn=r2vn   # NAT jail
 run_nat_row() {
 	_name=$1
+	_wild=0
+	case "$_name" in *-wild) _wild=1 ;; esac
 	echo "$SEP"
-	echo "=== ROW $_name (NAT-T transport: 10.9.0.2 -> pf NAT 192.0.5.254 -> 192.0.5.1) ==="
+	if [ "$_wild" = 1 ]; then
+		echo "=== ROW $_name (N3 NAT-T transport + wildcard SPD: 10.9.0.2 -> pf NAT 192.0.5.254 -> 192.0.5.1) ==="
+	else
+		echo "=== ROW $_name (NAT-T transport: 10.9.0.2 -> pf NAT 192.0.5.254 -> 192.0.5.1) ==="
+	fi
 	jails_teardown
 	jexec $jn /bin/sh -c 'pfctl -d' >/dev/null 2>&1 || true
 	jail -r $jn 2>/dev/null || true
@@ -1547,7 +1553,18 @@ run_nat_row() {
 	# seat conf: transport mode, selectors on the addresses each seat
 	# sees (the initiator its private address, the responder the NAT one)
 	_nat_conf() {
-		_seat=$1 _my=$2 _peer=$3 _myid=$4 _peerid=$5 _passive=$6
+		_seat=$1 _my=$2 _peer=$3 _myid=$4 _peerid=$5 _passive=$6 _selwild=${7:-0}
+		# N3 wildcard SPD: responder selectors are 0.0.0.0/0 so the FIRST
+		# lookup hits even with the initiator's private TSi.  RFC 7296
+		# s2.23.1 requires substitute-before-lookup; without it the
+		# narrowed TS keeps 10.9.0.2 and the row fails the N3 assert.
+		if [ "$_selwild" = 1 ]; then
+			_sout_src="0.0.0.0/0"; _sout_dst="0.0.0.0/0"
+			_sin_src="0.0.0.0/0"; _sin_dst="0.0.0.0/0"
+		else
+			_sout_src="$_my"; _sout_dst="$_peer"
+			_sin_src="$_peer"; _sin_dst="$_my"
+		fi
 		cat > /tmp/freeb/$_seat.conf <<NEOF
 interface {
 	ike { $_my; };
@@ -1575,12 +1592,12 @@ remote matrix_$_seat {
 };
 selector sel_out {
 	direction outbound;
-	src $_my; dst $_peer;
+	src $_sout_src; dst $_sout_dst;
 	policy_index pol;
 };
 selector sel_in {
 	direction inbound;
-	dst $_my; src $_peer;
+	dst $_sin_dst; src $_sin_src;
 	policy_index pol;
 };
 policy pol {
@@ -1603,8 +1620,8 @@ sa esp_e {
 };
 NEOF
 	}
-	_nat_conf $ji 10.9.0.2 192.0.5.1 r2init-matrix racoon2-matrix off
-	_nat_conf $jr 192.0.5.1 192.0.5.254 racoon2-matrix r2init-matrix on
+	_nat_conf $ji 10.9.0.2 192.0.5.1 r2init-matrix racoon2-matrix off 0
+	_nat_conf $jr 192.0.5.1 192.0.5.254 racoon2-matrix r2init-matrix on $_wild
 	for _sx in r:$jr:resp i:$ji:init; do
 		_j=${_sx#*:}; _j=${_j%%:*}; _t=${_sx##*:}
 		jexec $_j /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/$_t-ctl RACOON2_RESUME_DIR=/tmp/freeb/$_t-resume $SBIN/spmd -F -f /tmp/freeb/$_j.conf > /tmp/freeb/$_t-spmd.log 2>&1 &"
@@ -1653,9 +1670,23 @@ NEOF
 			[ "${_z:-0}" -eq 0 ] || _bad="${_bad:+$_bad; }$_z SA(s) in $(basename $_f .txt) carried no bytes"
 		done
 	fi
+	# N3: under a wildcard SPD the responder MUST have substituted TSi
+	# with the post-NAT address before the first SPD lookup.
+	if [ "$_wild" = 1 ] && [ -z "$_bad" ]; then
+		if grep -qF 'NAT-T transport: substituted TSi with 192.0.5.254' "$FR" 2>/dev/null; then
+			echo "row $_name: N3 OK - responder substituted TSi with post-NAT 192.0.5.254 before SPD lookup"
+		else
+			_bad="N3: no 'substituted TSi with 192.0.5.254' in responder log (wildcard SPD matched private TSi?)"
+		fi
+	fi
 	if [ -z "$_bad" ]; then
-		echo "row $_name: NAT-T transport OK - esp-udp transport SAs both jails, ICMP + TCP across pf NAT"
-		echo "PASS freebsd-vnet $_name (NAT-T transport across pf NAT: esp-udp SAs, ICMP + TCP)"
+		if [ "$_wild" = 1 ]; then
+			echo "row $_name: N3 NAT-T wildcard OK - esp-udp SAs, ICMP+TCP, TSi substituted to 192.0.5.254"
+			echo "PASS freebsd-vnet $_name (N3: wildcard SPD + post-NAT TSi under RFC 7296 s2.23.1)"
+		else
+			echo "row $_name: NAT-T transport OK - esp-udp transport SAs both jails, ICMP + TCP across pf NAT"
+			echo "PASS freebsd-vnet $_name (NAT-T transport across pf NAT: esp-udp SAs, ICMP + TCP)"
+		fi
 		jails_teardown; jail -r $jn 2>/dev/null || true
 		return 0
 	fi
@@ -1795,6 +1826,8 @@ case "$ROW" in
 		run i2io4-cbc128        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		# --- NAT-T transport across a pf NAT jail (G5; three jails) ---
 		run i2inatt-transport
+		# --- N3: same topology, responder wildcard SPD (0.0.0.0/0) ---
+		run i2inatt-transport-wild
 		run i2io4-gcm256        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a ""
 		;;
 	i2iinit-esp-cbc128) run_row i2iinit-esp-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
@@ -1853,6 +1886,7 @@ case "$ROW" in
 	i2idh-ecp384-charon) run_row i2idh-ecp384-charon inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp384 aes_gcm non_auth 300 300 0 a "" ;;
 	i2idh-ecp521-charonr) run_row i2idh-ecp521-charonr inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp521 aes_gcm non_auth 300 300 0 a "" ;;
 	i2inatt-transport) run_nat_row i2inatt-transport || fail=1 ;;
+	i2inatt-transport-wild) run_nat_row i2inatt-transport-wild || fail=1 ;;
 	*) echo "unknown ROW=$ROW"; exit 2 ;;
 esac
 echo "$SEP"

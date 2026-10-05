@@ -2499,6 +2499,7 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     struct sockaddr *sub_i, *sub_r;
     struct ikev2_sa* ike_sa;
     int err = -1;
+    int init_nated, resp_nated;
 
     if (child_sa == NULL || ts_i_pl == NULL || ts_r_pl == NULL)
         return err;
@@ -2520,13 +2521,34 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
             return 0;                                                                                                                                                                        
     }
 
+    /*
+     * RFC 7296 §2.23.1: substitute only the TS of a NATed party.
+     * TSi names the initiator, TSr the responder.  From this seat's
+     * behind_nat / peer_behind_nat flags:
+     *   initiator NATed → rewrite TSi; responder NATed → rewrite TSr.
+     */
+    init_nated = ike_sa->is_initiator ? ike_sa->behind_nat
+                                      : ike_sa->peer_behind_nat;
+    resp_nated = ike_sa->is_initiator ? ike_sa->peer_behind_nat
+                                      : ike_sa->behind_nat;
     sub_i = ike_sa->is_initiator ? ike_sa->local : ike_sa->remote;
     sub_r = ike_sa->is_initiator ? ike_sa->remote : ike_sa->local; 
 
-    err = ikev2_ts_payload_substitute(ts_i_pl, sub_i);
-
-    if (err == 0)
+    err = 0;
+    if (init_nated) {
+        err = ikev2_ts_payload_substitute(ts_i_pl, sub_i);
+        if (err == 0)
+            plog(PLOG_INFO, PLOGLOC, NULL,
+                 "NAT-T transport: substituted TSi with %s\n",
+                 rcs_sa2str_wop(sub_i));
+    }
+    if (err == 0 && resp_nated) {
         err = ikev2_ts_payload_substitute(ts_r_pl, sub_r);
+        if (err == 0)
+            plog(PLOG_INFO, PLOGLOC, NULL,
+                 "NAT-T transport: substituted TSr with %s\n",
+                 rcs_sa2str_wop(sub_r));
+    }
 
     return err;
 }

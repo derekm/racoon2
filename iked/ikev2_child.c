@@ -1081,35 +1081,87 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 
 	/* choose conf by ts_i and ts_r, use_transport_mode */
 	/* and obtain matching ts_i and ts_r in child_param */
+	/*
+	 * RFC 7296 §2.23.1 (N3): when transport mode was requested and NAT
+	 * was detected, substitute BEFORE the first SPD lookup (TSi if the
+	 * peer is NATed, TSr if we are).  Keep a copy of the originals and
+	 * retry with them only as a tunnel-mode fallback when the
+	 * post-NAT lookup misses.  Without this order a wildcard SPD
+	 * matches the client's private address and the narrowed TS sent
+	 * back still carries IP1 instead of IPN1.
+	 */
+#ifdef ENABLE_NATT
+	{
+		rc_vchar_t *saved_ts_i = NULL, *saved_ts_r = NULL;
+		int did_subst = 0;
+
+		if (child_sa->child_param.use_transport_mode &&
+		    (ike_sa->behind_nat || ike_sa->peer_behind_nat)) {
+			size_t li = get_payload_length(proposed_ts_i);
+			size_t lr = get_payload_length(proposed_ts_r);
+
+			saved_ts_i = rc_vmalloc(li);
+			saved_ts_r = rc_vmalloc(lr);
+			if (saved_ts_i == NULL || saved_ts_r == NULL) {
+				if (saved_ts_i)
+					rc_vfree(saved_ts_i);
+				if (saved_ts_r)
+					rc_vfree(saved_ts_r);
+				goto fail_nomem;
+			}
+			memcpy(saved_ts_i->v, proposed_ts_i, li);
+			memcpy(saved_ts_r->v, proposed_ts_r, lr);
+			if (ikev2_addr_substitute(child_sa, proposed_ts_i,
+						  proposed_ts_r) != 0) {
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				     "Could not perform address substitution "
+				     "on responder's side\n");
+				rc_vfree(saved_ts_i);
+				rc_vfree(saved_ts_r);
+				goto ts_unacceptable;
+			}
+			did_subst = 1;
+		}
+		sel4 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i, proposed_ts_r,
+						   child_sa, AF_INET,
+						   ike_sa->rmconf);
+		sel6 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i, proposed_ts_r,
+						   child_sa, AF_INET6,
+						   ike_sa->rmconf);
+		if (!sel4 && !sel6 && did_subst) {
+			/* tunnel fallback: restore pre-NAT TS and retry */
+			memcpy(proposed_ts_i, saved_ts_i->v, saved_ts_i->l);
+			memcpy(proposed_ts_r, saved_ts_r->v, saved_ts_r->l);
+			plog(PLOG_INFO, PLOGLOC, NULL,
+			     "NAT-T transport SPD miss; retrying with "
+			     "original TS (tunnel fallback)\n");
+			sel4 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i,
+							    proposed_ts_r,
+							    child_sa, AF_INET,
+							    ike_sa->rmconf);
+			sel6 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i,
+							    proposed_ts_r,
+							    child_sa, AF_INET6,
+							    ike_sa->rmconf);
+		}
+		if (saved_ts_i)
+			rc_vfree(saved_ts_i);
+		if (saved_ts_r)
+			rc_vfree(saved_ts_r);
+		if (!sel4 && !sel6)
+			goto ts_unacceptable;
+	}
+#else
 	sel4 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i, proposed_ts_r,
 					   child_sa, AF_INET,
 					   ike_sa->rmconf);
 	sel6 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i, proposed_ts_r,
 					   child_sa, AF_INET6,
 					   ike_sa->rmconf);
-	if (!sel4 && !sel6) {
-#ifdef ENABLE_NATT
-        if (ikev2_addr_substitute(child_sa, proposed_ts_i, proposed_ts_r) != 0)
-        {
-            plog(PLOG_INTERR, PLOGLOC, NULL,
-                 "Could not perform address substitution on responder's side\n");
-            goto ts_unacceptable;
-        }
-
-        sel4 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i, proposed_ts_r,
-                                            child_sa, AF_INET,
-                                            ike_sa->rmconf);
-        sel6 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i, proposed_ts_r,
-                                            child_sa, AF_INET6,
-                                            ike_sa->rmconf);
-
-        if (!sel4 && !sel6)
-            goto ts_unacceptable;
-
-#else
-        goto ts_unacceptable;
+	if (!sel4 && !sel6)
+		goto ts_unacceptable;
 #endif
-	}
+
 	if (sel4)
 		child_sa->selector = sel4;
 	else
