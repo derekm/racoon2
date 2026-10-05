@@ -1462,14 +1462,22 @@ esac
 # one-child invariant: a row whose IKE_AUTH carries the child must never see
 # a new-child CREATE_CHILD_SA (the Linux spurious-ACQUIRE child, b8c7ce8)
 case "$_name" in
-*-charonr) _onechk=0
-	# charon responder: count CREATE_CHILD requests that open a new
-	# child (TSi without N(REKEY_SA)), as the Linux i2i_onechild_gate does
+*-firstchild-nocl*|*-clresp-legacy*)
+	# IKE_AUTH carried no child (fallback row): a new-child CREATE_CHILD is
+	# a violation, exactly as i2i_onechild_gate enforces.
+	_onechk=1 ;;
+*-firstchild*|*-clresp*|*-childless*|*-zerochild*)
+	# RFC 6023 / CREATE_CHILD-first-child rows: the child IS expected via
+	# CREATE_CHILD, so the zero-new-child invariant must NOT apply here.
+	_onechk=0 ;;
+*-charonr)
+	# BSD twin of the Linux i2i_onechild_gate: count CREATE_CHILD requests
+	# that open a NEW child (TSi without N(REKEY_SA)) seen by the charon
+	# responder seat -- that is only legal on RFC 6023 / CREATE_CHILD-first-child
+	# rows, which are matched BEFORE this branch.  Rows that carry the
+	# child in IKE_AUTH must see none.
 	_nc=$(grep -E 'parsed CREATE_CHILD_SA request [0-9]+ \[' $FB_CL 2>/dev/null | grep 'TSi' | grep -vc 'N(REKEY_SA)' || true)
 	[ "${_nc:-0}" -eq 0 ] || rk_fail "charon responder saw ${_nc} new-child CREATE_CHILD_SA on a row whose child is negotiated in IKE_AUTH" ;;
-*-zerochild*) _onechk=0 ;;
-*-firstchild-nocl*|*-clresp-legacy*) _onechk=1 ;;
-*-firstchild*|*-clresp*|*-childless*) _onechk=0 ;;
 *) _onechk=1 ;;
 esac
 if [ "$_onechk" = 1 ] && [ "$_neg" = a ] && grep -qE 'CREATE_CHILD_SA request: .*proto=ESP rekey_proto=0 ' $FR 2>/dev/null; then
