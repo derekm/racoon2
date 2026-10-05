@@ -53,6 +53,9 @@
 #include <openssl/bio.h>
 #include <openssl/pem.h>
 #include <openssl/bn.h>
+#include <openssl/evp.h>
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
 
 #include "var.h"
 #ifdef RACOON2
@@ -99,6 +102,7 @@ int sha1test __P((int, char **));
 int md5test __P((int, char **));
 int dhtest __P((int, char **));
 int dhrangetest __P((int, char **));
+int rfc7427test __P((int, char **));
 int bntest __P((int, char **));
 #ifndef RACOON2
 #ifndef CERTTEST_BROKEN
@@ -1124,6 +1128,191 @@ dhrangetest(ac, av)
 	return fails ? -1 : 0;
 }
 
+/*
+ * RFC 7427 Digital Signature (AUTH method 14) verification: one good
+ * signature for every AlgorithmIdentifier iked accepts (DER blobs from
+ * RFC 7427 App. A), plus the identifiers and inputs it must refuse.
+ */
+static EVP_PKEY *
+r7427_keygen(int type, int nid_or_bits)
+{
+	EVP_PKEY_CTX *kc;
+	EVP_PKEY *k = NULL;
+
+	if ((kc = EVP_PKEY_CTX_new_id(type, NULL)) == NULL)
+		return NULL;
+	if (EVP_PKEY_keygen_init(kc) != 1)
+		goto out;
+	if (type == EVP_PKEY_RSA &&
+	    EVP_PKEY_CTX_set_rsa_keygen_bits(kc, nid_or_bits) != 1)
+		goto out;
+	if (type == EVP_PKEY_EC &&
+	    EVP_PKEY_CTX_set_ec_paramgen_curve_nid(kc, nid_or_bits) != 1)
+		goto out;
+	(void)EVP_PKEY_keygen(kc, &k);
+out:
+	EVP_PKEY_CTX_free(kc);
+	return k;
+}
+
+/* sign `msg' with key/md (pss: salt 32 or hash length, MGF1 = md) */
+static vchar_t *
+r7427_sign(EVP_PKEY *k, const EVP_MD *md, int pss, int salt,
+	   const unsigned char *msg, size_t msglen)
+{
+	EVP_MD_CTX *c = EVP_MD_CTX_new();
+	EVP_PKEY_CTX *pc = NULL;
+	size_t l = 0;
+	vchar_t *sig = NULL;
+
+	if (c == NULL || EVP_DigestSignInit(c, &pc, md, NULL, k) != 1)
+		goto out;
+	if (pss && (EVP_PKEY_CTX_set_rsa_padding(pc, RSA_PKCS1_PSS_PADDING) != 1 ||
+	    EVP_PKEY_CTX_set_rsa_mgf1_md(pc, md) != 1 ||
+	    EVP_PKEY_CTX_set_rsa_pss_saltlen(pc, salt) != 1))
+		goto out;
+	if (EVP_DigestSign(c, NULL, &l, msg, msglen) != 1)
+		goto out;
+	if ((sig = vmalloc(l)) == NULL)
+		goto out;
+	if (EVP_DigestSign(c, (unsigned char *)sig->v, &l, msg, msglen) != 1) {
+		vfree(sig);
+		sig = NULL;
+		goto out;
+	}
+	sig->l = l;
+out:
+	EVP_MD_CTX_free(c);
+	return sig;
+}
+
+static vchar_t *
+r7427_pub(EVP_PKEY *k)
+{
+	int l = i2d_PUBKEY(k, NULL);
+	unsigned char *p;
+	vchar_t *v;
+
+	if (l <= 0 || (v = vmalloc(l)) == NULL)
+		return NULL;
+	p = (unsigned char *)v->v;
+	i2d_PUBKEY(k, &p);
+	return v;
+}
+
+int
+rfc7427test(ac, av)
+	int ac;
+	char **av;
+{
+	/* RFC 7427 Appendix A */
+	static const uint8_t ai_sha1rsa[] = { 0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x05,0x05,0x00 };
+	static const uint8_t ai_sha256rsa[] = { 0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0b,0x05,0x00 };
+	static const uint8_t ai_sha384rsa[] = { 0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0c,0x05,0x00 };
+	static const uint8_t ai_sha512rsa[] = { 0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0d,0x05,0x00 };
+	static const uint8_t ai_ecdsa1[] = { 0x30,0x09,0x06,0x07,0x2a,0x86,0x48,0xce,0x3d,0x04,0x01 };
+	static const uint8_t ai_ecdsa256[] = { 0x30,0x0a,0x06,0x08,0x2a,0x86,0x48,0xce,0x3d,0x04,0x03,0x02 };
+	static const uint8_t ai_ecdsa384[] = { 0x30,0x0a,0x06,0x08,0x2a,0x86,0x48,0xce,0x3d,0x04,0x03,0x03 };
+	static const uint8_t ai_ecdsa512[] = { 0x30,0x0a,0x06,0x08,0x2a,0x86,0x48,0xce,0x3d,0x04,0x03,0x04 };
+	static const uint8_t ai_pss_empty[] = { 0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0a,0x30,0x00 };
+	static const uint8_t ai_pss_default[] = {
+		0x30,0x3e,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0a,0x30,0x31,0xa0,
+		0x0b,0x30,0x09,0x06,0x05,0x2b,0x0e,0x03,0x02,0x1a,0x05,0x00,0xa1,0x18,0x30,0x16,
+		0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x08,0x30,0x09,0x06,0x05,0x2b,
+		0x0e,0x03,0x02,0x1a,0x05,0x00,0xa2,0x03,0x02,0x01,0x14,0xa3,0x03,0x02,0x01,0x01 };
+	static const uint8_t ai_pss_sha256[] = {
+		0x30,0x46,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0a,0x30,0x39,0xa0,
+		0x0f,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,
+		0xa1,0x1c,0x30,0x1a,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x08,0x30,
+		0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0xa2,0x03,
+		0x02,0x01,0x20,0xa3,0x03,0x02,0x01,0x01 };
+	static const char msg[] = "IKEv2 AUTH octets for the RFC 7427 test";
+	EVP_PKEY *rsa, *ec256, *ec384;
+	vchar_t m, *rpub, *e256pub, *e384pub;
+	int fails = 0;
+	struct {
+		const char *name;
+		const uint8_t *ai;
+		size_t ai_len;
+		EVP_PKEY **sk;
+		vchar_t **pk;
+		const EVP_MD *(*md)(void);
+		int pss, salt, corrupt, want;
+	} cases[] = {
+		{ "sha256WithRSAEncryption", ai_sha256rsa, sizeof(ai_sha256rsa), &rsa, &rpub, EVP_sha256, 0, 0, 0, 0 },
+		{ "sha384WithRSAEncryption", ai_sha384rsa, sizeof(ai_sha384rsa), &rsa, &rpub, EVP_sha384, 0, 0, 0, 0 },
+		{ "sha512WithRSAEncryption", ai_sha512rsa, sizeof(ai_sha512rsa), &rsa, &rpub, EVP_sha512, 0, 0, 0, 0 },
+		{ "RSASSA-PSS SHA-256 (A.4.3)", ai_pss_sha256, sizeof(ai_pss_sha256), &rsa, &rpub, EVP_sha256, 1, 32, 0, 0 },
+		{ "ecdsa-with-sha256 (P-256)", ai_ecdsa256, sizeof(ai_ecdsa256), &ec256, &e256pub, EVP_sha256, 0, 0, 0, 0 },
+		{ "ecdsa-with-sha384 (P-384)", ai_ecdsa384, sizeof(ai_ecdsa384), &ec384, &e384pub, EVP_sha384, 0, 0, 0, 0 },
+		{ "ecdsa-with-sha512 (P-384)", ai_ecdsa512, sizeof(ai_ecdsa512), &ec384, &e384pub, EVP_sha512, 0, 0, 0, 0 },
+		{ "sha1WithRSAEncryption refused", ai_sha1rsa, sizeof(ai_sha1rsa), &rsa, &rpub, EVP_sha1, 0, 0, 0, -1 },
+		{ "ecdsa-with-sha1 refused", ai_ecdsa1, sizeof(ai_ecdsa1), &ec256, &e256pub, EVP_sha1, 0, 0, 0, -1 },
+		{ "PSS empty params (SHA-1) refused", ai_pss_empty, sizeof(ai_pss_empty), &rsa, &rpub, EVP_sha1, 1, 20, 0, -1 },
+		{ "PSS default params (SHA-1) refused", ai_pss_default, sizeof(ai_pss_default), &rsa, &rpub, EVP_sha1, 1, 20, 0, -1 },
+		{ "PSS salt mismatch refused", ai_pss_sha256, sizeof(ai_pss_sha256), &rsa, &rpub, EVP_sha256, 1, 20, 0, -1 },
+		{ "AI hash != signing hash refused", ai_sha384rsa, sizeof(ai_sha384rsa), &rsa, &rpub, EVP_sha256, 0, 0, 0, -1 },
+		{ "ECDSA AI with an RSA key refused", ai_ecdsa256, sizeof(ai_ecdsa256), &ec256, &rpub, EVP_sha256, 0, 0, 0, -1 },
+		{ "RSA AI with an EC key refused", ai_sha256rsa, sizeof(ai_sha256rsa), &rsa, &e256pub, EVP_sha256, 0, 0, 0, -1 },
+		{ "corrupted signature refused", ai_sha256rsa, sizeof(ai_sha256rsa), &rsa, &rpub, EVP_sha256, 0, 0, 1, -1 },
+		{ "truncated AlgorithmIdentifier refused", ai_sha256rsa, sizeof(ai_sha256rsa) - 1, &rsa, &rpub, EVP_sha256, 0, 0, 0, -1 },
+	};
+	size_t i;
+
+	printf("\n**Test for RFC 7427 Digital Signature verify.**\n");
+
+	rsa = r7427_keygen(EVP_PKEY_RSA, 2048);
+	ec256 = r7427_keygen(EVP_PKEY_EC, NID_X9_62_prime256v1);
+	ec384 = r7427_keygen(EVP_PKEY_EC, NID_secp384r1);
+	if (!rsa || !ec256 || !ec384) {
+		printf("error: keygen\n");
+		return -1;
+	}
+	rpub = r7427_pub(rsa);
+	e256pub = r7427_pub(ec256);
+	e384pub = r7427_pub(ec384);
+	m.v = (caddr_t)msg;
+	m.l = sizeof(msg) - 1;
+
+	for (i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+		vchar_t *sig;
+		int rc;
+
+		sig = r7427_sign(*cases[i].sk, cases[i].md(), cases[i].pss,
+		    cases[i].salt, (const unsigned char *)msg, sizeof(msg) - 1);
+		if (sig == NULL) {
+			/* a provider that refuses SHA-1 signing makes the
+			 * SHA-1 refusal cases moot, not failed */
+			if (cases[i].want != 0 && cases[i].md() == EVP_sha1()) {
+				printf("ok: %s: (cannot sign SHA-1 here)\n",
+				    cases[i].name);
+				continue;
+			}
+			printf("FAIL: %s: could not sign\n", cases[i].name);
+			fails++;
+			continue;
+		}
+		if (cases[i].corrupt)
+			sig->u[sig->l / 2] ^= 0x01;
+		rc = eay_rfc7427_verify(&m, cases[i].ai, cases[i].ai_len,
+		    sig, *cases[i].pk);
+		if (rc != cases[i].want) {
+			printf("FAIL: %s: rc=%d, want %d\n", cases[i].name, rc,
+			    cases[i].want);
+			fails++;
+		} else
+			printf("ok: %s: rc=%d\n", cases[i].name, rc);
+		vfree(sig);
+	}
+	vfree(rpub);
+	vfree(e256pub);
+	vfree(e384pub);
+	EVP_PKEY_free(rsa);
+	EVP_PKEY_free(ec256);
+	EVP_PKEY_free(ec384);
+	return fails ? -1 : 0;
+}
+
 struct {
 	char *name;
 	int (*func) __P((int, char **));
@@ -1131,6 +1320,7 @@ struct {
 	{ "random", bntest, },
 	{ "dh", dhtest, },
 	{ "dhrange", dhrangetest, },
+	{ "rfc7427", rfc7427test, },
 	{ "md5", md5test, },
 	{ "sha1", sha1test, },
 	{ "hmac", hmactest, },

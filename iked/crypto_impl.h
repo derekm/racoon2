@@ -87,6 +87,10 @@ extern int eay_ecdsa_verify (const char *, rc_vchar_t *, rc_vchar_t *,
 				     rc_vchar_t *);
 extern int eay_ecdsa_curve_bits (rc_vchar_t *);
 
+/* RFC 7427 Digital Signature (AUTH method 14) */
+extern int eay_rfc7427_verify (rc_vchar_t *, const uint8_t *, size_t,
+			       rc_vchar_t *, rc_vchar_t *);
+
 /* ASN.1 */
 extern rc_vchar_t *eay_get_pkcs1privkey (const char *);
 extern rc_vchar_t *eay_get_pkcs1pubkey (const char *);

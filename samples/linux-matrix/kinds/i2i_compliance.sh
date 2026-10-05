@@ -488,7 +488,7 @@ i2i_compliance() {
 	# when a seat pins the ike:pubkey scheme, the iked responder log MUST
 	# carry both the 16431 echo and 'auth method 14' or this cell FAILs.
 	a13b_pin=0
-	if grep -qE "auth[[:space:]]*=[[:space:]]*ike:pubkey" \
+	if grep -qE "auth[[:space:]]*=[[:space:]]*ike:(pubkey|rsa/pss)" \
 	    "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then
 		a13b_pin=1
 	fi

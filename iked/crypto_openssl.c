@@ -65,6 +65,8 @@
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
 #include <openssl/obj_mac.h>
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 #include <openssl/provider.h>
 #include <openssl/crypto.h>
@@ -1697,6 +1699,200 @@ eay_ecdsa_verify(const char *hash_type, rc_vchar_t *octets, rc_vchar_t *sig,
  * returns the bit size of the EC group order of the private key
  * (256/384/521), 0 if the key is not an EC key or on error
  */
+/*
+ * RFC 7427 s3: verify the signature of a Digital Signature (AUTH method
+ * 14) payload.  `ai' is the DER AlgorithmIdentifier the peer sent, `sig'
+ * the signature value after it.  Accepted (RFC 8247 s3.2, RFC 7427
+ * App. A):
+ *   sha256/384/512WithRSAEncryption       RSASSA-PKCS1-v1_5
+ *   id-RSASSA-PSS                         SHA-256/384/512, MGF1 with the
+ *                                         same hash, trailerField 1
+ *   ecdsa-with-SHA256/384/512             DER Ecdsa-Sig-Value
+ * Anything built on SHA-1 (including PSS with default parameters) and
+ * any other algorithm is refused.  Returns 0 for a good signature.
+ */
+static const EVP_MD *
+rfc7427_sha2(const ASN1_OBJECT *obj)
+{
+	switch (OBJ_obj2nid(obj)) {
+	case NID_sha256: return EVP_sha256();
+	case NID_sha384: return EVP_sha384();
+	case NID_sha512: return EVP_sha512();
+	}
+	return NULL;
+}
+
+/* the hash of an AlgorithmIdentifier whose parameters must be NULL/absent */
+static const EVP_MD *
+rfc7427_sha2_algor(const X509_ALGOR *a)
+{
+	const ASN1_OBJECT *obj;
+	int ptype;
+	const void *pval;
+
+	if (a == NULL)
+		return NULL;
+	X509_ALGOR_get0(&obj, &ptype, &pval, a);
+	if (ptype != V_ASN1_UNDEF && ptype != V_ASN1_NULL)
+		return NULL;
+	return rfc7427_sha2(obj);
+}
+
+int
+eay_rfc7427_verify(rc_vchar_t *octets, const uint8_t *ai, size_t ai_len,
+		   rc_vchar_t *sig, rc_vchar_t *pubkey)
+{
+	enum { K_NONE, K_PKCS1, K_PSS, K_ECDSA } kind = K_NONE;
+	const unsigned char *p;
+	BPP_const unsigned char *bp;
+	X509_ALGOR *alg = NULL, *mgfhash = NULL;
+	RSA_PSS_PARAMS *pss = NULL;
+	const ASN1_OBJECT *obj;
+	int ptype;
+	const void *pval;
+	const EVP_MD *md = NULL, *mgfmd = NULL;
+	long salt = 20;
+	EVP_PKEY *pkey = NULL;
+	EVP_MD_CTX *ctx = NULL;
+	EVP_PKEY_CTX *pctx = NULL;
+	int keytype, error = -1;
+
+	p = ai;
+	alg = d2i_X509_ALGOR(NULL, &p, (long)ai_len);
+	if (alg == NULL || p != ai + ai_len) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "RFC 7427: malformed AlgorithmIdentifier\n");
+		goto end;
+	}
+	X509_ALGOR_get0(&obj, &ptype, &pval, alg);
+	switch (OBJ_obj2nid(obj)) {
+	case NID_sha256WithRSAEncryption:
+		md = EVP_sha256(); kind = K_PKCS1; break;
+	case NID_sha384WithRSAEncryption:
+		md = EVP_sha384(); kind = K_PKCS1; break;
+	case NID_sha512WithRSAEncryption:
+		md = EVP_sha512(); kind = K_PKCS1; break;
+	case NID_ecdsa_with_SHA256:
+		md = EVP_sha256(); kind = K_ECDSA; break;
+	case NID_ecdsa_with_SHA384:
+		md = EVP_sha384(); kind = K_ECDSA; break;
+	case NID_ecdsa_with_SHA512:
+		md = EVP_sha512(); kind = K_ECDSA; break;
+	case NID_rsassaPss:
+		kind = K_PSS; break;
+	default:
+		break;
+	}
+	if (kind == K_NONE) {
+		char oid[80];
+
+		OBJ_obj2txt(oid, sizeof(oid), obj, 1);
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "RFC 7427: unsupported signature algorithm %s\n", oid);
+		goto end;
+	}
+	if (kind == K_PKCS1 && ptype != V_ASN1_NULL && ptype != V_ASN1_UNDEF)
+		goto badparam;
+	if (kind == K_ECDSA && ptype != V_ASN1_UNDEF)
+		goto badparam;
+	if (kind == K_PSS) {
+		const ASN1_STRING *seq = pval;
+		const unsigned char *q;
+
+		/* absent hash/MGF parameters default to SHA-1: refused */
+		if (ptype != V_ASN1_SEQUENCE || seq == NULL)
+			goto badparam;
+		q = ASN1_STRING_get0_data(seq);
+		pss = d2i_RSA_PSS_PARAMS(NULL, &q, ASN1_STRING_length(seq));
+		if (pss == NULL ||
+		    q != ASN1_STRING_get0_data(seq) + ASN1_STRING_length(seq))
+			goto badparam;
+		if ((md = rfc7427_sha2_algor(pss->hashAlgorithm)) == NULL)
+			goto badparam;
+		if (pss->maskGenAlgorithm == NULL)
+			goto badparam;
+		X509_ALGOR_get0(&obj, &ptype, &pval, pss->maskGenAlgorithm);
+		if (OBJ_obj2nid(obj) != NID_mgf1 || ptype != V_ASN1_SEQUENCE)
+			goto badparam;
+		seq = pval;
+		q = ASN1_STRING_get0_data(seq);
+		mgfhash = d2i_X509_ALGOR(NULL, &q, ASN1_STRING_length(seq));
+		if (mgfhash == NULL ||
+		    q != ASN1_STRING_get0_data(seq) + ASN1_STRING_length(seq))
+			goto badparam;
+		if ((mgfmd = rfc7427_sha2_algor(mgfhash)) == NULL)
+			goto badparam;
+		if (pss->saltLength != NULL &&
+		    (salt = ASN1_INTEGER_get(pss->saltLength)) < 0)
+			goto badparam;
+		if (pss->trailerField != NULL &&
+		    ASN1_INTEGER_get(pss->trailerField) != 1)
+			goto badparam;
+	}
+
+	bp = (unsigned char *)pubkey->v;
+	if ((pkey = d2i_PUBKEY(NULL, &bp, pubkey->l)) == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed obtaining public key: %s\n", eay_strerror());
+		goto end;
+	}
+	keytype = EVP_PKEY_id(pkey);
+	if ((kind == K_ECDSA && keytype != EVP_PKEY_EC) ||
+	    (kind == K_PKCS1 && keytype != EVP_PKEY_RSA) ||
+	    (kind == K_PSS && keytype != EVP_PKEY_RSA &&
+	     keytype != EVP_PKEY_RSA_PSS)) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "RFC 7427: signature algorithm does not match the "
+		     "peer's key type\n");
+		goto end;
+	}
+
+	if ((ctx = EVP_MD_CTX_new()) == NULL)
+		goto end;
+	if (EVP_DigestVerifyInit(ctx, &pctx, md, NULL, pkey) != 1)
+		goto sslerr;
+	if (kind == K_PSS &&
+	    (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING) != 1 ||
+	     EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, mgfmd) != 1 ||
+	     EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, (int)salt) != 1))
+		goto sslerr;
+	if (EVP_DigestVerify(ctx, (unsigned char *)sig->v, sig->l,
+	    (unsigned char *)octets->v, octets->l) != 1) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "RFC 7427 signature verification failed: %s\n",
+		     eay_strerror());
+		goto end;
+	}
+	if (kind == K_PSS)
+		plog(PLOG_INFO, PLOGLOC, NULL,
+		     "RFC 7427 signature verified: RSASSA-PSS %s "
+		     "(MGF1 %s, salt %ld)\n",
+		     OBJ_nid2sn(EVP_MD_type(md)), OBJ_nid2sn(EVP_MD_type(mgfmd)),
+		     salt);
+	else
+		plog(PLOG_INFO, PLOGLOC, NULL,
+		     "RFC 7427 signature verified: %s %s\n",
+		     kind == K_ECDSA ? "ECDSA" : "RSASSA-PKCS1-v1_5",
+		     OBJ_nid2sn(EVP_MD_type(md)));
+	error = 0;
+	goto end;
+
+      sslerr:
+	plog(PLOG_INTERR, PLOGLOC, NULL,
+	     "RFC 7427 verify setup failed: %s\n", eay_strerror());
+	goto end;
+      badparam:
+	plog(PLOG_PROTOERR, PLOGLOC, NULL,
+	     "RFC 7427: unsupported AlgorithmIdentifier parameters\n");
+      end:
+	EVP_MD_CTX_free(ctx);
+	EVP_PKEY_free(pkey);
+	RSA_PSS_PARAMS_free(pss);
+	X509_ALGOR_free(mgfhash);
+	X509_ALGOR_free(alg);
+	return error;
+}
+
 int
 eay_ecdsa_curve_bits(rc_vchar_t *privkey)
 {

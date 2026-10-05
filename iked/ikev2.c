@@ -2017,21 +2017,25 @@ responder_state0_after_gen(int rc, void *arg)
 	/* RFC 7427 s4: echo N(SIG_HASH_ALGORITHMS) only if the initiator
 	 * offered it AND this responder's seat is RSASIG (only then can we
 	 * honor the method-14 DS AUTH the notify commits both sides to).
-	 * Data = our supported IKEv2 hash-algorithm IDs (16-bit): SHA2-256=2.
+	 * Data = the hash-algorithm IDs (16-bit) we can verify (RFC 7427
+	 * s4): SHA2-256=2, SHA2-384=3, SHA2-512=4 (eay_rfc7427_verify);
+	 * never SHA1=1 (RFC 8247 s3.2).  Our own method-14 AUTH signs SHA2-256.
 	 * iked<->iked rows never send 16431, so they stay on classic method 1
 	 * (i2ipubkey-rsa gate greps 'auth method 1'); only charon peers that
 	 * offer the notify take the RFC 7427 path. */
 	if (ike_sa->peer_sent_sig_hash_algos) {
 		struct rc_alglist *_kmp = ikev2_kmp_auth_method(ike_sa->rmconf);
 		if (_kmp && _kmp->algtype == RCT_ALG_RSASIG) {
-			static const uint8_t sig_hash_sha2_256[] = { 0x00, 0x02 };
+			static const uint8_t sig_hash_sha2[] = {
+				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
+			};
 			ike_sa->sig_hash_algos_ds = 1;
 			TRACE((PLOGLOC, "echoing SIG_HASH_ALGORITHMS (16431)\n"));
 			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 					    ikev2_notify_payload(0, 0, 0,
 								 IKEV2_SIG_HASH_ALGORITHMS,
-								 (uint8_t *)sig_hash_sha2_256,
-								 sizeof(sig_hash_sha2_256)),
+								 (uint8_t *)sig_hash_sha2,
+								 sizeof(sig_hash_sha2)),
 					    TRUE);
 		}
 	}
