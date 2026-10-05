@@ -449,6 +449,86 @@ test_natt_substitution_invalid_args(void)
 	teardown(iph2, iph1);
 }
 
+/*
+ * N5: the ID payload must hold the whole address for its type (and the
+ * mask for a subnet type), and the type's family must match the phase-1
+ * endpoint that replaces it.  Otherwise the copy writes past the ID
+ * buffer or reads past the endpoint.  Buffers are exact-size heap
+ * allocations so ASan sees any overrun; a refused substitution must
+ * leave both IDs untouched.
+ */
+static void
+check_natt_substitution_refused(int flag, int ph1_family, uint8_t id_type,
+    const void *data, size_t data_len)
+{
+	struct ph1handle *iph1;
+	struct ph2handle *iph2;
+	rc_vchar_t *id, *id_p;
+
+	if (ph1_family == AF_INET)
+		iph1 = setup_ph1(&iph2, OUR4_ADDR, NAT4_ADDR, AF_INET);
+	else
+		iph1 = setup_ph1(&iph2, OUR6_ADDR, NAT6_ADDR, AF_INET6);
+	iph2->id = make_id_payload(id_type, data, data_len);
+	iph2->id_p = make_id_payload(id_type, data, data_len);
+	id = rc_vdup(iph2->id);
+	id_p = rc_vdup(iph2->id_p);
+	if (id == NULL || id_p == NULL)
+		exit(1);
+
+	TEST_CHECK(natt_addr_substitution(iph2, flag) == -1);
+	TEST_CHECK(rc_vmemcmp(iph2->id, id) == 0);
+	TEST_CHECK(rc_vmemcmp(iph2->id_p, id_p) == 0);
+
+	rc_vfree(id);
+	rc_vfree(id_p);
+	teardown(iph2, iph1);
+}
+
+static void
+test_natt_substitution_short_id(void)
+{
+	static const uint8_t two[2] = { 198, 51 };
+	uint8_t addr6[8];
+	struct in_addr a4;
+
+	/* IPv4 address id with 2 of its 4 address bytes */
+	check_natt_substitution_refused(NAT_DETECTED_PEER, AF_INET,
+	    IPSECDOI_ID_IPV4_ADDR, two, sizeof(two));
+	check_natt_substitution_refused(NAT_DETECTED_ME, AF_INET,
+	    IPSECDOI_ID_IPV4_ADDR, two, sizeof(two));
+	/* IPv6 address id with 8 of its 16 address bytes */
+	memset(addr6, 0x20, sizeof(addr6));
+	check_natt_substitution_refused(NAT_DETECTED_PEER, AF_INET6,
+	    IPSECDOI_ID_IPV6_ADDR, addr6, sizeof(addr6));
+	/* IPv4 subnet id with the address but no mask */
+	test_pton4(PEER4_ADDR, &a4);
+	check_natt_substitution_refused(NAT_DETECTED_PEER, AF_INET,
+	    IPSECDOI_ID_IPV4_ADDR_SUBNET, &a4, sizeof(a4));
+}
+
+static void
+test_natt_substitution_family_mismatch(void)
+{
+	struct in_addr a4;
+	struct in6_addr a6;
+
+	/* IPv6 id over an IPv4 phase 1: would read 16 bytes at offset 8
+	 * of a 16-byte sockaddr_in */
+	test_pton6(PEER6_ADDR, &a6);
+	check_natt_substitution_refused(NAT_DETECTED_PEER, AF_INET,
+	    IPSECDOI_ID_IPV6_ADDR, &a6, sizeof(a6));
+	check_natt_substitution_refused(NAT_DETECTED_ME, AF_INET,
+	    IPSECDOI_ID_IPV6_ADDR, &a6, sizeof(a6));
+	/* IPv4 id over an IPv6 phase 1: would copy sin6_flowinfo bytes */
+	test_pton4(PEER4_ADDR, &a4);
+	check_natt_substitution_refused(NAT_DETECTED_PEER, AF_INET6,
+	    IPSECDOI_ID_IPV4_ADDR, &a4, sizeof(a4));
+	/* both flags: a bad IDr2 must not leave IDi2 half-substituted */
+	check_natt_substitution_refused(NAT_DETECTED_BOTH, AF_INET6,
+	    IPSECDOI_ID_IPV4_ADDR, &a4, sizeof(a4));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -467,6 +547,8 @@ main(int argc, char *argv[])
 	RUN_TEST(test_natt_substitution_both);
 	RUN_TEST(test_natt_substitution_keeps_subnet_mask);
 	RUN_TEST(test_natt_substitution_invalid_args);
+	RUN_TEST(test_natt_substitution_short_id);
+	RUN_TEST(test_natt_substitution_family_mismatch);
 
 	plog_clean();
 

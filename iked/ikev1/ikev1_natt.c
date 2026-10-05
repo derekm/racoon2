@@ -487,74 +487,94 @@ idpl_addr2sa(int id_type, caddr_t data, struct sockaddr_storage* ss)
     }
 }
 
-static int switch_id_pl_addr(struct sockaddr *src, struct sockaddr *dst, int proto)
+/*
+ * Address bytes the ID payload must carry for its type (the address,
+ * plus the mask for a subnet type) and the sockaddr family whose address
+ * replaces it; 0 for a type without an address to substitute.
+ */
+static size_t id_pl_addr_need(int proto, int *family)
 {
-    switch(proto)
+    switch (proto)
     {
         case IPSECDOI_ID_IPV4_ADDR:
+            *family = AF_INET;
+            return sizeof(struct in_addr);
         case IPSECDOI_ID_IPV4_ADDR_SUBNET:
-        {
-            memcpy((void *)dst,
-                   &((struct sockaddr_in*)src)->sin_addr,
-                   sizeof(struct in_addr));
-
-            break;
-        }
+            *family = AF_INET;
+            return 2 * sizeof(struct in_addr);
         case IPSECDOI_ID_IPV6_ADDR:
+            *family = AF_INET6;
+            return sizeof(struct in6_addr);
         case IPSECDOI_ID_IPV6_ADDR_SUBNET:
-        {
-            memcpy((void *)dst,
-                   &((struct sockaddr_in6*)src)->sin6_addr,
-                   sizeof(struct in6_addr));
-            break;
-        }
+            *family = AF_INET6;
+            return 2 * sizeof(struct in6_addr);
         default:
-            return -1;
+            return 0;
     }
-    return 0;
+}
+
+/*
+ * N5: an ID that is too short for its type, or whose family differs from
+ * the phase-1 endpoint, would make the copy write past the ID buffer or
+ * read past the endpoint.  Check before anything is modified.
+ */
+static int id_pl_addr_ok(const rc_vchar_t *id, const struct sockaddr *src)
+{
+    const struct ipsecdoi_id_b *id_b;
+    size_t need;
+    int family = AF_UNSPEC;
+
+    if (id == NULL || src == NULL || id->l < sizeof(*id_b))
+        return 0;
+    id_b = (const struct ipsecdoi_id_b *)id->v;
+    need = id_pl_addr_need(id_b->type, &family);
+    if (need == 0 || id->l - sizeof(*id_b) < need)
+        return 0;
+    return src->sa_family == family;
+}
+
+static void switch_id_pl_addr(const struct sockaddr *src, rc_vchar_t *id)
+{
+    struct ipsecdoi_id_b *id_b = (struct ipsecdoi_id_b *)id->v;
+    void *dst = (char *)id_b + sizeof(*id_b);
+
+    if (src->sa_family == AF_INET)
+        memcpy(dst, &((const struct sockaddr_in *)src)->sin_addr,
+               sizeof(struct in_addr));
+    else
+        memcpy(dst, &((const struct sockaddr_in6 *)src)->sin6_addr,
+               sizeof(struct in6_addr));
 }
 
 int
 natt_addr_substitution(struct ph2handle *iph2, int flag)
 {
-    struct ipsecdoi_id_b *id_b;
-    struct sockaddr *sa;
-    struct sockaddr *src;
-    int proto;
-
     if (iph2 == NULL || iph2->ph1 == NULL || flag == 0)
+        return -1;
+
+    /* validate every requested side first: a refused IDr2 must not
+     * leave IDi2 already rewritten */
+    if ((flag & NAT_DETECTED_PEER) &&
+        !id_pl_addr_ok(iph2->id_p, iph2->ph1->remote))
+        return -1;
+    if ((flag & NAT_DETECTED_ME) &&
+        !id_pl_addr_ok(iph2->id, iph2->ph1->local))
         return -1;
 
     if (flag & NAT_DETECTED_PEER)
     {
-        if (iph2->id_p == NULL
-         || iph2->id_p->l < sizeof(struct ipsecdoi_id_b))
-            return -1;
-        id_b = (struct ipsecdoi_id_b *)iph2->id_p->v;
-        src = iph2->ph1->remote;
-        sa = (struct sockaddr *)((char *)id_b + sizeof(*id_b));
-        proto = id_b->type;
         plog(PLOG_INFO, PLOGLOC, NULL,
              "NAT-T address substitution (IDi2) -> %s\n",
-             rcs_sa2str_wop(src));
-        if (switch_id_pl_addr(src, sa, proto) != 0)
-            return -1;
+             rcs_sa2str_wop(iph2->ph1->remote));
+        switch_id_pl_addr(iph2->ph1->remote, iph2->id_p);
     }
 
     if (flag & NAT_DETECTED_ME)
     {
-        if (iph2->id == NULL
-         || iph2->id->l < sizeof(struct ipsecdoi_id_b))
-            return -1;
-        id_b = (struct ipsecdoi_id_b *)iph2->id->v;
-        src = iph2->ph1->local;
-        sa = (struct sockaddr *)((char *)id_b + sizeof(*id_b));
-        proto = id_b->type;
         plog(PLOG_INFO, PLOGLOC, NULL,
              "NAT-T address substitution (IDr2) -> %s\n",
-             rcs_sa2str_wop(src));
-        if (switch_id_pl_addr(src, sa, proto) != 0)
-            return -1;
+             rcs_sa2str_wop(iph2->ph1->local));
+        switch_id_pl_addr(iph2->ph1->local, iph2->id);
     }
 
     return 0;
