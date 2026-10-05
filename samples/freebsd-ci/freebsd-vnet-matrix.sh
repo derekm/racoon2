@@ -968,8 +968,11 @@ fb_first() { grep -oE "g_ir_present=[Yn]" "$1" 2>/dev/null | head -1; }
 # rekey initiator has already logged, so a single read right after the
 # initiator finished can see the responder's line still missing (seen once
 # on 16.0-CURRENT, i2iinit-clresp-legacy: identical SA keys in both jails,
-# i=none).  Wait (bounded) for both seats' first Y keymat before the
-# unchanged match assertion; the -gens/-ikerekey branches already poll.
+# i=none).  The gate can also run while the 1 s initial_child_ke rekey is
+# still in flight (15.1, i2iinit-firstchild-nocl: i=none r=none, the rekey
+# finished in the same second).  Wait (bounded) for both seats' first Y
+# keymat before any of the unchanged assertions in these branches; the
+# -gens/-ikerekey branches already poll.
 fb_wait_first() {
 	_w=0
 	while [ "$_w" -lt 30 ]; do
@@ -991,9 +994,9 @@ case "$_name" in
 	*) _kl=$FI _pl=$FR _why=immediate ;;
 	esac
 	_bad=""
+	fb_wait_first || true
 	grep -q "initial_child_ke $_why: rekeying the IKE_AUTH child" "$_kl" || _bad="no initial_child_ke $_why rekey line"
 	[ "$(fb_first $FI)" = "g_ir_present=n" ] && [ "$(fb_first $FR)" = "g_ir_present=n" ] || _bad="${_bad:+$_bad; }first child not the plain IKE_AUTH child (i=$(fb_first $FI) r=$(fb_first $FR))"
-	fb_wait_first || true
 	_yi=$(fb_ys $FI | head -1); _yr=$(fb_ys $FR | head -1)
 	[ -n "$_yi" ] && [ "$_yi" = "$_yr" ] || _bad="${_bad:+$_bad; }no matching first Y keymat (i=${_yi:-none} r=${_yr:-none})"
 	[ "$(grep -cE 'CREATE_CHILD_SA request SA_hex=.*06000024' "$_pl" 2>/dev/null || true)" -ge 1 ] || _bad="${_bad:+$_bad; }no type-6 in the rekey request"
@@ -1014,10 +1017,10 @@ case "$_name" in
 	# childless IKE_SA: the first child comes from CREATE_CHILD with KE +
 	# type-6, so the first keymat is already Y and nobody rekeys it
 	_bad=""
+	fb_wait_first || true
 	grep -q "sending modified (SA-less) IKE_AUTH" $FI || _bad="initiator sent no childless IKE_AUTH"
 	grep -q "received childless (SA-less) IKE_AUTH" $FR || _bad="${_bad:+$_bad; }responder saw no childless IKE_AUTH"
 	[ "$(fb_first $FI)" = "g_ir_present=Y" ] && [ "$(fb_first $FR)" = "g_ir_present=Y" ] || _bad="${_bad:+$_bad; }first child keymat not Y (i=$(fb_first $FI) r=$(fb_first $FR))"
-	fb_wait_first || true
 	_yi=$(fb_ys $FI | head -1); _yr=$(fb_ys $FR | head -1)
 	[ -n "$_yi" ] && [ "$_yi" = "$_yr" ] || _bad="${_bad:+$_bad; }Y keymat mismatch (i=${_yi:-none} r=${_yr:-none})"
 	grep -qE 'CREATE_CHILD_SA request: .*proto=ESP rekey_proto=0 ' $FR || _bad="${_bad:+$_bad; }no new-child CREATE_CHILD_SA"
