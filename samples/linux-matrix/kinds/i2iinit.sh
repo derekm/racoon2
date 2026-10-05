@@ -1102,8 +1102,38 @@ fi
 	up_req=${up_req:-1}
 	[ "$I2I_CFGNEG" = 1 ] && up_req=0
 
-	if { [ "${up_req:-1}" = 1 ] && [ "$up" -ne 1 ]; } || { [ "${up_req:-1}" = 0 ] && { [ "$up" -ne 0 ] || [ "${cp_refuse:-0}" -ne 1 ]; }; } || { [ "$need_pqc" = 1 ] && { [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; }; } || [ "$cpl" -ne 0 ] || [ "${childless_ok:-0}" -ne 1 ] || [ "${shape_ok:-1}" -ne 1 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; } || [ "${rk_ok:-0}" -ne 1 ] || [ "${onechild_ok:-0}" -ne 1 ]; then
-		log "FAIL: i2iinit incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl childless_ok=${childless_ok:-0} shape_ok=${shape_ok:-1} ppk_ok=${ppk_ok:-0} pfsrekey_ok=${pfsrekey_ok:-0} rk_ok=${rk_ok:-0} onechild_ok=${onechild_ok:-0} peeri=${PEER} peerr=${PEER_R})"
+	# F7 RFC 7427 signature-scheme rows: charon must really have signed
+	# with the scheme the row names (not a silent fallback to the default
+	# SHA-256 PKCS#1 v1.5), and the iked responder must have verified that
+	# AUTH as method 14.
+	sig_ok=1
+	sig_want=""; sig_iked=""
+	case "$name" in
+	*-rsa-pss-*)
+		sig_want='RSA_EMSA_PSS_SHA2_256_SALT_32'
+		sig_iked='RFC 7427 signature verified: RSASSA-PSS SHA256 (MGF1 SHA256, salt 32)' ;;
+	*-rsa-sha512-*)
+		sig_want='RSA_EMSA_PKCS1_SHA2_512'
+		sig_iked='RFC 7427 signature verified: RSASSA-PKCS1-v1_5 SHA512' ;;
+	esac
+	if [ -n "$sig_want" ]; then
+		if grep -qE "authentication of .* \(myself\) with $sig_want successful" \
+		       "$D/charon-init.log" 2>/dev/null &&
+		   grep -q 'auth method 14' "$D/resp-iked.log" 2>/dev/null &&
+		   grep -qF "$sig_iked" "$D/resp-iked.log" 2>/dev/null; then
+			log "RFC 7427 scheme OK: charon signed $sig_want, iked: $sig_iked"
+		else
+			sig_ok=0
+			log "FAIL: RFC 7427 scheme $sig_want not signed by charon / verified by iked"
+			grep -E '\(myself\) with|signature|AUTHENTICATION_FAILED' \
+			    "$D/charon-init.log" 2>/dev/null | tail -4
+			grep -iE 'auth method|RFC 7427|signature|verif' "$D/resp-iked.log" \
+			    2>/dev/null | tail -4
+		fi
+	fi
+
+	if { [ "${up_req:-1}" = 1 ] && [ "$up" -ne 1 ]; } || { [ "${up_req:-1}" = 0 ] && { [ "$up" -ne 0 ] || [ "${cp_refuse:-0}" -ne 1 ]; }; } || { [ "$need_pqc" = 1 ] && { [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; }; } || [ "$cpl" -ne 0 ] || [ "${childless_ok:-0}" -ne 1 ] || [ "$sig_ok" -ne 1 ] || [ "${shape_ok:-1}" -ne 1 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; } || [ "${rk_ok:-0}" -ne 1 ] || [ "${onechild_ok:-0}" -ne 1 ]; then
+		log "FAIL: i2iinit incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl childless_ok=${childless_ok:-0} sig_ok=$sig_ok shape_ok=${shape_ok:-1} ppk_ok=${ppk_ok:-0} pfsrekey_ok=${pfsrekey_ok:-0} rk_ok=${rk_ok:-0} onechild_ok=${onechild_ok:-0} peeri=${PEER} peerr=${PEER_R})"
 		if [ "$PEER" = charon ]; then
 			log "--- charon-init.log ---"
 			i2i_peer_i_diag "$D" charon

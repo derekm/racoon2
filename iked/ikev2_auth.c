@@ -593,10 +593,11 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 			result = VERIFIED_FAILURE;
 		break;
 	case IKEV2_AUTH_DS:
-		/* (RFC7427)
+		/* (RFC7427 s3)
 		 * Digital Signature (14) - auth data = [1-octet len][AI][signature].
-		 * Only SHA-256 is advertised, so match the known sha256WithRSA
-		 * AlgorithmIdentifier blob and verify the trailing signature. */
+		 * The AlgorithmIdentifier names the scheme and hash; any SHA-2
+		 * RSASSA-PKCS1-v1_5, RSASSA-PSS or ECDSA identifier is accepted
+		 * (eay_rfc7427_verify), SHA-1 is not (RFC 8247 s3.2). */
 		pubkey = ikev2_public_key(sa, id, &sa->due_time);
 		if (!pubkey) {
 			isakmp_log(sa, 0, 0, 0,
@@ -604,28 +605,26 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 				   "failed to get public key\n");
 			goto fail;
 		}
+		if (authdata->l < 1 || authdata->u[0] == 0 ||
+		    authdata->l < 1 + (size_t)authdata->u[0] + 1) {
+			isakmp_log(sa, 0, 0, 0,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "malformed RFC 7427 authentication data\n");
+			result = VERIFIED_FAILURE;
+			break;
+		}
 		{
-		const size_t _ai_len = sizeof(rfc7427_sha256_ai);
-			if (authdata->l < 1 + _ai_len ||
-			    authdata->u[0] != _ai_len ||
-			    memcmp(authdata->u + 1, rfc7427_sha256_ai, _ai_len) != 0) {
-				isakmp_log(sa, 0, 0, 0,
-					   PLOG_PROTOERR, PLOGLOC,
-					   "unsupported RFC 7427 signature algorithm\n");
+			size_t _ai_len = authdata->u[0];
+			rc_vchar_t sig_view;
+
+			memset(&sig_view, 0, sizeof(sig_view));
+			sig_view.l = authdata->l - 1 - _ai_len;
+			sig_view.u = authdata->u + 1 + _ai_len;
+			if (eay_rfc7427_verify(octets, authdata->u + 1, _ai_len,
+					       &sig_view, pubkey) == 0)
+				result = VERIFIED_SUCCESS;
+			else
 				result = VERIFIED_FAILURE;
-				break;
-			}
-			{
-				rc_vchar_t sig_view;
-				memset(&sig_view, 0, sizeof(sig_view));
-				sig_view.l = authdata->l - 1 - _ai_len;
-				sig_view.u = authdata->u + 1 + _ai_len;
-				if (eay_rsassa_pkcs1_v1_5_verify("SHA256", octets,
-								 &sig_view, pubkey) == 0)
-					result = VERIFIED_SUCCESS;
-				else
-					result = VERIFIED_FAILURE;
-			}
 		}
 		break;
 	case IKEV2_AUTH_DSS:
