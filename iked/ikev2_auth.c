@@ -351,11 +351,12 @@ ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 				   "failed to get private key\n");
 			goto fail;
 		}
-		/* (RFC8247)
-		 * Section 3.2 requires SHA-256 for IKEv2 AUTH PKCS#1-v1.5 RSA
-		 * signatures; SHA-1 MUST NOT be used for this purpose.
+		/* RFC 8247 keeps method 1 for interoperability with peers that
+		 * still use the historic SHA-1 DigestInfo (strongSwan auth=rsa,
+		 * Windows, iOS).  SHA-2 belongs on method 14 (RFC 7427), which we
+		 * prefer whenever N(SIGNATURE_HASH_ALGORITHMS) was exchanged.
 		 */
-		authdata = eay_rsassa_pkcs1_v1_5_sign("SHA256", octets, privkey);
+		authdata = eay_rsassa_pkcs1_v1_5_sign("SHA1", octets, privkey);
 		if (!authdata) {
 			isakmp_log(sa, 0, 0, 0,
 				   PLOG_INTERR, PLOGLOC,
@@ -774,11 +775,9 @@ ikev2_auth_method(struct ikev2_sa *sa)
 	case RCT_ALG_DSS:
 		return IKEV2_AUTH_DSS;
 	case RCT_ALG_RSASIG:
-		/* RFC 7427: when N(SIG_HASH_ALGORITHMS) was exchanged with the peer,
-		 * use AUTH method 14 (DS) so the signature can carry a SHA-2 hash.
-		 * Classic method 1 is SHA-1-only and OpenSSL >=3.5 refuses SHA-1
-		 * signing.  Only negotiated when the PEER offered 16431 (charon);
-		 * iked<->iked rows keep method 1. */
+		/* RFC 7427: when N(SIG_HASH_ALGORITHMS) was exchanged, use method
+		 * 14 (DS) with a SHA-2 AlgorithmIdentifier.  Otherwise method 1
+		 * with the historic SHA-1 DigestInfo (interop). */
 		if (sa->sig_hash_algos_ds)
 			return IKEV2_AUTH_DS;
 		return IKEV2_AUTH_RSASIG;
