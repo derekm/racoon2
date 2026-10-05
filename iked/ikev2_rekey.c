@@ -1781,8 +1781,16 @@ ikev2_rekey_ikesa_init_followup_send(struct ikev2_sa *old_sa,
 						ctx->addke_link->l),
 			    TRUE);
 	message_id = ikev2_request_id(old_sa);
+	/*
+	 * The followup runs on the IKE SA being rekeyed (RFC 9370 s2.2.2), so
+	 * the I flag is that SA's original role (RFC 7296 s3.1), not the
+	 * rekey-initiator role.  When the original responder drives the
+	 * rekey the flag must be clear; charon looks the SA up by SPIs *and*
+	 * the I flag and silently drops a request with the wrong one.
+	 */
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
-				     IKEV2FLAG_INITIATOR,
+				     old_sa->is_initiator ?
+				     IKEV2FLAG_INITIATOR : 0,
 				     message_id, old_sa, &payl);
 	rc_vfree(kei);
 	ikev2_payloads_destroy(&payl);
