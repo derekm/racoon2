@@ -1331,6 +1331,113 @@ eay_rsassa_pkcs1_v1_5_verify(const char *hash_type, rc_vchar_t *octets, rc_vchar
 }
 
 /*
+ * IKEv2 AUTH method 1 (RSA Digital Signature) verification.
+ *
+ * Method 1 does not negotiate a hash (RFC 7296 s3.8).  Deployed peers
+ * (strongSwan auth = rsa, Windows, iOS) sign with SHA-1; this tree's
+ * iked<->iked rows sign with SHA-256.  Recover the DigestInfo from the
+ * PKCS#1 signature and accept either SHA-1 or SHA-256 (RFC 8247 keeps
+ * method 1 for interop; method 14 is the SHA-2 path).
+ *
+ * returns 0 if successful, non-0 otherwise
+ */
+int
+eay_rsassa_pkcs1_v1_5_verify_auth(rc_vchar_t *octets, rc_vchar_t *sig,
+				 rc_vchar_t *pubkey)
+{
+	/* DigestInfo prefixes (RFC 8017 DigestInfo / RFC 7427 App. A) */
+	static const uint8_t di_sha1[] = {
+		0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
+		0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14
+	};
+	static const uint8_t di_sha256[] = {
+		0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+		0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+		0x00, 0x04, 0x20
+	};
+	EVP_PKEY *pkey = NULL;
+	EVP_PKEY_CTX *pctx = NULL;
+	BPP_const unsigned char *bp;
+	unsigned char *di = NULL;
+	size_t di_len = 0;
+	unsigned char hash[EVP_MAX_MD_SIZE];
+	unsigned int hash_len = 0;
+	const EVP_MD *md;
+	const char *hash_name;
+	size_t expect_hash;
+	int ok = -1;
+
+	bp = (unsigned char *)pubkey->v;
+	pkey = d2i_PUBKEY(NULL, &bp, pubkey->l);
+	if (pkey == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed obtaining public key: %s\n", eay_strerror());
+		goto out;
+	}
+	if (EVP_PKEY_id(pkey) != EVP_PKEY_RSA) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "public key is not for RSA\n");
+		goto out;
+	}
+
+	di_len = (size_t)EVP_PKEY_size(pkey);
+	di = racoon_malloc(di_len);
+	if (di == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "failed allocating memory\n");
+		goto out;
+	}
+	pctx = EVP_PKEY_CTX_new(pkey, NULL);
+	if (pctx == NULL ||
+	    EVP_PKEY_verify_recover_init(pctx) != 1 ||
+	    EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PADDING) != 1 ||
+	    EVP_PKEY_verify_recover(pctx, di, &di_len,
+				    (unsigned char *)sig->v, sig->l) != 1) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "RSA verify_recover failed: %s\n", eay_strerror());
+		goto out;
+	}
+
+	if (di_len == sizeof(di_sha1) + 20 &&
+	    memcmp(di, di_sha1, sizeof(di_sha1)) == 0) {
+		md = EVP_sha1();
+		hash_name = "SHA1";
+		expect_hash = 20;
+	} else if (di_len == sizeof(di_sha256) + 32 &&
+		   memcmp(di, di_sha256, sizeof(di_sha256)) == 0) {
+		md = EVP_sha256();
+		hash_name = "SHA256";
+		expect_hash = 32;
+	} else {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "AUTH method 1: unsupported DigestInfo (len=%zu)\n",
+		     di_len);
+		goto out;
+	}
+
+	if (EVP_Digest(octets->v, octets->l, hash, &hash_len, md, NULL) != 1 ||
+	    hash_len != expect_hash ||
+	    CRYPTO_memcmp(di + (di_len - expect_hash), hash, expect_hash) != 0) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "AUTH method 1: %s DigestInfo hash mismatch\n",
+		     hash_name);
+		goto out;
+	}
+	plog(PLOG_INFO, PLOGLOC, NULL,
+	     "AUTH method 1 signature verified: RSASSA-PKCS1-v1_5 %s\n",
+	     hash_name);
+	ok = 0;
+
+out:
+	if (di)
+		racoon_free(di);
+	if (pctx)
+		EVP_PKEY_CTX_free(pctx);
+	if (pkey)
+		EVP_PKEY_free(pkey);
+	return ok;
+}
+
+/*
  * generates a DSS signature over SHA1 hash of octets
  */
 rc_vchar_t *

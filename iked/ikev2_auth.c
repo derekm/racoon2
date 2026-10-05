@@ -575,9 +575,9 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 	switch (method) {
 #ifdef HAVE_SIGNING_C
 	case IKEV2_AUTH_RSASIG:
-		/* (draft-17)
-		 * RSA Digital Signature (1) - Computed as specified in section
-		 * 2.15 using an RSA private key over a PKCS#1 padded hash.
+		/* (RFC 7296 s3.8 / F6) RSA Digital Signature (1): hash is not
+		 * negotiated.  Recover DigestInfo; accept SHA-1 (interop with
+		 * strongSwan auth=rsa / Windows / iOS) or SHA-256 (iked<->iked).
 		 */
 		pubkey = ikev2_public_key(sa, id, &sa->due_time);
 		if (!pubkey) {
@@ -586,8 +586,8 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 				   "failed to get public key\n");
 			goto fail;
 		}
-		if (eay_rsassa_pkcs1_v1_5_verify("SHA256", octets,
-						 authdata, pubkey) == 0)
+		if (eay_rsassa_pkcs1_v1_5_verify_auth(octets, authdata,
+						      pubkey) == 0)
 			result = VERIFIED_SUCCESS;
 		else
 			result = VERIFIED_FAILURE;

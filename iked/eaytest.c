@@ -103,6 +103,7 @@ int md5test __P((int, char **));
 int dhtest __P((int, char **));
 int dhrangetest __P((int, char **));
 int rfc7427test __P((int, char **));
+int rsam1test __P((int, char **));
 int bntest __P((int, char **));
 #ifndef RACOON2
 #ifndef CERTTEST_BROKEN
@@ -1313,6 +1314,92 @@ rfc7427test(ac, av)
 	return fails ? -1 : 0;
 }
 
+
+/*
+ * F6 — IKEv2 AUTH method 1 hash: peers historically sign SHA-1; this tree
+ * signed/verified SHA-256 only.  eay_rsassa_pkcs1_v1_5_verify_auth recovers
+ * the DigestInfo and accepts either.  The SHA-256-only verify must FAIL a
+ * SHA-1 signature (the pre-fix bug); the new helper must accept both.
+ */
+int
+rsam1test(ac, av)
+	int ac;
+	char **av;
+{
+	static const char msg[] = "IKEv2 AUTH octets for the F6 method-1 test";
+	EVP_PKEY *rsa;
+	vchar_t m, *pub, *sig_sha1, *sig_sha256;
+	int fails = 0;
+	int rc;
+
+	(void)ac;
+	(void)av;
+	printf("\n**Test for AUTH method 1 DigestInfo verify (F6).**\n");
+	rsa = r7427_keygen(EVP_PKEY_RSA, 2048);
+	if (rsa == NULL) {
+		printf("FAIL: could not generate RSA key\n");
+		return -1;
+	}
+	pub = r7427_pub(rsa);
+	m.v = (char *)msg;
+	m.l = sizeof(msg) - 1;
+	sig_sha1 = r7427_sign(rsa, EVP_sha1(), 0, 0,
+	    (const unsigned char *)msg, sizeof(msg) - 1);
+	sig_sha256 = r7427_sign(rsa, EVP_sha256(), 0, 0,
+	    (const unsigned char *)msg, sizeof(msg) - 1);
+	if (pub == NULL || sig_sha256 == NULL) {
+		printf("FAIL: could not build SHA-256 fixture\n");
+		fails++;
+		goto out;
+	}
+
+	/* SHA-256 signature: both the old SHA256-only verify and the new
+	 * DigestInfo helper must accept it (iked<->iked keeps signing SHA-256). */
+	rc = eay_rsassa_pkcs1_v1_5_verify("SHA256", &m, sig_sha256, pub);
+	if (rc != 0) {
+		printf("FAIL: SHA-256 sig rejected by SHA256-only verify rc=%d\n", rc);
+		fails++;
+	} else
+		printf("ok: SHA-256 sig accepted by SHA256-only verify\n");
+	rc = eay_rsassa_pkcs1_v1_5_verify_auth(&m, sig_sha256, pub);
+	if (rc != 0) {
+		printf("FAIL: SHA-256 sig rejected by verify_auth rc=%d\n", rc);
+		fails++;
+	} else
+		printf("ok: SHA-256 sig accepted by verify_auth\n");
+
+	if (sig_sha1 == NULL) {
+		printf("ok: SHA-1 sign unavailable here (OpenSSL policy); skip SHA-1 cases\n");
+		goto out;
+	}
+
+	/* Pre-fix bug: SHA256-only verify rejects a SHA-1 method-1 signature. */
+	rc = eay_rsassa_pkcs1_v1_5_verify("SHA256", &m, sig_sha1, pub);
+	if (rc == 0) {
+		printf("FAIL: SHA-1 sig unexpectedly accepted by SHA256-only verify\n");
+		fails++;
+	} else
+		printf("ok: SHA-1 sig rejected by SHA256-only verify (the F6 bug)\n");
+
+	/* Fix: DigestInfo helper accepts the SHA-1 signature. */
+	rc = eay_rsassa_pkcs1_v1_5_verify_auth(&m, sig_sha1, pub);
+	if (rc != 0) {
+		printf("FAIL: SHA-1 sig rejected by verify_auth rc=%d\n", rc);
+		fails++;
+	} else
+		printf("ok: SHA-1 sig accepted by verify_auth\n");
+
+out:
+	if (sig_sha1)
+		vfree(sig_sha1);
+	if (sig_sha256)
+		vfree(sig_sha256);
+	if (pub)
+		vfree(pub);
+	EVP_PKEY_free(rsa);
+	return fails ? -1 : 0;
+}
+
 struct {
 	char *name;
 	int (*func) __P((int, char **));
@@ -1321,6 +1408,7 @@ struct {
 	{ "dh", dhtest, },
 	{ "dhrange", dhrangetest, },
 	{ "rfc7427", rfc7427test, },
+	{ "rsam1", rsam1test, },
 	{ "md5", md5test, },
 	{ "sha1", sha1test, },
 	{ "hmac", hmactest, },
