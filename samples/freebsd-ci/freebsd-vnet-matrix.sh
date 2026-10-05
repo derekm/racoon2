@@ -414,12 +414,20 @@ charon {
 SEOF
 	_cl_line=""
 	[ -z "$FB_CH_CHILDLESS" ] || _cl_line="		childless = $FB_CH_CHILDLESS"
+	_ppk_conn=""; _ppk_sec=""
+	if [ "${FB_PPK:-0}" = 1 ]; then
+		# Same test default as Linux I2I_PPK_HEX = SHA-256("rfc8784-mat")
+		_ppk_hex=1e9546cc8758e5f4bf1f5d3476f79bfea60c7bd4822a32058e23cf16107eef0b
+		_ppk_conn="		ppk_id = \"rfc8784-mat\"\n		ppk_required = yes"
+		_ppk_sec="	ppk-$_name {\n		secret = \"0x$_ppk_hex\"\n		id = \"rfc8784-mat\"\n	}"
+	fi
 	cat > /tmp/freeb/swanctl.conf <<SEOF
 connections {
 	$_name {
 		version = 2
 		rekey_time = $FB_CH_IKE_REKEY
 $_cl_line
+$(printf '%b' "$_ppk_conn")
 		proposals = $FB_CH_PROP
 		local_addrs = $_cmy
 		remote_addrs = $_cpeer
@@ -445,6 +453,7 @@ secrets {
 	ike-$_name {
 		secret = 0x$_hex
 	}
+$(printf '%b' "$_ppk_sec")
 }
 SEOF
 	chmod 600 /tmp/freeb/swanctl.conf
@@ -520,6 +529,47 @@ fb_charon_gate() {
 		_w=0; while [ "$_w" -lt 10 ] && [ "$(fb_cnt 'selected proposal: ESP:[^ ]*ECP_256[^ ]*KE1_ML_KEM_768' $FB_CL)" -lt 1 ]; do _w=$((_w+1)); sleep 1; done
 		[ "$(fb_cnt 'selected proposal: ESP:[^ ]*ECP_256[^ ]*KE1_ML_KEM_768' $FB_CL)" -ge 1 ] || _bad="${_bad:+$_bad; }charon never selected ESP ECP_256+KE1_ML_KEM_768"
 		_what="$_what, initial_child_ke immediate rekey (Y $(fb_ys $_il | head -1 | cut -c1-16)...) + charon ESP KE1_ML_KEM_768" ;;
+	*-firstchild-charonr)
+		grep -q 'sending modified (SA-less) IKE_AUTH' $FI || _bad="${_bad:+$_bad; }iked initiator sent no childless IKE_AUTH"
+		grep -qE 'CREATE_CHILD_SA request: .*proto=ESP rekey_proto=0 ' $_il || _bad="${_bad:+$_bad; }no new-child CREATE_CHILD_SA"
+		grep -q 'initial_child_ke [a-z]*: rekeying the IKE_AUTH child' $FI $FR 2>/dev/null && _bad="${_bad:+$_bad; }initial_child_ke rekey on a childless IKE_SA"
+		_what="$_what, RFC 6023 firstchild: SA-less IKE_AUTH + CREATE_CHILD first child" ;;
+	*-clresp-charon)
+		grep -q 'received childless (SA-less) IKE_AUTH' $FR || _bad="${_bad:+$_bad; }iked responder saw no SA-less IKE_AUTH"
+		grep -qE 'CREATE_CHILD_SA request: .*proto=ESP rekey_proto=0 ' $FR || _bad="${_bad:+$_bad; }no new-child CREATE_CHILD_SA"
+		grep -q 'initial_child_ke [a-z]*: rekeying the IKE_AUTH child' $FR && _bad="${_bad:+$_bad; }immediate rekey on a childless IKE_SA"
+		_what="$_what, RFC 6023 clresp: charon prefer childless, CREATE_CHILD first child" ;;
+	*-gens-charon*)
+		_w=0
+		while [ "$_w" -lt 150 ]; do
+			_ny=$(fb_ys $_il | wc -w | tr -d ' ')
+			[ "${_ny:-0}" -ge 2 ] && break
+			_w=$((_w+1)); sleep 1
+		done
+		[ "${_ny:-0}" -ge 2 ] || _bad="${_bad:+$_bad; }< 2 ADDKE child generations on iked ($_ny)"
+		_w=0; while [ "$_w" -lt 10 ] && [ "$(fb_cnt 'selected proposal: ESP:[^ ]*ECP_256[^ ]*KE1_ML_KEM_768' $FB_CL)" -lt 2 ]; do _w=$((_w+1)); sleep 1; done
+		[ "$(fb_cnt 'selected proposal: ESP:[^ ]*ECP_256[^ ]*KE1_ML_KEM_768' $FB_CL)" -ge 2 ] || _bad="${_bad:+$_bad; }charon selected ESP KE1_ML_KEM_768 fewer than 2 times"
+		_what="$_what, multi-generation ADDKE x${_ny:-0} on iked + charon ESP KE1_ML_KEM_768" ;;
+	*-ikerekey-charon*)
+		_w=0
+		while [ "$_w" -lt 150 ]; do
+			_nsk=$(fb_cnt 'IKE_SA rekey ADDKE SK\(1\)' $_il)
+			[ "${_nsk:-0}" -ge 2 ] && break
+			_w=$((_w+1)); sleep 1
+		done
+		[ "${_nsk:-0}" -ge 2 ] || _bad="${_bad:+$_bad; }< 2 IKE_SA ADDKE rekeys on iked ($_nsk)"
+		sleep 3
+		fb_charon_sas $_ij ikerekey
+		_sas=/tmp/freeb/charon-sas-ikerekey.txt
+		grep -q 'ESTABLISHED' $_sas || _bad="${_bad:+$_bad; }charon --list-sas: no ESTABLISHED IKE_SA"
+		grep -q 'KE1_ML_KEM_768' $_sas || _bad="${_bad:+$_bad; }charon --list-sas: IKE_SA lacks KE1_ML_KEM_768"
+		_uid=$(grep -oE '^[^ ]+: #[0-9]+' $_sas | head -1 | grep -oE '[0-9]+$')
+		[ "${_uid:-0}" -ge 3 ] || _bad="${_bad:+$_bad; }charon IKE_SA unique id ${_uid:-none} < 3"
+		_what="$_what, IKE_SA ADDKE rekeyed x${_nsk:-0}, charon IKE_SA #${_uid:-?} ESTABLISHED" ;;
+	*-ppk-charon*)
+		grep -qE 'USE_PPK|using PPK|PPK_IDENTITY|ppk' $_il || _bad="${_bad:+$_bad; }iked seat: no PPK markers"
+		grep -qE 'using PPK|PPK_IDENTITY|USE_PPK' $FB_CL || _bad="${_bad:+$_bad; }charon: no PPK markers"
+		_what="$_what, RFC 8784 PPK mixed into SK_d (ESP child proves match)" ;;
 	*-zerochild*)
 		grep -q 'received childless (SA-less) IKE_AUTH, establishing IKE_SA with zero children' $FR || _bad="${_bad:+$_bad; }iked responder did not establish a zero-child IKE_SA"
 		_w=0
@@ -862,14 +912,42 @@ run_row() {
 	FB_CH_ESP=aes128gcm16; FB_CH_CHILDLESS=""; FB_CH_INIT_IKE=0
 	FB_CH_IKE_REKEY=0s; FB_CH_CHILD_REKEY=0s
 	if [ -n "$FB_CH" ]; then
-		FB_POL_I=""; FB_POL_R=""; FB_IKE_I=""; FB_IKE_R=""
+		FB_POL_I=""; FB_POL_R=""; FB_IKE_I=""; FB_IKE_R=""; FB_PPK=0; FB_PPK_MANDATORY=0
 		case "$_name" in
-		*-immediate*|*-zerochild*) FB_CH_ESP=aes128gcm16-ecp256-ke1_mlkem768 ;;
+		*-immediate*|*-zerochild*|*-firstchild*|*-clresp*|*-gens*|*-ikerekey*)
+			FB_CH_ESP=aes128gcm16-ecp256-ke1_mlkem768 ;;
 		esac
 		case "$_name" in
 		*-immediate*)
 			if [ "$FB_CH" = i ]; then FB_POL_R="	initial_child_ke immediate;"
 			else FB_POL_I="	initial_child_ke immediate;"; fi ;;
+		*-firstchild*)
+			# Linux firstchild-charonr: iked initiator childless, charon
+			# responder childless=allow (advertises 16418)
+			FB_POL_I="	initial_child_ke childless;"; FB_CH_CHILDLESS=allow; FB_DBG3=1 ;;
+		*-clresp*)
+			# Linux clresp-charon: charon initiator prefer, iked responder
+			# childless on + immediate (no rekey of a child that never was)
+			FB_CH_CHILDLESS=prefer; FB_IKE_R="		childless on;"
+			FB_POL_R="	initial_child_ke immediate;"; FB_DBG3=1 ;;
+		*-gens*)
+			# iked seat drives child rekeys via short lifetime.
+			# all-list passes the right LFT; single-row dispatcher defaults
+			# to 300/300 so force the driving seat to 30s here.
+			if [ "$FB_CH" = i ]; then _lftr=30; else _lfti=30; fi ;;
+		*-ikerekey*)
+			if [ "$FB_CH" = i ]; then
+				FB_IKE_R="		kmp_sa_lifetime_time 30 sec;"
+			else
+				FB_IKE_I="		kmp_sa_lifetime_time 30 sec;"
+			fi ;;
+		*-ppk*)
+			# RFC 8784: optional PPK (test default SHA-256(ppk_id));
+			# charonr uses mandatory so charon must apply the PPK
+			FB_PPK=1
+			_ppk_lines="		use_ppk on;\n		ppk_mandatory off;\n		ppk_id \"rfc8784-mat\";"
+			if [ "$FB_CH" = i ]; then FB_IKE_R=$(printf '%b' "$_ppk_lines")
+			else FB_IKE_I=$(printf '%b' "$_ppk_lines"); FB_PPK_MANDATORY=1; fi ;;
 		*-childless*)
 			FB_CH_CHILDLESS=force; FB_IKE_R="		childless on;"; FB_DBG3=1 ;;
 		*-zerochild-cr*)
@@ -1725,10 +1803,9 @@ run() {
 
 # Matrix rows.  Tokens match the Linux kinds verbatim so pfkey/xfrm parity
 # is asserted on identical config.  REKEY rows: initiator lifetime short.
-# 66 rows.  Still Linux-only (not replicated): netem drop/dup,
-# mobike/cookie2, xfrm-only cells, PPK, ESN, DPD silence, NSA-warn, and
-# the charon rows that need RSA/PPK/CFG seats or the gens/ikerekey
-# drivers.  Those need a peer or a conf knob this harness does not emit.
+# Still Linux-only (not replicated): netem drop/dup, mobike/cookie2,
+# xfrm-only cells, ESN, DPD silence, NSA-warn, and charon RSA/CFG seats.
+# FreeBSD now mirrors Linux gens/ikerekey/firstchild/clresp/ppk charon rows.
 case "$ROW" in
 	all)
 		# --- i2iinit esp alg vectors (mirror linux i2iinit-esp-*) ---
@@ -1795,6 +1872,15 @@ case "$ROW" in
 		run i2iinit-immediate-charonr   inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		run i2iinit-zerochild-charon    inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		run i2iinit-zerochild-cr-charon inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		# --- expand FreeBSD charon rows (mirror Linux gens/ikerekey/firstchild/clresp/ppk) ---
+		run i2iinit-gens-charon         inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 30 1 a ""
+		run i2iinit-gens-charonr        inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 30 300 1 a ""
+		run i2iinit-ikerekey-charon     inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-ikerekey-charonr    inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-firstchild-charonr  inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-clresp-charon       inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-ppk-charon          inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		run i2iinit-ppk-charonr         inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		# --- PQC rows (OpenSSL 3.5 build = WITH_ADDKE: RATOON2 out-of-band
 		#      RFC 9370, not netbsd-style kernel ESP).  i2iinit-addke proves
 		#      ML-KEM-768 on the INITIAL IKE_SA (type-06 offer + matching
@@ -1890,7 +1976,7 @@ case "$ROW" in
 	i2ike-rekey) run_row i2ike-rekey inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 60 3600 1 a "" ;;
 	i2ineg-a12strict) run_row i2ineg-a12strict inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 r "parent_child_strength on;" ;;
 	i2ineg-a12permit) run_row i2ineg-a12permit inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a "" ;;
-	i2iinit-charon|i2iinit-charonr|i2iinit-childless-charon|i2iinit-immediate-charon|i2iinit-immediate-charonr|i2iinit-zerochild-charon|i2iinit-zerochild-cr-charon)
+	i2iinit-charon|i2iinit-charonr|i2iinit-childless-charon|i2iinit-immediate-charon|i2iinit-immediate-charonr|i2iinit-zerochild-charon|i2iinit-zerochild-cr-charon|i2iinit-gens-charon|i2iinit-gens-charonr|i2iinit-ikerekey-charon|i2iinit-ikerekey-charonr|i2iinit-firstchild-charonr|i2iinit-clresp-charon|i2iinit-ppk-charon|i2iinit-ppk-charonr)
 		run_row "$ROW" inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a "" ;;
 	i2idh-ecp384-charon) run_row i2idh-ecp384-charon inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp384 aes_gcm non_auth 300 300 0 a "" ;;
 	i2idh-ecp521-charonr) run_row i2idh-ecp521-charonr inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp521 aes_gcm non_auth 300 300 0 a "" ;;
