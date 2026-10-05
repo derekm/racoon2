@@ -11,7 +11,7 @@
 # touched, so the host state is unchanged and the run stays self-contained).
 #
 # Gate: ESP child UP on both seats (proves IKE_AUTH authenticated), the iked
-# TRACE 'auth method %d' (1 = RSASIG, 9/10/11 = ECDSA) on BOTH seats, and CPL.
+# TRACE 'auth method %d' (14 = Digital Signature (RFC 7427), 9/10/11 = ECDSA) on BOTH seats, and CPL.
 # Row suffix selects the method: i2ipubkey-rsa | i2ipubkey-ecdsa.
 kind_i2ipubkey() {
 	name=$1
@@ -22,7 +22,7 @@ kind_i2ipubkey() {
 	# defaults: RSA
 	AUTH_METHOD=rsasig
 	AUTH_HEX=1
-	EXP_METHOD='auth method 1'
+	EXP_METHOD='auth method 14'
 	CURVE=''
 	case "$name" in
 	*-ecdsa) AUTH_METHOD=ecdsa; AUTH_HEX=10; EXP_METHOD='auth method 10'; CURVE='P-384' ;;

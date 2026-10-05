@@ -946,7 +946,7 @@ run_row() {
 	sleep 1
 	# Debug level: 0x0001 = DEBUG (A4/A5/A8 cells, ADDKE g_ir_present) for
 	# every row; 0x0003 adds DEBUG_FLAG_TRACE=0x0002 so the pubkey rows can
-	# prove the peer-auth METHOD ('auth method 1/10' is a TRACE line), same
+	# prove the peer-auth METHOD ('auth method 14/10' is a TRACE line), same
 	# as linux i2ipubkey's I2I_DBG override.
 	_dbg=0x0001
 	[ "$AUTH" = psk ] || _dbg=0x0003
@@ -1103,7 +1103,7 @@ run_row() {
 # string as linux i2ipubkey.sh.
 case "$_name" in
 i2ipubkey-*)
-	_exp="auth method 1([^0-9]|$)"
+	_exp="auth method 14"
 	case "$_name" in *-ecdsa*) _exp="auth method 10" ;; esac
 	ai=$(grep -cE "$_exp" /tmp/freeb/init-iked.log 2>/dev/null || true)
 	ar=$(grep -cE "$_exp" /tmp/freeb/resp-iked.log 2>/dev/null || true)

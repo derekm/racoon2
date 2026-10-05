@@ -1513,6 +1513,26 @@ initiator_start_after_gen(int rc, void *arg)
 							 0, 0),
 				    TRUE);
 	}
+	/* RFC 7427 s4: offer N(SIG_HASH_ALGORITHMS) when this seat is RSASIG
+	 * so a peer that supports method 14 can negotiate it.  Data = the
+	 * SHA-2 hash IDs we can verify (never SHA-1; that stays on method 1).
+	 * If the peer echoes, initiator notify sets sig_hash_algos_ds and we
+	 * sign method 14; otherwise we fall back to method 1 / SHA-1. */
+	{
+		struct rc_alglist *_kmp = ikev2_kmp_auth_method(ike_sa->rmconf);
+		if (_kmp && _kmp->algtype == RCT_ALG_RSASIG) {
+			static const uint8_t sig_hash_sha2[] = {
+				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
+			};
+			TRACE((PLOGLOC, "offering SIG_HASH_ALGORITHMS (16431)\n"));
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+								 IKEV2_SIG_HASH_ALGORITHMS,
+								 (uint8_t *)sig_hash_sha2,
+								 sizeof(sig_hash_sha2)),
+					    TRUE);
+		}
+	}
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
 				     0, ike_sa, &ctx->payl);
 	if (!pkt)
@@ -2020,9 +2040,9 @@ responder_state0_after_gen(int rc, void *arg)
 	 * Data = the hash-algorithm IDs (16-bit) we can verify (RFC 7427
 	 * s4): SHA2-256=2, SHA2-384=3, SHA2-512=4 (eay_rfc7427_verify);
 	 * never SHA1=1 (RFC 8247 s3.2).  Our own method-14 AUTH signs SHA2-256.
-	 * iked<->iked rows never send 16431, so they stay on classic method 1
-	 * (i2ipubkey-rsa gate greps 'auth method 1'); only charon peers that
-	 * offer the notify take the RFC 7427 path. */
+	 * Both initiator and responder offer/echo 16431 when RSASIG, so
+	 * iked<->iked RSA (i2ipubkey-rsa) negotiates method 14; method 1 /
+	 * SHA-1 remains the fallback when the peer does not echo. */
 	if (ike_sa->peer_sent_sig_hash_algos) {
 		struct rc_alglist *_kmp = ikev2_kmp_auth_method(ike_sa->rmconf);
 		if (_kmp && _kmp->algtype == RCT_ALG_RSASIG) {

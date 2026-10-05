@@ -128,10 +128,9 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 #endif
 	case IKEV2_SIG_HASH_ALGORITHMS:
 		/* RFC 7427 s4: the PEER advertises its signature-hash support and
-		 * thereby the Digital Signature AUTH method (14).  This side only
-		 * echoes 16431 (committing to method 14 AUTH) when its own seat is
-		 * RSASIG -- see responder_state0_after_gen.  iked<->iked rows never
-		 * send this notify, so they stay on classic method 1. */
+		 * thereby the Digital Signature AUTH method (14).  This side echoes
+		 * 16431 (committing to method 14 AUTH) when its own seat is RSASIG
+		 * -- see responder_state0_after_gen. */
 		ike_sa->peer_sent_sig_hash_algos = 1;
 		TRACE((PLOGLOC, "peer offers SIG_HASH_ALGORITHMS (16431)\n"));
 		break;
@@ -299,8 +298,11 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		break;
 #endif
 	case IKEV2_SIG_HASH_ALGORITHMS:
-		/* RFC 7427 s4: peer echoed our 16431 offer (initiator view). */
+		/* RFC 7427 s4: peer echoed our 16431 offer (initiator view).
+		 * Commit to method 14 AUTH on this seat — ikev2_auth_method
+		 * keys off sig_hash_algos_ds. */
 		ike_sa->peer_sent_sig_hash_algos = 1;
+		ike_sa->sig_hash_algos_ds = 1;
 		TRACE((PLOGLOC, "peer echoes SIG_HASH_ALGORITHMS (16431)\n"));
 		break;
 	case IKEV2_USE_PPK:
