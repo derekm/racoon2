@@ -1190,6 +1190,12 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		rc_free(sa->local);
 	if (sa->remote)
 		rc_free(sa->remote);
+#ifdef ENABLE_NATT
+	if (sa->oa_i)
+		rc_free(sa->oa_i);
+	if (sa->oa_r)
+		rc_free(sa->oa_r);
+#endif
 
 	if (sa->cookie2_echo)
 		rc_vfree(sa->cookie2_echo);

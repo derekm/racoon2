@@ -2492,6 +2492,27 @@ ikev2_ts_payload_substitute(struct ikev2_payload_header *pl,
     return 0;
 }
 
+/* First start-address of a TS payload, or NULL.  Caller owns the copy. */
+static struct sockaddr *
+ikev2_ts_payload_first_addr(struct ikev2_payload_header *pl)
+{
+	struct ikev2payl_traffic_selector *payl;
+	struct ikev2_traffic_selector *ts;
+	struct sockaddr *saddr = NULL, *eaddr = NULL;
+
+	if (pl == NULL)
+		return NULL;
+	payl = (struct ikev2payl_traffic_selector *)pl;
+	if (payl->tsh.num_ts == 0)
+		return NULL;
+	ts = (struct ikev2_traffic_selector *)(payl + 1);
+	if (ikev2_retreive_ts_addr(ts, &saddr, &eaddr) != 0)
+		return NULL;
+	if (eaddr)
+		rc_free(eaddr);
+	return saddr;
+}
+
 int ikev2_addr_substitute(struct ikev2_child_sa *child_sa, 
                           struct ikev2_payload_header *ts_i_pl,
                           struct ikev2_payload_header *ts_r_pl)
@@ -2534,8 +2555,21 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     sub_i = ike_sa->is_initiator ? ike_sa->local : ike_sa->remote;
     sub_r = ike_sa->is_initiator ? ike_sa->remote : ike_sa->local; 
 
+    /*
+     * N4 (RFC 3948 §3.1.2 / 7296 §2.23.1): stash the ORIGINAL addresses
+     * carried in the received TS payloads into oa_i/oa_r BEFORE rewriting.
+     * FreeBSD (and Linux) compute the TCP/UDP checksum delta from
+     * (OA, SA endpoint); the OA must be the address the peer used when it
+     * computed the checksum — i.e. the TS it put on the wire — never our
+     * local SA endpoint.  Stashing the substitute target on the initiator
+     * made FreeBSD apply a non-zero delta of (local_addr − post-NAT_addr)
+     * and drop every TCP segment (ICMP kept working because its checksum
+     * does not cover the IP addresses).
+     */
     err = 0;
     if (init_nated) {
+        if (ike_sa->oa_i == NULL)
+            ike_sa->oa_i = ikev2_ts_payload_first_addr(ts_i_pl);
         err = ikev2_ts_payload_substitute(ts_i_pl, sub_i);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
@@ -2543,6 +2577,8 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
                  rcs_sa2str_wop(sub_i));
     }
     if (err == 0 && resp_nated) {
+        if (ike_sa->oa_r == NULL)
+            ike_sa->oa_r = ikev2_ts_payload_first_addr(ts_r_pl);
         err = ikev2_ts_payload_substitute(ts_r_pl, sub_r);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
