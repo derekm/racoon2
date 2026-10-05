@@ -301,12 +301,41 @@ i2i_compliance() {
 	# the window); this cell only claims the 24h default is honored.
 	# The regex is anchored to the exact 86400 s default: the loose
 	# 8[0-9]{4} matched any 80000–89999 and overstated the proof.
-	a7_ok=0
-	for _lg in "$_D/resp-iked.log" "$_D/init-iked.log"; do
-		if [ -f "$_lg" ] && grep -qE "ike_remain=86400" "$_lg"; then a7_ok=1; fi
+	#
+	# Knob seats: a row may set kmp_sa_lifetime_time on an iked seat on
+	# purpose (the -ikerekey/-zerochild rekey-family rows: 30 s).  That
+	# seat never shows the 24h default.  If it is the ONLY iked seat (a
+	# charon peer row), the default-lifetime precondition is absent.  The
+	# cell is then proven the way the i2iconf-lifetime row proves it: the
+	# knob is <= 24h AND that seat logged 'initiating IKE_SA rekey', i.e.
+	# the admin-configured lifetime was honored.  Any row that still has a
+	# default-lifetime iked seat keeps the exact ike_remain=86400 proof.
+	a7_ok=0 a7_dflt=0 a7_knob_rk=0 a7_knob_over=0 a7_knob_txt=""
+	for _seat in r i; do
+		case $_seat in
+		r) _lg="$_D/resp-iked.log"; _cf="$_C/responder.conf" ;;
+		i) _lg="$_D/init-iked.log"; _cf="$_C/initiator.conf" ;;
+		esac
+		[ -f "$_lg" ] || continue
+		_kn=$(sed -n 's/^[[:space:]]*kmp_sa_lifetime_time[[:space:]]\{1,\}\([0-9]\{1,\}\)[[:space:]]*sec.*/\1/p' "$_cf" 2>/dev/null | head -1)
+		if [ -z "$_kn" ]; then
+			a7_dflt=1
+			grep -qE "ike_remain=86400" "$_lg" && a7_ok=1
+		else
+			a7_knob_txt="$a7_knob_txt seat=$_seat:${_kn}s"
+			[ "$_kn" -le 86400 ] || a7_knob_over=1
+			grep -q "initiating IKE_SA rekey" "$_lg" && a7_knob_rk=1
+		fi
 	done
-	[ "$a7_ok" -eq 1 ] && PLOG A7 PASS "IKE_SA default lifetime 24h honored (resume ike_remain=86400); admin knob exercised by the i2iconf-lifetime row (kmp_sa_lifetime_time 37s -> observed 'initiating IKE_SA rekey')"
-	[ "$a7_ok" -eq 0 ] && PLOG A7 FAIL "no ike_remain=86400 (24h) IKE_SA lifetime in iked logs"
+	if [ "$a7_dflt" -eq 1 ]; then
+		# a default-lifetime iked seat exists: the unchanged 24h proof
+		[ "$a7_ok" -eq 1 ] && PLOG A7 PASS "IKE_SA default lifetime 24h honored (resume ike_remain=86400); admin knob exercised by the i2iconf-lifetime row (kmp_sa_lifetime_time 37s -> observed 'initiating IKE_SA rekey')"
+		[ "$a7_ok" -eq 0 ] && PLOG A7 FAIL "no ike_remain=86400 (24h) IKE_SA lifetime in iked logs"
+	elif [ -n "$a7_knob_txt" ] && [ "$a7_knob_over" -eq 0 ] && [ "$a7_knob_rk" -eq 1 ]; then
+		PLOG A7 PASS "IKE_SA lifetime admin-configurable: no default-lifetime iked seat; kmp_sa_lifetime_time (${a7_knob_txt# }) <= 24h honored, observed 'initiating IKE_SA rekey'"
+	else
+		PLOG A7 FAIL "IKE_SA lifetime: no default-lifetime iked seat and the kmp_sa_lifetime_time knob (${a7_knob_txt# }) was not honored (> 24h or no 'initiating IKE_SA rekey')"
+	fi
 
 	# ---- A8  CHILD_SA lifetime admin-configurable, within [.. 8h] ----------
 	# kind sets ipsec_sa_lifetime_time (60/300 s) => SADB hard-time matches;
