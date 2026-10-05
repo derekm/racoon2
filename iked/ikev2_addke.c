@@ -576,6 +576,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	rc_vchar_t *ct = 0, *ss = 0;
 	uint16_t ke_method;
 	int is_response;
+	int rekey_link_match = 0;	/* followup links to the pending IKE-SA rekey */
 	int type;
 
 	ikehdr = (struct ikev2_header *)msg->v;
@@ -861,10 +862,19 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * encapsulate step below.
 		 */
 		child_sa = NULL;
+		rekey_link_match = 1;
 	} else {
 		child_sa = followup_ke_find_child(ike_sa, link, ke_method);
 	}
-	if (!child_sa && !ike_sa->addke_rekey_pending) {
+	/*
+	 * A pending IKE-SA rekey is no licence to accept any link: the
+	 * N(16441) blob is what ties this followup to that rekey (RFC 9370
+	 * s2.2.2), so a link that matches neither the rekey nor a child has
+	 * no key exchange state and gets STATE_NOT_FOUND.  Completing the
+	 * rekey on an unmatched link hid an initiator that never echoed the
+	 * responder's link.
+	 */
+	if (!child_sa && !rekey_link_match) {
 		/* rfc9370 s2.2.4: no key exchange state -> STATE_NOT_FOUND */
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOWARN, PLOGLOC,
@@ -899,7 +909,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	}
 
 	/* SK(1) now known: complete the deferred exchange. */
-	if (ike_sa->addke_rekey_pending) {
+	if (rekey_link_match) {
 		/* ADDKE IKE-SA rekey: finish SKEYSEED + keys with SK(1),
 		 * reply KEr(1) inside the completion. */
 		if (ikev2_rekey_responder_addke_complete(ike_sa, ss, ct,
