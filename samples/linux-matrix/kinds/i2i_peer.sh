@@ -8,7 +8,8 @@
 # ML-KEM-768 key material across two independent implementations — the ESP
 # child landing proves SK(1) matched (AUTH+IntAuth verify).  iked default
 # paths in the kinds stay untouched.
-# New -charon rows ship gate=box until a container counted-gate PASS.
+# New -charon rows ship gate=box until a box (netns, real ESP) PASS; the
+# promoted ones run in the Fedora PQC matrix (fedora:44 strongSwan 6.0.7).
 # Requires strongSwan 6.0.x + the `ml` plugin on the run host (box:
 # libstrongswan-ml.so; mlkem768/ML_KEM_768 in libstrongswan.so.0).
 
