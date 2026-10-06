@@ -199,9 +199,11 @@ i2i_compliance() {
 	_aa4=
 	_a4c=
 	case "$name" in
+	*-esp-3des|*-ike-3des)
+		_aa4="3des|DES3|des3_ede"; _a4c='3DES-CBC (RFC 2451)' ;;
 	*-esp-cbc128|*-esp-cbc192|*-esp-cbc256|*-esp-sha384|*-esp-sha512|*-esp-xcbc|*-esp-cmac)
 		_aa4="enctype=AES(128|192|256)?-CBC|enc cbc\(aes\)"; _a4c='AES-CBC (RFC 4868)' ;;
-	*-esp-ctr)
+	*-esp-ctr|*-esp-ctr128|*-esp-ctr192|*-esp-ctr256)
 		_aa4="enctype=AES-CTR"; _a4c='AES-CTR (RFC 5930)' ;;
 	*)
 		_aa4="enctype=AES-GCM|aead rfc4106\|gcm\|aes_gcm"; _a4c='AES-GCM' ;;
@@ -216,7 +218,7 @@ i2i_compliance() {
 	# -esp-cbc192 / -esp-ctr rows are interop/classical coverage, so they
 	# report INFO (established, outside the claim), never PASS.
 	case "$name" in
-	*-esp-cbc192|*-esp-ctr)
+	*-esp-cbc192|*-esp-ctr|*-esp-ctr192|*-esp-ctr256|*-esp-3des|*-ike-3des)
 		[ "$a4_ok" -eq 1 ] && PLOG A4 INFO "ESP cipher $_a4c established but outside v3.0e claimed set ($_aa4 for $name)"
 		[ "$a4_ok" -eq 0 ] && PLOG A4 FAIL "ESP cipher absent from logs (wanted $_aa4)"
 		;;
@@ -283,7 +285,7 @@ i2i_compliance() {
 		[ -f "$_C/$_c" ] && grep -qE "kmp_enc_alg \{ (aes128_cbc|aes256_cbc|aes_gcm)" "$_C/$_c" && a6_claim=1
 	done
 	case "$name" in
-	*-ike-cbc192|*-ike-ctr*)
+	*-ike-cbc192|*-ike-ctr*|*-ike-3des)
 		[ "$a6_det" -eq 1 ] && PLOG A6 INFO "IKE payload cipher outside v3.0e claimed IKE set (via $name)"
 		[ "$a6_det" -eq 0 ] && PLOG A6 FAIL "IKE payload cipher not detected (no charon proposal / conf kmp_enc_alg)"
 		;;
