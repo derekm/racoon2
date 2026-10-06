@@ -224,31 +224,22 @@ jobs:
       - name: Run the PQC matrix (ADDKE i2ike)
         run: |
           export R2_ADDKE=yes
-          # charon interop rows (-charon: charon initiator, -charonr: charon
-          # responder) use Fedora's strongSwan 6.0.x package (ML-KEM through
-          # the openssl plugin on OpenSSL 3.5).  Resolve swanctl wherever
-          # the package put it instead of assuming the bin/sbin merge.
+          # Full matrix in the Fedora 44 container (OpenSSL 3.5, xfrm-addke
+          # build): every gate=addke row runs, so the 8 new IKE/ESP keylen
+          # rows (ike-gcm192/128, esp-ctr192/256, esp-gcm192/128,
+          # esp-3des, ike-3des) are exercised on CI too.  gate=box and
+          # gate=dpd rows are still skipped by run.sh (R2_BOX/R2_DPD unset)
+          # per the i2ike-drop576 staging rule.  inputs.cases overrides.
+          # charon interop rows (-charon/-charonr) use Fedora's strongSwan
+          # 6.0.x package (ML-KEM through the openssl plugin on OpenSSL 3.5).
+          # Resolve swanctl wherever the package put it instead of assuming
+          # the bin/sbin merge.
           export I2I_SWANCTL_BIN=$(command -v swanctl || echo /usr/sbin/swanctl)
           "$I2I_SWANCTL_BIN" --version || true
           CASES=${{ inputs.cases }}
-          # run.sh's filter regex-matches case NAMES; 'i2ike' would also pull
-          # in i2ikesa-addke (and 'i2ikesa-addke' is a separate ADDKE gate).
-          # Cover the box-verified gate rows on the INITIAL + rekey paths,
-          # plus the counted-drop replay kill-tests (i2ike-drop R2 replay,
-          # i2iinit-drop576 H1 fragment replay).  i2ike-drop576 is not in
-          # this list until a container run passes its counted gate.
-          # Names are anchored: a bare i2ike-drop also matches i2ike-drop576.
-          # i2ike-drop576 is box-green once and container-red (36204006963:
-          # new Y never landed).  It stays out of this default until a
-          # container run passes the same counted gate.
-          [ -n "$CASES" ] || CASES='^(i2inatt-transport |i2inatt-transport-wild |i2iv6-esp |i2iv6-esp-cbc128 |i2iinit-addke |i2iinit-nointermediate |i2iinit-childless |i2iinit-childless-init |i2iinit-childless-init-rsa |i2iinit-childless-init-cfg |i2iinit-childless-init-cfgneg |i2iinit-pfsrekey |i2iinit-pfsrekey-dh384 |i2iinit-pfsrekey-dh521 |i2iinit-ike-gcm256 |i2iinit-ike-gcm192 |i2iinit-ike-gcm128 |i2iinit-prfxcbc |i2iinit-prfcmac |i2iinit-esp-cbc128 |i2iinit-esp-cbc192 |i2iinit-esp-sha384 |i2iinit-esp-sha512 |i2iinit-esp-xcbc |i2iinit-esp-cmac |i2iinit-esp-ctr |i2iinit-esp-ctr192 |i2iinit-esp-ctr256 |i2idh-modp2048 |i2idh-modp3072 |i2idh-modp4096 |i2idh-modp6144 |i2idh-modp8192 |i2idh-ecp256 |i2idh-ecp384 |i2idh-ecp521 |i2ike-addke |i2ikesa-addke |i2ike-drop |i2ike-skfreplay |i2iinit-drop576 |i2ike-addke-immediate |i2iinit-immediate |i2iinit-immediate-r |i2iinit-firstchild |i2iinit-firstchild-nocl |i2iinit-clresp |i2iinit-clresp-legacy |i2iinit-gens |i2iinit-ikerekey |i2iinit-noacq |i2iinit-charon |i2iinit-charonr |i2iinit-childless-charon |i2iinit-immediate-charon |i2iinit-immediate-charonr |i2iinit-firstchild-charonr |i2iinit-firstchild-nocl-charonr |i2iinit-clresp-charon |i2iinit-clresp-legacy-charon |i2iinit-gens-charon |i2iinit-gens-charonr |i2iinit-gens-cr-charon |i2iinit-gens-cr-charonr |i2iinit-ikerekey-charon |i2iinit-ikerekey-charonr |i2iinit-ikerekey-cr-charon |i2iinit-ikerekey-cr-charonr |i2iinit-zerochild-charon |i2iinit-zerochild-cr-charon |i2idh-ecp384-charon |i2idh-ecp384-charonr |i2idh-ecp521-charon |i2idh-ecp521-charonr |i2iinit-ppk-charon |i2iinit-ppk-charonr |i2iinit-childless-pfsrekey-charon |i2iinit-childless-rsa-charon |i2iinit-childless-rsa-pss-charon |i2iinit-childless-rsa-sha512-charon |i2iinit-childless-rsa-sha1-charon |i2iinit-childless-cfg-charon |i2iinit-childless-cfgneg-charon )'
-          # run.sh splits ARGS on IFS.  A --cases value with spaces (the
-          # anchored names above) must be one argv: pass it quoted.
-          # --shard partitions the filter-passing rows round-robin; each of
-          # the 3 matrix shards is its own container, so the netns/socket
-          # names per kind never collide across shards.
-          bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
-            --shard ${{ matrix.shard }} 3 --cases "$CASES" | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+          ARGS="--src $GITHUB_WORKSPACE --shard ${{ matrix.shard }} 3"
+          [ -z "$CASES" ] || ARGS="$ARGS --cases $CASES"
+          bash samples/linux-matrix/run.sh $ARGS | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
         env:
           R2_PREFIX: /usr/local/racoon2
 
