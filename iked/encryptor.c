@@ -116,6 +116,17 @@ struct encryptor_method encr_aesgcm128 = {
 	eay_aes_gcm_ike_decrypt,
 };
 
+struct encryptor_method encr_aesgcm192 = {
+	"aes-192-gcm",
+	1, AES_GCM_IV_SIZE, (192 / 8) + AES_GCM_SALT_SIZE,
+	eay_aes_weakkey,
+	aead_need_aad,
+	aead_need_aad,
+	AES_GCM_ICV_SIZE,
+	eay_aes_gcm_ike_encrypt,
+	eay_aes_gcm_ike_decrypt,
+};
+
 struct encryptor_method encr_aesgcm256 = {
 	"aes-256-gcm",
 	1, AES_GCM_IV_SIZE, (256 / 8) + AES_GCM_SALT_SIZE,
