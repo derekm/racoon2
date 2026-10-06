@@ -150,6 +150,8 @@ esp_up() { # esp_up $JAIL : count of *mature* esp tunnel SAs in that jail's SADB
 #   A14 peer id pinned (peers_id fqdn in confs)
 # NEG rows (wrongpsk/idmismatch): the refusal IS the evidence; childless
 # cells (A3/A4/A5/A8) waive to INFO like linux i2i_compliance *-cfgneg*.
+# A1 (SPD from spmd's config) is NOT waived for racoon2 seats; only a
+# charon seat on a NEG/x row may lack PROTECT rows (see A1).
 # ---------------------------------------------------------------------------
 fbsd_comply() {
 	_name=$1 _neg=$2
@@ -158,14 +160,35 @@ fbsd_comply() {
 	AF() { grep -avE '^[0-9a-f]{8}( |$)' "$1" 2>/dev/null || true; }
 
 	# ---- A1  SPD PROTECT architecture (setkey -DP across both jails) ----
-	_a1=1
-	for _sp in resp-spd.txt init-spd.txt; do
-		if ! grep -qE 'esp/tunnel/.*/require|esp/tunnel' "/tmp/freeb/$_sp" 2>/dev/null; then
-			_a1=0
+	# A racoon2 seat's SPD comes from spmd's policy config, installed at
+	# startup whatever IKE later decides, so EVERY racoon2 seat must show
+	# PROTECT rows - NEG and expected-reject rows included (the dump is
+	# taken while the jails are still up).  The only seat allowed to lack
+	# them is a strongSwan charon seat on a NEG/x row: charon installs its
+	# policies together with a CHILD_SA, which the proven refusal (the
+	# caller only reaches here after the refusal marker matched) prevents.
+	# 6950319 had waived A1 to INFO for whole NEG rows because of
+	# i2iinit-charon-g12's charon initiator seat; that also hid a racoon2
+	# seat without PROTECT rows.  On positive rows both seats must have it.
+	_a1=1; _a1_info=""
+	for _seat in resp init; do
+		if grep -qE 'esp/tunnel/.*/require|esp/tunnel' "/tmp/freeb/$_seat-spd.txt" 2>/dev/null; then
+			continue
 		fi
+		if [ "$_neg" != a ] && { { [ "$_seat" = init ] && [ "$FB_CH" = i ]; } ||
+		   { [ "$_seat" = resp ] && [ "$FB_CH" = r ]; }; }; then
+			_a1_info="$_seat (charon seat: no CHILD_SA after the proven refusal, so no charon policies)"
+			continue
+		fi
+		_a1=0
 	done
-	[ "$_a1" -eq 1 ] && _plog A1 PASS "SPD has PROTECT(esp/tunnel require) rows in both jails (setkey -DP resp/init)"
-	[ "$_a1" -eq 0 ] && _plog A1 FAIL "SPD missing PROTECT(esp/tunnel require) row in a jail (resp-spd.txt/init-spd.txt)" || true
+	if [ "$_a1" -eq 0 ]; then
+		_plog A1 FAIL "SPD missing PROTECT(esp/tunnel require) row in a racoon2 jail (resp-spd.txt/init-spd.txt)"
+	elif [ -n "$_a1_info" ]; then
+		_plog A1 PASS "SPD has PROTECT(esp/tunnel require) rows on every racoon2 seat; $_a1_info"
+	else
+		_plog A1 PASS "SPD has PROTECT(esp/tunnel require) rows in both jails (setkey -DP resp/init)"
+	fi
 
 	# ---- A2  no cleartext path: only esp/tunnel rows may exist -----------
 	_a2=1
