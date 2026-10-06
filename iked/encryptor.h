@@ -63,6 +63,7 @@ extern struct encryptor_method encr_aesctr128;
 extern struct encryptor_method encr_aesctr192;
 extern struct encryptor_method encr_aesctr256;
 extern struct encryptor_method encr_aesgcm128;
+extern struct encryptor_method encr_aesgcm192;
 extern struct encryptor_method encr_aesgcm256;
 extern struct encryptor_method encr_null;
 

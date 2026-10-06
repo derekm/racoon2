@@ -1094,6 +1094,7 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	{
 		rc_vchar_t *saved_ts_i = NULL, *saved_ts_r = NULL;
 		int did_subst = 0;
+		int subst_won = 0;
 
 		if (child_sa->child_param.use_transport_mode &&
 		    (ike_sa->behind_nat || ike_sa->peer_behind_nat)) {
@@ -1128,6 +1129,7 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		sel6 = ike_conf_find_ikev2sel_by_ts(proposed_ts_i, proposed_ts_r,
 						   child_sa, AF_INET6,
 						   ike_sa->rmconf);
+		subst_won = (sel4 || sel6) ? 1 : 0;
 		if (!sel4 && !sel6 && did_subst) {
 			/* tunnel fallback: restore pre-NAT TS and retry */
 			memcpy(proposed_ts_i, saved_ts_i->v, saved_ts_i->l);
@@ -1162,7 +1164,7 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		 * on any range — "Could not perform address substitution",
 		 * no SAD entries on its side (i2inatt-transport-wild).
 		 */
-		if (did_subst && sel4 && !sel6) {
+		if (subst_won && sel4 && !sel6) {
 			struct ikev2_child_param *n3param = &child_sa->child_param;
 			rc_vchar_t *n3i, *n3r;
 

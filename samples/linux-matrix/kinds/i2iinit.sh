@@ -76,7 +76,10 @@ kind_i2iinit() {
 	*-ike-ctr256*) I2I_IKE_ENC="aes_ctr, 256" ;;
 	*-ike-ctr*)    I2I_IKE_ENC="aes_ctr, 128" ;;
 	*-ike-gcm256*) I2I_IKE_ENC="aes_gcm, 256" ;;
-	esac
+	*-ike-gcm192*) I2I_IKE_ENC="aes_gcm, 192" ;;
+	*-ike-gcm128*) I2I_IKE_ENC="aes_gcm, 128" ;;
+	*-ike-3des*)   I2I_IKE_ENC="3des_cbc" ;;
+esac
 	case "$name" in
 	*-prfsha384*) I2I_IKE_PRF="hmac_sha2_384" ;;
 	*-prfsha512*) I2I_IKE_PRF="hmac_sha2_512" ;;
@@ -85,6 +88,9 @@ kind_i2iinit() {
 	esac
 	case "$name" in
 	*-esp-gcm256*) I2I_ESP_ENC="aes_gcm, 256" ;;
+	*-esp-gcm192*) I2I_ESP_ENC="aes_gcm, 192" ;;
+	*-esp-gcm128*) I2I_ESP_ENC="aes_gcm, 128" ;;
+	*-esp-3des*)   I2I_ESP_ENC="3des_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
 	*-esp-cbc128*) I2I_ESP_ENC="aes128_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
 	*-esp-cbc192*) I2I_ESP_ENC="aes192_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
 	*-esp-cbc256*) I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
@@ -92,10 +98,12 @@ kind_i2iinit() {
 	*-esp-sha512*) I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="hmac_sha2_512" ;;
 	*-esp-xcbc*)   I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="aes_xcbc" ;;
 	*-esp-cmac*)   I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="aes_cmac" ;;
+	*-esp-ctr192*) I2I_ESP_ENC="aes_ctr, 192"; I2I_ESP_AUTH="non_auth" ;;
+	*-esp-ctr256*) I2I_ESP_ENC="aes_ctr, 256"; I2I_ESP_AUTH="non_auth" ;;
 	*-esp-ctr*)    I2I_ESP_ENC="aes_ctr";    I2I_ESP_AUTH="non_auth" ;;
 	esac
 	case "$name" in
-	*-ike-cbc128*|*-ike-cbc192*|*-ike-cbc256*|*-ike-ctr*) I2I_CLASSICAL=1 ;;
+	*-ike-cbc128*|*-ike-cbc192*|*-ike-cbc256*|*-ike-ctr*|*-ike-3des*) I2I_CLASSICAL=1 ;;
 	esac
 	case "$name" in
 	*-esn*) I2I_ESN=1 ;;
@@ -823,6 +831,57 @@ fi
 		else
 			shape_ok=0
 			log 'FAIL: -esp-gcm256 row but responder SAD lacks aead rfc4106 72-hex (AES-256) key'
+		fi
+		;;
+	*-esp-gcm192)
+		# AES-192-GCM: 24 B key + 4 B salt = 28 B = 56 hex.
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'aead rfc4106\(gcm\(aes\)\) 0x[0-9a-f]{56} 128$'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD aead rfc4106(gcm(aes)) 56-hex key (AES-192-GCM)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-gcm192 row but responder SAD lacks aead rfc4106 56-hex (AES-192) key'
+		fi
+		;;
+	*-esp-gcm128)
+		# AES-128-GCM: 16 B key + 4 B salt = 20 B = 40 hex.
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'aead rfc4106\(gcm\(aes\)\) 0x[0-9a-f]{40} 128$'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD aead rfc4106(gcm(aes)) 40-hex key (AES-128-GCM)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-gcm128 row but responder SAD lacks aead rfc4106 40-hex (AES-128) key'
+		fi
+		;;
+	*-esp-ctr192)
+		# AES-192-CTR RFC 5930/3686: AEAD key = 24 B AES + 4 B salt = 28 B = 56 hex.
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc rfc3686\(ctr\(aes\)\) 0x[0-9a-f]{56}'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc rfc3686(ctr(aes)) 56-hex (AES-192-CTR)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-ctr192 row but responder SAD lacks enc rfc3686(ctr(aes)) 56-hex'
+		fi
+		;;
+	*-esp-ctr256)
+		# AES-256-CTR RFC 5930/3686: AEAD key = 32 B AES + 4 B salt = 36 B = 72 hex.
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc rfc3686\(ctr\(aes\)\) 0x[0-9a-f]{72}'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc rfc3686(ctr(aes)) 72-hex (AES-256-CTR)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-ctr256 row but responder SAD lacks enc rfc3686(ctr(aes)) 72-hex'
+		fi
+		;;
+	*-esp-3des)
+		# 3DES-CBC ESP: enc "cbc(des3_ede) 0x<48hex>" (24 B key) + hmac(sha256).
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'enc cbc\(des3_ede\) 0x[0-9a-f]{48}' \
+		   && ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'auth-trunc hmac\(sha256\)'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD enc cbc(des3_ede) 48-hex + hmac(sha256) (3DES-CBC)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-3des row but responder SAD lacks cbc(des3_ede) 48-hex + hmac(sha256)'
 		fi
 		;;
 	*-esp-cbc256)

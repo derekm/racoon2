@@ -284,12 +284,23 @@ fbsd_comply() {
 		[ -f "/tmp/freeb/$_c" ] || continue
 		grep -q 'kmp_enc_alg { aes256_cbc' "/tmp/freeb/$_c" && _ikesz=256 || true
 		grep -q 'kmp_enc_alg { aes_gcm, 256' "/tmp/freeb/$_c" && _ikesz=256 || true
+		grep -q 'kmp_enc_alg { aes_gcm, 192' "/tmp/freeb/$_c" && _ikesz=192 || true
+		grep -q 'kmp_enc_alg { aes_gcm, 128' "/tmp/freeb/$_c" && _ikesz=128 || true
+		grep -q 'kmp_enc_alg { aes_ctr, 256' "/tmp/freeb/$_c" && _ikesz=256 || true
+		grep -q 'kmp_enc_alg { aes_ctr, 192' "/tmp/freeb/$_c" && _ikesz=192 || true
+		grep -q 'kmp_enc_alg { aes_ctr, 128' "/tmp/freeb/$_c" && _ikesz=128 || true
+		grep -q 'kmp_enc_alg { 3des_cbc' "/tmp/freeb/$_c" && _ikesz=64 || true
 		grep -q 'kmp_enc_alg { aes128_cbc' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
 		grep -q 'kmp_enc_alg { aes_gcm' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
 		grep -q 'esp_enc_alg { aes_gcm, 256' "/tmp/freeb/$_c" && _childsz=256 || true
+		grep -q 'esp_enc_alg { aes_gcm, 192' "/tmp/freeb/$_c" && _childsz=192 || true
+		grep -q 'esp_enc_alg { aes_gcm, 128' "/tmp/freeb/$_c" && _childsz=128 || true
 		grep -q 'esp_enc_alg { aes256_cbc' "/tmp/freeb/$_c" && _childsz=256 || true
 		grep -q 'esp_enc_alg { aes128_cbc' "/tmp/freeb/$_c" && _childsz=128 || true
+		grep -q 'esp_enc_alg { 3des_cbc' "/tmp/freeb/$_c" && _childsz=64 || true
 		grep -q 'esp_enc_alg { aes_ctr' "/tmp/freeb/$_c" && _childsz=128 || true
+		grep -q 'esp_enc_alg { aes_ctr, 192' "/tmp/freeb/$_c" && _childsz=192 || true
+		grep -q 'esp_enc_alg { aes_ctr, 256' "/tmp/freeb/$_c" && _childsz=256 || true
 		[ "$_childsz" -eq 0 ] && grep -q 'esp_enc_alg { aes_gcm' "/tmp/freeb/$_c" && _childsz=128 || true
 	done
 	if [ "$_ikesz" -eq 0 ] || [ "$_childsz" -eq 0 ]; then
@@ -443,7 +454,7 @@ $(printf '%b' "$_ppk_conn")
 			ch {
 				local_ts = $_cmy/32
 				remote_ts = $_cpeer/32
-				esp_proposals = $FB_CH_ESP
+				esp_proposals = ${FB_CH_ESP%!}   # swanctl rejects the '!' selector suffix; strip it like linux ikev2.sh:250
 				rekey_time = $FB_CH_CHILD_REKEY
 			}
 		}
@@ -907,7 +918,11 @@ run_row() {
 	#                        ADDKE >= 2 times (iked kmp_sa_lifetime 30 s, or
 	#                        -cr: charon rekey_time 30s), never deleted
 	FB_CH=""; FB_ZERO=0
-	case "$_name" in *-charon) FB_CH=i ;; *-charonr) FB_CH=r ;; esac
+	case "$_name" in
+		*-charon) FB_CH=i ;;
+		*-charonr) FB_CH=r ;;
+		*-charon-*) FB_CH=i ;; # ICV interop port (charon initiator)
+	esac
 	FB_CH_PROP="aes256gcm16-prfsha256-$_idh-ke1_mlkem768"
 	FB_CH_ESP=aes128gcm16; FB_CH_CHILDLESS=""; FB_CH_INIT_IKE=0
 	FB_CH_IKE_REKEY=0s; FB_CH_CHILD_REKEY=0s
@@ -916,6 +931,14 @@ run_row() {
 		case "$_name" in
 		*-immediate*|*-zerochild*|*-firstchild*|*-clresp*|*-gens*|*-ikerekey*)
 			FB_CH_ESP=aes128gcm16-ecp256-ke1_mlkem768 ;;
+		*-charon-g8)
+			FB_CH_ESP=aes128gcm8! ;;
+		*-charon-g12)
+			FB_CH_ESP=aes128gcm12! ;;
+		*-charon-s384)
+			FB_CH_ESP=aes256-sha384! ;;
+		*-charon-s512)
+			FB_CH_ESP=aes256-sha512! ;;
 		esac
 		case "$_name" in
 		*-immediate*)
@@ -1484,6 +1507,32 @@ if [ "$_onechk" = 1 ] && [ "$_neg" = a ] && grep -qE 'CREATE_CHILD_SA request: .
 	rk_fail "responder saw a new-child CREATE_CHILD_SA on a row whose child is negotiated in IKE_AUTH"
 fi
 
+# --- NSA/CNSSP-15 warning latch (i2i-nsawarn* advisory rows only) ----
+# The weak token sits in a multi-alg LIST (gen_conf emits it verbatim), so
+# the exchange lands on the compliant first-common suite while iked must log
+# 'configuring obsolete algorithm <X>' at proposal-build on BOTH seats.
+# Gate: warning in BOTH iked logs AND the ESP child up (proves the weak offer
+# never blocked/downgraded the negotiation).  The -des row is NEG=r and is
+# latched in the refusal marker table instead (conf-check reject).
+case "$_name" in
+i2i-nsawarn|i2i-nsawarn-*)
+	case "$_name" in
+	*-des|*-esp3des) : ;; # fail-closed rows: NEG/x, latched in the refusal marker table
+	*)
+		_wns="configuring obsolete algorithm"
+		_wr=$(grep -c "$_wns" /tmp/freeb/resp-iked.log 2>/dev/null || true)
+		_wi=$(grep -c "$_wns" /tmp/freeb/init-iked.log 2>/dev/null || true)
+		if [ "${_wr:-0}" -ge 1 ] && [ "${_wi:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
+			echo "row $_name: NSA/CNSSP-15 OK - obsolete-alg warning fired BOTH seats (resp=${_wr} init=${_wi}), child still up (advisory-only)"
+		else
+			echo "FAIL row $_name: nsawarn gate (resp_warn=${_wr:-0} init_warn=${_wi:-0} up=$up); need warning on both seats + child up"
+			up=0
+		fi
+		;;
+	esac
+	;;
+esac
+
 echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 	jexec $jr /usr/local/sbin/setkey -D > /tmp/freeb/resp-sadb.txt 2>&1 || true
 	jexec $ji /usr/local/sbin/setkey -D > /tmp/freeb/init-sadb.txt 2>&1 || true
@@ -1510,6 +1559,7 @@ echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 			*i2ineg-wrongpsk*)   grep -q "authentication failure" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
 			*i2ineg-idmismatch*) grep -q "does not match peers id" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
 			*i2ineg-a12strict*)  grep -q "parent_child_strength on" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
+			*i2i-nsawarn-des*)   grep -q "kmp_enc_alg DES-CBC unsupported" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
 		esac
 		if [ "$up" -eq 1 ] && [ "$refusal" -eq 1 ]; then
 			echo "PASS freebsd-vnet $_name (NEG: refusal proven by responder log marker)"
@@ -1821,6 +1871,35 @@ case "$ROW" in
 		run i2iinit-esp-cbc192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes192_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-esp-cbc256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-esp-gcm256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a ""
+	run i2iinit-esp-gcm192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 192" non_auth 300 300 0 a ""
+	run i2iinit-esp-gcm128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 128" non_auth 300 300 0 a ""
+	run i2iinit-esp-gcm8   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm8 non_auth 300 300 0 x ""
+	run i2iinit-esp-gcm12  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm12 non_auth 300 300 0 x ""
+	# esp-3des is EXPECTED-REJECT on FreeBSD: 3DES-CBC was removed from
+	# the kernel IPsec stack in 2020 (r348205/r360557), supported_ealgs[]
+	# has no SADB_EALG_3DESCBC, so iked config-check refuses (x latch).
+	# The ike-3des row below is the POSITIVE IKE-side case (userland
+	# OpenSSL encryptor encr_triple_des, no pfkey involvement).
+	run i2iinit-esp-3des  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 3des_cbc hmac_sha2_256 300 300 0 x ""
+	# --- NSA/CNSSP-15 hardening rows (mirror linux kinds/i2i_nsawarn.sh):
+	#     the deprecated token is listed AFTER a compliant one in the SAME
+	#     alg slot (gen_conf emits list tokens verbatim), so negotiation
+	#     lands compliant while iked must log 'configuring obsolete
+	#     algorithm <X>' at proposal-build on BOTH seats (advisory-only,
+	#     never fails closed).  i2i-nsawarn-des is fail-closed: DES-CBC is
+	#     commented out of the IKE transform table, so iked refuses the
+	#     config at conf-check on both seats and the child never establishes.
+	#     The verdict latch is the *i2i-nsawarn* case in run_row (warn in
+	#     both logs + child up), with -des expecting the conf-check reject.
+	run i2i-nsawarn        inet 192.0.5.2 192.0.5.1 "aes256_cbc; 3des_cbc" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-nsawarn-md5    inet 192.0.5.2 192.0.5.1 aes128_cbc "hmac_sha2_256; hmac_md5" modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-nsawarn-sha1   inet 192.0.5.2 192.0.5.1 aes128_cbc "hmac_sha2_256; hmac_sha1" modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-nsawarn-modp768  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 "ecp256; modp768" aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-nsawarn-modp1024 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 "ecp256; modp1024" aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-nsawarn-modp1536 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 "ecp256; modp1536" aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-nsawarn-esp3des inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes256_cbc; 3des_cbc" hmac_sha2_256 300 300 0 x ""
+	run i2i-nsawarn-espsha1 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "hmac_sha2_256; hmac_sha1" 300 300 0 a ""
+	run i2i-nsawarn-des   inet 192.0.5.2 192.0.5.1 "aes256_cbc; des_cbc" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
 		run i2iinit-esp-sha384 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_384 300 300 0 a ""
 		run i2iinit-esp-sha512 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_512 300 300 0 a ""
 		# xcbc/cmac rows are EXPECTED-REJECT: FreeBSD 15.1 supported_aalgs[]
@@ -1831,6 +1910,8 @@ case "$ROW" in
 		run i2iinit-esp-xcbc   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_xcbc" 300 300 0 x ""
 		run i2iinit-esp-cmac   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_cmac" 300 300 0 x ""
 		run i2iinit-esp-ctr    inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ctr" "non_auth" 300 300 0 a ""
+	run i2iinit-esp-ctr192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ctr, 192" "non_auth" 300 300 0 a ""
+	run i2iinit-esp-ctr256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ctr, 256" "non_auth" 300 300 0 a ""
 		# --- i2iinit ike/prf vectors (mirror linux i2iinit-ike-*/prf-*) ---
 		run i2iinit-ike-cbc192 inet 192.0.5.2 192.0.5.1 aes192_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-ike-cbc256 inet 192.0.5.2 192.0.5.1 aes256_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
@@ -1839,6 +1920,9 @@ case "$ROW" in
 	run i2iinit-ike-ctr192 inet 192.0.5.2 192.0.5.1 "aes_ctr, 192" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 	run i2iinit-ike-ctr256 inet 192.0.5.2 192.0.5.1 "aes_ctr, 256" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-ike-gcm256 inet 192.0.5.2 192.0.5.1 "aes_gcm, 256" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2iinit-ike-gcm192 inet 192.0.5.2 192.0.5.1 "aes_gcm, 192" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2iinit-ike-gcm128 inet 192.0.5.2 192.0.5.1 "aes_gcm, 128" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2iinit-ike-3des   inet 192.0.5.2 192.0.5.1 3des_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfsha384  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_384 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfsha512  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_512 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfxcbc    inet 192.0.5.2 192.0.5.1 aes128_cbc aes_xcbc modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
@@ -1889,6 +1973,18 @@ case "$ROW" in
 		run i2iinit-clresp-charon       inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		run i2iinit-ppk-charon          inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
 		run i2iinit-ppk-charonr         inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a ""
+		# --- charon ICV interop (RFC 4106 ICV8/12 + RFC 4868 SHA2-384/512):
+		#     port of linux ikev2-netns-g8/g12/s384/s512.  The charon seat's
+		#     esp_proposals force the ICV variant (aes128gcm8!/aes128gcm12! /
+		#     aes256-sha384!/aes256-sha512!).  On FreeBSD the ICV-8/12 rows
+		#     are EXPECTED-REJECT: supported_ealgs[] has no AESGCM8/12 (only
+		#     AESGCM16), so the iked seat config-check refuses at startup
+		#     (x latch).  The s384/s512 rows are positive: SHA2-384/512 are
+		#     in supported_aalgs[] and the exchanges negotiate end-to-end. ---
+		run i2iinit-charon-g8           inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm8 non_auth 300 300 0 x ""
+		run i2iinit-charon-g12          inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm12 non_auth 300 300 0 x ""
+		run i2iinit-charon-s384         inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes256_cbc hmac_sha2_384 300 300 0 a ""
+		run i2iinit-charon-s512         inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes256_cbc hmac_sha2_512 300 300 0 a ""
 		# --- PQC rows (OpenSSL 3.5 build = WITH_ADDKE: RATOON2 out-of-band
 		#      RFC 9370, not netbsd-style kernel ESP).  i2iinit-addke proves
 		#      ML-KEM-768 on the INITIAL IKE_SA (type-06 offer + matching
@@ -1937,6 +2033,11 @@ case "$ROW" in
 	i2iinit-esp-cbc192) run_row i2iinit-esp-cbc192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes192_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-esp-cbc256) run_row i2iinit-esp-cbc256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-esp-gcm256) run_row i2iinit-esp-gcm256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a "" ;;
+	i2iinit-esp-gcm192) run_row i2iinit-esp-gcm192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 192" non_auth 300 300 0 a "" ;;
+	i2iinit-esp-gcm128) run_row i2iinit-esp-gcm128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 128" non_auth 300 300 0 a "" ;;
+	i2iinit-esp-gcm8)   run_row i2iinit-esp-gcm8   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm8 non_auth 300 300 0 x "" ;;
+	i2iinit-esp-gcm12)  run_row i2iinit-esp-gcm12  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm12 non_auth 300 300 0 x "" ;;
+	i2iinit-esp-3des)   run_row i2iinit-esp-3des   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 3des_cbc hmac_sha2_256 300 300 0 x "" ;;
 	i2iinit-esp-sha384) run_row i2iinit-esp-sha384 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_384 300 300 0 a "" ;;
 	i2iinit-esp-sha512) run_row i2iinit-esp-sha512 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_512 300 300 0 a "" ;;
 	i2iinit-esp-xcbc)  run_row i2iinit-esp-xcbc   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "aes_xcbc" 300 300 0 x "" ;;
@@ -1966,9 +2067,14 @@ case "$ROW" in
 	i2ineg-wrongpsk)   run_row i2ineg-wrongpsk   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
 	i2ineg-idmismatch) run_row i2ineg-idmismatch inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
 	i2iinit-esp-ctr) run_row i2iinit-esp-ctr inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ctr" "non_auth" 300 300 0 a "" ;;
+	i2iinit-esp-ctr192) run_row i2iinit-esp-ctr192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ctr, 192" "non_auth" 300 300 0 a "" ;;
+	i2iinit-esp-ctr256) run_row i2iinit-esp-ctr256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ctr, 256" "non_auth" 300 300 0 a "" ;;
 	i2iinit-ike-cbc192) run_row i2iinit-ike-cbc192 inet 192.0.5.2 192.0.5.1 aes192_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-ike-cbc256) run_row i2iinit-ike-cbc256 inet 192.0.5.2 192.0.5.1 aes256_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-ike-gcm256) run_row i2iinit-ike-gcm256 inet 192.0.5.2 192.0.5.1 "aes_gcm, 256" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-gcm192) run_row i2iinit-ike-gcm192 inet 192.0.5.2 192.0.5.1 "aes_gcm, 192" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-gcm128) run_row i2iinit-ike-gcm128 inet 192.0.5.2 192.0.5.1 "aes_gcm, 128" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-3des)   run_row i2iinit-ike-3des   inet 192.0.5.2 192.0.5.1 3des_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-prfsha384) run_row i2iinit-prfsha384 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_384 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-prfsha512) run_row i2iinit-prfsha512 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_512 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-prfxcbc) run_row i2iinit-prfxcbc inet 192.0.5.2 192.0.5.1 aes128_cbc aes_xcbc modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
@@ -1986,6 +2092,19 @@ case "$ROW" in
 	i2ineg-a12permit) run_row i2ineg-a12permit inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a "" ;;
 	i2iinit-charon|i2iinit-charonr|i2iinit-childless-charon|i2iinit-immediate-charon|i2iinit-immediate-charonr|i2iinit-zerochild-charon|i2iinit-zerochild-cr-charon|i2iinit-gens-charon|i2iinit-gens-charonr|i2iinit-ikerekey-charon|i2iinit-ikerekey-charonr|i2iinit-firstchild-charonr|i2iinit-clresp-charon|i2iinit-ppk-charon|i2iinit-ppk-charonr)
 		run_row "$ROW" inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm non_auth 300 300 0 a "" ;;
+	i2i-nsawarn) run_row i2i-nsawarn inet 192.0.5.2 192.0.5.1 "aes256_cbc; 3des_cbc" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-nsawarn-md5) run_row i2i-nsawarn-md5 inet 192.0.5.2 192.0.5.1 aes128_cbc "hmac_sha2_256; hmac_md5" modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-nsawarn-sha1) run_row i2i-nsawarn-sha1 inet 192.0.5.2 192.0.5.1 aes128_cbc "hmac_sha2_256; hmac_sha1" modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-nsawarn-modp768) run_row i2i-nsawarn-modp768 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 "ecp256; modp768" aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-nsawarn-modp1024) run_row i2i-nsawarn-modp1024 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 "ecp256; modp1024" aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-nsawarn-modp1536) run_row i2i-nsawarn-modp1536 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 "ecp256; modp1536" aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-nsawarn-esp3des) run_row i2i-nsawarn-esp3des inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes256_cbc; 3des_cbc" hmac_sha2_256 300 300 0 x "" ;;
+	i2i-nsawarn-espsha1) run_row i2i-nsawarn-espsha1 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "hmac_sha2_256; hmac_sha1" 300 300 0 a "" ;;
+	i2i-nsawarn-des) run_row i2i-nsawarn-des inet 192.0.5.2 192.0.5.1 "aes256_cbc; des_cbc" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2iinit-charon-g8) run_row i2iinit-charon-g8 inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm8 non_auth 300 300 0 x "" ;;
+	i2iinit-charon-g12) run_row i2iinit-charon-g12 inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm12 non_auth 300 300 0 x "" ;;
+	i2iinit-charon-s384) run_row i2iinit-charon-s384 inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes256_cbc hmac_sha2_384 300 300 0 a "" ;;
+	i2iinit-charon-s512) run_row i2iinit-charon-s512 inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes256_cbc hmac_sha2_512 300 300 0 a "" ;;
 	i2idh-ecp384-charon) run_row i2idh-ecp384-charon inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp384 aes_gcm non_auth 300 300 0 a "" ;;
 	i2idh-ecp521-charonr) run_row i2idh-ecp521-charonr inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp521 aes_gcm non_auth 300 300 0 a "" ;;
 	i2inatt-transport) run_nat_row i2inatt-transport || fail=1 ;;
