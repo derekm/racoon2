@@ -149,7 +149,7 @@ esp_up() { # esp_up $JAIL : count of *mature* esp tunnel SAs in that jail's SADB
 #   A13 peer auth DECLARED on both seat confs (psk or pubkey)
 #   A14 peer id pinned (peers_id fqdn in confs)
 # NEG rows (wrongpsk/idmismatch): the refusal IS the evidence; childless
-# cells (A3/A4/A5/A8) waive to INFO like linux i2i_compliance *-cfgneg*.
+# cells (A1/A3/A4/A5/A8) waive to INFO like linux i2i_compliance *-cfgneg*.
 # ---------------------------------------------------------------------------
 fbsd_comply() {
 	_name=$1 _neg=$2
@@ -158,6 +158,10 @@ fbsd_comply() {
 	AF() { grep -avE '^[0-9a-f]{8}( |$)' "$1" 2>/dev/null || true; }
 
 	# ---- A1  SPD PROTECT architecture (setkey -DP across both jails) ----
+	# SPD dump runs after jails that gate through here; on NEG/x (expected-
+	# reject) rows there is no tunnel to protect, so an empty SPD is the
+	# EXPECTED outcome, not a missing-architecture FAIL (same waiver the
+	# matrix header below gives A3/A4/A5/A8 for NEG rows).
 	_a1=1
 	for _sp in resp-spd.txt init-spd.txt; do
 		if ! grep -qE 'esp/tunnel/.*/require|esp/tunnel' "/tmp/freeb/$_sp" 2>/dev/null; then
@@ -165,7 +169,11 @@ fbsd_comply() {
 		fi
 	done
 	[ "$_a1" -eq 1 ] && _plog A1 PASS "SPD has PROTECT(esp/tunnel require) rows in both jails (setkey -DP resp/init)"
-	[ "$_a1" -eq 0 ] && _plog A1 FAIL "SPD missing PROTECT(esp/tunnel require) row in a jail (resp-spd.txt/init-spd.txt)" || true
+	if [ "$_a1" -eq 0 ] && [ "$_neg" = a ]; then
+		_plog A1 FAIL "SPD missing PROTECT(esp/tunnel require) row in a jail (resp-spd.txt/init-spd.txt)"
+	elif [ "$_a1" -eq 0 ]; then
+		_plog A1 INFO "no esp/tunnel SPD PROTECT rows for $_name (NEG-refusal/expected-reject); not a FAIL"
+	fi
 
 	# ---- A2  no cleartext path: only esp/tunnel rows may exist -----------
 	_a2=1
