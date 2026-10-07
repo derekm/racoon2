@@ -143,6 +143,17 @@ static const struct xfrm_algmap enc_map[] = {
 #define XFRMA_ALG_AEAD 18
 #endif
 
+/* RFC 4303 §2.2.1 ESN kernel plumbing.  Fedora/Ubuntu default kernels
+ * ship XFRM_STATE_ESN and XFRMA_REPLAY_ESN_VAL; guard so a narrower
+ * userspace header still compiles (the kernel rejects the ESN flag if
+ * the corresponding replay-ESN attr is absent, so both must go out). */
+#ifndef XFRM_STATE_ESN
+#define XFRM_STATE_ESN 128
+#endif
+#ifndef XFRMA_REPLAY_ESN_VAL
+#define XFRMA_REPLAY_ESN_VAL 23
+#endif
+
 struct xfrm_aeadmap {
 	int rct;
 	const char *name;
@@ -534,6 +545,15 @@ fill_usersa(struct xfrm_usersa_info *sa, struct rcpfk_msg *rc)
 	sa->mode = mode_to_x(rc->samode);
 	sa->reqid = rc->reqid;
 	sa->replay_window = rc->wsize;
+	sa->flags = 0;
+	/* RFC 7296 §3.3.2 / RFC 4303 §2.2.1 ESN: portable SADB_X_SAFLAGS_ESN
+	 * bit (0x400) set by the IKE layer maps onto XFRM_STATE_ESN.
+	 * The window lives in XFRMA_REPLAY_ESN_VAL; a non-zero usersa
+	 * replay_window beside that attr is not what iproute2 sends. */
+	if (rc->saflags & SADB_X_SAFLAGS_ESN) {
+		sa->flags |= XFRM_STATE_ESN;
+		sa->replay_window = 0;
+	}
 	fill_lft(&sa->lft, rc);
 
 	/*
@@ -715,6 +735,41 @@ add_encap_attr(struct nlmsghdr *n, size_t maxlen, struct rcpfk_msg *rc)
 #endif
 }
 
+/*
+ * RFC 4303 §2.2.1 / RFC 7296 §3.3.2 ESN: when the negotiated child uses
+ * extended sequence numbers, the kernel needs the ESN replay state
+ * (XFRMA_REPLAY_ESN_VAL) in ADDITION to XFRM_STATE_ESN in usersa_info;
+ * a state created with the ESN flag but no replay-ESN struct is
+ * rejected.  bmp_len must be (replay_window + 31) / 32.  Linux
+ * configure defaults the window to 32 (one word); FreeBSD leaves the
+ * header default (64) unless --with-ipsec-window-size is set.  A
+ * hardcoded bmp_len of 1 rejects every window above 32.
+ */
+static int
+add_replay_esn_attr(struct nlmsghdr *n, size_t maxlen, struct rcpfk_msg *rc)
+{
+	uint32_t window, bmp_len, len;
+	struct xfrm_replay_state_esn *re;
+	unsigned char buf[sizeof(*re) + 8 * sizeof(uint32_t)];
+
+	if (!(rc->saflags & SADB_X_SAFLAGS_ESN))
+		return 0;
+	window = rc->wsize ? rc->wsize : 32;
+	bmp_len = (window + 31) / 32;
+	if (bmp_len < 1)
+		bmp_len = 1;
+	if (bmp_len > 8) {
+		xfrm_seterror(rc, EINVAL, "ESN window %u exceeds 256", window);
+		return -1;
+	}
+	len = (uint32_t)(sizeof(*re) + bmp_len * sizeof(uint32_t));
+	memset(buf, 0, sizeof(buf));
+	re = (struct xfrm_replay_state_esn *)buf;
+	re->bmp_len = bmp_len;
+	re->replay_window = window;
+	return xfrm_addattr(n, maxlen, XFRMA_REPLAY_ESN_VAL, buf, len);
+}
+
 static int
 sa_is_unspec(const struct sockaddr *sa)
 {
@@ -859,11 +914,13 @@ xfrm_send_sa(struct rcpfk_msg *rc, uint16_t nltype)
 	if (nltype == XFRM_MSG_NEWSA || nltype == XFRM_MSG_UPDSA) {
 		if (aead_lookup(rc->enctype)) {
 			if (add_aead_attr(n, sizeof(buf), rc) ||
-			    add_encap_attr(n, sizeof(buf), rc))
+			    add_encap_attr(n, sizeof(buf), rc) ||
+			    add_replay_esn_attr(n, sizeof(buf), rc))
 				return -1;
 		} else if (add_enc_attr(n, sizeof(buf), rc) ||
 		    add_auth_attr(n, sizeof(buf), rc) ||
-		    add_encap_attr(n, sizeof(buf), rc))
+		    add_encap_attr(n, sizeof(buf), rc) ||
+		    add_replay_esn_attr(n, sizeof(buf), rc))
 			return -1;
 	}
 	pending_set(rc, nltype, n->nlmsg_seq);

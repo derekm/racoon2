@@ -422,6 +422,13 @@ struct ikev2_child_sa {
 
 	int delete_sent;
 
+	/* RFC 7296 §3.3.2 / RFC 4303 §2.2.1 ESN: 1 when the negotiated child
+	 * SA uses extended (64-bit) sequence numbers.  Set only after the
+	 * ESN transform is matched (NULL-negotiation: transform is absent ->
+	 * ESN no); carried into the kernel SA as SADB_X_SAFLAGS_ESN (FreeBSD/
+	 * OpenBSD 0x400) or XFRM_STATE_ESN + XFRMA_REPLAY_ESN_VAL (Linux). */
+	int esn;
+
 	/* RFC 9370 ADDKE (stage 2): while this child is waiting for
 	 * its IKE_FOLLOWUP_KE exchange, the CREATE_CHILD_SA response
 	 * has been sent but the keymat/XFRM install is deferred. */

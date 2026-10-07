@@ -38,6 +38,18 @@
 #endif
 
 #define RCPFK_ERRSTRBUFSIZE	128
+
+/*
+ * RFC 7296 §3.3.2 / RFC 4303 §2.2.1 ESN.
+ * FreeBSD/OpenBSD/NetBSD pfkeyv2.h define SADB_X_SAFLAGS_ESN (0x400) as
+ * a sadb_sa_flags bit (added to FreeBSD in r366755).  Linux has no
+ * SADB SA-flags word, so the XFRM backend maps this portable bit onto
+ * XFRM_STATE_ESN + XFRMA_REPLAY_ESN_VAL instead.  The portable value is
+ * kept identical to the *BSD bit so a native header wins when present.
+ */
+#ifndef SADB_X_SAFLAGS_ESN
+#define SADB_X_SAFLAGS_ESN	0x400
+#endif
 #define RCPFK_SOCKBUFSIZE	128 * 1024
 
 /* racoon PF_KEY message container */

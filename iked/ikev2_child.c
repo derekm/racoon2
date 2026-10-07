@@ -2421,6 +2421,12 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa,
 	/* thus don't specify SADB_SAFLAGS_NOECN */
 
 	param->saflags = 0;
+	/* RFC 7296 §3.3.2 / RFC 4303 §2.2.1 ESN: carry the negotiated
+	 * extended-sequence flag into the kernel SA.  SADB_X_SAFLAGS_ESN
+	 * (0x400, FreeBSD/OpenBSD sadb_sa_flags) is the portable bit; the
+	 * XFRM backend maps it to XFRM_STATE_ESN + XFRMA_REPLAY_ESN_VAL. */
+	if (child_sa->esn)
+		param->saflags |= SADB_X_SAFLAGS_ESN;
 
 	/*
 	 * XXX hack for IKEv2 NAT-T initiator. as getspi is done
