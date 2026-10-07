@@ -173,10 +173,11 @@ extern rc_vchar_t *eay_chacha20poly1305_ike_decrypt (rc_vchar_t *, rc_vchar_t *,
 
 /* AES-CCM (RFC 4309 / RFC 5282 IKE): key is AES key || 3-byte salt
  * (19/27/35 octets), iv is 8 bytes, nonce = salt || iv (11 octets),
- * L = 4.  Probe on the Fedora box OpenSSL 3.5.8 (2026-10-06,
- * ccm_evp_roundtrip): RFC3610 packet-1 encrypt PASS, L2/L4 M=12 P,
- * M=8 and M=16 F.  Only the ICV-12 wrapper is wired.  Re-probe before
- * offering 8 or 16; a failing cell is not a permanent library fact. */
+ * L = 4.  All three tag lengths (8/12/16, transforms 14/15/16) round-trip
+ * on the Fedora box OpenSSL 3.5.8 (probe 2026-10-07): AES-128/192/256 x
+ * M=8/12/16 ALL P/P with the RFC 3610 ctrl order.  The earlier "M=8/16 F"
+ * (2026-10-06) was a probe-side ctrl-order bug, not a library fact.  All
+ * three wrappers are wired. */
 extern rc_vchar_t *eay_aes_ccm_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, int);
 extern rc_vchar_t *eay_aes_ccm_ike_decrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, int);
 extern rc_vchar_t *eay_aes_ccm8_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);

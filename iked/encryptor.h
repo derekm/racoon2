@@ -67,8 +67,14 @@ extern struct encryptor_method encr_aesgcm192;
 extern struct encryptor_method encr_aesgcm256;
 extern struct encryptor_method encr_chacha20poly1305;
 extern struct encryptor_method encr_aesccm8;
+extern struct encryptor_method encr_aesccm8_192;
+extern struct encryptor_method encr_aesccm8_256;
 extern struct encryptor_method encr_aesccm12;
+extern struct encryptor_method encr_aesccm12_192;
+extern struct encryptor_method encr_aesccm12_256;
 extern struct encryptor_method encr_aesccm16;
+extern struct encryptor_method encr_aesccm16_192;
+extern struct encryptor_method encr_aesccm16_256;
 extern struct encryptor_method encr_null;
 
 struct encryptor *encryptor_new(struct encryptor_method *);
