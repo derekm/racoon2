@@ -979,10 +979,16 @@ run_row() {
 			# the iked seat MUST have $SYSCONFDIR/ppk/<ppk_id>.bin
 			# (SYSCONFDIR = $PREFIX/etc for this prefix-less build).
 			# charonr uses mandatory so charon must apply the PPK.
+			# NOTE: the bytes are written with OCTAL escapes (\ooo), NOT
+			# \xHH.  FreeBSD /bin/sh printf does not expand \xHH (POSIX
+			# undefined), so \x1e... wrote the literal text "x1e..." and
+			# the od check below failed on the 15.1 CI VMs (sandbox
+			# uses /bin/sh).  Octal is portable POSIX and verified on
+			# FreeBSD 15.1: yields 1e9546cc...ef0b raw.
 			FB_PPK=1
 			mkdir -p "$PREFIX/etc/ppk"
 			( umask 077
-			  printf '\x1e\x95\x46\xcc\x87\x58\xe5\xf4\xbf\x1f\x5d\x34\x76\xf7\x9b\xfe\xa6\x0c\x7b\xd4\x82\x2a\x32\x05\x8e\x23\xcf\x16\x10\x7e\xef\x0b' \
+			  printf '\036\225\106\314\207\130\345\364\277\037\135\064\166\367\233\376\246\014\173\324\202\052\062\005\216\043\317\026\020\176\357\013' \
 				> "$PREFIX/etc/ppk/rfc8784-mat.bin" )
 			[ "$(od -An -tx1 "$PREFIX/etc/ppk/rfc8784-mat.bin" | tr -d ' \n')" = "1e9546cc8758e5f4bf1f5d3476f79bfea60c7bd4822a32058e23cf16107eef0b" ] || {
 				echo "FAIL: could not provision $PREFIX/etc/ppk/rfc8784-mat.bin"; return 1; }
