@@ -459,10 +459,10 @@ rc_type ikev2_config_required(struct rcf_remote *conf)
 }
 
 /* RFC 8784 s5: obtain the PPK secret bytes for a remote.  The secret is
- * the raw content of $SYSCONFDIR/ppk/<ppk_id>.bin when that file exists;
- * otherwise (test/build default only, never a production install) the
- * PPK is SHA-256 of the ppk_id string so a PPK-enabled iked pair works
- * out of the box without provisioning a secret file.  A config keyword
+ * the raw content of $SYSCONFDIR/ppk/<ppk_id>.bin — a use_ppk session
+ * REQUIRES the provisioned file and aborts without it (fail-closed; there
+ * is deliberately no test/build SHA-256 fallback, since a deterministic
+ * hash of the public ppk_id is not a secret).  A config keyword
  * carrying a literal PPK value is deliberately NOT exposed -- no secret
  * may ever sit in a committed configuration.  Caller owns the returned
  * buffer (cleanse with OPENSSL_cleanse before rc_vfree). */
