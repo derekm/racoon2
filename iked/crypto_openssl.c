@@ -2922,6 +2922,313 @@ fail:
 	return NULL;
 }
 
+/* ChaCha20-Poly1305 (RFC 7634) for IKE: key is 32-byte key || 4-byte salt
+ * (36 octets), iv is 8 bytes, nonce = salt || iv (96 bits), ICV 16.
+ * AAD as RFC 5282 s5.1 (IKE header + Encrypted Payload header).
+ * Encrypt returns ciphertext || ICV16; decrypt input is ciphertext || ICV16. */
+rc_vchar_t *
+eay_chacha20poly1305_ike_encrypt(rc_vchar_t *data, rc_vchar_t *key,
+				 rc_vchar_t *iv, rc_vchar_t *aad)
+{
+	unsigned char nonce[CHACHA20_POLY1305_NONCE_SIZE];
+	EVP_CIPHER_CTX *ctx = NULL;
+	rc_vchar_t *out = NULL;
+	int len = 0, len2 = 0;
+
+	if (!data || !key || !iv || iv->l != CHACHA20_POLY1305_IV_SIZE)
+		return NULL;
+	if (key->l != 32 + CHACHA20_POLY1305_SALT_SIZE)
+		return NULL;
+	memcpy(nonce, key->u + 32, CHACHA20_POLY1305_SALT_SIZE);
+	memcpy(nonce + CHACHA20_POLY1305_SALT_SIZE, iv->v,
+	       CHACHA20_POLY1305_IV_SIZE);
+	ctx = EVP_CIPHER_CTX_new();
+	if (!ctx)
+		return NULL;
+	out = rc_vmalloc(data->l + CHACHA20_POLY1305_ICV_SIZE);
+	if (!out)
+		goto fail;
+	if (!EVP_EncryptInit_ex(ctx, EVP_chacha20_poly1305(), NULL, NULL, NULL))
+		goto fail;
+	if (!EVP_EncryptInit_ex(ctx, NULL, NULL, (unsigned char *)key->v, nonce))
+		goto fail;
+	if (aad && aad->l > 0) {
+		if (!EVP_EncryptUpdate(ctx, NULL, &len,
+				       (unsigned char *)aad->v, (int)aad->l))
+			goto fail;
+	}
+	if (!EVP_EncryptUpdate(ctx, (unsigned char *)out->v, &len,
+			       (unsigned char *)data->v, (int)data->l))
+		goto fail;
+	if (!EVP_EncryptFinal_ex(ctx, (unsigned char *)out->v + len, &len2))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG,
+				 CHACHA20_POLY1305_ICV_SIZE,
+				 (unsigned char *)out->v + data->l))
+		goto fail;
+	EVP_CIPHER_CTX_free(ctx);
+	return out;
+fail:
+	EVP_CIPHER_CTX_free(ctx);
+	if (out)
+		rc_vfree(out);
+	return NULL;
+}
+
+rc_vchar_t *
+eay_chacha20poly1305_ike_decrypt(rc_vchar_t *data, rc_vchar_t *key,
+				 rc_vchar_t *iv, rc_vchar_t *aad)
+{
+	unsigned char nonce[CHACHA20_POLY1305_NONCE_SIZE];
+	size_t ct_len;
+	EVP_CIPHER_CTX *ctx = NULL;
+	rc_vchar_t *out = NULL;
+	int len = 0, len2 = 0;
+
+	if (!data || data->l < CHACHA20_POLY1305_ICV_SIZE)
+		return NULL;
+	if (!key || !iv || iv->l != CHACHA20_POLY1305_IV_SIZE)
+		return NULL;
+	if (key->l != 32 + CHACHA20_POLY1305_SALT_SIZE)
+		return NULL;
+	memcpy(nonce, key->u + 32, CHACHA20_POLY1305_SALT_SIZE);
+	memcpy(nonce + CHACHA20_POLY1305_SALT_SIZE, iv->v,
+	       CHACHA20_POLY1305_IV_SIZE);
+	ct_len = data->l - CHACHA20_POLY1305_ICV_SIZE;
+	ctx = EVP_CIPHER_CTX_new();
+	if (!ctx)
+		return NULL;
+	out = rc_vmalloc(ct_len);
+	if (!out)
+		goto fail;
+	if (!EVP_DecryptInit_ex(ctx, EVP_chacha20_poly1305(), NULL, NULL, NULL))
+		goto fail;
+	if (!EVP_DecryptInit_ex(ctx, NULL, NULL, (unsigned char *)key->v, nonce))
+		goto fail;
+	if (aad && aad->l > 0) {
+		if (!EVP_DecryptUpdate(ctx, NULL, &len,
+				       (unsigned char *)aad->v, (int)aad->l))
+			goto fail;
+	}
+	if (ct_len > 0 &&
+	    !EVP_DecryptUpdate(ctx, (unsigned char *)out->v, &len,
+			       (unsigned char *)data->v, (int)ct_len))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG,
+				 CHACHA20_POLY1305_ICV_SIZE,
+				 (unsigned char *)data->v + ct_len))
+		goto fail;
+	if (!EVP_DecryptFinal_ex(ctx, (unsigned char *)out->v + len, &len2))
+		goto fail;
+	EVP_CIPHER_CTX_free(ctx);
+	return out;
+fail:
+	EVP_CIPHER_CTX_free(ctx);
+	if (out)
+		rc_vfree(out);
+	return NULL;
+}
+
+/* AES-CCM (RFC 5282) for IKE: key is AES key || 3-byte salt (19/27/35
+ * octets for AES-128/192/256), iv is 8 bytes, nonce = salt || iv
+ * (11 octets), ICV 8/12/16.  IKEv2 transform ids 14/15/16
+ * (IKEV2TRANSF_ENCR_AES_CCM_8/12/16).  AAD as RFC 5282 s5.1.
+ * Encrypt returns ciphertext || ICV; decrypt input is ciphertext || ICV. */
+static const EVP_CIPHER *
+eay_aes_ccm_cipher(size_t keylen)
+{
+	switch (keylen) {
+	case 16:
+		return EVP_aes_128_ccm();
+	case 24:
+		return EVP_aes_192_ccm();
+	case 32:
+		return EVP_aes_256_ccm();
+	default:
+		return NULL;
+	}
+}
+
+static int
+eay_aes_ccm_nonce(unsigned char nonce[AES_CCM_NONCE_SIZE],
+		  rc_vchar_t *key, rc_vchar_t *iv, size_t *aes_key_len)
+{
+	if (!key || !iv || iv->l != AES_CCM_IV_SIZE)
+		return -1;
+	if (key->l < AES_CCM_SALT_SIZE)
+		return -1;
+	*aes_key_len = key->l - AES_CCM_SALT_SIZE;
+	if (eay_aes_ccm_cipher(*aes_key_len) == NULL)
+		return -1;
+	memcpy(nonce, key->u + *aes_key_len, AES_CCM_SALT_SIZE);
+	memcpy(nonce + AES_CCM_SALT_SIZE, iv->v, AES_CCM_IV_SIZE);
+	return 0;
+}
+
+static rc_vchar_t *
+eay_aes_ccm_ike_encrypt1(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			 rc_vchar_t *aad, size_t keymat_salt, int icv)
+{
+	unsigned char nonce[AES_CCM_NONCE_SIZE];
+	size_t aes_key_len;
+	EVP_CIPHER_CTX *ctx = NULL;
+	rc_vchar_t *out = NULL;
+	int len = 0, len2 = 0;
+	const EVP_CIPHER *ciph;
+
+	if (!data || eay_aes_ccm_nonce(nonce, key, iv, &aes_key_len) != 0)
+		return NULL;
+	ciph = eay_aes_ccm_cipher(aes_key_len);
+	ctx = EVP_CIPHER_CTX_new();
+	if (!ctx)
+		return NULL;
+	out = rc_vmalloc(data->l + icv);
+	if (!out)
+		goto fail;
+	if (!EVP_EncryptInit_ex(ctx, ciph, NULL, NULL, NULL))
+		goto fail;
+	/* L = 15 - nonce_len. IKE/ESP CCM nonce is 11 octets, so L=4.
+	 * Set L, IV length, and tag length before the second init.
+	 * The second init must pass the key again, plus the nonce. */
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_L,
+				 15 - AES_CCM_NONCE_SIZE, NULL))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN,
+				 AES_CCM_NONCE_SIZE, NULL))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, icv, NULL))
+		goto fail;
+	if (!EVP_EncryptInit_ex(ctx, NULL, NULL,
+				(unsigned char *)key->v, nonce))
+		goto fail;
+	/* CCM requires the total plaintext length to be set first. */
+	if (!EVP_EncryptUpdate(ctx, NULL, &len, NULL, (int)data->l))
+		goto fail;
+	if (aad && aad->l > 0) {
+		if (!EVP_EncryptUpdate(ctx, NULL, &len,
+				       (unsigned char *)aad->v, (int)aad->l))
+			goto fail;
+	}
+	if (!EVP_EncryptUpdate(ctx, (unsigned char *)out->v, &len,
+			       (unsigned char *)data->v, (int)data->l))
+		goto fail;
+	if (!EVP_EncryptFinal_ex(ctx, (unsigned char *)out->v + len, &len2))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, icv,
+				 (unsigned char *)out->v + data->l))
+		goto fail;
+	EVP_CIPHER_CTX_free(ctx);
+	return out;
+fail:
+	EVP_CIPHER_CTX_free(ctx);
+	if (out)
+		rc_vfree(out);
+	return NULL;
+}
+
+static rc_vchar_t *
+eay_aes_ccm_ike_decrypt1(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			 rc_vchar_t *aad, size_t keymat_salt, int icv)
+{
+	unsigned char nonce[AES_CCM_NONCE_SIZE];
+	size_t aes_key_len;
+	size_t ct_len;
+	EVP_CIPHER_CTX *ctx = NULL;
+	rc_vchar_t *out = NULL;
+	int len = 0, len2 = 0;
+	const EVP_CIPHER *ciph;
+
+	if (!data || data->l < icv)
+		return NULL;
+	if (eay_aes_ccm_nonce(nonce, key, iv, &aes_key_len) != 0)
+		return NULL;
+	ciph = eay_aes_ccm_cipher(aes_key_len);
+	ct_len = data->l - icv;
+	ctx = EVP_CIPHER_CTX_new();
+	if (!ctx)
+		return NULL;
+	out = rc_vmalloc(ct_len);
+	if (!out)
+		goto fail;
+	if (!EVP_DecryptInit_ex(ctx, ciph, NULL, NULL, NULL))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_L,
+				 15 - AES_CCM_NONCE_SIZE, NULL))
+		goto fail;
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN,
+				 AES_CCM_NONCE_SIZE, NULL))
+		goto fail;
+	/* Tag length is in B0. Set it before the second init. */
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, icv, NULL))
+		goto fail;
+	if (!EVP_DecryptInit_ex(ctx, NULL, NULL,
+				(unsigned char *)key->v, nonce))
+		goto fail;
+	/* CCM requires the total ciphertext length to be set first. */
+	if (!EVP_DecryptUpdate(ctx, NULL, &len, NULL, (int)ct_len))
+		goto fail;
+	if (aad && aad->l > 0) {
+		if (!EVP_DecryptUpdate(ctx, NULL, &len,
+				       (unsigned char *)aad->v, (int)aad->l))
+			goto fail;
+	}
+	/* Received tag before the ciphertext update. After is too late. */
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, icv,
+				 (unsigned char *)data->v + ct_len))
+		goto fail;
+	if (ct_len > 0 &&
+	    !EVP_DecryptUpdate(ctx, (unsigned char *)out->v, &len,
+			       (unsigned char *)data->v, (int)ct_len))
+		goto fail;
+	if (!EVP_DecryptFinal_ex(ctx, (unsigned char *)out->v + len, &len2))
+		goto fail;
+	EVP_CIPHER_CTX_free(ctx);
+	return out;
+fail:
+	EVP_CIPHER_CTX_free(ctx);
+	if (out)
+		rc_vfree(out);
+	return NULL;
+}
+
+rc_vchar_t *
+eay_aes_ccm_ike_encrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			rc_vchar_t *aad, int icv)
+{
+	return eay_aes_ccm_ike_encrypt1(data, key, iv, aad, AES_CCM_SALT_SIZE, icv);
+}
+
+rc_vchar_t *
+eay_aes_ccm_ike_decrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			rc_vchar_t *aad, int icv)
+{
+	return eay_aes_ccm_ike_decrypt1(data, key, iv, aad, AES_CCM_SALT_SIZE, icv);
+}
+
+/*
+ * ICV-12 wrappers for the encryptor_method 4-arg AEAD dispatch
+ * (RFC 4309 transform 15).  OpenSSL 3.5.8 probe 2026-10-06 printed
+ * M=12 P and M=8/16 F with the RFC 3610 ctrl order.  Do not treat
+ * that as a permanent property of the library; re-probe on an
+ * OpenSSL change before wiring the other tag lengths.
+ */
+rc_vchar_t *
+eay_aes_ccm12_ike_encrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			  rc_vchar_t *aad)
+{
+	/* key is AES key || 3-octet salt; RFC 4309 19/27/35. */
+	return eay_aes_ccm_ike_encrypt1(data, key, iv, aad,
+					AES_CCM_SALT_SIZE, AES_CCM_ICV_SIZE_12);
+}
+
+rc_vchar_t *
+eay_aes_ccm12_ike_decrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			  rc_vchar_t *aad)
+{
+	return eay_aes_ccm_ike_decrypt1(data, key, iv, aad,
+					AES_CCM_SALT_SIZE, AES_CCM_ICV_SIZE_12);
+}
+
 /* for ipsec part */
 int
 eay_null_hashlen(void)

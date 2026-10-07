@@ -138,6 +138,33 @@ struct encryptor_method encr_aesgcm256 = {
 	eay_aes_gcm_ike_decrypt,
 };
 
+/* ChaCha20-Poly1305 (RFC 7634 IKE): key 32||4=salt (36), iv 8, ICV 16. */
+struct encryptor_method encr_chacha20poly1305 = {
+	"chacha20-poly1305",
+	1, CHACHA20_POLY1305_IV_SIZE,
+	32 + CHACHA20_POLY1305_SALT_SIZE, /* RFC 7634: 32-byte key || 4-byte salt */
+	eay_aes_weakkey,
+	aead_need_aad,
+	aead_need_aad,
+	CHACHA20_POLY1305_ICV_SIZE,
+	eay_chacha20poly1305_ike_encrypt,
+	eay_chacha20poly1305_ike_decrypt,
+};
+
+/* AES-CCM ICV-12 (RFC 5282 IKE, RFC 4309 transform 15).  OpenSSL
+ * 3.5.8 probe 2026-10-06: M=12 P, M=8/16 F.  Not offered for IKE
+ * until a re-probe prints P. */
+struct encryptor_method encr_aesccm12 = {
+	"aes-ccm-icv12",
+	1, AES_CCM_IV_SIZE, 16 + AES_CCM_SALT_SIZE, /* 128-bit base row; 192/256 handled by keylen rows */
+	eay_aes_weakkey,
+	aead_need_aad,
+	aead_need_aad,
+	AES_CCM_ICV_SIZE_12,
+	eay_aes_ccm12_ike_encrypt,
+	eay_aes_ccm12_ike_decrypt,
+};
+
 static rc_vchar_t *null_encrypt_decrypt(rc_vchar_t *, rc_vchar_t *,
 					rc_vchar_t *);
 static int null_weakkey(rc_vchar_t *);

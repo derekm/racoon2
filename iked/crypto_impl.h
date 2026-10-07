@@ -165,6 +165,23 @@ extern rc_vchar_t *eay_aes_ctr (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 extern rc_vchar_t *eay_aes_gcm_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 extern rc_vchar_t *eay_aes_gcm_ike_decrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 
+/* ChaCha20-Poly1305 (RFC 7634 IKE): key is 32-byte key || 4-byte salt (36
+ * octets), iv is 8 bytes, nonce = salt || iv (96 bits), ICV 16 fixed.
+ * Encrypt returns ciphertext||ICV16; decrypt input is ciphertext||ICV16. */
+extern rc_vchar_t *eay_chacha20poly1305_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+extern rc_vchar_t *eay_chacha20poly1305_ike_decrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+
+/* AES-CCM (RFC 4309 / RFC 5282 IKE): key is AES key || 3-byte salt
+ * (19/27/35 octets), iv is 8 bytes, nonce = salt || iv (11 octets),
+ * L = 4.  Probe on the Fedora box OpenSSL 3.5.8 (2026-10-06,
+ * ccm_evp_roundtrip): RFC3610 packet-1 encrypt PASS, L2/L4 M=12 P,
+ * M=8 and M=16 F.  Only the ICV-12 wrapper is wired.  Re-probe before
+ * offering 8 or 16; a failing cell is not a permanent library fact. */
+extern rc_vchar_t *eay_aes_ccm_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, int);
+extern rc_vchar_t *eay_aes_ccm_ike_decrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, int);
+extern rc_vchar_t *eay_aes_ccm12_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+extern rc_vchar_t *eay_aes_ccm12_ike_decrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+
 /* misc */
 extern int eay_null_keylen (int);
 extern int eay_null_hashlen (void);
