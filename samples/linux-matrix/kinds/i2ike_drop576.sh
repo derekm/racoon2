@@ -6,14 +6,16 @@
 # (3 datagrams; journal line is "SKF fragment recv", not "fragmented path"
 # — that line only fires when the recv window does not match).
 # Responder child lifetime is 3600s so only the initiator rekeys.
-# Loss stays off until the rekey CREATE_CHILD response has been sent
-# (journal: "CREATE_CHILD_SA response:").  30% across that response is
-# what CI 36204006963 failed: y_arm stayed 1, the 10s ADDKE timer aborted,
-# and the new Y keymat never landed, even though the same 30% passed once
-# on the box.  After the response is on the wire, 30% for a few seconds
-# hits the FOLLOWUP response, then 0% so the replay finishes inside the
-# timer.  Not in the CI default until a container run passes this gate.
-# PASS: R2 replay >= 1, netem-dropped >= 1, SKF fragment recv >= 3,
+# Loss: an nftables rule on the responder egress, armed after IKE_AUTH and
+# before the rekey, drops exactly ONE datagram > 450B - the first SKF
+# fragment of the ML-KEM IKE_FOLLOWUP_KE response (nothing else the
+# responder sends after IKE_AUTH is that large).  The initiator cannot
+# reassemble, retransmits its FOLLOWUP request, and the responder must
+# answer with its armed cached response (R2 replay) inside the 10s ADDKE
+# arm timer.  (The old timed 30% netem window, armed after the
+# 'CREATE_CHILD_SA response:' line at 1s polling, armed too late on fast
+# runners: CI 37669727663 counted 0 drops on every attempt.)
+# PASS: R2 replay >= 1, nft-dropped >= 1, SKF fragment recv >= 3,
 # a new g_ir_present=Y keymat that matches both sides (the n line is the
 # AUTH child), a new SPI, and no ADDKE followup timeout.
 kind_i2ike_drop576() {
@@ -216,10 +218,33 @@ EOF
 		[ "$up" -eq 1 ] || continue
 		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort -u > "$D/spi0"
 
-		# No loss until the rekey CREATE_CHILD response has left.  Holding
-		# 30% across that send is what kept y1 at 1 in CI 36204006963.
+		# Deterministic single drop (replaces the timed netem window).
+		# The old window applied 30% netem only AFTER the responder logged
+		# 'CREATE_CHILD_SA response:', polled at 1s.  On a fast runner the
+		# whole IKE_FOLLOWUP_KE exchange completes within milliseconds of
+		# that line, so netem was armed after the fact: CI 37669727663
+		# logged "netem dropped 0 datagrams" with newspi=1 pqc=1 on all 4
+		# attempts (a clean rekey, nothing lost, no replay to observe).
+		# Instead, before the rekey starts, arm an nftables rule on the
+		# RESPONDER egress that drops exactly the first IKE datagram
+		# larger than 450 bytes.  After IKE_AUTH the only responder
+		# datagrams that large are the RFC 7383 SKF fragments of the
+		# ML-KEM IKE_FOLLOWUP_KE response (KEr 1088B over MTU 576); the
+		# CREATE_CHILD response, DPD and DELETE are well below it.  The
+		# quota (600 bytes, > one fragment, < two) makes it one drop,
+		# counted by the rule's own counter.
+		command -v nft >/dev/null 2>&1 || { log "FAIL: no nft (install nftables)"; break; }
+		ip netns exec "$NSR" nft -f - <<NFT || { log "FAIL: cannot install the nft drop rule in $NSR"; break; }
+table inet r2drop {
+	chain out {
+		type filter hook output priority 0; policy accept;
+		udp sport { 500, 4500 } meta length > 450 quota until 600 bytes counter drop
+	}
+}
+NFT
+		y_arm=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
+		yi_arm=$(grep -c 'g_ir_present=Y' "$D/init-iked.log" 2>/dev/null || true)
 		resp0=$(grep -c 'CREATE_CHILD_SA response:' "$D/resp-iked.log" 2>/dev/null || true)
-		replay0=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
 		i=0
 		resp1=$resp0
 		while [ "$i" -lt 70 ]; do
@@ -231,23 +256,13 @@ EOF
 		done
 		if [ "${resp1:-0}" -le "${resp0:-0}" ]; then
 			log "FAIL: rekey CREATE_CHILD response never sent (attempt $attempt)"
+			ip netns exec "$NSR" nft delete table inet r2drop 2>/dev/null || true
 			continue
 		fi
-		if ! ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 30% 2>/dev/null; then
-			log "FAIL: cannot apply netem loss on $NSR/$VR (no tc?); abort"
-			break
-		fi
-		d0=$(tc_dropped "$NSR" "$VR" || true)
-		y_arm=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
-		# 4s at 30% is enough to drop a FOLLOWUP fragment and still
-		# leave the 10s arm timer room to finish at 0%.
-		sleep 4
-		d1=$(tc_dropped "$NSR" "$VR" || true)
-		ndrop=$(( ${d1:-0} - ${d0:-0} ))
-		ip netns exec "$NSR" tc qdisc del dev "$VR" root 2>/dev/null || true
+		# the rekey's FOLLOWUP must land inside the 10s ADDKE arm timer
 		rekeyed=0
 		i=0
-		while [ "$i" -lt 8 ]; do
+		while [ "$i" -lt 15 ]; do
 			y1=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
 			if [ "${y1:-0}" -gt "${y_arm:-0}" ]; then
 				rekeyed=1
@@ -258,21 +273,29 @@ EOF
 			fi
 			i=$((i+1)); sleep 1
 		done
-		y1=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
-		if [ "${y1:-0}" -gt "${y_arm:-0}" ]; then
-			rekeyed=1
+		# The responder's Y keymat only proves IT finished; the dropped
+		# fragment is still missing on the initiator, which recovers only
+		# when its retransmit timer (interval_to_send, 10s default) fires
+		# and the responder replays the cached response.  Wait for the
+		# initiator's own new Y keymat (and the replay) before sampling;
+		# sampling right after the responder's Y caught the initiator
+		# holding fragments 2/3 of 3 (CI 38185214699: init log ends with
+		# two 'SKF fragment recv' lines, no retransmit yet).
+		yi1=${yi_arm:-0}
+		if [ "$rekeyed" -eq 1 ]; then
+			i=0
+			while [ "$i" -lt 35 ]; do
+				yi1=$(grep -c 'g_ir_present=Y' "$D/init-iked.log" 2>/dev/null || true)
+				nr=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
+				[ "${yi1:-0}" -gt "${yi_arm:-0}" ] && [ "${nr:-0}" -ge 1 ] && break
+				i=$((i+1)); sleep 1
+			done
+			log "initiator recovery: init Y ${yi_arm:-0}->${yi1:-0} R2 replay=${nr:-0} after ${i}s"
 		fi
-		# rekeyed is a *sampling* proxy: it wants a NEW g_ir_present=Y KEM
-	# line to appear after the loss window armed.  But the responder can
-	# emit all of its KEM lines (y_arm already 2) before the arm sample
-	# runs — same binary passes with y_arm=1 y1=2 and fails with
-	# y_arm=2 y1=2 (2026-09-27).  It is NOT part of the gate: a rekey
-	# that actually happened during the window is proven by newspi=1
-	# (new child SPI = completed rekey) + pqc=1 (ML-KEM keymat hash
-	# matches both sides, no followup timeout) + nreplay/drop/skf
-	# (a rekey fragment was dropped by netem AND recovered via armed
-	# response replay).  Keep it as a diagnostic only.
-	log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) y_arm=${y_arm:-0} y1=${y1:-0} rekeyed=${rekeyed:-0} resp ${resp0:-0}->${resp1:-0}"
+		ndrop=$(ip netns exec "$NSR" nft list table inet r2drop 2>/dev/null \
+			| grep -oE 'counter packets [0-9]+' | head -1 | awk '{print $3}')
+		ip netns exec "$NSR" nft delete table inet r2drop 2>/dev/null || true
+		log "drop window: nft dropped ${ndrop:-0} responder datagram(s) > 450B; y_arm=${y_arm:-0} y1=${y1:-0} rekeyed=${rekeyed:-0} resp ${resp0:-0}->${resp1:-0}"
 
 		newspi=0
 		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort -u > "$D/spi1"
@@ -292,6 +315,7 @@ EOF
 		skf=$(grep -c 'SKF fragment recv' "$D/resp-iked.log" 2>/dev/null || true)
 		pqc=0
 		if [ "${t6:-0}" -ge 1 ] && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
+		   && [ "${yi1:-0}" -gt "${yi_arm:-0}" ] \
 		   && [ "${abt:-0}" -eq 0 ]; then
 			pqc=1
 			log "PQC rekey: type-6 offered (x$t6), last KEM keymat $kh_i matches both sides, no followup timeout"
@@ -305,14 +329,15 @@ EOF
 		#   pqc=1     type-6 ML-KEM offered, keymat hash matches on BOTH sides,
 		#             no followup timeout => the rekey KEM converged
 		#   nreplay>=1 armed-response replay actually fired (resp log)
-		#   ndrop>=1  netem counted a real drop during the window
 		#   skf>=3    SKF fragmentation path was exercised
-		# (rekeyed is deliberately NOT in the gate: see the drop-count window
-		# comment — it is a sampling proxy, not a daemon property.)
-		if [ "$newspi" -eq 1 ] && [ "$pqc" -eq 1 ] \
+		#   rekeyed=1 a NEW g_ir_present=Y keymat appeared after the drop
+		#             rule was armed (sampled BEFORE the rekey now, so it
+		#             is no longer the racy post-hoc proxy it used to be)
+		#   ndrop>=1  is the nft rule's own counter (exactly one drop)
+		if [ "$newspi" -eq 1 ] && [ "$pqc" -eq 1 ] && [ "$rekeyed" -eq 1 ] \
 		   && [ "${nreplay:-0}" -ge 1 ] && [ "${ndrop:-0}" -ge 1 ] \
 		   && [ "${skf:-0}" -ge 3 ]; then
-			log "DROP-KILL-TEST: fragmented FOLLOWUP replayed under counted loss (R2 replay x$nreplay, netem-dropped=$ndrop, skf=$skf, attempt $attempt)"
+			log "DROP-KILL-TEST: fragmented FOLLOWUP replayed under counted loss (R2 replay x$nreplay, nft-dropped=$ndrop, skf=$skf, attempt $attempt)"
 			pass_ok=1
 			break
 		fi
