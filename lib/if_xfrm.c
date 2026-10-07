@@ -164,6 +164,7 @@ static const struct xfrm_aeadmap aead_map[] = {
 	{ RCT_ALG_AES_GCM,	"rfc4106(gcm(aes))",	128 },
 	{ RCT_ALG_AES_GCM8,	"rfc4106(gcm(aes))",	64 },
 	{ RCT_ALG_AES_GCM12,	"rfc4106(gcm(aes))",	96 },
+	{ RCT_ALG_AES_CCM,	"rfc4309(ccm(aes))",	96 },
 	{ 0, NULL, 0 }
 };
 

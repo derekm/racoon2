@@ -270,7 +270,8 @@ ikev2_encr_is_aead(u_int16_t aid)
 		aid == IKEV2TRANSF_ENCR_AES_GCM_ICV16 ||
 		aid == IKEV2TRANSF_ENCR_AES_CCM_8 ||
 		aid == IKEV2TRANSF_ENCR_AES_CCM_12 ||
-		aid == IKEV2TRANSF_ENCR_AES_CCM_16);
+		aid == IKEV2TRANSF_ENCR_AES_CCM_16 ||
+		aid == IKEV2TRANSF_ENCR_CHACHA20_POLY1305);
 }
 
 static int

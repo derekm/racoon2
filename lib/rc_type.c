@@ -243,6 +243,12 @@ rct2pfk_enctype(int type)
 #endif
 	case RCT_ALG_TWOFISH_CBC:
 		return SADB_X_EALG_TWOFISHCBC;
+	case RCT_ALG_AES_CCM:
+	case RCT_ALG_CHACHA20_POLY1305:
+		/* No pfkey id on this tree's headers.  Return 0 so
+		 * rcpfk_supported_enc says unsupported instead of errx
+		 * killing iked at config-check. */
+		return 0;
 	default:
 		errx(1, "enctype=%d not supported", type);
 	}
@@ -408,6 +414,10 @@ rct2str(int type)
 		return "AES-GCM-8";
 	case RCT_ALG_AES_GCM12:
 		return "AES-GCM-12";
+	case RCT_ALG_AES_CCM:
+		return "AES-CCM-12";
+	case RCT_ALG_CHACHA20_POLY1305:
+		return "CHACHA20-POLY1305";
 	case RCT_ALG_TWOFISH_CBC:
 		return "Twofish-CBC";
 	case RCT_ALG_NON_AUTH:

@@ -3086,6 +3086,17 @@ static struct algdef ikev2_transf_encr[] = {
 	ALG_ENC(RCT_ALG_AES_GCM8,	IKEV2TRANSF_ENCR_AES_GCM_ICV8, 16, 4, PROTO_VARIABLE_KEYLEN, 0),
 	ALG_ENC(RCT_ALG_AES_GCM8,	IKEV2TRANSF_ENCR_AES_GCM_ICV8, 24, 4, PROTO_VARIABLE_KEYLEN, 0),
 	ALG_ENC(RCT_ALG_AES_GCM8,	IKEV2TRANSF_ENCR_AES_GCM_ICV8, 32, 4, PROTO_VARIABLE_KEYLEN, 0),
+	/* AES-CCM ICV12 only: OpenSSL 3.5.8 probe 2026-10-06 printed
+	 * L4_M12=P and L4_M8/M16=F.  Do not offer 8/16 until a re-probe
+	 * prints P.  nonce_len 3 is the RFC 4309 salt. */
+	ALG_ENC(RCT_ALG_AES_CCM,	IKEV2TRANSF_ENCR_AES_CCM_12, 16, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm12),
+	ALG_ENC(RCT_ALG_AES_CCM,	IKEV2TRANSF_ENCR_AES_CCM_12, 24, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm12),
+	ALG_ENC(RCT_ALG_AES_CCM,	IKEV2TRANSF_ENCR_AES_CCM_12, 32, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm12),
+	/* ChaCha20-Poly1305 (RFC 7634).  RFC 8439 §2.8.2 tag matched on
+	 * OpenSSL 3.5.8.  ESP kernel name is not in /proc/crypto on this
+	 * box, so this row is IKE; ESP config-check stays red until the
+	 * kernel advertises the AEAD. */
+	ALG_ENC(RCT_ALG_CHACHA20_POLY1305, IKEV2TRANSF_ENCR_CHACHA20_POLY1305, 32, 4, 0, &encr_chacha20poly1305),
 	/* NULL_AUTH_AES_GMAC */
 	/* IEEE_P1619_XTS_AES */
 	{ 0 }
