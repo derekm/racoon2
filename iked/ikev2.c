@@ -1554,10 +1554,17 @@ initiator_start_after_gen(int rc, void *arg)
 	 * so a peer that supports method 14 can negotiate it.  Data = the
 	 * SHA-2 hash IDs we can verify (never SHA-1; that stays on method 1).
 	 * If the peer echoes, initiator notify sets sig_hash_algos_ds and we
-	 * sign method 14; otherwise we fall back to method 1 / SHA-1. */
+	 * sign method 14; otherwise we fall back to method 1 / SHA-1.
+	 * Gated by the remote's 'offer_sig_hash_algorithms' config (default
+	 * ON).  Turning it OFF pins the legacy AUTH_RSA method-1 path (no
+	 * 16431), so a modern strongSwan peer that would otherwise prefer
+	 * RFC 7427 actually signs method 1 / SHA-1 — used by the
+	 * i2iinit-*-rsa-sha1- interop rows to exercise iked's F6 method-1
+	 * DigestInfo verification end-to-end. */
 	{
 		struct rc_alglist *_kmp = ikev2_kmp_auth_method(ike_sa->rmconf);
-		if (_kmp && _kmp->algtype == RCT_ALG_RSASIG) {
+		if (_kmp && _kmp->algtype == RCT_ALG_RSASIG &&
+		    ikev2_offer_sig_hash_algorithms(ike_sa->rmconf) == RCT_BOOL_ON) {
 			static const uint8_t sig_hash_sha2[] = {
 				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
 			};
@@ -2079,8 +2086,12 @@ responder_state0_after_gen(int rc, void *arg)
 	 * never SHA1=1 (RFC 8247 s3.2).  Our own method-14 AUTH signs SHA2-256.
 	 * Both initiator and responder offer/echo 16431 when RSASIG, so
 	 * iked<->iked RSA (i2ipubkey-rsa) negotiates method 14; method 1 /
-	 * SHA-1 remains the fallback when the peer does not echo. */
-	if (ike_sa->peer_sent_sig_hash_algos) {
+	 * SHA-1 remains the fallback when the peer does not echo.
+	 * 'offer_sig_hash_algorithms off' (default ON) also suppresses the
+	 * echo, pinning method 1 / SHA-1 even though the peer offered 16431
+	 * (the i2iinit-*-rsa-sha1- interop rows). */
+	if (ike_sa->peer_sent_sig_hash_algos &&
+	    ikev2_offer_sig_hash_algorithms(ike_sa->rmconf) == RCT_BOOL_ON) {
 		struct rc_alglist *_kmp = ikev2_kmp_auth_method(ike_sa->rmconf);
 		if (_kmp && _kmp->algtype == RCT_ALG_RSASIG) {
 			static const uint8_t sig_hash_sha2[] = {

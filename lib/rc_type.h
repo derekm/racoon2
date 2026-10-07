@@ -322,6 +322,15 @@ struct rcf_kmp {
 	 * IKE_INTERMEDIATE sends, and the responder must fall back to a
 	 * classical IKE_SA.  ON (default) = normal end-to-end ADDKE. */
 	rc_type offer_intermediate;
+	/* RFC 7427: offer N(SIG_HASH_ALGORITHMS) (16431) in IKE_SA_INIT so a
+	 * peer that supports method 14 can negotiate it.  ON (default) =
+	 * normal RFC 7427 negotiation (SHA-2 only; method 1/SHA-1 fallback
+	 * only when the peer does not echo).  OFF pins the legacy AUTH_RSA
+	 * method-1 path end-to-end: used by the i2iinit-*-rsa-sha1- interop
+	 * rows to force a modern strongSwan peer, which prefers RFC 7427
+	 * when 16431 is offered, to actually sign method 1 / SHA-1 so iked's
+	 * F6 DigestInfo verification is exercised for real. */
+	rc_type offer_sig_hash_algorithms;
 	/* RFC 8784: Post-quantum Preshared Key (PPK) mixing.  use_ppk gates the
 	 * USE_PPK / PPK_IDENTITY notifications and the SK_d/SK_pi/SK_pr
 	 * re-derivation (RFC 8784 s4.2); ppk_mandatory mirrors RFC 8784's
