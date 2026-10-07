@@ -559,6 +559,14 @@ ikev2_sa_copy_negotiated_state(struct ikev2_sa *to, struct ikev2_sa *from)
 	to->peer_behind_nat = from->peer_behind_nat;
 	to->mobike_supported = from->mobike_supported;
 	to->frag_supported = from->frag_supported;
+	to->n_extra_addr4 = from->n_extra_addr4;
+	to->n_extra_addr6 = from->n_extra_addr6;
+	if (from->n_extra_addr4 > 0)
+		memcpy(to->extra_addr4, from->extra_addr4,
+		       (size_t)from->n_extra_addr4 * 4);
+	if (from->n_extra_addr6 > 0)
+		memcpy(to->extra_addr6, from->extra_addr6,
+		       (size_t)from->n_extra_addr6 * 16);
 }
 
 /* Re-pin the RFC 4555 §3.8 NATD binding-report digests.  They are a
@@ -1201,6 +1209,8 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		rc_vfree(sa->cookie2_echo);
 	if (sa->cookie2_sent)
 		rc_vfree(sa->cookie2_sent);
+	if (sa->mobike_rr_prev)
+		rc_free(sa->mobike_rr_prev);
 	if (sa->qcd_token_peer)
 		rc_vfree(sa->qcd_token_peer);
 

@@ -338,6 +338,13 @@ struct ikev2_sa {
 	int n_extra_addr4;
 	uint8_t extra_addr6[IKEV2_MAX_EXTRA_ADDR][16];
 	int n_extra_addr6;
+	/* RFC 4555 §3.6/§3.7 responder-follow: when the current path
+	 * dies, probe the next ADDITIONAL_* address with COOKIE2 before
+	 * aborting.  Kernel SAs stay on the old address until the
+	 * probe's COOKIE2 matches. */
+	int mobike_alt_idx;
+	int mobike_rr_pending;
+	struct sockaddr *mobike_rr_prev;
 	struct ikev2_frag_item *frag_chain;	/* Received fragments */
 	struct sched *natk_timer;
 #if 0	/* XXX for transport mode */

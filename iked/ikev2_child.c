@@ -713,6 +713,11 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 		ike_sa->response_info.src = rcs_sadup(local);
 		ike_sa->response_info.dest = rcs_sadup(remote);
 	}
+	/* RFC 4555 §3.8: the next binding report must describe the
+	 * address we just moved to, not the INIT pins. */
+	ikev2_sa_repin_natd(ike_sa);
+	isakmp_log(ike_sa, local, remote, 0, PLOG_INFO, PLOGLOC,
+		   "MOBIKE binding report re-pinned\n");
 }
 
 /*
