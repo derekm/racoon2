@@ -1574,30 +1574,39 @@ echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 # that negotiated ESN_YES but installed a 32-bit SA, flags=0x0, REDs).
 case "$_name" in
 i2iinit-esn)
+	# Match the SA's flags field carrying SADB_X_SAFLAGS_ESN (0x400).
+	# grep -cE 'flags=0x[0-9a-f]*400' hits 0x00000400; the absent *
+	# forces a suffix match so it cannot false-pass a 0x0 (no-ESN) SA.
 	_si=$(grep -cE 'flags=0x[0-9a-f]*400' /tmp/freeb/init-sadb.txt 2>/dev/null || true)
 	_sr=$(grep -cE 'flags=0x[0-9a-f]*400' /tmp/freeb/resp-sadb.txt 2>/dev/null || true)
 	if [ "${_si:-0}" -ge 1 ] && [ "${_sr:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
 		echo "row $_name: ESN OK - SADB_X_SAFLAGS_ESN (flags=0x400) on BOTH mature SAs (init=${_si} resp=${_sr}), child up"
 	else
 		echo "FAIL row $_name: ESN gate (init_sadflags400=${_si:-0} resp_sadflags400=${_sr:-0} up=$up); need flags=0x400 on both SAD dumps"
+		gate_why="ESN SAD gate (SADB_X_SAFLAGS_ESN 0x400 not on both SAs: init=${_si:-0} resp=${_sr:-0})"
 		up=0
 	fi
 	;;
 esac
 
 # --- ChaCha20-Poly1305 ESP ealg gate (i2iinit-esp-chacha) ---
-# The SAD must show ealg 15 (SADB_X_EALG_CHACHA20POLY1305) — "E: 15
-# <9-word 36B key>" (32B key + 4B salt) — on BOTH mature SAs.  A child
-# that silently fell back to GCM (E: 19/20) would PASS the generic
-# child-up gate for the wrong reason; this pins the actual ealg.
+# The SAD must show the ChaCha AEAD ealg on BOTH mature SAs, else a child
+# that silently fell back to GCM (E: 19/20) passes the generic child-up
+# gate for the wrong reason.  Match EITHER rendering of ealg 15:
+#   - ipsec-tools 0.8.2_13 (KAME, the guest + CI pkg) prints the NUMBER
+#     "E: 15 ..." (its alg table predates chacha);
+#   - a stock 15.1 base pfkey_dump prints the NAME from the kernel's
+#     SADB_X_EALG_CHACHA20POLY1305->pfkey_algname table, "E: chacha20-poly1305".
+# Accepting both keeps the gate true on whatever setkey the image ships.
 case "$_name" in
 i2iinit-esp-chacha)
-	_ci=$(grep -cE 'E: 15 ' /tmp/freeb/init-sadb.txt 2>/dev/null || true)
-	_cr=$(grep -cE 'E: 15 ' /tmp/freeb/resp-sadb.txt 2>/dev/null || true)
+	_ci=$(grep -cE 'E: (15 |chacha20[a-z0-9-]* )' /tmp/freeb/init-sadb.txt 2>/dev/null || true)
+	_cr=$(grep -cE 'E: (15 |chacha20[a-z0-9-]* )' /tmp/freeb/resp-sadb.txt 2>/dev/null || true)
 	if [ "${_ci:-0}" -ge 1 ] && [ "${_cr:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
-		echo "row $_name: ChaCha OK - SADB ealg 15 (SADB_X_EALG_CHACHA20POLY1305) on BOTH mature SAs (init=${_ci} resp=${_cr}), child up"
+		echo "row $_name: ChaCha OK - SADB ealg 15 / CHACHA20-POLY1305 on BOTH mature SAs (init=${_ci} resp=${_cr}), child up"
 	else
-		echo "FAIL row $_name: esp-chacha ealg gate (init_ealg15=${_ci:-0} resp_ealg15=${_cr:-0} up=$up); need E: 15 on both SAD dumps"
+		echo "FAIL row $_name: esp-chacha ealg gate (init_ealg15=${_ci:-0} resp_ealg15=${_cr:-0} up=$up); need chacha AEAD (E: 15 / chacha20) on both SAD dumps"
+		gate_why="ChaCha ESP ealg gate (chacha AEAD not on both SAs: init=${_ci:-0} resp=${_cr:-0})"
 		up=0
 	fi
 	;;
@@ -1924,7 +1933,8 @@ run() {
 # Matrix rows.  Tokens match the Linux kinds verbatim so pfkey/xfrm parity
 # is asserted on identical config.  REKEY rows: initiator lifetime short.
 # Still Linux-only (not replicated): netem drop/dup, mobike/cookie2,
-# xfrm-only cells, ESN, DPD silence, NSA-warn, and charon RSA/CFG seats.
+# xfrm-only cells, DPD silence, NSA-warn, and charon RSA/CFG seats.
+# (ESN and ChaCha-ESP ARE now replicated: i2iinit-esn / i2iinit-esp-chacha.)
 # FreeBSD now mirrors Linux gens/ikerekey/firstchild/clresp/ppk charon rows.
 case "$ROW" in
 	all)

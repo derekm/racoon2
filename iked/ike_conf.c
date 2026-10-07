@@ -3093,9 +3093,10 @@ static struct algdef ikev2_transf_encr[] = {
 	ALG_ENC(RCT_ALG_AES_CCM,	IKEV2TRANSF_ENCR_AES_CCM_12, 24, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm12),
 	ALG_ENC(RCT_ALG_AES_CCM,	IKEV2TRANSF_ENCR_AES_CCM_12, 32, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm12),
 	/* ChaCha20-Poly1305 (RFC 7634).  RFC 8439 §2.8.2 tag matched on
-	 * OpenSSL 3.5.8.  ESP kernel name is not in /proc/crypto on this
-	 * box, so this row is IKE; ESP config-check stays red until the
-	 * kernel advertises the AEAD. */
+	 * OpenSSL 3.5.8.  ESP is positive on BOTH legs: Linux XFRM via the
+	 * rfc7539esp(chacha20,poly1305) template (lib/if_xfrm.c), FreeBSD
+	 * via SADB_X_EALG_CHACHA20POLY1305 (lib/rc_type.c).  IKE transform
+	 * id 28 / config token chacha20_poly1305. */
 	ALG_ENC(RCT_ALG_CHACHA20_POLY1305, IKEV2TRANSF_ENCR_CHACHA20_POLY1305, 32, 4, 0, &encr_chacha20poly1305),
 	/* NULL_AUTH_AES_GMAC */
 	/* IEEE_P1619_XTS_AES */
