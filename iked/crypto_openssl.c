@@ -4500,6 +4500,13 @@ eay_ecp_compute(size_t field_len, rc_vchar_t *pub, rc_vchar_t *priv,
 	peer = EC_POINT_new(grp);
 	if (!peer || !EC_POINT_oct2point(grp, peer, enc, 1 + 2 * field_len, NULL))
 		goto end;
+	/* RFC 6989 s2.3.2 / curve hygiene: the peer public point must lie
+	 * on the curve.  oct2point already rejects malformed encodings, but
+	 * check the point explicitly so an on-wire/subgroup forgery can
+	 * never reach ECDH_compute_key (mirrors the MODP 1<r<p-1 range
+	 * check below in eay_modp_compute). */
+	if (!EC_POINT_is_on_curve(grp, peer, NULL))
+		goto end;
 	if (!*key)
 		*key = rc_vmalloc(field_len);
 	if (!*key)

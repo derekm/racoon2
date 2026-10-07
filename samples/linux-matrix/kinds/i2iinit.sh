@@ -46,6 +46,7 @@ kind_i2iinit() {
 	I2I_CHILDLESS=0                 # responder childless on (RFC 6023)
 	I2I_CLASSICAL=0                 # proposal-shape rows without ADDKE round
 	I2I_PPK=0                       # RFC 8784 PPK on charon seat
+	I2I_OFFER_SIG_HASH="on"         # RFC 7427 16431 (see -rsa-sha1- arm)
 	I2I_PERPETUAL=0
 	I2I_ESN=0
 	I2I_PFSREKEY=0
@@ -425,6 +426,7 @@ remote matrix_resp {
 		kmp_prf_alg { $I2I_IKE_PRF; };
 		kmp_hash_alg { $I2I_IKE_PRF; };
 		kmp_dh_group { $I2I_DH_GROUP; };
+		offer_sig_hash_algorithms $I2I_OFFER_SIG_HASH;
 $AUTH_TXT_R
 $PPK_TXT
 $CHILDLESS_TXT_R
@@ -492,6 +494,7 @@ remote matrix_init {
 		kmp_prf_alg { $I2I_IKE_PRF; };
 		kmp_hash_alg { $I2I_IKE_PRF; };
 		kmp_dh_group { $I2I_DH_GROUP; };
+		offer_sig_hash_algorithms $I2I_OFFER_SIG_HASH;
 $AUTH_TXT_I
 $PPK_TXT
 $CHILDLESS_TXT_I
@@ -1219,6 +1222,12 @@ fi
 		# F6: legacy AUTH_RSA (method 1, SHA-1).  Charon logs
 		# RSA_EMSA_PKCS1_NULL or RSA_EMSA_PKCS1_SHA1; iked must verify
 		# method 1 via DigestInfo (not the SHA256-only path).
+		# iked defaults to OFFERING 16431 (RFC 7427), which a modern
+		# strongSwan peer prefers over legacy method 1 — so it signs
+		# method 14 SHA-256 and this gate can never see method 1.  Pin
+		# offer_sig_hash_algorithms off on the iked seats so charon is
+		# forced to the legacy AUTH_RSA method-1 path this row asserts.
+		I2I_OFFER_SIG_HASH="off"
 		sig_want='RSA_EMSA_PKCS1_(NULL|SHA1)'
 		sig_iked='AUTH method 1 signature verified: RSASSA-PKCS1-v1_5 SHA1'
 		sig_method='auth method 1' ;;

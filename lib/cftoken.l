@@ -356,6 +356,7 @@ addke_required		{ DP; return(ADDKE_REQUIRED); }
 parent_child_strength	{ DP; return(PARENT_CHILD_STRENGTH); }
 addke_unrequested	{ DP; return(ADDKE_UNREQUESTED); }
 offer_intermediate	{ DP; return(OFFER_INTERMEDIATE); }
+offer_sig_hash_algorithms	{ DP; return(OFFER_SIG_HASH_ALGORITHMS); }
 	/* RFC 8784 PPK */
 use_ppk			{ DP; return(USE_PPK); }
 ppk_mandatory		{ DP; return(PPK_MANDATORY); }

@@ -261,7 +261,8 @@ ikev2_find_match(struct prop_pair *my_proposal,
  */
 /* L1: single source of truth for "this IKE/esp ENCR id is an AEAD
  * algorithm" (RFC 5282: ENCR+ICV, no separate INTEG).  Keep the enum set in
- * ONE place; a future AEAD (e.g. ChaCha20-Poly1305) goes here only. */
+ * ONE place; a new AEAD goes here only.  Current AEADs: AES-GCM (ICV8/12/16),
+ * AES-CCM (ICV8/12/16), ChaCha20-Poly1305. */
 int
 ikev2_encr_is_aead(u_int16_t aid)
 {

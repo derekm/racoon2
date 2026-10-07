@@ -214,6 +214,7 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* parent_child_strength (NDcPP FCS_IPSEC_EXT.1.12) */
 	RCT_BOOL_OFF,		/* addke_unrequested (responder-driven ADDKE) */
 	RCT_BOOL_ON,		/* offer_intermediate (RFC 9242 capability notify) */
+	RCT_BOOL_ON,		/* offer_sig_hash_algorithms (RFC 7427 16431) */
 	RCT_BOOL_OFF,		/* use_ppk (RFC 8784 PPK mixing) */
 	RCT_BOOL_OFF,		/* childless (RFC 6023 SA-less IKE_AUTH) */
 	RCT_BOOL_OFF,		/* require_config (RFC 6023 mandatory CP(CFG_REQUEST)) */
@@ -443,6 +444,7 @@ IKEV2_CONF_ATTR(rc_type, addke_required)
 IKEV2_CONF_ATTR(rc_type, parent_child_strength)
 IKEV2_CONF_ATTR(rc_type, addke_unrequested)
 IKEV2_CONF_ATTR(rc_type, offer_intermediate)
+IKEV2_CONF_ATTR(rc_type, offer_sig_hash_algorithms)
 IKEV2_CONF_ATTR(rc_type, use_ppk)
 IKEV2_CONF_ATTR(rc_type, childless)
 IKEV2_CONF_ATTR(rc_type, require_config)
@@ -476,6 +478,20 @@ ikev2_ppk_load(struct rcf_remote *rmconf)
 	ppk_id = ikev2_ppk_id(rmconf);
 	if (!ppk_id || ppk_id->l == 0)
 		return 0;
+
+	/* ppk_id is a bare token (RFC 8784 identity), never a path: it is
+	 * used to build $SYSCONFDIR/ppk/<ppk_id>.bin.  Reject any '/' or a
+	 * '..' component so a malicious config value cannot escape the ppk/
+	 * directory via path traversal. */
+	if (memchr(ppk_id->v, '/', ppk_id->l) ||
+	    (ppk_id->l >= 2 &&
+	     memcmp((const char *)ppk_id->v, "..", 2) == 0)) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "ppk_id '%.*s' must be a bare token (no '/', no '..') — "
+		     "refusing to build a PPK path\n",
+		     (int)ppk_id->l, (const char *)ppk_id->v);
+		return 0;
+	}
 
 	if (snprintf(path, sizeof(path), SYSCONFDIR "/ppk/%.*s.bin",
 		     (int)ppk_id->l, (const char *)ppk_id->v) >= (int)sizeof(path)) {
