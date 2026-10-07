@@ -976,8 +976,10 @@ run_row() {
 			fi ;;
 		*-ppk*)
 			# RFC 8784 fail-closed (no SHA-256 test default, 2026-10-06):
-			# the iked seat MUST have $SYSCONFDIR/ppk/<ppk_id>.bin
-			# (SYSCONFDIR = $PREFIX/etc for this prefix-less build).
+			# the iked seat MUST have $SYSCONFDIR/ppk/<ppk_id>.bin.
+			# SYSCONFDIR here is ${PREFIX}/etc/racoon2 (configure.ac
+			# racoon_sysconfdir = $prefix/etc/racoon2), so the bin file
+			# must land under .../etc/racoon2/ppk, NOT $PREFIX/etc/ppk.
 			# charonr uses mandatory so charon must apply the PPK.
 			# NOTE: the bytes are written with OCTAL escapes (\ooo), NOT
 			# \xHH.  FreeBSD /bin/sh printf does not expand \xHH (POSIX
@@ -986,12 +988,13 @@ run_row() {
 			# uses /bin/sh).  Octal is portable POSIX and verified on
 			# FreeBSD 15.1: yields 1e9546cc...ef0b raw.
 			FB_PPK=1
-			mkdir -p "$PREFIX/etc/ppk"
+			_ppkdir="$PREFIX/etc/racoon2/ppk"
+			mkdir -p "$_ppkdir"
 			( umask 077
 			  printf '\036\225\106\314\207\130\345\364\277\037\135\064\166\367\233\376\246\014\173\324\202\052\062\005\216\043\317\026\020\176\357\013' \
-				> "$PREFIX/etc/ppk/rfc8784-mat.bin" )
-			[ "$(od -An -tx1 "$PREFIX/etc/ppk/rfc8784-mat.bin" | tr -d ' \n')" = "1e9546cc8758e5f4bf1f5d3476f79bfea60c7bd4822a32058e23cf16107eef0b" ] || {
-				echo "FAIL: could not provision $PREFIX/etc/ppk/rfc8784-mat.bin"; return 1; }
+				> "$_ppkdir/rfc8784-mat.bin" )
+			[ "$(od -An -tx1 "$_ppkdir/rfc8784-mat.bin" | tr -d ' \n')" = "1e9546cc8758e5f4bf1f5d3476f79bfea60c7bd4822a32058e23cf16107eef0b" ] || {
+				echo "FAIL: could not provision $_ppkdir/rfc8784-mat.bin"; return 1; }
 			_ppk_lines="		use_ppk on;\n		ppk_mandatory off;\n		ppk_id \"rfc8784-mat\";"
 			if [ "$FB_CH" = i ]; then FB_IKE_R=$(printf '%b' "$_ppk_lines")
 			else FB_IKE_I=$(printf '%b' "$_ppk_lines"); FB_PPK_MANDATORY=1; fi ;;
