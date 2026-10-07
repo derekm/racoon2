@@ -289,7 +289,7 @@ i2i_compliance() {
 		[ -f "$_C/$_c" ] && grep -qE "kmp_enc_alg \{ (aes128_cbc|aes256_cbc|aes_gcm)" "$_C/$_c" && a6_claim=1
 	done
 	case "$name" in
-	*-ike-cbc192|*-ike-ctr*|*-ike-3des)
+	*-ike-cbc192|*-ike-ctr*|*-ike-ccm*|*-ike-3des)
 		[ "$a6_det" -eq 1 ] && PLOG A6 INFO "IKE payload cipher outside v3.0e claimed IKE set (via $name)"
 		[ "$a6_det" -eq 0 ] && PLOG A6 FAIL "IKE payload cipher not detected (no charon proposal / conf kmp_enc_alg)"
 		;;
@@ -418,6 +418,8 @@ i2i_compliance() {
 			if grep -q "kmp_enc_alg { aes_gcm, 256" "$_C/$_c"; then _ikesz=256; fi
 			if grep -q "kmp_enc_alg { aes_gcm" "$_C/$_c"; then [ "$_ikesz" -eq 0 ] && _ikesz=128; fi
 			if grep -q "kmp_enc_alg { aes_ctr" "$_C/$_c"; then [ "$_ikesz" -eq 0 ] && _ikesz=128; fi
+			# bare aes_ccm/ccm8/ccm16 is the 128-bit default (RFC 4309 key=128)
+			if grep -qE "kmp_enc_alg { aes_ccm" "$_C/$_c"; then [ "$_ikesz" -eq 0 ] && _ikesz=128; fi
 			# CHILD_SA cipher (esp_enc_alg): AEAD aes_gcm default 128; the
 			# -esp-shape arms pin aes{128,192,256}_cbc / aes_ctr(or aes_gcm, 256).
 			if grep -q "esp_enc_alg { aes_gcm, 256" "$_C/$_c"; then _childsz=256; fi

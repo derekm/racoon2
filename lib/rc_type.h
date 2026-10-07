@@ -102,9 +102,11 @@ typedef enum {
 
 	/* Appended after the last sequential value so PSK and every
 	 * earlier code keep their numbers.  ChaCha20-Poly1305 is RFC 7634.
-	 * AES_CCM is ICV-12 (transform 15); 8/16 stay unwired until a
-	 * probe on the shipping OpenSSL prints P for that M. */
+	 * AES_CCM is ICV-12 (transform 15); AES_CCM8/16 are the other two
+	 * RFC 4309 tag lengths (14/16), all three round-tripping on the
+	 * shipping OpenSSL (probe 2026-10-07). */
 	RCT_ALG_CHACHA20_POLY1305, RCT_ALG_AES_CCM,
+	RCT_ALG_AES_CCM8, RCT_ALG_AES_CCM16,
 
 		/* NAT-T: distinct from RCT_BOOL_ON/OFF and 0=unset */
 	RCT_NATT_FORCE = 0x00FE,
