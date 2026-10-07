@@ -352,9 +352,12 @@ o Cryptographic algorithm and its representation
 	(SK_d/SK_pi/SK_pr = prf+(PPK, SK')), so an attacker who later
 	breaks the key exchange remains unable to derive the SAs.  The PPK
 	value is read from $SYSCONFDIR/ppk/<ppk_id>.bin (raw bytes).  If
-	that file is missing, ppk_mandatory on makes IKE_AUTH fail closed;
-	ppk_mandatory off falls back to a NON-SECRET test default
-	SHA-256(ppk_id) with a loud warning — do not use in production.
+	that file is missing or unreadable, the session fails closed
+	regardless of ppk_mandatory: there is deliberately NO non-secret
+	fallback (a deterministic hash of the public ppk_id is not a
+	secret).  Provision the file with the peer's shared PPK secret;
+	ppk_mandatory additionally requires the peer to apply the PPK
+	(rather than declining with N(NO_PPK_AUTH)).
 	PPK is applied on the initial IKE_SA only, never on rekeys (RFC
 	8784 §2.2).  The peer must also support PPK; iked-to-iked is
 	verified in the matrix (i2iinit-ppk).

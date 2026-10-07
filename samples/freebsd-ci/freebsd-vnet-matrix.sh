@@ -973,9 +973,17 @@ run_row() {
 				FB_IKE_I="		kmp_sa_lifetime_time 30 sec;"
 			fi ;;
 		*-ppk*)
-			# RFC 8784: optional PPK (test default SHA-256(ppk_id));
-			# charonr uses mandatory so charon must apply the PPK
+			# RFC 8784 fail-closed (no SHA-256 test default, 2026-10-06):
+			# the iked seat MUST have $SYSCONFDIR/ppk/<ppk_id>.bin
+			# (SYSCONFDIR = $PREFIX/etc for this prefix-less build).
+			# charonr uses mandatory so charon must apply the PPK.
 			FB_PPK=1
+			mkdir -p "$PREFIX/etc/ppk"
+			( umask 077
+			  printf '\x1e\x95\x46\xcc\x87\x58\xe5\xf4\xbf\x1f\x5d\x34\x76\xf7\x9b\xfe\xa6\x0c\x7b\xd4\x82\x2a\x32\x05\x8e\x23\xcf\x16\x10\x7e\xef\x0b' \
+				> "$PREFIX/etc/ppk/rfc8784-mat.bin" )
+			[ "$(od -An -tx1 "$PREFIX/etc/ppk/rfc8784-mat.bin" | tr -d ' \n')" = "1e9546cc8758e5f4bf1f5d3476f79bfea60c7bd4822a32058e23cf16107eef0b" ] || {
+				echo "FAIL: could not provision $PREFIX/etc/ppk/rfc8784-mat.bin"; return 1; }
 			_ppk_lines="		use_ppk on;\n		ppk_mandatory off;\n		ppk_id \"rfc8784-mat\";"
 			if [ "$FB_CH" = i ]; then FB_IKE_R=$(printf '%b' "$_ppk_lines")
 			else FB_IKE_I=$(printf '%b' "$_ppk_lines"); FB_PPK_MANDATORY=1; fi ;;

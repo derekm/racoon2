@@ -131,14 +131,14 @@ esac
 	case "$name" in
 	*-ppk-charonr) I2I_PPK_MANDATORY=1 ;;
 	esac
-	# ppk_mandatory refuses the SHA-256(ppk_id) test default (a213b35:
-	# fail closed when the secret file is missing), so a mandatory row
-	# provisions $SYSCONFDIR/ppk/<ppk_id>.bin with the same 32 bytes the
-	# charon seat's secrets.ppk carries (I2I_PPK_HEX); removed at cleanup.
-	# Never inherit one: optional-PPK rows keep testing the default path.
+	# RFC 8784 fail-closed (no SHA-256 fallback, 2026-10-06): every PPK
+	# row MUST provision $SYSCONFDIR/ppk/<ppk_id>.bin with the same 32
+	# bytes the charon seat's secrets.ppk carries (I2I_PPK_HEX), because
+	# iked now refuses to derive a non-secret PPK when the file is
+	# missing.  Both mandatory and optional rows provision the file.
 	PPK_FILE="$ETC/ppk/${I2I_PPK_ID}.bin"
 	rm -f "$PPK_FILE"
-	if [ "$I2I_PPK" = 1 ] && [ "$I2I_PPK_MANDATORY" = 1 ]; then
+	if [ "$I2I_PPK" = 1 ]; then
 		mkdir -p "$ETC/ppk"
 		( umask 077
 		  printf "$(printf '%s' "$I2I_PPK_HEX" | sed 's/../\\x&/g')" > "$PPK_FILE" )
