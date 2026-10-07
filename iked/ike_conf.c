@@ -3702,13 +3702,10 @@ ikev2_ipsec_conf_to_proplist(struct ikev2_child_sa *child_sa,
 		prop_tail = &proplist[proposal_number];
 
 		IPSEC_CONF(ext_sequence, conf, ext_sequence, RCT_BOOL_OFF);
-#if 1
-		if (ext_sequence == RCT_BOOL_ON) {
-			isakmp_log(0, 0, 0, 0,
-				   PLOG_INTWARN, PLOGLOC,
-				   "Extended Sequence Number unsupported.\n");
-		}
-#endif
+		/* ext_sequence on adds ESN_YES to the offer
+		 * (ikev2_ipsec_sa_to_proplist); the negotiated value is
+		 * lifted into the kernel SA (SADB_X_SAFLAGS_ESN /
+		 * XFRM_STATE_ESN + XFRMA_REPLAY_ESN_VAL) at install. */
 		need_pfs = is_createchild ||
 		    (child_sa->parent && child_sa->parent->rmconf &&
 		     ikev2_need_pfs(child_sa->parent->rmconf) == RCT_BOOL_ON);
@@ -4100,8 +4097,11 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 	}
 
 	/*
-	 * (RFC4718, section4.4)
-	 * Extended Sequence Numbers (ESN) Transform
+	 * RFC 7296 §3.3.2: ESN_YES and ESN_NO are alternatives of one
+	 * transform type, linked on tnext (same as variable-keylen
+	 * ciphers).  Linking them on next makes the matcher emit both
+	 * and the later ESN_NO clears the flag the kernel needs.
+	 * YES is first so a peer that offered YES selects it.
 	 */
 	if (esn == RCT_BOOL_ON) {
 		*tail = transform_new(IKEV2TRANSFORM_TYPE_ESN,
@@ -4109,7 +4109,7 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 				      IKEV2TRANSFORM_MORE);
 		if (!*tail)
 			goto fail_nomem;
-		tail = &(*tail)->next;
+		tail = &(*tail)->tnext;
 	}
 	*tail = transform_new(IKEV2TRANSFORM_TYPE_ESN,
 			      IKEV2TRANSF_ESN_NO, 0,
@@ -4358,15 +4358,18 @@ ikev2_proposal_to_ipsec(struct ikev2_child_sa *child_sa,
 			case IKEV2TRANSFORM_TYPE_DH:
 				break;
 			case IKEV2TRANSFORM_TYPE_ESN:
-#ifdef notyet
-				/* *esn = get_uint16(&trns->transform_id); */
-#else
-				if (get_uint16(&trns->transform_id) != IKEV2TRANSF_ESN_NO) {
-					isakmp_log(child_sa->parent, 0, 0, 0,
-						   PLOG_PROTOERR, PLOGLOC,
-						   "negotiated Extended Sequence Number is YES, but it is unsupported\n");
+				if (get_uint16(&trns->transform_id) == IKEV2TRANSF_ESN_YES) {
+					/* RFC 7296 §3.3.2 / RFC 4303 §2.2.1.
+					 * Prefer YES if both appear: a later
+					 * ESN_NO must not clear a selected YES. */
+					child_sa->esn = 1;
+					TRACE((PLOGLOC, "negotiated Extended Sequence "
+					      "Number = YES\n"));
+				} else if (!child_sa->esn) {
+					child_sa->esn = 0;
+					TRACE((PLOGLOC, "negotiated Extended Sequence "
+					      "Number = NO\n"));
 				}
-#endif
 				break;
 			default:
 				/* unsupported */
@@ -5076,10 +5079,11 @@ ike_conf_check_ipsec(struct rcf_ipsec *ips, int *err, int *warn,
 		ips_index = rc_vmem2str(ips->ips_index);
 
 	if (ips->ext_sequence == RCT_BOOL_ON) {
-		++*warn;
-		plog(PLOG_INTWARN, PLOGLOC, 0,
-		     "ipsec %s ext_sequence is specified but it is not suported\n",
-		     ips_index);
+		/* ESN is implemented: the offer carries ESN_YES alongside
+		 * ESN_NO, and a negotiated ESN_YES is lifted into the
+		 * kernel SA (SADB_X_SAFLAGS_ESN / XFRM_STATE_ESN +
+		 * XFRMA_REPLAY_ESN_VAL).  A kernel with no ESN support
+		 * rejects the SA install at runtime, so no config warn. */
 	}
 }
 

@@ -982,19 +982,20 @@ fi
 		fi
 		;;
 	*-esn)
-		# ESN is NOT implemented by iked: ike_conf.c:4665 logs
-		# 'ext_sequence is specified but it is not suported' when the knob is
-		# parsed, and the child installs with a plain (non-ESN) replay window.
-		# The honest gate is CONFIG-ACCEPTANCE: the knob reached iked and the
-		# documented not-supported warning fired while the child still lands
-		# (a parser-reject or a crash would fail).  A future ESN
-		# implementation flips this row to assert the SAD E flag.
-		if grep -q 'ext_sequence is specified but it is not suported' "$D/resp-iked.log" 2>/dev/null; then
+		# RFC 4303 §2.2.1 / RFC 7296 §3.3.2 ESN is IMPLEMENTED: the SA
+		# installs with XFRM_STATE_ESN + XFRMA_REPLAY_ESN_VAL, so
+		# `ip xfrm state` prints an ESN SA as "flag esn" with an
+		# "anti-replay esn context" block + a 64-bit seq-hi/oseq-hi
+		# counter (verified on the Fedora 44 box).  Gate on that
+		# evidence — NOT on a config warning (the old
+		# 'not suported' text is gone).  A peer that negotiated
+		# ESN_YES but installed a 32-bit SA (the pre-fix lie) now REDs.
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q 'flag esn'; then
 			shape_ok=1
-			log 'ESN config-accept: iked parsed ext_sequence on + logged not-supported (ike_conf.c:4665); child up'
+			log 'ESN SAD proof: responder xfrm state carries flag esn (64-bit replay)'
 		else
 			shape_ok=0
-			log 'FAIL: -esn row but iked did not log the ext_sequence not-supported warning'
+			log 'FAIL: -esn row but responder SAD does not carry "flag esn" (32-bit SA installed)'
 		fi
 		;;
 	*)
