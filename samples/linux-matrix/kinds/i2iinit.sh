@@ -102,7 +102,8 @@ esac
 	*-esp-ctr192*) I2I_ESP_ENC="aes_ctr, 192"; I2I_ESP_AUTH="non_auth" ;;
 	*-esp-ctr256*) I2I_ESP_ENC="aes_ctr, 256"; I2I_ESP_AUTH="non_auth" ;;
 	*-esp-ctr*)    I2I_ESP_ENC="aes_ctr";    I2I_ESP_AUTH="non_auth" ;;
-	esac
+	*-esp-chacha*) I2I_ESP_ENC="chacha20_poly1305"; I2I_ESP_AUTH="non_auth" ;;
+esac
 	case "$name" in
 	*-ike-cbc128*|*-ike-cbc192*|*-ike-cbc256*|*-ike-ctr*|*-ike-3des*) I2I_CLASSICAL=1 ;;
 	esac
@@ -980,6 +981,38 @@ fi
 		else
 			shape_ok=0
 			log 'FAIL: -esp-ctr row but responder SAD lacks enc rfc3686(ctr(aes))'
+		fi
+		;;
+	*-esp-chacha-esn)
+		# Combo row: CHILD is ChaCha20-Poly1305 (rfc7539esp esp template)
+		# AND the child carries the ESN flag (RFC 4303 §2.2.1 64-bit
+		# replay).  Requires BOTH SAD proofs — a ChaCha AEAD key and the
+		# 'flag esn' anti-replay esn context on the same state.
+		c_ok=0; e_ok=0
+		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'aead rfc7539esp\(chacha20,poly1305\) 0x[0-9a-f]{72} 128$' && c_ok=1
+		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q 'flag esn' && e_ok=1
+		if [ "$c_ok" = 1 ] && [ "$e_ok" = 1 ]; then
+			shape_ok=1
+			log 'ESP shape: responder SAD aead rfc7539esp(chacha20,poly1305) 72-hex AND flag esn (ChaCha + ESN combo)'
+		else
+			shape_ok=0
+			log "FAIL: -esp-chacha-esn combo row but responder SAD chacha=${c_ok} esn_flag=${e_ok}"
+		fi
+		;;
+	*-esp-chacha)
+		# RFC 7634 ChaCha20-Poly1305 for ESP.  racoon2 maps
+		# RCT_ALG_CHACHA20_POLY1305 to the kernel AEAD
+		# "rfc7539esp(chacha20,poly1305)" (the COMMA template, lib/if_xfrm.c
+		# aead_map); COMma, not chacha20poly1305, else XFRM answers
+		# 'AEAD algorithm not found'.  Key is 32 B + 4 B salt = 36 B = 72
+		# hex; ICV fixed 128.  The chacha20poly1305 module autoloads via
+		# cryptomgr when the first SA installs.
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'aead rfc7539esp\(chacha20,poly1305\) 0x[0-9a-f]{72} 128$'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD aead rfc7539esp(chacha20,poly1305) 72-hex key (ChaCha20-Poly1305)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-chacha row but responder SAD lacks aead rfc7539esp(chacha20,poly1305) 72-hex'
 		fi
 		;;
 	*-esn)
