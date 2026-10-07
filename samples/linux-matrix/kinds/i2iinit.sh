@@ -184,8 +184,8 @@ esac
 	# lands on ecp384, not the -pfsrekey default ecp256.
 	case "$name" in
 	*-ike-ccm8-charon*)   I2I_PROPOSAL="aes128ccm8-prfsha256-$I2I_DH_GROUP-ke1_mlkem768" ;;
-	*-ike-ccm-charon*)    I2I_PROPOSAL="aes128ccm12-prfsha256-$I2I_DH_GROUP-ke1_mlkem768" ;;
 	*-ike-ccm16-charon*)  I2I_PROPOSAL="aes128ccm16-prfsha256-$I2I_DH_GROUP-ke1_mlkem768" ;;
+	*-ike-ccm-charon*)    I2I_PROPOSAL="aes128ccm12-prfsha256-$I2I_DH_GROUP-ke1_mlkem768" ;;
 	*-dh384*) I2I_DH_GROUP=ecp384; I2I_PROPOSAL=aes256gcm16-prfsha256-ecp384-ke1_mlkem768
 	          I2I_ESP=aes128gcm16-ecp384 ;;
 	*-dh521*) I2I_DH_GROUP=ecp521; I2I_PROPOSAL=aes256gcm16-prfsha256-ecp521-ke1_mlkem768
