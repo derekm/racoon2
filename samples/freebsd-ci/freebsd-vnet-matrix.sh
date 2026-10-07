@@ -297,6 +297,8 @@ fbsd_comply() {
 		grep -q 'kmp_enc_alg { aes_ctr, 256' "/tmp/freeb/$_c" && _ikesz=256 || true
 		grep -q 'kmp_enc_alg { aes_ctr, 192' "/tmp/freeb/$_c" && _ikesz=192 || true
 		grep -q 'kmp_enc_alg { aes_ctr, 128' "/tmp/freeb/$_c" && _ikesz=128 || true
+		# bare aes_ccm/ccm8/ccm16 is the 128-bit default (RFC 4309 key=128)
+		grep -qE 'kmp_enc_alg { aes_ccm' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
 		grep -q 'kmp_enc_alg { 3des_cbc' "/tmp/freeb/$_c" && _ikesz=64 || true
 		grep -q 'kmp_enc_alg { aes128_cbc' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
 		grep -q 'kmp_enc_alg { aes_gcm' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
@@ -892,7 +894,7 @@ run_row() {
 		;;
 	*i2ike-addke-512*) ADDKE="mlkem512" ;;
 	*i2ike-addke-1024*) ADDKE="mlkem1024" ;;
-	*i2iinit-addke*|*i2ike-addke*|*i2iinit-ike-gcm*|*nointermediate*|*pfsrekey*) ADDKE="mlkem768" ;;
+	*i2iinit-addke*|*i2ike-addke*|*i2iinit-ike-gcm*|*i2iinit-ike-ccm*|*nointermediate*|*pfsrekey*) ADDKE="mlkem768" ;;
 	*-immediate*|*-firstchild*|*-clresp*|*-childless-init*|*-gens*|*-ikerekey*) ADDKE="mlkem768" ;;
 	*-charon|*-charonr) ADDKE="mlkem768" ;;
 	esac
@@ -1346,7 +1348,7 @@ esac
 #         plain rekey installs);
 #   (c) no `ADDKE followup timeout; abort`.
 case "$_name" in
-*i2iinit-addke*|*i2iinit-ike-gcm*)
+*i2iinit-addke*|*i2iinit-ike-gcm*|*i2iinit-ike-ccm*)
 	# IKE_SA_INIT dumps the proposal as a raw hex block, not SA_hex=.
 	# SA_hex= is CREATE_CHILD only; this row does not rekey.
 	t6r=$(grep -c "06000024" /tmp/freeb/resp-iked.log 2>/dev/null || true)
@@ -2023,6 +2025,12 @@ case "$ROW" in
 		run i2iinit-ike-gcm256 inet 192.0.5.2 192.0.5.1 "aes_gcm, 256" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 	run i2iinit-ike-gcm192 inet 192.0.5.2 192.0.5.1 "aes_gcm, 192" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 	run i2iinit-ike-gcm128 inet 192.0.5.2 192.0.5.1 "aes_gcm, 128" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	# IKE AES-CCM all three RFC 4309 tag lengths (transforms 14/15/16).
+	# IKE CCM is OpenSSL-only (no pfkey ealg needed), so it is fully
+	# backend-independent; these mirror the Linux i2iinit-ike-ccm* rows.
+	run i2iinit-ike-ccm8  inet 192.0.5.2 192.0.5.1 aes_ccm8  hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2iinit-ike-ccm   inet 192.0.5.2 192.0.5.1 aes_ccm   hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2iinit-ike-ccm16 inet 192.0.5.2 192.0.5.1 aes_ccm16 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 	run i2iinit-ike-3des   inet 192.0.5.2 192.0.5.1 3des_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfsha384  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_384 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfsha512  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_512 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
@@ -2177,6 +2185,9 @@ case "$ROW" in
 	i2iinit-ike-gcm256) run_row i2iinit-ike-gcm256 inet 192.0.5.2 192.0.5.1 "aes_gcm, 256" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-ike-gcm192) run_row i2iinit-ike-gcm192 inet 192.0.5.2 192.0.5.1 "aes_gcm, 192" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-ike-gcm128) run_row i2iinit-ike-gcm128 inet 192.0.5.2 192.0.5.1 "aes_gcm, 128" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-ccm8) run_row i2iinit-ike-ccm8 inet 192.0.5.2 192.0.5.1 aes_ccm8 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-ccm) run_row i2iinit-ike-ccm inet 192.0.5.2 192.0.5.1 aes_ccm hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-ike-ccm16) run_row i2iinit-ike-ccm16 inet 192.0.5.2 192.0.5.1 aes_ccm16 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-ike-3des)   run_row i2iinit-ike-3des   inet 192.0.5.2 192.0.5.1 3des_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-prfsha384) run_row i2iinit-prfsha384 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_384 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-prfsha512) run_row i2iinit-prfsha512 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_512 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
