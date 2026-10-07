@@ -78,6 +78,7 @@ jobs:
 
       - name: Run the test matrix shard (xfrm backend)
         run: |
+          set -o pipefail
           CASES=${{ inputs.cases }}
           ARGS="--src $GITHUB_WORKSPACE --shard ${{ matrix.shard }} 3"
           [ -z "$CASES" ] || ARGS="$ARGS --cases $CASES"
@@ -236,6 +237,7 @@ jobs:
           # the bin/sbin merge.
           export I2I_SWANCTL_BIN=$(command -v swanctl || echo /usr/sbin/swanctl)
           "$I2I_SWANCTL_BIN" --version || true
+          set -o pipefail
           CASES=${{ inputs.cases }}
           ARGS="--src $GITHUB_WORKSPACE --shard ${{ matrix.shard }} 3"
           [ -z "$CASES" ] || ARGS="$ARGS --cases $CASES"
