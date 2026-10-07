@@ -191,6 +191,9 @@ Currently, the system supports the following specifications:
 	          Protocol Version 2 (IKEv2)
 	          (ML-KEM-512/768/1024; one intermediate round)
 	RFC 4555, IKEv2 Mobility and Multihoming Protocol (MOBIKE)
+	          (responder-follow: implicit/RFC-4555 UPDATE_SA_ADDRESSES
+	          migrates IKE + Child SA endpoints; initiator-originated
+	          updates not implemented — remote-access server role)
 	RFC 6290, A Quick Crash Detection Method for the Internet
 	          Key Exchange Protocol (IKEv2)
 	RFC 8784, Mixing Preshared Keys in the Internet Key Exchange
