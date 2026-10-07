@@ -65,8 +65,11 @@ jobs:
             # only runs its reverse copyback rsync after a *successful* run
             # step, so a non-zero exit aborts the action before the log is
             # copied back to the host runner.  The report job is the gate
-            # (it fails the run on any FAIL row) — same division of labor as
-            # the Fedora/Ubuntu matrices, whose shard steps tee the log.
+            # (it fails the run on any FAIL row) — FreeBSD /bin/sh has no
+            # pipefail, so this step must not try to fail red rows itself.
+            # (The Fedora/Ubuntu matrices differ: their shard steps tee the
+            # log AND set -o pipefail, so a red row fails that shard job
+            # directly, and their merged report is supplementary.)
             rc=0
             ROW=all sh samples/freebsd-ci/freebsd-vnet-matrix.sh \
               --shard ${{ matrix.shard }} 3 \
