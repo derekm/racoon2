@@ -25,12 +25,13 @@ kind_i2iinit() {
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
 	# RFC 8784 PPK rows (i2iinit-ppk, i2iinit-ppk-charon): seats enable
-	# USE_PPK with a shared ppk_id (test default = SHA-256(ppk_id), no
-	# secret files on the box).  TRACE must be on (0x0003) for the kind's
+	# USE_PPK with a shared ppk_id — every row provisions the REAL
+	# $SYSCONFDIR/ppk/<id>.bin (ikev2_ppk_load fails closed without it,
+	# no SHA-256 test default).  TRACE must be on (0x0003) for the kind's
 	# USE_PPK/PPK_IDENTITY evidence lines to land in the iked logs.  A
 	# -ppk-charon suffix additionally drops the charon initiator into
-	# PPK (ppk_id/ppk_required + secrets.ppk matching the iked test
-	# default) — re-arbitrating the s5.1 typed PPK_IDENTITY against a
+	# PPK (ppk_id/ppk_required + secrets.ppk carrying the same provisioned
+	# 32 bytes) — re-arbitrating the s5.1 typed PPK_IDENTITY against a
 	# second implementation.
 	I2I_DBG=0x0001
 	I2I_PPK=0
@@ -131,14 +132,14 @@ esac
 	case "$name" in
 	*-ppk-charonr) I2I_PPK_MANDATORY=1 ;;
 	esac
-	# ppk_mandatory refuses the SHA-256(ppk_id) test default (a213b35:
-	# fail closed when the secret file is missing), so a mandatory row
-	# provisions $SYSCONFDIR/ppk/<ppk_id>.bin with the same 32 bytes the
-	# charon seat's secrets.ppk carries (I2I_PPK_HEX); removed at cleanup.
-	# Never inherit one: optional-PPK rows keep testing the default path.
+	# RFC 8784 fail-closed (no SHA-256 fallback, 2026-10-06): every PPK
+	# row MUST provision $SYSCONFDIR/ppk/<ppk_id>.bin with the same 32
+	# bytes the charon seat's secrets.ppk carries (I2I_PPK_HEX), because
+	# iked now refuses to derive a non-secret PPK when the file is
+	# missing.  Both mandatory and optional rows provision the file.
 	PPK_FILE="$ETC/ppk/${I2I_PPK_ID}.bin"
 	rm -f "$PPK_FILE"
-	if [ "$I2I_PPK" = 1 ] && [ "$I2I_PPK_MANDATORY" = 1 ]; then
+	if [ "$I2I_PPK" = 1 ]; then
 		mkdir -p "$ETC/ppk"
 		( umask 077
 		  printf "$(printf '%s' "$I2I_PPK_HEX" | sed 's/../\\x&/g')" > "$PPK_FILE" )

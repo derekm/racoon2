@@ -459,10 +459,10 @@ rc_type ikev2_config_required(struct rcf_remote *conf)
 }
 
 /* RFC 8784 s5: obtain the PPK secret bytes for a remote.  The secret is
- * the raw content of $SYSCONFDIR/ppk/<ppk_id>.bin when that file exists;
- * otherwise (test/build default only, never a production install) the
- * PPK is SHA-256 of the ppk_id string so a PPK-enabled iked pair works
- * out of the box without provisioning a secret file.  A config keyword
+ * the raw content of $SYSCONFDIR/ppk/<ppk_id>.bin — a use_ppk session
+ * REQUIRES the provisioned file and aborts without it (fail-closed; there
+ * is deliberately no test/build SHA-256 fallback, since a deterministic
+ * hash of the public ppk_id is not a secret).  A config keyword
  * carrying a literal PPK value is deliberately NOT exposed -- no secret
  * may ever sit in a committed configuration.  Caller owns the returned
  * buffer (cleanse with OPENSSL_cleanse before rc_vfree). */
@@ -477,6 +477,20 @@ ikev2_ppk_load(struct rcf_remote *rmconf)
 	if (!ppk_id || ppk_id->l == 0)
 		return 0;
 
+	/* ppk_id is a bare token (RFC 8784 identity), never a path: it is
+	 * used to build $SYSCONFDIR/ppk/<ppk_id>.bin.  Reject any '/' or a
+	 * '..' component so a malicious config value cannot escape the ppk/
+	 * directory via path traversal. */
+	if (memchr(ppk_id->v, '/', ppk_id->l) ||
+	    (ppk_id->l >= 2 &&
+	     memcmp((const char *)ppk_id->v, "..", 2) == 0)) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "ppk_id '%.*s' must be a bare token (no '/', no '..') — "
+		     "refusing to build a PPK path\n",
+		     (int)ppk_id->l, (const char *)ppk_id->v);
+		return 0;
+	}
+
 	if (snprintf(path, sizeof(path), SYSCONFDIR "/ppk/%.*s.bin",
 		     (int)ppk_id->l, (const char *)ppk_id->v) >= (int)sizeof(path)) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
@@ -488,32 +502,24 @@ ikev2_ppk_load(struct rcf_remote *rmconf)
 		ret = rcf_readfile(path, PLOGLOC, 1);
 		if (ret)
 			return ret;
-		/* fall through to the test default if the file read fails */
+		/* fall through: file exists but could not be read */
 	}
 
-	/* test/build default: PPK = SHA-256(ppk_id string).
-	 * A missing secret file is a provisioning error — a deterministic
-	 * SHA-256 of the advertised (public) ppk_id is NOT a secret, so this
-	 * fallback is matrix/test material only.  When the config demanded a
-	 * MANDATORY PPK (ppk_mandatory on), refuse outright: returning 0 here
-	 * makes the RFC 8784 key-mixing step fail and IKE_AUTH abort with
-	 * 'failed to load PPK'.  For an optional session, warn loudly that the
-	 * deployment is running the non-secret test default. */
-	if (ikev2_ppk_mandatory(rmconf) == RCT_BOOL_ON) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		     "RFC 8784: PPK file %s missing and ppk_mandatory on — refusing to derive a weak default PPK (no SHA-256 fallback for a hardened session)\n",
-		     path);
-		return 0;
-	}
-	plog(PLOG_INTWARN, PLOGLOC, NULL,
-	     "RFC 8784: PPK file %s missing; using non-secret TEST default SHA-256(ppk_id '%.*s') — do NOT run this in production\n",
-	     path, (int)ppk_id->l, (const char *)ppk_id->v);
-	ret = rc_vmalloc(32);
-	if (!ret)
-		return 0;
-	SHA256((const unsigned char *)ppk_id->v, ppk_id->l,
-	       (unsigned char *)ret->v);
-	return ret;
+	/* RFC 8784 fail-closed: a USE_PPK session REQUIRES the provisioned
+	 * secret file.  There is deliberately NO non-secret test default
+	 * (a deterministic hash of the public ppk_id is not a secret, and a
+	 * deterministic value makes two peers "match" with nothing secret).
+	 * Missing/unreadable file always aborts the session — both optional
+	 * and mandatory PPK modes — so a misconfigured deployment can never
+	 * silently negotiate a non-secret PPK.  The matrix provisions
+	 * $SYSCONFDIR/ppk/<ppk_id>.bin with real bytes instead of relying on
+	 * a fallback.  Caller (ikev2_ppk_apply) treats NULL as fatal. */
+	plog(PLOG_INTERR, PLOGLOC, NULL,
+	     "RFC 8784: PPK secret file %s missing or unreadable — refusing "
+	     "to derive a PPK; provision %s with the peer's shared secret "
+	     "(fail-closed, no fallback)\n",
+	     path, path);
+	return 0;
 }
 
 static int

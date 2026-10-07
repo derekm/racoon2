@@ -36,10 +36,13 @@ I2I_PROPOSAL=${I2I_PROPOSAL:-aes256gcm16-prfsha256-${I2I_DH_GROUP}-ke1_mlkem768}
 # i2i_peer.sh first); a source-time default here would pre-empt that arm.
 I2I_ESP="${I2I_ESP:-}"
 # RFC 8784 PPK on a charon seat: I2I_PPK=1 adds ppk_id/ppk_required to the
-# conn and a secrets.ppk block whose secret is the SAME test default the
-# iked seat derives (SHA-256('rfc8784-mat')) — charon sends the typed
-# PPK_ID_FIXED (0x02) identity, re-arbitrating our s5.1 type-octet fix
-# against a second implementation.  No secret files are created.
+# conn and a secrets.ppk block whose secret is $I2I_PPK_HEX — the SAME
+# fixed 32 bytes the iked seat provisions into $SYSCONFDIR/ppk/<id>.bin
+# (fail-closed since 2026-10-06: iked reads the file, it never derives a
+# SHA-256(ppk_id) fallback).  charon sends the typed PPK_ID_FIXED (0x02)
+# identity, re-arbitrating our s5.1 type-octet fix against a second
+# implementation.  The secret file is provisioned per-run in i2iinit.sh
+# and removed at cleanup.
 I2I_PPK=${I2I_PPK:-0}
 I2I_PPK_ID=${I2I_PPK_ID:-rfc8784-mat}
 I2I_PPK_HEX=1e9546cc8758e5f4bf1f5d3476f79bfea60c7bd4822a32058e23cf16107eef0b
@@ -118,8 +121,9 @@ i2i_peer_resp_id() {
 }
 
 # ppk_secret_block <name> — emit a swanctl secrets.ppk block when I2I_PPK=1.
-# The secret is the SAME deterministic test default the iked seat derives
-# (SHA-256(ppk_id)); charon will send the typed PPK_ID_FIXED identity.
+# The secret is $I2I_PPK_HEX — the SAME fixed 32 bytes the iked seat
+# provisions into $SYSCONFDIR/ppk/<id>.bin (fail-closed: no SHA-256
+# default).  charon will send the typed PPK_ID_FIXED identity.
 # Emits nothing otherwise (so a non-PPK row's secrets{} stays single-cased).
 ppk_secret_block() {
 	_name=$1
