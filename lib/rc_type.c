@@ -244,11 +244,25 @@ rct2pfk_enctype(int type)
 	case RCT_ALG_TWOFISH_CBC:
 		return SADB_X_EALG_TWOFISHCBC;
 	case RCT_ALG_AES_CCM:
-	case RCT_ALG_CHACHA20_POLY1305:
-		/* No pfkey id on this tree's headers.  Return 0 so
+		/* No pfkey id on this tree's headers (FreeBSD/NetBSD have no
+		 * AES-CCM ESP ealg even defined).  Return 0 so
 		 * rcpfk_supported_enc says unsupported instead of errx
 		 * killing iked at config-check. */
 		return 0;
+#ifdef SADB_X_EALG_CHACHA20POLY1305
+	case RCT_ALG_CHACHA20_POLY1305:
+		/* FreeBSD/NetBSD define SADB_X_EALG_CHACHA20POLY1305 (15);
+		 * whether the running kernel's esp_xformsw actually
+		 * registers it is decided by rcpfk_supported_enc() /
+		 * findsupportedalg() at install time, so an unregistered
+		 * kernel yields a clean "not supported by kernel" refusal
+		 * (expected-reject x-row), never an errx at config-check. */
+		return SADB_X_EALG_CHACHA20POLY1305;
+#else
+	case RCT_ALG_CHACHA20_POLY1305:
+		/* Header has no ESP ChaCha ealg: same unsupported path. */
+		return 0;
+#endif
 	default:
 		errx(1, "enctype=%d not supported", type);
 	}

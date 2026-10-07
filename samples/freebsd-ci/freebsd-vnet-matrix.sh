@@ -662,8 +662,8 @@ gen_conf() {
 	fi
 	# per-seat rekey-family extras (set by run_row; empty for other rows):
 	# FB_IKE_[IR] go into the remote ikev2 block, FB_POL_[IR] into the policy.
-	if [ "$_seat" = "$jr" ]; then _xike=$FB_IKE_R _xpol=$FB_POL_R
-	else _xike=$FB_IKE_I _xpol=$FB_POL_I; fi
+	if [ "$_seat" = "$jr" ]; then _xike=$FB_IKE_R _xpol=$FB_POL_R _xesp=$FB_ESP_R
+	else _xike=$FB_IKE_I _xpol=$FB_POL_I _xesp=$FB_ESP_I; fi
 	_addke_line=""
 	[ -z "$_addke" ] || _addke_line="	esp_addke_alg { $_addke; };"
 	_eesp_emit=$(printf '%b\n' "$_addke_line")
@@ -714,6 +714,7 @@ $(printf '%b\n' "$_xpol")
 };
 ipsec ipsec_e {
 	ipsec_sa_lifetime_time $_lft sec;
+$(printf '%b\n' "$_xesp")
 	sa_index esp_e;
 };
 sa esp_e {
@@ -901,8 +902,9 @@ run_row() {
 	#                     immediate, initiator childless on; -legacy: not
 	#   -childless-init   remote childless on on both seats (RFC 6023)
 	#   -gens / -ikerekey >= 2 ADDKE child / IKE_SA rekeys
-	FB_IKE_I=""; FB_IKE_R=""; FB_POL_I=""; FB_POL_R=""; FB_DBG3=0
+	FB_IKE_I=""; FB_IKE_R=""; FB_POL_I=""; FB_POL_R=""; FB_ESP_I=""; FB_ESP_R=""; FB_DBG3=0
 	case "$_name" in
+	*-esn*)  FB_ESP_I="		ext_sequence on;"; FB_ESP_R="		ext_sequence on;" ;;
 	*-immediate-r*)      FB_POL_R="	initial_child_ke immediate;" ;;
 	*-immediate*)        FB_POL_I="	initial_child_ke immediate;" ;;
 	*-firstchild-nocl*)  FB_POL_I="	initial_child_ke childless;"; FB_DBG3=1 ;;
@@ -1557,7 +1559,45 @@ echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 	echo "responder jail ESP tunnel SAs: $(grep -cE 'esp mode=tunnel' /tmp/freeb/resp-sadb.txt 2>/dev/null || true)"
 	echo "initiator jail ESP tunnel SAs: $(grep -cE 'esp mode=tunnel' /tmp/freeb/init-sadb.txt 2>/dev/null || true)"
 
-	echo "=== verdict (row $_name) ==="
+# --- ESN SAD gate (i2iinit-esn) ---
+# The negotiated ESN_YES lifts child_sa->esn -> SADB_X_SAFLAGS_ESN (0x400)
+# into the kernel SA.  FreeBSD setkey -D renders the ESP SA's sa_flags in
+# the "flags=0x%08x" field on the seq/replay line ("flags=0x00000400
+# state=mature" verified on the 15.1 guest), so the non-vacuous proof is
+# reading SADB_X_SAFLAGS_ESN from BOTH SAD dumps written above (a peer
+# that negotiated ESN_YES but installed a 32-bit SA, flags=0x0, REDs).
+case "$_name" in
+i2iinit-esn)
+	_si=$(grep -cE 'flags=0x[0-9a-f]*400' /tmp/freeb/init-sadb.txt 2>/dev/null || true)
+	_sr=$(grep -cE 'flags=0x[0-9a-f]*400' /tmp/freeb/resp-sadb.txt 2>/dev/null || true)
+	if [ "${_si:-0}" -ge 1 ] && [ "${_sr:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
+		echo "row $_name: ESN OK - SADB_X_SAFLAGS_ESN (flags=0x400) on BOTH mature SAs (init=${_si} resp=${_sr}), child up"
+	else
+		echo "FAIL row $_name: ESN gate (init_sadflags400=${_si:-0} resp_sadflags400=${_sr:-0} up=$up); need flags=0x400 on both SAD dumps"
+		up=0
+	fi
+	;;
+esac
+
+# --- ChaCha20-Poly1305 ESP ealg gate (i2iinit-esp-chacha) ---
+# The SAD must show ealg 15 (SADB_X_EALG_CHACHA20POLY1305) — "E: 15
+# <9-word 36B key>" (32B key + 4B salt) — on BOTH mature SAs.  A child
+# that silently fell back to GCM (E: 19/20) would PASS the generic
+# child-up gate for the wrong reason; this pins the actual ealg.
+case "$_name" in
+i2iinit-esp-chacha)
+	_ci=$(grep -cE 'E: 15 ' /tmp/freeb/init-sadb.txt 2>/dev/null || true)
+	_cr=$(grep -cE 'E: 15 ' /tmp/freeb/resp-sadb.txt 2>/dev/null || true)
+	if [ "${_ci:-0}" -ge 1 ] && [ "${_cr:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
+		echo "row $_name: ChaCha OK - SADB ealg 15 (SADB_X_EALG_CHACHA20POLY1305) on BOTH mature SAs (init=${_ci} resp=${_cr}), child up"
+	else
+		echo "FAIL row $_name: esp-chacha ealg gate (init_ealg15=${_ci:-0} resp_ealg15=${_cr:-0} up=$up); need E: 15 on both SAD dumps"
+		up=0
+	fi
+	;;
+esac
+
+echo "=== verdict (row $_name) ==="
 	# SA count is INFORMATIONAL ONLY (a healthy bidir tunnel can show 1
 	# esp line per jail).  The authoritative gate is the data-plane ping /
 	# NEG refusal, never the SA count.
@@ -1889,6 +1929,20 @@ case "$ROW" in
 		run i2iinit-esp-gcm256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a ""
 	run i2iinit-esp-gcm192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 192" non_auth 300 300 0 a ""
 	run i2iinit-esp-gcm128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 128" non_auth 300 300 0 a ""
+	# --- ESN (RFC 4303 §2.2.1 / RFC 7296 §3.3.2): ext_sequence on in the
+	#     ipsec block on BOTH seats; the negotiated ESN_YES lifts
+	#     child_sa->esn -> SADB_X_SAFLAGS_ESN (0x400) into the kernel SA.
+	#     Linux leg proven; FreeBSD leg proven on the 15.1 vnet guest
+	#     (setkey -D renders the ESN SA as 'flags=0x00000400 state=mature',
+	#     asserted by the i2iinit-esn SAD-shape gate below).
+	run i2iinit-esn         inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 300 300 0 a ""
+	# --- ChaCha20-Poly1305 ESP (RFC 7634): lib/rc_type.c maps
+	#     RCT_ALG_CHACHA20_POLY1305 -> SADB_X_EALG_CHACHA20POLY1305 (15)
+	#     on headers that define it.  Whether the FreeBSD kernel
+	#     esp_xformsw registers the transform decides a vs x: if it does
+	#     not, findsupportedalg() refuses cleanly and the row reds (flip
+	#     to x with the 'not supported by kernel' latch -- do not guess).
+	run i2iinit-esp-chacha  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 chacha20_poly1305 non_auth 300 300 0 a ""
 	run i2iinit-esp-gcm8   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm8 non_auth 300 300 0 x ""
 	run i2iinit-esp-gcm12  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm12 non_auth 300 300 0 x ""
 	# esp-3des is EXPECTED-REJECT on FreeBSD: 3DES-CBC was removed from
@@ -2051,6 +2105,8 @@ case "$ROW" in
 	i2iinit-esp-gcm256) run_row i2iinit-esp-gcm256 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a "" ;;
 	i2iinit-esp-gcm192) run_row i2iinit-esp-gcm192 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 192" non_auth 300 300 0 a "" ;;
 	i2iinit-esp-gcm128) run_row i2iinit-esp-gcm128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 128" non_auth 300 300 0 a "" ;;
+	i2iinit-esn)        run_row i2iinit-esn        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 300 300 0 a "" ;;
+	i2iinit-esp-chacha) run_row i2iinit-esp-chacha inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 chacha20_poly1305 non_auth 300 300 0 a "" ;;
 	i2iinit-esp-gcm8)   run_row i2iinit-esp-gcm8   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm8 non_auth 300 300 0 x "" ;;
 	i2iinit-esp-gcm12)  run_row i2iinit-esp-gcm12  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm12 non_auth 300 300 0 x "" ;;
 	i2iinit-esp-3des)   run_row i2iinit-esp-3des   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 3des_cbc hmac_sha2_256 300 300 0 x "" ;;
