@@ -736,6 +736,10 @@ EOF
 run_row() {
 	_name=$1 _fam=$2 _hi=$3 _hr=$4 _ienc=$5 _iprf=$6 _idh=$7 \
 	_eesp=$8 _eaut=$9 _lfti=${10} _lftr=${11} _rekey=${12} _neg=${13} _str=${14}
+	# Per-row gates (pfsrekey/ADDKE/ESN/ChaCha/nsawarn) set gate_why when they
+	# clear up; a STALE gate_why from a prior row must never be reprinted by a
+	# later mature-SA failure that does not set its own.  Reset it here.
+	gate_why=""
 	# i2io4* rows set s6r/s6i as v6 selector overrides; reset per row so a
 	# v4 row dispatched after an i2io4 row never inherits stale v6 selectors.
 	s6r=""; s6i=""
@@ -977,9 +981,10 @@ run_row() {
 		*-ppk*)
 			# RFC 8784 fail-closed (no SHA-256 test default, 2026-10-06):
 			# the iked seat MUST have $SYSCONFDIR/ppk/<ppk_id>.bin.
-			# SYSCONFDIR here is ${PREFIX}/etc/racoon2 (configure.ac
-			# racoon_sysconfdir = $prefix/etc/racoon2), so the bin file
-			# must land under .../etc/racoon2/ppk, NOT $PREFIX/etc/ppk.
+			# SYSCONFDIR is ${PREFIX}/etc/racoon2: acinclude.m4 rewrites the
+			# default sysconfdir from ${prefix}/etc to ${prefix}/etc/racoon2
+			# (and iked/Makefile.am passes $(sysconfdir) as -DSYSCONFDIR), so
+			# the bin file must land under .../etc/racoon2/ppk, NOT $PREFIX/etc/ppk.
 			# charonr uses mandatory so charon must apply the PPK.
 			# NOTE: the bytes are written with OCTAL escapes (\ooo), NOT
 			# \xHH.  FreeBSD /bin/sh printf does not expand \xHH (POSIX
@@ -994,7 +999,8 @@ run_row() {
 			  printf '\036\225\106\314\207\130\345\364\277\037\135\064\166\367\233\376\246\014\173\324\202\052\062\005\216\043\317\026\020\176\357\013' \
 				> "$_ppkdir/rfc8784-mat.bin" )
 			[ "$(od -An -tx1 "$_ppkdir/rfc8784-mat.bin" | tr -d ' \n')" = "1e9546cc8758e5f4bf1f5d3476f79bfea60c7bd4822a32058e23cf16107eef0b" ] || {
-				echo "FAIL: could not provision $_ppkdir/rfc8784-mat.bin"; return 1; }
+				echo "FAIL freebsd-vnet $_name (PPK provisioning: could not create $_ppkdir/rfc8784-mat.bin with the exact secret bytes)"
+				return 1; }
 			_ppk_lines="		use_ppk on;\n		ppk_mandatory off;\n		ppk_id \"rfc8784-mat\";"
 			if [ "$FB_CH" = i ]; then FB_IKE_R=$(printf '%b' "$_ppk_lines")
 			else FB_IKE_I=$(printf '%b' "$_ppk_lines"); FB_PPK_MANDATORY=1; fi ;;
@@ -1578,8 +1584,12 @@ echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 case "$_name" in
 i2iinit-esn)
 	# Match the SA's flags field carrying SADB_X_SAFLAGS_ESN (0x400).
-	# grep -cE 'flags=0x[0-9a-f]*400' hits 0x00000400; the absent *
-	# forces a suffix match so it cannot false-pass a 0x0 (no-ESN) SA.
+	# The [0-9a-f]* is present so 0x00000400 matches; it is deliberately
+	# NOT anchored to the full field, so this is a suffix-style hit on the
+	# flags= hex.  Real 15.1/16.0 dumps render flags=0x00000400 (8 hex
+	# digits); the suffix match cannot false-pass a 0x0 (no-ESN) SA and
+	# would false-pass a hypothetical flags=0x00004000, which no kernel
+	# prints today.  Acceptable as a scalar gate.
 	_si=$(grep -cE 'flags=0x[0-9a-f]*400' /tmp/freeb/init-sadb.txt 2>/dev/null || true)
 	_sr=$(grep -cE 'flags=0x[0-9a-f]*400' /tmp/freeb/resp-sadb.txt 2>/dev/null || true)
 	if [ "${_si:-0}" -ge 1 ] && [ "${_sr:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
@@ -1936,8 +1946,10 @@ run() {
 # Matrix rows.  Tokens match the Linux kinds verbatim so pfkey/xfrm parity
 # is asserted on identical config.  REKEY rows: initiator lifetime short.
 # Still Linux-only (not replicated): netem drop/dup, mobike/cookie2,
-# xfrm-only cells, DPD silence, NSA-warn, and charon RSA/CFG seats.
-# (ESN and ChaCha-ESP ARE now replicated: i2iinit-esn / i2iinit-esp-chacha.)
+# xfrm-only cells, DPD silence, and charon RSA/CFG seats.
+# (ESN, ChaCha-ESP, PPK charon, and NSA/CNSSP-15 nsawarn ARE now
+# replicated: i2iinit-esn / i2iinit-esp-chacha / i2iinit-ppk-charon /
+# i2i-nsawarn*.)
 # FreeBSD now mirrors Linux gens/ikerekey/firstchild/clresp/ppk charon rows.
 case "$ROW" in
 	all)
