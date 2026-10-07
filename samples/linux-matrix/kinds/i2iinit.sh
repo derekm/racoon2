@@ -47,6 +47,7 @@ kind_i2iinit() {
 	I2I_CLASSICAL=0                 # proposal-shape rows without ADDKE round
 	I2I_PPK=0                       # RFC 8784 PPK on charon seat
 	I2I_OFFER_SIG_HASH="on"         # RFC 7427 16431 (see -rsa-sha1- arm)
+	I2I_OPENSSL_ENV=                # OPENSSL_CONF for -rsa-sha1- (SHA-1 policy)
 	I2I_PERPETUAL=0
 	I2I_ESN=0
 	I2I_PFSREKEY=0
@@ -348,6 +349,35 @@ esac
 		I2I_RSA=1
 		;;
 	esac
+	# F6 rsa-sha1 interop: pin offer_sig_hash_algorithms off BEFORE the
+	# iked confs are emitted (this case runs before conf gen) so a modern
+	# strongSwan peer is forced to legacy AUTH_RSA method 1 / SHA-1 instead
+	# of preferring RFC 7427 method 14 when 16431 is offered.
+	case "$name" in
+	*-rsa-sha1-*)
+		I2I_OFFER_SIG_HASH="off"
+		# Fedora/RHEL OpenSSL crypto policy blocks SHA-1 signatures
+		# (rh-allow-sha1-signatures = no), which would make it IMPOSSIBLE
+		# for either charon or iked to emit the legacy method-1 SHA-1 AUTH
+		# this row asserts — 'Error setting context: invalid digest' at
+		# sign.  Scope an OPENSSL_CONF that re-enables SHA-1 signatures
+		# (the documented rh override) for the charon and iked processes
+		# of THIS row only, so the F6 path is exercised for real.
+		I2I_OPENSSL_SHA1_CONF="$D/openssl-sha1.conf"
+		mkdir -p "$D"
+		cat > "$I2I_OPENSSL_SHA1_CONF" <<'EOC'
+openssl_conf = openssl_init
+
+[openssl_init]
+alg_section = evp
+
+[evp]
+rh-allow-sha1-signatures = yes
+EOC
+		chmod 644 "$I2I_OPENSSL_SHA1_CONF" 2>/dev/null || true
+		I2I_OPENSSL_ENV="OPENSSL_CONF=$I2I_OPENSSL_SHA1_CONF"
+		;;
+	esac
 	# RFC 7296 s2.19 / review #2 CFG coverage: -cfg rows request a
 	# configuration payload in IKE_AUTH (initiator request {
 	# application_version; } -> CFG_REQUEST) and the responder replies
@@ -614,6 +644,7 @@ else
 	RSPMD=$!
 	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
+	    ${I2I_OPENSSL_ENV:-} \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D "$I2I_DBG" -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 fi
 
@@ -624,6 +655,7 @@ else
 	ISPMD=$!
 	i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK="$SOCK_I" RACOON2_RESUME_DIR="$PRIVRES_I" \
+	    ${I2I_OPENSSL_ENV:-} \
 	    "$SBIN/iked" -F -f "$C/initiator.conf" -D "$I2I_DBG" -l "$D/init-iked.log" ) >"$D/init-iked.out" 2>&1 &
 fi
 
@@ -1219,22 +1251,22 @@ fi
 		sig_want='RSA_EMSA_PKCS1_SHA2_512'
 		sig_iked='RFC 7427 signature verified: RSASSA-PKCS1-v1_5 SHA512' ;;
 	*-rsa-sha1-*)
-		# F6: legacy AUTH_RSA (method 1, SHA-1).  Charon logs
-		# RSA_EMSA_PKCS1_NULL or RSA_EMSA_PKCS1_SHA1; iked must verify
-		# method 1 via DigestInfo (not the SHA256-only path).
-		# iked defaults to OFFERING 16431 (RFC 7427), which a modern
-		# strongSwan peer prefers over legacy method 1 — so it signs
-		# method 14 SHA-256 and this gate can never see method 1.  Pin
-		# offer_sig_hash_algorithms off on the iked seats so charon is
-		# forced to the legacy AUTH_RSA method-1 path this row asserts.
-		I2I_OFFER_SIG_HASH="off"
+		# F6 gate: requires the peer (charon) to have produced a legacy
+		# AUTH_RSA method-1 SHA-1 signature and iked to have VERIFIED it
+		# via DigestInfo (not the SHA-256-only path).  The pre-emission
+		# arm above (I2I_OFFER_SIG_HASH off + OPENSSL_CONF) makes a modern
+		# strongSwan peer sign method 1, so this gate can actually see it.
 		sig_want='RSA_EMSA_PKCS1_(NULL|SHA1)'
+		# strongSwan logs the legacy AUTH_RSA sign as its own scheme name
+		# ('RSA signature'), not the OpenSSL 'RSA_EMSA_PKCS1_SHA1' string.
+		sig_charon='RSA signature'
 		sig_iked='AUTH method 1 signature verified: RSASSA-PKCS1-v1_5 SHA1'
 		sig_method='auth method 1' ;;
 	esac
 	if [ -n "$sig_want" ]; then
 		sig_method=${sig_method:-auth method 14}
-		if grep -qE "authentication of .* \(myself\) with $sig_want successful" \
+		sig_charon=${sig_charon:-$sig_want}
+		if grep -qE "authentication of .* \\(myself\\) with $sig_charon successful" \
 		       "$D/charon-init.log" 2>/dev/null &&
 		   grep -qF "$sig_method" "$D/resp-iked.log" 2>/dev/null &&
 		   grep -qF "$sig_iked" "$D/resp-iked.log" 2>/dev/null; then

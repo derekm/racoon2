@@ -81,7 +81,8 @@ i2i_charon_run() {
 	_ns=$1 _log=$2
 	_sb=""
 	command -v stdbuf >/dev/null 2>&1 && _sb="stdbuf -oL -eL"
-	( ip netns exec "$_ns" $_sb "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
+	( ip netns exec "$_ns" $_sb env ${I2I_OPENSSL_ENV:-} \
+	    "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
 	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) >"$_log" 2>&1 &
 }
 
@@ -231,9 +232,17 @@ i2i_peer_i_conf() {
 		case "$_name" in
 		*-rsa-pss-*)    _lauth='ike:rsa/pss-sha256' ;;
 		*-rsa-sha512-*) _lauth='ike:pubkey-sha512' ;;
-		*-rsa-sha1-*)   _lauth='rsa' ;;
+		*-rsa-sha1-*)
+			# F6: both charon and the iked peer drive the legacy AUTH_RSA
+			# method-1 SHA-1 path (the iked seats set
+			# offer_sig_hash_algorithms off, so iked also signs method 1).
+			# The remote constraint must be the SAME legacy scheme, not the
+			# RFC 7427 SHA-2 set — charon would reject iked's method-1
+			# signature against ike:pubkey-sha256-sha384-sha512.
+			_lauth='rsa' ; _rauth='rsa' ;;
 		*)              _lauth='ike:pubkey-sha256-sha384-sha512' ;;
 		esac
+		_rauth=${_rauth:-ike:pubkey-sha256-sha384-sha512}
 		_auth_local='		local {
 			id = '"$I2I_CHARON_ID"'
 			auth = '"$_lauth"'
@@ -241,7 +250,7 @@ i2i_peer_i_conf() {
 		}
 		remote {
 			id = racoon2-matrix
-			auth = ike:pubkey-sha256-sha384-sha512
+			auth = '"$_rauth"'
 			pubkeys = "'"$_C"'/pub-r.pem"
 		}'
 		_pskhex=""
