@@ -244,6 +244,8 @@ rct2pfk_enctype(int type)
 	case RCT_ALG_TWOFISH_CBC:
 		return SADB_X_EALG_TWOFISHCBC;
 	case RCT_ALG_AES_CCM:
+	case RCT_ALG_AES_CCM8:
+	case RCT_ALG_AES_CCM16:
 		/* No pfkey id on this tree's headers (FreeBSD/NetBSD have no
 		 * AES-CCM ESP ealg even defined).  Return 0 so
 		 * rcpfk_supported_enc says unsupported instead of errx
@@ -430,6 +432,10 @@ rct2str(int type)
 		return "AES-GCM-12";
 	case RCT_ALG_AES_CCM:
 		return "AES-CCM-12";
+	case RCT_ALG_AES_CCM8:
+		return "AES-CCM-8";
+	case RCT_ALG_AES_CCM16:
+		return "AES-CCM-16";
 	case RCT_ALG_CHACHA20_POLY1305:
 		return "CHACHA20-POLY1305";
 	case RCT_ALG_TWOFISH_CBC:

@@ -179,8 +179,12 @@ extern rc_vchar_t *eay_chacha20poly1305_ike_decrypt (rc_vchar_t *, rc_vchar_t *,
  * offering 8 or 16; a failing cell is not a permanent library fact. */
 extern rc_vchar_t *eay_aes_ccm_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, int);
 extern rc_vchar_t *eay_aes_ccm_ike_decrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, int);
+extern rc_vchar_t *eay_aes_ccm8_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+extern rc_vchar_t *eay_aes_ccm8_ike_decrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 extern rc_vchar_t *eay_aes_ccm12_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 extern rc_vchar_t *eay_aes_ccm12_ike_decrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+extern rc_vchar_t *eay_aes_ccm16_ike_encrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+extern rc_vchar_t *eay_aes_ccm16_ike_decrypt (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 
 /* misc */
 extern int eay_null_keylen (int);

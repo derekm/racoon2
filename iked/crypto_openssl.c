@@ -3206,12 +3206,31 @@ eay_aes_ccm_ike_decrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
 }
 
 /*
- * ICV-12 wrappers for the encryptor_method 4-arg AEAD dispatch
- * (RFC 4309 transform 15).  OpenSSL 3.5.8 probe 2026-10-06 printed
- * M=12 P and M=8/16 F with the RFC 3610 ctrl order.  Do not treat
- * that as a permanent property of the library; re-probe on an
- * OpenSSL change before wiring the other tag lengths.
+ * ICV wrappers for the encryptor_method 4-arg AEAD dispatch
+ * (RFC 4309 transforms 14/15/16).  All three tag lengths round-trip on
+ * box OpenSSL 3.5.8 (probe 2026-10-07: AES-128/192/256 x M=8/12/16 all
+ * P/P with the RFC 3610 ctrl order below).  The earlier "M=8/16 F" was a
+ * probe-side ctrl-order bug (SET_L/IVLEN/TAG before the second init, and
+ * decrypt received-tag set before the ciphertext update), not a library
+ * property.
  */
+rc_vchar_t *
+eay_aes_ccm8_ike_encrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			  rc_vchar_t *aad)
+{
+	/* key is AES key || 3-octet salt; RFC 4309 19/27/35. */
+	return eay_aes_ccm_ike_encrypt1(data, key, iv, aad,
+					AES_CCM_SALT_SIZE, AES_CCM_ICV_SIZE_8);
+}
+
+rc_vchar_t *
+eay_aes_ccm8_ike_decrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			  rc_vchar_t *aad)
+{
+	return eay_aes_ccm_ike_decrypt1(data, key, iv, aad,
+					AES_CCM_SALT_SIZE, AES_CCM_ICV_SIZE_8);
+}
+
 rc_vchar_t *
 eay_aes_ccm12_ike_encrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
 			  rc_vchar_t *aad)
@@ -3227,6 +3246,23 @@ eay_aes_ccm12_ike_decrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
 {
 	return eay_aes_ccm_ike_decrypt1(data, key, iv, aad,
 					AES_CCM_SALT_SIZE, AES_CCM_ICV_SIZE_12);
+}
+
+rc_vchar_t *
+eay_aes_ccm16_ike_encrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			  rc_vchar_t *aad)
+{
+	/* key is AES key || 3-octet salt; RFC 4309 19/27/35. */
+	return eay_aes_ccm_ike_encrypt1(data, key, iv, aad,
+					AES_CCM_SALT_SIZE, AES_CCM_ICV_SIZE_16);
+}
+
+rc_vchar_t *
+eay_aes_ccm16_ike_decrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv,
+			  rc_vchar_t *aad)
+{
+	return eay_aes_ccm_ike_decrypt1(data, key, iv, aad,
+					AES_CCM_SALT_SIZE, AES_CCM_ICV_SIZE_16);
 }
 
 /* for ipsec part */

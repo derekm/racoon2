@@ -3086,12 +3086,22 @@ static struct algdef ikev2_transf_encr[] = {
 	ALG_ENC(RCT_ALG_AES_GCM8,	IKEV2TRANSF_ENCR_AES_GCM_ICV8, 16, 4, PROTO_VARIABLE_KEYLEN, 0),
 	ALG_ENC(RCT_ALG_AES_GCM8,	IKEV2TRANSF_ENCR_AES_GCM_ICV8, 24, 4, PROTO_VARIABLE_KEYLEN, 0),
 	ALG_ENC(RCT_ALG_AES_GCM8,	IKEV2TRANSF_ENCR_AES_GCM_ICV8, 32, 4, PROTO_VARIABLE_KEYLEN, 0),
-	/* AES-CCM ICV12 only: OpenSSL 3.5.8 probe 2026-10-06 printed
-	 * L4_M12=P and L4_M8/M16=F.  Do not offer 8/16 until a re-probe
-	 * prints P.  nonce_len 3 is the RFC 4309 salt. */
+	/* AES-CCM all three RFC 4309 tag lengths.  Probe 2026-10-07 on box
+	 * OpenSSL 3.5.8: AES-128/192/256 x M=8/12/16 ALL round-trip P/P with
+	 * the RFC 3610 ctrl order (SET_L/IVLEN/TAG before the second init;
+	 * decrypt received-tag before the ciphertext update).  The earlier
+	 * "M=8/16 F" was a probe-side ctrl-order bug, not a library gap.
+	 * aes_ccm=ICV-12 (transform 15), aes_ccm8=14, aes_ccm16=16.
+	 * nonce_len 3 is the RFC 4309 salt; key = AES key || 3-octet salt. */
+	ALG_ENC(RCT_ALG_AES_CCM8,	IKEV2TRANSF_ENCR_AES_CCM_8, 16, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm8),
+	ALG_ENC(RCT_ALG_AES_CCM8,	IKEV2TRANSF_ENCR_AES_CCM_8, 24, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm8),
+	ALG_ENC(RCT_ALG_AES_CCM8,	IKEV2TRANSF_ENCR_AES_CCM_8, 32, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm8),
 	ALG_ENC(RCT_ALG_AES_CCM,	IKEV2TRANSF_ENCR_AES_CCM_12, 16, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm12),
 	ALG_ENC(RCT_ALG_AES_CCM,	IKEV2TRANSF_ENCR_AES_CCM_12, 24, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm12),
 	ALG_ENC(RCT_ALG_AES_CCM,	IKEV2TRANSF_ENCR_AES_CCM_12, 32, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm12),
+	ALG_ENC(RCT_ALG_AES_CCM16,	IKEV2TRANSF_ENCR_AES_CCM_16, 16, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm16),
+	ALG_ENC(RCT_ALG_AES_CCM16,	IKEV2TRANSF_ENCR_AES_CCM_16, 24, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm16),
+	ALG_ENC(RCT_ALG_AES_CCM16,	IKEV2TRANSF_ENCR_AES_CCM_16, 32, 3, PROTO_VARIABLE_KEYLEN, &encr_aesccm16),
 	/* ChaCha20-Poly1305 (RFC 7634).  RFC 8439 §2.8.2 tag matched on
 	 * OpenSSL 3.5.8.  ESP is positive on BOTH legs: Linux XFRM via the
 	 * rfc7539esp(chacha20,poly1305) template (lib/if_xfrm.c), FreeBSD

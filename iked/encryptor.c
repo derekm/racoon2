@@ -151,9 +151,21 @@ struct encryptor_method encr_chacha20poly1305 = {
 	eay_chacha20poly1305_ike_decrypt,
 };
 
+/* AES-CCM ICV-8 (RFC 5282 IKE, RFC 4309 transform 14).  Round-trips on
+ * box OpenSSL 3.5.8 with the RFC 3610 ctrl order (probe 2026-10-07). */
+struct encryptor_method encr_aesccm8 = {
+	"aes-ccm-icv8",
+	1, AES_CCM_IV_SIZE, 16 + AES_CCM_SALT_SIZE, /* 128-bit base row; 192/256 handled by keylen rows */
+	eay_aes_weakkey,
+	aead_need_aad,
+	aead_need_aad,
+	AES_CCM_ICV_SIZE_8,
+	eay_aes_ccm8_ike_encrypt,
+	eay_aes_ccm8_ike_decrypt,
+};
+
 /* AES-CCM ICV-12 (RFC 5282 IKE, RFC 4309 transform 15).  OpenSSL
- * 3.5.8 probe 2026-10-06: M=12 P, M=8/16 F.  Not offered for IKE
- * until a re-probe prints P. */
+ * 3.5.8 probe 2026-10-07: M=12 P (all 3 key lengths). */
 struct encryptor_method encr_aesccm12 = {
 	"aes-ccm-icv12",
 	1, AES_CCM_IV_SIZE, 16 + AES_CCM_SALT_SIZE, /* 128-bit base row; 192/256 handled by keylen rows */
@@ -163,6 +175,19 @@ struct encryptor_method encr_aesccm12 = {
 	AES_CCM_ICV_SIZE_12,
 	eay_aes_ccm12_ike_encrypt,
 	eay_aes_ccm12_ike_decrypt,
+};
+
+/* AES-CCM ICV-16 (RFC 5282 IKE, RFC 4309 transform 16).  Round-trips on
+ * box OpenSSL 3.5.8 with the RFC 3610 ctrl order (probe 2026-10-07). */
+struct encryptor_method encr_aesccm16 = {
+	"aes-ccm-icv16",
+	1, AES_CCM_IV_SIZE, 16 + AES_CCM_SALT_SIZE, /* 128-bit base row; 192/256 handled by keylen rows */
+	eay_aes_weakkey,
+	aead_need_aad,
+	aead_need_aad,
+	AES_CCM_ICV_SIZE_16,
+	eay_aes_ccm16_ike_encrypt,
+	eay_aes_ccm16_ike_decrypt,
 };
 
 static rc_vchar_t *null_encrypt_decrypt(rc_vchar_t *, rc_vchar_t *,
