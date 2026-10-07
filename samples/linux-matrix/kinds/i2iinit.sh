@@ -79,6 +79,9 @@ kind_i2iinit() {
 	*-ike-gcm256*) I2I_IKE_ENC="aes_gcm, 256" ;;
 	*-ike-gcm192*) I2I_IKE_ENC="aes_gcm, 192" ;;
 	*-ike-gcm128*) I2I_IKE_ENC="aes_gcm, 128" ;;
+	*-ike-ccm8*)   I2I_IKE_ENC="aes_ccm8" ;;
+	*-ike-ccm16*)  I2I_IKE_ENC="aes_ccm16" ;;
+	*-ike-ccm*)    I2I_IKE_ENC="aes_ccm" ;;
 	*-ike-3des*)   I2I_IKE_ENC="3des_cbc" ;;
 esac
 	case "$name" in
@@ -180,6 +183,9 @@ esac
 	# arms override I2I_ESP unconditionally so a '-dh384-pfsrekey' name
 	# lands on ecp384, not the -pfsrekey default ecp256.
 	case "$name" in
+	*-ike-ccm8-charon*)   I2I_PROPOSAL="aes128ccm8-prfsha256-$I2I_DH_GROUP-ke1_mlkem768" ;;
+	*-ike-ccm16-charon*)  I2I_PROPOSAL="aes128ccm16-prfsha256-$I2I_DH_GROUP-ke1_mlkem768" ;;
+	*-ike-ccm-charon*)    I2I_PROPOSAL="aes128ccm12-prfsha256-$I2I_DH_GROUP-ke1_mlkem768" ;;
 	*-dh384*) I2I_DH_GROUP=ecp384; I2I_PROPOSAL=aes256gcm16-prfsha256-ecp384-ke1_mlkem768
 	          I2I_ESP=aes128gcm16-ecp384 ;;
 	*-dh521*) I2I_DH_GROUP=ecp521; I2I_PROPOSAL=aes256gcm16-prfsha256-ecp521-ke1_mlkem768

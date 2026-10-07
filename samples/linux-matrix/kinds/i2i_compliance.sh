@@ -402,7 +402,9 @@ i2i_compliance() {
 	if [ "$_pei" = charon ] || [ "$_per" = charon ]; then
 		for _cl in "$_D/charon-resp.log" "$_D/charon-init.log"; do
 			[ -f "$_cl" ] || continue
-			_n=$(grep -oE "selected proposal: IKE:AES_GCM_16_[0-9]+" "$_cl" | grep -oE "[0-9]+$" | head -1)
+			# charon proposal grammar: AES_GCM_16_128 or AES_CCM_{8,12,16}_128;
+			# the CCM rows negotiate the bare 128-bit default so _n=128.
+			_n=$(grep -oE "selected proposal: IKE:AES_(GCM_16|CCM_(8|12|16))_[0-9]+" "$_cl" | grep -oE "[0-9]+$" | head -1)
 			[ -n "$_n" ] && _ikesz=$_n
 		done
 	else
