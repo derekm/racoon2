@@ -193,12 +193,16 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate || [ -n "$n
 	export R2_WORKERS
 	log "=== $name ($kind) workers=${R2_WORKERS:-live} ==="
 	R2_CASE_FAIL=0
+	R2_CASE_SKIP=0
 	if kind_$kind "$name"; then
 		st=0
 	else
 		st=$?
 	fi
-	if [ "$R2_CASE_FAIL" != 0 ] || [ "$st" -ne 0 ]; then
+	if [ "$R2_CASE_SKIP" -eq 1 ]; then
+		log "SKIP $name (kind-declared: no env to run it)"
+		skip=$((skip + 1))
+	elif [ "$R2_CASE_FAIL" != 0 ] || [ "$st" -ne 0 ]; then
 		log "FAIL $name"
 		fail=$((fail + 1))
 	else

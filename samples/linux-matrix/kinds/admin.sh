@@ -9,6 +9,15 @@ kind_admin() {
 	# restore), and the very first row of a shard can race the service
 	# coming up.  Bring the unit up and wait, mirroring iked_restore().
 	if ! iked_listening; then
+		# No systemd running (e.g. the Fedora/Ubuntu CI containers, which
+		# ship no iked.service): there is no live iked to test, so the
+		# admin row cannot run here - SKIP, it is not an iked failure.
+		if ! systemctl is-system-running >/dev/null 2>&1 && \
+		   [ ! -d /run/systemd/system ]; then
+			log "SKIP $name (no systemd / no live iked unit to admin-test)"
+			R2_CASE_SKIP=1
+			return 0
+		fi
 		systemctl start "$IKED_UNIT" 2>/dev/null || true
 		i=0
 		while ! iked_listening; do
