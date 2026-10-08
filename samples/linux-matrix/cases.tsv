@@ -14,26 +14,26 @@ evlooptest	unit	pass	-	iked/evlooptest
 ndcppkats	unit	pass	-	NDcPP v3.0e crypto KATs (A9 DH-x len, A10 nonce, B1 keygen, B3 zeroize, B4 AES-CBC/GCM, B5 ECDSA, B6 DRBG) against the daemon's OpenSSL wrappers; emits one 'KAT <cell>: PASS/FAIL <evidence>' line per cell for the compliance report
 workerstest	unit	pass	-	iked/workerstest (inline, 1, 10)
 admin-empty	admin	pass	-	show-sa empty; esp ENOTSUP; vpn-connect ENOENT
-ikev2-netns	ikev2	pass	0	strongSwan netns; inline drain (RACOON2_CRYPTO_WORKERS=0)
-ikev2-netns-w1	ikev2	pass	1	strongSwan netns; pool N=1
-ikev2-netns-s384	ikev2	pass	0	RFC 4868: ESP AES-CBC + HMAC-SHA2-384, ICV 192 (responder SAD)
-ikev2-netns-s512	ikev2	pass	0	RFC 4868: ESP AES-CBC + HMAC-SHA2-512, ICV 256 (responder SAD)
-ikev2-netns-g8	ikev2	pass	0	RFC 4106: AES-GCM 8-octet ICV (aead icv 8 in SAD)
-ikev2-netns-g12	ikev2	pass	0	RFC 4106: AES-GCM 12-octet ICV (aead icv 12 in SAD)
-ikev2-netns-frag	ikev2	pass	0	RFC 7383 knob on (fragmentation=yes); IKE_SA+SAD — not a reassembly proof (PSK AUTH typically <576)
-ikev2-netns-mobike	ikev2	pass	0	RFC 4555 MOBIKE_SUPPORTED knob (charon mobike=yes); not a roam proof
-ikev2-netns-cookie2	ikev2	pass	0	RFC 4555 NO_ADDITIONAL_ADDRESSES processed (charon mobike=yes; COOKIE2 echo if present)
-ikev2-netns-dh19	ikev2	pass	0	ECP256 DH group 19: KEi 19 accepted and bound to selected proposal DH (no KEYMAT divergence)
-ikev2-netns-childrekey	ikev2	pass	0	charon-initiated CHILD rekey at 30s keylife (PFS-19, no CP): SPI replaced, IKE stays. Not racoon2-as-responder msgid mint, not CP TSr/lease, not PFS-less.
-ikev2-netns-r2rekey	ikev2	pass	0	racoon2-initiated CHILD rekey as original responder (30s ipsec lifetime, charon rekey=no). Gate: log initiating CREATE_CHILD_SA rekey + SPI change.
-ikev2-netns-resume-dump	ikev2	pass	0	session resume dump SR2R under /var/lib/racoon2/resume after IKE_AUTH
-ikev2-netns-qcd	ikev2	pass	0	RFC 6290 QCD_TOKEN sent in IKE_AUTH (maker)
-ikev2-netns-ikesa-rekey	ikev2	pass	0	RFC 7296 §2.8 IKE_SA rekey (charon ikelifetime=30s)
+ikev2-netns	ikev2	pass	0	strongSwan netns; inline drain (RACOON2_CRYPTO_WORKERS=0)	addke
+ikev2-netns-w1	ikev2	pass	1	strongSwan netns; pool N=1	addke
+ikev2-netns-s384	ikev2	pass	0	RFC 4868: ESP AES-CBC + HMAC-SHA2-384, ICV 192 (responder SAD)	addke
+ikev2-netns-s512	ikev2	pass	0	RFC 4868: ESP AES-CBC + HMAC-SHA2-512, ICV 256 (responder SAD)	addke
+ikev2-netns-g8	ikev2	pass	0	RFC 4106: AES-GCM 8-octet ICV (aead icv 8 in SAD)	addke
+ikev2-netns-g12	ikev2	pass	0	RFC 4106: AES-GCM 12-octet ICV (aead icv 12 in SAD)	addke
+ikev2-netns-frag	ikev2	pass	0	RFC 7383 knob on (fragmentation=yes); IKE_SA+SAD — not a reassembly proof (PSK AUTH typically <576)	addke
+ikev2-netns-mobike	ikev2	pass	0	RFC 4555 MOBIKE_SUPPORTED knob (charon mobike=yes); not a roam proof	addke
+ikev2-netns-cookie2	ikev2	pass	0	RFC 4555 NO_ADDITIONAL_ADDRESSES processed (charon mobike=yes; COOKIE2 echo if present)	addke
+ikev2-netns-dh19	ikev2	pass	0	ECP256 DH group 19: KEi 19 accepted and bound to selected proposal DH (no KEYMAT divergence)	addke
+ikev2-netns-childrekey	ikev2	pass	0	charon-initiated CHILD rekey at 30s keylife (PFS-19, no CP): SPI replaced, IKE stays. Not racoon2-as-responder msgid mint, not CP TSr/lease, not PFS-less.	addke
+ikev2-netns-r2rekey	ikev2	pass	0	racoon2-initiated CHILD rekey as original responder (30s ipsec lifetime, charon rekey=no). Gate: log initiating CREATE_CHILD_SA rekey + SPI change.	addke
+ikev2-netns-resume-dump	ikev2	pass	0	session resume dump SR2R under /var/lib/racoon2/resume after IKE_AUTH	addke
+ikev2-netns-qcd	ikev2	pass	0	RFC 6290 QCD_TOKEN sent in IKE_AUTH (maker)	addke
+ikev2-netns-ikesa-rekey	ikev2	pass	0	RFC 7296 §2.8 IKE_SA rekey (charon ikelifetime=30s)	addke
 xfrm-natt-oa	unit	pass	-	RFC 3947 NAT-OA via rcpfk → XFRMA_ENCAP encap_oa (root, ip xfrm)
 i2inatt-transport	i2inatt	pass	0	G5/N4 Linux twin: NAT-T transport across iptables SNAT (initiator 10.9.0.2 -> SNAT 192.0.5.254 -> responder 192.0.5.1); esp transport SAs both netns, ICMP+TCP across NAT-T, NAT-OA carries original TSi 10.9.0.2	box
 i2inatt-transport-wild	i2inatt	pass	0	N3 RFC 7296 s2.23.1: same NAT topology with responder wildcard SPD 0.0.0.0/0; asserts substitute-before-lookup ('substituted TSi with 192.0.5.254') + N4 NAT-OA + ICMP+TCP	box
 xfrm-tmpl-family	unit	pass	-	IP_ANY mixed-family tmpl coerce (v4 local + :: → proto esp, no c0a8:444f)
-ikev1-strongswan	ikev1	pass	0	IKEv1 netns vs ikev1_nat.conf (IP IDs, whole-file PSK, hmac-sha1); not a live NAT-OA peer	
+ikev1-strongswan	ikev1	pass	0	IKEv1 netns vs ikev1_nat.conf (IP IDs, whole-file PSK, hmac-sha1); not a live NAT-OA peer	addke
 i2ike-addke	i2ike	pass	0	PQC: iked<->iked, mlkem768. Initial IKE_AUTH child is plain (type-6 is CREATE_CHILD-only); the 60s child-SA rekey offers type-06 ADDKE + IKE_FOLLOWUP_KE + ML-KEM keymat, new SPI both netns; kind asserts type-06 offer + the same ML-KEM keymat hash on BOTH sides + no followup abort (not just a new SPI). Also runs the NDcPP v3.0e CPL compliance report (A1-A14/B-cells) against the row's own artifacts; a wired-cell FAIL fails the case	addke
 i2ike-addke-512	i2ike	pass	0	PQC ADDKE round ML-KEM-512 (transform id 35): same i2ike kind as i2ike-addke but the row-name suffix selects mlkem512 (esp_addke_alg) and the type-06 gate becomes 06000023. Proves the ML-KEM-512 KEM path (ikev2_addke.c NID_ML_KEM_512, ss 32 B shared secret) end-to-end: initial child plain, 60s CREATE_CHILD rekey offers type-06 id 35 + IKE_FOLLOWUP_KE, both sides derive identical ML-KEM keymat sha256, new SPI both netns, no followup abort. iked<->iked only (box charon speaks ke1_mlkem768 only). Also runs the NDcPP v3.0e CPL compliance report; a wired-cell FAIL fails the case	addke
 i2ike-addke-1024	i2ike	pass	0	PQC ADDKE round ML-KEM-1024 (transform id 37): same i2ike kind as i2ike-addke but the row-name suffix selects mlkem1024 (esp_addke_alg) and the type-06 gate becomes 06000025. Proves the ML-KEM-1024 KEM path (ikev2_addke.c NID_ML_KEM_1024) end-to-end: initial child plain, 60s CREATE_CHILD rekey offers type-06 id 37 + IKE_FOLLOWUP_KE, both sides derive identical ML-KEM keymat sha256, new SPI both netns, no followup abort. iked<->iked only (box charon speaks ke1_mlkem768 only). Also runs the NDcPP v3.0e CPL compliance report; a wired-cell FAIL fails the case	addke
