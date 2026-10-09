@@ -113,8 +113,11 @@ eap_round_release(struct ikev2_eap_round *r)
  * main thread after drain: re-find the SA, clear the pin, and either resume
  * or drop.  Mirror of iked/ikev2.c ikev2_createchild_initiator_dh_done:
  * on a gone / recycled / DYING / DEAD SA the continuation is NOT called -
- * the round is just released - because the SA teardown is already handling
- * the EAP relay and MSK.  resume() runs only with a confirmed-live SA.
+ * the round is just released - because teardown is (or will be) handling the
+ * EAP relay and MSK: for a findable DYING/DEAD SA, done() clears the pin and
+ * returns without resume() and disposal happens on a later tick, so the
+ * caller must not assume eap_msk is already gone either.  resume() runs only
+ * with a confirmed-live SA.
  */
 static void
 eap_round_done(void *arg)

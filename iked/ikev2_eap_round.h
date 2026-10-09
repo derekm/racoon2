@@ -13,16 +13,26 @@
  * The EAP round uses its OWN pin (ike_sa->eap_round_pending), orthogonal to the
  * DH/rekey crypto_pending that other worker jobs pin.  An EAP round can
  * therefore be in flight on the same SA as a DH/rekey job without the pin-clear
- * race: one done() releases only its own pin, never the other's, so the
- * periodic task cannot reap the SA (and its relay/MSK) under a still-running
- * worker.
+ * race: one done() releases only its own pin, never the other's.
  *
- * Memory-safety of that overlap rests on the caller invariant: the EAP worker
- * never touches the SA - it runs ikev2_radius_exchange() on round-owned copies
- * only (see eap_round_run).  A DH abort() during an in-flight EAP round only
- * marks the SA DYING; the round's done() treats a re-found DYING/DEAD SA as a
- * drop, so the caller must treat that outcome as the exchange ending with no
- * AUTH rather than as a successful continuation.
+ * What the pin guards: it keeps this SA findable (on the list, not unlinked
+ * and freed) until the round's done() has run and cleared it.  The EAP worker
+ * never touches the SA or eap_msk - it runs ikev2_radius_exchange() on
+ * round-owned copies only (see eap_round_run) - so the pin is NOT protecting
+ * SA memory a worker writes.  Rather, done() runs on the main loop after
+ * crypto_workers_drain() and must be able to re-find the SA by serial so it
+ * can clear its own pin and either resume a live SA or drop a DYING/DEAD one;
+ * the pin must stay set until that happens, so a DH/rekey done() setting
+ * crypto_pending=0 can never release an in-flight EAP round (nor vice versa)
+ * and let this tick dispose the SA first.
+ *
+ * The caller invariant that makes overlap memory-safe: a DH abort() during an
+ * in-flight EAP round runs ikev2_abort() (marks the SA DYING, expires children,
+ * then DEAD) which does not dispose the IKE SA itself; the round's done()
+ * treats a re-found DYING/DEAD SA as a drop - it clears the pin and returns
+ * without resume().  Disposal then happens on a later tick, so the caller must
+ * treat a dropped round as the exchange ending with no AUTH rather than as a
+ * successful continuation, and must not block on resume() after an abort.
  *
  * See ikev2_eap_round.c for the lifetime rationale.  The relay's per-SE
  * state and the MSK live on the caller-owned ike_sa; this module never
