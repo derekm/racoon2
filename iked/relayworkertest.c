@@ -1,39 +1,47 @@
 /*
- * iked/relayworkertest.c - prove the responder EAP relay driven through the
+ * iked/relayworkertest.c - exercise the responder EAP relay through the
  * worker pool, live against FreeRADIUS.
  *
- * This closes the loop that radworkertest (worker -> exchange) and
- * relaytest (decoded response -> relay state machine) prove separately:
+ * This combines what radworkertest (worker -> exchange) and relaytest
+ * (decoded response -> relay state machine) prove separately into ONE live
+ * pass:
  *
- *   1. ikev2_eap_relay_start() emits the EAP Identity Request the IKE_AUTH
- *      responder would send the client (RFC 3748 s5.1).
- *   2. the client's EAP Identity Response is submitted to the worker pool
+ *   1. ikev2_eap_relay_start() emits an EAP Identity Request (RFC 3748
+ *      s5.1) like the one the (not-yet-wired) IKE_AUTH responder would send.
+ *   2. a client-style EAP Identity Response is submitted to the worker pool
  *      (crypto_job_submit), which runs the blocking ikev2_radius_exchange()
- *      off the main thread - exactly the non-blocking contract the IKE_AUTH
- *      wiring uses (and which stalls had ikev2 run it inline).
+ *      OFF the main thread (the pool-enabled oracle; and which would stall
+ *      the daemon loop if run inline with no pool).
  *   3. the main thread drains (crypto_workers_drain) and calls
- *      ikev2_eap_relay_consume() with the decoded Access-Challenge, the same
- *      way the responder will; consume() must return CONTINUE with the next
- *      EAP Request for the client (the MSCHAPv2 challenge, type 26) and
- *      remember the State attr (RFC 3579).
+ *      ikev2_eap_relay_consume() with the decoded Access-Challenge;
+ *      consume() returns CONTINUE with the next EAP Request (MSCHAPv2,
+ *      type 26) and remembers the State attr (RFC 3579).
+ *
+ * This is a HARNESS exercising the worker+drain+relay combination; the
+ * IKE_AUTH responder wiring itself is NOT in this tree yet (see
+ * ikev2_eap.c:21-27, which says so accurately).  This harness does not
+ * create or resume an ike_sa, so it cannot close the responder wiring gate
+ * by itself.
  *
  * ORACLE: exits non-zero unless the pool THIS BINARY started is enabled
  * (crypto_workers_enabled() right after init; nthreads is argv[3], default
  * 2 - this harness does NOT read RACOON2_CRYPTO_WORKERS / --with-crypto-
- * workers, which only iked/main.c reads), relay_start() emitted a valid
- * 5-byte Request/Identity opener, the exchange returns Access-Challenge,
- * consume() returns CONTINUE, the relay's next EAP Request for the client
- * is a Request(1) of type 26 (MSCHAPv2), and State was captured.
+ * workers, which only iked/main.c reads), relay_start() emitted the exact
+ * 5-byte Request/Identity opener {1,7,0,5,1}, the exchange returns
+ * Access-Challenge, consume() returns CONTINUE, the relay's next EAP
+ * Request for the client is a Request(1) of type 26 (MSCHAPv2), and State
+ * was retained (l > 0).
  *
  * WHAT A PASS DOES / DOES NOT PROVE: a green run proves one live worker
  * RADIUS round whose Access-Challenge survives ikev2_eap_relay_consume()
- * with an MSCHAPv2 Request and a copied State.  It does NOT prove: daemon
+ * with an MSCHAPv2 Request and a retained State.  It does NOT prove: daemon
  * pool configuration (this harness starts its own pool via argv[3]), SA
  * lifetime / re-find in done() (there is no ike_sa here, no crypto_pending
  * / DYING / DEAD guard), State echoed on a second Access-Request (the
- * copied State is never placed in opt->state and sent), worker plog /
+ * retained State is never placed in opt->state and sent, and is not
+ * compared against the Challenge's State attribute), worker plog /
  * localtime thread-safety, or Accept -> MSK -> AUTH.  Those are the
- * responder-wiring gates; this harness closes only the worker+drain+relay
+ * responder-wiring gates; this harness exercises only the worker+drain+relay
  * piece of them.  Do not treat a pass as permission to wire payload type 48
  * on this result alone.
  *
@@ -79,7 +87,10 @@ rrelay_run(void *arg)
 		&j->eap, &j->opt, &j->id, &j->resp);
 }
 
-/* runs on the MAIN thread after drain - the future iked responder contract */
+/* runs on the MAIN thread after drain: prints the worker result (the
+ * harness's main loop is where the relay consume happens, below).  This is
+ * NOT an SA resume; there is no ike_sa and no crypto_pending/refcount guard
+ * here - that part of the responder wiring is still untested. */
 static void
 rrelay_done(void *arg)
 {
@@ -154,17 +165,21 @@ main(int argc, char **argv)
 	}
 	{
 		uint8_t *ov = (uint8_t *)opener->v;
-		if (opener->l != 5 || ov[0] != 1 /* Request */ ||
-		    ov[4] != 1 /* Identity */) {
-			printf("FAIL: relay_start did not emit a 5-byte "
-			       "Request/Identity opener (len=%zu code=%u "
-			       "type=%u)\n", opener->l,
-			       opener->l ? (unsigned)ov[0] : 0,
+		uint8_t expect[5] = { 1, 7, 0, 5, 1 };  /* Request,id7,len5,Identity */
+		if (opener->l != 5 || memcmp(ov, expect, 5) != 0) {
+			printf("FAIL: relay_start did not emit exactly {1,7,0,5,1} "
+			       "(len=%zu %02x %02x %02x %02x %02x)\n",
+			       opener->l,
+			       opener->l >= 1 ? (unsigned)ov[0] : 0,
+			       opener->l >= 2 ? (unsigned)ov[1] : 0,
+			       opener->l >= 3 ? (unsigned)ov[2] : 0,
+			       opener->l >= 4 ? (unsigned)ov[3] : 0,
 			       opener->l >= 5 ? (unsigned)ov[4] : 0);
 			goto out;
 		}
-		printf("relay start: EAP Identity Request (id=%u, %zu bytes)\n",
-		       opener->l ? (unsigned)ov[1] : 0, opener->l);
+		printf("relay start: EAP Identity Request id=%u len=%u (%zu bytes)\n",
+		       (unsigned)ov[1],
+		       ((unsigned)ov[2] << 8) | ov[3], opener->l);
 	}
 
 	/* 2. the client's EAP Identity Response goes to RADIUS.  Its
@@ -263,15 +278,15 @@ main(int argc, char **argv)
 			goto out;
 		}
 		printf("relay -> client: EAP Request type 26 (MSCHAPv2) "
-		       "(%zu bytes), State %zu octets captured\n",
+		       "(%zu bytes), State retained (%zu octets)\n",
 		       next->l, relay.state->l);
 	}
 	failed = 0;
 	printf("PASS: one worker RADIUS round -> relay consume -> MSCHAPv2 "
-	       "challenge (type 26) + State copied.  This proves the "
-	       "worker+drain+relay path; it does NOT prove daemon pool "
-	       "config, SA lifetime/re-find, State echo on a 2nd round, "
-	       "worker plog/localtime, or Accept -> MSK -> AUTH.\n");
+	       "challenge (type 26) + a non-empty retained State.  This "
+	       "exercises the worker+drain+relay path only; it does NOT prove "
+	       "daemon pool config, SA lifetime/re-find, State echo on a 2nd "
+	       "round, worker plog/localtime, or Accept -> MSK -> AUTH.\n");
 
       out:
 	if (next) rc_vfree(next);
