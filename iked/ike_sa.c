@@ -42,6 +42,7 @@
 #include "racoon.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "ikev2_eap_relay.h"
 
 #include "ike_conf.h"
 #include "var.h"
@@ -1153,6 +1154,12 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		rc_vfree(sa->my_first_message);
 	if (sa->peer_first_message)
 		rc_vfree(sa->peer_first_message);
+	/* EAP responder state (RFC 7296 s2.16): the 64-octet MSK is a secret
+	 * - zeroize; the per-SE relay owns its buffers. */
+	if (sa->eap_msk)
+		rc_vfreez(sa->eap_msk);
+	if (sa->eap_relay)
+		ikev2_eap_relay_free(sa->eap_relay);
 	if (sa->encryptor)
 		encryptor_destroy(sa->encryptor);
 	if (sa->authenticator)

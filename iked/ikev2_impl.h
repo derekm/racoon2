@@ -354,6 +354,17 @@ struct ikev2_sa {
 	struct sockaddr *privaddr_p;
 #endif
 
+	/* EAP remote-access auth (RFC 7296 s2.16 / RFC 5998): the responder
+	 * proxy state and the derived MSK for an eap-configured remote that
+	 * is authenticating.  eap_relay is the per-SE multi-round relay
+	 * (ikev2_eap_relay.c) driven by the worker path; eap_msk is the
+	 * 64-octet MSK extracted from the final Access-Accept, substituted
+	 * for the shared secret in the AUTH computation (IKEV2_AUTH_SHARED_KEY
+	 * arm).  Both NULL on a non-EAP SA.  Owned: freed in ike_sa.c
+	 * teardown. */
+	void *eap_relay;	/* struct ikev2_eap_relay *, per-SE */
+	rc_vchar_t *eap_msk;	/* 64-octet EAP-MSCHAPv2 MSK, AUTH seed */
+
 	IKEV2_SA_LIST_ENTRY link;
 };
 

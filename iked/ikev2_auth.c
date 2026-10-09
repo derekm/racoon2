@@ -70,6 +70,21 @@ static const uint8_t rfc7427_sha256_ai[] = {
 static rc_vchar_t *ikev2_auth_input(struct ikev2_sa *, int);
 
 /*
+ * Shared secret for the IKEV2_AUTH_SHARED_KEY AUTH computation (RFC 7296
+ * s2.16): for an EAP-authenticating SA the 64-octet MSK extracted from the
+ * final Access-Accept substitutes for the pre-shared key.  Returns a NEWLY
+ * allocated buffer (the caller rc_vfreez()s it like the PSK path does), or
+ * NULL if neither a PSK path nor an EAP MSK is available.
+ */
+static rc_vchar_t *
+ikev2_auth_shared_secret(struct ikev2_sa *sa)
+{
+	if (sa->eap_msk)
+		return rc_vdup((rc_vchar_t *)sa->eap_msk);
+	return ikev2_pre_shared_key(sa);
+}
+
+/*
  * IKEv2 AUTH
  */
 
@@ -457,10 +472,10 @@ ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 				VCHAR_INIT(IKEV2_SHAREDSECRET_KEYPAD,
 					   IKEV2_SHAREDSECRET_KEYPADLEN);
 
-#ifdef notyet
-			/* EAP case: shared key is dynamically obtained from server */
-#endif
-			sharedkey = ikev2_pre_shared_key(sa);
+			/* RFC 7296 s2.16: an EAP-authenticating SA substitutes its
+			 * MSK for the pre-shared key here (helper returns a
+			 * fresh copy either way). */
+			sharedkey = ikev2_auth_shared_secret(sa);
 			if (!sharedkey)
 				goto fail_no_shared_key;
 			if (!sa->prf->method->is_variable_keylen &&
@@ -677,7 +692,7 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 				VCHAR_INIT(IKEV2_SHAREDSECRET_KEYPAD,
 					   IKEV2_SHAREDSECRET_KEYPADLEN);
 
-			sharedkey = ikev2_pre_shared_key(sa);
+			sharedkey = ikev2_auth_shared_secret(sa);
 			if (!sharedkey)
 				goto fail_no_shared_key;
 			if (!sa->prf->method->is_variable_keylen &&
@@ -771,6 +786,12 @@ ikev2_auth_method(struct ikev2_sa *sa)
 	}
 	switch (alg->algtype) {
 	case RCT_ALG_PSK:
+		return IKEV2_AUTH_SHARED_KEY;
+	case RCT_ALG_EAP:
+		/* RFC 5998 s3: EAP-only auth produces the responder's AUTH
+		 * with the shared-key syntax, the MSK being the shared
+		 * secret (RFC 7296 s2.16).  The SHARED_KEY arm below uses
+		 * sa->eap_msk when it is set. */
 		return IKEV2_AUTH_SHARED_KEY;
 	case RCT_ALG_DSS:
 		return IKEV2_AUTH_DSS;
