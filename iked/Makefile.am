@@ -24,7 +24,7 @@ IKEV1_NATT_SRC = ikev1/ikev1_natt.c
 endif
 IKEV2_NATT_SRC = nattraversal.c
 
-IKEV2_SRC = ikev2.c ikev2_intermediate.c ikev2_auth.c ikev2_child.c ikev2_cookie.c ikev2_notify.c ikev2_packet.c ikev2_payload.c ikev2_decrypt.c ikev2_proposal.c ikev2_rekey.c ikev2_config.c ikev2_frag.c ikev2_resume.c ikev2_resume_rec.c ikev2_qcd.c ikev2_addke.c ikev2_eap.c ikev2_radius.c ikev2_eap_relay.c ikev2cfg_walk.c
+IKEV2_SRC = ikev2.c ikev2_intermediate.c ikev2_auth.c ikev2_child.c ikev2_cookie.c ikev2_notify.c ikev2_packet.c ikev2_payload.c ikev2_decrypt.c ikev2_proposal.c ikev2_rekey.c ikev2_config.c ikev2_frag.c ikev2_resume.c ikev2_resume_rec.c ikev2_qcd.c ikev2_addke.c ikev2_eap.c ikev2_radius.c ikev2_eap_relay.c ikev2_eap_round.c ikev2cfg_walk.c
 IKED_COMMON = main.c dh.c ike_sa.c ike_conf.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC}
 
 if USE_EPOLL
@@ -119,8 +119,8 @@ endif
 # exists only under ENABLE_NATT (see configure.ac NATT conditional), so
 # a --disable-natt build must not try to build these.
 if NATT
-TESTS += test_ts_substitute test_natoa test_ip_any
-check_PROGRAMS += test_ts_substitute test_natoa test_ip_any
+TESTS += test_ts_substitute test_natoa test_ip_any eaproundtest
+check_PROGRAMS += test_ts_substitute test_natoa test_ip_any eaproundtest
 test_ts_substitute_SOURCES = test_ts_substitute.c
 test_ts_substitute_LDADD = $(addtest_ikedsrc) $(LDADD)
 test_natoa_SOURCES = test_natoa.c
@@ -128,6 +128,10 @@ test_natoa_CPPFLAGS = $(AM_CPPFLAGS) -Iikev1
 test_natoa_LDADD = $(addtest_ikedsrc) $(LDADD)
 test_ip_any_SOURCES = test_ip_any.c
 test_ip_any_LDADD = $(addtest_ikedsrc) $(LDADD)
+# EAP worker-round bridge: SA-lifetime guard in done() (live AND dead SA).
+# Links the full iked object set like the tests above.
+eaproundtest_SOURCES = eaproundtest.c
+eaproundtest_LDADD = $(addtest_ikedsrc) $(LDADD)
 endif
 
 if USE_EPOLL
@@ -162,7 +166,7 @@ addtest_ikev2 = ikev2.$(OBJEXT) ikev2_intermediate.$(OBJEXT) \
 	ikev2_decrypt.$(OBJEXT) ikev2_proposal.$(OBJEXT) ikev2_rekey.$(OBJEXT) \
 	ikev2_config.$(OBJEXT) ikev2_frag.$(OBJEXT) ikev2_resume.$(OBJEXT) \
 	ikev2_resume_rec.$(OBJEXT) ikev2_qcd.$(OBJEXT) ikev2_addke.$(OBJEXT) \
-	ikev2_eap.$(OBJEXT) ikev2_radius.$(OBJEXT) ikev2_eap_relay.$(OBJEXT) \
+	ikev2_eap.$(OBJEXT) ikev2_radius.$(OBJEXT) ikev2_eap_relay.$(OBJEXT) ikev2_eap_round.$(OBJEXT) \
 	ikev2cfg_walk.$(OBJEXT) nattraversal.$(OBJEXT)
 if USE_ADMIN
 addtest_admin = admin.$(OBJEXT)
