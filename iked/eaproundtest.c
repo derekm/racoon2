@@ -134,8 +134,10 @@ main(void)
 		printf("eaproundtest: FAIL 1 pin not set during round\n");
 		fails++;
 	} else {
-		drain_until_done();
-		if (resume_count == 1 && sa->crypto_pending == 0 &&
+		if (drain_until_done() != 0) {
+			printf("eaproundtest: FAIL 1 drain timeout\n");
+			fails++;
+		} else if (resume_count == 1 && sa->crypto_pending == 0 &&
 		    resume_had_sa) {
 			printf("eaproundtest: PASS 1 live SA resumed once, "
 			       "pin cleared\n");
@@ -165,10 +167,11 @@ main(void)
 		printf("eaproundtest: FAIL 2 submit\n");
 		fails++;
 	} else {
-		/* pin may or may not still be set if inline; either way
-		 * resume must NOT run */
-		drain_until_done();
-		if (resume_count == 0) {
+		resume_count = 0;
+		if (drain_until_done() != 0) {
+			printf("eaproundtest: FAIL 2 drain timeout\n");
+			fails++;
+		} else if (resume_count == 0) {
 			printf("eaproundtest: PASS 2 not-on-list SA not "
 			       "resumed\n");
 		} else {
@@ -194,8 +197,11 @@ main(void)
 		printf("eaproundtest: FAIL 3 submit\n");
 		fails++;
 	} else {
-		drain_until_done();
-		if (resume_count == 0 && sa->crypto_pending == 0) {
+		resume_count = 0;
+		if (drain_until_done() != 0) {
+			printf("eaproundtest: FAIL 3 drain timeout\n");
+			fails++;
+		} else if (resume_count == 0 && sa->crypto_pending == 0) {
 			printf("eaproundtest: PASS 3 DEAD SA not resumed, "
 			       "pin cleared\n");
 		} else {
@@ -207,21 +213,38 @@ main(void)
 	TAILQ_REMOVE(&ikev2_sa_list, sa, link);
 	ikev2_dispose_sa(sa);
 
-	/* ---- 4. SA freed while worker away: no resume, no crash ----
-	 * submit pins + queues; then the caller frees its opt.state and the SA
-	 * BEFORE drain.  done() finds no SA by serial -> releases the round
-	 * without touching the freed SA.  Freeing caller-owned opt.state right
-	 * after submit is only sound because submit deep-copies every
-	 * worker-read opt member (user_name/nas_ip/nas_id/state/secret):
-	 * if it shallow-copied, the worker would read freed memory (ASan
-	 * crash).  A use-after-free of the SA would crash or resume. */
+	/* ---- 4. SA freed while worker away: no resume, no crash,
+	 * and a REAL deep-copy proof ----
+	 * Every worker-read opt member (user_name, nas_ip, nas_id, state,
+	 * secret) is a heap object the caller frees IMMEDIATELY after submit,
+	 * before drain.  submit must deep-copy all of them: if any were only
+	 * shallow-copied, the worker would read freed memory (ASan crash on the
+	 * worker thread or a bad request packet).  nas_ip is cleared and nas_id
+	 * set so build_request reads nas_id, and secret/state are heap-backed so
+	 * their copies are exercised too.  The SA is also freed before drain;
+	 * done() finds no SA by serial and drops the round without touching it.
+	 * A use-after-free of the SA would crash or resume. */
 	rc_vchar_t sbuf;
+	rc_vchar_t csecret;
 	uint8_t statewire[16] = { 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 };
+	char *c_uname, *c_nasip, *c_nasid;
 	sbuf.v = malloc(sizeof(statewire)); sbuf.l = sizeof(statewire);
+	csecret.v = malloc(4); csecret.l = 4;
+	c_uname = strdup("alice@example.test");
+	c_nasip = strdup("192.0.2.9");
+	c_nasid = strdup("nas-test");
+	if (!sbuf.v || !csecret.v || !c_uname || !c_nasip || !c_nasid) {
+		printf("eaproundtest: FAIL 4 malloc\n");
+		fails++;
+		goto case4_done;
+	}
 	memcpy(sbuf.v, statewire, sizeof(statewire));
+	memcpy(csecret.v, "SEKR", 4);
 	opt.state = &sbuf;
-	opt.user_name = "alice@example.test";	/* non-NULL: deep-copied */
-	opt.nas_id = "nas-test";
+	opt.user_name = c_uname;
+	opt.nas_ip = c_nasip;	/* set but build_request prefers it; also freed */
+	opt.nas_id = c_nasid;
+	opt.secret = &csecret;
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
@@ -235,24 +258,88 @@ main(void)
 		printf("eaproundtest: FAIL 4 submit\n");
 		fails++;
 	} else {
-		/* caller frees its opt.state + SA right after submit; the worker
-		 * must already hold its own deep copies */
+		/* caller frees every opt member + the SA right after submit; the
+		 * worker must already hold its own deep copies of all of them */
 		free(sbuf.v); sbuf.v = NULL;
+		free(csecret.v); csecret.v = NULL;
+		free(c_uname); free(c_nasip); free(c_nasid);
 		TAILQ_REMOVE(&ikev2_sa_list, sa, link);
 		ikev2_dispose_sa(sa);
-		opt.state = NULL;	/* drop the alias so later cases are clean */
+		opt.state = NULL;
+		opt.user_name = NULL;
+		opt.nas_ip = NULL;
+		opt.nas_id = NULL;
+		opt.secret = &secret;
 		if (drain_until_done() != 0) {
 			printf("eaproundtest: FAIL 4 drain timeout\n");
 			fails++;
 		} else if (resume_count == 0) {
 			printf("eaproundtest: PASS 4 freed-SA round not "
-			       "resumed (no UAF, opt deep-copied)\n");
+			       "resumed (opt deep-copied, no UAF)\n");
 		} else {
 			printf("eaproundtest: FAIL 4 freed-SA WAS resumed "
 			       "count=%d (use-after-free!)\n", resume_count);
 			fails++;
 		}
 	}
+      case4_done:
+	opt.state = NULL;
+	opt.user_name = NULL;
+	opt.nas_ip = NULL;
+	opt.nas_id = NULL;
+	opt.secret = &secret;
+
+	/* ---- 5. reject a mismatched caller serial (no pin left set) ---- */
+	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+	if (!sa) return 2;
+	ikev2_sa_insert(sa);
+	sa->crypto_pending = 0;
+	resume_count = 0;
+	id = 11;
+	if (ikev2_eap_round_submit(sa, sa->serial_number + 1, &eap,
+				   (struct sockaddr *)&server,
+				   (socklen_t)sizeof(server), &opt,
+				   &id, on_resume) != 0) {
+		if (sa->crypto_pending == 0) {
+			printf("eaproundtest: PASS 5 mismatched serial "
+			       "rejected, no pin set\n");
+		} else {
+			printf("eaproundtest: FAIL 5 rejected but pin set=%d\n",
+			       sa->crypto_pending);
+			fails++;
+		}
+	} else {
+		printf("eaproundtest: FAIL 5 mismatched serial accepted\n");
+		fails++;
+	}
+	TAILQ_REMOVE(&ikev2_sa_list, sa, link);
+	ikev2_dispose_sa(sa);
+
+	/* ---- 6. reject an already-pinned SA (no unpin of a foreign pin) ---- */
+	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+	if (!sa) return 2;
+	ikev2_sa_insert(sa);
+	sa->crypto_pending = 1;	/* pretend a DH/rekey job pinned it */
+	resume_count = 0;
+	id = 12;
+	if (ikev2_eap_round_submit(sa, sa->serial_number, &eap,
+				   (struct sockaddr *)&server,
+				   (socklen_t)sizeof(server), &opt,
+				   &id, on_resume) != 0) {
+		if (sa->crypto_pending == 1) {
+			printf("eaproundtest: PASS 6 already-pinned SA "
+			       "rejected, foreign pin left set\n");
+		} else {
+			printf("eaproundtest: FAIL 6 rejected but pinned=%d\n",
+			       sa->crypto_pending);
+			fails++;
+		}
+	} else {
+		printf("eaproundtest: FAIL 6 already-pinned SA accepted\n");
+		fails++;
+	}
+	TAILQ_REMOVE(&ikev2_sa_list, sa, link);
+	ikev2_dispose_sa(sa);
 
 	if (secret.v) free(secret.v);
 	printf("eaproundtest: %s (%d failures)\n",

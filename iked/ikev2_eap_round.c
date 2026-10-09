@@ -10,12 +10,15 @@
  * SA-lifetime: between the worker starting select() and the main loop
  * draining, the IKE_SA may be freed or moved to DYING/DEAD.  The bridge
  * therefore sets ike_sa->crypto_pending before submitting (the pin that
- * stops ikev2_sa_periodic_task disposing the SA while the worker is away)
- * and clears it in done() on the re-found SA - ALWAYS, even for a
- * DYING/DEAD SA, so the periodic task can reap it and release the eap_msk.
+ * stops ikev2_sa_periodic_task disposing the SA while the worker is away).
  * done() runs on the main thread and is the ONLY place the RADIUS result
- * may touch the SA; a gone/dead SA is NOT resumed, but its pin is still
- * cleared first.  The worker thread never touches the SA.
+ * may touch the SA.  For a FINDABLE SA it clears the pin ALWAYS - even for
+ * a DYING/DEAD SA, so the periodic task can reap it and release the eap_msk
+ * - and then refuses to resume if the SA is DYING/DEAD.  For a GONE /
+ * recycled SA (ikev2_find_sa_by_serial() missed or returned a different
+ * SA) there is no pin to clear - the SA, and any pin on it, are already
+ * gone - so done() just drops the round.  The worker thread never touches
+ * the SA.
  *
  * This bridge exists because the operator harnesses (radworkertest /
  * relayworkertest) cannot prove the SA-lifetime + pin bookkeeping: they run
