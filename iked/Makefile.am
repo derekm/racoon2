@@ -24,7 +24,7 @@ IKEV1_NATT_SRC = ikev1/ikev1_natt.c
 endif
 IKEV2_NATT_SRC = nattraversal.c
 
-IKEV2_SRC = ikev2.c ikev2_intermediate.c ikev2_auth.c ikev2_child.c ikev2_cookie.c ikev2_notify.c ikev2_packet.c ikev2_payload.c ikev2_decrypt.c ikev2_proposal.c ikev2_rekey.c ikev2_config.c ikev2_frag.c ikev2_resume.c ikev2_resume_rec.c ikev2_qcd.c ikev2_addke.c ikev2cfg_walk.c
+IKEV2_SRC = ikev2.c ikev2_intermediate.c ikev2_auth.c ikev2_child.c ikev2_cookie.c ikev2_notify.c ikev2_packet.c ikev2_payload.c ikev2_decrypt.c ikev2_proposal.c ikev2_rekey.c ikev2_config.c ikev2_frag.c ikev2_resume.c ikev2_resume_rec.c ikev2_qcd.c ikev2_addke.c ikev2_eap.c ikev2cfg_walk.c
 IKED_COMMON = main.c dh.c ike_sa.c ike_conf.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC}
 
 if USE_EPOLL
@@ -50,9 +50,15 @@ else
 sbin_PROGRAMS = iked
 endif
 
-TESTS = eaytest evlooptest workerstest resumetest fragtest ndcppkats
-check_PROGRAMS = eaytest evlooptest workerstest resumetest fragtest ndcppkats
+TESTS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest
+check_PROGRAMS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest
 eaytest_SOURCES = eaytest.c crypto_openssl.c str2val.c
+
+# EAP (RFC 3748) framing codec: decode/encode round-trip + malformed-input
+# rejection.  Standalone: only the lib allocators/plog/byte helpers are
+# pulled in via the default LDADD (libracoon); the codec itself has no
+# iked state-machine deps.
+eaptest_SOURCES = eaptest.c ikev2_eap.c
 # NDcPP v3.0e crypto KATs (A9/A10/B1/B3-B6) against the daemon's OpenSSL
 # wrappers; emits a "KAT <cell>: PASS/FAIL <evidence>" line per cell.
 ndcppkats_SOURCES = ndcppkats.c crypto_openssl.c str2val.c dh.c crypto_workers.c keyed_hash.c
