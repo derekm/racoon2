@@ -155,18 +155,21 @@ extern rc_vchar_t *ikev2_radius_find_attr(struct ikev2_radius_response *,
 extern rc_vchar_t *ikev2_radius_eap_message(struct ikev2_radius_response *);
 
 /*
- * Extract the EAP-derived MSK from an Access-Accept: the MS-MPPE-Recv-Key
- * (RFC 2548 s2.4.3, vendor 311 sub-attr 17, carried in a Vendor-Specific
- * attr) is the EAP-MSCHAPv2 session key iked folds into Ka = prf+(SK_d,
- * N(p)||MSK...) per RFC 7296 s2.16 / doc/eap-wiring-plan.md s7.  The key
- * is encrypted with a per-packet protocol ("recv" from the user; "send"
- * is the NAS->user direction and is not the MSK for IKE EAP).  Returns a
- * freshly allocated vchar with the decrypted master key the caller frees,
- * or NULL if the response lacks it / decrypt fails.
+ * Extract the EAP-MSCHAPv2 MSK from an Access-Accept.  RFC 3079 s3.3 /
+ * [MS-CHAP] 3.1.5.1: the two 16-octet master keys arrive as the
+ * MS-MPPE-Recv-Key (vendor 311 sub-attr 17) and MS-MPPE-Send-Key
+ * (sub-attr 16) VSAs, and
+ *     MSK = MasterReceiveKey || MasterSendKey || 32 zero octets
+ * (64 octets).  RFC 7296 s2.16 substitutes this MSK for the shared secret
+ * in the s2.15 AUTH computation:
+ *     AUTH = prf(prf(MSK, "Key Pad for IKEv2"), SignedOctets)
+ * Both attributes are mandatory; a missing Recv-Key / Send-Key or a
+ * decrypt failure returns NULL (fail closed).  Returns a freshly
+ * allocated 64-octet vchar the caller frees.
  *
  * req_auth is the Request Authenticator of the Access-Request that drew
- * this Access-Accept (their exchange's authenticator feeds the RC4 key
- * schedule, RFC 2548 s2.4.3).
+ * this Access-Accept (their exchange's authenticator feeds the RFC 2548
+ * MD5-XOR key schedule, s2.4.3).
  */
 extern rc_vchar_t *ikev2_radius_msk(struct ikev2_radius_response *,
 				    const uint8_t req_auth[IKEV2_RADIUS_AUTH_LEN],

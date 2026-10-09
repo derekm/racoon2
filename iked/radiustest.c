@@ -18,6 +18,12 @@
  *      does not pass an attacker-forged reply).
  *   8. State attribute is echoed in the next request.
  *   9. >253-octet EAP-Message fragments (RFC 3579 s2.2) and reassembles.
+ *   10. EAP-MSCHAPv2 MSK recovered as Recv(16)||Send(16)||zeros(32) = 64
+ *       octets (RFC 3079 s3.3 / [MS-CHAP] 3.1.5.1), from independently
+ *       encrypted MS-MPPE-Recv-Key(17) + Send-Key(16) VSAs.
+ *   11. no VSA -> no MSK (NULL).
+ *   12. Recv-only (no Send-Key) -> no MSK (both keys required).
+ *   13. cleared salt MSB (RFC 2548 s2.4.3) -> decrypt refuses -> no MSK.
  *
  * Returns 0 iff all pass.
  */
@@ -77,7 +83,7 @@ msg_auth(uint8_t *pkt, size_t len, const uint8_t *req_auth,
 }
 
 /* Independent MS-MPPE key encryption (RFC 2548 s2.4.3): given the plain
- * MSK, produce the opaque sub-attribute value Salt(2)||ciphertext the
+ * key, produce the opaque sub-attribute value Salt(2)||ciphertext the
  * server would put in a VSA sub-attr.  Salt MSB must be set. */
 static size_t
 mppe_encrypt(const uint8_t *msk, size_t keylen, const uint8_t *req_auth,
@@ -542,8 +548,6 @@ main(void)
 	/* ---- 10. MSK extraction (MS-MPPE-Recv-Key, RFC 2548) ---- */
 	{
 		const uint8_t *req_auth = (const uint8_t *)req->v + 4;
-		uint8_t msk[32], mppeval[64];
-		size_t mppel;
 		uint8_t respbuf[1024];
 		uint8_t attrs[512], *ap;
 		size_t attrsl = 0, total;
@@ -553,24 +557,38 @@ main(void)
 		rc_vchar_t *got_msk;
 		size_t k;
 
-		/* a 32-octet MSK (EAP-MSCHAPv2 gives 32) */
-		for (k = 0; k < sizeof(msk); k++)
-			msk[k] = (uint8_t)(0xa0 + (k & 0x0f));
+		/* the two 16-octet master keys (RFC 3079 s3.3) */
+		uint8_t recv[16], send[16], expect_msk[64];
+		for (k = 0; k < sizeof(recv); k++)
+			recv[k] = (uint8_t)(0xa0 + (k & 0x0f));
+		for (k = 0; k < sizeof(send); k++)
+			send[k] = (uint8_t)(0x50 + (k & 0x0f));
+		/* independent server-side encryption, one VSA holding both */
+		{
+			uint8_t ev_r[64], ev_s[64];
+			size_t el_r, el_s;
+			el_r = mppe_encrypt(recv, sizeof(recv), req_auth,
+					    (const uint8_t *)secret->v, secret->l, ev_r);
+			el_s = mppe_encrypt(send, sizeof(send), req_auth,
+					    (const uint8_t *)secret->v, secret->l, ev_s);
+			ap = attrs;
+			ap[0] = IKEV2_RADIUS_ATTR_VENDOR_SPECIFIC;
+			ap[1] = (uint8_t)(2 + 4 + (2 + el_r) + (2 + el_s));
+			ap[2] = 0; ap[3] = 0; ap[4] = 0x01; ap[5] = 0x37;	/* 311 BE */
+			/* Recv-Key (17) then Send-Key (16) sub-attrs */
+			ap[6] = IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY;
+			ap[7] = (uint8_t)(2 + el_r);
+			memcpy(ap + 8, ev_r, el_r);
+			ap[8 + el_r] = IKEV2_RADIUS_VSA_MS_MPPE_SEND_KEY;
+			ap[9 + el_r] = (uint8_t)(2 + el_s);
+			memcpy(ap + 10 + el_r, ev_s, el_s);
+			attrsl = 2 + 4 + (2 + el_r) + (2 + el_s);
+		}
 
-		/* independently encrypt it (server side) */
-		mppel = mppe_encrypt(msk, sizeof(msk), req_auth,
-				     (const uint8_t *)secret->v, secret->l,
-				     mppeval);
-
-		/* build the VSA: Vendor-ID(4)=311 + subattr(17, 2+mppel) */
-		ap = attrs;
-		ap[0] = IKEV2_RADIUS_ATTR_VENDOR_SPECIFIC;
-		ap[1] = (uint8_t)(2 + 4 + (2 + mppel));
-		ap[2] = 0; ap[3] = 0; ap[4] = 0x01; ap[5] = 0x37;	/* 311 BE */
-		ap[6] = IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY;
-		ap[7] = (uint8_t)(2 + mppel);
-		memcpy(ap + 8, mppeval, mppel);
-		attrsl = 2 + 4 + (2 + mppel);
+		memset(expect_msk, 0, sizeof(expect_msk));
+		memcpy(expect_msk, recv, sizeof(recv));
+		memcpy(expect_msk + 16, send, sizeof(send));
+		/* bytes 32..63 are zero pad */
 
 		/* build an Access-Accept: attrs + a Message-Authenticator */
 		{
@@ -612,12 +630,13 @@ main(void)
 			fails++;
 		} else {
 			got_msk = ikev2_radius_msk(resp, req_auth, secret);
-			if (!got_msk || got_msk->l != sizeof(msk) ||
-			    memcmp(got_msk->v, msk, sizeof(msk)) != 0) {
-				printf("radiustest: FAIL MSK not recovered\n");
+			if (!got_msk || got_msk->l != sizeof(expect_msk) ||
+			    memcmp(got_msk->v, expect_msk, sizeof(expect_msk)) != 0) {
+				printf("radiustest: FAIL MSK not recovered (got %s)\n",
+				       got_msk ? "wrong 64-octet MSK" : "NULL");
 				fails++;
 			} else
-				printf("radiustest: PASS 10 MSK (MS-MPPE-Recv-Key) recovered\n");
+				printf("radiustest: PASS 10 MSK (Recv||Send||zeros) recovered\n");
 			if (got_msk)
 				rc_vfree(got_msk);
 			ikev2_radius_response_free(resp);
@@ -671,6 +690,166 @@ main(void)
 				printf("radiustest: FAIL MA-only accept verify\n");
 				fails++;
 			}
+		}
+	}
+
+	/* ---- 12. Recv-only (no Send-Key) -> MSK must be NULL ---- */
+	{
+		const uint8_t *req_auth = (const uint8_t *)req->v + 4;
+		uint8_t recv[16];
+		uint8_t respbuf[1024];
+		uint8_t attrs[256], *ap;
+		size_t attrsl = 0, total;
+		uint8_t hdr4[4], ra[16];
+		rc_vchar_t resp_raw;
+		struct ikev2_radius_response *resp;
+		rc_vchar_t *got_msk;
+		size_t k;
+
+		for (k = 0; k < sizeof(recv); k++)
+			recv[k] = (uint8_t)(0xb0 + (k & 0x0f));
+		{
+			uint8_t ev[64];
+			size_t el = mppe_encrypt(recv, sizeof(recv), req_auth,
+						(const uint8_t *)secret->v,
+						secret->l, ev);
+			ap = attrs;
+			ap[0] = IKEV2_RADIUS_ATTR_VENDOR_SPECIFIC;
+			ap[1] = (uint8_t)(2 + 4 + (2 + el));
+			ap[2] = 0; ap[3] = 0; ap[4] = 0x01; ap[5] = 0x37;
+			ap[6] = IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY;
+			ap[7] = (uint8_t)(2 + el);
+			memcpy(ap + 8, ev, el);
+			attrsl = 2 + 4 + (2 + el);
+		}
+		{
+			uint8_t *ma = attrs + attrsl;
+			uint8_t scratch[512];
+			size_t sl = attrsl;
+			ma[0] = IKEV2_RADIUS_ATTR_MESSAGE_AUTH;
+			ma[1] = 2 + IKEV2_RADIUS_AUTH_LEN;
+			memset(ma + 2, 0, IKEV2_RADIUS_AUTH_LEN);
+			attrsl += 2 + IKEV2_RADIUS_AUTH_LEN;
+			total = IKEV2_RADIUS_HEADER_LEN + attrsl;
+			respbuf[0] = IKEV2_RADIUS_CODE_ACCESS_ACCEPT;
+			respbuf[1] = id;
+			respbuf[2] = (uint8_t)(total >> 8);
+			respbuf[3] = (uint8_t)(total & 0xff);
+			memset(respbuf + 4, 0, IKEV2_RADIUS_AUTH_LEN);
+			memcpy(respbuf + IKEV2_RADIUS_HEADER_LEN, attrs, attrsl);
+			memcpy(scratch, respbuf, total);
+			msg_auth(scratch, total, req_auth,
+				 (const uint8_t *)secret->v, secret->l,
+				 IKEV2_RADIUS_HEADER_LEN + sl + 2,
+				 respbuf + IKEV2_RADIUS_HEADER_LEN + sl + 2);
+			memcpy(attrs + sl + 2, respbuf + IKEV2_RADIUS_HEADER_LEN + sl + 2,
+			       IKEV2_RADIUS_AUTH_LEN);
+			hdr4[0]=respbuf[0];hdr4[1]=respbuf[1];
+			hdr4[2]=respbuf[2];hdr4[3]=respbuf[3];
+			resp_auth(hdr4, req_auth, (const uint8_t *)attrs, attrsl,
+				  (const uint8_t *)secret->v, secret->l, ra);
+			memcpy(respbuf + 4, ra, IKEV2_RADIUS_AUTH_LEN);
+		}
+		resp_raw.v = respbuf; resp_raw.l = total;
+		resp = ikev2_radius_verify_response(id, req_auth, &resp_raw, secret);
+		if (!resp) {
+			printf("radiustest: FAIL Recv-only accept verify\n");
+			fails++;
+		} else {
+			got_msk = ikev2_radius_msk(resp, req_auth, secret);
+			if (got_msk) {
+				printf("radiustest: FAIL MSK from Recv-only accept\n");
+				rc_vfree(got_msk);
+				fails++;
+			} else
+				printf("radiustest: PASS 12 Recv-only -> no MSK (both keys required)\n");
+			ikev2_radius_response_free(resp);
+		}
+	}
+
+	/* ---- 13. cleared salt MSB -> decrypt fails -> no MSK ---- */
+	{
+		const uint8_t *req_auth = (const uint8_t *)req->v + 4;
+		uint8_t recv[16], send[16];
+		uint8_t respbuf[1024];
+		uint8_t attrs[256], *ap;
+		size_t attrsl = 0, total;
+		uint8_t hdr4[4], ra[16];
+		rc_vchar_t resp_raw;
+		struct ikev2_radius_response *resp;
+		rc_vchar_t *got_msk;
+		size_t k;
+
+		for (k = 0; k < sizeof(recv); k++)
+			recv[k] = (uint8_t)(0xc0 + (k & 0x0f));
+		for (k = 0; k < sizeof(send); k++)
+			send[k] = (uint8_t)(0x30 + (k & 0x0f));
+		{
+			uint8_t ev_r[64], ev_s[64];
+			size_t el_r, el_s;
+			el_r = mppe_encrypt(recv, sizeof(recv), req_auth,
+					    (const uint8_t *)secret->v,
+					    secret->l, ev_r);
+			el_s = mppe_encrypt(send, sizeof(send), req_auth,
+					    (const uint8_t *)secret->v,
+					    secret->l, ev_s);
+			/* force the Recv-Key salt MSB clear: RFC 2548 s2.4.3
+			 * requires it set, so the decryptor must refuse */
+			ev_r[0] &= 0x7f;
+			ap = attrs;
+			ap[0] = IKEV2_RADIUS_ATTR_VENDOR_SPECIFIC;
+			ap[1] = (uint8_t)(2 + 4 + (2 + el_r) + (2 + el_s));
+			ap[2] = 0; ap[3] = 0; ap[4] = 0x01; ap[5] = 0x37;
+			ap[6] = IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY;
+			ap[7] = (uint8_t)(2 + el_r);
+			memcpy(ap + 8, ev_r, el_r);
+			ap[8 + el_r] = IKEV2_RADIUS_VSA_MS_MPPE_SEND_KEY;
+			ap[9 + el_r] = (uint8_t)(2 + el_s);
+			memcpy(ap + 10 + el_r, ev_s, el_s);
+			attrsl = 2 + 4 + (2 + el_r) + (2 + el_s);
+		}
+		{
+			uint8_t *ma = attrs + attrsl;
+			uint8_t scratch[512];
+			size_t sl = attrsl;
+			ma[0] = IKEV2_RADIUS_ATTR_MESSAGE_AUTH;
+			ma[1] = 2 + IKEV2_RADIUS_AUTH_LEN;
+			memset(ma + 2, 0, IKEV2_RADIUS_AUTH_LEN);
+			attrsl += 2 + IKEV2_RADIUS_AUTH_LEN;
+			total = IKEV2_RADIUS_HEADER_LEN + attrsl;
+			respbuf[0] = IKEV2_RADIUS_CODE_ACCESS_ACCEPT;
+			respbuf[1] = id;
+			respbuf[2] = (uint8_t)(total >> 8);
+			respbuf[3] = (uint8_t)(total & 0xff);
+			memset(respbuf + 4, 0, IKEV2_RADIUS_AUTH_LEN);
+			memcpy(respbuf + IKEV2_RADIUS_HEADER_LEN, attrs, attrsl);
+			memcpy(scratch, respbuf, total);
+			msg_auth(scratch, total, req_auth,
+				 (const uint8_t *)secret->v, secret->l,
+				 IKEV2_RADIUS_HEADER_LEN + sl + 2,
+				 respbuf + IKEV2_RADIUS_HEADER_LEN + sl + 2);
+			memcpy(attrs + sl + 2, respbuf + IKEV2_RADIUS_HEADER_LEN + sl + 2,
+			       IKEV2_RADIUS_AUTH_LEN);
+			hdr4[0]=respbuf[0];hdr4[1]=respbuf[1];
+			hdr4[2]=respbuf[2];hdr4[3]=respbuf[3];
+			resp_auth(hdr4, req_auth, (const uint8_t *)attrs, attrsl,
+				  (const uint8_t *)secret->v, secret->l, ra);
+			memcpy(respbuf + 4, ra, IKEV2_RADIUS_AUTH_LEN);
+		}
+		resp_raw.v = respbuf; resp_raw.l = total;
+		resp = ikev2_radius_verify_response(id, req_auth, &resp_raw, secret);
+		if (!resp) {
+			printf("radiustest: FAIL bad-salt accept verify\n");
+			fails++;
+		} else {
+			got_msk = ikev2_radius_msk(resp, req_auth, secret);
+			if (got_msk) {
+				printf("radiustest: FAIL MSK despite cleared salt MSB\n");
+				rc_vfree(got_msk);
+				fails++;
+			} else
+				printf("radiustest: PASS 13 bad salt -> no MSK\n");
+			ikev2_radius_response_free(resp);
 		}
 	}
 

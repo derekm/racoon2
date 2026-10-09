@@ -508,11 +508,13 @@ ikev2_radius_eap_message(struct ikev2_radius_response *resp)
 
 /*
  * RFC 2548 s2.4.3: decrypt an MS-MPPE key.  The sub-attribute value is
- * Salt(2) || ciphertext, where ciphertext is the plaintext
- * Key-Length(1) || Key (padded to a 16-multiple) RC4'd by:
+ * Salt(2) || ciphertext, where the plaintext Key-Length(1) || Key (padded
+ * to a 16-multiple) is wrapped by the MD5-XOR schedule:
  *     b(1)=MD5(S+R+A); c(1)=p(1)^b(1)
  *     b(i)=MD5(S+c(i-1)); c(i)=p(i)^b(i)
- * S = shared secret, R = Request Authenticator, A = Salt.  We reverse it:
+ * S = shared secret, R = Request Authenticator, A = Salt.  (NOT the RC4
+ * MPPE cipher - that is the MPPE session cipher, not this attribute wrap;
+ * using real RC4 here would fail against FreeRADIUS.)  We reverse it:
  * p(1)=c(1)^b(1); for i>1 b(i)=MD5(S+c(i-1)) gives p(i) from c(i).
  */
 static rc_vchar_t *
@@ -594,6 +596,11 @@ radius_decrypt_mppe(const uint8_t *val, size_t vlen,
 		racoon_free(out.v);
 		return NULL;
 	}
+	if (keylen == 0) {
+		/* an empty key is not a usable key - fail closed */
+		racoon_free(out.v);
+		return NULL;
+	}
 	{
 		rc_vchar_t *key = rc_vmalloc(keylen);
 		if (!key) {
@@ -613,18 +620,28 @@ ikev2_radius_msk(struct ikev2_radius_response *resp,
 		 rc_vchar_t *secret)
 {
 	unsigned i;
+	rc_vchar_t *recv = NULL, *send = NULL, *msk = NULL;
+	uint8_t zero32[32];
 
 	if (!resp || !secret)
 		return NULL;
-	/* find the MS-MPPE-Recv-Key VSA (vendor 311, sub-attr 17) */
+	/* RFC 2548 s2.4: MS-MPPE-* keys appear ONLY in Access-Accept. */
+	if (resp->code != IKEV2_RADIUS_CODE_ACCESS_ACCEPT)
+		return NULL;
+
+	/* Walk every Microsoft VSA and grab the Recv-Key (17) and the
+	 * Send-Key (16).  The EAP-MSCHAPv2 MSK is 64 octets:
+	 *     MSK = MasterReceiveKey || MasterSendKey || 32 zero octets
+	 * (RFC 3079 s3.3 / [MS-CHAP] 3.1.5.1), where the RADIUS attributes
+	 * carry those two 16-octet master keys.  Both must decrypt. */
 	for (i = 0; i < resp->nattrs; i++) {
 		const uint8_t *v;
 		size_t vlen;
+		rc_vchar_t *k;
 		if (resp->attrs[i].type != IKEV2_RADIUS_ATTR_VENDOR_SPECIFIC)
 			continue;
 		v = (const uint8_t *)resp->attrs[i].value->v;
 		vlen = resp->attrs[i].value->l;
-		/* Vendor-Specific: Vendor-ID(4) then subattrs */
 		if (vlen < 8)
 			continue;
 		{
@@ -638,17 +655,54 @@ ikev2_radius_msk(struct ikev2_radius_response *resp,
 				uint8_t st = v[off], sl = v[off + 1];
 				if (sl < 2 || off + sl > vlen)
 					break;
-				if (st == IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY) {
-					return radius_decrypt_mppe(v + off + 2,
-								  sl - 2,
-								  req_auth,
-								  secret);
+				if (st == IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY ||
+				    st == IKEV2_RADIUS_VSA_MS_MPPE_SEND_KEY) {
+					k = radius_decrypt_mppe(v + off + 2, sl - 2,
+								req_auth, secret);
+					if (!k)
+						goto done;	/* fail closed */
+					if (st == IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY) {
+						if (recv) { rc_vfree(k); goto done; }
+						recv = k;
+					} else {
+						if (send) { rc_vfree(k); goto done; }
+						send = k;
+					}
 				}
 				off += sl;
 			}
 		}
 	}
-	return NULL;
+	/* both keys are mandatory for a usable MSK */
+	if (!recv || !send)
+		goto done;
+
+	memset(zero32, 0, sizeof(zero32));
+	/* EAP-MSCHAPv2 master keys are 16 octets (RFC 3079 s3.3); truncate
+	 * any longer attribute to the first 16, per RFC 2548 implementation
+	 * note ("the RADIUS client is responsible for truncation"). */
+	{
+		size_t rl = recv->l < 16 ? recv->l : 16;
+		size_t sl2 = send->l < 16 ? send->l : 16;
+		msk = rc_vmalloc(64);
+		if (!msk)
+			goto done;
+		memcpy((uint8_t *)msk->v, recv->v, rl);
+		if (rl < 16)
+			memset((uint8_t *)msk->v + rl, 0, 16 - rl);
+		memcpy((uint8_t *)msk->v + 16, send->v, sl2);
+		if (sl2 < 16)
+			memset((uint8_t *)msk->v + 16 + sl2, 0, 16 - sl2);
+		memcpy((uint8_t *)msk->v + 32, zero32, 32);
+		msk->l = 64;
+	}
+
+      done:
+	if (recv)
+		rc_vfree(recv);
+	if (send)
+		rc_vfree(send);
+	return msk;
 }
 
 void

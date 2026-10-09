@@ -46,11 +46,12 @@ single-round-trip latency or a dependency-free standalone is required later.
   SK_p/SK_Pr-derived AUTH. Requires `N(EAP_ONLY_AUTH)` negotiation.
 - **RFC 4739 multiple auth** is available when both EAP and a legacy/PSK auth
   are used; not required for the first milestone (EAP-only server).
-- **Key derivation**: after EAP success, the method yields an MSK (RFC 3748 §5;
-  EAP-MSCHAPv2 RFC 2759 gives 32-byte MPPE-Send/Recv keys as the credential
-  material; EAP-TLS RFC 5216 gives a 128-byte MSK/EMSK). iked then computes
-  `Ka = prf+(SK_d, ...MSK...)` and folds it into the SKEYSEED extension so the
-  AUTH payload proves EAP-derived keys (RFC 7296 §2.16).
+- **Key derivation**: after EAP success, the method yields an MSK.  For
+  EAP-MSCHAPv2 the two 16-octet MS-MPPE keys (RFC 3079 §3.3) come back from
+  RADIUS as Recv-Key∥Send-Key ∥ 32 zero octets = 64-octet MSK
+  ([MS-CHAP] 3.1.5.1); EAP-TLS RFC 5216 gives a 64-byte MSK.  iked uses the
+  MSK as the shared secret in RFC 7296 §2.16 / §2.15:
+  `AUTH = prf(prf(MSK, "Key Pad for IKEv2"), SignedOctets)`.
 
 EAP packets are raw `Code/Identifier/Length/Type/Data` with a 4-byte header and
 a 1-byte method type; a 0-length Identity response and the
@@ -69,9 +70,11 @@ Success/Failure/Nak codes are the skeleton any method must handle.
    (80/Vendor 0), retry/timeout, and Response-Authenticator verification.
 3. **RFC 5998 EAP-only-auth wiring** — advertise `N(EAP_ONLY_AUTH)`, suppress
    the responder AUTH payload, and derive AUTH from the EAP MSK instead.
-4. **Key derivation** — extend `ikev2_compute_keys` (or add an EAP post-step)
-   to mix the MSK: `Ka = prf+(SK_d, N(p) || MSK || ...)` per RFC 7296 §2.16,
-   then SK_pi/SK_pr from Ka. **Must compose with — not double-mix with — the
+4. **Key derivation** — after a successful EAP exchange (Access-Accept +
+   MSK), iked sets the EAP-derived MSK as the shared secret for the IKE
+   AUTH computation (RFC 7296 §2.16, §2.15):
+   `AUTH = prf(prf(MSK, "Key Pad for IKEv2"), SignedOctets)`.
+   **Must compose with — not double-mix with — the
    existing ADDKE (RFC 9370), IKE_INTERMEDIATE (RFC 9242) and PPK (RFC 8784)
    derivation chain** (a PPK'd SK_d would again diverge from a peer that defers
    PPK, as the 2026-09-28 fix did; EAP MSK is mixed at the EAP-success stage,
