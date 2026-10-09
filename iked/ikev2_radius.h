@@ -9,7 +9,17 @@
  * Message-Authenticator (80), sends them to the RADIUS server over UDP
  * (1812), and decodes/verifies the Access-Accept / Access-Challenge /
  * Access-Reject response (checking the Response-Authenticator and its
- * Message-Authenticator).  The EAP method itself lives on FreeRADIUS.
+ * Message-Authenticator).
+ *
+ * Rock-solid authenticator handling is the point of the module:
+ *  - Response-Authenticator (RFC 2865 s3) proves the reply came from the
+ *    holder of the shared secret.
+ *  - Message-Authenticator (RFC 2869 s3.2 / RFC 3579 s3.5) is computed
+ *    over the packet with the Authenticator field replaced by the Request
+ *    Authenticator and the attribute value zeroed; requiring it on EAP
+ *    responses closes Blast-RADIUS (CVE-2024-3596) style forgery, where
+ *    an on-path attacker who only knows Code/ID/Length/ReqAuth could
+ *    forge the MD5 Response-Authenticator for Access-Reject.
  *
  * A packet is:  Code(1) Identifier(1) Length(2) Authenticator(16) then a
  * sequence of Type(1) Length(1) Value attributes.
@@ -33,11 +43,15 @@
 #define IKEV2_RADIUS_ATTR_FRAMED_PROTOCOL	7
 #define IKEV2_RADIUS_ATTR_STATE			24
 #define IKEV2_RADIUS_ATTR_CLASS			25
+#define IKEV2_RADIUS_ATTR_NAS_IDENTIFIER	32
 #define IKEV2_RADIUS_ATTR_EAP_MESSAGE		79
 #define IKEV2_RADIUS_ATTR_MESSAGE_AUTH		80
 
 #define IKEV2_RADIUS_AUTH_LEN	16	/* Request/Response Authenticator */
 #define IKEV2_RADIUS_HEADER_LEN	20	/* Code+ID+Len+Auth */
+#define IKEV2_RADIUS_MAX_VALUE	253	/* max octets in one Attr Value */
+
+struct ikev2_radius_opt;	/* forward decl: used in the codec prototypes */
 
 /*
  * Codec-level entry points (no socket) so the authenticator math is
@@ -49,14 +63,13 @@
  * (fresh Request Authenticator + Message-Authenticator(80)).  The caller
  * frees it.
  *
- * ikev2_radius_verify_response() checks id + Response-Authenticator and
- * decodes attributes; returns a response the caller frees, or NULL.
+ * ikev2_radius_verify_response() checks id + Response-Authenticator +
+ * Message-Authenticator and decodes attributes; returns a response the
+ * caller frees, or NULL.
  */
 extern rc_vchar_t *ikev2_radius_build_request(uint8_t id, rc_vchar_t *eap,
-					      const char *user_name,
-					      uint16_t nas_port,
-					      const struct sockaddr *nas,
-					      rc_vchar_t *secret);
+					      const struct ikev2_radius_opt *,
+					      const struct sockaddr *nas);
 extern struct ikev2_radius_response *
 ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 			     rc_vchar_t *resp_raw, rc_vchar_t *secret);
@@ -74,8 +87,10 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
  */
 struct ikev2_radius_opt {
 	const char *user_name;		/* EAP Identity (attr 1), optional */
-	const char *nas_ip;		/* our address presented as NAS, may be "" */
-	uint16_t nas_port;		/* attr 5, optional (0 = omit) */
+	const char *nas_ip;		/* NAS-IP-Address dotted quad, may be "" */
+	const char *nas_id;		/* NAS-Identifier, optional */
+	uint32_t nas_port;		/* attr 5 (4-octet), optional (0=omit) */
+	rc_vchar_t *state;		/* prior Access-Challenge State to echo */
 	rc_vchar_t *secret;		/* shared RADIUS secret (never in cfg) */
 	unsigned retries;		/* total transmit attempts (>= 1) */
 	unsigned timeout_ms;		/* wait per attempt */
@@ -83,7 +98,8 @@ struct ikev2_radius_opt {
 
 /*
  * A decoded RADIUS response.  attrs is an array of (type, vchar) pairs;
- * use ikev2_radius_find_attr() to pull the EAP-Message / State / Class.
+ * use ikev2_radius_find_attr() to pull State / Class, and
+ * ikev2_radius_eap_message() to get the reassembled EAP message.
  */
 struct ikev2_radius_response {
 	uint8_t code;
@@ -99,7 +115,7 @@ struct ikev2_radius_attr {
 };
 
 /*
- * ikev2_radius_exchange(server, port, eap, opt, id[in/out], resp)
+ * ikev2_radius_exchange(server, servlen, eap, opt, id[in/out], resp)
  *
  * Send one EAP message (already the 4-byte RFC 3748 packet in `eap`) to
  * the RADIUS server as an Access-Request, wait for the response, verify
@@ -125,6 +141,10 @@ extern int ikev2_radius_exchange(struct sockaddr *server, socklen_t servlen,
 /* Find the first attribute of a given type; NULL if absent. */
 extern rc_vchar_t *ikev2_radius_find_attr(struct ikev2_radius_response *,
 					  uint8_t type);
+
+/* Reassemble EAP-Message (79) attributes across RFC 3579 fragmentation
+ * into a single vchar the caller frees; NULL if none present. */
+extern rc_vchar_t *ikev2_radius_eap_message(struct ikev2_radius_response *);
 
 /* Free a response returned by ikev2_radius_exchange(). */
 extern void ikev2_radius_response_free(struct ikev2_radius_response *);

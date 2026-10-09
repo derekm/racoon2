@@ -5,16 +5,34 @@
  * ikev2_eap.c + doc/eap-wiring-plan.md).  This module is the RADIUS
  * *client* wire layer: it builds an Access-Request carrying the framed
  * EAP-Message (79) attribute, signs it with the Message-Authenticator
- * (80, RFC 2869 s3.2: HMAC-MD5 of the whole packet with the attr value
- * zeroed, under the shared secret), sends it over UDP 1812, and decodes +
- * authenticator-verifies the reply (Access-Accept / Access-Challenge /
- * Access-Reject: Response-Authenticator = MD5(Code+ID+Len+ReqAuth+Attrs+
- * Secret), RFC 2865 s3).
+ * (80), sends it over UDP 1812, and decodes + authenticator-verifies the
+ * reply (Access-Accept / Access-Challenge / Access-Reject).
  *
- * Self-contained: only lib allocators (racoon_malloc/rc_vmalloc), the
- * daemon's OpenSSL MD5/HMAC wrappers (eay_md5_one/eay_hmacmd5_one) and
- * the RAND_bytes DRBG are used, so a unit test (radiustest.c) exercises
- * the authenticator math without a live server.
+ * Both response authenticators are checked (and required on EAP):
+ *  - Response-Authenticator (RFC 2865 s3):
+ *      MD5(Code+ID+Len+ReqAuth+Attrs+Secret)
+ *  - Message-Authenticator (RFC 2869 s3.2, RFC 3579 s3.5):
+ *      HMAC-MD5(Secret, packet with Authenticator <- RequestAuthenticator
+ *               and MA value zeroed)
+ * The MA requirement defeats Blast-RADIUS (CVE-2024-3596): an on-path
+ * attacker who knows only Code/ID/Length/ReqAuth can forge the MD5
+ * Response-Authenticator, but cannot forge the HMAC-MD5 MA.  A response
+ * that lacks attr 80 or whose HMAC fails is dropped.
+ *
+ * RFC 2865 robustness:
+ *  - retransmits resend the IDENTICAL request bytes (RFC 2865 s2.5
+ *    duplicate detection) - a fresh Request Authenticator only on a new
+ *    round trip.
+ *  - the reply source must match the server, and the response Length must
+ *    match the datagram.
+ *  - Access-Challenge State (RFC 2865 s5.24) is echoed on the next
+ *    Access-Request via opt->state for multi-round EAP.
+ *  - EAP-Message longer than 253 octets is fragmented (RFC 3579 s2.2) and
+ *    reassembled across attributes on receipt.
+ *
+ * Self-contained: only lib allocators, the daemon's OpenSSL MD5/HMAC
+ * wrappers, and the RAND_bytes DRBG - so a unit test (radiustest.c)
+ * exercises the authenticator math without a live server.
  *
  * Status: milestone 2 (doc/eap-wiring-plan.md).  Not yet wired into the
  * IKE_AUTH responder; builds into iked via IKEV2_SRC.
@@ -32,6 +50,7 @@
 #include <unistd.h>
 
 #include <openssl/rand.h>
+#include <openssl/crypto.h>	/* CRYPTO_memcmp */
 
 #include "racoon.h"
 #include "gcmalloc.h"
@@ -40,6 +59,7 @@
 #include "ikev2_radius.h"
 
 #define	RADIUS_PKT_GROW	256
+#define	RADIUS_RECV_MAX	4096	/* RADIUS packets cap at 4096 octets */
 
 /* Append one Type/Length/Value attribute to *pktp at *off (grows pkt). */
 static int
@@ -50,7 +70,7 @@ radius_put_attr(rc_vchar_t **pktp, size_t *off, uint8_t type,
 	size_t alen = vlen + 2;
 	uint8_t *v;
 
-	if (vlen > 253) {
+	if (vlen > IKEV2_RADIUS_MAX_VALUE) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "RADIUS attr %u value too long (%zu)\n", type, vlen);
 		return -1;
@@ -71,6 +91,31 @@ radius_put_attr(rc_vchar_t **pktp, size_t *off, uint8_t type,
 		memcpy(v + 2, val, vlen);
 	*off += alen;
 	return 0;
+}
+
+/*
+ * Append an EAP-Message attribute, splitting `data` across consecutive
+ * type-79 attributes when it exceeds 253 octets (RFC 3579 s2.2).  Returns
+ * the number of attributes appended, or -1 on alloc failure.
+ */
+static int
+radius_put_eap(rc_vchar_t **pktp, size_t *off, const uint8_t *data,
+	       size_t len)
+{
+	size_t done = 0;
+	int n = 0;
+
+	while (len - done > IKEV2_RADIUS_MAX_VALUE) {
+		if (radius_put_attr(pktp, off, IKEV2_RADIUS_ATTR_EAP_MESSAGE,
+				   data + done, IKEV2_RADIUS_MAX_VALUE) < 0)
+			return -1;
+		done += IKEV2_RADIUS_MAX_VALUE;
+		n++;
+	}
+	if (radius_put_attr(pktp, off, IKEV2_RADIUS_ATTR_EAP_MESSAGE,
+			   data + done, len - done) < 0)
+		return -1;
+	return n + 1;
 }
 
 /* Parse Attributes out of a raw response body into resp->attrs. */
@@ -126,19 +171,59 @@ radius_parse_attrs(struct ikev2_radius_response *resp, const uint8_t *v,
 }
 
 /*
+ * Given a parsed response, locate the Message-Authenticator(80) attribute
+ * and return its value length position markers: sets *ma_pos to the byte
+ * offset of the MA value within the packet and *ma_len to its length (16).
+ * Returns 0 if present (and 16), -1 if absent or malformed.
+ */
+static int
+radius_locate_ma(const struct ikev2_radius_response *resp, const uint8_t *pkt,
+		 size_t len, size_t *ma_pos)
+{
+	size_t off = IKEV2_RADIUS_HEADER_LEN;
+	size_t i;
+	int found = -1;
+
+	/*
+	 * Walk the packet attributes in step with resp->attrs (which were
+	 * parsed from the same bytes, in order) to find the MA appending
+	 * offset.  We need the byte position because the HMAC covers the
+	 * raw zerod MA value, not the parsed copy.
+	 */
+	for (i = 0; i < resp->nattrs; i++) {
+		size_t alen;
+		if (off + 2 > len)
+			return -1;
+		alen = pkt[off + 1];
+		if (off + alen > len)
+			return -1;
+		if (resp->attrs[i].type == IKEV2_RADIUS_ATTR_MESSAGE_AUTH) {
+			if (resp->attrs[i].value->l != IKEV2_RADIUS_AUTH_LEN)
+				return -1;	/* must be exactly 16 */
+			*ma_pos = off + 2;	/* value starts here */
+			found = 0;
+		}
+		off += alen;
+	}
+	return found;
+}
+
+/*
  * Build a signed Access-Request with a fresh Request Authenticator and a
  * correct Message-Authenticator(80).  Returns a vchar the caller frees.
  */
 rc_vchar_t *
-ikev2_radius_build_request(uint8_t id, rc_vchar_t *eap, const char *user_name,
-			   uint16_t nas_port, const struct sockaddr *nas,
-			   rc_vchar_t *secret)
+ikev2_radius_build_request(uint8_t id, rc_vchar_t *eap,
+			   const struct ikev2_radius_opt *opt,
+			   const struct sockaddr *nas)
 {
 	rc_vchar_t *pkt;
 	size_t off;
 	static const uint8_t zauth[IKEV2_RADIUS_AUTH_LEN] = { 0 };
 	uint8_t *reqauth;
 
+	if (!opt || !eap)
+		return NULL;
 	pkt = rc_vmalloc(IKEV2_RADIUS_HEADER_LEN + RADIUS_PKT_GROW);
 	if (!pkt)
 		return NULL;
@@ -153,31 +238,47 @@ ikev2_radius_build_request(uint8_t id, rc_vchar_t *eap, const char *user_name,
 	}
 	off = IKEV2_RADIUS_HEADER_LEN;
 
-	if (user_name && user_name[0])
+	if (opt->user_name && opt->user_name[0])
 		if (radius_put_attr(&pkt, &off, IKEV2_RADIUS_ATTR_USER_NAME,
-				   (const uint8_t *)user_name,
-				   strlen(user_name)) < 0)
+				   (const uint8_t *)opt->user_name,
+				   strlen(opt->user_name)) < 0)
 			goto fail;
 
-	/* NAS-IP-Address (4) - only meaningful for AF_INET. */
-	if (nas && nas->sa_family == AF_INET) {
-		const struct sockaddr_in *sin = (const void *)nas;
-		if (radius_put_attr(&pkt, &off, IKEV2_RADIUS_ATTR_NAS_IP_ADDRESS,
-				   (const uint8_t *)&sin->sin_addr.s_addr, 4) < 0)
+	/* NAS-IP-Address (4): the NAS's address, or NAS-Identifier (32)
+	 * when only a name is configured.  RFC 2869 requires one of them
+	 * on an Access-Request. */
+	if (opt->nas_ip && opt->nas_ip[0]) {
+		struct in_addr a;
+		if (inet_pton(AF_INET, opt->nas_ip, &a) == 1)
+			if (radius_put_attr(&pkt, &off,
+					   IKEV2_RADIUS_ATTR_NAS_IP_ADDRESS,
+					   (const uint8_t *)&a, 4) < 0)
+				goto fail;
+	} else if (opt->nas_id && opt->nas_id[0]) {
+		if (radius_put_attr(&pkt, &off,
+				   IKEV2_RADIUS_ATTR_NAS_IDENTIFIER,
+				   (const uint8_t *)opt->nas_id,
+				   strlen(opt->nas_id)) < 0)
 			goto fail;
 	}
 
-	if (nas_port) {
-		uint8_t p16[2];
-		p16[0] = (uint8_t)(nas_port >> 8);
-		p16[1] = (uint8_t)(nas_port & 0xff);
+	/* NAS-Port (5): 4-octet value (RFC 2865 s5.5). */
+	if (opt->nas_port) {
+		uint32_t p32 = htonl(opt->nas_port);
 		if (radius_put_attr(&pkt, &off, IKEV2_RADIUS_ATTR_NAS_PORT,
-				   p16, 2) < 0)
+				   (const uint8_t *)&p32, 4) < 0)
 			goto fail;
 	}
 
-	if (radius_put_attr(&pkt, &off, IKEV2_RADIUS_ATTR_EAP_MESSAGE,
-			   (const uint8_t *)eap->v, eap->l) < 0)
+	/* echo prior Access-Challenge State (RFC 2865 s5.24) */
+	if (opt->state && opt->state->l > 0)
+		if (radius_put_attr(&pkt, &off, IKEV2_RADIUS_ATTR_STATE,
+				   (const uint8_t *)opt->state->v,
+				   opt->state->l) < 0)
+			goto fail;
+
+	/* EAP-Message (79, RFC 3579), fragmented if > 253 octets */
+	if (radius_put_eap(&pkt, &off, (const uint8_t *)eap->v, eap->l) < 0)
 		goto fail;
 
 	/* Message-Authenticator(80) slot, zeroed first (RFC 2869 s3.2). */
@@ -198,7 +299,7 @@ ikev2_radius_build_request(uint8_t id, rc_vchar_t *eap, const char *user_name,
 		rc_vchar_t *dig;
 		uint8_t *maslot = (uint8_t *)pkt->v + off - IKEV2_RADIUS_AUTH_LEN;
 
-		key.v = secret->v; key.l = secret->l;
+		key.v = opt->secret->v; key.l = opt->secret->l;
 		mac.v = pkt->v;    mac.l = off;
 		dig = eay_hmacmd5_one(&key, &mac);
 		if (!dig) {
@@ -219,9 +320,60 @@ ikev2_radius_build_request(uint8_t id, rc_vchar_t *eap, const char *user_name,
 }
 
 /*
+ * Compute the RFC 3579 s3.5 Message-Authenticator for a response and
+ * compare it (constant-time) with the attr-80 value in the packet.
+ * req_auth is the Request Authenticator we sent.  Returns 0 if valid,
+ * -1 if absent/wrong/malformed.
+ */
+static int
+radius_check_msg_auth(const struct ikev2_radius_response *resp,
+		      const uint8_t *pkt, size_t len,
+		      const uint8_t *req_auth, rc_vchar_t *secret)
+{
+	size_t ma_pos = 0;
+	uint8_t *work;
+	rc_vchar_t key, mac, *dig;
+	int ok;
+
+	if (radius_locate_ma(resp, pkt, len, &ma_pos) < 0) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "RADIUS: EAP response lacks Message-Authenticator(80)\n");
+		return -1;
+	}
+
+	/* HMAC input: the response with Authenticator <- ReqAuth and the
+	 * MA value zeroed.  Copy, patch both spots, hash. */
+	work = racoon_malloc(len);
+	if (!work)
+		return -1;
+	memcpy(work, pkt, len);
+	memcpy(work + 4, req_auth, IKEV2_RADIUS_AUTH_LEN);	/* Auth <- ReqAuth */
+	memset(work + ma_pos, 0, IKEV2_RADIUS_AUTH_LEN);	/* MA <- 0 */
+
+	key.v = secret->v; key.l = secret->l;
+	mac.v = work;      mac.l = len;
+	dig = eay_hmacmd5_one(&key, &mac);
+	if (!dig) {
+		racoon_free(work);
+		return -1;
+	}
+	/* compare the computed HMAC against the ORIGINAL attr-80 value (the
+	 * packet, not the zeroed working copy). */
+	ok = (dig->l == IKEV2_RADIUS_AUTH_LEN) &&
+	     (CRYPTO_memcmp(dig->v, pkt + ma_pos, IKEV2_RADIUS_AUTH_LEN) == 0);
+	rc_vfree(dig);
+	racoon_free(work);
+	if (!ok)
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "RADIUS: response Message-Authenticator mismatch\n");
+	return ok ? 0 : -1;
+}
+
+/*
  * Verify a response against the Request Authenticator we sent and decode
  * it.  Returns NULL on any failure (id/authenticator mismatch, short
- * packet, malformed attrs); caller frees the result.
+ * packet, malformed attrs, missing/bad Message-Authenticator); caller
+ * frees the result.
  */
 struct ikev2_radius_response *
 ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
@@ -232,6 +384,7 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 	size_t len = resp_raw->l;
 	rc_vchar_t *dig;
 	uint8_t calc[IKEV2_RADIUS_AUTH_LEN];
+	size_t hlen;
 
 	if (len < IKEV2_RADIUS_HEADER_LEN) {
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
@@ -243,6 +396,15 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 		     "RADIUS: response id %u != request id %u\n", v[1], id);
 		return NULL;
 	}
+	/* honor the RADIUS Length field; discard trailing padding (RFC
+	 * 2865 s3: octets beyond Length are padding and MUST be ignored). */
+	hlen = ((size_t)v[2] << 8) | v[3];
+	if (hlen < IKEV2_RADIUS_HEADER_LEN || hlen > len) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "RADIUS: bad Length %zu (datagram %zu)\n", hlen, len);
+		return NULL;
+	}
+	len = hlen;	/* attributes stop at Length */
 
 	resp = racoon_calloc(1, sizeof(*resp));
 	if (!resp)
@@ -251,9 +413,14 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 	resp->identifier = v[1];
 	memcpy(resp->authenticator, v + 4, IKEV2_RADIUS_AUTH_LEN);
 
-	/* Response-Authenticator = MD5(Code+ID+Len+ReqAuth+Attrs+Secret).
-	 * The response header's first 4 bytes are its Code/Id/Len; the
-	 * 16-byte Request Authenticator we sent follows, then attrs + secret. */
+	/* parse attributes MUST happen before MA check (locate needs them) */
+	if (radius_parse_attrs(resp, v + IKEV2_RADIUS_HEADER_LEN,
+			       len - IKEV2_RADIUS_HEADER_LEN) < 0) {
+		ikev2_radius_response_free(resp);
+		return NULL;
+	}
+
+	/* Response-Authenticator = MD5(Code+ID+Len+ReqAuth+Attrs+Secret) */
 	{
 		size_t attrl = len - IKEV2_RADIUS_HEADER_LEN;
 		size_t blen = 4 + IKEV2_RADIUS_AUTH_LEN + attrl + secret->l;
@@ -261,7 +428,7 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 		uint8_t *b = racoon_malloc(blen);
 		rc_vchar_t buf;
 		if (!b) {
-			racoon_free(resp);
+			ikev2_radius_response_free(resp);
 			return NULL;
 		}
 		memcpy(b + bo, v, 4);				   bo += 4;
@@ -270,9 +437,10 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 		memcpy(b + bo, secret->v, secret->l);		   bo += secret->l;
 		buf.v = b; buf.l = blen;
 		dig = eay_md5_one(&buf);
+		memset(b, 0, blen);	/* wipe the secret-bearing buffer */
 		racoon_free(b);
 		if (!dig) {
-			racoon_free(resp);
+			ikev2_radius_response_free(resp);
 			return NULL;
 		}
 		memcpy(calc, dig->v, IKEV2_RADIUS_AUTH_LEN);
@@ -281,13 +449,13 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 				  IKEV2_RADIUS_AUTH_LEN) != 0) {
 			plog(PLOG_PROTOERR, PLOGLOC, NULL,
 			     "RADIUS: response authenticator mismatch\n");
-			racoon_free(resp);
+			ikev2_radius_response_free(resp);
 			return NULL;
 		}
 	}
 
-	if (radius_parse_attrs(resp, v + IKEV2_RADIUS_HEADER_LEN,
-			       len - IKEV2_RADIUS_HEADER_LEN) < 0) {
+	/* Message-Authenticator (RFC 3579): required on every EAP reply. */
+	if (radius_check_msg_auth(resp, v, len, req_auth, secret) < 0) {
 		ikev2_radius_response_free(resp);
 		return NULL;
 	}
@@ -304,6 +472,37 @@ ikev2_radius_find_attr(struct ikev2_radius_response *resp, uint8_t type)
 		if (resp->attrs[i].type == type)
 			return resp->attrs[i].value;
 	return NULL;
+}
+
+rc_vchar_t *
+ikev2_radius_eap_message(struct ikev2_radius_response *resp)
+{
+	rc_vchar_t *out;
+	size_t total = 0, off = 0;
+	unsigned i, n = 0;
+
+	if (!resp)
+		return NULL;
+	/* first pass: count attr-79 total bytes + fragment count */
+	for (i = 0; i < resp->nattrs; i++)
+		if (resp->attrs[i].type == IKEV2_RADIUS_ATTR_EAP_MESSAGE) {
+			total += resp->attrs[i].value->l;
+			n++;
+		}
+	if (n == 0)
+		return NULL;
+	out = rc_vmalloc(total);
+	if (!out)
+		return NULL;
+	for (i = 0; i < resp->nattrs; i++)
+		if (resp->attrs[i].type == IKEV2_RADIUS_ATTR_EAP_MESSAGE) {
+			memcpy((uint8_t *)out->v + off,
+			       resp->attrs[i].value->v,
+			       resp->attrs[i].value->l);
+			off += resp->attrs[i].value->l;
+		}
+	out->l = total;
+	return out;
 }
 
 void
@@ -326,10 +525,9 @@ ikev2_radius_exchange(struct sockaddr *server, socklen_t servlen,
 	int s = -1;
 	int rv = IKEV2_RADIUS_IOERR;
 	unsigned attempt, max;
-	struct sockaddr_storage nas;
-	socklen_t naslen = (socklen_t)sizeof(nas);
-	uint8_t req_auth[IKEV2_RADIUS_AUTH_LEN];
 	rc_vchar_t *req = NULL, *rbuf = NULL;
+	uint8_t req_auth[IKEV2_RADIUS_AUTH_LEN];
+	int got_bad = 0;
 
 	*resp_out = NULL;
 	if (!server || !eap || !opt || !opt->secret || opt->secret->l == 0) {
@@ -339,7 +537,6 @@ ikev2_radius_exchange(struct sockaddr *server, socklen_t servlen,
 	}
 
 	max = opt->retries ? opt->retries : 1;
-	memset(&nas, 0, sizeof(nas));
 
 	s = socket(server->sa_family, SOCK_DGRAM, 0);
 	if (s < 0) {
@@ -347,6 +544,23 @@ ikev2_radius_exchange(struct sockaddr *server, socklen_t servlen,
 		     "RADIUS: socket: %s\n", strerror(errno));
 		return IKEV2_RADIUS_IOERR;
 	}
+	/* bind the socket to the server so the kernel filters the source:
+	 * a reply from anywhere else cannot be accepted. */
+	if (connect(s, server, servlen) < 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "RADIUS: connect: %s\n", strerror(errno));
+		close(s);
+		return IKEV2_RADIUS_IOERR;
+	}
+
+	/* Build the request ONCE.  A retransmit resends the identical
+	 * bytes (RFC 2865 s2.5) - same ID, same Request Authenticator. */
+	req = ikev2_radius_build_request(*id, eap, opt, server);
+	if (!req) {
+		rv = IKEV2_RADIUS_IOERR;
+		goto out;
+	}
+	memcpy(req_auth, (const uint8_t *)req->v + 4, IKEV2_RADIUS_AUTH_LEN);
 
 	for (attempt = 0; attempt < max; attempt++) {
 		ssize_t n;
@@ -354,22 +568,9 @@ ikev2_radius_exchange(struct sockaddr *server, socklen_t servlen,
 		struct timeval ts;
 		struct ikev2_radius_response *rr;
 
-		/* fresh Request Authenticator + MAC per transmit (RFC 2865
-		 * requires a unique authenticator per Access-Request). */
-		req = ikev2_radius_build_request(*id, eap, opt->user_name,
-						 opt->nas_port,
-						 (struct sockaddr *)&nas,
-						 opt->secret);
-		if (!req) {
-			rv = IKEV2_RADIUS_IOERR;
-			goto out;
-		}
-		memcpy(req_auth, (const uint8_t *)req->v + 4,
-		       IKEV2_RADIUS_AUTH_LEN);
-
-		if (sendto(s, req->v, req->l, 0, server, servlen) < 0) {
+		if (sendto(s, req->v, req->l, 0, NULL, 0) < 0) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
-			     "RADIUS: sendto: %s\n", strerror(errno));
+			     "RADIUS: send: %s\n", strerror(errno));
 			rv = IKEV2_RADIUS_IOERR;
 			goto out;
 		}
@@ -378,25 +579,18 @@ ikev2_radius_exchange(struct sockaddr *server, socklen_t servlen,
 		ts.tv_usec = (opt->timeout_ms % 1000) * 1000;
 		FD_ZERO(&rfd);
 		FD_SET(s, &rfd);
-		if (select(s + 1, &rfd, NULL, NULL, &ts) <= 0) {
-			/* timeout (or EINTR) -> retry with a fresh auth */
-			rc_vfree(req);
-			req = NULL;
-			continue;
-		}
+		if (select(s + 1, &rfd, NULL, NULL, &ts) <= 0)
+			continue;	/* timeout: retransmit identical bytes */
 
-		rbuf = rc_vmalloc(4096);
+		rbuf = rc_vmalloc(RADIUS_RECV_MAX);
 		if (!rbuf) {
 			rv = IKEV2_RADIUS_IOERR;
 			goto out;
 		}
-		n = recvfrom(s, rbuf->v, 4096, 0,
-			     (struct sockaddr *)&nas, &naslen);
+		n = recvfrom(s, rbuf->v, RADIUS_RECV_MAX, 0, NULL, NULL);
 		if (n < 0) {
 			rc_vfree(rbuf);
 			rbuf = NULL;
-			rc_vfree(req);
-			req = NULL;
 			continue;	/* transient: retry */
 		}
 		rbuf->l = n;
@@ -404,11 +598,9 @@ ikev2_radius_exchange(struct sockaddr *server, socklen_t servlen,
 		if (((uint8_t *)rbuf->v)[0] != IKEV2_RADIUS_CODE_ACCESS_ACCEPT &&
 		    ((uint8_t *)rbuf->v)[0] != IKEV2_RADIUS_CODE_ACCESS_REJECT &&
 		    ((uint8_t *)rbuf->v)[0] != IKEV2_RADIUS_CODE_ACCESS_CHALLENGE) {
-			/* not a reply to our request; ignore + retry */
+			/* not a RADIUS reply to our request; drop + retry */
 			rc_vfree(rbuf);
 			rbuf = NULL;
-			rc_vfree(req);
-			req = NULL;
 			continue;
 		}
 		rr = ikev2_radius_verify_response(*id, req_auth, rbuf,
@@ -416,25 +608,31 @@ ikev2_radius_exchange(struct sockaddr *server, socklen_t servlen,
 		if (rr) {
 			*resp_out = rr;
 			rv = IKEV2_RADIUS_OK;
+			/* req/rbuf freed at out; reflect ownership */
 			rc_vfree(rbuf);
-			rc_vfree(req);
+			rbuf = NULL;
 			goto out;
 		}
-		/* auth mismatch / malformed -> treat as lost and retry */
+		/* a well-formed reply failed verification; remember it so we
+		 * report BADVERIFY instead of a bare timeout if all retries
+		 * do the same. */
+		got_bad = 1;
 		rc_vfree(rbuf);
 		rbuf = NULL;
-		rc_vfree(req);
-		req = NULL;
 	}
-	rv = IKEV2_RADIUS_TIMEOUT;
+	rv = got_bad ? IKEV2_RADIUS_BADVERIFY : IKEV2_RADIUS_TIMEOUT;
 
       out:
 	if (s >= 0)
 		close(s);
-	if (req)
+	if (req) {
 		rc_vfree(req);
-	if (rbuf)
+		req = NULL;
+	}
+	if (rbuf) {
 		rc_vfree(rbuf);
+		rbuf = NULL;
+	}
 	if (rv == IKEV2_RADIUS_OK)
 		*id = (uint8_t)(*id + 1);
 	return rv;
