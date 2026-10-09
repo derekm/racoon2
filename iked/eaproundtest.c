@@ -26,8 +26,9 @@
  *      accepted even with crypto_pending=1, and the round's done() leaves
  *      crypto_pending set (EAP never touches the DH pin).
  *   8. the reaper defers a DYING childless SA while either pin is set
- *      (8a crypto_pending, 8b eap_round_pending) and reaps it once both
- *      clear, locking both sides of the reaper OR.
+ *      (8a crypto_pending, 8b eap_round_pending, 8c both) and reaps it
+ *      only once both clear, locking both sides of the reaper OR and the
+ *      invariant that clearing one pin does not release the other.
  *
  * The exchange runs against 127.0.0.1:1 (nothing listens) so it fails fast
  * with a transport error; what matters here is the done() path (SA re-find,
@@ -383,9 +384,12 @@ main(void)
 	ikev2_dispose_sa(sa);
 
 	/* ---- 8. the periodic task defers disposal of a DYING childless SA
-	 * with no pin, and reaps it once both clear.  Two deferral halves so
-	 * the reaper OR (ike_sa.c:237 crypto_pending || eap_round_pending)
-	 * is locked on both sides, not just the EAP one. */
+	 * while a pin is set, and reaps it only once both pins are clear.
+	 * Two deferral halves so the reaper OR (ike_sa.c:237
+	 * crypto_pending || eap_round_pending) is locked on both sides,
+	 * not just the EAP one.  Each half also asserts its pin is STILL set
+	 * after the defer tick, so a reaper that cleared both pins and
+	 * continue'd is caught before the next tick could dispose. */
 	/* 8a: crypto_pending (a DH/rekey job) alone must defer */
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
@@ -396,6 +400,10 @@ main(void)
 	ikev2_sa_periodic_task();
 	if (ikev2_find_sa_by_serial(sa->serial_number) == NULL) {
 		printf("eaproundtest: FAIL 8a reaper disposed crypto-pinned SA\n");
+		fails++;
+	} else if (sa->crypto_pending != 1) {
+		printf("eaproundtest: FAIL 8a reaper cleared crypto pin while "
+		       "deferring\n");
 		fails++;
 	} else {
 		printf("eaproundtest: PASS 8a reaper defers on crypto_pending\n");
@@ -424,6 +432,10 @@ main(void)
 	if (ikev2_find_sa_by_serial(sa->serial_number) == NULL) {
 		printf("eaproundtest: FAIL 8b reaper disposed EAP-pinned SA\n");
 		fails++;
+	} else if (sa->eap_round_pending != 1) {
+		printf("eaproundtest: FAIL 8b reaper cleared EAP pin while "
+		       "deferring\n");
+		fails++;
 	} else {
 		printf("eaproundtest: PASS 8b reaper defers on eap_round_pending\n");
 		/* clear EAP; must now be reaped */
@@ -441,6 +453,47 @@ main(void)
 				printf("eaproundtest: PASS 8b reaper reaps after "
 				       "EAP clear\n");
 		}
+	}
+	/* 8c: BOTH pins set, then clear only the crypto half: the EAP pin must
+	 * still defer (a DH done() clearing crypto_pending=0 must NOT release
+	 * an in-flight EAP round). */
+	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+	if (!sa) return 2;
+	ikev2_sa_insert(sa);
+	sa->state = IKEV2_STATE_DYING;
+	sa->crypto_pending = 1;
+	sa->eap_round_pending = 1;
+	ikev2_sa_periodic_task();	/* defers: both pins set */
+	if (ikev2_find_sa_by_serial(sa->serial_number) == NULL ||
+	    sa->crypto_pending != 1 || sa->eap_round_pending != 1) {
+		printf("eaproundtest: FAIL 8c both-pins defer broken\n");
+		fails++;
+	} else {
+		/* a DH/rekey done() clears only its own pin */
+		sa->crypto_pending = 0;
+		ikev2_sa_periodic_task();
+		if (ikev2_find_sa_by_serial(sa->serial_number) == NULL ||
+		    sa->eap_round_pending != 1) {
+			printf("eaproundtest: FAIL 8c crypto clear released "
+			       "EAP round\n");
+			fails++;
+		} else
+			printf("eaproundtest: PASS 8c DH done() leaves EAP "
+			       "pin set; still deferred\n");
+	}
+	/* clear both: must now be reaped */
+	{
+		int serno = sa->serial_number;
+		sa->crypto_pending = 0;
+		sa->eap_round_pending = 0;
+		ikev2_sa_periodic_task();
+		if (ikev2_find_sa_by_serial(serno) != NULL) {
+			printf("eaproundtest: FAIL 8c reaper kept unpinned "
+			       "DYING SA\n");
+			fails++;
+		} else
+			printf("eaproundtest: PASS 8c reaper reaps after both "
+			       "pins clear\n");
 	}
 
 	if (secret.v) free(secret.v);

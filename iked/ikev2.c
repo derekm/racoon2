@@ -6697,8 +6697,8 @@ ikev2_info_init_notify_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		case IKEV2_PAYLOAD_NOTIFY:
 			if (ikev2_process_notify(ike_sa, p, TRUE) != 0) {
 				ikev2_abort(ike_sa, ECONNREFUSED);
-				/* ikev2_abort() frees the SAs; stop the
-				 * walk on freed memory. */
+				/* abort marked the SA DYING then DEAD (and
+				 * expired its children); stop the walk. */
 				return;
 			}
 			break;

@@ -26,13 +26,21 @@
  * crypto_pending=0 can never release an in-flight EAP round (nor vice versa)
  * and let this tick dispose the SA first.
  *
- * The caller invariant that makes overlap memory-safe: a DH abort() during an
- * in-flight EAP round runs ikev2_abort() (marks the SA DYING, expires children,
- * then DEAD) which does not dispose the IKE SA itself; the round's done()
- * treats a re-found DYING/DEAD SA as a drop - it clears the pin and returns
- * without resume().  Disposal then happens on a later tick, so the caller must
- * treat a dropped round as the exchange ending with no AUTH rather than as a
- * successful continuation, and must not block on resume() after an abort.
+ * The caller invariant: the pin makes overlap memory-safe, but the caller of
+ * ikev2_eap_round_submit() must treat EACH round as possibly ending in either
+ * path at done() time, depending on where the SA is then standing:
+ *   - live SA: done() clears the pin and calls resume() exactly once;
+ *   - gone / DYING / DEAD SA: done() clears the pin (when findable) and does
+ *     NOT call resume() - the round is released and disposal happens on a
+ *     later reaper tick, so the caller must not assume eap_msk survived.
+ * The exact concurrent worker that shares the SA is not privileged here: it
+ * is CREATE_CHILD_SA / rekey DH (which never calls ikev2_abort() - those
+ * failure paths use ikev2_child_abort / child-expire / rekey abort and leave
+ * the IKE SA live), so the common case is that a live overlap still resumes.
+ * The drop path exists for SAs that went DYING/DEAD/DISPOSED independently.
+ * A caller must therefore not condition on which worker failed; it either
+ * gets resume() with a live SA or no callback at all (drop).  IKE_SA_INIT
+ * cannot overlap here (its responder abort path is before IKE_AUTH).
  *
  * See ikev2_eap_round.c for the lifetime rationale.  The relay's per-SE
  * state and the MSK live on the caller-owned ike_sa; this module never
