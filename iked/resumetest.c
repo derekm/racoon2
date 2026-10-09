@@ -288,6 +288,16 @@ test_validate(void)
 	rec.nchild = 0;
 	CHECK(r2rs_validate(&rec) == 0, "validate zero children");
 
+	/* child role is a boolean: 0 (peer-created) or 1 (locally created)
+	 * both pass; any other byte is a corrupt dump. */
+	fill_rec(&rec);
+	rec.child[0].is_initiator = 0;
+	rec.child[1].is_initiator = 1;
+	CHECK(r2rs_validate(&rec) == 0, "validate child roles 0/1 ok");
+	fill_rec(&rec);
+	rec.child[0].is_initiator = 2;
+	CHECK(r2rs_validate(&rec) != 0, "validate child role corrupt");
+
 	CHECK(r2rs_validate(NULL) != 0, "validate NULL refused");
 }
 

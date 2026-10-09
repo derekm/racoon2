@@ -304,11 +304,18 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 	 * keys, so once the responder advanced to gen-1 it can never be
 	 * AEAD-decrypted.  Detect it by the cleartext outer exchange type +
 	 * message_id and replay the cached gen-0 response (a lost-fragment
-	 * recovery that the old H1 prev-gen-ICV retry could never reach). */
+	 * recovery that the old H1 prev-gen-ICV retry could never reach).
+	 * The trigger REQUIRES the packet to come from the SA's real peer
+	 * (rcs_cmpsa against ike_sa->remote): a gen-0 retransmission can only
+	 * be authenticated by its source, since it is undecryptable after the
+	 * key advance.  An arbitrary source may not drive the cached-response
+	 * replay; unmatched sources fall through to normal (which safely
+	 * fails the AEAD check). */
 	if (ike_sa != NULL &&
 	    ikehdr->exchange_type == IKEV2EXCH_IKE_INTERMEDIATE &&
 	    ike_sa->intermediate_replay != NULL &&
-	    get_uint32(&ikehdr->message_id) == ike_sa->intermediate_replay_msgid) {
+	    get_uint32(&ikehdr->message_id) == ike_sa->intermediate_replay_msgid &&
+	    rcs_cmpsa(remote, ike_sa->remote) == 0) {
 		isakmp_log(ike_sa, local, remote, packet, PLOG_DEBUG, PLOGLOC,
 			   "RT-REPLAY: retransmitted gen-0 intermediate req detected "
 			   "(msgid=%u replay=%p)\n",

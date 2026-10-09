@@ -423,6 +423,11 @@ ikev2_resume_save(struct ikev2_sa *sa)
 		rec.child[n].out_spi = out_spi;
 		rec.child[n].satype = IKEV2PROPOSAL_ESP;
 		rec.child[n].expire_at = resume_wall_expire(ch->timer, 3600);
+		/* persist who created this child so a restore keeps the
+		 * correct key direction for a later rekey (a locally
+		 * initiated CREATE_CHILD_SA must not come back as
+		 * responder-side). */
+		rec.child[n].is_initiator = ch->is_initiator ? 1 : 0;
 		/* RFC 9370 ADDKE: persist the pending followup state so a
 		 * restart mid-PQC-rekey is recognizable on restore.  The
 		 * keymat for such a child is incomplete (SK(1) pending), so
@@ -764,7 +769,11 @@ restore_one(const char *path)
 		ch = ikev2_create_child_sa(sa, TRUE);
 		if (!ch)
 			goto fail;
-		ch->is_initiator = 0;
+		/* restore who created this child (persisted at save); old dumps
+		 * have the reserved byte as 0 (peer-created / responder role),
+		 * which matches the hardcoded value this replaces.  Keeping the
+		 * true role preserves key direction for a later rekey. */
+		ch->is_initiator = c->is_initiator ? 1 : 0;
 		ch->local = rcs_sadup(sa->local);
 		ch->remote = rcs_sadup(sa->remote);
 		if (!c->sl_index[0]) {
