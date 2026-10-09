@@ -162,6 +162,7 @@ addtest_ikev2 = ikev2.$(OBJEXT) ikev2_intermediate.$(OBJEXT) \
 	ikev2_decrypt.$(OBJEXT) ikev2_proposal.$(OBJEXT) ikev2_rekey.$(OBJEXT) \
 	ikev2_config.$(OBJEXT) ikev2_frag.$(OBJEXT) ikev2_resume.$(OBJEXT) \
 	ikev2_resume_rec.$(OBJEXT) ikev2_qcd.$(OBJEXT) ikev2_addke.$(OBJEXT) \
+	ikev2_eap.$(OBJEXT) ikev2_radius.$(OBJEXT) ikev2_eap_relay.$(OBJEXT) \
 	ikev2cfg_walk.$(OBJEXT) nattraversal.$(OBJEXT)
 if USE_ADMIN
 addtest_admin = admin.$(OBJEXT)
