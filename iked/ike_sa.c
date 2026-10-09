@@ -1155,11 +1155,15 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 	if (sa->peer_first_message)
 		rc_vfree(sa->peer_first_message);
 	/* EAP responder state (RFC 7296 s2.16): the 64-octet MSK is a secret
-	 * - zeroize; the per-SE relay owns its buffers. */
+	 * - zeroize; the per-SE relay owns its buffers (freed internally; the
+	 * struct itself is released and the SA pointer nulled here). */
 	if (sa->eap_msk)
 		rc_vfreez(sa->eap_msk);
-	if (sa->eap_relay)
+	if (sa->eap_relay) {
 		ikev2_eap_relay_free(sa->eap_relay);
+		racoon_free(sa->eap_relay);
+		sa->eap_relay = NULL;
+	}
 	if (sa->encryptor)
 		encryptor_destroy(sa->encryptor);
 	if (sa->authenticator)

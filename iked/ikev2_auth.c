@@ -79,8 +79,20 @@ static rc_vchar_t *ikev2_auth_input(struct ikev2_sa *, int);
 static rc_vchar_t *
 ikev2_auth_shared_secret(struct ikev2_sa *sa)
 {
-	if (sa->eap_msk)
+	if (sa->eap_msk) {
+		/* EAP-MSCHAPv2 MSK is exactly 64 octets (RFC 3079 s3.3 /
+		 * [MS-CHAP] 3.1.5.1); the PRFs we negotiate are all
+		 * variable-keylen so the caller's fixed-key length check
+		 * would NOT catch a malformed MSK.  Fail closed. */
+		if (sa->eap_msk->l != 64) {
+			isakmp_log(sa, 0, 0, 0,
+				   PLOG_INTERR, PLOGLOC,
+				   "EAP MSK is %zu octets, want 64\n",
+				   (size_t)sa->eap_msk->l);
+			return NULL;
+		}
 		return rc_vdup((rc_vchar_t *)sa->eap_msk);
+	}
 	return ikev2_pre_shared_key(sa);
 }
 
@@ -788,11 +800,20 @@ ikev2_auth_method(struct ikev2_sa *sa)
 	case RCT_ALG_PSK:
 		return IKEV2_AUTH_SHARED_KEY;
 	case RCT_ALG_EAP:
-		/* RFC 5998 s3: EAP-only auth produces the responder's AUTH
-		 * with the shared-key syntax, the MSK being the shared
-		 * secret (RFC 7296 s2.16).  The SHARED_KEY arm below uses
-		 * sa->eap_msk when it is set. */
-		return IKEV2_AUTH_SHARED_KEY;
+		/* RFC 5998 s3: EAP-only auth computes the responder AUTH with
+		 * the shared-key syntax, the MSK being the shared secret
+		 * (RFC 7296 s2.16).  That is only reachable AFTER the
+		 * EAP->MSK extraction, i.e. once sa->eap_msk is set by the
+		 * responder arm - which does not exist yet (payload 48 is
+		 * still unwired).  Fail CLOSED until then: an eap remote
+		 * must not silently complete as a pre-shared-key peer. */
+		if (sa->eap_msk)
+			return IKEV2_AUTH_SHARED_KEY;
+		isakmp_log(sa, 0, 0, 0,
+			   PLOG_INTERR, PLOGLOC,
+			   "eap auth configured but no EAP MSK yet "
+			   "(responder EAP wiring not landed)\n");
+		return 0;
 	case RCT_ALG_DSS:
 		return IKEV2_AUTH_DSS;
 	case RCT_ALG_RSASIG:
