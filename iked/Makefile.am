@@ -119,8 +119,8 @@ endif
 # exists only under ENABLE_NATT (see configure.ac NATT conditional), so
 # a --disable-natt build must not try to build these.
 if NATT
-TESTS += test_ts_substitute test_natoa test_ip_any eaproundtest
-check_PROGRAMS += test_ts_substitute test_natoa test_ip_any eaproundtest
+TESTS += test_ts_substitute test_natoa test_ip_any eaproundtest eaplocal
+check_PROGRAMS += test_ts_substitute test_natoa test_ip_any eaproundtest eaplocal
 test_ts_substitute_SOURCES = test_ts_substitute.c
 test_ts_substitute_LDADD = $(addtest_ikedsrc) $(LDADD)
 test_natoa_SOURCES = test_natoa.c
@@ -132,6 +132,10 @@ test_ip_any_LDADD = $(addtest_ikedsrc) $(LDADD)
 # Links the full iked object set like the tests above.
 eaproundtest_SOURCES = eaproundtest.c
 eaproundtest_LDADD = $(addtest_ikedsrc) $(LDADD)
+# EAP-remote decision gate (ikev2_eap_remote): the trigger's fail-closed
+# "only for an eap remote" condition, proven with real rmconf/rc_alglist.
+eaplocal_SOURCES = eaplocal.c
+eaplocal_LDADD = $(addtest_ikedsrc) $(LDADD)
 endif
 
 if USE_EPOLL
