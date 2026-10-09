@@ -4,11 +4,17 @@
  * Bridge between the IKE_AUTH responder's EAP relay (ikev2_eap_relay.c)
  * and the worker pool: submit one blocking ikev2_radius_exchange() to a
  * worker; on the main thread after crypto_workers_drain(), re-find the SA by
- * serial, clear the crypto_pending pin it set, and resume the caller's
+ * serial, clear the EAP pin (sa->eap_pending) it set, and resume the caller's
  * callback only if that SA is still live.  A gone / DYING / DEAD SA drops
  * the round without resuming: for a findable DYING/DEAD SA the pin is
  * cleared first so the periodic task can reap it; a gone SA has no pin left
  * to clear.
+ *
+ * The EAP round uses its OWN pin (ike_sa->eap_pending), orthogonal to the
+ * DH/rekey crypto_pending that other worker jobs pin.  An EAP round can
+ * therefore be in flight on the same SA as a DH/rekey job with no risk that
+ * one done() releases the other's pin and lets the periodic task reap the SA
+ * (and its relay/MSK) under a still-running worker.
  *
  * See ikev2_eap_round.c for the lifetime rationale.  The relay's per-SE
  * state and the MSK live on the caller-owned ike_sa; this module never
@@ -52,13 +58,15 @@ typedef void (*ikev2_eap_round_resume_t)(struct ikev2_eap_round *r, int rc);
  * serial MUST equal ike_sa->serial_number (done() looks the SA up by serial
  * to unpin it; a mismatched caller serial would never unpin).
  *
- * ike_sa->crypto_pending is set here and cleared in done() on the SA found
- * by serial - even for a DYING/DEAD SA, so the periodic task can reap it.
- * crypto_pending is a plain boolean shared with the DH/rekey paths, not a
- * refcount: submit FAILS (returns -1) if it is already set, so this must
- * not be called while another worker job is pinning the same SA.  For an SA
- * that disappears before done() runs there is no pin to clear (nothing is
- * set on the freed SA): that path just drops the round.
+ * ike_sa->eap_pending (EAP's own pin, orthogonal to the DH/rekey
+ * crypto_pending) is set here and cleared in done() on the SA found by
+ * serial - even for a DYING/DEAD SA, so the periodic task can reap it.
+ * eap_pending is a boolean: submit FAILS (returns -1) if it is already set
+ * (an EAP round already in flight on this SA).  A concurrent DH/rekey job
+ * pins crypto_pending, its own field, so EAP and DH/rekey can be in flight
+ * together without one done() releasing the other's pin.  For an SA that
+ * disappears before done() runs there is no pin to clear (nothing is set on
+ * the freed SA): that path just drops the round.
  *
  * All worker-read input (eap, server, every opt string/state/secret) is
  * deep-copied into the round up front, so the caller may free its own copies

@@ -9,13 +9,15 @@
  *
  * SA-lifetime: between the worker starting select() and the main loop
  * draining, the IKE_SA may be freed or moved to DYING/DEAD.  The bridge
- * therefore sets ike_sa->crypto_pending before submitting (the pin that
- * stops ikev2_sa_periodic_task disposing the SA while the worker is away).
+ * therefore sets ike_sa->eap_pending before submitting (EAP's own pin, which
+ * - with crypto_pending - stops ikev2_sa_periodic_task disposing the SA
+ * while the worker is away; see ikev2_eap_round.h for why EAP pins its own
+ * field rather than sharing the DH/rekey crypto_pending).
  * done() runs on the main thread and is the ONLY place the RADIUS result
- * may touch the SA.  For a FINDABLE SA it clears the pin ALWAYS - even for
- * a DYING/DEAD SA, so the periodic task can reap it and release the eap_msk
- * - and then refuses to resume if the SA is DYING/DEAD.  For a GONE /
- * recycled SA (ikev2_find_sa_by_serial() missed or returned a different
+ * may touch the SA.  For a FINDABLE SA it clears the EAP pin ALWAYS - even
+ * for a DYING/DEAD SA, so the periodic task can reap it and release the
+ * eap_msk - and then refuses to resume if the SA is DYING/DEAD.  For a GONE
+ * / recycled SA (ikev2_find_sa_by_serial() missed or returned a different
  * SA) there is no pin to clear - the SA, and any pin on it, are already
  * gone - so done() just drops the round.  The worker thread never touches
  * the SA.
@@ -130,9 +132,11 @@ eap_round_done(void *arg)
 		eap_round_release(r);
 		return;
 	}
-	/* clear the pin ALWAYS, even for a DYING/DEAD SA, so the periodic
-	 * task can dispose it (and the eap_msk) */
-	sa->crypto_pending = 0;
+	/* clear the EAP pin ALWAYS, even for a DYING/DEAD SA, so the periodic
+	 * task can dispose it (and the eap_msk).  eap_pending is EAP's own
+	 * pin, orthogonal to crypto_pending (DH/rekey): a DH done() can never
+	 * release an in-flight EAP round and vice versa. */
+	sa->eap_pending = 0;
 	if (sa->state == IKEV2_STATE_DYING ||
 	    sa->state == IKEV2_STATE_DEAD) {
 		/* teardown owns the SA; do not resume into a dying SA */
@@ -162,17 +166,14 @@ ikev2_eap_round_submit(struct ikev2_sa *ike_sa, int serial,
 	    !opt->secret->v || !id || servlen <= 0 ||
 	    servlen > (socklen_t)sizeof(r->server))
 		return -1;
-	/* serial must name exactly this SA: crypto_pending is a boolean pin
-	 * cleared by serial lookup in done(); a mismatched caller serial would
-	 * leave somebody else's pin set and this SA never unpinned. */
+	/* serial must name exactly this SA: the EAP pin is released by serial
+	 * lookup in done(); a mismatched caller serial would never unpin. */
 	if (serial != ike_sa->serial_number)
 		return -1;
-	/* crypto_pending is a plain boolean shared with the DH/rekey paths
-	 * (ikev2_sa_periodic_task skips a pinned SA because a worker may hold
-	 * pointers into it).  It is not a refcount: if another worker job has
-	 * already pinned this SA, pinning it again and clearing it here would
-	 * unpin that other job's SA mid-flight.  Refuse rather than corrupt. */
-	if (ike_sa->crypto_pending)
+	/* eap_pending is EAP's own pin for this SA (orthogonal to the DH/rekey
+	 * crypto_pending).  It is a boolean: refuse if an EAP round is already
+	 * in flight on this SA rather than clobber its pin. */
+	if (ike_sa->eap_pending)
 		return -1;
 
 	r = racoon_calloc(1, sizeof(*r));
@@ -228,11 +229,13 @@ ikev2_eap_round_submit(struct ikev2_sa *ike_sa, int serial,
 	}
 	memcpy(r->eap.v, eap->v, eap->l);
 
-	/* pin the SA so it is not disposed while the worker is away */
-	ike_sa->crypto_pending = 1;
+	/* pin the SA so it is not disposed while the worker is away.  eap_pending
+	 * is EAP's own orthogonal pin (vs. crypto_pending used by DH/rekey), so
+	 * a DH/rekey done() can never release an in-flight EAP round. */
+	ike_sa->eap_pending = 1;
 
 	if (crypto_job_submit(eap_round_run, eap_round_done, r) != 0) {
-		ike_sa->crypto_pending = 0;
+		ike_sa->eap_pending = 0;
 		eap_round_release(r);
 		return -1;
 	}
