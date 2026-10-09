@@ -118,9 +118,39 @@ main(int argc, char **argv)
 		if (got)
 			printf("State attr (%zu bytes) present - server session state captured (not yet echoed in a 2nd request)\n",
 			       got->l);
-		ikev2_radius_response_free(resp);
 	}
 	rc_vfree(eap);
 	free(secret.v);
-	return rv == IKEV2_RADIUS_OK ? 0 : 1;
+	/* Live proof (references/eap-radius-client.md item 5): PASS requires a
+	 * valid Access-Challenge (code 11) with a reassembled EAP type 26 and a
+	 * State attribute.  rv==OK alone is not proof - exchange() returns OK
+	 * for Accept and Reject too, so exit non-zero unless we actually got
+	 * the MSCHAPv2 challenge.  Free resp only after validation. */
+	if (rv != IKEV2_RADIUS_OK || !resp ||
+	    resp->code != IKEV2_RADIUS_CODE_ACCESS_CHALLENGE) {
+		if (resp)
+			ikev2_radius_response_free(resp);
+		printf("radiuslive: FAIL (expected Access-Challenge, code 11)\n");
+		return 1;
+	}
+	{
+		int eap_ok = 0, state_ok = 0;
+		rc_vchar_t *e = NULL;
+		e = ikev2_radius_eap_message(resp);
+		eap_ok = (e && e->l >= 5 &&
+			  ((uint8_t *)e->v)[4] == IKEV2_RADIUS_EAP_TYPE_MSCHAPV2);
+		if (e)
+			rc_vfree(e);
+		state_ok = ikev2_radius_find_attr(resp,
+					IKEV2_RADIUS_ATTR_STATE) != NULL;
+		if (!eap_ok || !state_ok) {
+			ikev2_radius_response_free(resp);
+			printf("radiuslive: FAIL (want EAP type 26 + State, got "
+			       "eap_ok=%d state_ok=%d)\n", eap_ok, state_ok);
+			return 1;
+		}
+	}
+	ikev2_radius_response_free(resp);
+	printf("radiuslive: PASS (code 11, EAP type 26, State)\n");
+	return 0;
 }

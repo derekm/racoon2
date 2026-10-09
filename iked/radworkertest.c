@@ -12,21 +12,29 @@
  * This harness mirrors exactly that:  submit an Access-Request carrying an
  * EAP Identity response to a worker, let the pool complete the UDP round
  * trip to the live FreeRADIUS, drain on the "main thread", and print the
- * Access-Challenge + EAP-MSCHAPv2 response the worker obtained.  Pass = the
- * non-blocking integration resolves the blocking-event-loop gate.
+ * Access-Challenge + EAP-MSCHAPv2 response the worker obtained.  A pass
+ * proves the worker-pool path delivers the RADIUS result back on the main
+ * loop.  It does NOT close the blocking-event-loop gate by itself: the
+ * gate for the real daemon adds - an SA must be started with a real pool
+ * (below), done() must not touch a freed SA, plog on worker threads, and
+ * the multi-second RADIUS select sharing the DH pool (see
+ * references/eap-radius-client.md).
  *
  * Operator harness (needs root + a running server + the secret file): NOT
  * in TESTS, like radiuslive.c.
  *
  * ORACLE: this exits non-zero unless the worker POOL is actually enabled
- * (crypto_workers_enabled(), i.e. RACOON2_CRYPTO_WORKERS > 0 / a non-zero
- * workers= in config) -- the inline fallback does NOT close the blocking
- * gate and must not pass.  It also requires the reassembled EAP type to be
- * 26 (MSCHAPv2) and a State attribute (RFC 3579 session state), matching
- * the live-proof rule in references/eap-radius-client.md.  A printed PASS is
- * not the oracle; the exit status is.
+ * (crypto_workers_enabled(), i.e. RACOON2_CRYPTO_WORKERS > 0 at run time
+ * or --with-crypto-workers>0 at build; the tree default is 0 threads, so
+ * crypto_job_submit runs fn+done INLINE and never writes the notify fd,
+ * which would stall iked's single-threaded loop - that must not pass).
+ * The default nthreads here is 2 so the shipped binary exercises a real
+ * pool; pass a 3rd arg of 0 to see the inline diagnostic.  A pass also
+ * requires the reassembled EAP type to be 26 (MSCHAPv2) and a State
+ * attribute (RFC 3579 session state).  A printed PASS is not the oracle;
+ * the exit status is.
  *
- * Usage: radworkertest SECRET_FILE [IDENTITY]
+ * Usage: radworkertest SECRET_FILE [IDENTITY] [NTHREADS]
  */
 #include <config.h>
 
@@ -92,6 +100,7 @@ main(int argc, char **argv)
 {
 	const char *secret_path = argc > 1 ? argv[1] : "/etc/racoon2/radius-secret";
 	const char *ident = argc > 2 ? argv[2] : "radiuslocal";
+	int nthreads = argc > 3 ? atoi(argv[3]) : 2;
 	struct rjob *job;
 	FILE *fp;
 	uint8_t eap_ident[256];
@@ -101,9 +110,22 @@ main(int argc, char **argv)
 	if (rbuf_init(8, 80, 8, 1000, 5))
 		return 2;
 
-	if (crypto_workers_init(2) < 0) {
+	if (crypto_workers_init(nthreads) < 0) {
 		fprintf(stderr, "workers init failed\n");
 		return 2;
+	}
+	/* Decide whether the pool is real BEFORE we submit anything.  With
+	 * nthreads<=0 (or no pthreads) crypto_job_submit runs fn+done inline
+	 * and never writes the notify fd, so the poll below would time out
+	 * and never reach this diagnostic - hence the early check.  Inline
+	 * execution stalls iked's single-threaded loop and does NOT close the
+	 * blocking gate; it must fail here, not after a wasted poll window. */
+	if (!crypto_workers_enabled()) {
+		printf("FAIL: crypto worker pool is not enabled "
+		       "(nthreads=%d: inline fallback does not close the "
+		       "blocking gate; iked needs --with-crypto-workers>0 / "
+		       "RACOON2_CRYPTO_WORKERS>0)\n", nthreads);
+		return 1;
 	}
 
 	job = calloc(1, sizeof(*job));
@@ -175,14 +197,8 @@ main(int argc, char **argv)
 	}
 	printf("main loop drained %d poll(s)\n", polled);
 
-	/* ORACLE (matches the live-proof rule): the pool MUST be a real
-	 * worker pool, not the inline fallback (which would stall iked's
-	 * single-threaded loop and does NOT close the blocking gate). */
-	if (!crypto_workers_enabled()) {
-		printf("FAIL: crypto worker pool is not enabled "
-		       "(inline fallback does not close the blocking gate)\n");
-		return 1;
-	}
+	/* The pool was verified enabled before submit (above); reaching this
+	 * point through a real notify+drain is the non-blocking proof. */
 	if (job->rv != IKEV2_RADIUS_OK || !job->resp) {
 		printf("FAIL: exchange rc=%d on worker (wanted 0)\n", job->rv);
 		return 1;

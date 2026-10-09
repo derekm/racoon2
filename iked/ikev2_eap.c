@@ -14,8 +14,12 @@
  * (EAP-MSCHAPv2, EAP-TLS) are opaque to this module and live on the remote
  * FreeRADIUS server.  iked only frames and carries them.
  *
- * Status: milestone 1 - framing codec + skeleton.  Wired into the IKE_AUTH
- * responder in the companion ikev2.c changes (IKEV2_PAYLOAD_EAP region).
+ * Status: milestone 1 - framing codec + skeleton.  NOT YET wired into the
+ * IKE_AUTH responder: IKEV2_PAYLOAD_EAP (48) appears in ikev2.c only as
+ * the top of the critical-payload type range (ikev2.c:1229); the responder
+ * EAP path that would intercept an IDi-without-AUTH message and proxy the
+ * exchange via ikev2_radius.c is still to be written per
+ * doc/eap-wiring-plan.md (milestone 3, responder wiring).
  */
 
 #include <config.h>
