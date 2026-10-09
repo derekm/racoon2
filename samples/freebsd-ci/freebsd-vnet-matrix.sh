@@ -1167,7 +1167,7 @@ run_row() {
 		# lands; probe the replacement (its Y keymat is installed), not
 		# the SA being deleted under the ping.
 		case "$_name" in
-		*-immediate*)
+		*-immediate*|*-firstchild-nocl*)
 			_il=$FI; [ "$FB_CH" = i ] && _il=$FR
 			fb_wait_one "$_il" || true
 			sleep 2 ;;
