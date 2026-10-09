@@ -198,8 +198,10 @@ radius_locate_ma(const struct ikev2_radius_response *resp, const uint8_t *pkt,
 		if (off + alen > len)
 			return -1;
 		if (resp->attrs[i].type == IKEV2_RADIUS_ATTR_MESSAGE_AUTH) {
-			if (resp->attrs[i].value->l != IKEV2_RADIUS_AUTH_LEN)
-				return -1;	/* must be exactly 16 */
+			/* exactly one MA, exactly 16 octets (RFC 5080 s2.2: a
+			 * second Message-Authenticator is a protocol error). */
+			if (found == 0 || resp->attrs[i].value->l != IKEV2_RADIUS_AUTH_LEN)
+				return -1;
 			*ma_pos = off + 2;	/* value starts here */
 			found = 0;
 		}
@@ -214,8 +216,7 @@ radius_locate_ma(const struct ikev2_radius_response *resp, const uint8_t *pkt,
  */
 rc_vchar_t *
 ikev2_radius_build_request(uint8_t id, rc_vchar_t *eap,
-			   const struct ikev2_radius_opt *opt,
-			   const struct sockaddr *nas)
+			   const struct ikev2_radius_opt *opt)
 {
 	rc_vchar_t *pkt;
 	size_t off;
@@ -555,70 +556,107 @@ ikev2_radius_exchange(struct sockaddr *server, socklen_t servlen,
 
 	/* Build the request ONCE.  A retransmit resends the identical
 	 * bytes (RFC 2865 s2.5) - same ID, same Request Authenticator. */
-	req = ikev2_radius_build_request(*id, eap, opt, server);
+	req = ikev2_radius_build_request(*id, eap, opt);
 	if (!req) {
 		rv = IKEV2_RADIUS_IOERR;
 		goto out;
 	}
 	memcpy(req_auth, (const uint8_t *)req->v + 4, IKEV2_RADIUS_AUTH_LEN);
 
+	/*
+	 * Per RFC 5080 s2.2.2, a responder must use the first datagram that
+	 * carries a valid Response-Authenticator and discard every other
+	 * datagram (bad code, bad id, bad MAC) as noise - never treat it as
+	 * the final answer.  So for each transmit we wait out the FULL
+	 * timeout window, draining the socket and keeping it readable until
+	 * a valid reply arrives or the window expires.
+	 */
 	for (attempt = 0; attempt < max; attempt++) {
-		ssize_t n;
-		fd_set rfd;
-		struct timeval ts;
-		struct ikev2_radius_response *rr;
+		struct timeval deadline, now, rem;
+		int window_ms = opt->timeout_ms ? opt->timeout_ms : 1000;
+		int first_send = 1;
+		int bad_this_window = 0;
 
-		if (sendto(s, req->v, req->l, 0, NULL, 0) < 0) {
-			plog(PLOG_INTERR, PLOGLOC, NULL,
-			     "RADIUS: send: %s\n", strerror(errno));
-			rv = IKEV2_RADIUS_IOERR;
-			goto out;
-		}
+	      send_once:
+		{
+			ssize_t n;
+			fd_set rfd;
+			struct ikev2_radius_response *rr;
 
-		ts.tv_sec = opt->timeout_ms / 1000;
-		ts.tv_usec = (opt->timeout_ms % 1000) * 1000;
-		FD_ZERO(&rfd);
-		FD_SET(s, &rfd);
-		if (select(s + 1, &rfd, NULL, NULL, &ts) <= 0)
-			continue;	/* timeout: retransmit identical bytes */
+			if (first_send) {
+				if (sendto(s, req->v, req->l, 0, NULL, 0) < 0) {
+					plog(PLOG_INTERR, PLOGLOC, NULL,
+					     "RADIUS: send: %s\n", strerror(errno));
+					rv = IKEV2_RADIUS_IOERR;
+					goto out;
+				}
+				first_send = 0;
+				gettimeofday(&now, NULL);
+				deadline.tv_sec = now.tv_sec + window_ms / 1000;
+				deadline.tv_usec = now.tv_usec +
+					(window_ms % 1000) * 1000;
+				if (deadline.tv_usec >= 1000000) {
+					deadline.tv_sec++;
+					deadline.tv_usec -= 1000000;
+				}
+			}
 
-		rbuf = rc_vmalloc(RADIUS_RECV_MAX);
-		if (!rbuf) {
-			rv = IKEV2_RADIUS_IOERR;
-			goto out;
-		}
-		n = recvfrom(s, rbuf->v, RADIUS_RECV_MAX, 0, NULL, NULL);
-		if (n < 0) {
+			/* how much of the window is left? */
+			gettimeofday(&now, NULL);
+			rem.tv_sec = deadline.tv_sec - now.tv_sec;
+			rem.tv_usec = deadline.tv_usec - now.tv_usec;
+			if (rem.tv_usec < 0) {
+				rem.tv_sec--;
+				rem.tv_usec += 1000000;
+			}
+			if (rem.tv_sec < 0) {
+				/* window expired: retransmit identical bytes */
+				goto next_attempt;
+			}
+
+			FD_ZERO(&rfd);
+			FD_SET(s, &rfd);
+			if (select(s + 1, &rfd, NULL, NULL, &rem) <= 0)
+				goto next_attempt;	/* EINTR/timeout */
+
+			rbuf = rc_vmalloc(RADIUS_RECV_MAX);
+			if (!rbuf) {
+				rv = IKEV2_RADIUS_IOERR;
+				goto out;
+			}
+			n = recvfrom(s, rbuf->v, RADIUS_RECV_MAX, 0, NULL, NULL);
+			if (n < 0) {
+				rc_vfree(rbuf);
+				rbuf = NULL;
+				goto send_once;	/* transient: keep waiting */
+			}
+			rbuf->l = n;
+
+			if (((uint8_t *)rbuf->v)[0] == IKEV2_RADIUS_CODE_ACCESS_ACCEPT ||
+			    ((uint8_t *)rbuf->v)[0] == IKEV2_RADIUS_CODE_ACCESS_REJECT ||
+			    ((uint8_t *)rbuf->v)[0] == IKEV2_RADIUS_CODE_ACCESS_CHALLENGE) {
+				rr = ikev2_radius_verify_response(*id, req_auth,
+								 rbuf, opt->secret);
+				if (rr) {
+					*resp_out = rr;
+					rv = IKEV2_RADIUS_OK;
+					rc_vfree(rbuf);
+					rbuf = NULL;
+					goto out;
+				}
+			}
+			/* discard the datagram, note we saw something, and keep
+			 * waiting out the window for a VALID reply. */
+			bad_this_window = 1;
 			rc_vfree(rbuf);
 			rbuf = NULL;
-			continue;	/* transient: retry */
+			goto send_once;
 		}
-		rbuf->l = n;
-
-		if (((uint8_t *)rbuf->v)[0] != IKEV2_RADIUS_CODE_ACCESS_ACCEPT &&
-		    ((uint8_t *)rbuf->v)[0] != IKEV2_RADIUS_CODE_ACCESS_REJECT &&
-		    ((uint8_t *)rbuf->v)[0] != IKEV2_RADIUS_CODE_ACCESS_CHALLENGE) {
-			/* not a RADIUS reply to our request; drop + retry */
-			rc_vfree(rbuf);
-			rbuf = NULL;
-			continue;
-		}
-		rr = ikev2_radius_verify_response(*id, req_auth, rbuf,
-						 opt->secret);
-		if (rr) {
-			*resp_out = rr;
-			rv = IKEV2_RADIUS_OK;
-			/* req/rbuf freed at out; reflect ownership */
-			rc_vfree(rbuf);
-			rbuf = NULL;
-			goto out;
-		}
-		/* a well-formed reply failed verification; remember it so we
-		 * report BADVERIFY instead of a bare timeout if all retries
-		 * do the same. */
-		got_bad = 1;
-		rc_vfree(rbuf);
-		rbuf = NULL;
+	      next_attempt:
+		if (bad_this_window)
+			got_bad = 1;
+		first_send = 1;	/* (per-attempt scope; resets each iteration) */
+		(void)first_send;
 	}
 	rv = got_bad ? IKEV2_RADIUS_BADVERIFY : IKEV2_RADIUS_TIMEOUT;
 

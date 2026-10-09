@@ -116,7 +116,7 @@ main(int argc, char **argv)
 		}
 		got = ikev2_radius_find_attr(resp, IKEV2_RADIUS_ATTR_STATE);
 		if (got)
-			printf("State attr (%zu bytes) present - multi-round OK\n",
+			printf("State attr (%zu bytes) present - server session state captured (not yet echoed in a 2nd request)\n",
 			       got->l);
 		ikev2_radius_response_free(resp);
 	}
