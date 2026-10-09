@@ -173,6 +173,10 @@ r2rs_validate(const struct r2rs_sa *rec)
 			return -1;
 		if (c->addke_link_len > sizeof(c->addke_link))
 			return -1;
+		/* child role is a boolean (who created it); anything else is a
+		 * corrupt dump.  Old v5 dumps have this byte 0 (peer-created). */
+		if (c->is_initiator > 1)
+			return -1;
 	}
 	/* strings must be NUL-terminated in-place: restore_one() and
 	 * the child restore use strlen() on these fixed arrays, so an

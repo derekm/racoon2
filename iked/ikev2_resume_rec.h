@@ -61,7 +61,12 @@ struct r2rs_child {
 	uint16_t integr_id;
 	uint16_t encr_klen;
 	uint8_t esn;
-	uint8_t pad_c;
+	uint8_t is_initiator;	/* who created this child (was reserved pad byte):
+				 * 1 = we did, 0 = peer did.  Previously hard-
+				 * coded 0 on restore, which broke rekey
+				 * direction for locally-initiated CREATE_CHILD_SA
+				 * children.  Old dumps (reserved=0) read as
+				 * responder/peer-created, i.e. today's value. */
 	/* RFC 9370 ADDKE (v3): pending followup state for this child.
 	 * addke_link is the opaque 16441 link data (max 64). */
 	uint8_t addke_pending;
