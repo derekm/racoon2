@@ -64,7 +64,8 @@ Success/Failure/Nak codes are the skeleton any method must handle.
 
 1. **EAP framing module** — `ikev2_eap.c` (framing codec, landed) + the
    responder relay engine `ikev2_eap_relay.c` (landed, verified by relaytest
-   / relayworkertest).  Payload type 48 is still `#ifdef notyet` in the
+   and exercised one-round-live by relayworkertest).  Payload type 48 is
+   still `#ifdef notyet` in the
    IKE_AUTH responder: `IKEV2_PAYLOAD_EAP` (48) appears in `iked/ikev2.c` only
    as the top of the critical-payload type range (~line 1229); the responder
    arms that would intercept an IDi-without-AUTH message for an eap-remote and
