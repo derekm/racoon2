@@ -70,6 +70,33 @@ static const uint8_t rfc7427_sha256_ai[] = {
 static rc_vchar_t *ikev2_auth_input(struct ikev2_sa *, int);
 
 /*
+ * Shared secret for the IKEV2_AUTH_SHARED_KEY AUTH computation (RFC 7296
+ * s2.16): for an EAP-authenticating SA the 64-octet MSK extracted from the
+ * final Access-Accept substitutes for the pre-shared key.  Returns a NEWLY
+ * allocated buffer (the caller rc_vfreez()s it like the PSK path does), or
+ * NULL if neither a PSK path nor an EAP MSK is available.
+ */
+static rc_vchar_t *
+ikev2_auth_shared_secret(struct ikev2_sa *sa)
+{
+	if (sa->eap_msk) {
+		/* EAP-MSCHAPv2 MSK is exactly 64 octets (RFC 3079 s3.3 /
+		 * [MS-CHAP] 3.1.5.1); the PRFs we negotiate are all
+		 * variable-keylen so the caller's fixed-key length check
+		 * would NOT catch a malformed MSK.  Fail closed. */
+		if (sa->eap_msk->l != 64) {
+			isakmp_log(sa, 0, 0, 0,
+				   PLOG_INTERR, PLOGLOC,
+				   "EAP MSK is %zu octets, want 64\n",
+				   (size_t)sa->eap_msk->l);
+			return NULL;
+		}
+		return rc_vdup((rc_vchar_t *)sa->eap_msk);
+	}
+	return ikev2_pre_shared_key(sa);
+}
+
+/*
  * IKEv2 AUTH
  */
 
@@ -457,10 +484,10 @@ ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 				VCHAR_INIT(IKEV2_SHAREDSECRET_KEYPAD,
 					   IKEV2_SHAREDSECRET_KEYPADLEN);
 
-#ifdef notyet
-			/* EAP case: shared key is dynamically obtained from server */
-#endif
-			sharedkey = ikev2_pre_shared_key(sa);
+			/* RFC 7296 s2.16: an EAP-authenticating SA substitutes its
+			 * MSK for the pre-shared key here (helper returns a
+			 * fresh copy either way). */
+			sharedkey = ikev2_auth_shared_secret(sa);
 			if (!sharedkey)
 				goto fail_no_shared_key;
 			if (!sa->prf->method->is_variable_keylen &&
@@ -677,7 +704,7 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 				VCHAR_INIT(IKEV2_SHAREDSECRET_KEYPAD,
 					   IKEV2_SHAREDSECRET_KEYPADLEN);
 
-			sharedkey = ikev2_pre_shared_key(sa);
+			sharedkey = ikev2_auth_shared_secret(sa);
 			if (!sharedkey)
 				goto fail_no_shared_key;
 			if (!sa->prf->method->is_variable_keylen &&
@@ -772,6 +799,21 @@ ikev2_auth_method(struct ikev2_sa *sa)
 	switch (alg->algtype) {
 	case RCT_ALG_PSK:
 		return IKEV2_AUTH_SHARED_KEY;
+	case RCT_ALG_EAP:
+		/* RFC 5998 s3: EAP-only auth computes the responder AUTH with
+		 * the shared-key syntax, the MSK being the shared secret
+		 * (RFC 7296 s2.16).  That is only reachable AFTER the
+		 * EAP->MSK extraction, i.e. once sa->eap_msk is set by the
+		 * responder arm - which does not exist yet (payload 48 is
+		 * still unwired).  Fail CLOSED until then: an eap remote
+		 * must not silently complete as a pre-shared-key peer. */
+		if (sa->eap_msk)
+			return IKEV2_AUTH_SHARED_KEY;
+		isakmp_log(sa, 0, 0, 0,
+			   PLOG_INTERR, PLOGLOC,
+			   "eap auth configured but no EAP MSK yet "
+			   "(responder EAP wiring not landed)\n");
+		return 0;
 	case RCT_ALG_DSS:
 		return IKEV2_AUTH_DSS;
 	case RCT_ALG_RSASIG:

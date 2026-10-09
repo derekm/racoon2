@@ -83,9 +83,14 @@ ikev2_eap_relay_consume(struct ikev2_eap_relay *relay,
 		}
 		state = ikev2_radius_find_attr(resp, IKEV2_RADIUS_ATTR_STATE);
 		if (state) {
-			if (relay->state)
-				rc_vfree(relay->state);
-			relay->state = rc_vdup(state);
+			rc_vchar_t *dup = rc_vdup(state);
+			if (dup) {
+				if (relay->state)
+					rc_vfree(relay->state);
+				relay->state = dup;
+			}
+			/* on oom keep the previous State; fail the round is a
+			 * caller choice (no double-free either way) */
 		}
 		relay_discard_pending(relay);
 		relay->eap_pending = rc_vdup(*out_eap);
@@ -128,9 +133,13 @@ ikev2_eap_relay_free(struct ikev2_eap_relay *relay)
 {
 	if (!relay)
 		return;
-	if (relay->state)
+	if (relay->state) {
 		rc_vfree(relay->state);
-	if (relay->eap_pending)
+		relay->state = NULL;
+	}
+	if (relay->eap_pending) {
 		rc_vfree(relay->eap_pending);
+		relay->eap_pending = NULL;
+	}
 	relay->started = relay->finished = 0;
 }
