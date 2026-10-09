@@ -1,21 +1,26 @@
 /*
  * iked/ikev2_eap.c - EAP (RFC 3748) framing for racoon2 iked IKEv2.
  *
- * iked terminates a road-warrior client's EAP by tunneling it per RFC 7296
- * s2.16 inside IKE_AUTH, proxying each EAP message to a RADIUS server (see
- * ikev2_radius.c).  This module is the EAP *wire* codec: it encodes and
- * decodes RFC 3748 EAP packets (the 4-byte Code/Identifier/Length header
- * plus the single-byte Type and method data), and provides the small set of
- * method-agnostic skeleton operations (Identity request/response, Nak) that
- * any method must handle before the method-specific exchange runs inside
- * the RADIUS Access-Challenge round trips.
+ * Road-warrior EAP is tunneled per RFC 7296 s2.16 inside IKE_AUTH, with
+ * each EAP message proxied to a RADIUS server (see ikev2_radius.c).  That
+ * responder path is NOT yet wired (see the Status note below); this module
+ * is the EAP *wire* codec: it encodes and decodes RFC 3748 EAP packets
+ * (the 4-byte Code/Identifier/Length header plus the single-byte Type and
+ * method data), and provides the small set of method-agnostic skeleton
+ * operations (Identity request/response, Nak) that any method must handle
+ * before the method-specific exchange runs inside the RADIUS
+ * Access-Challenge round trips.
  *
  * The EAP method itself is never implemented here: method types
  * (EAP-MSCHAPv2, EAP-TLS) are opaque to this module and live on the remote
  * FreeRADIUS server.  iked only frames and carries them.
  *
- * Status: milestone 1 - framing codec + skeleton.  Wired into the IKE_AUTH
- * responder in the companion ikev2.c changes (IKEV2_PAYLOAD_EAP region).
+ * Status: milestone 1 - framing codec + skeleton.  NOT YET wired into the
+ * IKE_AUTH responder: IKEV2_PAYLOAD_EAP (48) appears in ikev2.c only as
+ * the top of the critical-payload type range (ikev2.c:1229); the responder
+ * EAP path that would intercept an IDi-without-AUTH message and proxy the
+ * exchange via ikev2_radius.c is still to be written per
+ * doc/eap-wiring-plan.md (milestone 3, responder wiring).
  */
 
 #include <config.h>
