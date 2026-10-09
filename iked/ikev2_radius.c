@@ -413,6 +413,11 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 	resp->code = v[0];
 	resp->identifier = v[1];
 	memcpy(resp->authenticator, v + 4, IKEV2_RADIUS_AUTH_LEN);
+	/* Record the Request Authenticator that drew this response: the EAP
+	 * relay extracts the MS-MPPE MSK with ikev2_radius_msk(), which needs
+	 * it (RFC 2548 key schedule).  Without this, the caller that runs the
+	 * exchange on a worker could not recover the MSK from an Accept. */
+	memcpy(resp->req_auth, req_auth, IKEV2_RADIUS_AUTH_LEN);
 
 	/* parse attributes MUST happen before MA check (locate needs them) */
 	if (radius_parse_attrs(resp, v + IKEV2_RADIUS_HEADER_LEN,

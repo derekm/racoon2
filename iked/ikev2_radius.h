@@ -113,6 +113,9 @@ struct ikev2_radius_response {
 	uint8_t code;
 	uint8_t identifier;
 	uint8_t authenticator[IKEV2_RADIUS_AUTH_LEN];	/* Response Auth */
+	uint8_t req_auth[IKEV2_RADIUS_AUTH_LEN];	/* the Request Auth
+							   that drew it (for
+							   MSK extraction) */
 	unsigned nattrs;
 	struct ikev2_radius_attr *attrs;
 };
