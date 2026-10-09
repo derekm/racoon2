@@ -47,6 +47,12 @@
 #define IKEV2_RADIUS_ATTR_EAP_MESSAGE		79
 #define IKEV2_RADIUS_ATTR_MESSAGE_AUTH		80
 
+/* Microsoft VSA (RFC 2548): vendor-id 311, in attr 26 (Vendor-Specific). */
+#define IKEV2_RADIUS_VSA_MICROSOFT	311
+#define IKEV2_RADIUS_ATTR_VENDOR_SPECIFIC	26
+#define IKEV2_RADIUS_VSA_MS_MPPE_SEND_KEY	16
+#define IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY	17
+
 #define IKEV2_RADIUS_AUTH_LEN	16	/* Request/Response Authenticator */
 #define IKEV2_RADIUS_HEADER_LEN	20	/* Code+ID+Len+Auth */
 #define IKEV2_RADIUS_MAX_VALUE	253	/* max octets in one Attr Value */
@@ -147,6 +153,27 @@ extern rc_vchar_t *ikev2_radius_find_attr(struct ikev2_radius_response *,
 /* Reassemble EAP-Message (79) attributes across RFC 3579 fragmentation
  * into a single vchar the caller frees; NULL if none present. */
 extern rc_vchar_t *ikev2_radius_eap_message(struct ikev2_radius_response *);
+
+/*
+ * Extract the EAP-MSCHAPv2 MSK from an Access-Accept.  RFC 3079 s3.3 /
+ * [MS-CHAP] 3.1.5.1: the two 16-octet master keys arrive as the
+ * MS-MPPE-Recv-Key (vendor 311 sub-attr 17) and MS-MPPE-Send-Key
+ * (sub-attr 16) VSAs, and
+ *     MSK = MasterReceiveKey || MasterSendKey || 32 zero octets
+ * (64 octets).  RFC 7296 s2.16 substitutes this MSK for the shared secret
+ * in the s2.15 AUTH computation:
+ *     AUTH = prf(prf(MSK, "Key Pad for IKEv2"), SignedOctets)
+ * Both attributes are mandatory; a missing Recv-Key / Send-Key or a
+ * decrypt failure returns NULL (fail closed).  Returns a freshly
+ * allocated 64-octet vchar the caller frees.
+ *
+ * req_auth is the Request Authenticator of the Access-Request that drew
+ * this Access-Accept (their exchange's authenticator feeds the RFC 2548
+ * MD5-XOR key schedule, s2.4.3).
+ */
+extern rc_vchar_t *ikev2_radius_msk(struct ikev2_radius_response *,
+				    const uint8_t req_auth[IKEV2_RADIUS_AUTH_LEN],
+				    rc_vchar_t *secret);
 
 /* Free a response returned by ikev2_radius_exchange(). */
 extern void ikev2_radius_response_free(struct ikev2_radius_response *);
