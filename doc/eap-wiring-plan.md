@@ -151,13 +151,20 @@ remote client {
 }
 ```
 
-## 7. Key derivation (used-key generation) with EAP
+## 7. Key derivation (AUTH) with EAP
 
-`Ka = prf+(SK_d, N(p) || MSK)` (RFC 7296 §2.16); `SK_pi = first-half(Ka)`,
-`SK_pr = second-half(Ka)`, then AUTH over `SK_pr`. EAP-MSCHAPv2 supplies its MSK
-from the 32-byte MPPE-Recv/MPPE-Send key pair (RFC 2759); EAP-TLS supplies the
-128-byte MSK (RFC 5216). Append this as one ordered input in the existing
-key-derivation chain so ADDKE/I_INTERMEDIATE/PPK ordering is preserved.
+RFC 7296 §2.16 substitutes the EAP-derived MSK for the shared secret in
+§2.15, so the responder's AUTH is:
+
+`AUTH = prf(prf(MSK, "Key Pad for IKEv2"), SignedOctets)`
+
+There is **no** `Ka = prf+(SK_d, N(p) || MSK)` remix of `SK_d` in that
+section.  EAP-MSCHAPv2 supplies its 64-octet MSK as
+Recv-Key∥Send-Key∥32 zero octets (RFC 3079 §3.3, [MS-CHAP] 3.1.5.1);
+EAP-TLS supplies a 64-octet MSK (RFC 5216).  The MSK is used only in the
+AUTH computation, on top of the existing key schedule — it must not
+disturb the ADDKE/I_INTERMEDIATE/PPK key-derivation chain, whose SKEYSEED
+outputs stay as the peer computes them.
 
 ## 8. Security notes
 
