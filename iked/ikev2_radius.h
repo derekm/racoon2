@@ -68,8 +68,7 @@ struct ikev2_radius_opt;	/* forward decl: used in the codec prototypes */
  * caller frees, or NULL.
  */
 extern rc_vchar_t *ikev2_radius_build_request(uint8_t id, rc_vchar_t *eap,
-					      const struct ikev2_radius_opt *,
-					      const struct sockaddr *nas);
+					      const struct ikev2_radius_opt *);
 extern struct ikev2_radius_response *
 ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 			     rc_vchar_t *resp_raw, rc_vchar_t *secret);
@@ -122,9 +121,12 @@ struct ikev2_radius_attr {
  * its authentics, and return the decoded response in *resp (caller frees
  * with ikev2_radius_response_free()).
  *
- * id[in] is the RADIUS Identifier to stamp (monotonic per SA); it is
- * updated to the next value on return so successive round trips within
- * the same IKE_SA do not reuse it.
+ * id[in] is the RADIUS Identifier to stamp.  On a SUCCESSFUL round trip it
+ * is incremented so the next EAP exchange uses a fresh id; on timeout /
+ * verify failure it is left unchanged.  That is safe because every call
+ * opens a fresh UDP socket (new source port), which together with the id
+ * is what RFC 2865 s2.5 duplicate detection keys on - a retried call is
+ * not a duplicate of a timed-out one.
  *
  * Returns IKEV2_RADIUS_*; on OK, *resp->code is Accept/Reject/Challenge
  * and the EAP-Message attribute(s) are in the attr list.

@@ -151,7 +151,6 @@ main(void)
 	static const uint8_t eap_ident[] = { 0x02, 0x01, 0x00, 0x05, 0x01 };
 	rc_vchar_t *secret, *eap, *req;
 	uint8_t id = 42;
-	struct sockaddr_in nas;
 	struct ikev2_radius_opt opt;
 
 	if (rbuf_init(8, 80, 8, 1000, 5))
@@ -170,15 +169,11 @@ main(void)
 	memcpy(eap->v, eap_ident, sizeof(eap_ident));
 	eap->l = sizeof(eap_ident);
 
-	memset(&nas, 0, sizeof(nas));
-	nas.sin_family = AF_INET;
-	inet_pton(AF_INET, "127.0.0.1", &nas.sin_addr);
-
 	/* ---- 1. build + independent request-MA oracle ---- */
 	opt.secret = secret;
 	opt.user_name = "radiuslocal";
 	opt.nas_ip = "192.168.0.165";
-	req = ikev2_radius_build_request(id, eap, &opt, (struct sockaddr *)&nas);
+	req = ikev2_radius_build_request(id, eap, &opt);
 	if (!req) {
 		printf("radiustest: FAIL build_request (NULL)\n");
 		fails++;
@@ -334,20 +329,73 @@ main(void)
 				printf("radiustest: PASS 6 reject missing MA\n");
 		}
 
-		/* 7. tampered MA -> reject: build a correct challenge, then
-		 * flip one byte in the MA value (the ResponseAuth still
-		 * covers the attrs, so only the MA check can catch it). */
+		/* 7. tampered MA -> reject, with the Response-Authenticator
+		 * RECOMPUTED over the tampered packet so the MD5 check passes
+		 * and only the Message-Authenticator HMAC can catch it.  This
+		 * is the Blast-RADIUS (CVE-2024-3596) defense: an on-path
+		 * attacker who knows only Code/ID/Len/ReqAuth can forge the
+		 * MD5 Response-Authenticator but not the HMAC-MA.
+		 * Also verify a Reject->Accept code fork with a recomputed
+		 * ResponseAuth but stale MA is rejected. */
 		{
-			/* rebuild the 2-pass signed packet */
-			rlen = build_challenge(id, req_auth, (const uint8_t (*)[1])&(uint8_t[]){IKEV2_RADIUS_ATTR_EAP_MESSAGE}, &eaplen, &eapval, 1, secret->v, secret->l, respbuf, sizeof(respbuf));
-			respbuf[rlen - 1] ^= 0xff;	/* last MA byte */
-			resp_raw.v = respbuf; resp_raw.l = rlen;
+			uint8_t respbuf_t[2048];
+			size_t rlen_t;
+
+			/* (a) tamper the MA byte, recompute ResponseAuth */
+			{
+				uint8_t hdr4[4], ra[16];
+				rlen_t = build_challenge(id, req_auth,
+					(const uint8_t (*)[1])&(uint8_t[]){IKEV2_RADIUS_ATTR_EAP_MESSAGE},
+					&eaplen, &eapval, 1, secret->v,
+					secret->l, respbuf_t, sizeof(respbuf_t));
+				/* flip last MA byte (MA is the last attr) */
+				respbuf_t[rlen_t - 1] ^= 0xff;
+				/* recompute ResponseAuth over tampered attrs */
+				memset(respbuf_t + 4, 0, IKEV2_RADIUS_AUTH_LEN);
+				hdr4[0]=respbuf_t[0];hdr4[1]=respbuf_t[1];
+				hdr4[2]=respbuf_t[2];hdr4[3]=respbuf_t[3];
+				resp_auth(hdr4, req_auth,
+					  respbuf_t + IKEV2_RADIUS_HEADER_LEN,
+					  rlen_t - IKEV2_RADIUS_HEADER_LEN,
+					  secret->v, secret->l, ra);
+				memcpy(respbuf_t + 4, ra, IKEV2_RADIUS_AUTH_LEN);
+			}
+			resp_raw.v = respbuf_t; resp_raw.l = rlen_t;
 			if (ikev2_radius_verify_response(id, req_auth,
 							&resp_raw, secret) != NULL) {
-				printf("radiustest: FAIL tampered-MA accepted\n");
+				printf("radiustest: FAIL tampered-MA (recomputed ResponseAuth) accepted\n");
 				fails++;
 			} else
-				printf("radiustest: PASS 7 reject tampered MA\n");
+				printf("radiustest: PASS 7a reject tampered MA (HMAC catches it)\n");
+
+			/* (b) Reject->Accept fork: retarget the code, recompute
+			 * ResponseAuth only, leave the MA stale -> the MD5
+			 * ResponseAuth matches but the stale HMAC-MA fails. */
+			{
+				uint8_t hdr4[4], ra[16];
+				rlen_t = build_challenge(id, req_auth,
+					(const uint8_t (*)[1])&(uint8_t[]){IKEV2_RADIUS_ATTR_EAP_MESSAGE},
+					&eaplen, &eapval, 1, secret->v,
+					secret->l, respbuf_t, sizeof(respbuf_t));
+				/* recast this packet as Access-Accept */
+				respbuf_t[0] = IKEV2_RADIUS_CODE_ACCESS_ACCEPT;
+				/* recompute ResponseAuth over retargeted code */
+				memset(respbuf_t + 4, 0, IKEV2_RADIUS_AUTH_LEN);
+				hdr4[0]=respbuf_t[0];hdr4[1]=respbuf_t[1];
+				hdr4[2]=respbuf_t[2];hdr4[3]=respbuf_t[3];
+				resp_auth(hdr4, req_auth,
+					  respbuf_t + IKEV2_RADIUS_HEADER_LEN,
+					  rlen_t - IKEV2_RADIUS_HEADER_LEN,
+					  secret->v, secret->l, ra);
+				memcpy(respbuf_t + 4, ra, IKEV2_RADIUS_AUTH_LEN);
+				resp_raw.v = respbuf_t; resp_raw.l = rlen_t;
+				if (ikev2_radius_verify_response(id, req_auth,
+								&resp_raw, secret) != NULL) {
+					printf("radiustest: FAIL Reject->Accept (stale MA) accepted\n");
+					fails++;
+				} else
+					printf("radiustest: PASS 7b reject Reject->Accept fork\n");
+			}
 		}
 	}
 
@@ -361,8 +409,7 @@ main(void)
 		int has_state = 0;
 		stv.v = st; stv.l = sizeof(st);
 		opt.state = &stv;
-		req2 = ikev2_radius_build_request(id, eap, &opt,
-						 (struct sockaddr *)&nas);
+		req2 = ikev2_radius_build_request(id, eap, &opt);
 		if (!req2) {
 			printf("radiustest: FAIL State build (NULL)\n");
 			fails++;
