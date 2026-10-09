@@ -16,8 +16,15 @@
  * non-blocking integration resolves the blocking-event-loop gate.
  *
  * Operator harness (needs root + a running server + the secret file): NOT
- * in TESTS, like radiuslive.c.  crypto_workers is available even without
- * pthreads (inline fallback), so this works regardless.
+ * in TESTS, like radiuslive.c.
+ *
+ * ORACLE: this exits non-zero unless the worker POOL is actually enabled
+ * (crypto_workers_enabled(), i.e. RACOON2_CRYPTO_WORKERS > 0 / a non-zero
+ * workers= in config) -- the inline fallback does NOT close the blocking
+ * gate and must not pass.  It also requires the reassembled EAP type to be
+ * 26 (MSCHAPv2) and a State attribute (RFC 3579 session state), matching
+ * the live-proof rule in references/eap-radius-client.md.  A printed PASS is
+ * not the oracle; the exit status is.
  *
  * Usage: radworkertest SECRET_FILE [IDENTITY]
  */
@@ -64,12 +71,19 @@ rjob_done(void *arg)
 	struct rjob *j = arg;
 	int i;
 	if (j->rv == IKEV2_RADIUS_OK && j->resp) {
+		rc_vchar_t *eap;
 		printf("worker result on main thread: code=%u\n", j->resp->code);
+		eap = ikev2_radius_eap_message(j->resp);
+		if (eap && eap->l >= 5)
+			printf("  EAP-Message reassembled (%zu bytes): type=%u\n",
+			       eap->l,
+			       (unsigned)((uint8_t *)eap->v)[4]);
+		if (eap)
+			rc_vfree(eap);
 		for (i = 0; i < (int)j->resp->nattrs; i++)
-			if (j->resp->attrs[i].type == IKEV2_RADIUS_ATTR_EAP_MESSAGE)
-				printf("  EAP-Message (%zu bytes): type=%u\n",
-				       j->resp->attrs[i].value->l,
-				       (unsigned)((uint8_t *)j->resp->attrs[i].value->v)[4]);
+			if (j->resp->attrs[i].type == IKEV2_RADIUS_ATTR_STATE)
+				printf("  State present (%zu octets)\n",
+				       j->resp->attrs[i].value->l);
 	}
 }
 
@@ -161,10 +175,43 @@ main(int argc, char **argv)
 	}
 	printf("main loop drained %d poll(s)\n", polled);
 
-	if (job->rv != IKEV2_RADIUS_OK) {
+	/* ORACLE (matches the live-proof rule): the pool MUST be a real
+	 * worker pool, not the inline fallback (which would stall iked's
+	 * single-threaded loop and does NOT close the blocking gate). */
+	if (!crypto_workers_enabled()) {
+		printf("FAIL: crypto worker pool is not enabled "
+		       "(inline fallback does not close the blocking gate)\n");
+		return 1;
+	}
+	if (job->rv != IKEV2_RADIUS_OK || !job->resp) {
 		printf("FAIL: exchange rc=%d on worker (wanted 0)\n", job->rv);
 		return 1;
 	}
-	printf("PASS: non-blocking RADIUS exchange completed on worker + drained on main\n");
+	if (job->resp->code != IKEV2_RADIUS_CODE_ACCESS_CHALLENGE) {
+		printf("FAIL: expected Access-Challenge (11), got code=%u\n",
+		       job->resp->code);
+		ikev2_radius_response_free(job->resp);
+		return 1;
+	}
+	{
+		rc_vchar_t *eap = ikev2_radius_eap_message(job->resp);
+		int good = (eap && eap->l >= 5 &&
+			    ((uint8_t *)eap->v)[4] == IKEV2_RADIUS_EAP_TYPE_MSCHAPV2);
+		if (eap)
+			rc_vfree(eap);
+		if (!good) {
+			printf("FAIL: reassembled EAP is not MSCHAPv2 (type 26)\n");
+			ikev2_radius_response_free(job->resp);
+			return 1;
+		}
+	}
+	if (!ikev2_radius_find_attr(job->resp, IKEV2_RADIUS_ATTR_STATE)) {
+		printf("FAIL: response has no State attribute (RFC 3579)\n");
+		ikev2_radius_response_free(job->resp);
+		return 1;
+	}
+	ikev2_radius_response_free(job->resp);
+	printf("PASS: non-blocking RADIUS (code 11, EAP type 26, State) "
+	       "completed on worker + drained on main\n");
 	return 0;
 }
