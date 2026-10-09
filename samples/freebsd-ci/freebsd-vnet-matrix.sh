@@ -1163,11 +1163,12 @@ run_row() {
 			jexec $jr /usr/local/sbin/setkey -DP 2>/dev/null | grep -q 'out ipsec' && break
 			_pw=$((_pw+1)); sleep 1
 		done
-		# -immediate rows replace the IKE_AUTH child right after it
-		# lands; probe the replacement (its Y keymat is installed), not
-		# the SA being deleted under the ping.
+		# -immediate / -firstchild-nocl / -clresp-legacy rows replace
+		# the IKE_AUTH child right after it lands; probe the replacement
+		# (its Y keymat is installed), not the SA being deleted under
+		# the ping.
 		case "$_name" in
-		*-immediate*|*-firstchild-nocl*)
+		*-immediate*|*-firstchild-nocl*|*-clresp-legacy*)
 			_il=$FI; [ "$FB_CH" = i ] && _il=$FR
 			fb_wait_one "$_il" || true
 			sleep 2 ;;
@@ -1719,6 +1720,14 @@ echo "=== verdict (row $_name) ==="
 		echo "FAIL freebsd-vnet $_name (IKE payload malformed after decrypt, not a SADB timeout)"
 	elif [ "$up" -eq 0 ] && grep -q 'state=mature' /tmp/freeb/resp-sadb.txt /tmp/freeb/init-sadb.txt 2>/dev/null; then
 		echo "FAIL freebsd-vnet $_name (${gate_why:-later latch cleared up}; ESP SAs were mature)"
+	elif [ "$up" -eq 1 ] && [ "$TUN_OK" -eq 0 ]; then
+		# child came up and SAs are mature, but the post-establishment
+		# probe did not transit either SA (e.g. the at-once immediate
+		# rekey replaced the child under the ping).  Say so - a mature
+		# SADB is not "no ESP tunnel SAs".
+		echo "FAIL freebsd-vnet $_name (child up + ESP SAs mature, but post-establishment ping did not transit)"
+	elif [ "$up" -eq 1 ] && [ "$TUN_OK" -eq 1 ]; then
+		echo "FAIL freebsd-vnet $_name (${gate_why:-unexplained FAIL after child up + data-plane OK})"
 	else
 		echo "FAIL freebsd-vnet $_name: no ESP tunnel SAs in either per-vnet SADB after timeout"
 	fi
