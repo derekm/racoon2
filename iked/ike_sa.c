@@ -234,17 +234,22 @@ ikev2_sa_periodic_task(void)
 			if (ikev2_resume_save(sa) == 0)
 				sa->resume_dirty = 0;
 		}
-		if (sa->crypto_pending || sa->eap_pending) {
+		if (sa->crypto_pending || sa->eap_round_pending) {
 			/*
-			 * A worker holds pointers into this SA: a crypto
-			 * worker (child_sa/new_sa dhpub slots, or the EAP
-			 * RADIUS round's relay/MSK) and its done callback
-			 * will run on the next drain.  Disposing now would
-			 * free memory the worker is about to write (and the
-			 * callback about to read).  EAP uses its own
-			 * eap_pending pin (orthogonal to crypto_pending) so a
-			 * DH/rekey done() can never release an in-flight EAP
-			 * round, and vice versa.  Defer until no pin is set.
+			 * A crypto/DH worker (child_sa/new_sa dhpub slots) or
+			 * the EAP RADIUS round is in flight and its done()
+			 * callback will run on the next drain.  The EAP worker
+			 * itself only touches round-owned copies (see
+			 * eap_round_run), but if this SA were disposed before
+			 * round done() re-finds it by serial, the SA - and the
+			 * eap_msk it owns - would be freed and zeroized while
+			 * the resume() caller still holds the round, and a
+			 * re-found DYING SA must not be resumed underneath.
+			 * The pin defers disposal until the round's done() has
+			 * cleared it.  EAP uses its own eap_round_pending
+			 * (orthogonal to crypto_pending) so a DH/rekey done()
+			 * can never release an in-flight EAP round, and vice
+			 * versa.  Defer until no pin is set.
 			 */
 			TRACE((PLOGLOC, "deferring ike_sa %p (crypto/eap pending)\n",
 			       sa));

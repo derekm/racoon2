@@ -9,7 +9,7 @@
  *
  * SA-lifetime: between the worker starting select() and the main loop
  * draining, the IKE_SA may be freed or moved to DYING/DEAD.  The bridge
- * therefore sets ike_sa->eap_pending before submitting (EAP's own pin, which
+ * therefore sets ike_sa->eap_round_pending before submitting (EAP's own pin, which
  * - with crypto_pending - stops ikev2_sa_periodic_task disposing the SA
  * while the worker is away; see ikev2_eap_round.h for why EAP pins its own
  * field rather than sharing the DH/rekey crypto_pending).
@@ -133,10 +133,10 @@ eap_round_done(void *arg)
 		return;
 	}
 	/* clear the EAP pin ALWAYS, even for a DYING/DEAD SA, so the periodic
-	 * task can dispose it (and the eap_msk).  eap_pending is EAP's own
+	 * task can dispose it (and the eap_msk).  eap_round_pending is EAP's own
 	 * pin, orthogonal to crypto_pending (DH/rekey): a DH done() can never
 	 * release an in-flight EAP round and vice versa. */
-	sa->eap_pending = 0;
+	sa->eap_round_pending = 0;
 	if (sa->state == IKEV2_STATE_DYING ||
 	    sa->state == IKEV2_STATE_DEAD) {
 		/* teardown owns the SA; do not resume into a dying SA */
@@ -170,10 +170,10 @@ ikev2_eap_round_submit(struct ikev2_sa *ike_sa, int serial,
 	 * lookup in done(); a mismatched caller serial would never unpin. */
 	if (serial != ike_sa->serial_number)
 		return -1;
-	/* eap_pending is EAP's own pin for this SA (orthogonal to the DH/rekey
+	/* eap_round_pending is EAP's own pin for this SA (orthogonal to the DH/rekey
 	 * crypto_pending).  It is a boolean: refuse if an EAP round is already
 	 * in flight on this SA rather than clobber its pin. */
-	if (ike_sa->eap_pending)
+	if (ike_sa->eap_round_pending)
 		return -1;
 
 	r = racoon_calloc(1, sizeof(*r));
@@ -229,13 +229,13 @@ ikev2_eap_round_submit(struct ikev2_sa *ike_sa, int serial,
 	}
 	memcpy(r->eap.v, eap->v, eap->l);
 
-	/* pin the SA so it is not disposed while the worker is away.  eap_pending
+	/* pin the SA so it is not disposed while the worker is away.  eap_round_pending
 	 * is EAP's own orthogonal pin (vs. crypto_pending used by DH/rekey), so
 	 * a DH/rekey done() can never release an in-flight EAP round. */
-	ike_sa->eap_pending = 1;
+	ike_sa->eap_round_pending = 1;
 
 	if (crypto_job_submit(eap_round_run, eap_round_done, r) != 0) {
-		ike_sa->eap_pending = 0;
+		ike_sa->eap_round_pending = 0;
 		eap_round_release(r);
 		return -1;
 	}

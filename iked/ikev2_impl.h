@@ -316,8 +316,8 @@ struct ikev2_sa {
 	int behind_nat;
 	int peer_behind_nat;
 	int crypto_pending;
-	int eap_pending;	/* EAP worker round in flight (own pin, see
-				   eap_pending reason in ikev2_eap_round.c) */
+	int eap_round_pending;	/* EAP worker round in flight (own pin, see
+				   eap_round_pending reason in ikev2_eap_round.c) */
 	int frag_supported;		/* IKEv2 fragmentation (RFC7383) */
 	int mobike_supported;		/* RFC 4555 */
 	int mobike_update;		/* UPDATE_SA_ADDRESSES seen */

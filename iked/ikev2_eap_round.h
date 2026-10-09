@@ -4,17 +4,25 @@
  * Bridge between the IKE_AUTH responder's EAP relay (ikev2_eap_relay.c)
  * and the worker pool: submit one blocking ikev2_radius_exchange() to a
  * worker; on the main thread after crypto_workers_drain(), re-find the SA by
- * serial, clear the EAP pin (sa->eap_pending) it set, and resume the caller's
+ * serial, clear the EAP pin (sa->eap_round_pending) it set, and resume the caller's
  * callback only if that SA is still live.  A gone / DYING / DEAD SA drops
  * the round without resuming: for a findable DYING/DEAD SA the pin is
  * cleared first so the periodic task can reap it; a gone SA has no pin left
  * to clear.
  *
- * The EAP round uses its OWN pin (ike_sa->eap_pending), orthogonal to the
+ * The EAP round uses its OWN pin (ike_sa->eap_round_pending), orthogonal to the
  * DH/rekey crypto_pending that other worker jobs pin.  An EAP round can
- * therefore be in flight on the same SA as a DH/rekey job with no risk that
- * one done() releases the other's pin and lets the periodic task reap the SA
- * (and its relay/MSK) under a still-running worker.
+ * therefore be in flight on the same SA as a DH/rekey job without the pin-clear
+ * race: one done() releases only its own pin, never the other's, so the
+ * periodic task cannot reap the SA (and its relay/MSK) under a still-running
+ * worker.
+ *
+ * Memory-safety of that overlap rests on the caller invariant: the EAP worker
+ * never touches the SA - it runs ikev2_radius_exchange() on round-owned copies
+ * only (see eap_round_run).  A DH abort() during an in-flight EAP round only
+ * marks the SA DYING; the round's done() treats a re-found DYING/DEAD SA as a
+ * drop, so the caller must treat that outcome as the exchange ending with no
+ * AUTH rather than as a successful continuation.
  *
  * See ikev2_eap_round.c for the lifetime rationale.  The relay's per-SE
  * state and the MSK live on the caller-owned ike_sa; this module never
@@ -58,10 +66,10 @@ typedef void (*ikev2_eap_round_resume_t)(struct ikev2_eap_round *r, int rc);
  * serial MUST equal ike_sa->serial_number (done() looks the SA up by serial
  * to unpin it; a mismatched caller serial would never unpin).
  *
- * ike_sa->eap_pending (EAP's own pin, orthogonal to the DH/rekey
+ * ike_sa->eap_round_pending (EAP's own pin, orthogonal to the DH/rekey
  * crypto_pending) is set here and cleared in done() on the SA found by
  * serial - even for a DYING/DEAD SA, so the periodic task can reap it.
- * eap_pending is a boolean: submit FAILS (returns -1) if it is already set
+ * eap_round_pending is a boolean: submit FAILS (returns -1) if it is already set
  * (an EAP round already in flight on this SA).  A concurrent DH/rekey job
  * pins crypto_pending, its own field, so EAP and DH/rekey can be in flight
  * together without one done() releasing the other's pin.  For an SA that

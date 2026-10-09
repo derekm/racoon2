@@ -4,7 +4,7 @@
  * that the operator harnesses (radworkertest / relayworkertest) cannot prove
  * because they run without an ike_sa.
  *
- * ikev2_eap_round_submit() pins ike_sa->eap_pending (EAP's own pin, set and
+ * ikev2_eap_round_submit() pins ike_sa->eap_round_pending (EAP's own pin, set and
  * cleared separately from the DH/rekey crypto_pending), runs the exchange on
  * a worker, and done() re-finds the SA by serial on the main thread:
  *   - a live SA has the pin cleared and resume() is called once;
@@ -19,6 +19,14 @@
  *   3. inserted DEAD SA: pin cleared, resume NOT called.
  *   4. inserted SA freed while the worker is away: resume NOT called, no
  *      crash (unlink + dispose + drain).
+ *   5. mismatched serial: submit rejected, nothing pinned.
+ *   6. already-pinned SA (eap_round_pending set by a prior round): submit
+ *      rejected, the existing pin left set.
+ *   7. a DH/rekey crypto_pending concurrent job does NOT block EAP: submit
+ *      accepted even with crypto_pending=1, and the round's done() leaves
+ *      crypto_pending set (EAP never touches the DH pin).
+ *   8. the reaper defers an EAP-pinned SA: ikev2_sa_periodic_task() does not
+ *      mark/dispose a SA with eap_round_pending set, and does once it clears.
  *
  * The exchange runs against 127.0.0.1:1 (nothing listens) so it fails fast
  * with a transport error; what matters here is the done() path (SA re-find,
@@ -122,7 +130,7 @@ main(void)
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
-	sa->eap_pending = 0;
+	sa->eap_round_pending = 0;
 	resume_count = 0; resume_had_sa = 0;
 	id = 7;
 	if (ikev2_eap_round_submit(sa, sa->serial_number, &eap,
@@ -131,20 +139,20 @@ main(void)
 				   &id, on_resume) != 0) {
 		printf("eaproundtest: FAIL 1 submit\n");
 		fails++;
-	} else if (sa->eap_pending == 0) {
+	} else if (sa->eap_round_pending == 0) {
 		printf("eaproundtest: FAIL 1 pin not set during round\n");
 		fails++;
 	} else {
 		if (drain_until_done() != 0) {
 			printf("eaproundtest: FAIL 1 drain timeout\n");
 			fails++;
-		} else if (resume_count == 1 && sa->eap_pending == 0 &&
+		} else if (resume_count == 1 && sa->eap_round_pending == 0 &&
 		    resume_had_sa) {
 			printf("eaproundtest: PASS 1 live SA resumed once, "
 			       "pin cleared\n");
 		} else {
 			printf("eaproundtest: FAIL 1 resume=%d pending=%d"
-			       " sa=%d\n", resume_count, sa->eap_pending,
+			       " sa=%d\n", resume_count, sa->eap_round_pending,
 			       resume_had_sa);
 			fails++;
 		}
@@ -158,7 +166,7 @@ main(void)
 	 * without calling resume (no use-after-free). */
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
-	sa->eap_pending = 0;
+	sa->eap_round_pending = 0;
 	resume_count = 0; resume_had_sa = 0;
 	id = 8;
 	if (ikev2_eap_round_submit(sa, sa->serial_number, &eap,
@@ -187,7 +195,7 @@ main(void)
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
-	sa->eap_pending = 0;
+	sa->eap_round_pending = 0;
 	sa->state = IKEV2_STATE_DEAD;
 	resume_count = 0; resume_had_sa = 0;
 	id = 9;
@@ -202,12 +210,12 @@ main(void)
 		if (drain_until_done() != 0) {
 			printf("eaproundtest: FAIL 3 drain timeout\n");
 			fails++;
-		} else if (resume_count == 0 && sa->eap_pending == 0) {
+		} else if (resume_count == 0 && sa->eap_round_pending == 0) {
 			printf("eaproundtest: PASS 3 DEAD SA not resumed, "
 			       "pin cleared\n");
 		} else {
 			printf("eaproundtest: FAIL 3 resume=%d pending=%d\n",
-			       resume_count, sa->eap_pending);
+			       resume_count, sa->eap_round_pending);
 			fails++;
 		}
 	}
@@ -249,7 +257,7 @@ main(void)
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
-	sa->eap_pending = 0;
+	sa->eap_round_pending = 0;
 	resume_count = 0; resume_had_sa = 0;
 	id = 10;
 	if (ikev2_eap_round_submit(sa, sa->serial_number, &eap,
@@ -294,19 +302,19 @@ main(void)
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
-	sa->eap_pending = 0;
+	sa->eap_round_pending = 0;
 	resume_count = 0;
 	id = 11;
 	if (ikev2_eap_round_submit(sa, sa->serial_number + 1, &eap,
 				   (struct sockaddr *)&server,
 				   (socklen_t)sizeof(server), &opt,
 				   &id, on_resume) != 0) {
-		if (sa->eap_pending == 0) {
+		if (sa->eap_round_pending == 0) {
 			printf("eaproundtest: PASS 5 mismatched serial "
 			       "rejected, no pin set\n");
 		} else {
 			printf("eaproundtest: FAIL 5 rejected but pin set=%d\n",
-			       sa->eap_pending);
+			       sa->eap_round_pending);
 			fails++;
 		}
 	} else {
@@ -316,23 +324,23 @@ main(void)
 	TAILQ_REMOVE(&ikev2_sa_list, sa, link);
 	ikev2_dispose_sa(sa);
 
-	/* ---- 6. reject an already-pinned SA (no unpin of a foreign pin) ---- */
+	/* ---- 6. reject an already-pinned SA (same-EAP-round guard) ---- */
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
-	sa->eap_pending = 1;	/* pretend another EAP round pinned it */
+	sa->eap_round_pending = 1;	/* another EAP round already in flight */
 	resume_count = 0;
 	id = 12;
 	if (ikev2_eap_round_submit(sa, sa->serial_number, &eap,
 				   (struct sockaddr *)&server,
 				   (socklen_t)sizeof(server), &opt,
 				   &id, on_resume) != 0) {
-		if (sa->eap_pending == 1) {
+		if (sa->eap_round_pending == 1) {
 			printf("eaproundtest: PASS 6 already-pinned SA "
-			       "rejected, foreign eap pin left set\n");
+			       "rejected, own EAP pin left set\n");
 		} else {
 			printf("eaproundtest: FAIL 6 rejected but pinned=%d\n",
-			       sa->eap_pending);
+			       sa->eap_round_pending);
 			fails++;
 		}
 	} else {
@@ -341,6 +349,64 @@ main(void)
 	}
 	TAILQ_REMOVE(&ikev2_sa_list, sa, link);
 	ikev2_dispose_sa(sa);
+
+	/* ---- 7. a concurrent DH/rekey crypto_pending does NOT block EAP,
+	 * and the round's done() clears only its OWN pin - crypto_pending is
+	 * left set (EAP never writes the DH pin). ---- */
+	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+	if (!sa) return 2;
+	ikev2_sa_insert(sa);
+	sa->crypto_pending = 1;		/* a DH/rekey job is in flight */
+	sa->eap_round_pending = 0;
+	resume_count = 0; resume_had_sa = 0;
+	id = 13;
+	if (ikev2_eap_round_submit(sa, sa->serial_number, &eap,
+				   (struct sockaddr *)&server,
+				   (socklen_t)sizeof(server), &opt,
+				   &id, on_resume) != 0) {
+		printf("eaproundtest: FAIL 7 crypto_pending blocked EAP submit\n");
+		fails++;
+	} else if (drain_until_done() != 0) {
+		printf("eaproundtest: FAIL 7 drain timeout\n");
+		fails++;
+	} else if (resume_count == 1 && sa->eap_round_pending == 0 &&
+	    sa->crypto_pending == 1) {
+		printf("eaproundtest: PASS 7 crypto_pending coexists; EAP done "
+		       "left DH pin set\n");
+	} else {
+		printf("eaproundtest: FAIL 7 resume=%d eap=%d crypto=%d\n",
+		       resume_count, sa->eap_round_pending, sa->crypto_pending);
+		fails++;
+	}
+	TAILQ_REMOVE(&ikev2_sa_list, sa, link);
+	ikev2_dispose_sa(sa);
+
+	/* ---- 8. the periodic task defers disposal of a DYING childless SA
+	 * while eap_round_pending is set, and reaps it once both pins clear. */
+	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+	if (!sa) return 2;
+	ikev2_sa_insert(sa);
+	sa->state = IKEV2_STATE_DYING;
+	sa->crypto_pending = 0;
+	sa->eap_round_pending = 1;	/* EAP worker still out */
+	ikev2_sa_periodic_task();
+	if (ikev2_find_sa_by_serial(sa->serial_number) == NULL) {
+		printf("eaproundtest: FAIL 8 reaper disposed pinned SA\n");
+		fails++;
+	} else {
+		int serno = sa->serial_number;
+		sa->eap_round_pending = 0;	/* round done */
+		ikev2_sa_periodic_task();
+		/* the second tick disposed the SA, so only the captured serial
+		 * (not sa) is valid from here on */
+		if (ikev2_find_sa_by_serial(serno) != NULL) {
+			printf("eaproundtest: FAIL 8 reaper kept unpinned "
+			       "DYING SA\n");
+			fails++;
+		} else
+			printf("eaproundtest: PASS 8 reaper defer->reap "
+			       "matches EAP pin\n");
+	}
 
 	if (secret.v) free(secret.v);
 	printf("eaproundtest: %s (%d failures)\n",
