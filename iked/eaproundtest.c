@@ -1,26 +1,27 @@
 /*
  * iked/eaproundtest.c - hermetic test of the responder EAP worker-round
- * bridge (ikev2_eap_round.c), focused on the SA-lifetime guard.
+ * bridge (ikev2_eap_round.c), focused on the SA-lifetime and pin bookkeeping
+ * that the operator harnesses (radworkertest / relayworkertest) cannot prove
+ * because they run without an ike_sa.
  *
- * The operator harnesses (radworkertest / relayworkertest) prove the
- * worker+drain+relay path but run WITHOUT an ike_sa, so they cannot test
- * the one property this bridge exists to guarantee: between the worker
- * starting and the main loop draining, the IKE_SA may disappear, and
- * done() must NOT resume (or touch) an SA it cannot re-find as the same,
- * live SA (use-after-free guard; same discipline as
- * ikev2_createchild_initiator_dh_done).
+ * ikev2_eap_round_submit() pins ike_sa->crypto_pending, runs the exchange on
+ * a worker, and done() re-finds the SA by serial on the main thread:
+ *   - a live SA has the pin cleared and resume() is called once;
+ *   - a gone / recycled / DYING / DEAD SA has the pin cleared (when still
+ *     findable) and resume() is NOT called (mirror of
+ *     ikev2_createchild_initiator_dh_done) - the round is just released.
  *
- * This test creates REAL ike_sa structs and exercises the bridge's
- * revalidate/done path hermetically:
+ * Cases:
+ *   1. live, inserted SA: pin cleared, resume called once.
+ *   2. not-on-list SA (find_sa_by_serial == NULL): resume NOT called, no
+ *      touch of the SA (no use-after-free).
+ *   3. inserted DEAD SA: pin cleared, resume NOT called.
+ *   4. inserted SA freed while the worker is away: resume NOT called, no
+ *      crash (unlink + dispose + drain).
  *
- *   1. a live, inserted SA is resumed (done() runs; crypto_pending cleared).
- *   2. an SA that is not on the serial list (not inserted) is NOT resumed:
- *      find_sa_by_serial returns NULL and the round is dropped cleanly.
- *   3. an inserted, IKEV2_STATE_DEAD SA is NOT resumed (state check).
- *
- * The worker's exchange runs against 127.0.0.1:1 (nothing listens) so it
- * returns fast with a transport error - the point here is the done() path
- * (SA re-find + resume-or-drop), which runs regardless of the exchange rc.
+ * The exchange runs against 127.0.0.1:1 (nothing listens) so it fails fast
+ * with a transport error; what matters here is the done() path (SA re-find,
+ * pin clear, resume-or-drop), which runs regardless of the exchange rc.
  *
  * Returns 0 iff all pass.
  */
@@ -52,13 +53,15 @@ TEST_MAIN_STUBS()
 
 static int fails;
 static int resume_count;
+static int resume_had_sa;
 
 static void
 on_resume(struct ikev2_eap_round *r, int rc)
 {
 	resume_count++;
+	if (ikev2_eap_round_sa(r) != NULL)
+		resume_had_sa = 1;
 	(void)rc;
-	(void)r;
 }
 
 /* run the main-loop select+drain until the worker round completes */
@@ -85,7 +88,6 @@ main(void)
 	rc_vchar_t secret, eap;
 	struct sockaddr_in server;
 	struct ikev2_radius_opt opt;
-	struct ikev2_eap_round *round = NULL;
 	uint8_t id = 7;
 	uint8_t eapwire[5] = { 2, 7, 0, 5, 1 };	/* Response/Identity */
 	struct ikev2_sa *sa;
@@ -113,96 +115,129 @@ main(void)
 	opt.retries = 1;
 	opt.timeout_ms = 50;
 
-	/* ---- 1. live, inserted SA is resumed ---- */
+	/* ---- 1. live, inserted SA: pin cleared + resume once ---- */
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
-	sa->crypto_pending = 1;
-	resume_count = 0;
-	round = NULL;
+	sa->crypto_pending = 0;
+	resume_count = 0; resume_had_sa = 0;
+	id = 7;
 	if (ikev2_eap_round_submit(sa, sa->serial_number, &eap,
 				   (struct sockaddr *)&server,
 				   (socklen_t)sizeof(server), &opt,
-				   &id, on_resume, &round) != 0) {
+				   &id, on_resume) != 0) {
 		printf("eaproundtest: FAIL 1 submit\n");
+		fails++;
+	} else if (sa->crypto_pending == 0) {
+		/* inline pool path already ran done() before submit returned;
+		 * treat as pass if consumed */
+		printf("eaproundtest: FAIL 1 pin not set during round\n");
 		fails++;
 	} else {
 		drain_until_done();
-		if (resume_count == 1 && sa->crypto_pending == 0) {
-			printf("eaproundtest: PASS 1 live SA resumed, "
-			       "crypto_pending cleared\n");
+		if (resume_count == 1 && sa->crypto_pending == 0 &&
+		    resume_had_sa) {
+			printf("eaproundtest: PASS 1 live SA resumed once, "
+			       "pin cleared\n");
 		} else {
-			printf("eaproundtest: FAIL 1 resume_count=%d"
-			       " pending=%d\n", resume_count, sa->crypto_pending);
+			printf("eaproundtest: FAIL 1 resume=%d pending=%d"
+			       " sa=%d\n", resume_count, sa->crypto_pending,
+			       resume_had_sa);
 			fails++;
 		}
 	}
-	/* dispose the live SA (round already completed and freed).  dispose_sa
-	 * does not unlink (iked/ike_sa.c:1080), so remove it from the list
-	 * ourselves first - otherwise the freed block keeps a stale list entry
-	 * that malloc can later reuse, making a later "not on the list" check
-	 * nondeterministic. */
 	TAILQ_REMOVE(&ikev2_sa_list, sa, link);
 	ikev2_dispose_sa(sa);
 
-	/* ---- 2. non-inserted SA (not findable by serial) is NOT resumed ----
+	/* ---- 2. not-on-list SA: resume NOT called, no touch ----
 	 * allocates a real SA but does NOT put it on the serial list, so
-	 * find_sa_by_serial(serial) is NULL -> done() must drop the round
-	 * without calling on_resume (no use-after-free). */
+	 * find_sa_by_serial(serial) is NULL in done() -> release the round
+	 * without calling resume (no use-after-free). */
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
-	sa->crypto_pending = 1;
-	resume_count = 0;
-	round = NULL;
+	sa->crypto_pending = 0;
+	resume_count = 0; resume_had_sa = 0;
+	id = 8;
 	if (ikev2_eap_round_submit(sa, sa->serial_number, &eap,
 				   (struct sockaddr *)&server,
 				   (socklen_t)sizeof(server), &opt,
-				   &id, on_resume, &round) != 0) {
+				   &id, on_resume) != 0) {
 		printf("eaproundtest: FAIL 2 submit\n");
 		fails++;
 	} else {
+		/* pin may or may not still be set if inline; either way
+		 * resume must NOT run */
 		drain_until_done();
 		if (resume_count == 0) {
-			printf("eaproundtest: PASS 2 non-findable SA round "
-			       "not resumed\n");
+			printf("eaproundtest: PASS 2 not-on-list SA not "
+			       "resumed\n");
 		} else {
-			printf("eaproundtest: FAIL 2 resume_count=%d (want 0: "
-			       "SA not on serial list)\n", resume_count);
+			printf("eaproundtest: FAIL 2 resume_count=%d "
+			       "(want 0)\n", resume_count);
 			fails++;
 		}
 	}
-	/* dispose our reference (SA is not on the serial list; disposing it
-	 * here is safe: no worker round will find it by serial) */
 	ikev2_dispose_sa(sa);
 
-	/* ---- 3. inserted but DEAD SA is NOT resumed ---- */
+	/* ---- 3. inserted DEAD SA: pin cleared, resume NOT called ---- */
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
-	sa->crypto_pending = 1;
+	sa->crypto_pending = 0;
 	sa->state = IKEV2_STATE_DEAD;
-	resume_count = 0;
-	round = NULL;
+	resume_count = 0; resume_had_sa = 0;
+	id = 9;
 	if (ikev2_eap_round_submit(sa, sa->serial_number, &eap,
 				   (struct sockaddr *)&server,
 				   (socklen_t)sizeof(server), &opt,
-				   &id, on_resume, &round) != 0) {
+				   &id, on_resume) != 0) {
 		printf("eaproundtest: FAIL 3 submit\n");
 		fails++;
 	} else {
 		drain_until_done();
-		if (resume_count == 0) {
-			printf("eaproundtest: PASS 3 DEAD SA not resumed\n");
+		if (resume_count == 0 && sa->crypto_pending == 0) {
+			printf("eaproundtest: PASS 3 DEAD SA not resumed, "
+			       "pin cleared\n");
 		} else {
-			printf("eaproundtest: FAIL 3 DEAD SA resumed count=%d\n",
-			       resume_count);
+			printf("eaproundtest: FAIL 3 resume=%d pending=%d\n",
+			       resume_count, sa->crypto_pending);
 			fails++;
 		}
 	}
-	/* dispose the DEAD SA (round already dropped); unlink first so the
-	 * freed block doesn't leave a reusable stale list entry */
 	TAILQ_REMOVE(&ikev2_sa_list, sa, link);
 	ikev2_dispose_sa(sa);
+
+	/* ---- 4. SA freed while worker away: no resume, no crash ----
+	 * submit pins + queues; then unlink + dispose (free) the SA BEFORE
+	 * drain.  done() finds no SA by serial -> releases the round without
+	 * touching the freed SA.  A use-after-free would crash or resume.
+	 * Freeing mid-round is only sound because the round deep-copies all
+	 * its worker input up front. */
+	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+	if (!sa) return 2;
+	ikev2_sa_insert(sa);
+	sa->crypto_pending = 0;
+	resume_count = 0; resume_had_sa = 0;
+	id = 10;
+	if (ikev2_eap_round_submit(sa, sa->serial_number, &eap,
+				   (struct sockaddr *)&server,
+				   (socklen_t)sizeof(server), &opt,
+				   &id, on_resume) != 0) {
+		printf("eaproundtest: FAIL 4 submit\n");
+		fails++;
+	} else {
+		TAILQ_REMOVE(&ikev2_sa_list, sa, link);
+		ikev2_dispose_sa(sa);
+		drain_until_done();
+		if (resume_count == 0) {
+			printf("eaproundtest: PASS 4 freed-SA round not "
+			       "resumed (no UAF)\n");
+		} else {
+			printf("eaproundtest: FAIL 4 freed-SA WAS resumed "
+			       "count=%d (use-after-free!)\n", resume_count);
+			fails++;
+		}
+	}
 
 	if (secret.v) free(secret.v);
 	printf("eaproundtest: %s (%d failures)\n",
