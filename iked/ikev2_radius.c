@@ -506,6 +506,151 @@ ikev2_radius_eap_message(struct ikev2_radius_response *resp)
 	return out;
 }
 
+/*
+ * RFC 2548 s2.4.3: decrypt an MS-MPPE key.  The sub-attribute value is
+ * Salt(2) || ciphertext, where ciphertext is the plaintext
+ * Key-Length(1) || Key (padded to a 16-multiple) RC4'd by:
+ *     b(1)=MD5(S+R+A); c(1)=p(1)^b(1)
+ *     b(i)=MD5(S+c(i-1)); c(i)=p(i)^b(i)
+ * S = shared secret, R = Request Authenticator, A = Salt.  We reverse it:
+ * p(1)=c(1)^b(1); for i>1 b(i)=MD5(S+c(i-1)) gives p(i) from c(i).
+ */
+static rc_vchar_t *
+radius_decrypt_mppe(const uint8_t *val, size_t vlen,
+		    const uint8_t *req_auth, rc_vchar_t *secret)
+{
+	size_t salt, clen, i, keylen;
+	const uint8_t *c;
+	uint8_t b[16];
+	rc_vchar_t out;
+
+	/* Salt is 2 octets, MSB of first set */
+	if (vlen < 3 || !(val[0] & 0x80))
+		return NULL;
+	salt = 2;
+	c = val + salt;
+	clen = vlen - salt;
+	if (clen == 0 || (clen % 16) != 0)
+		return NULL;
+
+	out.v = racoon_malloc(clen);
+	if (!out.v)
+		return NULL;
+
+	/* p(1) = c(1) ^ MD5(S||R||A) */
+	{
+		uint8_t *m = racoon_malloc(secret->l + IKEV2_RADIUS_AUTH_LEN + 2);
+		size_t mo = 0;
+		rc_vchar_t md_in;
+		rc_vchar_t *md;
+		if (!m) {
+			racoon_free(out.v);
+			return NULL;
+		}
+		memcpy(m + mo, secret->v, secret->l);		mo += secret->l;
+		memcpy(m + mo, req_auth, IKEV2_RADIUS_AUTH_LEN); mo += IKEV2_RADIUS_AUTH_LEN;
+		memcpy(m + mo, val, 2);				 mo += 2;	/* salt */
+		md_in.v = m; md_in.l = mo;
+		md = eay_md5_one(&md_in);
+		racoon_free(m);
+		if (!md) {
+			racoon_free(out.v);
+			return NULL;
+		}
+		memcpy(b, md->v, IKEV2_RADIUS_AUTH_LEN);
+		rc_vfree(md);
+	}
+	for (i = 0; i < clen; i += 16) {
+		size_t o;
+		for (o = 0; o < 16; o++)
+			((uint8_t *)out.v)[i + o] = c[i + o] ^ b[o];
+		if (i + 16 < clen) {
+			/* b(i+1) = MD5(S || c(i)) for the next chunk */
+			uint8_t *m = racoon_malloc(secret->l + 16);
+			size_t mo;
+			rc_vchar_t md_in;
+			rc_vchar_t *md;
+			if (!m) {
+				racoon_free(out.v);
+				return NULL;
+			}
+			memcpy(m, secret->v, secret->l);	  mo = secret->l;
+			memcpy(m + mo, c + i, 16);		  mo += 16;
+			md_in.v = m; md_in.l = mo;
+			md = eay_md5_one(&md_in);
+			racoon_free(m);
+			if (!md) {
+				racoon_free(out.v);
+				return NULL;
+			}
+			memcpy(b, md->v, IKEV2_RADIUS_AUTH_LEN);
+			rc_vfree(md);
+		}
+	}
+
+	/* plaintext: Key-Length(1) then Key */
+	keylen = ((uint8_t *)out.v)[0];
+	if ((size_t)(1 + keylen) > clen) {
+		racoon_free(out.v);
+		return NULL;
+	}
+	{
+		rc_vchar_t *key = rc_vmalloc(keylen);
+		if (!key) {
+			racoon_free(out.v);
+			return NULL;
+		}
+		memcpy(key->v, (uint8_t *)out.v + 1, keylen);
+		key->l = keylen;
+		racoon_free(out.v);
+		return key;
+	}
+}
+
+rc_vchar_t *
+ikev2_radius_msk(struct ikev2_radius_response *resp,
+		 const uint8_t req_auth[IKEV2_RADIUS_AUTH_LEN],
+		 rc_vchar_t *secret)
+{
+	unsigned i;
+
+	if (!resp || !secret)
+		return NULL;
+	/* find the MS-MPPE-Recv-Key VSA (vendor 311, sub-attr 17) */
+	for (i = 0; i < resp->nattrs; i++) {
+		const uint8_t *v;
+		size_t vlen;
+		if (resp->attrs[i].type != IKEV2_RADIUS_ATTR_VENDOR_SPECIFIC)
+			continue;
+		v = (const uint8_t *)resp->attrs[i].value->v;
+		vlen = resp->attrs[i].value->l;
+		/* Vendor-Specific: Vendor-ID(4) then subattrs */
+		if (vlen < 8)
+			continue;
+		{
+			uint32_t vendor = ((uint32_t)v[0] << 24) |
+					  ((uint32_t)v[1] << 16) |
+					  ((uint32_t)v[2] << 8) | v[3];
+			size_t off = 4;
+			if (vendor != IKEV2_RADIUS_VSA_MICROSOFT)
+				continue;
+			while (off + 2 <= vlen) {
+				uint8_t st = v[off], sl = v[off + 1];
+				if (sl < 2 || off + sl > vlen)
+					break;
+				if (st == IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY) {
+					return radius_decrypt_mppe(v + off + 2,
+								  sl - 2,
+								  req_auth,
+								  secret);
+				}
+				off += sl;
+			}
+		}
+	}
+	return NULL;
+}
+
 void
 ikev2_radius_response_free(struct ikev2_radius_response *resp)
 {
@@ -517,7 +662,6 @@ ikev2_radius_response_free(struct ikev2_radius_response *resp)
 	racoon_free(resp->attrs);
 	racoon_free(resp);
 }
-
 int
 ikev2_radius_exchange(struct sockaddr *server, socklen_t servlen,
 		      rc_vchar_t *eap, const struct ikev2_radius_opt *opt,

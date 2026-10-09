@@ -47,6 +47,12 @@
 #define IKEV2_RADIUS_ATTR_EAP_MESSAGE		79
 #define IKEV2_RADIUS_ATTR_MESSAGE_AUTH		80
 
+/* Microsoft VSA (RFC 2548): vendor-id 311, in attr 26 (Vendor-Specific). */
+#define IKEV2_RADIUS_VSA_MICROSOFT	311
+#define IKEV2_RADIUS_ATTR_VENDOR_SPECIFIC	26
+#define IKEV2_RADIUS_VSA_MS_MPPE_SEND_KEY	16
+#define IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY	17
+
 #define IKEV2_RADIUS_AUTH_LEN	16	/* Request/Response Authenticator */
 #define IKEV2_RADIUS_HEADER_LEN	20	/* Code+ID+Len+Auth */
 #define IKEV2_RADIUS_MAX_VALUE	253	/* max octets in one Attr Value */
@@ -147,6 +153,24 @@ extern rc_vchar_t *ikev2_radius_find_attr(struct ikev2_radius_response *,
 /* Reassemble EAP-Message (79) attributes across RFC 3579 fragmentation
  * into a single vchar the caller frees; NULL if none present. */
 extern rc_vchar_t *ikev2_radius_eap_message(struct ikev2_radius_response *);
+
+/*
+ * Extract the EAP-derived MSK from an Access-Accept: the MS-MPPE-Recv-Key
+ * (RFC 2548 s2.4.3, vendor 311 sub-attr 17, carried in a Vendor-Specific
+ * attr) is the EAP-MSCHAPv2 session key iked folds into Ka = prf+(SK_d,
+ * N(p)||MSK...) per RFC 7296 s2.16 / doc/eap-wiring-plan.md s7.  The key
+ * is encrypted with a per-packet protocol ("recv" from the user; "send"
+ * is the NAS->user direction and is not the MSK for IKE EAP).  Returns a
+ * freshly allocated vchar with the decrypted master key the caller frees,
+ * or NULL if the response lacks it / decrypt fails.
+ *
+ * req_auth is the Request Authenticator of the Access-Request that drew
+ * this Access-Accept (their exchange's authenticator feeds the RC4 key
+ * schedule, RFC 2548 s2.4.3).
+ */
+extern rc_vchar_t *ikev2_radius_msk(struct ikev2_radius_response *,
+				    const uint8_t req_auth[IKEV2_RADIUS_AUTH_LEN],
+				    rc_vchar_t *secret);
 
 /* Free a response returned by ikev2_radius_exchange(). */
 extern void ikev2_radius_response_free(struct ikev2_radius_response *);
