@@ -50,8 +50,8 @@ else
 sbin_PROGRAMS = iked
 endif
 
-TESTS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest radiustest relaytest
-check_PROGRAMS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest radiustest relaytest
+TESTS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest radiustest relaytest authdertest
+check_PROGRAMS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest radiustest relaytest authdertest
 eaytest_SOURCES = eaytest.c crypto_openssl.c str2val.c
 
 # EAP (RFC 3748) framing codec: decode/encode round-trip + malformed-input
@@ -70,6 +70,12 @@ radiustest_SOURCES = radiustest.c ikev2_radius.c crypto_openssl.c str2val.c \
 # decoded RADIUS responses, so no socket/server is needed.
 relaytest_SOURCES = relaytest.c ikev2_eap_relay.c ikev2_radius.c ikev2_eap.c \
 	crypto_openssl.c str2val.c keyed_hash.c
+# EAP responder AUTH derivation (RFC 7296 s2.16): the responder AUTH over
+# SignedOctets is prf(prf(MSK,"Key Pad for IKEv2"),octets) - the same MAC as
+# the PSK path (IKEV2_AUTH_SHARED_KEY) with the MSK as shared key.  Checks
+# the daemon's own HMAC-SHA2-256 primitive against an independent raw
+# OpenSSL HMAC oracle (a shared wrapper bug cannot pass).
+authdertest_SOURCES = authdertest.c crypto_openssl.c str2val.c keyed_hash.c
 # NDcPP v3.0e crypto KATs (A9/A10/B1/B3-B6) against the daemon's OpenSSL
 # wrappers; emits a "KAT <cell>: PASS/FAIL <evidence>" line per cell.
 ndcppkats_SOURCES = ndcppkats.c crypto_openssl.c str2val.c dh.c crypto_workers.c keyed_hash.c
