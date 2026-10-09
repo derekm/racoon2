@@ -266,23 +266,32 @@ main(void)
 		struct relattr aa[1];
 		struct ikev2_radius_response *r;
 		uint8_t state[4] = { 1, 2, 3, 4 };
+		int started = 1;
 		memset(&r2, 0, sizeof(r2));
 		{
 			rc_vchar_t *opener = ikev2_eap_relay_start(&r2, 3);
-			if (opener)
+			if (!opener) {
+				/* a NULL start() must not false-pass: consume()
+				 * returns ERROR on an un-started relay. */
+				printf("relaytest: FAIL 5 start() returned NULL\n");
+				fails++;
+				started = 0;
+			} else
 				rc_vfree(opener);
 		}
-		aa[0].type = ATTR_STATE; aa[0].v = state; aa[0].l = 4;
-		r = mkresp(CHAL_REQ, req_auth, 1, aa);
-		eap = NULL; msk = NULL;
-		res = ikev2_eap_relay_consume(&r2, r, &secret, &eap, &msk);
-		if (res != IKEV2_EAP_RELAY_ERROR || eap || msk) {
-			printf("relaytest: FAIL 5 no-EAP Challenge\n");
-			fails++;
-		} else
-			printf("relaytest: PASS 5 Challenge w/o EAP -> ERROR\n");
+		if (started) {
+			aa[0].type = ATTR_STATE; aa[0].v = state; aa[0].l = 4;
+			r = mkresp(CHAL_REQ, req_auth, 1, aa);
+			eap = NULL; msk = NULL;
+			res = ikev2_eap_relay_consume(&r2, r, &secret, &eap, &msk);
+			if (res != IKEV2_EAP_RELAY_ERROR || eap || msk) {
+				printf("relaytest: FAIL 5 no-EAP Challenge\n");
+				fails++;
+			} else
+				printf("relaytest: PASS 5 Challenge w/o EAP -> ERROR\n");
+			fresp(r);
+		}
 		ikev2_eap_relay_free(&r2);
-		fresp(r);
 	}
 
 	/* ---- 6. Access-Reject -> FAILURE ---- */
@@ -290,22 +299,30 @@ main(void)
 		struct ikev2_eap_relay r3;
 		struct ikev2_radius_response *r;
 		struct relattr aa[0];
+		int started = 1;
 		memset(&r3, 0, sizeof(r3));
 		{
 			rc_vchar_t *opener = ikev2_eap_relay_start(&r3, 4);
-			if (opener)
+			if (!opener) {
+				/* a NULL start() must not false-pass. */
+				printf("relaytest: FAIL 6 start() returned NULL\n");
+				fails++;
+				started = 0;
+			} else
 				rc_vfree(opener);
 		}
-		r = mkresp(REJECT, req_auth, 0, aa);
-		eap = NULL; msk = NULL;
-		res = ikev2_eap_relay_consume(&r3, r, &secret, &eap, &msk);
-		if (res != IKEV2_EAP_RELAY_FAILURE || eap || msk) {
-			printf("relaytest: FAIL 6 Reject\n");
-			fails++;
-		} else
-			printf("relaytest: PASS 6 Access-Reject -> FAILURE\n");
+		if (started) {
+			r = mkresp(REJECT, req_auth, 0, aa);
+			eap = NULL; msk = NULL;
+			res = ikev2_eap_relay_consume(&r3, r, &secret, &eap, &msk);
+			if (res != IKEV2_EAP_RELAY_FAILURE || eap || msk) {
+				printf("relaytest: FAIL 6 Reject\n");
+				fails++;
+			} else
+				printf("relaytest: PASS 6 Access-Reject -> FAILURE\n");
+			fresp(r);
+		}
 		ikev2_eap_relay_free(&r3);
-		fresp(r);
 	}
 
 	ikev2_eap_relay_free(&relay);

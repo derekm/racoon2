@@ -1,8 +1,9 @@
 # EAP wiring plan for racoon2 iked (remote-access EAP on Fedora .165)
 
 Status: milestones 1-2 landed (framing codec, RADIUS client, MSK extract,
-worker + relay engines); the **responder IKE_AUTH wiring** (below, §4.3) is
-the outstanding roadmap. Authored 2026-10-06, updated as parts land.
+worker + relay engines, AUTH derivation), config grammar (§4 item 5) landed;
+the **responder IKE_AUTH wiring** (§4 item 1 areas + §9 milestone 3) is the
+outstanding roadmap. Authored 2026-10-06, updated as parts land.
 
 ## 1. Goal
 
@@ -61,11 +62,15 @@ Success/Failure/Nak codes are the skeleton any method must handle.
 
 ## 4. Code touch-points in racoon2
 
-1. **EAP framing module** — where payload type 48 is currently `#ifdef notyet`
-   in `iked/ikev2.c` (the `IKEV2_PAYLOAD_EAP` case regions, ~lines 2830 /
-   2895 / 3692 / 4233). New `ikev2_eap.c`: encode/decode EAP Request/Response
-   (RFC 3748), carry `Identifier`, and orchestrate the Request→Response
-   round trips across the IKE_AUTH state.
+1. **EAP framing module** — `ikev2_eap.c` (framing codec, landed) + the
+   responder relay engine `ikev2_eap_relay.c` (landed, verified by relaytest
+   / relayworkertest).  Payload type 48 is still `#ifdef notyet` in the
+   IKE_AUTH responder: `IKEV2_PAYLOAD_EAP` (48) appears in `iked/ikev2.c` only
+   as the top of the critical-payload type range (~line 1229); the responder
+   arms that would intercept an IDi-without-AUTH message for an eap-remote and
+   emit payload 48 inside the SK response are still to be written (the EAP
+   request/response orchestration across the IKE_AUTH state is the open
+   milestone-3 wiring).
 2. **RADIUS client module** — `ikev2_radius.c` (or in `lib/`): packet
    encode/decode for `Access-Request/Challenge/Reject/Accept`, UDP 1812,
    shared-secret MD5 authenticator, `EAP-Message`(79)/`Message-Authenticator`

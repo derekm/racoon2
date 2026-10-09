@@ -347,9 +347,10 @@ struct rcf_kmp {
 	rc_type ppk_mandatory;
 	rc_vchar_t *ppk_id;
 	/* EAP remote-access auth (doc/eap-wiring-plan.md): kmp_auth_method
-	 * { eap; } selects EAP responder mode, where iked terminates the
-	 * client's EAP by proxying it to a RADIUS server (the AUTH wiring
-	 * is pending).  radius_server (host or IP, required when eap is
+	 * { eap; } selects EAP responder mode, the configuration for iked
+	 * to terminate the client's EAP by proxying it to a RADIUS server
+	 * (relay engine ikev2_eap_relay.c; the IKE_AUTH responder wiring is
+	 * still pending).  radius_server (host or IP, required when eap is
 	 * selected) and radius_port (default 1812) name the endpoint;
 	 * radius_secret_file
 	 * is the shared-secret file path -- the secret itself never appears in
