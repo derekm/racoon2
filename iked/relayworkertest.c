@@ -20,9 +20,22 @@
  * ORACLE: exits non-zero unless the pool THIS BINARY started is enabled
  * (crypto_workers_enabled() right after init; nthreads is argv[3], default
  * 2 - this harness does NOT read RACOON2_CRYPTO_WORKERS / --with-crypto-
- * workers, which only iked/main.c reads), the exchange returns OK, consume()
- * returns CONTINUE, the relay's next EAP Request for the client is a
- * Request(1) of type 26 (MSCHAPv2), and State was captured.
+ * workers, which only iked/main.c reads), relay_start() emitted a valid
+ * 5-byte Request/Identity opener, the exchange returns Access-Challenge,
+ * consume() returns CONTINUE, the relay's next EAP Request for the client
+ * is a Request(1) of type 26 (MSCHAPv2), and State was captured.
+ *
+ * WHAT A PASS DOES / DOES NOT PROVE: a green run proves one live worker
+ * RADIUS round whose Access-Challenge survives ikev2_eap_relay_consume()
+ * with an MSCHAPv2 Request and a copied State.  It does NOT prove: daemon
+ * pool configuration (this harness starts its own pool via argv[3]), SA
+ * lifetime / re-find in done() (there is no ike_sa here, no crypto_pending
+ * / DYING / DEAD guard), State echoed on a second Access-Request (the
+ * copied State is never placed in opt->state and sent), worker plog /
+ * localtime thread-safety, or Accept -> MSK -> AUTH.  Those are the
+ * responder-wiring gates; this harness closes only the worker+drain+relay
+ * piece of them.  Do not treat a pass as permission to wire payload type 48
+ * on this result alone.
  *
  * Operator harness (root + live server + secret file): NOT in TESTS, like
  * radworkertest / radiuslive.
@@ -129,23 +142,39 @@ main(int argc, char **argv)
 		((uint8_t *)j->secret.v)[j->secret.l - 1] == ' '))
 		j->secret.l--;
 
-	/* 1. relay starts the exchange: the Identity Request for the client */
+	/* 1. relay starts the exchange: the Identity Request for the client.
+	 * It is part of the exit oracle: must be a Request(1)/Identity(1) of
+	 * the id we will echo back on the client's response (RFC 3748 s4:
+	 * the response Identifier must copy the request's). */
 	memset(&relay, 0, sizeof(relay));
 	opener = ikev2_eap_relay_start(&relay, 7);
 	if (!opener) {
-		printf("FAIL: relay_start\n");
+		printf("FAIL: relay_start returned NULL\n");
 		goto out;
 	}
-	printf("relay start: EAP Identity Request (%zu bytes)\n", opener->l);
+	{
+		uint8_t *ov = (uint8_t *)opener->v;
+		if (opener->l != 5 || ov[0] != 1 /* Request */ ||
+		    ov[4] != 1 /* Identity */) {
+			printf("FAIL: relay_start did not emit a 5-byte "
+			       "Request/Identity opener (len=%zu code=%u "
+			       "type=%u)\n", opener->l,
+			       opener->l ? (unsigned)ov[0] : 0,
+			       opener->l >= 5 ? (unsigned)ov[4] : 0);
+			goto out;
+		}
+		printf("relay start: EAP Identity Request (id=%u, %zu bytes)\n",
+		       opener->l ? (unsigned)ov[1] : 0, opener->l);
+	}
 
-	/* 2. the client's EAP Identity Response is what goes to RADIUS.  An
-	 * EAP Response/Identity (code 2, type 1, id 8) mentioning the user. */
+	/* 2. the client's EAP Identity Response goes to RADIUS.  Its
+	 * Identifier must match the Request we just sent (RFC 3748 s4). */
 	idlen = strlen(ident);
 	if (idlen > 245) idlen = 245;
-	eap_ident[0] = 2; eap_ident[1] = 8;			/* Response, id */
+	eap_ident[0] = 2; eap_ident[1] = (uint8_t)((uint8_t *)opener->v)[1];
 	eap_ident[2] = (uint8_t)((5 + idlen) >> 8);
 	eap_ident[3] = (uint8_t)((5 + idlen) & 0xff);
-	eap_ident[4] = 1;					/* Type=Identity */
+	eap_ident[4] = 1;				/* Type=Identity */
 	memcpy(eap_ident + 5, ident, idlen);
 	j->eap.v = malloc(5 + idlen);
 	if (!j->eap.v) goto out;
@@ -211,13 +240,22 @@ main(int argc, char **argv)
 		goto out;
 	}
 	{
-		uint8_t *v = (uint8_t *)next->v;
-		int code = v[0], type = v[4];
-		if (next->l <= 4 || code != 1 /* Request */ ||
-		    next->l < 5 || type != IKEV2_RADIUS_EAP_TYPE_MSCHAPV2) {
+		uint8_t *v;
+		int code = 0, type = 0;
+		/* length dominates the index: an assembled short/empty EAP
+		 * buffer (rc_vmalloc(0) can be non-NULL) must FAIL, not overread */
+		if (next->l < 5) {
+			printf("FAIL: relay next EAP too short (%zu bytes)\n",
+			       next->l);
+			goto out;
+		}
+		v = (uint8_t *)next->v;
+		code = v[0]; type = v[4];
+		if (code != 1 /* Request */ ||
+		    type != IKEV2_RADIUS_EAP_TYPE_MSCHAPV2) {
 			printf("FAIL: relay next EAP is not MSCHAPv2 Request "
 			       "(code=%d type=%d len=%zu)\n",
-			       code >= 0 ? code : -1, type, next->l);
+			       code, type, next->l);
 			goto out;
 		}
 		if (!relay.state || relay.state->l == 0) {
@@ -229,8 +267,11 @@ main(int argc, char **argv)
 		       next->l, relay.state->l);
 	}
 	failed = 0;
-	printf("PASS: worker exchange + relay consume -> MSCHAPv2 challenge, "
-	       "State captured (actual responder wiring contract)\n");
+	printf("PASS: one worker RADIUS round -> relay consume -> MSCHAPv2 "
+	       "challenge (type 26) + State copied.  This proves the "
+	       "worker+drain+relay path; it does NOT prove daemon pool "
+	       "config, SA lifetime/re-find, State echo on a 2nd round, "
+	       "worker plog/localtime, or Accept -> MSK -> AUTH.\n");
 
       out:
 	if (next) rc_vfree(next);
