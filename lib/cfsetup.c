@@ -223,6 +223,9 @@ static int rcf_fix_need_pfs (struct cf_list *, void *);
 static int rcf_fix_my_public_key (struct cf_list *, void *);
 static int rcf_fix_peers_public_key (struct cf_list *, void *);
 static int rcf_fix_pre_shared_key (struct cf_list *, void *);
+static int rcf_fix_radius_server (struct cf_list *, void *);
+static int rcf_fix_radius_port (struct cf_list *, void *);
+static int rcf_fix_radius_secret_file (struct cf_list *, void *);
 static int rcf_fix_dpd (struct cf_list *, void *);
 static int rcf_fix_dpd_delay (struct cf_list *, void *);
 static int rcf_fix_dpd_retry (struct cf_list *, void *);
@@ -394,6 +397,9 @@ struct rcf_tdf_t {
 	{ CFD_MY_PUBLIC_KEY,		rcf_fix_my_public_key, },
 	{ CFD_PEERS_PUBLIC_KEY,		rcf_fix_peers_public_key, },
 	{ CFD_PRE_SHARED_KEY,		rcf_fix_pre_shared_key, },
+	{ CFD_RADIUS_SERVER,		rcf_fix_radius_server, },
+	{ CFD_RADIUS_PORT,		rcf_fix_radius_port, },
+	{ CFD_RADIUS_SECRET_FILE,	rcf_fix_radius_secret_file, },
 	{ CFD_DPD,			rcf_fix_dpd, },
 	{ CFD_DPD_DELAY,		rcf_fix_dpd_delay, },
 	{ CFD_DPD_RETRY,		rcf_fix_dpd_retry, },
@@ -1811,6 +1817,45 @@ rcf_fix_pre_shared_key(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_PRE_SHARED_KEY))
 		return -1;
 	if (rcf_fix_string(head->nextp, &dst->pre_shared_key))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_radius_server(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_RADIUS_SERVER))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->radius_server))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_radius_port(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_RADIUS_PORT))
+		return -1;
+	if (rcf_fix_number(head->nextp, &dst->radius_port))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_radius_secret_file(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_RADIUS_SECRET_FILE))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->radius_secret_file))
 		return -1;
 
 	return 0;
@@ -3341,6 +3386,8 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rc_vfree(n->peers_principal);
 	rc_vfree(n->addresspool);
 	rc_vfree(n->ppk_id);
+	rc_vfree(n->radius_server);
+	rc_vfree(n->radius_secret_file);
 	rc_free(n);
 }
 
@@ -3411,6 +3458,9 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	new->require_config = src->require_config;
 	new->ppk_mandatory = src->ppk_mandatory;
 	DEEPCOPY_VDUP(src->ppk_id, new->ppk_id);
+	DEEPCOPY_VDUP(src->radius_server, new->radius_server);
+	DEEPCOPY_VDUP(src->radius_secret_file, new->radius_secret_file);
+	new->radius_port = src->radius_port;
 	DEEPCOPY_VDUP(src->addresspool, new->addresspool);
 	new->config_request = src->config_request;
 	DEEPCOPY_ADDRLIST(src->cfg_dns, new->cfg_dns);

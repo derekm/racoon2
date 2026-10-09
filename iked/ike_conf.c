@@ -220,6 +220,9 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* require_config (RFC 6023 mandatory CP(CFG_REQUEST)) */
 	RCT_BOOL_OFF,		/* ppk_mandatory (RFC 8784 mandatory_or_not) */
 	NULL,			/* ppk_id (RFC 8784 PPK_IDENTIFIER) */
+	NULL,			/* radius_server (EAP/RADIUS: none by default) */
+	IKEV2_RADIUS_DEFAULT_PORT, /* radius_port */
+	NULL,			/* radius_secret_file */
 };
 
 #ifdef IKEV1
@@ -450,6 +453,9 @@ IKEV2_CONF_ATTR(rc_type, childless)
 IKEV2_CONF_ATTR(rc_type, require_config)
 IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
 IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)
+IKEV2_CONF_ATTR(rc_vchar_t *, radius_server)
+IKEV2_CONF_ATTR(int, radius_port)
+IKEV2_CONF_ATTR(rc_vchar_t *, radius_secret_file)
 IKEV2_CONF_ATTR(struct rc_addrlist *, natd_public_address)
 IKEV2_CONF_ATTR(rc_type, need_pfs)
 IKEV2_CONF_ATTR(rc_vchar_t *, application_version)
@@ -4684,6 +4690,8 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 
 		for (alg = kmp_auth_method; alg; alg = alg->next) {
 			rc_vchar_t *pre_shared_key;
+			rc_vchar_t *radius_server;
+			rc_vchar_t *radius_secret_file;
 			struct rc_pklist *peers_pubkey;
 
 			switch (alg->algtype) {
@@ -4736,6 +4744,35 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 					++*err;
 					plog(PLOG_INTERR, PLOGLOC, 0,
 					     "remote %s ikev2 section specifies public key authentication, but peers_public_key is not specified\n",
+					     rm_index);
+				}
+				break;
+			case RCT_ALG_EAP:
+				/* EAP remote-access auth (doc/eap-wiring-plan.md):
+				 * iked proxies the client's EAP to a RADIUS
+				 * server.  radius_server + secret file required;
+				 * port defaults to 1812.  eap cannot share the
+				 * method list with psk/pubkey. */
+				IKEV2_CONF(radius_server, rmconf,
+					   radius_server, NULL);
+				if (!radius_server) {
+					++*err;
+					plog(PLOG_INTERR, PLOGLOC, 0,
+					     "remote %s ikev2 section specifies auth method eap, but radius_server is not specified\n",
+					     rm_index);
+				}
+				IKEV2_CONF(radius_secret_file, rmconf,
+					   radius_secret_file, NULL);
+				if (!radius_secret_file) {
+					++*err;
+					plog(PLOG_INTERR, PLOGLOC, 0,
+					     "remote %s ikev2 section specifies auth method eap, but radius_secret_file is not specified\n",
+					     rm_index);
+				}
+				if (alg->next) {
+					++*err;
+					plog(PLOG_INTERR, PLOGLOC, 0,
+					     "remote %s ikev2 section: eap must be the only auth method\n",
 					     rm_index);
 				}
 				break;

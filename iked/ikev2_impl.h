@@ -84,6 +84,9 @@ extern int ikev2_ipsec_window_size;
 /* thus 256 bits (32 octets) shall be adequate */
 #define	IKEV2_DEFAULT_NONCE_SIZE		(256 / 8)
 
+/* EAP remote-access auth: default RADIUS auth port (RFC 2865). */
+#define	IKEV2_RADIUS_DEFAULT_PORT		1812
+
 extern struct ikev2_payload_types {
 	const char *name;
 	size_t minimum_length;
