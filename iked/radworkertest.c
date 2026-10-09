@@ -14,22 +14,27 @@
  * trip to the live FreeRADIUS, drain on the "main thread", and print the
  * Access-Challenge + EAP-MSCHAPv2 response the worker obtained.  A pass
  * proves the worker-pool path delivers the RADIUS result back on the main
- * loop.  It does NOT close the blocking-event-loop gate by itself: the
- * gate for the real daemon adds - an SA must be started with a real pool
- * (below), done() must not touch a freed SA, plog on worker threads, and
- * the multi-second RADIUS select sharing the DH pool (see
- * references/eap-radius-client.md).
+ * loop.  It does NOT close the blocking-event-loop gate by itself: for the
+ * real daemon the gate still needs (1) the pool actually started for the
+ * IKE SA (iked reads --with-crypto-workers / RACOON2_CRYPTO_WORKERS in
+ * main.c; the tree default is 0 threads, so crypto_job_submit would run
+ * fn+done INLINE and never write the notify fd, stalling the loop), (2)
+ * done() must not touch a freed SA (serial revalidation / crypto_pending),
+ * and (3) worker-thread plog (localtime) and the multi-second RADIUS
+ * select sharing the DH pool.  This harness starts its own pool and manages
+ * its own job, so a pass does not prove those three daemon-path gates.
  *
  * Operator harness (needs root + a running server + the secret file): NOT
  * in TESTS, like radiuslive.c.
  *
- * ORACLE: this exits non-zero unless the worker POOL is actually enabled
- * (crypto_workers_enabled(), i.e. RACOON2_CRYPTO_WORKERS > 0 at run time
- * or --with-crypto-workers>0 at build; the tree default is 0 threads, so
- * crypto_job_submit runs fn+done INLINE and never writes the notify fd,
- * which would stall iked's single-threaded loop - that must not pass).
- * The default nthreads here is 2 so the shipped binary exercises a real
- * pool; pass a 3rd arg of 0 to see the inline diagnostic.  A pass also
+ * ORACLE: this exits non-zero unless the pool THIS BINARY started is real -
+ * i.e. crypto_workers_enabled() is true immediately after crypto_workers_init().
+ * The thread count is argv[3], default 2, so the shipped binary exercises a
+ * real pool; pass argv[3]=0 to see the inline fallback FAIL (fn+done run on
+ * the caller and never notify, which would stall iked's single-threaded
+ * loop).  Note this harness does NOT read RACOON2_CRYPTO_WORKERS or
+ * --with-crypto-workers - those are read only in iked/main.c - so a pass
+ * here says nothing about how iked's own pool was configured.  A pass also
  * requires the reassembled EAP type to be 26 (MSCHAPv2) and a State
  * attribute (RFC 3579 session state).  A printed PASS is not the oracle;
  * the exit status is.
