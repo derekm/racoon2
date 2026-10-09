@@ -128,8 +128,8 @@ main(int argc, char **argv)
 	if (!crypto_workers_enabled()) {
 		printf("FAIL: crypto worker pool is not enabled "
 		       "(nthreads=%d: inline fallback does not close the "
-		       "blocking gate; iked needs --with-crypto-workers>0 / "
-		       "RACOON2_CRYPTO_WORKERS>0)\n", nthreads);
+		       "blocking gate - re-run this harness with a non-zero "
+		       "NTHREADS argument)\n", nthreads);
 		return 1;
 	}
 

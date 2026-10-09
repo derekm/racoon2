@@ -2,9 +2,11 @@
  * iked/ikev2_radius.h - RADIUS client (RFC 2865/RFC 3579) interface for
  * iked IKEv2 EAP.
  *
- * iked terminates a road-warrior client's EAP by proxying each EAP message
- * to a RADIUS server (see ikev2_eap.c + doc/eap-wiring-plan.md).  This
- * module is the RADIUS *client* wire layer: it builds Access-Request
+ * In the RFC 7296 s2.16 design, iked will terminate a road-warrior
+ * client's EAP by proxying each EAP message to a RADIUS server (see
+ * ikev2_eap.c + doc/eap-wiring-plan.md); that responder path is still to be
+ * wired (milestone 3).  This module is the RADIUS *client* wire layer: it
+ * builds Access-Request
  * packets carrying the EAP-Message (79) attribute with a correct
  * Message-Authenticator (80), sends them to the RADIUS server over UDP
  * (1812), and decodes/verifies the Access-Accept / Access-Challenge /
