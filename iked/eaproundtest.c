@@ -64,8 +64,9 @@ on_resume(struct ikev2_eap_round *r, int rc)
 	(void)rc;
 }
 
-/* run the main-loop select+drain until the worker round completes */
-static void
+/* run the main-loop select+drain until the worker round completes.
+ * Returns 0 once a drain ran, -1 if the round never completed (timeout). */
+static int
 drain_until_done(void)
 {
 	int i;
@@ -77,9 +78,10 @@ drain_until_done(void)
 		if (select(crypto_workers_fd() + 1, &rfd, NULL, NULL, &tv) > 0 &&
 		    FD_ISSET(crypto_workers_fd(), &rfd)) {
 			crypto_workers_drain();
-			return;
+			return 0;
 		}
 	}
+	return -1;
 }
 
 int
@@ -129,8 +131,6 @@ main(void)
 		printf("eaproundtest: FAIL 1 submit\n");
 		fails++;
 	} else if (sa->crypto_pending == 0) {
-		/* inline pool path already ran done() before submit returned;
-		 * treat as pass if consumed */
 		printf("eaproundtest: FAIL 1 pin not set during round\n");
 		fails++;
 	} else {
@@ -208,11 +208,20 @@ main(void)
 	ikev2_dispose_sa(sa);
 
 	/* ---- 4. SA freed while worker away: no resume, no crash ----
-	 * submit pins + queues; then unlink + dispose (free) the SA BEFORE
-	 * drain.  done() finds no SA by serial -> releases the round without
-	 * touching the freed SA.  A use-after-free would crash or resume.
-	 * Freeing mid-round is only sound because the round deep-copies all
-	 * its worker input up front. */
+	 * submit pins + queues; then the caller frees its opt.state and the SA
+	 * BEFORE drain.  done() finds no SA by serial -> releases the round
+	 * without touching the freed SA.  Freeing caller-owned opt.state right
+	 * after submit is only sound because submit deep-copies every
+	 * worker-read opt member (user_name/nas_ip/nas_id/state/secret):
+	 * if it shallow-copied, the worker would read freed memory (ASan
+	 * crash).  A use-after-free of the SA would crash or resume. */
+	rc_vchar_t sbuf;
+	uint8_t statewire[16] = { 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 };
+	sbuf.v = malloc(sizeof(statewire)); sbuf.l = sizeof(statewire);
+	memcpy(sbuf.v, statewire, sizeof(statewire));
+	opt.state = &sbuf;
+	opt.user_name = "alice@example.test";	/* non-NULL: deep-copied */
+	opt.nas_id = "nas-test";
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
@@ -226,12 +235,18 @@ main(void)
 		printf("eaproundtest: FAIL 4 submit\n");
 		fails++;
 	} else {
+		/* caller frees its opt.state + SA right after submit; the worker
+		 * must already hold its own deep copies */
+		free(sbuf.v); sbuf.v = NULL;
 		TAILQ_REMOVE(&ikev2_sa_list, sa, link);
 		ikev2_dispose_sa(sa);
-		drain_until_done();
-		if (resume_count == 0) {
+		opt.state = NULL;	/* drop the alias so later cases are clean */
+		if (drain_until_done() != 0) {
+			printf("eaproundtest: FAIL 4 drain timeout\n");
+			fails++;
+		} else if (resume_count == 0) {
 			printf("eaproundtest: PASS 4 freed-SA round not "
-			       "resumed (no UAF)\n");
+			       "resumed (no UAF, opt deep-copied)\n");
 		} else {
 			printf("eaproundtest: FAIL 4 freed-SA WAS resumed "
 			       "count=%d (use-after-free!)\n", resume_count);

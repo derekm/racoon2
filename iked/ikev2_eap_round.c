@@ -67,7 +67,10 @@ eap_round_run(void *arg)
 				      &r->eap, &r->opt, &r->id, &r->resp);
 }
 
-/* Copy a NUL-terminated string into the round; NULL-safe. */
+/* Copy a NUL-terminated string into the round; NULL-safe.  Uses rc_strdup /
+ * rc_free (the plain malloc family, rc_malloc.h) so it pairs with the
+ * secret/EAP/state buffers - NOT racoon_free, which is the GC allocator
+ * under -DGC and must not free a plain strdup(). */
 static int
 eap_round_strdup(char **dst, const char *src)
 {
@@ -75,7 +78,7 @@ eap_round_strdup(char **dst, const char *src)
 		*dst = NULL;
 		return 0;
 	}
-	*dst = strdup(src);
+	*dst = rc_strdup(src);
 	return (*dst != NULL) ? 0 : -1;
 }
 
@@ -95,9 +98,9 @@ eap_round_release(struct ikev2_eap_round *r)
 	if (r->eap.v) { memset(r->eap.v, 0, r->eap.l); rc_free(r->eap.v); }
 	if (r->secret.v) { memset(r->secret.v, 0, r->secret.l); rc_free(r->secret.v); }
 	if (r->state.v) { memset(r->state.v, 0, r->state.l); rc_free(r->state.v); }
-	if (r->user_name) racoon_free(r->user_name);
-	if (r->nas_ip) racoon_free(r->nas_ip);
-	if (r->nas_id) racoon_free(r->nas_id);
+	if (r->user_name) rc_free(r->user_name);
+	if (r->nas_ip) rc_free(r->nas_ip);
+	if (r->nas_id) rc_free(r->nas_id);
 	racoon_free(r);
 }
 
@@ -156,6 +159,18 @@ ikev2_eap_round_submit(struct ikev2_sa *ike_sa, int serial,
 	    !opt->secret->v || !id || servlen <= 0 ||
 	    servlen > (socklen_t)sizeof(r->server))
 		return -1;
+	/* serial must name exactly this SA: crypto_pending is a boolean pin
+	 * cleared by serial lookup in done(); a mismatched caller serial would
+	 * leave somebody else's pin set and this SA never unpinned. */
+	if (serial != ike_sa->serial_number)
+		return -1;
+	/* crypto_pending is a plain boolean shared with the DH/rekey paths
+	 * (ikev2_sa_periodic_task skips a pinned SA because a worker may hold
+	 * pointers into it).  It is not a refcount: if another worker job has
+	 * already pinned this SA, pinning it again and clearing it here would
+	 * unpin that other job's SA mid-flight.  Refuse rather than corrupt. */
+	if (ike_sa->crypto_pending)
+		return -1;
 
 	r = racoon_calloc(1, sizeof(*r));
 	if (!r)
@@ -185,8 +200,7 @@ ikev2_eap_round_submit(struct ikev2_sa *ike_sa, int serial,
 	if (opt->state && opt->state->l) {
 		r->state.v = rc_calloc(1, opt->state->l);
 		if (!r->state.v) {
-			rc_vfreez(&r->secret);
-			racoon_free(r);
+			eap_round_release(r);
 			return -1;
 		}
 		memcpy(r->state.v, opt->state->v, opt->state->l);
