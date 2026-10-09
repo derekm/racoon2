@@ -5341,3 +5341,23 @@ ike_determine_sa_endpoint(struct sockaddr_storage *ss,
 
 	return addr;
 }
+
+/*
+ * Is the remote configured for EAP authentication?  This is the responder
+ * trigger's guard for routing an IDi-without-AUTH message to the EAP relay:
+ * only an eap remote is intercepted; everything else (PSK, signature, or an
+ * unspecified method) keeps the plain reject.  RCT_ALG_EAP is chosen in
+ * ike_conf_check_ikev2() and requires radius_server + radius_secret_file.
+ */
+int
+ikev2_eap_remote(struct ikev2_sa *sa)
+{
+	struct rc_alglist *alg;
+
+	if (!sa || !sa->rmconf)
+		return 0;
+	alg = ikev2_kmp_auth_method(sa->rmconf);
+	if (!alg)
+		return 0;	/* unspecified: not EAP, stay on the reject path */
+	return (alg->algtype == RCT_ALG_EAP);
+}

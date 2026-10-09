@@ -180,6 +180,7 @@ extern struct rc_alglist *ikev2_kmp_hash_alg(struct rcf_remote *);
 extern struct rc_alglist *ikev2_kmp_prf_alg(struct rcf_remote *);
 extern struct rc_alglist *ikev2_kmp_dh_group(struct rcf_remote *);
 extern struct rc_alglist *ikev2_kmp_auth_method(struct rcf_remote *);
+extern int ikev2_eap_remote(struct ikev2_sa *sa);
 extern int ikev2_peers_kmp_port(struct rcf_remote *);
 extern rc_type ikev2_cookie_required(struct rcf_remote *);
 extern rc_type ikev2_send_peers_id(struct rcf_remote *);
