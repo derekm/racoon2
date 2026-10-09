@@ -62,7 +62,7 @@ typedef enum {
 	 * registry ids 35/36/37 (draft-ietf-ipsecme-ikev2-mlkem-09). */
 	RCT_ALG_MLKEM512, RCT_ALG_MLKEM768, RCT_ALG_MLKEM1024,
 	RCT_ALG_PSK, RCT_ALG_DSS, RCT_ALG_RSASIG, RCT_ALG_ECDSA, RCT_ALG_RSAENC,
-	RCT_ALG_RSAREV, RCT_ALG_GSSAPI_KRB,
+	RCT_ALG_RSAREV, RCT_ALG_GSSAPI_KRB, RCT_ALG_EAP,
 
 		/* remote */
 	RCT_KMP_IKEV1, RCT_KMP_IKEV2, RCT_KMP_KINK,
@@ -346,6 +346,15 @@ struct rcf_kmp {
 	rc_type require_config;	/* RFC 6023: require CP(CFG_REQUEST) in IKE_AUTH */
 	rc_type ppk_mandatory;
 	rc_vchar_t *ppk_id;
+	/* EAP remote-access auth (doc/eap-wiring-plan.md): kmp_auth_method
+	 * { eap; } here means iked proxies the client's EAP to a RADIUS
+	 * server.  radius_server (host or IP, required when eap is selected)
+	 * and radius_port (default 1812) name the endpoint; radius_secret_file
+	 * is the shared-secret file path -- the secret itself never appears in
+	 * a config (same rule as ppk_id / pre_shared_key). */
+	rc_vchar_t *radius_server;
+	int radius_port;	/* 1812 default; int so rcf_fix_number can set it */
+	rc_vchar_t *radius_secret_file;
 };
 
 /* selector info */

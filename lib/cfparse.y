@@ -145,6 +145,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %token MY_PRINCIPAL PEERS_PRINCIPAL NEED_PFS NAT_TRAVERSAL NATD_PUBLIC_ADDRESS
 %token MY_PUBLIC_KEY PEERS_PUBLIC_KEY X509PEM PKCS12 ASCII
 %token PRE_SHARED_KEY
+%token RADIUS_SERVER RADIUS_PORT RADIUS_SECRET_FILE
 %token MOBILITY_ROLE AGENT MOBILE CORRESPONDENT
 %token REQUEST PROVIDE APPLICATION_VERSION
 %token REQUIRE_CONFIG
@@ -195,7 +196,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %token ECP256
 %token ECP384 ECP521
 %token MLKEM512 MLKEM768 MLKEM1024
-%token PSK DSS RSASIG RSAENC RSAREV GSSAPI_KRB ECDSA
+%token PSK DSS RSASIG RSAENC RSAREV GSSAPI_KRB ECDSA EAP
        /* addresspool for IKE Config */
 %token ADDRESSPOOL
 
@@ -645,6 +646,21 @@ ikev2_spec
 	|	PRE_SHARED_KEY string
 		{
 			MKRCFDIR($$, CFD_PRE_SHARED_KEY);
+			$$->nextp = $2;
+		}
+	|	RADIUS_SERVER string
+		{
+			MKRCFDIR($$, CFD_RADIUS_SERVER);
+			$$->nextp = $2;
+		}
+	|	RADIUS_PORT number
+		{
+			MKRCFDIR($$, CFD_RADIUS_PORT);
+			$$->nextp = $2;
+		}
+	|	RADIUS_SECRET_FILE string
+		{
+			MKRCFDIR($$, CFD_RADIUS_SECRET_FILE);
 			$$->nextp = $2;
 		}
 	|	PROVIDE BOC provide_list EOC
@@ -1669,6 +1685,7 @@ algorithm_type
 	|	RSAENC		{ MKRCFVAL($$, RCT_ALG_RSAENC); }
 	|	RSAREV		{ MKRCFVAL($$, RCT_ALG_RSAREV); }
 	|	GSSAPI_KRB	{ MKRCFVAL($$, RCT_ALG_GSSAPI_KRB); }
+	|	EAP		{ MKRCFVAL($$, RCT_ALG_EAP); }
 	;
 
 	/* byte specification */
