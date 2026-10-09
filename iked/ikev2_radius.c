@@ -1,11 +1,13 @@
 /*
  * iked/ikev2_radius.c - RADIUS client (RFC 2865 / RFC 3579) for iked IKEv2.
  *
- * iked proxies a road-warrior client's EAP to a RADIUS server (see
- * ikev2_eap.c + doc/eap-wiring-plan.md).  This module is the RADIUS
- * *client* wire layer: it builds an Access-Request carrying the framed
- * EAP-Message (79) attribute, signs it with the Message-Authenticator
- * (80), sends it over UDP 1812, and decodes + authenticator-verifies the
+ * In the RFC 7296 s2.16 design, iked proxies a road-warrior client's EAP
+ * to a RADIUS server (see ikev2_eap.c + doc/eap-wiring-plan.md); that
+ * responder path is still to be wired (milestone 3).  This module is the
+ * RADIUS *client* wire layer: it builds an Access-Request carrying the
+ * framed EAP-Message (79) attribute, signs it with the
+ * Message-Authenticator (80), sends it over UDP 1812, and decodes +
+ * authenticator-verifies the
  * reply (Access-Accept / Access-Challenge / Access-Reject).
  *
  * Both response authenticators are checked (and required on EAP):

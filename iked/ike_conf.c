@@ -4749,10 +4749,12 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 				break;
 			case RCT_ALG_EAP:
 				/* EAP remote-access auth (doc/eap-wiring-plan.md):
-				 * iked proxies the client's EAP to a RADIUS
-				 * server.  radius_server + secret file required;
-				 * port defaults to 1812.  eap cannot share the
-				 * method list with psk/pubkey. */
+				 * iked terminates the client's EAP by proxying
+				 * it to a RADIUS server (relay engine is
+				 * ikev2_eap_relay.c; the IKE_AUTH wiring is
+				 * pending).  radius_server + secret file
+				 * required; port defaults to 1812.  eap cannot
+				 * share the method list with psk/pubkey. */
 				IKEV2_CONF(radius_server, rmconf,
 					   radius_server, NULL);
 				if (!radius_server) {

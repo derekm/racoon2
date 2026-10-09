@@ -1,6 +1,8 @@
 # EAP wiring plan for racoon2 iked (remote-access EAP on Fedora .165)
 
-Status: **plan for review** — no code shipped. Authored 2026-10-06.
+Status: milestones 1-2 landed (framing codec, RADIUS client, MSK extract,
+worker + relay engines); the **responder IKE_AUTH wiring** (below, §4.3) is
+the outstanding roadmap. Authored 2026-10-06, updated as parts land.
 
 ## 1. Goal
 

@@ -267,7 +267,11 @@ main(void)
 		struct ikev2_radius_response *r;
 		uint8_t state[4] = { 1, 2, 3, 4 };
 		memset(&r2, 0, sizeof(r2));
-		ikev2_eap_relay_start(&r2, 3);
+		{
+			rc_vchar_t *opener = ikev2_eap_relay_start(&r2, 3);
+			if (opener)
+				rc_vfree(opener);
+		}
 		aa[0].type = ATTR_STATE; aa[0].v = state; aa[0].l = 4;
 		r = mkresp(CHAL_REQ, req_auth, 1, aa);
 		eap = NULL; msk = NULL;
@@ -287,7 +291,11 @@ main(void)
 		struct ikev2_radius_response *r;
 		struct relattr aa[0];
 		memset(&r3, 0, sizeof(r3));
-		ikev2_eap_relay_start(&r3, 4);
+		{
+			rc_vchar_t *opener = ikev2_eap_relay_start(&r3, 4);
+			if (opener)
+				rc_vfree(opener);
+		}
 		r = mkresp(REJECT, req_auth, 0, aa);
 		eap = NULL; msk = NULL;
 		res = ikev2_eap_relay_consume(&r3, r, &secret, &eap, &msk);
