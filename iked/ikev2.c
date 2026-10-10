@@ -139,6 +139,8 @@ static void responder_ike_sa_auth_eap_final_recv(struct ikev2_sa *,
 					 struct sockaddr *, struct sockaddr *);
 static void responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *, int);
 static int ikev2_responder_eap_send(struct ikev2_sa *, uint32_t, rc_vchar_t *);
+static int ikev2_responder_eap_auth_send(struct ikev2_sa *, uint32_t,
+					 rc_vchar_t *);
 int ikev2_responder_childless_auth_send(struct ikev2_sa *, uint32_t,
 					rc_vchar_t *);
 static void ikev2_established_recv(struct ikev2_sa *, rc_vchar_t *,
@@ -2125,7 +2127,14 @@ responder_state0_after_gen(int rc, void *arg)
 	if (ike_sa->peer_sent_sig_hash_algos &&
 	    ikev2_offer_sig_hash_algorithms(ike_sa->rmconf) == RCT_BOOL_ON) {
 		struct rc_alglist *_kmp = ikev2_kmp_auth_method(ike_sa->rmconf);
-		if (_kmp && _kmp->algtype == RCT_ALG_RSASIG) {
+		/* RSASIG anywhere in the list qualifies: the responder's own
+		 * seat may be rsasig even when the client authenticates via
+		 * eap (RFC 7296 s2.16, kmp_auth_method { eap; rsasig; }). */
+		int _has_rsa = 0;
+		for (; _kmp; _kmp = _kmp->next)
+			if (_kmp->algtype == RCT_ALG_RSASIG)
+				_has_rsa = 1;
+		if (_has_rsa) {
 			static const uint8_t sig_hash_sha2[] = {
 				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
 			};
@@ -3155,10 +3164,12 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 					    get_payload_length(ts_r));
 			}
 			/* park in the EAP continuation state and send the
-			 * EAP-Identity request */
+			 * EAP-Identity request (first IKE_AUTH response: the
+			 * responder authenticates itself here under RFC 7296
+			 * s2.16 when a signature method is configured). */
 			ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_AUTH_EAP);
-			ikev2_responder_eap_send(ike_sa, message_id,
-						 identity_req);
+			ikev2_responder_eap_auth_send(ike_sa, message_id,
+						      identity_req);
 			rc_vfree(identity_req);
 			/* each EAP round is a fresh IKE_AUTH request with a new
 			 * message id; advance so the peer's next EAP-Response
@@ -4132,10 +4143,14 @@ ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
 
 /*
  * Send a responder EAP IKE_AUTH response: IDr + EAP Request (payload 48),
- * NO responder AUTH (RFC 7296 s2.16 / RFC 5998 s2), using the hermetic
- * composition from ikev2_eap_emit_request().  The SA stays in its current
- * IKE_AUTH responder state so the peer's next EAP Response re-enters the
- * responder dispatch.  eap_req is NOT consumed.  Returns 0 on success.
+ * NO responder AUTH - used for continuation and EAP-Success rounds.  The
+ * responder authenticates itself only in the FIRST IKE_AUTH response
+ * (ikev2_responder_eap_auth_send, RFC 7296 s2.16 responder-cert case);
+ * every later round (peer EAP-Response -> next EAP-Request, and the final
+ * EAP-Success) is EAP-only.  Uses the hermetic composition from
+ * ikev2_eap_emit_request().  The SA stays in its current IKE_AUTH responder
+ * state so the peer's next EAP Response re-enters the responder dispatch.
+ * eap_req is NOT consumed.  Returns 0 on success.
  */
 static int
 ikev2_responder_eap_send(struct ikev2_sa *ike_sa, uint32_t message_id,
@@ -4161,7 +4176,7 @@ ikev2_responder_eap_send(struct ikev2_sa *ike_sa, uint32_t message_id,
 	pkt = 0;
 
 	TRACE((PLOGLOC, "responder EAP: sent EAP Request (48) in IKE_AUTH "
-	       "response (no AUTH)\n"));
+	       "response (EAP-only round, no AUTH)\n"));
 
       done:
 	if (pkt) rc_vfree(pkt);
@@ -4171,6 +4186,108 @@ ikev2_responder_eap_send(struct ikev2_sa *ike_sa, uint32_t message_id,
       fail:
 	isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 		   "failed building responder EAP IKE_AUTH response\n");
+	status = -1;
+	goto done;
+}
+
+/*
+ * Send the FIRST responder EAP IKE_AUTH response (the EAP-Identity request).
+ * RFC 7296 s2.16 responder-cert case: when a signature method is configured
+ * beside eap, the responder authenticates itself to the client in this first
+ * response - IDr + [CERT] + AUTH(responder signature) + EAP.  For an EAP-ONLY
+ * responder (no signature method) this is IDr + EAP, identical to a
+ * continuation round.  ikev2_eap_emit_request() is NOT used here for the
+ * responder-cert branch because it also emits IDr; this variant composes
+ * IDr + CERT + AUTH + EAP itself.  eap_req is NOT consumed.  Returns 0 on
+ * success.
+ */
+static int
+ikev2_responder_eap_auth_send(struct ikev2_sa *ike_sa, uint32_t message_id,
+			      rc_vchar_t *eap_req)
+{
+	struct ikev2_payloads payl;
+	rc_vchar_t *pkt = 0;
+	rc_vchar_t *auth = 0, *my_cert = 0;
+	struct rc_idlist *my_id;
+	rc_vchar_t *id_r = 0;
+	int rmethod;
+	int status = 0;
+
+	ikev2_payloads_init(&payl);
+
+	rmethod = ikev2_eap_responder_method(ike_sa);
+	if (rmethod == 0) {
+		/* EAP-only responder: this first round is just IDr + EAP. */
+		ikev2_payloads_destroy(&payl);
+		return ikev2_responder_eap_send(ike_sa, message_id, eap_req);
+	}
+
+	/* responder-cert (RFC 7296 s2.16): IDr + [CERT] + AUTH + EAP. */
+	if (ike_sa->id_r) {
+		id_r = ike_sa->id_r;
+	} else {
+		my_id = ikev2_my_id(ike_sa->rmconf);
+		if (!my_id)
+			goto fail;
+		id_r = ikev2_identifier(my_id);
+		if (!id_r)
+			goto fail;
+		ike_sa->id_r = id_r;
+	}
+	auth = ikev2_auth_calculate_method(ike_sa, FALSE, rmethod);
+	if (!auth)
+		goto fail;
+
+	/* [CERT+] under signature AUTH (mirror the childful responder). */
+	if (rmethod == IKEV2_AUTH_RSASIG || rmethod == IKEV2_AUTH_DS) {
+		const char *filename = 0;
+		struct rc_pklist *pk = ike_sa->rmconf->ikev2->my_pubkey;
+		while (pk) {
+			if (pk->ftype == RCT_FTYPE_X509PEM)
+				filename = rc_vmem2str(pk->pubkey);
+			pk = pk->next;
+		}
+		if (filename && rc_safefile(filename, FALSE) == 0) {
+			rc_vchar_t *my_cert_data = eay_get_x509cert(filename);
+			uint8_t value = IKEV2_CERT_X509_SIGN;
+			my_cert = rc_vprepend(my_cert_data, &value,
+					      sizeof(value));
+			if (!my_cert)
+				rc_vfree(my_cert_data);
+		}
+	}
+
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_R, id_r, FALSE);
+	if (my_cert)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CERT, my_cert, FALSE);
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_AUTH, auth, FALSE);
+	/* EAP payload last (RFC 7296: EAP is the final payload of the
+	 * IKE_AUTH response).  Can't use ikev2_eap_emit_request() here - it
+	 * pushes its own IDr, which would duplicate the one above. */
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_EAP, eap_req, FALSE);
+
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_AUTH, IKEV2FLAG_RESPONSE,
+				     message_id, ike_sa, &payl);
+	if (!pkt)
+		goto fail;
+	if (ikev2_transmit_response(ike_sa, pkt, ike_sa->local,
+				    ike_sa->remote) != 0)
+		goto fail;
+	pkt = 0;
+
+	TRACE((PLOGLOC, "responder EAP: sent first IKE_AUTH response with "
+	       "responder AUTH (rmethod %d) + EAP\n", rmethod));
+
+      done:
+	if (my_cert) rc_vfree(my_cert);
+	if (auth) rc_vfree(auth);
+	if (pkt) rc_vfree(pkt);
+	ikev2_payloads_destroy(&payl);
+	return status;
+
+      fail:
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		   "failed building first responder EAP IKE_AUTH response\n");
 	status = -1;
 	goto done;
 }

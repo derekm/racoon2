@@ -4740,6 +4740,15 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 			case RCT_ALG_ECDSA:
 				IKEV2_CONF(peers_pubkey, rmconf, peers_pubkey,
 					   0);
+				/* When this signature method sits after an eap
+				 * entry, it is the RESPONDER's own signing cert
+				 * (RFC 7296 s2.16: the client authenticates via
+				 * EAP, the responder via its certificate) - no
+				 * peer public key is then needed, the client's
+				 * AUTH is verified through the EAP MSK instead. */
+				if (kmp_auth_method &&
+				    kmp_auth_method->algtype == RCT_ALG_EAP)
+					break;
 				if (!peers_pubkey) {
 					++*err;
 					plog(PLOG_INTERR, PLOGLOC, 0,
@@ -5405,9 +5414,16 @@ ikev2_eap_responder_method(struct ikev2_sa *sa)
 		if (alg->algtype == RCT_ALG_EAP)
 			continue;
 		/* only a signature method is valid beside eap (checked in
-		 * ike_conf_check_ikev2); map it to an IKEv2 AUTH method */
+		 * ike_conf_check_ikev2); map it to an IKEv2 AUTH method.
+		 * Mirror ikev2_auth_method(): under an RSA config the
+		 * responder signs with method 14 (RFC 7427 DS, SHA-256)
+		 * when SIG_HASH_ALGORITHMS was exchanged, else method 1
+		 * (historic SHA-1 DigestInfo) - so SHA-1-disabled
+		 * OpenSSL 3.x builds still work. */
 		switch (alg->algtype) {
 		case RCT_ALG_RSASIG:
+			if (sa->sig_hash_algos_ds)
+				return IKEV2_AUTH_DS;
 			return IKEV2_AUTH_RSASIG;
 		case RCT_ALG_ECDSA:
 			return IKEV2_AUTH_ECDSA_SHA256_P256;
