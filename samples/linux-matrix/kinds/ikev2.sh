@@ -196,10 +196,14 @@ EOF
 		EXPECT_AUTH='aead rfc4106(gcm(aes)).* 128$'
 		;;
 	*-dh31)
-		IKE_PROP='aes256-sha256-curve25519!'
+		# bare curve25519 (no '!') — on strongSwan 6.0.7 a trailing
+		# '!' glued to the X25519 DH token is rejected ('curve25519!'
+		# not recognized) and drops the conn.  Matches the default
+		# modp2048 (also no bang).
+		IKE_PROP='aes256-sha256-curve25519'
 		;;
 	*-dh32)
-		IKE_PROP='aes256-sha256-curve448!'
+		IKE_PROP='aes256-sha256-curve448'
 		;;
 	*-childrekey)
 		STRONG_ESP='aes128gcm16-ecp256!'
@@ -231,6 +235,12 @@ EOF
 	# child esp proposal per STRONG_ESP; local/remote ids match the iked
 	# responder's my_id/peers_id (fqdn, no @ prefix in swanctl ids).
 	CHARON_CONN="$I2I_CHARON_VDIR/r2-ikev2.conf"
+	# Drop EVERY pre-existing swanctl conn, not just ours: a leftover
+	# conn from another kind that shares this conf.d (e.g. i2ieap's
+	# r2eap from an earlier run) would hijack --initiate --child and
+	# send the wrong IKE proposal (e.g. MODP_2048 instead of the dh31
+	# curve25519) or target a stale peer.  Same class as c4ed997.
+	rm -f /etc/strongswan/swanctl/conf.d/*.conf 2>/dev/null || true
 	rm -f "$CHARON_CONN"
 	cat > "$CHARON_CONN" <<EOF
 connections {

@@ -255,7 +255,11 @@ oakley_dh_generate(const struct dhgroup *dh, rc_vchar_t **pub,
 			     "failed to generate xcurve dh value.\n");
 			return -1;
 		}
-		break;
+		/* X25519/X448 raw keys are fixed-width (prime->l = 32/56);
+		 * skip oakley_check_dh_pub's MODP-style zero left-padding —
+		 * padding would corrupt the u-coordinate interpretation.
+		 * ECP returns here for the same reason. */
+		return 0;
 	case OAKLEY_ATTR_GRP_TYPE_EC2N:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "dh type %d isn't supported.\n", dh->type);

@@ -56,7 +56,7 @@ typedef enum {
 	RCT_ALG_MODP768, RCT_ALG_MODP1024, RCT_ALG_MODP1536, RCT_ALG_EC2N155,
 	RCT_ALG_EC2N185, RCT_ALG_MODP2048, RCT_ALG_MODP3072, RCT_ALG_MODP4096,
 	RCT_ALG_MODP6144, RCT_ALG_MODP8192, RCT_ALG_ECP256, RCT_ALG_ECP384,
-	RCT_ALG_ECP521, RCT_ALG_CURVE25519, RCT_ALG_CURVE448,
+	RCT_ALG_ECP521,
 	/* RFC 9370 Additional Key Exchange (ADDKE): ML-KEM parameter sets.
 	 * rc_alg names map to the IANA Transform Type 4 / KE method
 	 * registry ids 35/36/37 (draft-ietf-ipsecme-ikev2-mlkem-09). */
@@ -107,6 +107,11 @@ typedef enum {
 	 * shipping OpenSSL (probe 2026-10-07). */
 	RCT_ALG_CHACHA20_POLY1305, RCT_ALG_AES_CCM,
 	RCT_ALG_AES_CCM8, RCT_ALG_AES_CCM16,
+	/* RFC 8031 DH groups 31 (X25519/Curve25519) and 32
+	 * (X448/Curve448).  Appended here, not mid-sequence, so ML-KEM,
+	 * PSK, DSS, RSASIG, ECDSA, EAP and the appended ChaCha/CCM
+	 * codes keep their existing numbers (see the invariant above). */
+	RCT_ALG_CURVE25519, RCT_ALG_CURVE448,
 
 		/* NAT-T: distinct from RCT_BOOL_ON/OFF and 0=unset */
 	RCT_NATT_FORCE = 0x00FE,
