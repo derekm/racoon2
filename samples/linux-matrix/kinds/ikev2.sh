@@ -42,7 +42,7 @@ remote matrix_resp {
 		kmp_enc_alg { aes256_cbc; aes128_cbc; };
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
-		kmp_dh_group { ecp256; modp2048; };
+		kmp_dh_group { ecp256; curve25519; curve448; modp2048; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
@@ -184,6 +184,7 @@ EOF
 	# esp= line -- -s384 -> aes256-sha384!, -s512 -> aes256-sha512!,
 	# default stays aes128gcm16!
 	STRONG_ESP=aes128gcm16!
+	IKE_PROP=aes256-sha256-modp2048
 	EXPECT_AUTH=
 	case "$name" in
 	*-s384) STRONG_ESP='aes256-sha384!'; EXPECT_AUTH='auth-trunc hmac(sha384).* 192$' ;;
@@ -193,6 +194,16 @@ EOF
 	*-dh19)
 		STRONG_ESP='aes128gcm16-ecp256!'
 		EXPECT_AUTH='aead rfc4106(gcm(aes)).* 128$'
+		;;
+	*-dh31)
+		# bare curve25519 (no '!') — on strongSwan 6.0.7 a trailing
+		# '!' glued to the X25519 DH token is rejected ('curve25519!'
+		# not recognized) and drops the conn.  Matches the default
+		# modp2048 (also no bang).
+		IKE_PROP='aes256-sha256-curve25519'
+		;;
+	*-dh32)
+		IKE_PROP='aes256-sha256-curve448'
 		;;
 	*-childrekey)
 		STRONG_ESP='aes128gcm16-ecp256!'
@@ -224,13 +235,19 @@ EOF
 	# child esp proposal per STRONG_ESP; local/remote ids match the iked
 	# responder's my_id/peers_id (fqdn, no @ prefix in swanctl ids).
 	CHARON_CONN="$I2I_CHARON_VDIR/r2-ikev2.conf"
+	# Drop EVERY pre-existing swanctl conn, not just ours: a leftover
+	# conn from another kind that shares this conf.d (e.g. i2ieap's
+	# r2eap from an earlier run) would hijack --initiate --child and
+	# send the wrong IKE proposal (e.g. MODP_2048 instead of the dh31
+	# curve25519) or target a stale peer.  Same class as c4ed997.
+	rm -f /etc/strongswan/swanctl/conf.d/*.conf 2>/dev/null || true
 	rm -f "$CHARON_CONN"
 	cat > "$CHARON_CONN" <<EOF
 connections {
 	r2macos {
 		version = 2
 		rekey_time = $_REKEY_TIME
-		proposals = aes256-sha256-modp2048
+		proposals = $IKE_PROP
 		local_addrs = $HI
 		remote_addrs = $HR
 		local {

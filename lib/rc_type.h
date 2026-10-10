@@ -107,6 +107,11 @@ typedef enum {
 	 * shipping OpenSSL (probe 2026-10-07). */
 	RCT_ALG_CHACHA20_POLY1305, RCT_ALG_AES_CCM,
 	RCT_ALG_AES_CCM8, RCT_ALG_AES_CCM16,
+	/* RFC 8031 DH groups 31 (X25519/Curve25519) and 32
+	 * (X448/Curve448).  Appended here, not mid-sequence, so ML-KEM,
+	 * PSK, DSS, RSASIG, ECDSA, EAP and the appended ChaCha/CCM
+	 * codes keep their existing numbers (see the invariant above). */
+	RCT_ALG_CURVE25519, RCT_ALG_CURVE448,
 
 		/* NAT-T: distinct from RCT_BOOL_ON/OFF and 0=unset */
 	RCT_NATT_FORCE = 0x00FE,

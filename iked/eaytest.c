@@ -102,6 +102,7 @@ int sha1test __P((int, char **));
 int md5test __P((int, char **));
 int dhtest __P((int, char **));
 int dhrangetest __P((int, char **));
+int xcurvetest __P((int, char **));
 int rfc7427test __P((int, char **));
 int rsam1test __P((int, char **));
 int bntest __P((int, char **));
@@ -1129,6 +1130,86 @@ dhrangetest(ac, av)
 	return fails ? -1 : 0;
 }
 
+/* RFC 8031 DH groups 31 (X25519) and 32 (X448): generate+compute
+ * roundtrip, plus rejection of an all-zero (RFC 7748 low-order peer)
+ * shared secret. */
+static int
+xcurve_roundtrip(const char *name, size_t len, const unsigned char *low)
+{
+	vchar_t *pub1 = NULL, *priv1 = NULL, *pub2 = NULL, *priv2 = NULL;
+	vchar_t *gxy1 = NULL, *gxy2 = NULL;
+	int ok = 0;
+
+	printf("**Test for X-Curve %s (%zu bytes).**\n", name, len);
+	if (eay_xcurve_generate(len, &pub1, &priv1) < 0 ||
+	    eay_xcurve_generate(len, &pub2, &priv2) < 0) {
+		printf("error generating %s keys\n", name);
+		goto out;
+	}
+	printf("public1 len=%zu private1 len=%zu\n", pub1->l, priv1->l);
+	if (pub1->l != len || priv1->l != len || pub2->l != len || priv2->l != len) {
+		printf("ERROR: %s key length != %zu\n", name, len);
+		goto out;
+	}
+	gxy1 = vmalloc(len);
+	gxy2 = vmalloc(len);
+	if (!gxy1 || !gxy2) {
+		printf("ERROR: %s alloc\n", name);
+		goto out;
+	}
+	memset(gxy1->v, 0, len);
+	memset(gxy2->v, 0, len);
+	if (eay_xcurve_compute(len, pub1, priv1, pub2, &gxy1) < 0 ||
+	    eay_xcurve_compute(len, pub2, priv2, pub1, &gxy2) < 0) {
+		printf("ERROR: %s compute\n", name);
+		goto out;
+	}
+	if (memcmp(gxy1->v, gxy2->v, len)) {
+		printf("ERROR: %s shared secrets mismatch\n", name);
+		goto out;
+	}
+	if (low) {
+		vchar_t *t = vmalloc(len);
+		if (t) {
+			memcpy(t->v, low, len);
+			t->l = len;
+			if (eay_xcurve_compute(len, pub1, priv1, t, &gxy1) == 0) {
+				printf("ERROR: %s accepted low-order peer point\n", name);
+				vfree(t);
+				goto out;
+			}
+			vfree(t);
+		}
+	}
+	printf("ok: %s roundtrip (shared secret %zu bytes)\n", name, len);
+	ok = 1;
+      out:
+	if (pub1) vfree(pub1);
+	if (priv1) vfree(priv1);
+	if (pub2) vfree(pub2);
+	if (priv2) vfree(priv2);
+	if (gxy1) vfree(gxy1);
+	if (gxy2) vfree(gxy2);
+	return ok ? 0 : -1;
+}
+
+int
+xcurvetest(ac, av)
+	int ac;
+	char **av;
+{
+	static const unsigned char low_x25519[32] = { 0 };
+	static const unsigned char low_x448[56] = { 0 };
+	int fails = 0;
+
+	printf("\n**Test for RFC 8031 X25519/X448 (DH groups 31/32).**\n");
+	if (xcurve_roundtrip("X25519", 32, low_x25519) < 0)
+		++fails;
+	if (xcurve_roundtrip("X448", 56, low_x448) < 0)
+		++fails;
+	return fails ? -1 : 0;
+}
+
 /*
  * RFC 7427 Digital Signature (AUTH method 14) verification: one good
  * signature for every AlgorithmIdentifier iked accepts (DER blobs from
@@ -1407,6 +1488,7 @@ struct {
 	{ "random", bntest, },
 	{ "dh", dhtest, },
 	{ "dhrange", dhrangetest, },
+	{ "xcurve", xcurvetest, },
 	{ "rfc7427", rfc7427test, },
 	{ "rsam1", rsam1test, },
 	{ "md5", md5test, },

@@ -211,6 +211,8 @@ modp8192		{ DP; return(MODP8192); }
 ecp256			{ DP; return(ECP256); }
 ecp384			{ DP; return(ECP384); }
 ecp521			{ DP; return(ECP521); }
+curve25519		{ DP; return(CURVE25519); }
+curve448		{ DP; return(CURVE448); }
 mlkem512		{ DP; return(MLKEM512); }
 mlkem768		{ DP; return(MLKEM768); }
 mlkem1024		{ DP; return(MLKEM1024); }

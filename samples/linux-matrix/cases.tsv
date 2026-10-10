@@ -24,6 +24,8 @@ ikev2-netns-frag	ikev2	pass	0	RFC 7383 knob on (fragmentation=yes); IKE_SA+SAD â
 ikev2-netns-mobike	ikev2	pass	0	RFC 4555 MOBIKE_SUPPORTED knob (charon mobike=yes); not a roam proof	addke
 ikev2-netns-cookie2	ikev2	pass	0	RFC 4555 NO_ADDITIONAL_ADDRESSES processed (charon mobike=yes; COOKIE2 echo if present)	addke
 ikev2-netns-dh19	ikev2	pass	0	ECP256 DH group 19: KEi 19 accepted and bound to selected proposal DH (no KEYMAT divergence)	addke
+ikev2-netns-dh31	ikev2	pass	0	RFC 8031 Curve25519 DH group 31: charon IKE proposal kex curve25519; KEi 31 accepted and bound to selected proposal DH, KEYMAT from X25519 (32-byte pub/share)	addke
+ikev2-netns-dh32	ikev2	pass	0	RFC 8031 Curve448 DH group 32: charon IKE proposal kex curve448; KEi 32 accepted and bound to selected proposal DH, KEYMAT from X448 (56-byte pub/share)	addke
 ikev2-netns-childrekey	ikev2	pass	0	charon-initiated CHILD rekey at 30s keylife (PFS-19, no CP): SPI replaced, IKE stays. Not racoon2-as-responder msgid mint, not CP TSr/lease, not PFS-less.	addke
 ikev2-netns-r2rekey	ikev2	pass	0	racoon2-initiated CHILD rekey as original responder (30s ipsec lifetime, charon rekey=no). Gate: log initiating CREATE_CHILD_SA rekey + SPI change.	addke
 ikev2-netns-resume-dump	ikev2	pass	0	session resume dump SR2R under /var/lib/racoon2/resume after IKE_AUTH	addke

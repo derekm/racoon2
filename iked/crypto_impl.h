@@ -286,6 +286,9 @@ extern int eay_dh_compute (rc_vchar_t *, uint32_t, rc_vchar_t *,
 extern int eay_ecp_generate (size_t, rc_vchar_t **, rc_vchar_t **);
 extern int eay_ecp_compute (size_t, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
 			       rc_vchar_t **);
+extern int eay_xcurve_generate (size_t, rc_vchar_t **, rc_vchar_t **);
+extern int eay_xcurve_compute (size_t, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
+			       rc_vchar_t **);
 
 /* misc */
 extern int eay_revbnl (rc_vchar_t *);
