@@ -818,19 +818,18 @@ ikev2_auth_method(struct ikev2_sa *sa)
 	case RCT_ALG_PSK:
 		return IKEV2_AUTH_SHARED_KEY;
 	case RCT_ALG_EAP:
-		/* RFC 5998 s3: EAP-only auth computes the responder AUTH with
-		 * the shared-key syntax, the MSK being the shared secret
-		 * (RFC 7296 s2.16).  That is only reachable AFTER the
-		 * EAP->MSK extraction, i.e. once sa->eap_msk is set by the
-		 * responder arm - which does not exist yet (payload 48 is
-		 * still unwired).  Fail CLOSED until then: an eap remote
-		 * must not silently complete as a pre-shared-key peer. */
+		/* RFC 7296 s2.16 / RFC 5998 s3: an EAP remote computes the
+		 * responder AUTH with the shared-key syntax, the MSK being
+		 * the shared secret.  That is only reachable AFTER the
+		 * EAP->MSK extraction (responder arm fills sa->eap_msk).
+		 * Fail CLOSED until then: an eap remote whose MSK never
+		 * landed must not silently complete as a pre-shared-key
+		 * peer. */
 		if (sa->eap_msk)
 			return IKEV2_AUTH_SHARED_KEY;
 		isakmp_log(sa, 0, 0, 0,
 			   PLOG_INTERR, PLOGLOC,
-			   "eap auth configured but no EAP MSK yet "
-			   "(responder EAP wiring not landed)\n");
+			   "eap auth configured but no EAP MSK yet\n");
 		return 0;
 	case RCT_ALG_DSS:
 		return IKEV2_AUTH_DSS;

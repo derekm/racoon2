@@ -166,8 +166,8 @@ extern rc_vchar_t *ikev2_radius_eap_message(struct ikev2_radius_response *);
  * Extract the EAP MSK from an Access-Accept.  The two MPPE master keys
  * arrive as the MS-MPPE-Recv-Key (vendor 311 sub-attr 17) and
  * MS-MPPE-Send-Key (sub-attr 16) VSAs; the MSK is their concatenation,
- * zero-padded to 64 octets (RFC 2548 s2.4.2/2.4.3).  The per-method
- * key size determines any zero tail:
+ * zero-padded to 64 octets.  The per-method key size determines any zero
+ * tail:
  *     EAP-MSCHAPv2 (RFC 3079 s3.3): keys are 16 octets each, so
  *         MSK = MasterReceiveKey(16) || MasterSendKey(16) || 32 zero
  *     EAP-TLS (RFC 5216 s2.3): keys are 32 octets each, carrying the

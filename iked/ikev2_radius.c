@@ -637,10 +637,10 @@ ikev2_radius_msk(struct ikev2_radius_response *resp,
 
 	/* Walk every Microsoft VSA and grab the Recv-Key (17) and the
 	 * Send-Key (16).  The MSK is the concatenation of the two MPPE
-	 * master keys, zero-padded to 64 octets (RFC 2548 s2.4.2 / 2.4.3).
-	 * The key size is method-dependent (16 octets for EAP-MSCHAPv2,
-	 * RFC 3079 s3.3; 32 octets for EAP-TLS, RFC 5216 s2.3), so both must
-	 * decrypt here and the cfm assembly below clamps and pads. */
+	 * master keys, zero-padded to 64 octets.  The key size is
+	 * method-dependent - 16 octets for EAP-MSCHAPv2 (RFC 3079 s3.3),
+	 * 32 for EAP-TLS (RFC 5216 s2.3) - the assembly below accepts
+	 * only those, so both must decrypt here. */
 	for (i = 0; i < resp->nattrs; i++) {
 		const uint8_t *v;
 		size_t vlen;
