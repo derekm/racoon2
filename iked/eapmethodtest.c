@@ -9,11 +9,13 @@
  * (IKEV2_AUTH_ECDSA_SHA256_P256), P-384 -> 10, P-521 -> 11 (RFC 4754),
  * mirroring ikev2_auth_method().  An RSA config yields method 14 (DS,
  * RFC 7427) when SIG_HASH_ALGORITHMS was exchanged, else method 1
- * (RSASIG).  Crucially, a key-load failure (missing/unreadable key, or an
- * unsupported curve) must FAIL - the function returns 0, and the caller
- * (ikev2_responder_eap_auth_send) treats "signature method configured but
- * resolution failed" as an abort, NOT as an EAP-only no-CERT+AUTH
- * downgrade.
+ * (RSASIG).  A key-load failure (missing/unreadable key, or an
+ * unsupported curve) must FAIL - the function returns 0.  The CALLER
+ * (ikev2_responder_eap_auth_send, static in ikev2.c) treats "signature
+ * method configured but resolution failed" as an abort, NOT as an
+ * EAP-only no-CERT+AUTH downgrade; this test asserts the SELECTOR
+ * contract (0 on key failure) that feeds that decision - it does NOT
+ * drive the static caller itself.
  *
  * Keys are generated AT RUNTIME here with OpenSSL EVP (never committed,
  * never fetched) and written to $TMPDIR, so the test is hermetic and has
@@ -47,15 +49,6 @@ TEST_MAIN_STUBS()
 
 /* ---- helpers to spin up a temp key+cert file pair (runtime) ---- */
 
-static void
-write_file(const char *path, const char *data, size_t len)
-{
-	FILE *fp = fopen(path, "w");
-	if (!fp) { perror(path); exit(2); }
-	if (fwrite(data, 1, len, fp) != len) { perror(path); fclose(fp); exit(2); }
-	fclose(fp);
-}
-
 /* generate a self-signed EC key+cert with the given curve name;
  * writes <base>-key.pem and <base>-cert.pem, returns 0 on success. */
 static int
@@ -65,7 +58,6 @@ gen_ec_pair(const char *base, int curve_nid)
 	EVP_PKEY *pkey = NULL;
 	X509 *x = NULL;
 	EVP_PKEY_CTX *pctx = NULL;
-	EVP_PKEY *pubkey = NULL;
 	X509_NAME *name = NULL;
 	int rc = -1;
 
@@ -91,8 +83,6 @@ gen_ec_pair(const char *base, int curve_nid)
 	X509_set_issuer_name(x, name);
 	X509_set_pubkey(x, pkey);
 	if (!X509_sign(x, pkey, EVP_sha256())) { fprintf(stderr, "sign: %s\n", ERR_error_string(ERR_get_error(), NULL)); goto out; }
-	pubkey = X509_get_pubkey(x);
-	(void)pubkey;
 
 	{
 		FILE *fp = fopen(cpath, "w");
@@ -189,8 +179,14 @@ main(void)
 			char kpath[512], cpath[512];
 			snprintf(base, sizeof(base), "%s/c%d", tdir, i);
 			if (gen_ec_pair(base, curves[i])) {
-				printf("eapmethodtest: SKIP %d cannot gen %s key\n",
+				/* a curve we cannot generate means the
+				 * mapping for that branch is UNTESTED, not
+				 * a SKIP: fail the test rather than report a
+				 * false green. */
+				printf("eapmethodtest: FAIL %d cannot gen %s key "
+				       "(mapping untested)\n",
 				       i + 1, cname[i]);
+				fails++;
 				continue;
 			}
 			snprintf(cpath, sizeof(cpath), "%s-cert.pem", base);
@@ -320,7 +316,7 @@ main(void)
 	racoon_free(rm->ikev2);
 	racoon_free(rm);
 
-	/* ---- 8. NULL sa / NULL rmconf -> 0 (no crash) ---- */
+	/* ---- 8. NULL sa -> 0 (no crash) ---- */
 	got = ikev2_eap_responder_method(NULL);
 	if (got != 0) {
 		printf("eapmethodtest: FAIL 8 NULL sa -> %d (want 0)\n", got);
@@ -328,6 +324,20 @@ main(void)
 	} else {
 		printf("eapmethodtest: PASS 8 NULL sa -> 0\n");
 	}
+
+	/* ---- 9. NULL rmconf (sa set, config NULL) -> 0 (no crash) ---- */
+	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+	if (!sa) return 2;
+	sa->rmconf = NULL;	/* explicit: ike_conf.c:5413 guard */
+	got = ikev2_eap_responder_method(sa);
+	if (got != 0) {
+		printf("eapmethodtest: FAIL 9 NULL rmconf -> %d (want 0)\n", got);
+		fails++;
+	} else {
+		printf("eapmethodtest: PASS 9 NULL rmconf -> 0\n");
+	}
+	sa->rmconf = NULL;
+	ikev2_dispose_sa(sa);
 
 	if (fails == 0)
 		printf("eapmethodtest: ALL PASS (0 failures)\n");
