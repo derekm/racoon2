@@ -87,6 +87,10 @@ extern int ikev2_ipsec_window_size;
 /* EAP remote-access auth: default RADIUS auth port (RFC 2865). */
 #define	IKEV2_RADIUS_DEFAULT_PORT		1812
 
+/* RFC 5723 session resumption: default ticket lifetime in seconds (RFC
+ * 5723 s6.2 requires a finite lifetime; 24h matches the IKE_SA default). */
+#define	IKEV2_DEFAULT_SESSION_RESUME_LIFETIME	86400
+
 extern struct ikev2_payload_types {
 	const char *name;
 	size_t minimum_length;

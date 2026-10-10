@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include <stdio.h>
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -347,6 +348,36 @@ r2ticket_skeyseed(int prf_id, const rc_vchar_t *sk_d_old,
 		HMAC_CTX_free(h);
 	OPENSSL_cleanse(out, sizeof(out));
 	return r;
+}
+
+
+/*
+ * Load the RFC 5723 ticket key from a configured file: the raw file content
+ * must be exactly 32 bytes (AES-256).  Like ppk_id / radius_secret_file the
+ * key never appears in a config; the path does.  Caller owns *key (cleanse
+ * with OPENSSL_cleanse before rc_vfree).  Returns 0 ok, -1 on any error
+ * (missing/unreadable/wrong-length path).  Fail-closed.
+ */
+int
+r2ticket_key_load(const char *path, rc_vchar_t **key)
+{
+	FILE *f;
+	uint8_t buf[32];
+	size_t n;
+
+	if (!path || !key)
+		return -1;
+	*key = NULL;
+	f = fopen(path, "rb");
+	if (!f)
+		return -1;
+	n = fread(buf, 1, sizeof(buf), f);
+	fclose(f);
+	if (n != sizeof(buf))		/* must be exactly 32 bytes */
+		return -1;
+	*key = rc_vnew(buf, sizeof(buf));
+	OPENSSL_cleanse(buf, sizeof(buf));
+	return *key ? 0 : -1;
 }
 
 const EVP_MD *

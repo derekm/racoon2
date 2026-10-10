@@ -223,6 +223,9 @@ struct rcf_kmp ikev2_default_values = {
 	NULL,			/* radius_server (EAP/RADIUS: none by default) */
 	IKEV2_RADIUS_DEFAULT_PORT, /* radius_port */
 	NULL,			/* radius_secret_file */
+	RCT_BOOL_OFF,		/* use_session_resumption (RFC 5723) */
+	NULL,			/* session_resume_ticket_key (file path) */
+	IKEV2_DEFAULT_SESSION_RESUME_LIFETIME, /* session_resume_ticket_lifetime */
 };
 
 #ifdef IKEV1
@@ -456,6 +459,9 @@ IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)
 IKEV2_CONF_ATTR(rc_vchar_t *, radius_server)
 IKEV2_CONF_ATTR(int, radius_port)
 IKEV2_CONF_ATTR(rc_vchar_t *, radius_secret_file)
+IKEV2_CONF_ATTR(rc_type, use_session_resumption)
+IKEV2_CONF_ATTR(rc_vchar_t *, session_resume_ticket_key)
+IKEV2_CONF_ATTR(int, session_resume_ticket_lifetime)
 IKEV2_CONF_ATTR(struct rc_addrlist *, natd_public_address)
 IKEV2_CONF_ATTR(rc_type, need_pfs)
 IKEV2_CONF_ATTR(rc_vchar_t *, application_version)

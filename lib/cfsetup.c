@@ -214,6 +214,9 @@ static int rcf_fix_use_ppk (struct cf_list *, void *);
 static int rcf_fix_ppk_mandatory (struct cf_list *, void *);
 static int rcf_fix_childless (struct cf_list *, void *);
 static int rcf_fix_ppk_id (struct cf_list *, void *);
+static int rcf_fix_session_resumption (struct cf_list *, void *);
+static int rcf_fix_session_resume_key (struct cf_list *, void *);
+static int rcf_fix_session_resume_lifetime (struct cf_list *, void *);
 static int rcf_fix_send_peers_id (struct cf_list *, void *);
 static int rcf_fix_nat_traversal (struct cf_list *, void *);
 static int rcf_fix_natd_public_address (struct cf_list *, void *);
@@ -400,6 +403,9 @@ struct rcf_tdf_t {
 	{ CFD_RADIUS_SERVER,		rcf_fix_radius_server, },
 	{ CFD_RADIUS_PORT,		rcf_fix_radius_port, },
 	{ CFD_RADIUS_SECRET_FILE,	rcf_fix_radius_secret_file, },
+	{ CFD_USE_SESSION_RESUMPTION,	rcf_fix_session_resumption, },
+	{ CFD_SESSION_RESUME_TICKET_KEY, rcf_fix_session_resume_key, },
+	{ CFD_SESSION_RESUME_TICKET_LIFETIME, rcf_fix_session_resume_lifetime, },
 	{ CFD_DPD,			rcf_fix_dpd, },
 	{ CFD_DPD_DELAY,		rcf_fix_dpd_delay, },
 	{ CFD_DPD_RETRY,		rcf_fix_dpd_retry, },
@@ -1843,6 +1849,45 @@ rcf_fix_radius_port(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_RADIUS_PORT))
 		return -1;
 	if (rcf_fix_number(head->nextp, &dst->radius_port))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_session_resumption(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_USE_SESSION_RESUMPTION))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->use_session_resumption))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_session_resume_key(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_SESSION_RESUME_TICKET_KEY))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->session_resume_ticket_key))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_session_resume_lifetime(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_SESSION_RESUME_TICKET_LIFETIME))
+		return -1;
+	if (rcf_fix_number(head->nextp, &dst->session_resume_ticket_lifetime))
 		return -1;
 
 	return 0;

@@ -387,6 +387,9 @@ pre_shared_key		{ DP; return(PRE_SHARED_KEY); }
 radius_server		{ DP; return(RADIUS_SERVER); }
 radius_port		{ DP; return(RADIUS_PORT); }
 radius_secret_file	{ DP; return(RADIUS_SECRET_FILE); }
+session_resumption	{ DP; return(SESSION_RESUMPTION); }
+session_resume_ticket_key	{ DP; return(SESSION_RESUME_TICKET_KEY); }
+session_resume_ticket_lifetime	{ DP; return(SESSION_RESUME_TICKET_LIFETIME); }
 	/* mobility */
 mobility_role		{ DP; return(MOBILITY_ROLE); }
 agent			{ DP; return(AGENT); }

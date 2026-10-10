@@ -51,4 +51,9 @@ rc_vchar_t *r2ticket_skeyseed(int prf_id, const rc_vchar_t *sk_d_old,
 /* map an IKEv2 PRF transform id to an HMAC EVP_MD (NULL if unsupported) */
 const EVP_MD *r2ticket_prf_md(int prf_id);
 
+/* Load a 32-octet AES-256 ticket key from a file path.  0 ok / -1 fail-closed
+ * (missing, unreadable, or wrong length).  Caller owns *key; cleanse before
+ * rc_vfree. */
+int r2ticket_key_load(const char *path, rc_vchar_t **key);
+
 #endif /* IKEV2_RESUME_TICKET_H */
