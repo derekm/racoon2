@@ -3352,7 +3352,7 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 	int radius_port;
 	uint8_t rid;
 	FILE *fp;
-	(void)message_id; (void)remote;
+	(void)remote;
 
 	memset(&opt, 0, sizeof(opt));
 	memset(&server, 0, sizeof(server));
@@ -3373,15 +3373,30 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 	 * transmit (or a failed Success build) re-enters here with the MSK
 	 * already stored and the relay finished.  Opening a new RADIUS round
 	 * would hit the relay's finished guard and abort a completed Accept.
-	 * Re-synthesize and re-send Success from the peer id, no new round. */
+	 * Re-synthesize and re-send Success from the peer id, no new round.
+	 * Mirror the resume path: on a successful send advance the message id
+	 * AND park in RES_IKE_AUTH_EAP_FINAL, so the peer's RFC 5998 [AUTH]-only
+	 * final is dispatched to responder_ike_sa_auth_eap_final_recv (slot 11),
+	 * not re-entered here where an AUTH-only message would be misread as a
+	 * missing EAP payload.  On send failure stay in EAP for the next
+	 * retransmit. */
 	if (ike_sa->eap_msk && ike_sa->eap_msk->l == 64) {
 		rc_vchar_t *succ = ikev2_eap_build_success(
 		    ike_sa->eap_last_peer_id);
 		if (succ) {
 			if (ikev2_responder_eap_send(
-				ike_sa, message_id, succ) == 0)
+				ike_sa, message_id, succ) == 0) {
 				ikev2_update_message_id(
 				    ike_sa, message_id, FALSE);
+				ikev2_set_state(
+				    ike_sa,
+				    IKEV2_STATE_RES_IKE_AUTH_EAP_FINAL);
+			} else {
+				isakmp_log(ike_sa, 0, 0, 0,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "EAP: recovery Success transmit "
+					   "failed; staying in EAP\n");
+			}
 			rc_vfree(succ);
 		}
 		return;
