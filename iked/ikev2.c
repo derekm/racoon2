@@ -60,6 +60,7 @@
 #include "keyed_hash.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "ikev2_resume_ticket.h"
 #include "ikev2_eap_emit.h"
 #include "ikev2_eap.h"
 #include "ikev2_eap_relay.h"
@@ -147,6 +148,8 @@ static void ikev2_established_recv(struct ikev2_sa *, rc_vchar_t *,
 				   struct sockaddr *, struct sockaddr *);
 static void ikev2_dying_recv(struct ikev2_sa *, rc_vchar_t *, struct sockaddr *,
 			     struct sockaddr *);
+static rc_vchar_t *ikev2_ticket_lt_opaque(struct ikev2_sa *);
+static void ikev2_maybe_issue_ticket(struct ikev2_sa *, struct ikev2_payloads *);
 static void ikev2_dead_recv(struct ikev2_sa *, rc_vchar_t *, struct sockaddr *,
 			    struct sockaddr *);
 
@@ -3094,6 +3097,16 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			if (get_notify_type(n) == IKEV2_EAP_ONLY_AUTHENTICATION &&
 			    ikev2_eap_remote(ike_sa))
 				ike_sa->eap_only = 1;
+			/* RFC 5723 s4.1: a client requests a session-resumption
+			 * ticket with N(TICKET_REQUEST) in the first IKE_AUTH
+			 * (or a CREATE_CHILD / Informational it initiates).
+			 * Record the request here; on a successful
+			 * authentication the responder answers with
+			 * N(TICKET_LT_OPAQUE) (issued in
+			 * ikev2_message_issue_prf / the IKE_AUTH response
+			 * build). */
+			if (get_notify_type(n) == IKEV2_TICKET_REQUEST)
+				ike_sa->ticket_requested = 1;
 			/* process later */
 			break;
 		}
@@ -4166,6 +4179,112 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
  * (ikev2_sa_start_polling_timer) keeps it alive until the peer adds the
  * first child via CREATE_CHILD_SA.  Returns 0 on success.
  */
+
+/*
+ * RFC 5723 s4.1/7.1: if the peer requested a session-resumption ticket
+ * (N(TICKET_REQUEST) seen) and this remote has session_resumption enabled,
+ * mint a ticket by value from the just-authenticated IKE SA and return the
+ * TICKET_LT_OPAQUE notify DATA (4-octet lifetime || ticket).  Returns NULL
+ * when no ticket should be issued (not requested, not enabled, key missing)
+ * or on marshalling error.  The caller frees the returned rc_vchar_t.
+ *
+ * The ticket stores the RFC 5723 s5 "from the ticket" state: the negotiated
+ * IKE SA proposal (SAr), the IDi/IDr of the established SA, the original
+ * SPIs, the AUTH method, and the OLD SK_d (so a resumed IKE_AUTH can derive
+ * SKEYSEED per s5.1 without re-running EAP).  It is bound to the responder's
+ * ticket key (session_resume_ticket_key) with a fresh key_id derived from
+ * this SA's SPIs so concurrent SAs don't collapse onto one ticket key id.
+ */
+static rc_vchar_t *
+ikev2_ticket_lt_opaque(struct ikev2_sa *ike_sa)
+{
+	struct rcf_remote *rmconf = ike_sa->rmconf;
+	const char *keypath;
+	rc_vchar_t *tkey = NULL, *lt = NULL;
+	struct r2ticket_state st;
+	uint8_t key_id[R2TICK_KEY_ID_LEN];
+	int lifetime;
+	rc_vchar_t *sarl = NULL;
+	int r;
+
+	if (!ike_sa->ticket_requested)
+		return NULL;
+	if (rmconf && ikev2_use_session_resumption(rmconf) == RCT_BOOL_OFF)
+		return NULL;
+	if (!rmconf || !(keypath = rc_vmem2str(
+	    ikev2_session_resume_ticket_key(rmconf))))
+		return NULL;				/* not configured */
+	if (ikev2_session_resume_ticket_lifetime(rmconf) <= 0)
+		return NULL;
+	if (ikev2_auth_method(ike_sa) < 0)
+		return NULL;
+
+	if (r2ticket_key_load(keypath, &tkey) != 0) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		    "RFC 5723: cannot load session_resume_ticket_key '%s' - "
+		    "not issuing a ticket\\n", keypath);
+		rc_vfree((rc_vchar_t *)keypath);
+		return NULL;
+	}
+	rc_vfree((rc_vchar_t *)keypath);
+
+	memset(&st, 0, sizeof(st));
+	st.expires_at = (uint32_t)time(NULL) +
+	    (uint32_t)ikev2_session_resume_ticket_lifetime(rmconf);
+	st.auth_method = (uint8_t)ikev2_auth_method(ike_sa);
+	memcpy(&st.spi_i, &ike_sa->index.i_ck, 8);
+	memcpy(&st.spi_r, &ike_sa->index.r_ck, 8);
+
+	/* SAr: serialize the negotiated IKE SA proposal. */
+	sarl = ikev2_ikesa_to_proposal(ike_sa->negotiated_sa, 0);
+	if (!sarl)
+		goto done;
+	st.sa = sarl;
+
+	/* IDi/IDr: the payload data of the established SA. */
+	st.idi = ike_sa->id_i;
+	st.idr = ike_sa->id_r;
+	st.sk_d = ike_sa->sk_d;			/* OLD SK_d */
+
+	memcpy(key_id, &ike_sa->index.i_ck, 4);
+	memcpy(key_id + 4, &ike_sa->index.r_ck, 4);
+	lifetime = ikev2_session_resume_ticket_lifetime(rmconf);
+
+	lt = r2ticket_lt_opaque(tkey, key_id, &st, (uint32_t)lifetime);
+ done:
+	if (tkey) {
+		OPENSSL_cleanse(tkey->v, tkey->l);
+		rc_vfreez(tkey);
+	}
+	if (sarl)
+		rc_vfree(sarl);
+	return lt;
+}
+
+/*
+ * Push N(TICKET_LT_OPAQUE) into a response payload list if a ticket should
+ * be issued.  Used by every responder IKE_AUTH response builder after the
+ * authentication completes, so a client that requested a ticket receives it
+ * exactly once (RFC 5723 s4.2: only in the final IKE_AUTH response).
+ */
+static void
+ikev2_maybe_issue_ticket(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
+{
+	rc_vchar_t *lt;
+
+	lt = ikev2_ticket_lt_opaque(ike_sa);
+	if (!lt)
+		return;
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+	    "RFC 5723: issuing session-resumption ticket\\n");
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
+						 0, 0, IKEV2_TICKET_LT_OPAQUE,
+						 lt->v, lt->l),
+			    TRUE);
+	rc_vfree(lt);
+}
+
 int
 ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
 			      uint32_t message_id,
@@ -4783,6 +4902,10 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 							 0, 0),
 				    TRUE);
 	}
+
+	/* RFC 5723: answer a TICKET_REQUEST with N(TICKET_LT_OPAQUE) now
+	 * that the client has authenticated (final IKE_AUTH response). */
+	ikev2_maybe_issue_ticket(ike_sa, &payl);
 
 	/*
 	 * SA, TSi, TSr

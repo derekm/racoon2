@@ -358,6 +358,34 @@ r2ticket_skeyseed(int prf_id, const rc_vchar_t *sk_d_old,
  * with OPENSSL_cleanse before rc_vfree).  Returns 0 ok, -1 on any error
  * (missing/unreadable/wrong-length path).  Fail-closed.
  */
+
+rc_vchar_t *
+r2ticket_lt_opaque(const rc_vchar_t *tkey,
+    const uint8_t key_id[R2TICK_KEY_ID_LEN], const struct r2ticket_state *st,
+    uint32_t lifetime_sec)
+{
+	rc_vchar_t *ticket, *out;
+	size_t o = 0;
+	uint8_t *p;
+
+	ticket = r2ticket_create(tkey, key_id, st);
+	if (!ticket)
+		return NULL;
+	out = rc_vmalloc(4 + ticket->l);
+	if (!out) {
+		rc_vfree(ticket);
+		return NULL;
+	}
+	p = (uint8_t *)out->v;
+	p[o++] = (lifetime_sec >> 24) & 0xff;
+	p[o++] = (lifetime_sec >> 16) & 0xff;
+	p[o++] = (lifetime_sec >> 8) & 0xff;
+	p[o++] = lifetime_sec & 0xff;
+	memcpy(p + o, ticket->v, ticket->l);
+	rc_vfree(ticket);
+	return out;
+}
+
 int
 r2ticket_key_load(const char *path, rc_vchar_t **key)
 {

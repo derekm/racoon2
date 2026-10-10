@@ -56,4 +56,11 @@ const EVP_MD *r2ticket_prf_md(int prf_id);
  * rc_vfree. */
 int r2ticket_key_load(const char *path, rc_vchar_t **key);
 
+/* Build the RFC 5723 s7.1 TICKET_LT_OPAQUE notify DATA: a 4-octet big-endian
+ * Lifetime (seconds) followed by the minted ticket.  Returns a fresh
+ * rc_vchar_t (caller rc_vfree), or NULL on any error. */
+rc_vchar_t *r2ticket_lt_opaque(const rc_vchar_t *tkey,
+    const uint8_t key_id[R2TICK_KEY_ID_LEN], const struct r2ticket_state *st,
+    uint32_t lifetime_sec);
+
 #endif /* IKEV2_RESUME_TICKET_H */

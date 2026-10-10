@@ -24,7 +24,7 @@ IKEV1_NATT_SRC = ikev1/ikev1_natt.c
 endif
 IKEV2_NATT_SRC = nattraversal.c
 
-IKEV2_SRC = ikev2.c ikev2_intermediate.c ikev2_auth.c ikev2_child.c ikev2_cookie.c ikev2_notify.c ikev2_packet.c ikev2_payload.c ikev2_decrypt.c ikev2_proposal.c ikev2_rekey.c ikev2_config.c ikev2_frag.c ikev2_resume.c ikev2_resume_rec.c ikev2_qcd.c ikev2_addke.c ikev2_eap.c ikev2_radius.c ikev2_eap_relay.c ikev2_eap_round.c ikev2_eap_drive.c ikev2_eap_emit.c ikev2cfg_walk.c
+IKEV2_SRC = ikev2.c ikev2_intermediate.c ikev2_auth.c ikev2_child.c ikev2_cookie.c ikev2_notify.c ikev2_packet.c ikev2_payload.c ikev2_decrypt.c ikev2_proposal.c ikev2_rekey.c ikev2_config.c ikev2_frag.c ikev2_resume.c ikev2_resume_rec.c ikev2_resume_ticket.c ikev2_qcd.c ikev2_addke.c ikev2_eap.c ikev2_radius.c ikev2_eap_relay.c ikev2_eap_round.c ikev2_eap_drive.c ikev2_eap_emit.c ikev2cfg_walk.c
 IKED_COMMON = main.c dh.c ike_sa.c ike_conf.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC}
 
 if USE_EPOLL
@@ -186,7 +186,7 @@ addtest_ikev2 = ikev2.$(OBJEXT) ikev2_intermediate.$(OBJEXT) \
 	ikev2_notify.$(OBJEXT) ikev2_packet.$(OBJEXT) ikev2_payload.$(OBJEXT) \
 	ikev2_decrypt.$(OBJEXT) ikev2_proposal.$(OBJEXT) ikev2_rekey.$(OBJEXT) \
 	ikev2_config.$(OBJEXT) ikev2_frag.$(OBJEXT) ikev2_resume.$(OBJEXT) \
-	ikev2_resume_rec.$(OBJEXT) ikev2_qcd.$(OBJEXT) ikev2_addke.$(OBJEXT) \
+	ikev2_resume_rec.$(OBJEXT) ikev2_resume_ticket.$(OBJEXT) ikev2_qcd.$(OBJEXT) ikev2_addke.$(OBJEXT) \
 	ikev2_eap.$(OBJEXT) ikev2_radius.$(OBJEXT) ikev2_eap_relay.$(OBJEXT) ikev2_eap_round.$(OBJEXT) ikev2_eap_drive.$(OBJEXT) ikev2_eap_emit.$(OBJEXT) \
 	ikev2cfg_walk.$(OBJEXT) nattraversal.$(OBJEXT)
 if USE_ADMIN
