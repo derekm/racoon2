@@ -49,6 +49,7 @@
 #include <openssl/crypto.h>	/* OPENSSL_cleanse for key material */
 
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 
 #include "racoon.h"
@@ -60,6 +61,11 @@
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 #include "ikev2_eap_emit.h"
+#include "ikev2_eap.h"
+#include "ikev2_eap_relay.h"
+#include "ikev2_eap_round.h"
+#include "ikev2_eap_drive.h"
+#include "ikev2_radius.h"
 #include "ikev2_notify.h"
 #include "nattraversal.h"
 
@@ -122,6 +128,16 @@ static void initiator_ike_sa_auth_recv(struct ikev2_sa *, rc_vchar_t *,
 				       struct sockaddr *, struct sockaddr *);
 static void responder_ike_sa_auth_recv(struct ikev2_sa *, rc_vchar_t *,
 				       struct sockaddr *, struct sockaddr *);
+static void responder_ike_sa_auth_eap_recv(struct ikev2_sa *, rc_vchar_t *,
+					   struct sockaddr *,
+					   struct sockaddr *);
+static void responder_ike_sa_auth_eap_cont(struct ikev2_sa *, uint32_t,
+					   struct ikev2_payload_header *,
+					   struct sockaddr *);
+static void responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *, int);
+static int ikev2_responder_eap_send(struct ikev2_sa *, uint32_t, rc_vchar_t *);
+int ikev2_responder_childless_auth_send(struct ikev2_sa *, uint32_t,
+					rc_vchar_t *);
 static void ikev2_established_recv(struct ikev2_sa *, rc_vchar_t *,
 				   struct sockaddr *, struct sockaddr *);
 static void ikev2_dying_recv(struct ikev2_sa *, rc_vchar_t *, struct sockaddr *,
@@ -142,6 +158,7 @@ IKEV2INPUT ikev2_input_dispatch[] = {
 	ikev2_established_recv,	/* should be CREATE_CHILD_SA or INFORMATIONAL */
 	ikev2_dying_recv,	/* same as established, except no initiating */
 	ikev2_dead_recv,
+	responder_ike_sa_auth_eap_recv,	/* Responder EAP in IKE_AUTH (RFC 7296 s2.16) */
 #ifdef WITH_INTERMEDIATE
 	initiator_ike_intermediate_recv, /* Initiator IKE_INTERMEDIATE sent */
 #endif
@@ -3080,6 +3097,48 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 	}
 	if (!(id_i && auth)) {
+		/* RFC 7296 s2.16: an eap-configured remote with IDi and no
+		 * AUTH starts the EAP exchange instead of failing syntax.
+		 * Begin the relay with an EAP-Identity request and park the
+		 * SA in the EAP state; the peer's EAP Response IKE_AUTH
+		 * re-enters via responder_ike_sa_auth_eap_recv. */
+		if (id_i && !auth && ikev2_eap_remote(ike_sa)) {
+			struct ikev2_eap_relay *relay;
+			rc_vchar_t *identity_req;
+
+			relay = racoon_calloc(1, sizeof(*relay));
+			if (!relay)
+				goto fail_nomem;
+			identity_req = ikev2_eap_relay_start(relay, 1);
+			if (!identity_req) {
+				racoon_free(relay);
+				goto fail_nomem;
+			}
+			/* store the SA's id_i before parking */
+			if (ike_sa->id_i)
+				rc_vfree(ike_sa->id_i);
+			ike_sa->id_i = rc_vnew((uint8_t *)(id_i + 1),
+					       get_payload_data_length(id_i));
+			if (!ike_sa->id_i) {
+				rc_vfree(identity_req);
+				ikev2_eap_relay_free(relay);
+				racoon_free(relay);
+				goto fail_nomem;
+			}
+			ike_sa->eap_relay = relay;
+			/* park in the EAP continuation state and send the
+			 * EAP-Identity request */
+			ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_AUTH_EAP);
+			ikev2_responder_eap_send(ike_sa, message_id,
+						 identity_req);
+			rc_vfree(identity_req);
+			/* each EAP round is a fresh IKE_AUTH request with a new
+			 * message id; advance so the peer's next EAP-Response
+			 * (msgid = this request + 1) passes the window. */
+			ikev2_update_message_id(ike_sa, message_id, FALSE);
+			TRACE((PLOGLOC, "responder EAP: started, state EAP\n"));
+			return;
+		}
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
 			   "received message lacks %s payload\n",
@@ -3185,6 +3244,312 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	error = IKEV2_AUTHENTICATION_FAILED;
 	goto notify;
 #endif
+}
+
+static void
+responder_ike_sa_auth_eap_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
+			       struct sockaddr *remote, struct sockaddr *local)
+{
+	/* EAP continuation (IKEV2_STATE_RES_IKE_AUTH_EAP).  The peer's EAP
+	 * Response IKE_AUTH re-enters here by dispatch; run it through one
+	 * RADIUS round and either emit the next EAP or, on success, drive the
+	 * MSK into the SA and complete the exchange. */
+	struct ikev2_header *ikehdr = (struct ikev2_header *)msg->v;
+	struct ikev2_payload_header *p;
+	int type;
+	struct ikev2_payload_header *eap = 0;
+	uint32_t message_id;
+	(void)local;
+
+	message_id = get_uint32(&ikehdr->message_id);
+	/* remember the peer's request msgid for this round so our EAP
+	 * response echoes it (IKEv2 responses always echo the request id). */
+	ike_sa->eap_message_id = message_id;
+	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	for (type = ikehdr->next_payload;
+	     type != IKEV2_NO_NEXT_PAYLOAD;
+	     POINT_NEXT_PAYLOAD(p, type)) {
+		switch (type) {
+		case IKEV2_PAYLOAD_EAP:
+			if (eap)
+				goto malformed;
+			eap = p;
+			break;
+		default:
+			break;
+		}
+	}
+	if (!eap) {
+		isakmp_log(ike_sa, remote, (struct sockaddr *)0, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "EAP continuation: missing EAP payload\n");
+		goto malformed;
+	}
+	/* resume path handled by the worker bridge (see
+	 * responder_ike_sa_auth_eap_resume below). */
+	responder_ike_sa_auth_eap_cont(ike_sa, message_id, eap, remote);
+	return;
+
+      malformed:
+	if (ikev2_respond_error(ike_sa, msg, remote, local,
+				0, 0, 0, IKEV2_INVALID_SYNTAX, 0, 0) == 0)
+		ikev2_update_message_id(ike_sa, message_id, FALSE);
+	ikev2_abort(ike_sa, ECONNREFUSED);
+	return;
+}
+
+/* Run one RADIUS round for the peer's EAP Response. */
+static void
+responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
+			       struct ikev2_payload_header *eap,
+			       struct sockaddr *remote)
+{
+	struct ikev2_radius_opt opt;
+	rc_vchar_t eapmsg, *secret = 0;
+	struct sockaddr_storage server;
+	socklen_t servlen;
+	rc_vchar_t *radius_server;
+	const char *server_str, *secret_path;
+	int radius_port;
+	uint8_t rid;
+	FILE *fp;
+	(void)message_id; (void)remote;
+
+	memset(&opt, 0, sizeof(opt));
+	memset(&server, 0, sizeof(server));
+
+	/* echo the Access-Challenge State the relay captured on the prior
+	 * round (NULL on the first/identity round).  FreeRADIUS refuses to
+	 * run EAP without it from the second Access-Request onward. */
+	if (ike_sa->eap_relay) {
+		struct ikev2_eap_relay *rel =
+		    (struct ikev2_eap_relay *)ike_sa->eap_relay;
+		opt.state = rel->state;
+	}
+
+	eapmsg.v = (uint8_t *)(eap + 1);
+	eapmsg.l = get_payload_data_length(eap);
+
+	/* Remember the peer's EAP Response Identifier byte (wire offset 1).
+	 * RFC 3748 s4.2: the EAP-Success we synthesize after Acceptance must
+	 * echo THIS id (a strict peer discards a misidentified Success).  The
+	 * server's own Success packet, forwarded from the Accept, is preferred
+	 * when the Accept carries one - only that has authority over the id. */
+	if (eapmsg.l >= 2)
+		ike_sa->eap_last_peer_id =
+		    ((uint8_t *)eapmsg.v)[1];
+
+	/* Capture the EAP Identity (first round, Type=1) and carry it as
+	 * RADIUS User-Name so the server can match the account to a stored
+	 * secret (FreeRADIUS files authorize keys on it).  Store once on the
+	 * SA; later rounds re-send the same identity. */
+	if (!ike_sa->eap_user) {
+		char *id = ikev2_eap_identity_string(&eapmsg);
+		if (id)
+			ike_sa->eap_user = id;
+	}
+	if (ike_sa->eap_user)
+		opt.user_name = ike_sa->eap_user;
+	/* a RADIUS User-Name attr holds at most IKEV2_RADIUS_MAX_VALUE octets;
+	 * a longer identity would fail inside radius_put_attr and the failed
+	 * round would abort the SA with a misleading 'submit failed'.  Reject
+	 * with a log that names the actual length. */
+	if (ike_sa->eap_user &&
+	    strlen(ike_sa->eap_user) > IKEV2_RADIUS_MAX_VALUE) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "EAP: identity too long for RADIUS User-Name "
+			   "(l=%zu, max %d)\n",
+			   strlen(ike_sa->eap_user),
+			   IKEV2_RADIUS_MAX_VALUE);
+		goto fail_syntax;
+	}
+
+	/* remote RADIUS options from the SA's rmconf. */
+	radius_server = ikev2_radius_server(ike_sa->rmconf);
+	radius_port = ikev2_radius_port(ike_sa->rmconf);
+	if (!radius_server || radius_server->l == 0) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "EAP: no radius_server for eap remote\n");
+		goto fail_syntax;
+	}
+	server_str = rc_vmem2str(radius_server);
+	if (!server_str)
+		goto fail_nomem;
+	if (inet_pton(AF_INET, server_str,
+		      &((struct sockaddr_in *)&server)->sin_addr) != 1) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "EAP: radius_server '%s' not an IPv4 address\n",
+			   server_str);
+		goto fail_syntax;
+	}
+	((struct sockaddr_in *)&server)->sin_family = AF_INET;
+	((struct sockaddr_in *)&server)->sin_port =
+	    htons((radius_port > 0) ? radius_port : IKEV2_RADIUS_DEFAULT_PORT);
+	servlen = sizeof(struct sockaddr_in);
+
+	secret_path = rc_vmem2str(ikev2_radius_secret_file(ike_sa->rmconf));
+	if (!secret_path) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "EAP: no radius_secret_file for eap remote\n");
+		goto fail_syntax;
+	}
+	fp = fopen(secret_path, "r");
+	if (!fp) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "EAP: cannot open radius_secret_file %s\n",
+			   secret_path);
+		goto fail_syntax;
+	}
+	secret = rc_vmalloc(256);
+	if (!secret) { fclose(fp); goto fail_nomem; }
+	secret->l = fread(secret->v, 1, 255, fp);
+	fclose(fp);
+	while (secret->l &&
+	       (((uint8_t *)secret->v)[secret->l - 1] == '\n' ||
+		((uint8_t *)secret->v)[secret->l - 1] == '\r' ||
+		((uint8_t *)secret->v)[secret->l - 1] == ' '))
+		secret->l--;
+
+	if (secret->l == 0) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "EAP: empty radius_secret_file %s\n", secret_path);
+		rc_vfreez(secret);
+		goto fail_syntax;
+	}
+
+	opt.secret = secret;
+	opt.retries = 2;
+	opt.timeout_ms = 1000;
+	if (!ike_sa->eap_rid)
+		ike_sa->eap_rid = 1;
+	rid = ike_sa->eap_rid;
+
+	/* the worker round deep-copies opt/secret; we free ours after. */
+	{
+		int sr = ikev2_eap_round_submit(ike_sa, ike_sa->serial_number,
+					       &eapmsg,
+					       (struct sockaddr *)&server,
+					       servlen, &opt,
+					       &ike_sa->eap_rid,
+					       responder_ike_sa_auth_eap_resume);
+		if (sr == 1) {
+			/* a round is already in flight on this SA: this is a
+			 * retransmit of the in-flight EAP-Response.  Drop the
+			 * duplicate - the original round's resume() will answer
+			 * it.  Do NOT treat a re-entered round as a config
+			 * failure (localhost RADIUS hides this; a slow server
+			 * or a 1s peer retransmit would otherwise kill a good
+			 * exchange). */
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+				   "EAP: dropping duplicate round (in flight)\n");
+			rc_vfreez(secret);
+			return;
+		}
+		if (sr != 0) {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+				   "EAP: round submit failed\n");
+			rc_vfreez(secret);
+			goto fail_syntax;
+		}
+	}
+	(void)rid;
+	rc_vfreez(secret);
+	return;
+
+      fail_nomem:
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		   "EAP: out of memory in continuation\n");
+	++isakmpstat.fail_process_packet;
+	return;
+
+      fail_syntax:
+	/* the recv-level handler already reports the malformed message; here
+	 * we just tear the exchange down (no msg/remote to echo into). */
+	ikev2_abort(ike_sa, ECONNREFUSED);
+	return;
+}
+
+/* Worker-round resume: drive the decoded response into the relay and either
+ * emit the next EAP Request / EAP-Success or, on Acceptance, complete. */
+static void
+responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *r, int rc)
+{
+	struct ikev2_sa *ike_sa;
+	struct ikev2_radius_response *resp;
+	const rc_vchar_t *secret;
+	rc_vchar_t *out_eap = NULL;
+	enum ikev2_eap_drive_result dr;
+
+	(void)rc;
+	ike_sa = ikev2_eap_round_sa(r);
+	if (!ike_sa)
+		return;
+	resp = ikev2_eap_round_response(r);
+	secret = ikev2_eap_round_secret(r);
+
+	dr = ikev2_eap_drive_advance(ike_sa,
+				     (struct ikev2_eap_relay *)ike_sa->eap_relay,
+				     resp, secret, &out_eap);
+	switch (dr) {
+	case IKEV2_EAP_DRIVE_CONTINUE:
+		/* emit the next EAP Request to the client; stay in EAP, and
+		 * advance the request window only once the response was
+		 * actually transmitted, so the peer's next round
+		 * (msgid = eap_message_id + 1) is accepted.  A failed send
+		 * must not advance: the peer retransmits the old id. */
+		if (ikev2_responder_eap_send(ike_sa, ike_sa->eap_message_id,
+					    out_eap) == 0)
+			ikev2_update_message_id(ike_sa,
+						ike_sa->eap_message_id, FALSE);
+		if (out_eap) rc_vfree(out_eap);
+		return;
+	case IKEV2_EAP_DRIVE_SUCCESS:
+		/* MSK now stored on ike_sa->eap_msk.  Send EAP-Success to the
+		 * client (payload 48, code 3) so it knows the method
+		 * succeeded, then park and await the peer's final MSK-AUTH.
+		 *
+		 * NOTE the transition below is a PARK, not a completion: the
+		 * peer's RFC 5998 [AUTH]-only final IKE_AUTH carries no IDi,
+		 * so it cannot (yet) be routed through responder_ike_sa_auth_recv0
+		 * (which requires IDi).  Retaining the first IKE_AUTH's child
+		 * offer and completing the SA after MSK-AUTH verification is the
+		 * outstanding work; the code below must NOT be read as a claim
+		 * that RES_IKE_SA_INIT_SENT makes the exchange complete. */
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "EAP: Acceptance, MSK stored (l=%u); sending "
+			   "EAP-Success\n",
+			   ike_sa->eap_msk ? (unsigned)ike_sa->eap_msk->l : 0u);
+		{
+			rc_vchar_t *succ = out_eap;
+			/* Prefer the server's own Success packet (correct RFC
+			 * 3748 s4.2 Identifier, forwarded from the Accept).
+			 * Fall back to a synthetic Success echoing the last
+			 * peer EAP Response id - never the RADIUS id. */
+			if (!succ)
+				succ = ikev2_eap_build_success(
+				    ike_sa->eap_last_peer_id);
+			if (succ) {
+				if (ikev2_responder_eap_send(
+					ike_sa, ike_sa->eap_message_id,
+					succ) == 0)
+					ikev2_update_message_id(
+					    ike_sa,
+					    ike_sa->eap_message_id, FALSE);
+				if (succ != out_eap)
+					rc_vfree(succ);
+			}
+		}
+		if (out_eap) rc_vfree(out_eap);
+		ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_SA_INIT_SENT);
+		return;
+	case IKEV2_EAP_DRIVE_FAILURE:
+	default:
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "EAP: RADIUS Reject/error (dr=%d)\n", dr);
+		if (out_eap) rc_vfree(out_eap);
+		ikev2_abort(ike_sa, EACCES);
+		return;
+	}
 }
 
 static void
@@ -8244,6 +8609,7 @@ ikev2_state_str(int type)
 		S(INI_IKE_AUTH_SENT);
 		S(RES_IKE_AUTH_RCVD);
 		S(INI_IKE_AUTH_RCVD);
+		S(RES_IKE_AUTH_EAP);
 		S(ESTABLISHED);
 		S(DYING);
 		S(DEAD);

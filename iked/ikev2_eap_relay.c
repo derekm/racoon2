@@ -108,6 +108,14 @@ ikev2_eap_relay_consume(struct ikev2_eap_relay *relay,
 			     "EAP relay: Accept without decryptable MSK\n");
 			return IKEV2_EAP_RELAY_ERROR;
 		}
+		/* Forward the server's EAP-Success packet if the Accept
+		 * carries one (RFC 3748 s4.2: its Identifier MUST match the
+		 * peer Success's Response - only FreeRADIUS knows that id).
+		 * *out_eap is then the exact Success to transmit to the
+		 * client; the caller transmits and frees it as for a
+		 * Challenge.  Absent one we build a synthetic Success in the
+		 * caller. */
+		*out_eap = ikev2_radius_eap_message(resp);
 		relay->finished = 1;
 		relay_discard_pending(relay);
 		r = IKEV2_EAP_RELAY_SUCCESS;

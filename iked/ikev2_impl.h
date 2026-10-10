@@ -107,11 +107,12 @@ enum ikev2_state {
 	IKEV2_STATE_INI_IKE_AUTH_RCVD = 5,
 	IKEV2_STATE_ESTABLISHED = 6,
 	IKEV2_STATE_DYING = 7,
-	IKEV2_STATE_DEAD = 8
+	IKEV2_STATE_DEAD = 8,
+	IKEV2_STATE_RES_IKE_AUTH_EAP = 9
 #ifdef WITH_INTERMEDIATE
-	, IKEV2_STATE_INI_IKE_INTERMEDIATE_SENT = 9
+	, IKEV2_STATE_INI_IKE_INTERMEDIATE_SENT = 10
 #endif
-	/* IKEV2_STATE_EAP  = 9 */
+	/* IKEV2_STATE_EAP  = 11 */
 
 	/* IKEV2_STATE_ESTABLISHED_WAIT_INITIATOR, */
 };
@@ -362,10 +363,21 @@ struct ikev2_sa {
 	 * (ikev2_eap_relay.c) driven by the worker path; eap_msk is the
 	 * 64-octet MSK extracted from the final Access-Accept, substituted
 	 * for the shared secret in the AUTH computation (IKEV2_AUTH_SHARED_KEY
-	 * arm).  Both NULL on a non-EAP SA.  Owned: freed in ike_sa.c
-	 * teardown. */
+	 * arm).  Both NULL on a non-EAP SA.  eap_rid is the running RADIUS
+	 * Identifier across rounds.  Owned: freed in ike_sa.c teardown. */
 	void *eap_relay;	/* struct ikev2_eap_relay *, per-SE */
 	rc_vchar_t *eap_msk;	/* 64-octet EAP-MSCHAPv2 MSK, AUTH seed */
+	uint8_t eap_rid;	/* running RADIUS Identifier for EAP rounds */
+	uint32_t eap_message_id;	/* msgid of the in-flight peer EAP-Response
+					   IKE_AUTH, echoed in our EAP response */
+	char *eap_user;		/* EAP Identity string (owned, NULL until known);
+				   sent as RADIUS User-Name so the server can
+				   match the account */
+	uint8_t eap_last_peer_id;	/* Identifier byte of the last peer EAP
+					   Response we proxied; RFC 3748 s4.2 the
+					   EAP-Success we synthesize must echo it
+					   (the server's own Success packet is
+					   preferred when the Accept carries one) */
 
 	IKEV2_SA_LIST_ENTRY link;
 };

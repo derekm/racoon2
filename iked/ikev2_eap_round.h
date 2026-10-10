@@ -30,17 +30,36 @@
  * ikev2_eap_round_submit() must treat EACH round as possibly ending in either
  * path at done() time, depending on where the SA is then standing:
  *   - live SA: done() clears the pin and calls resume() exactly once;
- *   - gone / DYING / DEAD SA: done() clears the pin (when findable) and does
- *     NOT call resume() - the round is released and disposal happens on a
- *     later reaper tick, so the caller must not assume eap_msk survived.
- * The exact concurrent worker that shares the SA is not privileged here: it
- * is CREATE_CHILD_SA / rekey DH (which never calls ikev2_abort() - those
- * failure paths use ikev2_child_abort / child-expire / rekey abort and leave
- * the IKE SA live), so the common case is that a live overlap still resumes.
- * The drop path exists for SAs that went DYING/DEAD/DISPOSED independently.
- * A caller must therefore not condition on which worker failed; it either
- * gets resume() with a live SA or no callback at all (drop).  IKE_SA_INIT
- * cannot overlap here (its responder abort path is before IKE_AUTH).
+ *   - findable DYING/DEAD SA: done() clears the pin and does NOT call
+ *     resume() - the round is released.  eap_msk is still alive here:
+ *     disposal (which frees it) happens on a LATER reaper tick, so the
+ *     caller must never free it (teardown owns it).
+ *   - gone (already unlinked/freed) SA: done() just releases the round; the
+ *     SA and its eap_msk were already freed by whoever unlinked it.
+ * In the drop cases the caller is not re-entered, so it must not retain the
+ * SA pointer across a submit expecting a later cleanup - teardown owns the
+ * relay and eap_msk in both drop paths.
+ * No DH worker shares the IKE_AUTH window with an EAP round.  In this tree
+ * the responder creates the AUTH child with g_i=n_i=0 -- responder_ike_sa_auth_cont
+ * hardcodes the 0,0 at ikev2.c responder_ike_sa_auth_cont (the
+ * ikev2_create_child_responder call that passes sa_i2,ts_i,ts_r,cfg,0,0),
+ * which
+ * only submits a child DH exchange inside `if (g_i)` (ikev2_child.c:1351) -- so
+ * no child DH runs at IKE_AUTH (the AUTH child is keyed from SK_d per the RFC
+ * 7296 2.17 no-PFS formula; an optional KE in IKE_AUTH is allowed by 1.2 but this
+ * responder never passes one).  CREATE_CHILD_SA / rekey DH (ikev2_child.c /
+ * ikev2_rekey.c) runs only on an ESTABLISHED (or DYING, which forwards to the
+ * established handler) SA, and IKE_SA_INIT / IKE_INTERMEDIATE finish before
+ * IKE_AUTH.  This statement depends on the g_i=0 call site - if that 0,0 later
+ * becomes the peer's KE, re-check it.  The round's pin
+ * (eap_round_pending) is therefore orthogonal to crypto_pending because no
+ * crypto_pending job is in flight during IKE_AUTH EAP anyway - the DH/rekey
+ * done()-clears-the-other-pin hazard this design guards cannot actually arise
+ * while the round runs.  Still, IKE_AUTH failure does call ikev2_abort()
+ * (DYING then DEAD, expires children, no dispose), and the SA can be torn
+ * down independently, so the drop path is real and not the EAP worker's
+ * doing.  The caller must therefore not condition on which worker failed; it
+ * either gets resume() with a confirmed-live SA or no callback at all.
  *
  * See ikev2_eap_round.c for the lifetime rationale.  The relay's per-SE
  * state and the MSK live on the caller-owned ike_sa; this module never
@@ -103,7 +122,9 @@ typedef void (*ikev2_eap_round_resume_t)(struct ikev2_eap_round *r, int rc);
  * thread after crypto_workers_drain(), only for a live SA; if the pool is
  * disabled the round runs inline and resume() is called before submit
  * returns), -1 on failure (nothing submitted, nothing pinned, resume() never
- * called, caller keeps ownership of all inputs).
+ * called, caller keeps ownership of all inputs), or 1 when a round is already
+ * in flight on this SA (a retransmit of an in-flight round - the caller should
+ * drop the duplicate, not treat it as a failure), nothing more is submitted.
  */
 extern int ikev2_eap_round_submit(
 	struct ikev2_sa *ike_sa, int serial,
@@ -115,5 +136,6 @@ extern int ikev2_eap_round_submit(
 extern struct ikev2_radius_response *ikev2_eap_round_response(
 	struct ikev2_eap_round *r);
 extern struct ikev2_sa *ikev2_eap_round_sa(struct ikev2_eap_round *r);
+extern const rc_vchar_t *ikev2_eap_round_secret(struct ikev2_eap_round *r);
 
 #endif /* __IKEV2_EAP_ROUND_H_ */

@@ -179,7 +179,7 @@ ikev2_eap_round_submit(struct ikev2_sa *ike_sa, int serial,
 	 * crypto_pending).  It is a boolean: refuse if an EAP round is already
 	 * in flight on this SA rather than clobber its pin. */
 	if (ike_sa->eap_round_pending)
-		return -1;
+		return 1;	/* duplicate: a round is already in flight */
 
 	r = racoon_calloc(1, sizeof(*r));
 	if (!r)
@@ -259,4 +259,12 @@ ikev2_eap_round_sa(struct ikev2_eap_round *r)
 	/* the caller already has the SA it submitted with; this accessor
 	 * exists so a resume callback that only holds r can confirm the SA. */
 	return r ? r->ike_sa : NULL;
+}
+
+/* the deep-copied shared secret the round carried (valid during resume);
+ * needed by the drive/relay consume path. */
+const rc_vchar_t *
+ikev2_eap_round_secret(struct ikev2_eap_round *r)
+{
+	return r ? &r->secret : NULL;
 }
