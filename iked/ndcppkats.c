@@ -663,9 +663,14 @@ static int
 dh_two_party(const struct dhgroup *dg, size_t vlen)
 {
 	rc_vchar_t *a_pub = NULL, *a_priv = NULL, *b_pub = NULL, *b_priv = NULL;
-	rc_vchar_t *ab = NULL, *ba = NULL;
+	rc_vchar_t *ab = NULL, *ba = NULL, *neg = NULL;
+	rc_vchar_t *bad = NULL;
+	BN_CTX *ctx = NULL;
+	BIGNUM *g = NULL, *p = NULL, *ns = NULL;
+	unsigned char *buf = NULL;
 	int rc = -1;
 
+	/* Positive: two independent keypairs reach the same shared secret. */
 	if (oakley_dh_generate(dg, &a_pub, &a_priv) < 0 ||
 	    oakley_dh_generate(dg, &b_pub, &b_priv) < 0)
 		goto out;
@@ -677,6 +682,42 @@ dh_two_party(const struct dhgroup *dg, size_t vlen)
 		goto out;
 	if (!ab || !ba || ab->l != ba->l || rc_vmemcmp(ab, ba) != 0)
 		goto out;
+
+	/* Negative (RFC 6989 s2.2, only for groups with a published q):
+	 * feed the daemon a peer public y = p - g.  g^q == 1, and q is odd
+	 * for groups 22-24, so (-g)^q == -1 != 1 mod p: y is in [1,p-1]
+	 * but NOT in the prime-order subgroup, so oakley_dh_compute MUST
+	 * reject it.  Confirms the subgroup check actually fires, not just
+	 * that honest publics agree. */
+	if (dg->order && dg->genv) {
+		if (vlen > (size_t)INT_MAX)
+			goto out;
+		ctx = BN_CTX_new();
+		g = BN_new(); p = BN_new(); ns = BN_new();
+		if (!ctx || !g || !p || !ns)
+			goto out;
+		if (!BN_bin2bn(dg->genv->v, (int)dg->genv->l, g) ||
+		    !BN_bin2bn(dg->prime->v, (int)dg->prime->l, p) ||
+		    !BN_sub(ns, p, g))
+			goto out;
+		buf = racoon_calloc(vlen, 1);
+		if (!buf)
+			goto out;
+		if (BN_bn2binpad(ns, buf, (int)vlen) != (int)vlen)
+			goto out;
+		bad = rc_vnew(buf, vlen);
+		if (!bad)
+			goto out;
+		if (oakley_dh_compute(dg, a_pub, a_priv, bad, &neg) >= 0) {
+			kat_fail("A9", "RFC 5114 group accepted "
+				 "out-of-subgroup public y=p-g (RFC 6989)");
+			goto out;
+		}
+		if (neg) {
+			rc_vfree(neg);
+			neg = NULL;
+		}
+	}
 	rc = 0;
       out:
 	if (a_pub) rc_vfree(a_pub);
@@ -685,6 +726,13 @@ dh_two_party(const struct dhgroup *dg, size_t vlen)
 	if (b_priv) rc_vfree(b_priv);
 	if (ab) rc_vfree(ab);
 	if (ba) rc_vfree(ba);
+	if (neg) rc_vfree(neg);
+	if (bad) rc_vfree(bad);
+	if (buf) racoon_free(buf);
+	if (ctx) BN_CTX_free(ctx);
+	if (g) BN_free(g);
+	if (p) BN_free(p);
+	if (ns) BN_free(ns);
 	return rc;
 }
 

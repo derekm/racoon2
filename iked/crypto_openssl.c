@@ -4481,9 +4481,8 @@ eay_dh_compute_v(rc_vchar_t *prime, rc_vchar_t *genv, rc_vchar_t *order,
 	unsigned char *v = NULL;
 	int error = -1;
 
-	if (!prime || !genv || !pub || !priv || !pub_p || !key)
+	if (!prime || !genv || !pub || !priv || !pub_p || !key || *key == NULL)
 		return -1;
-	*key = NULL;
 	if ((dh = DH_new()) == NULL)
 		goto end;
 	if (eay_v2bn(&p, prime) < 0)
@@ -4531,7 +4530,10 @@ eay_dh_compute_v(rc_vchar_t *prime, rc_vchar_t *genv, rc_vchar_t *order,
 
 	if ((l = DH_compute_key(v, dh_pub, dh)) == -1)
 		goto end;
-	if ((*key = rc_vmalloc(prime->l)) == NULL)
+	/* caller pre-allocated *key = prime->l; write the shared secret
+	 * right-shifted into it (the old eay_dh_compute pattern) — never
+	 * orphan the caller's buffer. */
+	if (l > (int)prime->l)
 		goto end;
 	memcpy((*key)->u + (prime->l - l), v, l);
 
