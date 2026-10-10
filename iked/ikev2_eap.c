@@ -206,7 +206,7 @@ ikev2_eap_build_identity_request(u_int8_t identifier)
 	return enc;
 }
 
-/* RFC 3748 s5.2: EAP-Success (Code=3, no Type octet; length 4). */
+/* RFC 3748 s4.2: EAP-Success (Code=3, no Type octet; length 4). */
 rc_vchar_t *
 ikev2_eap_build_success(u_int8_t identifier)
 {
@@ -215,6 +215,24 @@ ikev2_eap_build_success(u_int8_t identifier)
 
 	memset(&p, 0, sizeof(p));
 	p.code = IKEV2_EAP_CODE_SUCCESS;
+	p.identifier = identifier;
+	p.data = NULL;
+	enc = ikev2_eap_encode_packet(&p);
+	return enc;
+}
+
+/* RFC 3748 s4.2: EAP-Failure (Code=4, no Type octet; length 4).  Sent by
+ * the responder to answer the outstanding IKE_AUTH when EAP/RADIUS
+ * rejects the client, so the peer's retransmission is not met with
+ * silence (RFC 7296 s2.16). */
+rc_vchar_t *
+ikev2_eap_build_failure(u_int8_t identifier)
+{
+	struct ikev2_eap_packet p;
+	rc_vchar_t *enc;
+
+	memset(&p, 0, sizeof(p));
+	p.code = IKEV2_EAP_CODE_FAILURE;
 	p.identifier = identifier;
 	p.data = NULL;
 	enc = ikev2_eap_encode_packet(&p);

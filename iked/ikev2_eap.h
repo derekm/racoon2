@@ -23,6 +23,10 @@ extern rc_vchar_t *ikev2_eap_build_identity_request(u_int8_t identifier);
 /* Build an RFC 3748 s5.2 EAP-Success (Code=3, no Type octet). */
 extern rc_vchar_t *ikev2_eap_build_success(u_int8_t identifier);
 
+/* Build an RFC 3748 s4.2 EAP-Failure (Code=4, no Type octet); answers the
+ * outstanding IKE_AUTH when EAP/RADIUS rejects the client. */
+extern rc_vchar_t *ikev2_eap_build_failure(u_int8_t identifier);
+
 /* Extract the EAP Identity (RFC 3748 s5.1) from a wire Response; returns a
  * NUL-terminated duplicate (rc_free) or NULL. */
 extern char *ikev2_eap_identity_string(rc_vchar_t *);
