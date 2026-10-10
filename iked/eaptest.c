@@ -177,6 +177,37 @@ main(void)
 			printf("eaptest: PASS identity_string non-identity rejected\n");
 		}
 	}
+	/* EAP Length 4 (< 5): the bytes after are NOT an identity - even though
+	 * they exist in the larger IKEv2 payload, they must NOT leak into
+	 * User-Name.  Strict rejection, no clamp fallback. */
+	{
+		u_int8_t w[] = { 0x02, 0x01, 0x00, 0x04, 0x01, 'a', 'd', 'm',
+				 'i', 'n' };
+		rc_vchar_t raw; char *s;
+		raw.v = w; raw.l = sizeof(w);
+		s = ikev2_eap_identity_string(&raw);
+		if (s != NULL) {
+			printf("eaptest: FAIL identity_string len<5 leaked tail\n");
+			if (s) rc_free(s);
+			fails++;
+		} else {
+			printf("eaptest: PASS identity_string len<5 strictly rejected\n");
+		}
+	}
+	/* EAP Length > payload: overrun - strictly rejected. */
+	{
+		u_int8_t w[] = { 0x02, 0x01, 0x01, 0x00, 0x01, 'a' }; /* len 0x0100 */
+		rc_vchar_t raw; char *s;
+		raw.v = w; raw.l = sizeof(w);
+		s = ikev2_eap_identity_string(&raw);
+		if (s != NULL) {
+			printf("eaptest: FAIL identity_string len-overrun\n");
+			if (s) rc_free(s);
+			fails++;
+		} else {
+			printf("eaptest: PASS identity_string len-overrun rejected\n");
+		}
+	}
 
 	/* Nak detection: a Response carrying type 3 must report type 3. */
 	{

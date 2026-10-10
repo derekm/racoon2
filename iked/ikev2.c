@@ -3358,15 +3358,6 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 	eapmsg.v = (uint8_t *)(eap + 1);
 	eapmsg.l = get_payload_data_length(eap);
 
-	/* Remember the peer's EAP Response Identifier byte (wire offset 1).
-	 * RFC 3748 s4.2: the EAP-Success we synthesize after Acceptance must
-	 * echo THIS id (a strict peer discards a misidentified Success).  The
-	 * server's own Success packet, forwarded from the Accept, is preferred
-	 * when the Accept carries one - only that has authority over the id. */
-	if (eapmsg.l >= 2)
-		ike_sa->eap_last_peer_id =
-		    ((uint8_t *)eapmsg.v)[1];
-
 	/* Capture the EAP Identity (first round, Type=1) and carry it as
 	 * RADIUS User-Name so the server can match the account to a stored
 	 * secret (FreeRADIUS files authorize keys on it).  Store once on the
@@ -3479,6 +3470,18 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 			rc_vfreez(secret);
 			goto fail_syntax;
 		}
+		/* submit accepted this round: remember its EAP Response
+		 * Identifier byte (wire offset 1).  RFC 3748 s4.2: the
+		 * EAP-Success we synthesize after Acceptance must echo THIS
+		 * id (a strict peer discards a misidentified Success).  The
+		 * server's own Success packet forwarded from the Accept is
+		 * preferred when the Accept carries one - only that has
+		 * authority over the id.  Captured here (not before the
+		 * in-flight drop) so a non-compliant retransmit cannot
+		 * overwrite the id of the round that actually answers. */
+		if (eapmsg.l >= 2)
+			ike_sa->eap_last_peer_id =
+			    ((uint8_t *)eapmsg.v)[1];
 	}
 	(void)rid;
 	rc_vfreez(secret);
@@ -3548,27 +3551,47 @@ responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *r, int rc)
 			   "EAP-Success\n",
 			   ike_sa->eap_msk ? (unsigned)ike_sa->eap_msk->l : 0u);
 		{
-			rc_vchar_t *succ = out_eap;
-			/* Prefer the server's own Success packet (correct RFC
-			 * 3748 s4.2 Identifier, forwarded from the Accept).
-			 * Fall back to a synthetic Success echoing the last
-			 * peer EAP Response id - never the RADIUS id. */
+			rc_vchar_t *succ = NULL;
+			/* Only forward the server's own Success packet when it is
+			 * a well-formed EAP-Success (RFC 3748: Code=3, Len>=4) AND
+			 * its Identifier equals the peer EAP-Response id we proxied
+			 * (s4.2).  A non-Success, an over-short buffer, or a
+			 * mismatched id must NOT go on the wire. */
+			if (out_eap && out_eap->l >= 4 &&
+			    ((uint8_t *)out_eap->v)[0] == 3 &&
+			    ((uint8_t *)out_eap->v)[1] == ike_sa->eap_last_peer_id)
+				succ = out_eap;
+			/* Otherwise synthesize a Success echoing that same id -
+			 * never eap_rid (the RADIUS Identifier). */
 			if (!succ)
 				succ = ikev2_eap_build_success(
 				    ike_sa->eap_last_peer_id);
+			/* The SA is parked (RES_IKE_AUTH_EAP_FINAL) ONLY once the
+			 * Success was actually transmitted.  On a failed send,
+			 * stay in the EAP continuation state: the peer retransmits
+			 * the old msgid, which must be answered by re-sending the
+			 * built Success, not by opening another RADIUS round. */
 			if (succ) {
 				if (ikev2_responder_eap_send(
 					ike_sa, ike_sa->eap_message_id,
-					succ) == 0)
+					succ) == 0) {
 					ikev2_update_message_id(
 					    ike_sa,
 					    ike_sa->eap_message_id, FALSE);
+					ikev2_set_state(
+					    ike_sa,
+					    IKEV2_STATE_RES_IKE_AUTH_EAP_FINAL);
+				} else {
+					isakmp_log(ike_sa, 0, 0, 0,
+						   PLOG_PROTOERR, PLOGLOC,
+						   "EAP: Success transmit failed; "
+						   "staying in EAP\n");
+				}
 				if (succ != out_eap)
 					rc_vfree(succ);
 			}
 		}
 		if (out_eap) rc_vfree(out_eap);
-		ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_AUTH_EAP_FINAL);
 		return;
 	case IKEV2_EAP_DRIVE_FAILURE:
 	default:

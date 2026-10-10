@@ -239,9 +239,13 @@ ikev2_eap_identity_string(rc_vchar_t *raw)
 	if (b[0] != 2 /* Response */ || b[4] != 1 /* Identity */)
 		return NULL;
 	len = ((size_t)b[2] << 8) | b[3];
-	/* honor the Length field; it may be smaller than the IKEv2 payload */
+	/* The EAP Length bounds the Identity data and MUST be honored strictly:
+	 * anything outside (5, raw->l] is not a well-formed EAP packet and its
+	 * bytes are NOT the identity - never fall back to the (larger) IKEv2
+	 * payload length, which would let a short EAP Length leak tail bytes
+	 * into the RADIUS User-Name. */
 	if (len < 5 || len > raw->l)
-		len = raw->l;	/* clamp a short/over-long field, never over-read */
+		return NULL;
 	if (len == 5)
 		return NULL;	/* empty identity */
 	data = &b[5];
