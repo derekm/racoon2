@@ -50,9 +50,14 @@ else
 sbin_PROGRAMS = iked
 endif
 
-TESTS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest radiustest relaytest authdertest
-check_PROGRAMS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest radiustest relaytest authdertest
+TESTS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest radiustest relaytest authdertest ticketkat
+check_PROGRAMS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest radiustest relaytest authdertest ticketkat
 eaytest_SOURCES = eaytest.c crypto_openssl.c str2val.c
+# RFC 5723 ticket-layer KAT: the s5.1 resumed-SKEYSEED derivation pinned
+# against a python hmac/sha256 vector and the ticket-by-value codec
+# round-trip + tamper/wrong-key/expired rejection.  Standalone (lib + EVP
+# only), no SA machinery — the same dependency-light shape as eaytest.
+ticketkat_SOURCES = ticketkat.c ikev2_resume_ticket.c
 
 # EAP (RFC 3748) framing codec: decode/encode round-trip + malformed-input
 # rejection.  Standalone: only the lib allocators/plog/byte helpers are
