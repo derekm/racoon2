@@ -781,6 +781,7 @@ int ikev2_check_request_cookie(rc_vchar_t *, struct sockaddr *,
 			       struct sockaddr *);
 
 extern rc_vchar_t *ikev2_auth_calculate(struct ikev2_sa *, int);
+extern rc_vchar_t *ikev2_auth_calculate_method(struct ikev2_sa *, int, int);
 extern void ikev2_verify(struct verified_info *);
 extern int ikev2_auth_verify(struct ikev2_sa *, int, struct ikev2payl_auth *);
 extern int ikev2_auth_method(struct ikev2_sa *);

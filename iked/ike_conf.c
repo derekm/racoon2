@@ -4753,10 +4753,18 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 				 * iked to terminate the client's EAP by proxying
 				 * it to a RADIUS server (relay engine is
 				 * ikev2_eap_relay.c; the IKE_AUTH responder
-				 * wiring is still pending).  radius_server +
+				 * wiring lives in ikev2.c).  radius_server +
 				 * secret file required; port defaults to 1812.
-				 * eap cannot share the method list with
-				 * psk/pubkey. */
+				 *
+				 * RFC 7296 s2.16: EAP authenticates the initiator;
+				 * the responder authenticates itself with its OWN
+				 * method.  So eap MAY share the list with exactly
+				 * ONE signature method (rsasig/ecdsa/dss): the
+				 * responder signs its AUTH with that cert while
+				 * proxying the client's EAP.  For an EAP-ONLY
+				 * responder (RFC 5998, the mutual-EAP case) eap is
+				 * the sole entry.  eap + psk is invalid: the
+				 * responder cannot share a MSK and a pre-shared-key. */
 				IKEV2_CONF(radius_server, rmconf,
 					   radius_server, NULL);
 				if (!radius_server) {
@@ -4774,10 +4782,21 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 					     rm_index);
 				}
 				if (alg->next) {
-					++*err;
-					plog(PLOG_INTERR, PLOGLOC, 0,
-					     "remote %s ikev2 section: eap must be the only auth method\n",
-					     rm_index);
+					rc_type at = alg->next->algtype;
+					if (at != RCT_ALG_RSASIG &&
+					    at != RCT_ALG_ECDSA &&
+					    at != RCT_ALG_DSS) {
+						++*err;
+						plog(PLOG_INTERR, PLOGLOC, 0,
+						     "remote %s ikev2 section: eap may be followed only by one signature method (rsasig/ecdsa/dss), got %s\n",
+						     rm_index, rct2str(at));
+					}
+					if (alg->next->next) {
+						++*err;
+						plog(PLOG_INTERR, PLOGLOC, 0,
+						     "remote %s ikev2 section: eap may be followed by at most one signature method\n",
+						     rm_index);
+					}
 				}
 				break;
 			default:
@@ -5359,5 +5378,44 @@ ikev2_eap_remote(struct ikev2_sa *sa)
 	alg = ikev2_kmp_auth_method(sa->rmconf);
 	if (!alg)
 		return 0;	/* unspecified: not EAP, stay on the reject path */
-	return (alg->algtype == RCT_ALG_EAP);
+	/* EAP anywhere in the method list marks this an EAP remote: the
+	 * client authenticates via EAP (RFC 7296 s2.16) even when the
+	 * responder additionally signs with its own cert. */
+	for (; alg; alg = alg->next)
+		if (alg->algtype == RCT_ALG_EAP)
+			return 1;
+	return 0;
+}
+
+/*
+ * The responder's OWN auth method for an EAP remote (RFC 7296 s2.16):
+ * EAP authenticates the initiator, the responder signs with its own
+ * signature method - the first non-EAP method in kmp_auth_method.  For an
+ * EAP-ONLY responder (RFC 5998) there is none, returning 0 (the caller
+ * derives the responder AUTH from the shared MSK instead).
+ */
+int
+ikev2_eap_responder_method(struct ikev2_sa *sa)
+{
+	struct rc_alglist *alg;
+
+	if (!sa || !sa->rmconf)
+		return 0;
+	for (alg = ikev2_kmp_auth_method(sa->rmconf); alg; alg = alg->next) {
+		if (alg->algtype == RCT_ALG_EAP)
+			continue;
+		/* only a signature method is valid beside eap (checked in
+		 * ike_conf_check_ikev2); map it to an IKEv2 AUTH method */
+		switch (alg->algtype) {
+		case RCT_ALG_RSASIG:
+			return IKEV2_AUTH_RSASIG;
+		case RCT_ALG_ECDSA:
+			return IKEV2_AUTH_ECDSA_SHA256_P256;
+		case RCT_ALG_DSS:
+			return IKEV2_AUTH_DSS;
+		default:
+			return 0;
+		}
+	}
+	return 0;
 }
