@@ -59,6 +59,7 @@
 #include "keyed_hash.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "ikev2_eap_emit.h"
 #include "ikev2_notify.h"
 #include "nattraversal.h"
 
@@ -3590,6 +3591,51 @@ ikev2_responder_childless_auth_send(struct ikev2_sa *ike_sa,
       fail:
 	isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 		   "failed building childless IKE_AUTH response\n");
+	status = -1;
+	goto done;
+}
+
+/*
+ * Send a responder EAP IKE_AUTH response: IDr + EAP Request (payload 48),
+ * NO responder AUTH (RFC 7296 s2.16 / RFC 5998 s2), using the hermetic
+ * composition from ikev2_eap_emit_request().  The SA stays in its current
+ * IKE_AUTH responder state so the peer's next EAP Response re-enters the
+ * responder dispatch.  eap_req is NOT consumed.  Returns 0 on success.
+ */
+static int
+ikev2_responder_eap_send(struct ikev2_sa *ike_sa, uint32_t message_id,
+			 rc_vchar_t *eap_req)
+{
+	struct ikev2_payloads payl;
+	rc_vchar_t *pkt = 0;
+	int status = 0;
+
+	ikev2_payloads_init(&payl);
+
+	if (ikev2_eap_emit_request(ike_sa, &payl, eap_req) != 0)
+		goto fail;
+
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_AUTH, IKEV2FLAG_RESPONSE,
+				     message_id, ike_sa, &payl);
+	if (!pkt)
+		goto fail;
+
+	if (ikev2_transmit_response(ike_sa, pkt, ike_sa->local,
+				    ike_sa->remote) != 0)
+		goto fail;
+	pkt = 0;
+
+	TRACE((PLOGLOC, "responder EAP: sent EAP Request (48) in IKE_AUTH "
+	       "response (no AUTH)\n"));
+
+      done:
+	if (pkt) rc_vfree(pkt);
+	ikev2_payloads_destroy(&payl);
+	return status;
+
+      fail:
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		   "failed building responder EAP IKE_AUTH response\n");
 	status = -1;
 	goto done;
 }

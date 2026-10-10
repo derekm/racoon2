@@ -67,54 +67,76 @@ main(void)
 	if (!eap_req) return 2;
 
 	/* ---- 1. IDr + EAP(48), no AUTH, first_np == IDr ---- */
-	blob = ikev2_eap_emit_request(sa, eap_req, &first_np);
-	if (!blob) {
-		printf("eapemittest: FAIL 1 no blob\n");
-		fails++;
-	} else {
-		int ok = 1;
-		/* IDr = 36, present as first_np (the first payload's
-		 * type; each payload's own type rides in the PREVIOUS
-		 * header's next_payload). */
-		if (first_np != IKEV2_PAYLOAD_ID_R)
-			ok = 0;
-		h = (const struct ikev2_payload_header *)blob->v;
-		/* payload 1: IDr; its next_payload names the next
-		 * type, which must be EAP (48) */
-		if (h->next_payload != IKEV2_PAYLOAD_EAP)
-			ok = 0;
-		/* payload 2: EAP; its next_payload must be NONE (no
-		 * trailing AUTH). */
-		h = (const struct ikev2_payload_header *)
-		    ((uint8_t *)(h + 1) + get_payload_data_length(h));
-		if (h->next_payload != IKEV2_NO_NEXT_PAYLOAD)
-			ok = 0;
-		rc_vfree(blob);
-		if (!ok) {
-			printf("eapemittest: FAIL 1 composition wrong "
-			       "(first_np=%u)\n", first_np);
+	{
+		struct ikev2_payloads payl;
+		ikev2_payloads_init(&payl);
+		if (ikev2_eap_emit_request(sa, &payl, eap_req) != 0) {
+			printf("eapemittest: FAIL 1 emit rc\n");
 			fails++;
-		} else
-			printf("eapemittest: PASS 1 IDr + EAP(48), no AUTH\n");
+		} else {
+			blob = ikev2_payloads_to_blob(&payl, &first_np);
+			if (!blob) {
+				printf("eapemittest: FAIL 1 no blob\n");
+				fails++;
+			} else {
+				int ok = 1;
+				/* IDr = 36, present as first_np (the first
+				 * payload's type; each payload's own type
+				 * rides in the PREVIOUS header's
+				 * next_payload). */
+				if (first_np != IKEV2_PAYLOAD_ID_R)
+					ok = 0;
+				h = (const struct ikev2_payload_header *)blob->v;
+				/* payload 1: IDr; its next_payload names the
+				 * next type, which must be EAP (48) */
+				if (h->next_payload != IKEV2_PAYLOAD_EAP)
+					ok = 0;
+				/* payload 2: EAP; its next_payload must be
+				 * NONE (no trailing AUTH). */
+				h = (const struct ikev2_payload_header *)
+				    ((uint8_t *)(h + 1) +
+				     get_payload_data_length(h));
+				if (h->next_payload != IKEV2_NO_NEXT_PAYLOAD)
+					ok = 0;
+				rc_vfree(blob);
+				if (!ok) {
+					printf("eapemittest: FAIL 1 composition "
+					       "wrong (first_np=%u)\n",
+					       first_np);
+					fails++;
+				} else
+					printf("eapemittest: PASS 1 IDr + "
+					       "EAP(48), no AUTH\n");
+			}
+		}
+		ikev2_payloads_destroy(&payl);
 	}
 
 	/* ---- 2. NULL eap_req refuses ---- */
-	blob = ikev2_eap_emit_request(sa, NULL, &first_np);
-	if (blob) {
-		printf("eapemittest: FAIL 2 NULL eap_req emitted\n");
-		fails++;
-		rc_vfree(blob);
-	} else
-		printf("eapemittest: PASS 2 NULL eap_req refused\n");
+	{
+		struct ikev2_payloads payl;
+		ikev2_payloads_init(&payl);
+		if (ikev2_eap_emit_request(sa, &payl, NULL) != 0)
+			printf("eapemittest: PASS 2 NULL eap_req refused\n");
+		else {
+			printf("eapemittest: FAIL 2 NULL eap_req accepted\n");
+			fails++;
+		}
+		ikev2_payloads_destroy(&payl);
+	}
 
 	/* ---- 3. NULL sa refuses ---- */
-	blob = ikev2_eap_emit_request(NULL, eap_req, &first_np);
-	if (blob) {
-		printf("eapemittest: FAIL 3 NULL sa emitted\n");
-		fails++;
-		rc_vfree(blob);
-	} else
-		printf("eapemittest: PASS 3 NULL sa refused\n");
+	{
+		struct ikev2_payloads payl;
+		ikev2_payloads_init(&payl);
+		if (ikev2_eap_emit_request(NULL, &payl, eap_req) != 0)
+			printf("eapemittest: PASS 3 NULL sa refused\n");
+		else {
+			printf("eapemittest: FAIL 3 NULL sa accepted\n");
+			fails++;
+		}
+		ikev2_payloads_destroy(&payl);
+	}
 
 	rc_vfree(eap_req);
 	ikev2_dispose_sa(sa);

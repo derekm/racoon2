@@ -10,16 +10,15 @@
  * again with no AUTH.  Only after the peer's EAP exchange reaches Success
  * (the relay returns an MSK) does the responder send its real AUTH.
  *
- * This module builds the *plaintext payload list* for the EAP form.  It is
- * kept separate from ikev2.c's sender so the exact composition (IDr first,
- * exactly one EAP payload 48, NO AUTH payload) can be unit-tested without a
- * live socket, and so the same composition can be reused by a later
- * IKE_FOLLOWUP_KE / multi-round continuation without duplicating logic.
+ * This module raises IDr and chains it with exactly one EAP payload (48) and
+ * NO AUTH into the caller's ikev2_payloads list.  That list is the shape
+ * ikev2_packet_construct() serializes, so the same composition serves both
+ * the ikev2.c responder sender (which hands &payl to packet_construct) and
+ * the hermetic test (which runs ikev2_payloads_to_blob to verify the shape
+ * without a live socket).
  *
- * Ownership: the returned rc_vchar_t is newly allocated (the serialized
- * payload blob); ikev2_eap_emit_request() does NOT take ownership of eap_req
- * (the caller retains it).  id_r is read from ike_sa->id_r or generated from
- * ike_sa->rmconf, owned as the rest of the SA does.
+ * Ownership: the caller owns the payloads list (init and destroy) and both
+ * id_r and eap_req.  This module pushes with need_free=0 and takes nothing.
  */
 
 #include <config.h>
@@ -37,50 +36,37 @@
 #include "ikev2_eap_emit.h"
 
 /*
- * Build the plaintext IKE_AUTH payload list for an EAP round response:
- * IDr then exactly one EAP payload, NO AUTH.  On success *first_np receives
- * the first payload type (IDr) for the IKE header / Encrypted header and the
- * returned blob is the serialized payload chain (caller frees it).  Returns
- * NULL on failure.  eap_req is NOT consumed.
+ * Raise IDr (from ike_sa->id_r if present, else from ike_sa->rmconf) and
+ * chain exactly one EAP payload (48) with NO AUTH into the caller's payloads
+ * list.  Returns 0 on success, -1 on failure (the list may be partially
+ * filled on failure; the caller destroys it either way).  eap_req is NOT
+ * consumed.
  */
-rc_vchar_t *
-ikev2_eap_emit_request(struct ikev2_sa *ike_sa, rc_vchar_t *eap_req,
-		       uint8_t *first_np)
+int
+ikev2_eap_emit_request(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
+		       rc_vchar_t *eap_req)
 {
-	struct ikev2_payloads payl;
-	rc_vchar_t *id_r = 0, *blob = 0;
+	rc_vchar_t *id_r = 0;
 	struct rc_idlist *my_id;
 
-	if (!ike_sa || !eap_req || !eap_req->v || !first_np)
-		return NULL;
-
-	ikev2_payloads_init(&payl);
+	if (!ike_sa || !payl || !eap_req || !eap_req->v)
+		return -1;
 
 	if (ike_sa->id_r) {
 		id_r = ike_sa->id_r;
 	} else {
 		my_id = ikev2_my_id(ike_sa->rmconf);
 		if (!my_id)
-			goto fail;
+			return -1;
 		id_r = ikev2_identifier(my_id);
 		if (!id_r)
-			goto fail;
+			return -1;
 		ike_sa->id_r = id_r;
 	}
 
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_R, id_r, FALSE);
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_EAP, eap_req, FALSE);
-
-	blob = ikev2_payloads_to_blob(&payl, first_np);
-	if (!blob)
-		goto fail;
-
-	ikev2_payloads_destroy(&payl);
-	return blob;
-
-      fail:
-	if (blob)
-		rc_vfree(blob);
-	ikev2_payloads_destroy(&payl);
-	return NULL;
+	/* IDr then exactly one EAP Request; NO AUTH (RFC 7296 s2.16 +
+	 * RFC 5998 s2).  need_free=0: id_r is SA-owned, eap_req caller-owned. */
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_ID_R, id_r, FALSE);
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_EAP, eap_req, FALSE);
+	return 0;
 }
