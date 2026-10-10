@@ -30,17 +30,26 @@
  * ikev2_eap_round_submit() must treat EACH round as possibly ending in either
  * path at done() time, depending on where the SA is then standing:
  *   - live SA: done() clears the pin and calls resume() exactly once;
- *   - gone / DYING / DEAD SA: done() clears the pin (when findable) and does
- *     NOT call resume() - the round is released and disposal happens on a
- *     later reaper tick, so the caller must not assume eap_msk survived.
- * The exact concurrent worker that shares the SA is not privileged here: it
- * is CREATE_CHILD_SA / rekey DH (which never calls ikev2_abort() - those
- * failure paths use ikev2_child_abort / child-expire / rekey abort and leave
- * the IKE SA live), so the common case is that a live overlap still resumes.
- * The drop path exists for SAs that went DYING/DEAD/DISPOSED independently.
+ *   - findable DYING/DEAD SA: done() clears the pin and does NOT call
+ *     resume() - the round is released.  eap_msk is still alive here:
+ *     disposal (which frees it) happens on a LATER reaper tick, so the
+ *     caller must never free it (teardown owns it).
+ *   - gone (already unlinked/freed) SA: done() just releases the round; the
+ *     SA and its eap_msk were already freed by whoever unlinked it.
+ * In the drop cases the caller is not re-entered, so it must not retain the
+ * SA pointer across a submit expecting a later cleanup - teardown owns the
+ * relay and eap_msk in both drop paths.
+ * The DH that can share the IKE_AUTH window with an EAP round is the
+ * initial child DH (and later CREATE_CHILD_SA / rekey DH); those failure
+ * paths use ikev2_child_abort / child-expire / rekey abort and leave the
+ * IKE SA live - they never call ikev2_abort() - so the common case is that
+ * a live overlap still resumes.  The drop path exists for SAs that went
+ * DYING/DEAD/DISPOSED independently.  IKE_SA_INIT and IKE_INTERMEDIATE finish
+ * before IKE_AUTH, so they cannot overlap an EAP round here; note
+ * IKE_INTERMEDIATE DOES call ikev2_abort() on failure, but that is in its
+ * own (earlier) exchange, never concurrent with the round.
  * A caller must therefore not condition on which worker failed; it either
- * gets resume() with a live SA or no callback at all (drop).  IKE_SA_INIT
- * cannot overlap here (its responder abort path is before IKE_AUTH).
+ * gets resume() with a live SA or no callback at all (drop).
  *
  * See ikev2_eap_round.c for the lifetime rationale.  The relay's per-SE
  * state and the MSK live on the caller-owned ike_sa; this module never

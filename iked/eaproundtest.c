@@ -394,106 +394,118 @@ main(void)
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
-	sa->state = IKEV2_STATE_DYING;
-	sa->crypto_pending = 1;
-	sa->eap_round_pending = 0;
-	ikev2_sa_periodic_task();
-	if (ikev2_find_sa_by_serial(sa->serial_number) == NULL) {
-		printf("eaproundtest: FAIL 8a reaper disposed crypto-pinned SA\n");
-		fails++;
-	} else if (sa->crypto_pending != 1) {
-		printf("eaproundtest: FAIL 8a reaper cleared crypto pin while "
-		       "deferring\n");
-		fails++;
-	} else {
-		printf("eaproundtest: PASS 8a reaper defers on crypto_pending\n");
-		/* clear crypto; must now be reaped */
-		{
-			int serno = sa->serial_number;
+	{
+		int serno = sa->serial_number;	/* captured BEFORE any tick: a
+						   reaper tick may free sa */
+		sa->state = IKEV2_STATE_DYING;
+		sa->crypto_pending = 1;
+		sa->eap_round_pending = 0;
+		ikev2_sa_periodic_task();	/* defers: crypto_pending set */
+		if (ikev2_find_sa_by_serial(serno) == NULL) {
+			printf("eaproundtest: FAIL 8a reaper disposed crypto-"
+			       "pinned SA\n");
+			fails++;
+		} else if (sa->crypto_pending != 1) {
+			printf("eaproundtest: FAIL 8a reaper cleared crypto pin "
+			       "while deferring\n");
+			fails++;
+		} else {
+			printf("eaproundtest: PASS 8a reaper defers on "
+			       "crypto_pending\n");
+			/* clear crypto; must now be reaped */
 			sa->crypto_pending = 0;
 			ikev2_sa_periodic_task();
+			/* the second tick disposed the SA, so only the
+			 * captured serial (not sa) is valid now */
 			if (ikev2_find_sa_by_serial(serno) != NULL) {
-				printf("eaproundtest: FAIL 8a reaper kept unpinned "
-				       "DYING SA\n");
+				printf("eaproundtest: FAIL 8a reaper kept "
+				       "unpinned DYING SA\n");
 				fails++;
 			} else
-				printf("eaproundtest: PASS 8a reaper reaps after "
-				       "crypto clear\n");
+				printf("eaproundtest: PASS 8a reaper reaps "
+				       "after crypto clear\n");
 		}
 	}
 	/* 8b: eap_round_pending (an EAP round) alone must defer */
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
-	sa->state = IKEV2_STATE_DYING;
-	sa->crypto_pending = 0;
-	sa->eap_round_pending = 1;	/* EAP worker still out */
-	ikev2_sa_periodic_task();
-	if (ikev2_find_sa_by_serial(sa->serial_number) == NULL) {
-		printf("eaproundtest: FAIL 8b reaper disposed EAP-pinned SA\n");
-		fails++;
-	} else if (sa->eap_round_pending != 1) {
-		printf("eaproundtest: FAIL 8b reaper cleared EAP pin while "
-		       "deferring\n");
-		fails++;
-	} else {
-		printf("eaproundtest: PASS 8b reaper defers on eap_round_pending\n");
-		/* clear EAP; must now be reaped */
-		{
-			int serno = sa->serial_number;
+	{
+		int serno = sa->serial_number;	/* captured before any tick */
+		sa->state = IKEV2_STATE_DYING;
+		sa->crypto_pending = 0;
+		sa->eap_round_pending = 1;	/* EAP worker still out */
+		ikev2_sa_periodic_task();
+		if (ikev2_find_sa_by_serial(serno) == NULL) {
+			printf("eaproundtest: FAIL 8b reaper disposed EAP-"
+			       "pinned SA\n");
+			fails++;
+		} else if (sa->eap_round_pending != 1) {
+			printf("eaproundtest: FAIL 8b reaper cleared EAP pin "
+			       "while deferring\n");
+			fails++;
+		} else {
+			printf("eaproundtest: PASS 8b reaper defers on "
+			       "eap_round_pending\n");
+			/* clear EAP; must now be reaped */
 			sa->eap_round_pending = 0;	/* round done */
 			ikev2_sa_periodic_task();
-			/* the second tick disposed the SA, so only the captured
-			 * serial (not sa) is valid from here on */
+			/* the second tick disposed the SA, so only the
+			 * captured serial (not sa) is valid now */
 			if (ikev2_find_sa_by_serial(serno) != NULL) {
-				printf("eaproundtest: FAIL 8b reaper kept unpinned "
-				       "DYING SA\n");
+				printf("eaproundtest: FAIL 8b reaper kept "
+				       "unpinned DYING SA\n");
 				fails++;
 			} else
-				printf("eaproundtest: PASS 8b reaper reaps after "
-				       "EAP clear\n");
+				printf("eaproundtest: PASS 8b reaper reaps "
+				       "after EAP clear\n");
 		}
 	}
 	/* 8c: BOTH pins set, then clear only the crypto half: the EAP pin must
 	 * still defer (a DH done() clearing crypto_pending=0 must NOT release
-	 * an in-flight EAP round). */
+	 * an in-flight EAP round), and only once BOTH are clear is it reaped.
+	 * sa is only touched while find_sa confirms it is live; every serial
+	 * is captured BEFORE the tick that may free the SA. */
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	ikev2_sa_insert(sa);
-	sa->state = IKEV2_STATE_DYING;
-	sa->crypto_pending = 1;
-	sa->eap_round_pending = 1;
-	ikev2_sa_periodic_task();	/* defers: both pins set */
-	if (ikev2_find_sa_by_serial(sa->serial_number) == NULL ||
-	    sa->crypto_pending != 1 || sa->eap_round_pending != 1) {
-		printf("eaproundtest: FAIL 8c both-pins defer broken\n");
-		fails++;
-	} else {
-		/* a DH/rekey done() clears only its own pin */
-		sa->crypto_pending = 0;
-		ikev2_sa_periodic_task();
-		if (ikev2_find_sa_by_serial(sa->serial_number) == NULL ||
-		    sa->eap_round_pending != 1) {
-			printf("eaproundtest: FAIL 8c crypto clear released "
-			       "EAP round\n");
-			fails++;
-		} else
-			printf("eaproundtest: PASS 8c DH done() leaves EAP "
-			       "pin set; still deferred\n");
-	}
-	/* clear both: must now be reaped */
 	{
-		int serno = sa->serial_number;
-		sa->crypto_pending = 0;
-		sa->eap_round_pending = 0;
-		ikev2_sa_periodic_task();
-		if (ikev2_find_sa_by_serial(serno) != NULL) {
-			printf("eaproundtest: FAIL 8c reaper kept unpinned "
-			       "DYING SA\n");
+		int serno = sa->serial_number;	/* captured before any tick */
+		sa->state = IKEV2_STATE_DYING;
+		sa->crypto_pending = 1;
+		sa->eap_round_pending = 1;
+		ikev2_sa_periodic_task();	/* defers: both pins set */
+		/* short-circuit: if the reaper wrongly disposed it, find==NULL
+		 * stops before touching sa (which is then freed) */
+		if (ikev2_find_sa_by_serial(serno) == NULL ||
+		    sa->crypto_pending != 1 || sa->eap_round_pending != 1) {
+			printf("eaproundtest: FAIL 8c both-pins defer broken\n");
 			fails++;
-		} else
-			printf("eaproundtest: PASS 8c reaper reaps after both "
-			       "pins clear\n");
+		} else {
+			/* a DH/rekey done() clears only its own pin; the EAP
+			 * pin must still defer */
+			sa->crypto_pending = 0;
+			ikev2_sa_periodic_task();
+			if (ikev2_find_sa_by_serial(serno) == NULL ||
+			    sa->eap_round_pending != 1) {
+				printf("eaproundtest: FAIL 8c crypto clear "
+				       "released EAP round\n");
+				fails++;
+			} else {
+				/* clear both: must now be reaped */
+				sa->eap_round_pending = 0;
+				ikev2_sa_periodic_task();
+				/* the reaping tick disposed the SA, so only
+				 * the captured serial (not sa) is valid */
+				if (ikev2_find_sa_by_serial(serno) != NULL) {
+					printf("eaproundtest: FAIL 8c reaper "
+					       "kept unpinned DYING SA\n");
+					fails++;
+				} else
+					printf("eaproundtest: PASS 8c reaper "
+					       "reaps after both pins clear\n");
+			}
+		}
 	}
 
 	if (secret.v) free(secret.v);
