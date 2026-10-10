@@ -229,6 +229,40 @@ main(void)
 		if (tk2) rc_vfree(tk2);
 	}
 
+	/* ---- N(TICKET_LT_OPAQUE) layout: 4-octet BE lifetime || ticket ---- */
+	{
+		rc_vchar_t *lt;
+		uint32_t lifetime = 0x4e1fb000u;	/* 1310000000 s */
+		rc_vchar_t *tail;
+		struct r2ticket_state back2;
+
+		lt = r2ticket_lt_opaque(tkey, KID1, &st, lifetime);
+		CHECK(lt != NULL, "N(TICKET_LT_OPAQUE) mints");
+		if (lt && lt->l >= 4) {
+			uint8_t *q = (uint8_t *)lt->v;
+			CHECK(q[0] == 0x4e && q[1] == 0x1f && q[2] == 0xb0 &&
+			      q[3] == 0x00,
+			    "lifetime is a 4-octet big-endian value");
+			/* the tail must be a stand-alone parseable ticket.  A
+			 * fresh GCM IV per create means ciphertext differs
+			 * run-to-run even for equal state, so the body is
+			 * verified by parsing it back, not by byte compare. */
+			tail = rc_vnew((uint8_t *)lt->v + 4, lt->l - 4);
+			CHECK(tail && r2ticket_parse(tkey, tail, &back2) == 0,
+			    "opaque ticket body parses back out of N()");
+			if (tail && r2ticket_parse(tkey, tail, &back2) == 0) {
+				CHECK(back2.expires_at == st.expires_at &&
+				      back2.auth_method == st.auth_method &&
+				      back2.spi_i == st.spi_i &&
+				      back2.spi_r == st.spi_r,
+				    "parsed ticket state equals the minted state");
+				free_state(&back2);
+			}
+			if (tail) rc_vfree(tail);
+		}
+		if (lt) rc_vfree(lt);
+	}
+
 	rc_vfree(kdv);
 	rc_vfree(niv);
 	rc_vfree(nrv);
