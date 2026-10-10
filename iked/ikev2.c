@@ -3369,6 +3369,27 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 	eapmsg.v = (uint8_t *)(eap + 1);
 	eapmsg.l = get_payload_data_length(eap);
 
+	/* RFC 3748 s4.1: the EAP-Response Identifier must echo the
+	 * Identifier of the EAP-Request we most recently sent the peer
+	 * (relay->eap_pending, unless it has already been consumed).  A
+	 * stale or replayed Response with a mismatched Identifier must
+	 * not open a new RADIUS round - drop it and let the peer's
+	 * retransmission of the correct one proceed. */
+	if (ike_sa->eap_relay) {
+		struct ikev2_eap_relay *rel =
+		    (struct ikev2_eap_relay *)ike_sa->eap_relay;
+		if (rel->eap_pending && eapmsg.l >= 2 &&
+		    ((uint8_t *)eapmsg.v)[1] != ((uint8_t *)rel->eap_pending->v)[1]) {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+				   "EAP: Response Identifier %u does not echo last Request "
+				   "Identifier %u; dropping (RFC 3748 s4.1)\n",
+				   (unsigned)((uint8_t *)eapmsg.v)[1],
+				   (unsigned)((uint8_t *)rel->eap_pending->v)[1]);
+			return;
+		}
+	}
+
+
 	/* A retransmit of the final EAP-Response after a FAILED EAP-Success
 	 * transmit (or a failed Success build) re-enters here with the MSK
 	 * already stored and the relay finished.  Opening a new RADIUS round
