@@ -61,6 +61,7 @@
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 #include "ikev2_eap_emit.h"
+#include "ikev2_eap.h"
 #include "ikev2_eap_relay.h"
 #include "ikev2_eap_round.h"
 #include "ikev2_eap_drive.h"
@@ -3131,6 +3132,10 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			ikev2_responder_eap_send(ike_sa, message_id,
 						 identity_req);
 			rc_vfree(identity_req);
+			/* each EAP round is a fresh IKE_AUTH request with a new
+			 * message id; advance so the peer's next EAP-Response
+			 * (msgid = this request + 1) passes the window. */
+			ikev2_update_message_id(ike_sa, message_id, FALSE);
 			TRACE((PLOGLOC, "responder EAP: started, state EAP\n"));
 			return;
 		}
@@ -3257,6 +3262,9 @@ responder_ike_sa_auth_eap_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	(void)local;
 
 	message_id = get_uint32(&ikehdr->message_id);
+	/* remember the peer's request msgid for this round so our EAP
+	 * response echoes it (IKEv2 responses always echo the request id). */
+	ike_sa->eap_message_id = message_id;
 	p = (struct ikev2_payload_header *)(ikehdr + 1);
 	for (type = ikehdr->next_payload;
 	     type != IKEV2_NO_NEXT_PAYLOAD;
@@ -3310,8 +3318,32 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 	memset(&opt, 0, sizeof(opt));
 	memset(&server, 0, sizeof(server));
 
+	/* echo the Access-Challenge State the relay captured on the prior
+	 * round (NULL on the first/identity round).  FreeRADIUS refuses to
+	 * run EAP without it from the second Access-Request onward. */
+	if (ike_sa->eap_relay) {
+		struct ikev2_eap_relay *rel =
+		    (struct ikev2_eap_relay *)ike_sa->eap_relay;
+		opt.state = rel->state;
+	}
+
 	eapmsg.v = (uint8_t *)(eap + 1);
 	eapmsg.l = get_payload_data_length(eap);
+
+	/* Capture the EAP Identity (first round, Type=1) and carry it as
+	 * RADIUS User-Name so the server can match the account to a stored
+	 * secret (FreeRADIUS files authorize keys on it).  Store once on the
+	 * SA; later rounds re-send the same identity. */
+	if (!ike_sa->eap_user) {
+		char *id = ikev2_eap_identity_string(&eapmsg);
+		if (id) {
+			if (ike_sa->eap_user)
+				rc_free(ike_sa->eap_user);
+			ike_sa->eap_user = id;
+		}
+	}
+	if (ike_sa->eap_user)
+		opt.user_name = ike_sa->eap_user;
 
 	/* remote RADIUS options from the SA's rmconf. */
 	radius_server = ikev2_radius_server(ike_sa->rmconf);
@@ -3423,24 +3455,41 @@ responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *r, int rc)
 				     resp, secret, &out_eap);
 	switch (dr) {
 	case IKEV2_EAP_DRIVE_CONTINUE:
-		/* emit the next EAP Request to the client; stay in EAP */
-		ikev2_responder_eap_send(ike_sa, ike_sa->send_message_id,
+		/* emit the next EAP Request to the client; stay in EAP, and
+		 * advance the request window so the peer's next round
+		 * (msgid = eap_message_id + 1) is accepted. */
+		ikev2_responder_eap_send(ike_sa, ike_sa->eap_message_id,
 					 out_eap);
+		ikev2_update_message_id(ike_sa, ike_sa->eap_message_id, FALSE);
 		if (out_eap) rc_vfree(out_eap);
 		return;
 	case IKEV2_EAP_DRIVE_SUCCESS:
-		/* MSK now stored on ike_sa->eap_msk.  Transition the SA back
-		 * to RES_IKE_SA_INIT_SENT so the peer's final IKE_AUTH
-		 * (carrying its MSK-based AUTH) re-enters the standard
-		 * responder flow (responder_ike_sa_auth_recv0), which verifies
-		 * the AUTH via the MSK (fail-closed: ikev2_auth_method returns
-		 * SHARED_KEY only when eap_msk is a 64-octet MSK) and completes
-		 * with its own responder AUTH + child. */
+		/* MSK now stored on ike_sa->eap_msk.  Send EAP-Success to the
+		 * client (payload 48, code 3) so it knows the method
+		 * succeeded, then transition the SA back to
+		 * RES_IKE_SA_INIT_SENT so the peer's final IKE_AUTH (carrying
+		 * its MSK-based AUTH) re-enters the standard responder flow
+		 * (responder_ike_sa_auth_recv0), which verifies the AUTH via
+		 * the MSK (fail-closed: ikev2_auth_method returns SHARED_KEY
+		 * only when eap_msk is a 64-octet MSK) and completes with its
+		 * own responder AUTH + child. */
 		isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
-			   "EAP: Acceptance, MSK stored (l=%u); awaiting peer "
-			   "MSK-AUTH\n",
+			   "EAP: Acceptance, MSK stored (l=%u); sending "
+			   "EAP-Success\n",
 			   ike_sa->eap_msk ? (unsigned)ike_sa->eap_msk->l : 0u);
 		if (out_eap) rc_vfree(out_eap);
+		{
+			/* EAP-Success (RFC 3748 s5.2) notifies the client the
+			 * method succeeded before it sends its MSK-AUTH. */
+			rc_vchar_t *succ =
+			    ikev2_eap_build_success(ike_sa->eap_rid);
+			if (succ) {
+				ikev2_responder_eap_send(ike_sa,
+					  ike_sa->eap_message_id, succ);
+				rc_vfree(succ);
+			}
+		}
+		ikev2_update_message_id(ike_sa, ike_sa->eap_message_id, FALSE);
 		ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_SA_INIT_SENT);
 		return;
 	case IKEV2_EAP_DRIVE_FAILURE:
@@ -8510,6 +8559,7 @@ ikev2_state_str(int type)
 		S(INI_IKE_AUTH_SENT);
 		S(RES_IKE_AUTH_RCVD);
 		S(INI_IKE_AUTH_RCVD);
+		S(RES_IKE_AUTH_EAP);
 		S(ESTABLISHED);
 		S(DYING);
 		S(DEAD);

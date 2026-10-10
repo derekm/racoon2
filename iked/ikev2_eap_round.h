@@ -39,12 +39,17 @@
  * In the drop cases the caller is not re-entered, so it must not retain the
  * SA pointer across a submit expecting a later cleanup - teardown owns the
  * relay and eap_msk in both drop paths.
- * No DH worker shares the IKE_AUTH window with an EAP round: the AUTH child
- * is keyed from SK_d (RFC 7296 s2.17), so the responder creates it with
- * g_i=n_i=0 (ikev2.c responder_ike_sa_auth_cont -> ikev2_create_child_responder
- * with 0,0) and no child DH exchange runs at IKE_AUTH; CREATE_CHILD_SA / rekey
- * DH (ikev2_child.c / ikev2_rekey.c) runs only on an ESTABLISHED SA, and
- * IKE_SA_INIT / IKE_INTERMEDIATE finish before IKE_AUTH.  The round's pin
+ * No DH worker shares the IKE_AUTH window with an EAP round.  In this tree
+ * the responder creates the AUTH child with g_i=n_i=0 -- responder_ike_sa_auth_cont
+ * hardcodes the 0,0 at ikev2.c:3673-3675 into ikev2_create_child_responder, which
+ * only submits a child DH exchange inside `if (g_i)` (ikev2_child.c:1351) -- so
+ * no child DH runs at IKE_AUTH (the AUTH child is keyed from SK_d per the RFC
+ * 7296 2.17 no-PFS formula; an optional KE in IKE_AUTH is allowed by 1.2 but this
+ * responder never passes one).  CREATE_CHILD_SA / rekey DH (ikev2_child.c /
+ * ikev2_rekey.c) runs only on an ESTABLISHED (or DYING, which forwards to the
+ * established handler) SA, and IKE_SA_INIT / IKE_INTERMEDIATE finish before
+ * IKE_AUTH.  This statement depends on the g_i=0 call site - if that 0,0 later
+ * becomes the peer's KE, re-check it.  The round's pin
  * (eap_round_pending) is therefore orthogonal to crypto_pending because no
  * crypto_pending job is in flight during IKE_AUTH EAP anyway - the DH/rekey
  * done()-clears-the-other-pin hazard this design guards cannot actually arise

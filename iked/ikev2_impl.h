@@ -368,6 +368,11 @@ struct ikev2_sa {
 	void *eap_relay;	/* struct ikev2_eap_relay *, per-SE */
 	rc_vchar_t *eap_msk;	/* 64-octet EAP-MSCHAPv2 MSK, AUTH seed */
 	uint8_t eap_rid;	/* running RADIUS Identifier for EAP rounds */
+	uint32_t eap_message_id;	/* msgid of the in-flight peer EAP-Response
+					   IKE_AUTH, echoed in our EAP response */
+	char *eap_user;		/* EAP Identity string (owned, NULL until known);
+				   sent as RADIUS User-Name so the server can
+				   match the account */
 
 	IKEV2_SA_LIST_ENTRY link;
 };

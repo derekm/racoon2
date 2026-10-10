@@ -206,6 +206,48 @@ ikev2_eap_build_identity_request(u_int8_t identifier)
 	return enc;
 }
 
+/* RFC 3748 s5.2: EAP-Success (Code=3, no Type octet; length 4). */
+rc_vchar_t *
+ikev2_eap_build_success(u_int8_t identifier)
+{
+	struct ikev2_eap_packet p;
+	rc_vchar_t *enc;
+
+	memset(&p, 0, sizeof(p));
+	p.code = IKEV2_EAP_CODE_SUCCESS;
+	p.identifier = identifier;
+	p.data = NULL;
+	enc = ikev2_eap_encode_packet(&p);
+	return enc;
+}
+
+/* Extract the EAP Identity (RFC 3748 s5.1) from a wire Response: Code=2,
+ * Type=1, Data = the client-supplied identity.  Returns a NUL-terminated
+ * duplicate (rc_strdup family; free with rc_free) or NULL if the packet is
+ * not a Response/Identity or has no data. */
+char *
+ikev2_eap_identity_string(rc_vchar_t *raw)
+{
+	uint8_t *data;
+	char *idstr = NULL;
+	uint8_t *b;
+
+	if (!raw || raw->l < 5 || raw->v == NULL)
+		return NULL;
+	b = (uint8_t *)raw->v;
+	/* Code(1) Id(1) Len(2) Type(1) then Type+Data */
+	if (b[0] != 2 /* Response */ || b[4] != 1 /* Identity */)
+		return NULL;
+	data = &b[5];
+	if (raw->l <= 5)
+		return NULL;	/* empty identity */
+	idstr = rc_calloc(1, raw->l - 5 + 1);
+	if (!idstr)
+		return NULL;
+	memcpy(idstr, data, raw->l - 5);
+	return idstr;
+}
+
 /*
  * ikev2_eap_type_from_response(rc_vchar_t *resp)
  *
