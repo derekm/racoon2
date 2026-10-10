@@ -950,6 +950,107 @@ main(void)
 		}
 	}
 
+	/* ---- 15. unsupported EPSM key lengths -> MSK must be NULL ---- */
+	/* The builder accepts only 16 (MSCHAPv2) / 32 (EAP-TLS) octet
+	 * MPPE keys, and requires both to be the same size.  Reverting
+	 * the length checks would still pass cases 10-14, so lock them
+	 * down hermetically: 15, 17, 31, 33 and a 16/32 mismatch must
+	 * each return NULL from ikev2_radius_msk (fail closed). */
+	{
+		static const size_t bad_r[5] = { 15, 17, 31, 33, 16 };
+		static const size_t bad_s[5] = { 15, 17, 31, 33, 32 };
+		size_t bi;
+		for (bi = 0; bi < 5; bi++) {
+			const uint8_t *req_auth = (const uint8_t *)req->v + 4;
+			uint8_t recv[64], send[64];
+			uint8_t respbuf[1024];
+			uint8_t attrs[512], *ap;
+			size_t attrsl = 0, total, rl, sl;
+			uint8_t hdr4[4], ra[16];
+			rc_vchar_t resp_raw;
+			struct ikev2_radius_response *resp;
+			rc_vchar_t *got_msk;
+			size_t k;
+			uint8_t ev_r[70], ev_s[70];
+			size_t el_r, el_s;
+
+			rl = bad_r[bi]; sl = bad_s[bi];
+			for (k = 0; k < rl; k++)
+				recv[k] = (uint8_t)(0xe0 + (k & 0x1f));
+			for (k = 0; k < sl; k++)
+				send[k] = (uint8_t)(0x70 + (k & 0x1f));
+			el_r = mppe_encrypt(recv, rl, req_auth,
+					    (const uint8_t *)secret->v,
+					    secret->l, ev_r);
+			el_s = mppe_encrypt(send, sl, req_auth,
+					    (const uint8_t *)secret->v,
+					    secret->l, ev_s);
+			ap = attrs;
+			ap[0] = IKEV2_RADIUS_ATTR_VENDOR_SPECIFIC;
+			ap[1] = (uint8_t)(2 + 4 + (2 + el_r) + (2 + el_s));
+			ap[2] = 0; ap[3] = 0; ap[4] = 0x01; ap[5] = 0x37;
+			ap[6] = IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY;
+			ap[7] = (uint8_t)(2 + el_r);
+			memcpy(ap + 8, ev_r, el_r);
+			ap[8 + el_r] = IKEV2_RADIUS_VSA_MS_MPPE_SEND_KEY;
+			ap[9 + el_r] = (uint8_t)(2 + el_s);
+			memcpy(ap + 10 + el_r, ev_s, el_s);
+			attrsl = 2 + 4 + (2 + el_r) + (2 + el_s);
+
+			{
+				uint8_t *ma = attrs + attrsl;
+				uint8_t scratch[512];
+				size_t ml = attrsl;
+				ma[0] = IKEV2_RADIUS_ATTR_MESSAGE_AUTH;
+				ma[1] = 2 + IKEV2_RADIUS_AUTH_LEN;
+				memset(ma + 2, 0, IKEV2_RADIUS_AUTH_LEN);
+				attrsl += 2 + IKEV2_RADIUS_AUTH_LEN;
+				total = IKEV2_RADIUS_HEADER_LEN + attrsl;
+				respbuf[0] = IKEV2_RADIUS_CODE_ACCESS_ACCEPT;
+				respbuf[1] = id;
+				respbuf[2] = (uint8_t)(total >> 8);
+				respbuf[3] = (uint8_t)(total & 0xff);
+				memset(respbuf + 4, 0, IKEV2_RADIUS_AUTH_LEN);
+				memcpy(respbuf + IKEV2_RADIUS_HEADER_LEN,
+				       attrs, attrsl);
+				memcpy(scratch, respbuf, total);
+				msg_auth(scratch, total, req_auth,
+					 (const uint8_t *)secret->v, secret->l,
+					 IKEV2_RADIUS_HEADER_LEN + ml + 2,
+					 respbuf + IKEV2_RADIUS_HEADER_LEN + ml + 2);
+				memcpy(attrs + ml + 2,
+				       respbuf + IKEV2_RADIUS_HEADER_LEN + ml + 2,
+				       IKEV2_RADIUS_AUTH_LEN);
+				hdr4[0]=respbuf[0];hdr4[1]=respbuf[1];
+				hdr4[2]=respbuf[2];hdr4[3]=respbuf[3];
+				resp_auth(hdr4, req_auth,
+					  (const uint8_t *)attrs, attrsl,
+					  (const uint8_t *)secret->v, secret->l, ra);
+				memcpy(respbuf + 4, ra, IKEV2_RADIUS_AUTH_LEN);
+			}
+			resp_raw.v = respbuf; resp_raw.l = total;
+			resp = ikev2_radius_verify_response(id, req_auth,
+							    &resp_raw, secret);
+			if (!resp) {
+				printf("radiustest: FAIL bad-len accept verify "
+				       "(recv=%zu send=%zu)\\n", rl, sl);
+				fails++;
+				continue;
+			}
+			got_msk = ikev2_radius_msk(resp, req_auth, secret);
+			if (got_msk) {
+				printf("radiustest: FAIL unsupported MSK len "
+				       "accepted (recv=%zu send=%zu) -> %zu\\n",
+				       rl, sl, got_msk->l);
+				rc_vfree(got_msk);
+				fails++;
+			} else
+				printf("radiustest: PASS 15 reject recv=%zu "
+				       "send=%zu -> no MSK\n", rl, sl);
+			ikev2_radius_response_free(resp);
+		}
+	}
+
 	rc_vfree(req);
 	rc_vfree(eap);
 	rc_vfree(secret);
