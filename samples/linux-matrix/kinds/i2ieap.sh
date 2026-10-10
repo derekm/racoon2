@@ -138,8 +138,10 @@ EOF
 	mkdir -p "$(dirname "$CONN")"
 	mkdir -p /etc/strongswan/swanctl/x509ca /etc/strongswan/swanctl/x509
 	# clear stale conns from prior EAP runs so charon only sees this row's
-	# connection (a leftover conn can hijack --initiate --child)
-	rm -f /etc/strongswan/swanctl/conf.d/r2-*.conf 2>/dev/null || true
+	# connection (a leftover conn can hijack --initiate --child).  Drop ALL
+	# conn files, not just r2-*: earlier probes may have written e.g.
+	# etls.conf with a conn named rtls.
+	rm -f /etc/strongswan/swanctl/conf.d/*.conf 2>/dev/null || true
 	cp "$C/certs/ca.pem" /etc/strongswan/swanctl/x509ca/r2-${name}-ca.pem
 	chmod 644 /etc/strongswan/swanctl/x509ca/r2-${name}-ca.pem
 	cat > "$C/eap-conn.conf" <<EOF
