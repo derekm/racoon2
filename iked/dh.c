@@ -102,6 +102,17 @@ struct dhgroup dh_brainpool512;
 int
 oakley_dhinit(void)
 {
+	/* The DH groups are static, process-lifetime globals initialized
+	 * once.  Guard against re-init: a second call would memset + re-alloc
+	 * the same .prime / generator vmbufs, orphaning the first call's
+	 * allocations (a real leak under ASan; the KAT probe and any future
+	 * repeated call would otherwise trip it).  The daemon calls this once
+	 * at startup (isakmp.c:183); idempotency is free and correct. */
+	static int inited = 0;
+	if (inited)
+		return 0;
+	inited = 1;
+
 	/* set DH MODP */
 	INITDHVAL(dh_modp768, OAKLEY_PRIME_MODP768, DHGROUP_TYPE_MODP);
 	INITDHVAL(dh_modp1024, OAKLEY_PRIME_MODP1024, DHGROUP_TYPE_MODP);
