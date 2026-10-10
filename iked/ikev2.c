@@ -3074,10 +3074,14 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			/* RFC 5998 s3: an EAP client that does not want the
 			 * responder to authenticate with its public-key AUTH/CERT
 			 * sends N(EAP_ONLY_AUTHENTICATION) (16417) in the first
-			 * IKE_AUTH (message 3).  Record it so the EAP responder
-			 * omits CERT+AUTH from msg 4 (honored only on an eap
-			 * remote; the EAP-only path recomputes the responder AUTH
-			 * from the MSK instead). */
+			 * IKE_AUTH (message 3).  Record it on the eap remote
+			 * for LOGGING only: this responder does NOT honor it by
+			 * omitting CERT+AUTH from msg 4 when a signature method
+			 * is configured, because it cannot know the EAP method
+			 * is mutual (EAP-MSCHAPv2, the non-mutual case, must
+			 * keep responder-cert auth).  RFC 5998 s3 makes
+			 * honoring the notify the responder's choice; see
+			 * ikev2_responder_eap_auth_send(). */
 			if (get_notify_type(n) == IKEV2_EAP_ONLY_AUTHENTICATION &&
 			    ikev2_eap_remote(ike_sa))
 				ike_sa->eap_only = 1;
@@ -4437,13 +4441,34 @@ ikev2_responder_eap_auth_send(struct ikev2_sa *ike_sa, uint32_t message_id,
 				filename = rc_vmem2str(pk->pubkey);
 			pk = pk->next;
 		}
-		if (filename && rc_safefile(filename, FALSE) == 0) {
-			rc_vchar_t *my_cert_data = eay_get_x509cert(filename);
-			uint8_t value = IKEV2_CERT_X509_SIGN;
-			my_cert = rc_vprepend(my_cert_data, &value,
-					      sizeof(value));
-			if (!my_cert)
-				rc_vfree(my_cert_data);
+		/* fail closed like the childful responder (fail_no_my_cert):
+		 * a signature AUTH must carry its CERT; never send a
+		 * signature AUTH the peer cannot verify. */
+		if (!filename || rc_safefile(filename, FALSE) != 0) {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "EAP responder: signature method configured but no "
+			   "readable X.509 CERT (%s); aborting\n",
+			   filename ? filename : "(none)");
+			ikev2_payloads_destroy(&payl);
+			ikev2_abort(ike_sa, ECONNREFUSED);
+			return -1;
+		}
+		rc_vchar_t *my_cert_data = eay_get_x509cert(filename);
+		if (!my_cert_data) {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "EAP responder: failed to read X.509 CERT (%s); "
+			   "aborting\n", filename);
+			ikev2_payloads_destroy(&payl);
+			ikev2_abort(ike_sa, ECONNREFUSED);
+			return -1;
+		}
+		uint8_t value = IKEV2_CERT_X509_SIGN;
+		my_cert = rc_vprepend(my_cert_data, &value, sizeof(value));
+		rc_vfree(my_cert_data);
+		if (!my_cert) {
+			ikev2_payloads_destroy(&payl);
+			ikev2_abort(ike_sa, ECONNREFUSED);
+			return -1;
 		}
 	}
 

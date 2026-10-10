@@ -119,8 +119,8 @@ endif
 # exists only under ENABLE_NATT (see configure.ac NATT conditional), so
 # a --disable-natt build must not try to build these.
 if NATT
-TESTS += test_ts_substitute test_natoa test_ip_any eaproundtest eaplocal eapdrivetest eapemittest
-check_PROGRAMS += test_ts_substitute test_natoa test_ip_any eaproundtest eaplocal eapdrivetest eapemittest
+TESTS += test_ts_substitute test_natoa test_ip_any eaproundtest eaplocal eapdrivetest eapemittest eapmethodtest
+check_PROGRAMS += test_ts_substitute test_natoa test_ip_any eaproundtest eaplocal eapdrivetest eapemittest eapmethodtest
 test_ts_substitute_SOURCES = test_ts_substitute.c
 test_ts_substitute_LDADD = $(addtest_ikedsrc) $(LDADD)
 test_natoa_SOURCES = test_natoa.c
@@ -142,6 +142,12 @@ eapdrivetest_LDADD = $(addtest_ikedsrc) $(LDADD)
 # EAP IKE_AUTH emission: IDr + EAP(48), no AUTH (hermetic composition).
 eapemittest_SOURCES = eapemittest.c
 eapemittest_LDADD = $(addtest_ikedsrc) $(LDADD)
+# EAP responder AUTH-method selection (ikev2_eap_responder_method): ECDSA
+# curve -> method 9/10/11, RSA -> DS/RSASIG, and key-failure -> 0 (the
+# caller aborts rather than degrade to EAP-only no-CERT+AUTH).  Keys are
+# generated at runtime with OpenSSL EVP - no private-key fixtures.
+eapmethodtest_SOURCES = eapmethodtest.c
+eapmethodtest_LDADD = $(addtest_ikedsrc) $(LDADD)
 endif
 
 if USE_EPOLL
