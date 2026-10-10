@@ -350,6 +350,112 @@ r2ticket_skeyseed(int prf_id, const rc_vchar_t *sk_d_old,
 	return r;
 }
 
+/* RFC 7296 s2.14 prf+:  {T1|T2|...} where
+ *   T1 = prf(K, S | 0x01)
+ *   T2 = prf(K, T1 | S | 0x02)
+ *   T3 = prf(K, T2 | S | 0x03) ...
+ * K = SKEYSEED, S = Ni | Nr | SPIi | SPIr.  Returns the first
+ * required_len octets.  Here required_len spans the whole
+ * {SK_d|SK_ai|SK_ar|SK_ei|SK_er|SK_pi|SK_pr} output; the caller slices it. */
+static rc_vchar_t *
+r2ticket_prf_plus(int prf_id, const rc_vchar_t *key, const rc_vchar_t *seed,
+    size_t required_len)
+{
+	const EVP_MD *md;
+	HMAC_CTX *h = NULL;
+	unsigned char t[EVP_MAX_MD_SIZE];
+	unsigned int tlen;
+	rc_vchar_t *out = NULL, *acc = NULL;
+	size_t mdlen, produced = 0;
+	uint8_t ctr = 1;
+
+	md = r2ticket_prf_md(prf_id);
+	if (!md || !key || !seed || required_len == 0)
+		return NULL;
+	mdlen = EVP_MD_size(md);
+	if (mdlen == 0)
+		return NULL;
+
+	out = rc_vmalloc(required_len);
+	acc = rc_vmalloc(mdlen);		/* previous T */
+	if (!out || !acc)
+		goto fail;
+	h = HMAC_CTX_new();
+	if (!h)
+		goto fail;
+
+	while (produced < required_len) {
+		size_t take;
+
+		if (HMAC_Init_ex(h, key->v, (int)key->l, md, NULL) != 1)
+			goto fail;
+		if (produced == 0) {
+			/* T1 = prf(K, S | 0x01): feed S then ctr */
+			if (HMAC_Update(h, seed->v, seed->l) != 1)
+				goto fail;
+		} else {
+			/* Tn = prf(K, Tprev | S | ctr) */
+			if (HMAC_Update(h, acc->v, acc->l) != 1)
+				goto fail;
+			if (HMAC_Update(h, seed->v, seed->l) != 1)
+				goto fail;
+		}
+		if (HMAC_Update(h, &ctr, 1) != 1)
+			goto fail;
+		if (HMAC_Final(h, t, &tlen) != 1)
+			goto fail;
+		memcpy(acc->v, t, mdlen);
+		take = required_len - produced;
+		if (take > mdlen)
+			take = mdlen;
+		memcpy((uint8_t *)out->v + produced, t, take);
+		produced += take;
+		ctr++;
+	}
+	if (h)
+		HMAC_CTX_free(h);
+	OPENSSL_cleanse(t, sizeof(t));
+	rc_vfree(acc);
+	return out;
+
+ fail:
+	if (h)
+		HMAC_CTX_free(h);
+	OPENSSL_cleanse(t, sizeof(t));
+	if (acc)
+		rc_vfree(acc);
+	if (out)
+		rc_vfree(out);
+	return NULL;
+}
+
+/* RFC 5723 s5.1: expand the resumed SKEYSEED into the full key set. */
+rc_vchar_t *
+r2ticket_keyexp(int prf_id, const rc_vchar_t *skeyseed,
+    const rc_vchar_t *ni, const rc_vchar_t *nr,
+    const uint8_t spi_i[8], const uint8_t spi_r[8],
+    size_t sk_d_len, size_t sk_ai_len, size_t sk_ei_len, size_t sk_pi_len)
+{
+	rc_vchar_t *seed, *r;
+	size_t seedlen;
+
+	if (!skeyseed || !ni || !nr || !spi_i || !spi_r)
+		return NULL;
+	seedlen = ni->l + nr->l + 16;
+	seed = rc_vmalloc(seedlen);
+	if (!seed)
+		return NULL;
+	memcpy((uint8_t *)seed->v, ni->v, ni->l);
+	memcpy((uint8_t *)seed->v + ni->l, nr->v, nr->l);
+	memcpy((uint8_t *)seed->v + ni->l + nr->l, spi_i, 8);
+	memcpy((uint8_t *)seed->v + ni->l + nr->l + 8, spi_r, 8);
+
+	r = r2ticket_prf_plus(prf_id, skeyseed, seed,
+	    sk_d_len + 2 * sk_ai_len + 2 * sk_ei_len + 2 * sk_pi_len);
+	rc_vfree(seed);
+	return r;
+}
+
 
 /*
  * Load the RFC 5723 ticket key from a configured file: the raw file content

@@ -48,6 +48,19 @@ int r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
 rc_vchar_t *r2ticket_skeyseed(int prf_id, const rc_vchar_t *sk_d_old,
     const rc_vchar_t *ni, const rc_vchar_t *nr);
 
+/* RFC 5723 s5.1 / RFC 7296 s2.14 key expansion.  From the resumed SKEYSEED
+ * derive the full resumed IKE SA key set:
+ *     {SK_d|SK_ai|SK_ar|SK_ei|SK_er|SK_pi|SK_pr} =
+ *         prf+(SKEYSEED, Ni | Nr | SPIi | SPIr)
+ * Returns a fresh rc_vchar_t holding sk_d_len + 2*sk_ai_len + 2*sk_ei_len +
+ * 2*sk_pi_len octets, laid out in that order (SK_d then ai,ar,ei,er,pi,pr).
+ * A single key of that length must be sliced by the caller.  NULL on any
+ * error (unsupported prf, NULL seed/ni/nr). */
+rc_vchar_t *r2ticket_keyexp(int prf_id, const rc_vchar_t *skeyseed,
+    const rc_vchar_t *ni, const rc_vchar_t *nr,
+    const uint8_t spi_i[8], const uint8_t spi_r[8],
+    size_t sk_d_len, size_t sk_ai_len, size_t sk_ei_len, size_t sk_pi_len);
+
 /* map an IKEv2 PRF transform id to an HMAC EVP_MD (NULL if unsupported) */
 const EVP_MD *r2ticket_prf_md(int prf_id);
 
