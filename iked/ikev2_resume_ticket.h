@@ -40,9 +40,13 @@ rc_vchar_t *r2ticket_create(const rc_vchar_t *tkey,
     const struct r2ticket_state *st);
 
 /* Validate a ticket and recover state.  0 + *st filled on success (caller
- * frees st->sa/idi/idr/sk_d); -1 on malformed/expired/tampered, *st zeroed. */
+ * frees with r2ticket_state_free); -1 on malformed/expired/tampered, *st
+ * zeroed. */
 int r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
     struct r2ticket_state *st);
+
+/* Free the heap members of a state returned by r2ticket_parse and zero it. */
+void r2ticket_state_free(struct r2ticket_state *st);
 
 /* RFC 5723 s5.1: SKEYSEED = prf(SK_d_old, "Resumption" | Ni | Nr). */
 rc_vchar_t *r2ticket_skeyseed(int prf_id, const rc_vchar_t *sk_d_old,

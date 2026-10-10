@@ -113,8 +113,8 @@ r2tick_pack(const struct r2ticket_state *st)
 	return out;
 }
 
-static void
-r2tick_state_free(struct r2ticket_state *st)
+void
+r2ticket_state_free(struct r2ticket_state *st)
 {
 	if (st->sa) { rc_vfree(st->sa); st->sa = NULL; }
 	if (st->idi) { rc_vfree(st->idi); st->idi = NULL; }
@@ -306,7 +306,7 @@ r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
 
  out:
 	if (rc != 0)
-		r2tick_state_free(st);
+		r2ticket_state_free(st);
 	if (plain)
 		racoon_free(plain);
 	if (ctx)
