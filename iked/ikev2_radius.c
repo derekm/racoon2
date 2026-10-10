@@ -628,7 +628,6 @@ ikev2_radius_msk(struct ikev2_radius_response *resp,
 {
 	unsigned i;
 	rc_vchar_t *recv = NULL, *send = NULL, *msk = NULL;
-	uint8_t zero32[32];
 
 	if (!resp || !secret)
 		return NULL;
@@ -684,23 +683,29 @@ ikev2_radius_msk(struct ikev2_radius_response *resp,
 	if (!recv || !send)
 		goto done;
 
-	memset(zero32, 0, sizeof(zero32));
-	/* EAP-MSCHAPv2 master keys are 16 octets (RFC 3079 s3.3); truncate
-	 * any longer attribute to the first 16, per RFC 2548 implementation
-	 * note ("the RADIUS client is responsible for truncation"). */
+	/* The MSK is the concatenation of the two MPPE master keys,
+	 * zero-padded to 64 octets (RFC 2548 s2.4.2/2.4.3).  The padding
+	 * rule covers both supported EAP methods:
+	 *   - EAP-MSCHAPv2 (RFC 3079 s3.3): keys are 16 octets each, so
+	 *     MSK = MasterReceiveKey(16) || MasterSendKey(16) || 32 zero
+	 *     octets.  This is what the earlier hard-coded 16/16/32 shape
+	 *     expressed.
+	 *   - EAP-TLS (RFC 5216 s8.6): keys are 32 octets each, carrying the
+	 *     full 64-octet TLS PRF MSK, so MSK = RecvKey(32)||SendKey(32)
+	 *     with no zero padding left over.
+	 * RFC 2548 says the RADIUS client is responsible for truncating any
+	 * longer attribute; clamp each key to 32 and never overrun 64. */
 	{
-		size_t rl = recv->l < 16 ? recv->l : 16;
-		size_t sl2 = send->l < 16 ? send->l : 16;
+		size_t rl = recv->l < 32 ? recv->l : 32;
+		size_t sl2 = send->l < 32 ? send->l : 32;
+		if (rl + sl2 > 64)
+			sl2 = 64 - rl;	/* defensive; 32+32=64 already */
 		msk = rc_vmalloc(64);
 		if (!msk)
 			goto done;
+		memset((uint8_t *)msk->v, 0, 64);
 		memcpy((uint8_t *)msk->v, recv->v, rl);
-		if (rl < 16)
-			memset((uint8_t *)msk->v + rl, 0, 16 - rl);
-		memcpy((uint8_t *)msk->v + 16, send->v, sl2);
-		if (sl2 < 16)
-			memset((uint8_t *)msk->v + 16 + sl2, 0, 16 - sl2);
-		memcpy((uint8_t *)msk->v + 32, zero32, 32);
+		memcpy((uint8_t *)msk->v + rl, send->v, sl2);
 		msk->l = 64;
 	}
 
