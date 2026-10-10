@@ -341,6 +341,11 @@ struct ikev2_sa {
 					 * (RFC 7296 §1.4.1: don't tear the old
 					 * SA down inside the new exchange) */
 	rc_vchar_t *cookie2_echo;	/* RFC 4555 COOKIE2 to copy into response */
+	/* RFC 5723: set when the peer sent N(TICKET_REQUEST) (seen in this
+	 * IKE_AUTH request or an initiated exchange).  When the remote
+	 * enables session resumption, the responder answers a successful
+	 * authentication with N(TICKET_LT_OPAQUE). */
+	int ticket_requested;
 	rc_vchar_t *cookie2_sent;	/* RFC 4555 COOKIE2 we put on a request */
 	int cookie2_matched;
 	rc_vchar_t *qcd_token_peer;	/* RFC 6290 token from peer (taker) */
