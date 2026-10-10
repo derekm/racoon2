@@ -3185,10 +3185,24 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				rc_vchar_t *id_data =
 				    ikev2_id2rct_id(id_i, &rc_id_type);
 				if (!id_data) {
+					/* Unsupported IDi type (ikev2_id2rct_id
+					 * returns NULL for that, not only OOM).
+					 * eap_relay was already assigned above;
+					 * null it before freeing so the SA (which
+					 * stays alive) never holds a dangling
+					 * pointer for dispose to double-free.
+					 * Mirrors the no-match path's ikev2_abort
+					 * so the SA and its relay are torn down. */
 					rc_vfree(identity_req);
 					ikev2_eap_relay_free(relay);
 					racoon_free(relay);
-					goto fail_nomem;
+					ike_sa->eap_relay = NULL;
+					++isakmpstat.authentication_failed;
+					/* the AUTH path replies
+					 * AUTHENTICATION_FAILED; EAP has no
+					 * AUTH to fail yet, so abort. */
+					ikev2_abort(ike_sa, ECONNREFUSED);
+					return;
 				}
 				for (peers_id = ikev2_peers_id(ike_sa->rmconf);
 				     peers_id; peers_id = peers_id->next) {
@@ -3430,6 +3444,7 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 		struct ikev2_eap_relay *rel =
 		    (struct ikev2_eap_relay *)ike_sa->eap_relay;
 		if (rel->eap_pending && eapmsg.l >= 2 &&
+		    rel->eap_pending->l >= 2 &&
 		    ((uint8_t *)eapmsg.v)[1] != ((uint8_t *)rel->eap_pending->v)[1]) {
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
 				   "EAP: Response Identifier %u does not echo last Request "
@@ -4344,7 +4359,39 @@ ikev2_responder_eap_auth_send(struct ikev2_sa *ike_sa, uint32_t message_id,
 
 	rmethod = ikev2_eap_responder_method(ike_sa);
 	if (rmethod == 0) {
-		/* EAP-only responder: this first round is just IDr + EAP.
+		/* rmethod==0 can mean either (a) a genuinely EAP-only
+		 * config (no signature method beside eap) or (b) a
+		 * signature method is configured but resolution FAILED
+		 * (private-key load error or unsupported ECDSA curve).
+		 * (b) must NOT be treated as EAP-only: omitting
+		 * CERT+AUTH there would silently downgrade a responder
+		 * that is supposed to authenticate itself with a
+		 * signature - exactly the downgrade the RFC 5998
+		 * walk-back below forbids.  Distinguish by checking the
+		 * configured auth-method list directly. */
+		struct rc_alglist *m;
+		int sig_configured = 0;
+		for (m = ikev2_kmp_auth_method(ike_sa->rmconf);
+		     m; m = m->next) {
+			if (m->algtype != RCT_ALG_EAP) {
+				sig_configured = 1;
+				break;
+			}
+		}
+		if (sig_configured) {
+			/* signature method configured but no method number
+			 * could be resolved (key missing/unreadable, or
+			 * unsupported ECDSA curve) -> fail hard, never
+			 * degrade to EAP-only. */
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "EAP responder: signature method configured but "
+			   "method resolution failed; aborting (no CERT+AUTH "
+			   "downgrade)\n");
+			ikev2_payloads_destroy(&payl);
+			ikev2_abort(ike_sa, ECONNREFUSED);
+			return -1;
+		}
+		/* genuinely EAP-only responder: this first round is just IDr + EAP.
 		 * Even when the peer sent N(EAP_ONLY_AUTHENTICATION) (16417,
 		 * RFC 5998 s3) to request EAP-only auth, a responder that is
 		 * CONFIGURED with a signature method must NOT omit its
@@ -4376,8 +4423,13 @@ ikev2_responder_eap_auth_send(struct ikev2_sa *ike_sa, uint32_t message_id,
 	if (!auth)
 		goto fail;
 
-	/* [CERT+] under signature AUTH (mirror the childful responder). */
-	if (rmethod == IKEV2_AUTH_RSASIG || rmethod == IKEV2_AUTH_DS) {
+	/* [CERT+] under signature AUTH (mirror the childful responder):
+	 * RSA (1/14) and ECDSA (9/10/11) both sign with a X.509 private
+	 * key, so attach the peer's configured CERT for all of them. */
+	if (rmethod == IKEV2_AUTH_RSASIG || rmethod == IKEV2_AUTH_DS ||
+	    rmethod == IKEV2_AUTH_ECDSA_SHA256_P256 ||
+	    rmethod == IKEV2_AUTH_ECDSA_SHA384_P384 ||
+	    rmethod == IKEV2_AUTH_ECDSA_SHA512_P521) {
 		const char *filename = 0;
 		struct rc_pklist *pk = ike_sa->rmconf->ikev2->my_pubkey;
 		while (pk) {
