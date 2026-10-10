@@ -331,7 +331,11 @@ struct ikev2transform {
 #define	IKEV2TRANSF_DH_MODP2048_256POS	24	/* (RFC5114) */
 #define	IKEV2TRANSF_DH_ECP192		25	/* (RFC5114) */
 #define	IKEV2TRANSF_DH_ECP224		26	/* (RFC5114) */
-/*	Reserved			27-1023 */
+#define	IKEV2TRANSF_DH_BRAINPOOL224	27	/* (RFC6954) */
+#define	IKEV2TRANSF_DH_BRAINPOOL256	28	/* (RFC6954) */
+#define	IKEV2TRANSF_DH_BRAINPOOL384	29	/* (RFC6954) */
+#define	IKEV2TRANSF_DH_BRAINPOOL512	30	/* (RFC6954) */
+/*	Reserved			31-1023 */
 /* Transform IDs for Transform Type 4 (Key Exchange Method).  RFC 9370
  * s1.3: ADDKE (Transform Type 6) transform IDs share this registry. */
 #define	IKEV2TRANSF_DH_PRIVATE		1024

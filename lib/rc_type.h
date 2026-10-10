@@ -112,6 +112,13 @@ typedef enum {
 	 * PSK, DSS, RSASIG, ECDSA, EAP and the appended ChaCha/CCM
 	 * codes keep their existing numbers (see the invariant above). */
 	RCT_ALG_CURVE25519, RCT_ALG_CURVE448,
+	/* RFC 5114 DH groups 22/23/24 (MODP with prime-order subgroup)
+	 * and RFC 6954 groups 27-30 (Brainpool ECC).  Appended after every
+	 * sequential value so no earlier code shifts. */
+	RCT_ALG_MODP1024_160POS, RCT_ALG_MODP2048_224POS,
+	RCT_ALG_MODP2048_256POS,
+	RCT_ALG_BRAINPOOL224, RCT_ALG_BRAINPOOL256, RCT_ALG_BRAINPOOL384,
+	RCT_ALG_BRAINPOOL512,
 
 		/* NAT-T: distinct from RCT_BOOL_ON/OFF and 0=unset */
 	RCT_NATT_FORCE = 0x00FE,

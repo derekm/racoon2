@@ -57,6 +57,27 @@ do {                                                                          \
 	racoon_free(buf.v);						      \
 } while(0);
 
+/* RFC 5114 groups 22-24 use a full prime-sized generator and a known
+ * subgroup order q, not gen1=2.  prime, generator and order are all
+ * hex strings; generator lives in genv, order in order. */
+#define INITDHVAL_POS(a, ps, gs, qs)                                          \
+do {                                                                          \
+	rc_vchar_t pbuf, gbuf, qbuf;                                          \
+	pbuf.v = str2val((ps), 16, &pbuf.l);                                  \
+	gbuf.v = str2val((gs), 16, &gbuf.l);                                  \
+	qbuf.v = str2val((qs), 16, &qbuf.l);                                  \
+	memset(&a, 0, sizeof(struct dhgroup));                                \
+	a.type = DHGROUP_TYPE_MODP;                                           \
+	a.prime = rc_vdup(&pbuf);                                             \
+	a.genv = rc_vdup(&gbuf);                                              \
+	a.order = rc_vdup(&qbuf);                                             \
+	a.gen1 = 0;                                                           \
+	a.gen2 = 0;                                                           \
+	racoon_free(pbuf.v);                                                  \
+	racoon_free(gbuf.v);                                                  \
+	racoon_free(qbuf.v);						      \
+} while(0);
+
 struct dhgroup dh_modp768;
 struct dhgroup dh_modp1024;
 struct dhgroup dh_modp1536;
@@ -70,6 +91,13 @@ struct dhgroup dh_ecp384;
 struct dhgroup dh_ecp521;
 struct dhgroup dh_curve25519;
 struct dhgroup dh_curve448;
+struct dhgroup dh_modp1024_160;
+struct dhgroup dh_modp2048_224;
+struct dhgroup dh_modp2048_256;
+struct dhgroup dh_brainpool224;
+struct dhgroup dh_brainpool256;
+struct dhgroup dh_brainpool384;
+struct dhgroup dh_brainpool512;
 
 int
 oakley_dhinit(void)
@@ -109,6 +137,38 @@ oakley_dhinit(void)
 	if (dh_curve448.prime)
 		memset(dh_curve448.prime->v, 0, 56);
 
+	/* RFC 5114 groups 22-24 (full generator + subgroup order q). */
+	INITDHVAL_POS(dh_modp1024_160, OAKLEY_PRIME_MODP1024_160,
+	    OAKLEY_GEN_MODP1024_160, OAKLEY_ORDER_MODP1024_160);
+	INITDHVAL_POS(dh_modp2048_224, OAKLEY_PRIME_MODP2048_224,
+	    OAKLEY_GEN_MODP2048_224, OAKLEY_ORDER_MODP2048_224);
+	INITDHVAL_POS(dh_modp2048_256, OAKLEY_PRIME_MODP2048_256,
+	    OAKLEY_GEN_MODP2048_256, OAKLEY_ORDER_MODP2048_256);
+
+	/* RFC 6954 groups 27-30 (Brainpool ECC).  prime->l = field size.
+	 * The curve NID is derived from that length, so prime is just
+	 * sized/zeroed like the other ECP groups. */
+	memset(&dh_brainpool224, 0, sizeof(dh_brainpool224));
+	dh_brainpool224.type = DHGROUP_TYPE_BRAINPOOL;
+	dh_brainpool224.prime = rc_vmalloc(28);
+	if (dh_brainpool224.prime)
+		memset(dh_brainpool224.prime->v, 0, 28);
+	memset(&dh_brainpool256, 0, sizeof(dh_brainpool256));
+	dh_brainpool256.type = DHGROUP_TYPE_BRAINPOOL;
+	dh_brainpool256.prime = rc_vmalloc(32);
+	if (dh_brainpool256.prime)
+		memset(dh_brainpool256.prime->v, 0, 32);
+	memset(&dh_brainpool384, 0, sizeof(dh_brainpool384));
+	dh_brainpool384.type = DHGROUP_TYPE_BRAINPOOL;
+	dh_brainpool384.prime = rc_vmalloc(48);
+	if (dh_brainpool384.prime)
+		memset(dh_brainpool384.prime->v, 0, 48);
+	memset(&dh_brainpool512, 0, sizeof(dh_brainpool512));
+	dh_brainpool512.type = DHGROUP_TYPE_BRAINPOOL;
+	dh_brainpool512.prime = rc_vmalloc(64);
+	if (dh_brainpool512.prime)
+		memset(dh_brainpool512.prime->v, 0, 64);
+
 	return 0;
 }
 
@@ -118,7 +178,8 @@ oakley_dhinit(void)
 size_t
 dh_value_len(struct dhgroup *dhgrp)
 {
-	if (dhgrp->type == OAKLEY_ATTR_GRP_TYPE_ECP)
+	if (dhgrp->type == OAKLEY_ATTR_GRP_TYPE_ECP ||
+	    dhgrp->type == DHGROUP_TYPE_BRAINPOOL)
 		return dhgrp->prime->l * 2;	/* RFC 5903: x||y */
 	return dhgrp->prime->l;
 }
@@ -180,16 +241,34 @@ oakley_dh_compute(const struct dhgroup *dh, rc_vchar_t *pub, rc_vchar_t *priv,
 #endif
 	switch (dh->type) {
 	case OAKLEY_ATTR_GRP_TYPE_MODP:
-		if (eay_dh_compute(dh->prime, dh->gen1, pub, priv, pub_p, gxy) < 0) {
-			plog(PLOG_INTERR, PLOGLOC, NULL,
-			     "failed to compute dh value.\n");
-			return -1;
+		if (dh->genv) {
+			if (eay_dh_compute_v(dh->prime, dh->genv, dh->order,
+			    pub, priv, pub_p, gxy) < 0) {
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				     "failed to compute dh value.\n");
+				return -1;
+			}
+		} else {
+			if (eay_dh_compute(dh->prime, dh->gen1, pub, priv,
+			    pub_p, gxy) < 0) {
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				     "failed to compute dh value.\n");
+				return -1;
+			}
 		}
 		break;
 	case OAKLEY_ATTR_GRP_TYPE_ECP:
 		if (eay_ecp_compute(dh->prime->l, pub, priv, pub_p, gxy) < 0) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 			     "failed to compute ecp256 dh value.\n");
+			return -1;
+		}
+		break;
+	case DHGROUP_TYPE_BRAINPOOL:
+		if (eay_brainpool_compute(dh->prime->l, pub, priv, pub_p,
+		    gxy) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "failed to compute brainpool dh value.\n");
 			return -1;
 		}
 		break;
@@ -235,10 +314,20 @@ oakley_dh_generate(const struct dhgroup *dh, rc_vchar_t **pub,
 #endif
 	switch (dh->type) {
 	case OAKLEY_ATTR_GRP_TYPE_MODP:
-		if (eay_dh_generate(dh->prime, dh->gen1, dh->gen2, pub, priv) < 0) {
-			plog(PLOG_INTERR, PLOGLOC, NULL,
-			     "failed to compute dh value.\n");
-			return -1;
+		if (dh->genv) {
+			if (eay_dh_generate_v(dh->prime, dh->genv, pub,
+			    priv) < 0) {
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				     "failed to compute dh value.\n");
+				return -1;
+			}
+		} else {
+			if (eay_dh_generate(dh->prime, dh->gen1, dh->gen2, pub,
+			    priv) < 0) {
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				     "failed to compute dh value.\n");
+				return -1;
+			}
 		}
 		break;
 
@@ -246,6 +335,13 @@ oakley_dh_generate(const struct dhgroup *dh, rc_vchar_t **pub,
 		if (eay_ecp_generate(dh->prime->l, pub, priv) < 0) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 			     "failed to generate ecp dh value.\n");
+			return -1;
+		}
+		return 0;
+	case DHGROUP_TYPE_BRAINPOOL:
+		if (eay_brainpool_generate(dh->prime->l, pub, priv) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "failed to generate brainpool dh value.\n");
 			return -1;
 		}
 		return 0;
