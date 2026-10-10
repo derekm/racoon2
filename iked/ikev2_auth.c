@@ -342,6 +342,22 @@ rc_vchar_t *
 ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 {
 	int method;
+
+	method = ikev2_auth_method(sa);
+	return ikev2_auth_calculate_method(sa, i_to_r, method);
+}
+
+/*
+ * ikev2_auth_calculate with an explicit auth method.  Used by the EAP
+ * responder when the client authenticates via EAP (RFC 7296 s2.16): the
+ * responder must sign its own AUTH with its configured signature method,
+ * which is NOT the first kmp_auth_method entry (that one is eap).  Passing
+ * method=0 here falls back to the config-selected method (equivalent to
+ * ikev2_auth_calculate).
+ */
+rc_vchar_t *
+ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
+{
 	rc_vchar_t *id;
 	rc_vchar_t *octets = 0;
 	rc_vchar_t *authdata = 0;
@@ -351,7 +367,8 @@ ikev2_auth_calculate(struct ikev2_sa *sa, int i_to_r)
 	rc_vchar_t *k = 0;
 	rc_vchar_t *sharedkey = 0;
 
-	method = ikev2_auth_method(sa);
+	if (method == 0)
+		method = ikev2_auth_method(sa);
 	if (method == 0)
 		goto fail;
 
