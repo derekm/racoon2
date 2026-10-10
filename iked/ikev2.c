@@ -3190,6 +3190,14 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	/* IDs from the ticket become this resumed SA's identities. */
 	ike_sa->id_i = st.idi;	st.idi = NULL;
 	ike_sa->id_r = st.idr;	st.idr = NULL;
+	ike_sa->resumed = 1;	/* established by ticket, not full IKE_AUTH */
+
+	/* The peer is already authenticated by the ticket: the resumed
+	 * IKE_AUTH must not re-run a full auth method.  Mark the SA
+	 * authenticated so responder_ike_sa_auth_cont() skips the
+	 * VERIFIED_FAILURE path; the subsequent initiator AUTH over the
+	 * resumed SK_pi (shared-key-mac) is verified normally. */
+	ike_sa->verified_info.result = VERIFIED_SUCCESS;
 
 	/* Resumed IKE_AUTH arrives with msgid 1, encrypted under these keys;
 	 * the normal responder IKE_AUTH path takes over from here. */

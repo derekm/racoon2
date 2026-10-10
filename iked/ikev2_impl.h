@@ -346,6 +346,12 @@ struct ikev2_sa {
 	 * enables session resumption, the responder answers a successful
 	 * authentication with N(TICKET_LT_OPAQUE). */
 	int ticket_requested;
+	/* RFC 5723: set when this IKE_SA was established by a ticket
+	 * (IKE_SESSION_RESUME / exchange 38), not by a full IKE_AUTH.  The
+	 * initiator is already authenticated by the ticket, so the resumed
+	 * IKE_AUTH must not re-run the PSK/sig/EAP method: its AUTH derives
+	 * from the resumed SK_p and its IDs come from the ticket. */
+	int resumed;
 	rc_vchar_t *cookie2_sent;	/* RFC 4555 COOKIE2 we put on a request */
 	int cookie2_matched;
 	rc_vchar_t *qcd_token_peer;	/* RFC 6290 token from peer (taker) */
