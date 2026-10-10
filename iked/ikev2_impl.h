@@ -112,7 +112,8 @@ enum ikev2_state {
 #ifdef WITH_INTERMEDIATE
 	, IKEV2_STATE_INI_IKE_INTERMEDIATE_SENT = 10
 #endif
-	/* IKEV2_STATE_EAP  = 11 */
+	, IKEV2_STATE_RES_IKE_AUTH_EAP_FINAL = 11
+	/* IKEV2_STATE_EAP  = 12 */
 
 	/* IKEV2_STATE_ESTABLISHED_WAIT_INITIATOR, */
 };
@@ -378,6 +379,13 @@ struct ikev2_sa {
 					   EAP-Success we synthesize must echo it
 					   (the server's own Success packet is
 					   preferred when the Accept carries one) */
+	rc_vchar_t *eap_sa_i2;	/* retained peer IKE_AUTH child offer (owned):
+				   SAi2 / TSi / TSr payload bytes from the
+				   first IKE_AUTH, held until the final RFC 5998
+				   [AUTH]-only message completes the child.  NULL
+				   unless an eap remote parked in EAP. */
+	rc_vchar_t *eap_ts_i;
+	rc_vchar_t *eap_ts_r;
 
 	IKEV2_SA_LIST_ENTRY link;
 };

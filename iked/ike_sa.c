@@ -799,6 +799,7 @@ ikev2_sa_expire(struct ikev2_sa *ike_sa, int send_delete)
 	case IKEV2_STATE_RES_IKE_AUTH_RCVD:
 	case IKEV2_STATE_INI_IKE_AUTH_RCVD:
 	case IKEV2_STATE_RES_IKE_AUTH_EAP:
+	case IKEV2_STATE_RES_IKE_AUTH_EAP_FINAL:
 		isakmp_log(ike_sa, 0, 0, 0,
 			   PLOG_INTERR, PLOGLOC, "ike_sa expired\n");
 		ikev2_abort(ike_sa, ETIMEDOUT);
@@ -925,6 +926,7 @@ ikev2_shutdown_sa(struct ikev2_sa *ike_sa)
 	case IKEV2_STATE_RES_IKE_AUTH_RCVD:
 	case IKEV2_STATE_INI_IKE_AUTH_RCVD:
 	case IKEV2_STATE_RES_IKE_AUTH_EAP:
+	case IKEV2_STATE_RES_IKE_AUTH_EAP_FINAL:
 		ikev2_abort(ike_sa, ETIMEDOUT);
 		break;
 	case IKEV2_STATE_ESTABLISHED:
@@ -1173,6 +1175,9 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 	if (sa->eap_msk)
 		rc_vfreez(sa->eap_msk);
 	if (sa->eap_user) { rc_free(sa->eap_user); sa->eap_user = NULL; }
+	if (sa->eap_sa_i2) { rc_vfreez(sa->eap_sa_i2); sa->eap_sa_i2 = NULL; }
+	if (sa->eap_ts_i) { rc_vfreez(sa->eap_ts_i); sa->eap_ts_i = NULL; }
+	if (sa->eap_ts_r) { rc_vfreez(sa->eap_ts_r); sa->eap_ts_r = NULL; }
 	if (sa->eap_relay) {
 		ikev2_eap_relay_free(sa->eap_relay);
 		racoon_free(sa->eap_relay);

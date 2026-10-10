@@ -134,6 +134,9 @@ static void responder_ike_sa_auth_eap_recv(struct ikev2_sa *, rc_vchar_t *,
 static void responder_ike_sa_auth_eap_cont(struct ikev2_sa *, uint32_t,
 					   struct ikev2_payload_header *,
 					   struct sockaddr *);
+static void responder_ike_sa_auth_eap_final_recv(struct ikev2_sa *,
+					 rc_vchar_t *,
+					 struct sockaddr *, struct sockaddr *);
 static void responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *, int);
 static int ikev2_responder_eap_send(struct ikev2_sa *, uint32_t, rc_vchar_t *);
 int ikev2_responder_childless_auth_send(struct ikev2_sa *, uint32_t,
@@ -161,7 +164,11 @@ IKEV2INPUT ikev2_input_dispatch[] = {
 	responder_ike_sa_auth_eap_recv,	/* Responder EAP in IKE_AUTH (RFC 7296 s2.16) */
 #ifdef WITH_INTERMEDIATE
 	initiator_ike_intermediate_recv, /* Initiator IKE_INTERMEDIATE sent */
+#else
+	ikev2_dead_recv, /* no state 10 without INTERMEDIATE: unreachable slot */
 #endif
+	responder_ike_sa_auth_eap_final_recv, /* Responder EAP [AUTH]-only final
+							(RFC 5998) */
 };
 
 static void informational_responder_recv(struct ikev2_sa *, rc_vchar_t *,
@@ -3126,6 +3133,27 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				goto fail_nomem;
 			}
 			ike_sa->eap_relay = relay;
+			/* Retain the peer's child offer (SAi2/TSi/TSr[/CFG]) from
+			 * this first IKE_AUTH: after EAP-Success the peer's RFC
+			 * 5998 final message carries ONLY AUTH, so the child
+			 * must be built here, from the offer stored now.  Each is
+			 * copied whole (header+data, get_payload_length) so a
+			 * later handler can cast it back to a payload header. */
+			if (sa_i2) {
+				ike_sa->eap_sa_i2 =
+				    rc_vnew((uint8_t *)sa_i2,
+					    get_payload_length(sa_i2));
+			}
+			if (ts_i) {
+				ike_sa->eap_ts_i =
+				    rc_vnew((uint8_t *)ts_i,
+					    get_payload_length(ts_i));
+			}
+			if (ts_r) {
+				ike_sa->eap_ts_r =
+				    rc_vnew((uint8_t *)ts_r,
+					    get_payload_length(ts_r));
+			}
 			/* park in the EAP continuation state and send the
 			 * EAP-Identity request */
 			ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_AUTH_EAP);
@@ -3540,7 +3568,7 @@ responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *r, int rc)
 			}
 		}
 		if (out_eap) rc_vfree(out_eap);
-		ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_SA_INIT_SENT);
+		ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_AUTH_EAP_FINAL);
 		return;
 	case IKEV2_EAP_DRIVE_FAILURE:
 	default:
@@ -3550,6 +3578,125 @@ responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *r, int rc)
 		ikev2_abort(ike_sa, EACCES);
 		return;
 	}
+}
+
+/* RFC 5998 EAP-only final: after the responder sends EAP-Success the peer
+ * sends a last IKE_AUTH carrying ONLY AUTH (no IDi, no child payloads - the
+ * child offer was retained from the first IKE_AUTH).  This handler verifies
+ * that MSK-based AUTH and completes the child from the retained offer,
+ * reaching ESTABLISHED.  The message is already SK-authenticated (ICV passed
+ * in ikev2_input); EAP final AUTH is SHARED_KEY, verified synchronously. */
+static void
+responder_ike_sa_auth_eap_final_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
+				     struct sockaddr *remote,
+				     struct sockaddr *local)
+{
+	struct ikev2_header *ikehdr = (struct ikev2_header *)msg->v;
+	struct ikev2_payload_header *p;
+	struct ikev2payl_auth *auth = 0;
+	struct ikev2_child_param child_param;
+	struct ikev2_payload_header *sa_i2, *ts_i, *ts_r;
+	uint32_t message_id;
+	int type, error, result;
+
+	message_id = get_uint32(&ikehdr->message_id);
+	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	/* the RFC 5998 final must be AUTH-only (no IDi, no child payloads).
+	 * Like every decrypted-message handler below, skip the ENCRYPTED
+	 * payload header (type 46) - its next_payload field surfaces the
+	 * first inner (decrypted) payload type. */
+	for (type = ikehdr->next_payload;
+	     type != IKEV2_NO_NEXT_PAYLOAD;
+	     POINT_NEXT_PAYLOAD(p, type)) {
+		if (type == IKEV2_PAYLOAD_ENCRYPTED)
+			continue;
+		if (type != IKEV2_PAYLOAD_AUTH) {
+			isakmp_log(ike_sa, remote, local, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "EAP final: unexpected payload type %d "
+				   "(want AUTH only)\n", type);
+			goto fail;
+		}
+		if (auth)
+			goto fail;
+		auth = (struct ikev2payl_auth *)p;
+	}
+	if (!auth)
+		goto fail;
+
+	/* fail closed: no 64-octet MSK, nothing to verify/complete against */
+	if (!ike_sa->eap_msk || ike_sa->eap_msk->l != 64) {
+		isakmp_log(ike_sa, remote, local, msg,
+			   PLOG_INTERR, PLOGLOC,
+			   "EAP final: no 64-octet MSK to verify AUTH\n");
+		goto fail;
+	}
+
+	/* verify the peer's MSK-based AUTH.  i_to_r=TRUE: the initiator
+	 * (this peer) signs the I-to-R direction, covering its own IDi and
+	 * the cached IKE_SA_INIT message - so no child payload is needed
+	 * here, exactly what the [AUTH]-only message provides. */
+	result = ikev2_auth_verify(ike_sa, TRUE, auth);
+	if (result != VERIFIED_SUCCESS) {
+		++isakmpstat.authentication_failed;
+		isakmp_log(ike_sa, remote, local, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "EAP final: peer MSK-AUTH verification failed\n");
+		error = IKEV2_AUTHENTICATION_FAILED;
+		goto notify;
+	}
+
+	/* complete the child from the retained first-IKE_AUTH offer */
+	if (!ike_sa->eap_sa_i2 || !ike_sa->eap_ts_i || !ike_sa->eap_ts_r) {
+		isakmp_log(ike_sa, remote, local, msg,
+			   PLOG_INTERR, PLOGLOC,
+			   "EAP final: missing retained child offer\n");
+		goto fail;
+	}
+	sa_i2 = (struct ikev2_payload_header *)ike_sa->eap_sa_i2->v;
+	ts_i  = (struct ikev2_payload_header *)ike_sa->eap_ts_i->v;
+	ts_r  = (struct ikev2_payload_header *)ike_sa->eap_ts_r->v;
+
+	ikev2_child_param_init(&child_param);
+	/* the child state machine (create_child_responder_cont ->
+	 * responder_state1_send) drives to ESTABLISHED and installs the ESP
+	 * SA; g_i/n_i=0 (no child DH at IKE_AUTH), mirroring the non-EAP
+	 * responder_ike_sa_auth_cont call.  No cfg was retained (recv0
+	 * defers CP to cont; an EAP remote has no config requirement).
+	 * create_child_responder_cont must see RES_IKE_AUTH_RCVD (the state
+	 * the non-EAP final send uses) to route to responder_state1_send,
+	 * so move off the EAP_FINAL dispatch state first. */
+	ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_AUTH_RCVD);
+	error = ikev2_create_child_responder(ike_sa, local, remote,
+					     message_id,
+					     sa_i2, ts_i, ts_r, 0,
+					     0, 0, &child_param,
+					     FALSE, 0, 0);
+	if (error) {
+		++isakmpstat.fail_process_packet;
+		ikev2_child_param_destroy(&child_param);
+		goto notify;
+	}
+	/* the child parsed the offer synchronously; release the retained copy */
+	if (ike_sa->eap_sa_i2) { rc_vfreez(ike_sa->eap_sa_i2); ike_sa->eap_sa_i2 = NULL; }
+	if (ike_sa->eap_ts_i) { rc_vfreez(ike_sa->eap_ts_i); ike_sa->eap_ts_i = NULL; }
+	if (ike_sa->eap_ts_r) { rc_vfreez(ike_sa->eap_ts_r); ike_sa->eap_ts_r = NULL; }
+	ikev2_update_message_id(ike_sa, message_id, FALSE);
+	ikev2_child_param_destroy(&child_param);
+	return;
+
+      fail:
+	isakmp_log(ike_sa, remote, local, msg,
+		   PLOG_PROTOERR, PLOGLOC,
+		   "EAP final: malformed final message\n");
+	error = IKEV2_INVALID_SYNTAX;
+	/* fall through */
+      notify:
+	if (ikev2_respond_error(ike_sa, msg, remote, local,
+				0, 0, 0, error, 0, 0) == 0)
+		ikev2_update_message_id(ike_sa, message_id, FALSE);
+	ikev2_abort(ike_sa, ECONNREFUSED);
+	return;
 }
 
 static void
@@ -8610,6 +8757,7 @@ ikev2_state_str(int type)
 		S(RES_IKE_AUTH_RCVD);
 		S(INI_IKE_AUTH_RCVD);
 		S(RES_IKE_AUTH_EAP);
+		S(RES_IKE_AUTH_EAP_FINAL);
 		S(ESTABLISHED);
 		S(DYING);
 		S(DEAD);
