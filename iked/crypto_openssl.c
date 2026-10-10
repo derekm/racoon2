@@ -4701,7 +4701,139 @@ eay_ecp_compute(size_t field_len, rc_vchar_t *pub, rc_vchar_t *priv,
  * shared secret is the x coordinate.  Field sizes are distinct within the
  * Brainpool set (224/256/384/512), so map NID from field_len here rather
  * than overloading ecp_curve_nid() (which shares 32/48 with P-256/P-384).
+ *
+ * Some OpenSSL builds ship a default/provider EC backend whose
+ * group_new_from_name() table omits the 224-bit brainpool curves
+ * (brainpoolP224r1 and brainpoolP224t1) even though they are listed by
+ * `openssl ecparam -list_curves` - e.g. OpenSSL 3.5.8 on Fedora 43/44
+ * returns "unknown group"/"invalid curve" for EC_KEY_new_by_curve_name()
+ * and for explicit explicit-keygen of those two NIDs, while 256/384/512
+ * work.  strongSwan negotiates DH 27 because it does not depend on the
+ * provider's named-curve table: it carries the RFC 5639 domain
+ * parameters itself.  We do the same here: brainpool_group() tries the
+ * named curve first, and when the provider lacks it, builds the group
+ * from the explicit RFC 5639 s3.3-3.7 parameters via
+ * EC_GROUP_new_curve_GFp + EC_GROUP_set_generator.  That path works on
+ * any build (verified: P-224 keygen + ECDH succeed through the explicit
+ * group even where the named NID is absent).
  */
+struct brainpool_dp {
+	size_t field_len;
+	int	nid;
+	/* RFC 5639 s3.x (r1) domain parameters, hex w/o 0x/space. */
+	const char *p, *a, *b, *gx, *gy, *n;
+};
+
+static const struct brainpool_dp brainpool_dp[] = {
+	{ 28, NID_brainpoolP224r1,
+	  "D7C134AA264366862A18302575D1D787B09F075797DA89F57EC8C0FF",
+	  "68A5E62CA9CE6C1C299803A6C1530B514E182AD8B0042A59CAD29F43",
+	  "2580F63CCFE44138870713B1A92369E33E2135D266DBB372386C400B",
+	  "0D9029AD2C7E5CF4340823B2A87DC68C9E4CE3174C1E6EFDEE12C07D",
+	  "58AA56F772C0726F24C6B89E4ECDAC24354B9E99CAA3F6D3761402CD",
+	  "D7C134AA264366862A18302575D0FB98D116BC4B6DDEBCA3A5A7939F" },
+	{ 32, NID_brainpoolP256r1,
+	  "A9FB57DBA1EEA9BC3E660A909D838D726E3BF623D52620282013481D1F6E5377",
+	  "7D5A0975FC2C3057EEF67530417AFFE7FB8055C126DC5C6CE94A4B44F330B5D9",
+	  "26DC5C6CE94A4B44F330B5D9BBD77CBF958416295CF7E1CE6BCCDC18FF8C07B6",
+	  "8BD2AEB9CB7E57CB2C4B482FFC81B7AFB9DE27E1E3BD23C23A4453BD9ACE3262",
+	  "547EF835C3DAC4FD97F8461A14611DC9C27745132DED8E545C1D54C72F046997",
+	  "A9FB57DBA1EEA9BC3E660A909D838D718C397AA3B561A6F7901E0E82974856A7" },
+	{ 48, NID_brainpoolP384r1,
+	  "8CB91E82A3386D280F5D6F7E50E641DF152F7109ED5456B412B1DA197FB711"
+	  "23ACD3A729901D1A71874700133107EC53",
+	  "7BC382C63D8C150C3C72080ACE05AFA0C2BEA28E4FB22787139165EFBA91F9"
+	  "0F8AA5814A503AD4EB04A8C7DD22CE2826",
+	  "04A8C7DD22CE28268B39B55416F0447C2FB77DE107DCD2A62E880EA53EEB62"
+	  "D57CB4390295DBC9943AB78696FA504C11",
+	  "1D1C64F068CF45FFA2A63A81B7C13F6B8847A3E77EF14FE3DB7FCAFE0CBD10"
+	  "E8E826E03436D646AAEF87B2E247D4AF1E",
+	  "8ABE1D7520F9C2A45CB1EB8E95CFD55262B70B29FEEC5864E19C054FF99129"
+	  "280E4646217791811142820341263C5315",
+	  "8CB91E82A3386D280F5D6F7E50E641DF152F7109ED5456B31F166E6CAC0425"
+	  "A7CF3AB6AF6B7FC3103B883202E9046565" },
+	{ 64, NID_brainpoolP512r1,
+	  "AADD9DB8DBE9C48B3FD4E6AE33C9FC07CB308DB3B3C9D20ED6639CCA703308"
+	  "717D4D9B009BC66842AECDA12AE6A380E62881FF2F2D82C68528AA6056583A48F3",
+	  "7830A3318B603B89E2327145AC234CC594CBDD8D3DF91610A83441CAEA9863"
+	  "BC2DED5D5AA8253AA10A2EF1C98B9AC8B57F1117A72BF2C7B9E7C1AC4D77FC94CA",
+	  "3DF91610A83441CAEA9863BC2DED5D5AA8253AA10A2EF1C98B9AC8B57F1117"
+	  "A72BF2C7B9E7C1AC4D77FC94CADC083E67984050B75EBAE5DD2809BD638016F723",
+	  "81AEE4BDD82ED9645A21322E9C4C6A9385ED9F70B5D916C1B43B62EEF4D009"
+	  "8EFF3B1F78E2D0D48D50D1687B93B97D5F7C6D5047406A5E688B352209BCB9F822",
+	  "7DDE385D566332ECC0EABFA9CF7822FDF209F70024A57B1AA000C55B881F81"
+	  "11B2DCDE494A5F485E5BCA4BD88A2763AED1CA2B2FA8F0540678CD1E0F3AD80892",
+	  "AADD9DB8DBE9C48B3FD4E6AE33C9FC07CB308DB3B3C9D20ED6639CCA703308"
+	  "70553E5C414CA92619418661197FAC10471DB1D381085DDADDB58796829CA90069" },
+};
+
+/* Return an owned EC_GROUP for the given Brainpool field length, or NULL.
+ * Prefer the provider's named curve; fall back to explicit RFC 5639
+ * parameters when the provider lacks the NID (brainpoolP224r1 on OpenSSL
+ * 3.5.8/Fedora).  Caller frees. */
+static EC_GROUP *
+brainpool_group(size_t field_len)
+{
+	const struct brainpool_dp *dp = NULL;
+	BN_CTX *ctx = NULL;
+	BIGNUM *p = NULL, *a = NULL, *b = NULL, *gx = NULL, *gy = NULL, *n = NULL;
+	EC_GROUP *grp = NULL;
+	EC_POINT *G = NULL;
+	size_t i;
+
+	for (i = 0; i < sizeof(brainpool_dp) / sizeof(brainpool_dp[0]); i++)
+		if (brainpool_dp[i].field_len == field_len) {
+			dp = &brainpool_dp[i];
+			break;
+		}
+	if (!dp)
+		return NULL;
+
+	grp = EC_GROUP_new_by_curve_name(dp->nid);
+	if (grp)
+		return grp;	/* provider has the named curve */
+
+	/* Provider lacks the named curve: build from explicit params. */
+	ctx = BN_CTX_new();
+	p = BN_new(); a = BN_new(); b = BN_new();
+	gx = BN_new(); gy = BN_new(); n = BN_new();
+	if (!ctx || !p || !a || !b || !gx || !gy || !n)
+		goto out;
+	if (!BN_hex2bn(&p, dp->p) || !BN_hex2bn(&a, dp->a) ||
+	    !BN_hex2bn(&b, dp->b) || !BN_hex2bn(&gx, dp->gx) ||
+	    !BN_hex2bn(&gy, dp->gy) || !BN_hex2bn(&n, dp->n))
+		goto out;
+	grp = EC_GROUP_new_curve_GFp(p, a, b, ctx);
+	if (!grp)
+		goto out;
+	G = EC_POINT_new(grp);
+	if (!G || !EC_POINT_set_affine_coordinates(grp, G, gx, gy, ctx) ||
+	    !EC_GROUP_set_generator(grp, G, n, BN_value_one()))
+		goto out;
+	/* advertise the canonical OID name so it round-trips like the
+	 * named-curve path */
+	EC_GROUP_set_asn1_flag(grp, OPENSSL_EC_NAMED_CURVE);
+	EC_GROUP_set_curve_name(grp, dp->nid);
+	if (G) {
+		EC_POINT_free(G);
+		G = NULL;
+	}
+	BN_CTX_free(ctx); ctx = NULL;
+	BN_free(p); BN_free(a); BN_free(b);
+	BN_free(gx); BN_free(gy); BN_free(n);
+	return grp;
+      out:
+	if (G)
+		EC_POINT_free(G);
+	if (grp)
+		EC_GROUP_free(grp);
+	if (ctx)
+		BN_CTX_free(ctx);
+	if (p) BN_free(p); if (a) BN_free(a); if (b) BN_free(b);
+	if (gx) BN_free(gx); if (gy) BN_free(gy); if (n) BN_free(n);
+	return NULL;
+}
+
 static int
 brainpool_curve_nid(size_t field_len)
 {
@@ -4741,14 +4873,18 @@ eay_brainpool_generate(size_t field_len, rc_vchar_t **pub, rc_vchar_t **priv)
 	buf = malloc(1 + publish);
 	if (!buf)
 		return -1;
-	ec = EC_KEY_new_by_curve_name(nid);
-	if (!ec || !EC_KEY_generate_key(ec))
-				goto end;
-	grp = EC_KEY_get0_group(ec);
+	grp = brainpool_group(field_len);	/* owned */
+	if (!grp)
+		goto end;
+	ec = EC_KEY_new();
+	if (!ec || !EC_KEY_set_group(ec, grp) || !EC_KEY_generate_key(ec))
+		goto end;
+	EC_GROUP_free((EC_GROUP *)grp);	/* key holds its own ref */
+	grp = EC_KEY_get0_group(ec);	/* borrowed; do not free */
 	pt = EC_KEY_get0_public_key(ec);
 	priv_bn = EC_KEY_get0_private_key(ec);
 	if (!grp || !pt || !priv_bn)
-				goto end;
+		goto end;
 		if (EC_POINT_point2oct(grp, pt, POINT_CONVERSION_UNCOMPRESSED,
 	    buf, 1 + publish, NULL) != 1 + publish || buf[0] != 0x04)
 		goto end;
@@ -4799,10 +4935,14 @@ eay_brainpool_compute(size_t field_len, rc_vchar_t *pub, rc_vchar_t *priv,
 	nid = brainpool_curve_nid(field_len);
 	if (nid == 0)
 		return -1;
-	ec = EC_KEY_new_by_curve_name(nid);
-	if (!ec)
+	grp = brainpool_group(field_len);	/* owned */
+	if (!grp)
+		return -1;
+	ec = EC_KEY_new();
+	if (!ec || !EC_KEY_set_group(ec, grp))
 		goto end;
-	grp = EC_KEY_get0_group(ec);
+	EC_GROUP_free((EC_GROUP *)grp);	/* key holds its own ref */
+	grp = EC_KEY_get0_group(ec);	/* borrowed; do not free */
 	priv_bn = BN_bin2bn((unsigned char *)priv->v, field_len, NULL);
 	if (!priv_bn || !EC_KEY_set_private_key(ec, priv_bn))
 		goto end;

@@ -742,20 +742,14 @@ test_dh_new_groups(void)
 		npos++;
 	}
 	for (i = 0; i < sizeof(bp) / sizeof(bp[0]); i++) {
-		/* RFC 6954 group 27 (brainpoolP224r1) is NOT implemented by
-		 * this OpenSSL build's EC provider (Fedora/OpenSSL 3.5.8
-		 * returns "invalid curve" for keygen on it; 256/384/512
-		 * work).  That is a host provider gap, not a daemon defect -
-		 * the code path is identical to the passing groups.  Probe
-		 * availability and report it explicitly rather than a silent
-		 * skip or a false code FAIL. */
-		if (EC_GROUP_new_by_curve_name(bp[i].nid) == NULL) {
-			fprintf(stderr, "KAT A9: NOTE %s unavailable in this "
-				"OpenSSL EC provider (host limitation; "
-				"daemon code path shared with the other "
-				"brainpool groups)\n", bp[i].name);
-			continue;
-		}
+		/* RFC 6954 group 27 (brainpoolP224r1) is missing from some
+		 * OpenSSL builds' named-curve provider table (e.g. 3.5.8 /
+		 * Fedora), so the daemon constructs the group from explicit
+		 * RFC 5639 s3.x parameters via brainpool_group() instead of
+		 * depending on EC_KEY_new_by_curve_name().  Probe the NID to
+		 * confirm which path was exercised, but the agreement above
+		 * runs through the same eay_brainpool_* the daemon uses
+		 * regardless. */
 		if (dh_value_len(bp[i].dg) != bp[i].vlen) {
 			kat_fail("A9", "%s dh_value_len=%zu (want %zu)",
 				 bp[i].name, dh_value_len(bp[i].dg),
@@ -771,6 +765,11 @@ test_dh_new_groups(void)
 		}
 		nbp++;
 	}
+	if (nbp == (sizeof(bp) / sizeof(bp[0])) &&
+	    EC_GROUP_new_by_curve_name(NID_brainpoolP224r1) == NULL)
+		fprintf(stderr, "KAT A9: NOTE group 27 passed via explicit "
+			"RFC 5639 params (named curve absent in this OpenSSL "
+			"EC provider)\n");
 	if (ok)
 		kat_pass("A9", "RFC 5114 %d/3 (MODP-POS) and RFC 6954 %d/4 "
 			 "(Brainpool) two-party key agreement reach equal "
