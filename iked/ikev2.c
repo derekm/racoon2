@@ -3398,6 +3398,14 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 					   "failed; staying in EAP\n");
 			}
 			rc_vfree(succ);
+		} else {
+			/* do not open a new RADIUS round: the relay is finished,
+			 * so only the (already sent) Success may answer the peer.
+			 * A build failure here means OOM - log so a persistent
+			 * failure is not mistaken for a hung exchange. */
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				   "EAP: recovery could not build EAP-Success "
+				   "(OOM); staying in EAP\n");
 		}
 		return;
 	}
