@@ -47,7 +47,9 @@
  * after resume returns; we do not).  secret is the round's deep-copied shared
  * secret.  On CONTINUE, *out_eap is set to a new vchar the caller transmits to
  * the client and frees; on SUCCESS, ike_sa->eap_msk holds a 64-octet MSK
- * (replacing any prior) and the relay is finished.
+ * (replacing any prior), the relay is finished, and *out_eap MAY hold the
+ * server's EAP-Message (e.g. the EAP-Success forwarded from the Accept, which
+ * the caller chooses whether to forward and must free either way).
  */
 enum ikev2_eap_drive_result
 ikev2_eap_drive_advance(struct ikev2_sa *ike_sa,

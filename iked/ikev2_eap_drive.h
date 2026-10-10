@@ -20,7 +20,11 @@ struct ikev2_eap_relay;
 /* Outcome of driving one round. */
 enum ikev2_eap_drive_result {
 	IKEV2_EAP_DRIVE_CONTINUE = 0,	/* *out_eap is the next EAP Request */
-	IKEV2_EAP_DRIVE_SUCCESS,	/* ike_sa->eap_msk set (64 octets) */
+	IKEV2_EAP_DRIVE_SUCCESS,	/* ike_sa->eap_msk set (64 octets);
+					   * *out_eap MAY be set to the
+					   * server's EAP-Message (e.g. an
+					   * EAP-Success forwarded from the
+					   * Accept) - caller must free it */
 	IKEV2_EAP_DRIVE_FAILURE,	/* Access-Reject */
 	IKEV2_EAP_DRIVE_ERROR		/* transport error / malformed / no SA */
 };

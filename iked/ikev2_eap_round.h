@@ -106,8 +106,9 @@ typedef void (*ikev2_eap_round_resume_t)(struct ikev2_eap_round *r, int rc);
  * ike_sa->eap_round_pending (EAP's own pin, orthogonal to the DH/rekey
  * crypto_pending) is set here and cleared in done() on the SA found by
  * serial - even for a DYING/DEAD SA, so the periodic task can reap it.
- * eap_round_pending is a boolean: submit FAILS (returns -1) if it is already set
- * (an EAP round already in flight on this SA).  A concurrent DH/rekey job
+ * eap_round_pending is a boolean: submit returns 1 if it is already set
+ * (an EAP round already in flight on this SA) - the caller must drop the
+ * duplicate, not abort.  A concurrent DH/rekey job
  * pins crypto_pending, its own field, so EAP and DH/rekey can be in flight
  * together without one done() releasing the other's pin.  For an SA that
  * disappears before done() runs there is no pin to clear (nothing is set on
