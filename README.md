@@ -192,6 +192,10 @@ Currently, the system supports the following specifications:
 	Internet Key Exchange (IKEv2) Protocol
 	RFC 4306, Internet Key Exchange (IKEv2) Protocol
 	RFC 7296, Internet Key Exchange Protocol Version 2 (IKEv2)
+	RFC 5998, An Extension for EAP-Only Authentication in IKEv2
+	          (responder-side EAP; RFC 7296 s2.16 state machine, EAP
+	          relay to an external RADIUS server, RFC 5216/3079 MSK
+	          derivation, responder CERT+AUTH; RFC 7296 s2.15 AUTH)
 	RFC 4307, Cryptographic Algorithms for Use
 	          in the Internet Key Exchange Version 2 (IKEv2)
 	RFC 4718, IKEv2 Clarifications and Implementation Guidelines
@@ -235,9 +239,12 @@ Currently, the system supports the following specifications:
 	          for Internet Key Exchange (IKE)
 	RFC 2367, PF_KEY Key Management API, Version 2
 
-	Not in this tree: RFC 5723 session resumption,
-	IKEv1 XAuth/mode-config (ENABLE_HYBRID scaffolding only),
+	Not in this tree: IKEv1 XAuth/mode-config (ENABLE_HYBRID scaffolding only),
 	ADDKE rounds 2+.
+
+	RFC 5723 (IKEv2 Session Resumption) is partially in this tree: the
+	responder ticket-by-value codec and the s5.1 resumed key derivation
+	(IKE_SESSION_RESUME ticket issuance / resumption exchange not yet wired).
 
 
 The system provides three daemons: iked, kinkd and spmd.

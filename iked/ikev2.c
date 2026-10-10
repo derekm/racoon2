@@ -170,8 +170,17 @@ IKEV2INPUT ikev2_input_dispatch[] = {
 	ikev2_dead_recv, /* no state 10 without INTERMEDIATE: unreachable slot */
 #endif
 	responder_ike_sa_auth_eap_final_recv, /* Responder EAP [AUTH]-only final
-							(RFC 5998) */
+						(RFC 5998) */
 };
+
+/* The dispatch array is indexed by IKEV2_STATE_* value.  The enum uses
+ * explicit values with a gap (10 exists only under WITH_INTERMEDIATE), so
+ * the only safe invariant is that the array is large enough for the largest
+ * state: a future state added to ikev2_state without growing this array must
+ * fail the build here (the runtime assert at the dispatch site is a second
+ * net). */
+_Static_assert(ARRAYLEN(ikev2_input_dispatch) > IKEV2_STATE_RES_IKE_AUTH_EAP_FINAL,
+    "ikev2_input_dispatch must cover IKEV2_STATE_RES_IKE_AUTH_EAP_FINAL");
 
 static void informational_responder_recv(struct ikev2_sa *, rc_vchar_t *,
 					 struct sockaddr *, struct sockaddr *);

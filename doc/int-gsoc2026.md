@@ -280,7 +280,11 @@ workstream and never conflict with the "Do not" list.
 
 ## Later
 
-- IKEv2 EAP-MSCHAPv2 + RADIUS.
+- ~~IKEv2 EAP-MSCHAPv2 + RADIUS~~ — **DONE (2026-10-10)**. Responder-side EAP
+  (RFC 7296 s2.16 state machine, RFC 5998 EAP-only, external RADIUS relay,
+  RFC 5216/3079 MSK, responder CERT+AUTH); see `doc/eap-design.md` and the
+  box-gated `i2ieap-mschapv2` matrix row.  Initiator-role EAP and an
+  in-process EAP method stack are NOT implemented (RADIUS-only backend).
 - **ASan/UBSan + valgrind over the Linux netns matrix — DONE (2026-09-28).** Box
   runner `r2-memcheck-run.sh` (R2_SAN asan,ubsan; R2_VG units; R2_VG_MATRIX over
   daemon shims) with all 11 unit binaries + full 7-row matrix genuinely valgrind-
