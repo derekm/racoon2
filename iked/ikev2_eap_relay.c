@@ -98,9 +98,10 @@ ikev2_eap_relay_consume(struct ikev2_eap_relay *relay,
 		break;
 
 	case IKEV2_RADIUS_CODE_ACCESS_ACCEPT:
-		/* the MSK (RFC 3079 s3.3 / [MS-CHAP] 3.1.5.1) is the AUTH
-		 * seed.  It must key off the Request Authenticator that drew
-		 * this Accept; ikev2_radius_verify_response captured it in
+		/* the MSK (per-method: RFC 3079 s3.3 for EAP-MSCHAPv2,
+		 * RFC 5216 s2.3 for EAP-TLS) is the AUTH seed.  It must
+		 * key off the Request Authenticator that drew this Accept;
+		 * ikev2_radius_verify_response captured it in
 		 * resp->req_auth. */
 		*out_msk = ikev2_radius_msk(resp, resp->req_auth, (rc_vchar_t *)secret);
 		if (!*out_msk) {

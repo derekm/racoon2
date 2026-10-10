@@ -628,7 +628,6 @@ ikev2_radius_msk(struct ikev2_radius_response *resp,
 {
 	unsigned i;
 	rc_vchar_t *recv = NULL, *send = NULL, *msk = NULL;
-	uint8_t zero32[32];
 
 	if (!resp || !secret)
 		return NULL;
@@ -637,10 +636,11 @@ ikev2_radius_msk(struct ikev2_radius_response *resp,
 		return NULL;
 
 	/* Walk every Microsoft VSA and grab the Recv-Key (17) and the
-	 * Send-Key (16).  The EAP-MSCHAPv2 MSK is 64 octets:
-	 *     MSK = MasterReceiveKey || MasterSendKey || 32 zero octets
-	 * (RFC 3079 s3.3 / [MS-CHAP] 3.1.5.1), where the RADIUS attributes
-	 * carry those two 16-octet master keys.  Both must decrypt. */
+	 * Send-Key (16).  The MSK is the concatenation of the two MPPE
+	 * master keys, zero-padded to 64 octets.  The key size is
+	 * method-dependent - 16 octets for EAP-MSCHAPv2 (RFC 3079 s3.3),
+	 * 32 for EAP-TLS (RFC 5216 s2.3) - the assembly below accepts
+	 * only those, so both must decrypt here. */
 	for (i = 0; i < resp->nattrs; i++) {
 		const uint8_t *v;
 		size_t vlen;
@@ -684,23 +684,36 @@ ikev2_radius_msk(struct ikev2_radius_response *resp,
 	if (!recv || !send)
 		goto done;
 
-	memset(zero32, 0, sizeof(zero32));
-	/* EAP-MSCHAPv2 master keys are 16 octets (RFC 3079 s3.3); truncate
-	 * any longer attribute to the first 16, per RFC 2548 implementation
-	 * note ("the RADIUS client is responsible for truncation"). */
+	/* The MSK is the concatenation of the two MPPE master keys,
+	 * zero-padded to 64 octets.  The per-method key size is an
+	 * on-the-wire contract, so reject anything we do not know rather
+	 * than silently clamp (a wrong split already surfaced late as
+	 * "verify result=-1" once):
+	 *   - EAP-MSCHAPv2 (RFC 3079 s3.3): two 16-octet master keys, so
+	 *     MSK = MasterReceiveKey(16) || MasterSendKey(16) || 32 zero
+	 *     octets.  This is the shape the earlier hard-coded 16/16/32
+	 *     code expressed.
+	 *   - EAP-TLS (RFC 5216 s2.3): the 64-octet TLS PRF MSK is carried
+	 *     as two 32-octet keys, so MSK = RecvKey(32)||SendKey(32) with
+	 *     no zero padding left over.
+	 * RFC 2548 s2.4.2/2.4.3 define the MPPE attribute wrap (the
+	 * Request-Authenticator-driven MD5-XOR key schedule that
+	 * radius_decrypt_mppe already talks), not the IKEv2 MSK layout;
+	 * the layout above is per EAP method. */
+	if (recv->l != 16 && recv->l != 32)
+		goto done;
+	if (send->l != 16 && send->l != 32)
+		goto done;
+	if (recv->l != send->l)
+		goto done;
 	{
-		size_t rl = recv->l < 16 ? recv->l : 16;
-		size_t sl2 = send->l < 16 ? send->l : 16;
+		size_t rl = recv->l, sl2 = send->l;
 		msk = rc_vmalloc(64);
 		if (!msk)
 			goto done;
+		memset((uint8_t *)msk->v, 0, 64);
 		memcpy((uint8_t *)msk->v, recv->v, rl);
-		if (rl < 16)
-			memset((uint8_t *)msk->v + rl, 0, 16 - rl);
-		memcpy((uint8_t *)msk->v + 16, send->v, sl2);
-		if (sl2 < 16)
-			memset((uint8_t *)msk->v + 16 + sl2, 0, 16 - sl2);
-		memcpy((uint8_t *)msk->v + 32, zero32, 32);
+		memcpy((uint8_t *)msk->v + rl, send->v, sl2);
 		msk->l = 64;
 	}
 

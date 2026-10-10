@@ -268,7 +268,64 @@ main(void)
 		free(relay3);
 	}
 
-	/* dispose the SA (frees eap_msk + the attached relay per
+		/* ---- 4. EAP-TLS Accept (two 32-octet keys) -> MSK = Recv||Send
+	 * (full 64, no zero pad).  Fresh SA + relay: case 2 already
+	 * finished its relay.  Locks the DRIVE path (not just the radius
+	 * helper) for the 32-octet shape so a regression that mishandles
+	 * EAP-TLS MPPE keys but keeps the radius unit test green is
+	 * caught here. */
+	{
+		struct ikev2_sa *sa4;
+		struct ikev2_eap_relay *relay4;
+		uint8_t recv[32], send[32], ev_r[64], ev_s[64], vsa[200];
+		size_t el_r, el_s, off = 0;
+		struct relattr aa[1];
+		struct ikev2_radius_response *r;
+		sa4 = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+		if (!sa4) return 2;
+		relay4 = calloc(1, sizeof(*relay4));
+		if (!relay4) return 2;
+		{
+			rc_vchar_t *opener = ikev2_eap_relay_start(relay4, 9);
+			if (!opener) return 2;
+			rc_vfree(opener);
+		}
+		sa4->eap_relay = relay4;
+		for (i = 0; i < 32; i++) { recv[i]=0xc0+i; send[i]=0x40+i; }
+		el_r = mppe_encrypt(recv, 32, req_auth, secret.v, secret.l, ev_r);
+		el_s = mppe_encrypt(send, 32, req_auth, secret.v, secret.l, ev_s);
+		vsa[0]=0;vsa[1]=0;vsa[2]=1;vsa[3]=0x37;	/* 311 BE */
+		off = 4;
+		vsa[off++]=VSA_RECV; vsa[off++]=(uint8_t)(2+el_r);
+		memcpy(vsa+off, ev_r, el_r); off += el_r;
+		vsa[off++]=VSA_SEND; vsa[off++]=(uint8_t)(2+el_s);
+		memcpy(vsa+off, ev_s, el_s); off += el_s;
+		aa[0].type = ATTR_VSA; aa[0].v = vsa; aa[0].l = off;
+		r = mkresp(ACCEPT, req_auth, 1, aa);
+		out_eap = NULL;
+		dr = ikev2_eap_drive_advance(sa4, relay4, r, &secret, &out_eap);
+		if (dr != IKEV2_EAP_DRIVE_SUCCESS || out_eap) {
+			printf("eapdrivetest: FAIL 4 EAP-TLS Accept->SUCCESS (res=%d)\n", dr);
+			fails++;
+		} else if (!sa4->eap_msk || sa4->eap_msk->l != 64) {
+			printf("eapdrivetest: FAIL 4 EAP-TLS MSK not stored/length\n");
+			fails++;
+		} else if (memcmp(sa4->eap_msk->v, recv, 32) != 0 ||
+			   memcmp((uint8_t *)sa4->eap_msk->v + 32, send, 32) != 0) {
+			/* full 64: no zero tail for 32+32 */
+			printf("eapdrivetest: FAIL 4 MSK != Recv(32)||Send(32)\n");
+			fails++;
+		} else {
+			int allz = 0;
+			(void)allz; /* no zero pad expected for 32+32 */
+			printf("eapdrivetest: PASS 4 EAP-TLS MSK = Recv(32)||Send(32) on SA\n");
+		}
+		if (out_eap) rc_vfree(out_eap);
+		fresp(r);
+		ikev2_dispose_sa(sa4);
+	}
+
+/* dispose the SA (frees eap_msk + the attached relay per
 	 * ike_sa.c dispose: ikev2_eap_relay_free + racoon_free(eap_relay)) */
 	ikev2_dispose_sa(sa);
 
