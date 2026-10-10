@@ -3067,11 +3067,23 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				goto duplicate;
 			ts_r = p;
 			break;
-		case IKEV2_PAYLOAD_NOTIFY:
+		case IKEV2_PAYLOAD_NOTIFY: {
+			struct ikev2payl_notify *n = (struct ikev2payl_notify *)p;
 			TRACE((PLOGLOC, "received notify type %s\n",
-			       ikev2_notify_type_str(get_notify_type((struct ikev2payl_notify *)p))));
+			       ikev2_notify_type_str(get_notify_type(n))));
+			/* RFC 5998 s3: an EAP client that does not want the
+			 * responder to authenticate with its public-key AUTH/CERT
+			 * sends N(EAP_ONLY_AUTHENTICATION) (16417) in the first
+			 * IKE_AUTH (message 3).  Record it so the EAP responder
+			 * omits CERT+AUTH from msg 4 (honored only on an eap
+			 * remote; the EAP-only path recomputes the responder AUTH
+			 * from the MSK instead). */
+			if (get_notify_type(n) == IKEV2_EAP_ONLY_AUTHENTICATION &&
+			    ikev2_eap_remote(ike_sa))
+				ike_sa->eap_only = 1;
 			/* process later */
 			break;
+		}
 		case IKEV2_PAYLOAD_VENDOR_ID:
 			/* A Vendor ID payload may be sent as part of any message. */
 			isakmp_log(ike_sa, local, remote, msg,
@@ -4331,8 +4343,12 @@ ikev2_responder_eap_auth_send(struct ikev2_sa *ike_sa, uint32_t message_id,
 	ikev2_payloads_init(&payl);
 
 	rmethod = ikev2_eap_responder_method(ike_sa);
-	if (rmethod == 0) {
-		/* EAP-only responder: this first round is just IDr + EAP. */
+	if (rmethod == 0 || ike_sa->eap_only) {
+		/* EAP-only responder: this first round is just IDr + EAP.
+		 * Also when the peer sent N(EAP_ONLY_AUTHENTICATION) (16417,
+		 * RFC 5998 s3): it opted out of responder public-key auth, so
+		 * omit CERT+AUTH from msg 4 even though a signature method is
+		 * configured; the responder AUTH comes from the EAP MSK. */
 		ikev2_payloads_destroy(&payl);
 		return ikev2_responder_eap_send(ike_sa, message_id, eap_req);
 	}
