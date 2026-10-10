@@ -369,6 +369,9 @@ struct ikev2_sa {
 	void *eap_relay;	/* struct ikev2_eap_relay *, per-SE */
 	rc_vchar_t *eap_msk;	/* 64-octet EAP MSK (MSCHAPv2 or TLS), AUTH seed */
 	uint8_t eap_rid;	/* running RADIUS Identifier for EAP rounds */
+	uint8_t eap_only;	/* peer sent N(EAP_ONLY_AUTHENTICATION) (16417)
+				   in first IKE_AUTH: honor RFC 5998 by omitting the
+				   responder CERT+AUTH from msg 4 */
 	uint32_t eap_message_id;	/* msgid of the in-flight peer EAP-Response
 					   IKE_AUTH, echoed in our EAP response */
 	char *eap_user;		/* EAP Identity string (owned, NULL until known);
