@@ -526,6 +526,33 @@ test_dh_xlen_modp(void)
 		kat_fail("A9", "oakley_dhinit failed");
 		return;
 	}
+	/* RFC 8031 groups 31/32: the daemon dhgroup init must size the
+	 * curve structs and dh_value_len must return the raw curve length
+	 * (32/56), NOT 2*l like the P-curve ECP groups. */
+	if (dh_value_len(&dh_curve25519) != 32 ||
+	    dh_value_len(&dh_curve448) != 56 ||
+	    dh_curve25519.prime->l != 32 || dh_curve448.prime->l != 56) {
+		kat_fail("A9", "RFC 8031 dh_value_len: curve25519=%zu curve448=%zu (want 32/56)",
+			 dh_value_len(&dh_curve25519), dh_value_len(&dh_curve448));
+		return;
+	}
+	{
+		rc_vchar_t *cp32 = NULL, *cs32 = NULL, *cp56 = NULL, *cs56 = NULL;
+		if (eay_xcurve_generate(32, &cp32, &cs32) < 0 ||
+		    eay_xcurve_generate(56, &cp56, &cs56) < 0 ||
+		    cp32->l != 32 || cs32->l != 32 ||
+		    cp56->l != 56 || cs56->l != 56) {
+			kat_fail("A9", "RFC 8031 xcurve keygen length failed");
+			goto out_curve;
+		}
+		kat_pass("A9", "RFC 8031 dh_value_len(curve25519)=32 dh_value_len(curve448)=56; "
+			 "X25519/X448 keygen -> 32/56-byte pub+priv");
+out_curve:
+		if (cp32) rc_vfree(cp32);
+		if (cs32) rc_vfree(cs32);
+		if (cp56) rc_vfree(cp56);
+		if (cs56) rc_vfree(cs56);
+	}
 	for (k = 0; k < K; k++) {
 		if (eay_dh_generate(dh_modp2048.prime, dh_modp2048.gen1,
 				    dh_modp2048.gen2, &pub, &priv) < 0 || !priv) {

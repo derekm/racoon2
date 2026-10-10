@@ -4528,6 +4528,133 @@ eay_ecp_compute(size_t field_len, rc_vchar_t *pub, rc_vchar_t *priv,
 	return error;
 }
 
+
+/* RFC 8031 Diffie-Hellman groups 31 (X25519) and 32 (X448).  The public
+ * value and derived shared secret are the raw 32/56-octet curve output
+ * (NOT x||y like the P-curve ECP groups), so these ride on their own
+ * DHGROUP_TYPE_CURVE dispatch, which makes dh_value_len() return the
+ * curve length rather than 2*l.  OpenSSL EVP handles RFC 7748 scalar
+ * clamping; derive() refuses low-order peer points, and we additionally
+ * fail closed on an all-zero shared secret below.
+ */
+static int
+xcurve_evp_type(size_t len)
+{
+	switch (len) {
+	case 32:	/* X25519 */
+		return EVP_PKEY_X25519;
+	case 56:	/* X448 */
+		return EVP_PKEY_X448;
+	default:
+		return 0;
+	}
+}
+
+int
+eay_xcurve_generate(size_t len, rc_vchar_t **pub, rc_vchar_t **priv)
+{
+	EVP_PKEY_CTX *kctx = NULL;
+	EVP_PKEY *pkey = NULL;
+	size_t publen = len, privlen = len;
+	int type;
+	int error = -1;
+
+	if (!pub || !priv)
+		return -1;
+	*pub = *priv = NULL;
+	type = xcurve_evp_type(len);
+	if (type == 0)
+		return -1;
+	if ((kctx = EVP_PKEY_CTX_new_id(type, NULL)) == NULL ||
+	    EVP_PKEY_keygen_init(kctx) != 1 ||
+	    EVP_PKEY_keygen(kctx, &pkey) != 1)
+		goto end;
+	*pub = rc_vmalloc(len);
+	*priv = rc_vmalloc(len);
+	if (!*pub || !*priv)
+		goto end;
+	if (EVP_PKEY_get_raw_public_key(pkey, (unsigned char *)(*pub)->v,
+	    &publen) != 1 || publen != len ||
+	    EVP_PKEY_get_raw_private_key(pkey, (unsigned char *)(*priv)->v,
+	    &privlen) != 1 || privlen != len)
+		goto end;
+	error = 0;
+      end:
+	if (error) {
+		if (*pub) {
+			rc_vfree(*pub);
+			*pub = NULL;
+		}
+		if (*priv) {
+			rc_vfree(*priv);
+			*priv = NULL;
+		}
+	}
+	if (pkey)
+		EVP_PKEY_free(pkey);
+	if (kctx)
+		EVP_PKEY_CTX_free(kctx);
+	return error;
+}
+
+int
+eay_xcurve_compute(size_t len, rc_vchar_t *pub, rc_vchar_t *priv,
+    rc_vchar_t *pub_p, rc_vchar_t **key)
+{
+	EVP_PKEY *ours = NULL, *peer = NULL;
+	EVP_PKEY_CTX *dctx = NULL;
+	size_t outlen = len;
+	int type;
+	int error = -1;
+	size_t i;
+	const unsigned char *p;
+
+	(void)pub;
+	if (!priv || priv->l != len || !pub_p || pub_p->l != len || !key)
+		return -1;
+	type = xcurve_evp_type(len);
+	if (type == 0)
+		return -1;
+	if (!*key && (*key = rc_vmalloc(len)) == NULL)
+		return -1;
+	/* RFC 7748: reject a degenerate (all-zero) shared secret, which only
+	 * occurs for a low-order peer public value.  OpenSSL's X25519/X448
+	 * derive already refuses these, but we check explicitly so a
+	 * malformed peer KE fails closed rather than silently. */
+	if ((peer = EVP_PKEY_new_raw_public_key(type, NULL,
+	    (unsigned char *)pub_p->v, pub_p->l)) == NULL ||
+	    (ours = EVP_PKEY_new_raw_private_key(type, NULL,
+	    (unsigned char *)priv->v, priv->l)) == NULL)
+		goto end;
+	if ((dctx = EVP_PKEY_CTX_new(ours, NULL)) == NULL ||
+	    EVP_PKEY_derive_init(dctx) != 1 ||
+	    EVP_PKEY_derive_set_peer(dctx, peer) != 1)
+		goto end;
+	if (EVP_PKEY_derive(dctx, (unsigned char *)(*key)->v, &outlen) != 1 ||
+	    outlen != len)
+		goto end;
+	p = (const unsigned char *)(*key)->v;
+	for (i = 0; i < len; ++i) {
+		if (p[i] != 0)
+			break;
+	}
+	if (i == len) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "xcurve shared secret is all-zero (RFC 7748 low-order peer point)\n");
+		goto end;
+	}
+	(*key)->l = len;
+	error = 0;
+      end:
+	if (peer)
+		EVP_PKEY_free(peer);
+	if (ours)
+		EVP_PKEY_free(ours);
+	if (dctx)
+		EVP_PKEY_CTX_free(dctx);
+	return error;
+}
+
 int
 eay_v2bn(BIGNUM **bn, rc_vchar_t *var)
 {

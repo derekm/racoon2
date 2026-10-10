@@ -68,6 +68,8 @@ struct dhgroup dh_modp8192;
 struct dhgroup dh_ecp256;
 struct dhgroup dh_ecp384;
 struct dhgroup dh_ecp521;
+struct dhgroup dh_curve25519;
+struct dhgroup dh_curve448;
 
 int
 oakley_dhinit(void)
@@ -96,6 +98,16 @@ oakley_dhinit(void)
 	dh_ecp521.prime = rc_vmalloc(66);
 	if (dh_ecp521.prime)
 		memset(dh_ecp521.prime->v, 0, 66);
+	memset(&dh_curve25519, 0, sizeof(dh_curve25519));
+	dh_curve25519.type = DHGROUP_TYPE_CURVE;
+	dh_curve25519.prime = rc_vmalloc(32);
+	if (dh_curve25519.prime)
+		memset(dh_curve25519.prime->v, 0, 32);
+	memset(&dh_curve448, 0, sizeof(dh_curve448));
+	dh_curve448.type = DHGROUP_TYPE_CURVE;
+	dh_curve448.prime = rc_vmalloc(56);
+	if (dh_curve448.prime)
+		memset(dh_curve448.prime->v, 0, 56);
 
 	return 0;
 }
@@ -181,6 +193,13 @@ oakley_dh_compute(const struct dhgroup *dh, rc_vchar_t *pub, rc_vchar_t *priv,
 			return -1;
 		}
 		break;
+	case DHGROUP_TYPE_CURVE:
+		if (eay_xcurve_compute(dh->prime->l, pub, priv, pub_p, gxy) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "failed to compute xcurve dh value.\n");
+			return -1;
+		}
+		break;
 	case OAKLEY_ATTR_GRP_TYPE_EC2N:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "dh type %d isn't supported.\n", dh->type);
@@ -230,6 +249,13 @@ oakley_dh_generate(const struct dhgroup *dh, rc_vchar_t **pub,
 			return -1;
 		}
 		return 0;
+	case DHGROUP_TYPE_CURVE:
+		if (eay_xcurve_generate(dh->prime->l, pub, priv) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "failed to generate xcurve dh value.\n");
+			return -1;
+		}
+		break;
 	case OAKLEY_ATTR_GRP_TYPE_EC2N:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "dh type %d isn't supported.\n", dh->type);

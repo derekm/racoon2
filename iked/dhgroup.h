@@ -190,6 +190,7 @@
 	"60C980DD 98EDD3DF FFFFFFFF FFFFFFFF"
 
 #define	DHGROUP_TYPE_MODP	1
+#define	DHGROUP_TYPE_CURVE	4
 #ifdef notyet
 #define	DHGROUP_TYPE_ECP	2
 #define	DHGROUP_TYPE_EC2N	3
@@ -216,5 +217,7 @@ extern struct dhgroup dh_modp8192;
 extern struct dhgroup dh_ecp256;
 extern struct dhgroup dh_ecp384;
 extern struct dhgroup dh_ecp521;
+extern struct dhgroup dh_curve25519;
+extern struct dhgroup dh_curve448;
 
 size_t dh_value_len(struct dhgroup *dhgrp);
