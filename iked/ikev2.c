@@ -3163,6 +3163,45 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				    rc_vnew((uint8_t *)ts_r,
 					    get_payload_length(ts_r));
 			}
+			/* RFC 7296 s2.16 auth checks peers_id like the AUTH path
+			 * below: a road-warrior remote names the identities it
+			 * accepts, and EAP must not start for an IDi the remote
+			 * is configured to refuse.  Apply the same verify_id gate. */
+			if (ikev2_verify_id(ike_sa->rmconf) == RCT_BOOL_ON) {
+				rc_type rc_id_type;
+				struct rc_idlist *peers_id;
+				rc_vchar_t *id_data =
+				    ikev2_id2rct_id(id_i, &rc_id_type);
+				if (!id_data) {
+					rc_vfree(identity_req);
+					ikev2_eap_relay_free(relay);
+					racoon_free(relay);
+					goto fail_nomem;
+				}
+				for (peers_id = ikev2_peers_id(ike_sa->rmconf);
+				     peers_id; peers_id = peers_id->next) {
+					if (ike_compare_id(rc_id_type, id_data, peers_id) == 0)
+						break;
+				}
+				rc_vfree(id_data);
+				if (!peers_id) {
+					isakmp_log(ike_sa, local, remote, msg,
+						   PLOG_PROTOERR, PLOGLOC,
+						   "received ID_I (type %s) does not match "
+						   "peers id (EAP)\n",
+						   rct2str(rc_id_type));
+					rc_vfree(identity_req);
+					ikev2_eap_relay_free(relay);
+					racoon_free(relay);
+					ike_sa->eap_relay = NULL;
+					++isakmpstat.authentication_failed;
+					/* the AUTH path replies AUTHENTICATION_FAILED; EAP
+					 * has no AUTH to fail yet, so abort the IKE exchange. */
+					ikev2_abort(ike_sa, ECONNREFUSED);
+					return;
+				}
+			}
+
 			/* park in the EAP continuation state and send the
 			 * EAP-Identity request (first IKE_AUTH response: the
 			 * responder authenticates itself here under RFC 7296
