@@ -5443,12 +5443,40 @@ ikev2_eap_responder_method(struct ikev2_sa *sa)
 				return IKEV2_AUTH_DS;
 			return IKEV2_AUTH_RSASIG;
 		case RCT_ALG_ECDSA:
-			return IKEV2_AUTH_ECDSA_SHA256_P256;
+			/* RFC 4754: the method number reflects the curve of the
+			 * responder private key (P-256 -> 9, P-384 -> 10, P-521 -> 11),
+			 * mirroring ikev2_auth_method().  Do NOT hardcode P-256: a
+			 * configured P-384/P-521 responder cert must sign the matching
+			 * method. */
+			{
+				rc_vchar_t *privkey = ikev2_private_key(sa, sa->id_i);
+				int bits;
+				if (!privkey) {
+					isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+					   "failed to get private key\n");
+					return 0;
+				}
+				bits = eay_ecdsa_curve_bits(privkey);
+				rc_vfreez(privkey);
+				switch (bits) {
+				case 256:
+					return IKEV2_AUTH_ECDSA_SHA256_P256;
+				case 384:
+					return IKEV2_AUTH_ECDSA_SHA384_P384;
+				case 521:
+					return IKEV2_AUTH_ECDSA_SHA512_P521;
+				default:
+					isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+					   "unsupported ECDSA curve (%d bits)\n", bits);
+					return 0;
+				}
+			}
 		case RCT_ALG_DSS:
 			return IKEV2_AUTH_DSS;
 		default:
 			return 0;
 		}
+
 	}
 	return 0;
 }
