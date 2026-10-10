@@ -3706,8 +3706,23 @@ responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *r, int rc)
 		return;
 	case IKEV2_EAP_DRIVE_FAILURE:
 	default:
+		/* RFC 3748 s4.2 + RFC 7296 s2.16: answer the outstanding
+		 * IKE_AUTH with EAP-Failure (Code=4) so the peer's
+		 * retransmission is not met with silence, then tear the
+		 * exchange down.  The identifier echoes the peer EAP
+		 * Response id we proxied (eap_last_peer_id). */
 		isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
-			   "EAP: RADIUS Reject/error (dr=%d)\n", dr);
+			   "EAP: RADIUS Reject/error (dr=%d); sending "
+			   "EAP-Failure\n", dr);
+		{
+			rc_vchar_t *fail = ikev2_eap_build_failure(
+			    ike_sa->eap_last_peer_id);
+			if (fail) {
+				ikev2_responder_eap_send(
+				    ike_sa, ike_sa->eap_message_id, fail);
+				rc_vfree(fail);
+			}
+		}
 		if (out_eap) rc_vfree(out_eap);
 		ikev2_abort(ike_sa, EACCES);
 		return;

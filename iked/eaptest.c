@@ -118,6 +118,20 @@ main(void)
 			rc_vfree(enc);
 	}
 
+	/* EAP-Failure builder: Code=4, echoed id, Len=4, no Type octet. */
+	{
+		rc_vchar_t *enc = ikev2_eap_build_failure(0x42);
+		u_int8_t want[] = { 0x04, 0x42, 0x00, 0x04 };
+		if (!enc || enc->l != 4 || memcmp(enc->v, want, 4) != 0) {
+			printf("eaptest: FAIL build_failure\n");
+			fails++;
+		} else {
+			printf("eaptest: PASS build_failure (id=0x42, len=4)\n");
+		}
+		if (enc)
+			rc_vfree(enc);
+	}
+
 	/* identity extraction: "joe" from a Response/Identity, and the
 	 * empty / non-identity / short-Length-borderline rejections. */
 	{
