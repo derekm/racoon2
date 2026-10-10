@@ -154,6 +154,13 @@ connections {
 		local {
 			auth = eap
 			eap_id = eaptest
+			# present an IKEv2 IDi that matches the responder's
+			# peers_id (fqdn "eaptest"); otherwise charon sends its IP
+			# (IDT_IPADDR) and the responder's peers_id check (RFC
+			# 7296 s2.16 enforcement) correctly refuses it.  A bare
+			# 'eaptest' (no '@') is inferred as an FQDN-type identity
+			# by strongSwan, matching peers_id fqdn.
+			id = eaptest
 		}
 		remote {
 			auth = pubkey

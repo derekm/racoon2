@@ -4343,12 +4343,19 @@ ikev2_responder_eap_auth_send(struct ikev2_sa *ike_sa, uint32_t message_id,
 	ikev2_payloads_init(&payl);
 
 	rmethod = ikev2_eap_responder_method(ike_sa);
-	if (rmethod == 0 || ike_sa->eap_only) {
+	if (rmethod == 0) {
 		/* EAP-only responder: this first round is just IDr + EAP.
-		 * Also when the peer sent N(EAP_ONLY_AUTHENTICATION) (16417,
-		 * RFC 5998 s3): it opted out of responder public-key auth, so
-		 * omit CERT+AUTH from msg 4 even though a signature method is
-		 * configured; the responder AUTH comes from the EAP MSK. */
+		 * Even when the peer sent N(EAP_ONLY_AUTHENTICATION) (16417,
+		 * RFC 5998 s3) to request EAP-only auth, a responder that is
+		 * CONFIGURED with a signature method must NOT omit its
+		 * CERT+AUTH here: RFC 5998 s3 says honoring the notify is the
+		 * responder choice, and this responder cannot know the EAP
+		 * method is mutual (EAP-MSCHAPv2, the non-mutual case, must
+		 * keep responder-cert auth).  A signature-configured responder
+		 * ignores the notify and sends CERT+AUTH (RFC 5998 permits);
+		 * only a genuinely EAP-only config (rmethod==0) drops them.
+		 * eap_only is recorded for logging, not honored over a
+		 * configured signature method. */
 		ikev2_payloads_destroy(&payl);
 		return ikev2_responder_eap_send(ike_sa, message_id, eap_req);
 	}
