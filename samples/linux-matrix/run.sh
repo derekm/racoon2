@@ -25,6 +25,7 @@ HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/kinds/i2i_rekey.sh"
 . "$HERE/kinds/i2iinit.sh"
 . "$HERE/kinds/i2ipubkey.sh"
+. "$HERE/kinds/i2ieap.sh"
 . "$HERE/kinds/i2inatt.sh"
 . "$HERE/kinds/i2i_compliance.sh"
 . "$HERE/kinds/i2i_neg.sh"
