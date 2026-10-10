@@ -260,3 +260,11 @@ ikev2_eap_round_sa(struct ikev2_eap_round *r)
 	 * exists so a resume callback that only holds r can confirm the SA. */
 	return r ? r->ike_sa : NULL;
 }
+
+/* the deep-copied shared secret the round carried (valid during resume);
+ * needed by the drive/relay consume path. */
+const rc_vchar_t *
+ikev2_eap_round_secret(struct ikev2_eap_round *r)
+{
+	return r ? &r->secret : NULL;
+}

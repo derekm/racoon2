@@ -107,11 +107,12 @@ enum ikev2_state {
 	IKEV2_STATE_INI_IKE_AUTH_RCVD = 5,
 	IKEV2_STATE_ESTABLISHED = 6,
 	IKEV2_STATE_DYING = 7,
-	IKEV2_STATE_DEAD = 8
+	IKEV2_STATE_DEAD = 8,
+	IKEV2_STATE_RES_IKE_AUTH_EAP = 9
 #ifdef WITH_INTERMEDIATE
-	, IKEV2_STATE_INI_IKE_INTERMEDIATE_SENT = 9
+	, IKEV2_STATE_INI_IKE_INTERMEDIATE_SENT = 10
 #endif
-	/* IKEV2_STATE_EAP  = 9 */
+	/* IKEV2_STATE_EAP  = 11 */
 
 	/* IKEV2_STATE_ESTABLISHED_WAIT_INITIATOR, */
 };
@@ -362,10 +363,11 @@ struct ikev2_sa {
 	 * (ikev2_eap_relay.c) driven by the worker path; eap_msk is the
 	 * 64-octet MSK extracted from the final Access-Accept, substituted
 	 * for the shared secret in the AUTH computation (IKEV2_AUTH_SHARED_KEY
-	 * arm).  Both NULL on a non-EAP SA.  Owned: freed in ike_sa.c
-	 * teardown. */
+	 * arm).  Both NULL on a non-EAP SA.  eap_rid is the running RADIUS
+	 * Identifier across rounds.  Owned: freed in ike_sa.c teardown. */
 	void *eap_relay;	/* struct ikev2_eap_relay *, per-SE */
 	rc_vchar_t *eap_msk;	/* 64-octet EAP-MSCHAPv2 MSK, AUTH seed */
+	uint8_t eap_rid;	/* running RADIUS Identifier for EAP rounds */
 
 	IKEV2_SA_LIST_ENTRY link;
 };

@@ -124,5 +124,6 @@ extern int ikev2_eap_round_submit(
 extern struct ikev2_radius_response *ikev2_eap_round_response(
 	struct ikev2_eap_round *r);
 extern struct ikev2_sa *ikev2_eap_round_sa(struct ikev2_eap_round *r);
+extern const rc_vchar_t *ikev2_eap_round_secret(struct ikev2_eap_round *r);
 
 #endif /* __IKEV2_EAP_ROUND_H_ */
