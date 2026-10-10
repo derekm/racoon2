@@ -3369,6 +3369,24 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 	eapmsg.v = (uint8_t *)(eap + 1);
 	eapmsg.l = get_payload_data_length(eap);
 
+	/* A retransmit of the final EAP-Response after a FAILED EAP-Success
+	 * transmit (or a failed Success build) re-enters here with the MSK
+	 * already stored and the relay finished.  Opening a new RADIUS round
+	 * would hit the relay's finished guard and abort a completed Accept.
+	 * Re-synthesize and re-send Success from the peer id, no new round. */
+	if (ike_sa->eap_msk && ike_sa->eap_msk->l == 64) {
+		rc_vchar_t *succ = ikev2_eap_build_success(
+		    ike_sa->eap_last_peer_id);
+		if (succ) {
+			if (ikev2_responder_eap_send(
+				ike_sa, message_id, succ) == 0)
+				ikev2_update_message_id(
+				    ike_sa, message_id, FALSE);
+			rc_vfree(succ);
+		}
+		return;
+	}
+
 	/* Capture the EAP Identity (first round, Type=1) and carry it as
 	 * RADIUS User-Name so the server can match the account to a stored
 	 * secret (FreeRADIUS files authorize keys on it).  Store once on the
@@ -3548,29 +3566,28 @@ responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *r, int rc)
 	case IKEV2_EAP_DRIVE_SUCCESS:
 		/* MSK now stored on ike_sa->eap_msk.  Send EAP-Success to the
 		 * client (payload 48, code 3) so it knows the method
-		 * succeeded, then park and await the peer's final MSK-AUTH.
-		 *
-		 * NOTE the transition below is a PARK, not a completion: the
-		 * peer's RFC 5998 [AUTH]-only final IKE_AUTH carries no IDi,
-		 * so it cannot (yet) be routed through responder_ike_sa_auth_recv0
-		 * (which requires IDi).  Retaining the first IKE_AUTH's child
-		 * offer and completing the SA after MSK-AUTH verification is the
-		 * outstanding work; the code below must NOT be read as a claim
-		 * that RES_IKE_SA_INIT_SENT makes the exchange complete. */
+		 * succeeded, then park in RES_IKE_AUTH_EAP_FINAL and await
+		 * the peer's final RFC 5998 [AUTH]-only IKE_AUTH (carries no
+		 * IDi), which responder_ike_sa_auth_eap_final_recv completes
+		 * from the retained first-IKE_AUTH child offer (ab84fdb). */
 		isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
 			   "EAP: Acceptance, MSK stored (l=%u); sending "
 			   "EAP-Success\n",
 			   ike_sa->eap_msk ? (unsigned)ike_sa->eap_msk->l : 0u);
 		{
 			rc_vchar_t *succ = NULL;
-			/* Only forward the server's own Success packet when it is
-			 * a well-formed EAP-Success (RFC 3748: Code=3, Len>=4) AND
-			 * its Identifier equals the peer EAP-Response id we proxied
-			 * (s4.2).  A non-Success, an over-short buffer, or a
-			 * mismatched id must NOT go on the wire. */
-			if (out_eap && out_eap->l >= 4 &&
+			/* Only forward the server's own Success packet when it
+			 * is a well-formed EAP-Success and its Identifier equals
+			 * the peer EAP-Response id we proxied (RFC 3748 s2/s4.2):
+			 * Code=3, Length field == 4 (Success is exactly 4 octets,
+			 * no trailing attribute bytes) AND buffer length == 4.
+			 * Anything else (non-Success, over-short, trailing data,
+			 * mismatched id) is NOT forwarded - synthesize instead. */
+			if (out_eap && out_eap->l == 4 &&
 			    ((uint8_t *)out_eap->v)[0] == 3 &&
-			    ((uint8_t *)out_eap->v)[1] == ike_sa->eap_last_peer_id)
+			    ((uint8_t *)out_eap->v)[1] == ike_sa->eap_last_peer_id &&
+			    ((uint8_t *)out_eap->v)[2] == 0 &&
+			    ((uint8_t *)out_eap->v)[3] == 4)
 				succ = out_eap;
 			/* Otherwise synthesize a Success echoing that same id -
 			 * never eap_rid (the RADIUS Identifier). */
