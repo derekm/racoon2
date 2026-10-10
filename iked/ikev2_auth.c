@@ -80,8 +80,9 @@ static rc_vchar_t *
 ikev2_auth_shared_secret(struct ikev2_sa *sa)
 {
 	if (sa->eap_msk) {
-		/* EAP-MSCHAPv2 MSK is exactly 64 octets (RFC 3079 s3.3 /
-		 * [MS-CHAP] 3.1.5.1); the PRFs we negotiate are all
+		/* The EAP MSK is always exactly 64 octets for both methods
+		 * (EAP-MSCHAPv2 RFC 3079 s3.3 / [MS-CHAP] 3.1.5.1; EAP-TLS
+		 * RFC 5216 s2.3); the PRFs we negotiate are all
 		 * variable-keylen so the caller's fixed-key length check
 		 * would NOT catch a malformed MSK.  Fail closed. */
 		if (sa->eap_msk->l != 64) {

@@ -636,10 +636,11 @@ ikev2_radius_msk(struct ikev2_radius_response *resp,
 		return NULL;
 
 	/* Walk every Microsoft VSA and grab the Recv-Key (17) and the
-	 * Send-Key (16).  The EAP-MSCHAPv2 MSK is 64 octets:
-	 *     MSK = MasterReceiveKey || MasterSendKey || 32 zero octets
-	 * (RFC 3079 s3.3 / [MS-CHAP] 3.1.5.1), where the RADIUS attributes
-	 * carry those two 16-octet master keys.  Both must decrypt. */
+	 * Send-Key (16).  The MSK is the concatenation of the two MPPE
+	 * master keys, zero-padded to 64 octets (RFC 2548 s2.4.2 / 2.4.3).
+	 * The key size is method-dependent (16 octets for EAP-MSCHAPv2,
+	 * RFC 3079 s3.3; 32 octets for EAP-TLS, RFC 5216 s2.3), so both must
+	 * decrypt here and the cfm assembly below clamps and pads. */
 	for (i = 0; i < resp->nattrs; i++) {
 		const uint8_t *v;
 		size_t vlen;
@@ -684,22 +685,29 @@ ikev2_radius_msk(struct ikev2_radius_response *resp,
 		goto done;
 
 	/* The MSK is the concatenation of the two MPPE master keys,
-	 * zero-padded to 64 octets (RFC 2548 s2.4.2/2.4.3).  The padding
-	 * rule covers both supported EAP methods:
-	 *   - EAP-MSCHAPv2 (RFC 3079 s3.3): keys are 16 octets each, so
+	 * zero-padded to 64 octets.  The per-method key size is an
+	 * on-the-wire contract, so reject anything we do not know rather
+	 * than silently clamp (a wrong split already surfaced late as
+	 * "verify result=-1" once):
+	 *   - EAP-MSCHAPv2 (RFC 3079 s3.3): two 16-octet master keys, so
 	 *     MSK = MasterReceiveKey(16) || MasterSendKey(16) || 32 zero
-	 *     octets.  This is what the earlier hard-coded 16/16/32 shape
-	 *     expressed.
-	 *   - EAP-TLS (RFC 5216 s8.6): keys are 32 octets each, carrying the
-	 *     full 64-octet TLS PRF MSK, so MSK = RecvKey(32)||SendKey(32)
-	 *     with no zero padding left over.
-	 * RFC 2548 says the RADIUS client is responsible for truncating any
-	 * longer attribute; clamp each key to 32 and never overrun 64. */
+	 *     octets.  This is the shape the earlier hard-coded 16/16/32
+	 *     code expressed.
+	 *   - EAP-TLS (RFC 5216 s2.3): the 64-octet TLS PRF MSK is carried
+	 *     as two 32-octet keys, so MSK = RecvKey(32)||SendKey(32) with
+	 *     no zero padding left over.
+	 * RFC 2548 s2.4.2/2.4.3 define the MPPE attribute wrap (the
+	 * Request-Authenticator-driven MD5-XOR key schedule that
+	 * radius_decrypt_mppe already talks), not the IKEv2 MSK layout;
+	 * the layout above is per EAP method. */
+	if (recv->l != 16 && recv->l != 32)
+		goto done;
+	if (send->l != 16 && send->l != 32)
+		goto done;
+	if (recv->l != send->l)
+		goto done;
 	{
-		size_t rl = recv->l < 32 ? recv->l : 32;
-		size_t sl2 = send->l < 32 ? send->l : 32;
-		if (rl + sl2 > 64)
-			sl2 = 64 - rl;	/* defensive; 32+32=64 already */
+		size_t rl = recv->l, sl2 = send->l;
 		msk = rc_vmalloc(64);
 		if (!msk)
 			goto done;

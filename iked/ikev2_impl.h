@@ -367,7 +367,7 @@ struct ikev2_sa {
 	 * arm).  Both NULL on a non-EAP SA.  eap_rid is the running RADIUS
 	 * Identifier across rounds.  Owned: freed in ike_sa.c teardown. */
 	void *eap_relay;	/* struct ikev2_eap_relay *, per-SE */
-	rc_vchar_t *eap_msk;	/* 64-octet EAP-MSCHAPv2 MSK, AUTH seed */
+	rc_vchar_t *eap_msk;	/* 64-octet EAP MSK (MSCHAPv2 or TLS), AUTH seed */
 	uint8_t eap_rid;	/* running RADIUS Identifier for EAP rounds */
 	uint32_t eap_message_id;	/* msgid of the in-flight peer EAP-Response
 					   IKE_AUTH, echoed in our EAP response */

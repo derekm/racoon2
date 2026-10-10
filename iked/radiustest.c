@@ -24,6 +24,8 @@
  *   11. no VSA -> no MSK (NULL).
  *   12. Recv-only (no Send-Key) -> no MSK (both keys required).
  *   13. cleared salt MSB (RFC 2548 s2.4.3) -> decrypt refuses -> no MSK.
+ *   14. EAP-TLS MSK recovered as Recv(32)||Send(32) = 64 octets (RFC 5216
+ *       s2.3), full 64-octet match, no zero tail.
  *
  * Returns 0 iff all pass.
  */
@@ -849,6 +851,101 @@ main(void)
 				fails++;
 			} else
 				printf("radiustest: PASS 13 bad salt -> no MSK\n");
+			ikev2_radius_response_free(resp);
+		}
+	}
+
+	/* ---- 14. EAP-TLS MSK shape: two 32-octet keys -> full 64 ---- */
+	{
+		const uint8_t *req_auth = (const uint8_t *)req->v + 4;
+		uint8_t respbuf[1024];
+		uint8_t attrs[512], *ap;
+		size_t attrsl = 0, total;
+		uint8_t hdr4[4], ra[16];
+		rc_vchar_t resp_raw;
+		struct ikev2_radius_response *resp;
+		rc_vchar_t *got_msk;
+		size_t k;
+
+		/* EAP-TLS carries the 64-octet TLS PRF MSK as two 32-octet
+		 * MS-MPPE keys (RFC 5216 s2.3), so MSK = Recv(32)||Send(32)
+		 * with NO zero tail.  Use distinct salt-leading patterns so
+		 * the expectation is unambiguous. */
+		uint8_t recv[32], send[32], expect_msk[64];
+		for (k = 0; k < sizeof(recv); k++)
+			recv[k] = (uint8_t)(0xd0 + (k & 0x1f));
+		for (k = 0; k < sizeof(send); k++)
+			send[k] = (uint8_t)(0x60 + (k & 0x1f));
+		{
+			uint8_t ev_r[64], ev_s[64];
+			size_t el_r, el_s;
+			el_r = mppe_encrypt(recv, sizeof(recv), req_auth,
+					    (const uint8_t *)secret->v,
+					    secret->l, ev_r);
+			el_s = mppe_encrypt(send, sizeof(send), req_auth,
+					    (const uint8_t *)secret->v,
+					    secret->l, ev_s);
+			ap = attrs;
+			ap[0] = IKEV2_RADIUS_ATTR_VENDOR_SPECIFIC;
+			ap[1] = (uint8_t)(2 + 4 + (2 + el_r) + (2 + el_s));
+			ap[2] = 0; ap[3] = 0; ap[4] = 0x01; ap[5] = 0x37;
+			ap[6] = IKEV2_RADIUS_VSA_MS_MPPE_RECV_KEY;
+			ap[7] = (uint8_t)(2 + el_r);
+			memcpy(ap + 8, ev_r, el_r);
+			ap[8 + el_r] = IKEV2_RADIUS_VSA_MS_MPPE_SEND_KEY;
+			ap[9 + el_r] = (uint8_t)(2 + el_s);
+			memcpy(ap + 10 + el_r, ev_s, el_s);
+			attrsl = 2 + 4 + (2 + el_r) + (2 + el_s);
+		}
+		/* 32-octet recv + send fill the whole MSK; nothing is zero pad */
+		memcpy(expect_msk, recv, sizeof(recv));
+		memcpy(expect_msk + 32, send, sizeof(send));
+
+		{
+			uint8_t *ma = attrs + attrsl;
+			uint8_t scratch[512];
+			size_t sl = attrsl;
+			ma[0] = IKEV2_RADIUS_ATTR_MESSAGE_AUTH;
+			ma[1] = 2 + IKEV2_RADIUS_AUTH_LEN;
+			memset(ma + 2, 0, IKEV2_RADIUS_AUTH_LEN);
+			attrsl += 2 + IKEV2_RADIUS_AUTH_LEN;
+			total = IKEV2_RADIUS_HEADER_LEN + attrsl;
+			respbuf[0] = IKEV2_RADIUS_CODE_ACCESS_ACCEPT;
+			respbuf[1] = id;
+			respbuf[2] = (uint8_t)(total >> 8);
+			respbuf[3] = (uint8_t)(total & 0xff);
+			memset(respbuf + 4, 0, IKEV2_RADIUS_AUTH_LEN);
+			memcpy(respbuf + IKEV2_RADIUS_HEADER_LEN, attrs, attrsl);
+			memcpy(scratch, respbuf, total);
+			msg_auth(scratch, total, req_auth,
+				 (const uint8_t *)secret->v, secret->l,
+				 IKEV2_RADIUS_HEADER_LEN + sl + 2,
+				 respbuf + IKEV2_RADIUS_HEADER_LEN + sl + 2);
+			memcpy(attrs + sl + 2, respbuf + IKEV2_RADIUS_HEADER_LEN + sl + 2,
+			       IKEV2_RADIUS_AUTH_LEN);
+			hdr4[0]=respbuf[0];hdr4[1]=respbuf[1];
+			hdr4[2]=respbuf[2];hdr4[3]=respbuf[3];
+			resp_auth(hdr4, req_auth,
+				  (const uint8_t *)attrs, attrsl,
+				  (const uint8_t *)secret->v, secret->l, ra);
+			memcpy(respbuf + 4, ra, IKEV2_RADIUS_AUTH_LEN);
+		}
+		resp_raw.v = respbuf; resp_raw.l = total;
+		resp = ikev2_radius_verify_response(id, req_auth,
+						    &resp_raw, secret);
+		if (!resp) {
+			printf("radiustest: FAIL EAP-TLS Access-Accept verify\n");
+			fails++;
+		} else {
+			got_msk = ikev2_radius_msk(resp, req_auth, secret);
+			if (!got_msk || got_msk->l != sizeof(expect_msk) ||
+			    memcmp(got_msk->v, expect_msk, sizeof(expect_msk)) != 0) {
+				printf("radiustest: FAIL EAP-TLS MSK not recovered\n");
+				fails++;
+			} else
+				printf("radiustest: PASS 14 EAP-TLS MSK (Recv(32)||Send(32)) recovered\n");
+			if (got_msk)
+				rc_vfree(got_msk);
 			ikev2_radius_response_free(resp);
 		}
 	}
