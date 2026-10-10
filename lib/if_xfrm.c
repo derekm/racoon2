@@ -1303,6 +1303,18 @@ rcpfk_supported_enc(int algtype)
 	    aead_lookup(algtype) != NULL;
 }
 
+/* Read a 64-bit netlink field via memcpy so strict-alignment targets
+ * (sparc64, some ARM, s390x) never fault on a direct deref of the
+ * packed xfrm_usersa_info payload (rdratlos/racoon-ipsec-tools #145
+ * review).  Identical result on x86-64/arm64. */
+static uint64_t
+xr_u64(const void *ptr)
+{
+	uint64_t v;
+	memcpy(&v, ptr, sizeof(v));
+	return v;
+}
+
 static void
 usersa_to_rc(const struct xfrm_usersa_info *sa, struct rcpfk_msg *rc)
 {
@@ -1311,18 +1323,18 @@ usersa_to_rc(const struct xfrm_usersa_info *sa, struct rcpfk_msg *rc)
 	rc->samode = x_to_mode(sa->mode);
 	rc->reqid = sa->reqid;
 	rc->wsize = (uint8_t)sa->replay_window;
-	rc->lft_hard_time = sa->lft.hard_add_expires_seconds == XFRM_INF ? 0 :
-	    sa->lft.hard_add_expires_seconds;
-	rc->lft_soft_time = sa->lft.soft_add_expires_seconds == XFRM_INF ? 0 :
-	    sa->lft.soft_add_expires_seconds;
-	rc->lft_hard_bytes = sa->lft.hard_byte_limit == XFRM_INF ? 0 :
-	    sa->lft.hard_byte_limit;
-	rc->lft_soft_bytes = sa->lft.soft_byte_limit == XFRM_INF ? 0 :
-	    sa->lft.soft_byte_limit;
-	rc->lft_current_bytes = sa->curlft.bytes;
-	rc->lft_current_alloc = sa->curlft.use_time ? 1 : sa->curlft.packets;
-	rc->lft_current_add = sa->curlft.add_time;
-	rc->lft_current_use = sa->curlft.use_time;
+	rc->lft_hard_time = xr_u64(&sa->lft.hard_add_expires_seconds) == XFRM_INF ? 0 :
+	    xr_u64(&sa->lft.hard_add_expires_seconds);
+	rc->lft_soft_time = xr_u64(&sa->lft.soft_add_expires_seconds) == XFRM_INF ? 0 :
+	    xr_u64(&sa->lft.soft_add_expires_seconds);
+	rc->lft_hard_bytes = xr_u64(&sa->lft.hard_byte_limit) == XFRM_INF ? 0 :
+	    xr_u64(&sa->lft.hard_byte_limit);
+	rc->lft_soft_bytes = xr_u64(&sa->lft.soft_byte_limit) == XFRM_INF ? 0 :
+	    xr_u64(&sa->lft.soft_byte_limit);
+	rc->lft_current_bytes = xr_u64(&sa->curlft.bytes);
+	rc->lft_current_alloc = xr_u64(&sa->curlft.use_time) ? 1 : xr_u64(&sa->curlft.packets);
+	rc->lft_current_add = xr_u64(&sa->curlft.add_time);
+	rc->lft_current_use = xr_u64(&sa->curlft.use_time);
 	rc->sa_src = (void *)&rc->sa_src_storage;
 	rc->sa_dst = (void *)&rc->sa_dst_storage;
 	xaddr_to_sa(sa->family, &sa->saddr, sa->sel.sport, &rc->sa_src_storage);
