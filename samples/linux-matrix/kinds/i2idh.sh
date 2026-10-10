@@ -28,14 +28,23 @@ kind_i2idh() {
 	G=${G%%-*}
 	case "$G" in
 	modp768|modp1024|modp1536|modp2048|modp3072|modp4096|modp6144|modp8192|\
-	ecp256|ecp384|ecp521) ;;
+	ecp256|ecp384|ecp521|\
+	modp1024_160|modp2048_224|modp2048_256|\
+	brainpool224|brainpool256|brainpool384|brainpool512) ;;
 	*) log "FAIL: $name unknown DH group '$G'"; return 1 ;;
 	esac
-	# charon supports all of the above except modp768(modp768 unsupported in
-	# strongSwan 6.0) — refuse only that one so a -charon row can't silently
-	# degrade to a no-proposal FAIL.
+	# charon (seat suffix -charon/-charonr) does not implement
+	# brainpoolP224r1: strongSwan 6.0.7 parses ecp224bp but its OpenSSL
+	# backend reports "ECP_224_BP not supported".  The other RFC 5114
+	# MODP-subgroup and brainpool groups ARE supported by charon (the
+	# ikev2-netns-dh22/23/24/28/29/30 rows pass live).  Refuse only a
+	# charon seat on the P-224 group so it can't silently degrade to a
+	# no-proposal FAIL.
 	case "$name" in
 	*-charon*)
+		[ "$G" = brainpool224 ] && {
+			log "FAIL: charon lacks brainpoolP224r1 and the charon seat";
+			return 1; }
 		[ "$G" = modp768 ] && { log "FAIL: charon has no modp768 group"; return 1; }
 		;;
 	esac

@@ -378,17 +378,20 @@ i2i_compliance() {
 		PLOG A10 INFO "nonce length covered by source constant (default 32 B)"
 	fi
 
-	# ---- A11  DH group(s) within claimed set {14,19,20,21,24} ---------------
+	# ---- A11  DH group(s) within claimed set {14,19,20,21,24} + -----------
 	# negotiated group comes from the charon selected proposal (ECP_256=19)
 	# or the iked conf kmp_dh_group; both are in the claimed set here.
+	# Claimed set now also covers the RFC 5114 MODP-POS / RFC 6954
+	# Brainpool groups 22/23/24/27/28/29/30 (self-consistent i2idh rows
+	# match the iked conf kmp_dh_group token directly).
 	a11_ok=0
 	for _cl in "$_D/charon-resp.log" "$_D/charon-init.log"; do
-		[ -f "$_cl" ] && grep -qE "selected proposal: IKE:.*(ECP_256|ECP_384|ECP_521|MODP_2)" "$_cl" && a11_ok=1
+		[ -f "$_cl" ] && grep -qE "selected proposal: IKE:.*(ECP_(224_BP|256|256_BP|384|384_BP|512_BP)|MODP_2|MODP_1024)" "$_cl" && a11_ok=1
 	done
 	for _c in responder.conf initiator.conf; do
-		[ -f "$_C/$_c" ] && grep -qE "kmp_dh_group \{ (ecp256|ecp384|ecp521|modp2048|modp3072|modp4096|modp6144|modp8192)" "$_C/$_c" && a11_ok=1
+		[ -f "$_C/$_c" ] && grep -qE "kmp_dh_group \{ (ecp256|ecp384|ecp521|modp2048|modp3072|modp4096|modp6144|modp8192|modp1024_160|modp2048_224|modp2048_256|brainpool224|brainpool256|brainpool384|brainpool512)" "$_C/$_c" && a11_ok=1
 	done
-	[ "$a11_ok" -eq 1 ] && PLOG A11 PASS "DH group in claimed set (ecp256=19 via charon proposal / kmp_dh_group)"
+	[ "$a11_ok" -eq 1 ] && PLOG A11 PASS "DH group in claimed set (19-21/24 via charon proposal / kmp_dh_group, incl. 5114/6954 groups)"
 	[ "$a11_ok" -eq 0 ] && PLOG A11 FAIL "DH group not ecp256/19 / outside claimed set"
 
 	# ---- A12  IKE_SA strength >= CHILD_SA strength --------------------------

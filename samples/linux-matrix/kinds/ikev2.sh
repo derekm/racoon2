@@ -42,7 +42,7 @@ remote matrix_resp {
 		kmp_enc_alg { aes256_cbc; aes128_cbc; };
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
-		kmp_dh_group { ecp256; curve25519; curve448; modp2048; };
+		kmp_dh_group { ecp256; curve25519; curve448; modp2048; modp2048_256; modp2048_224; modp1024_160; brainpool256; brainpool384; brainpool512; brainpool224; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
@@ -205,6 +205,20 @@ EOF
 	*-dh32)
 		IKE_PROP='aes256-sha256-curve448'
 		;;
+	# RFC 5114 MODP-with-subgroup groups 22/23/24 and RFC 6954
+	# Brainpool groups 27-30.  strongSwan 6.0.7 proposal tokens (from the
+	# libstrongswan group-name table): MODP-POS are modp1024s160 /
+	# modp2048s224 / modp2048s256 and Brainpool are ecp224bp/ecp256bp/
+	# ecp384bp/ecp512bp.  As with group 31/32, the DH token carries no
+	# trailing '!'.  The responder's kmp_dh_group (above) advertises all
+	# of them.
+	*-dh22) IKE_PROP='aes256-sha256-modp1024s160' ;;
+	*-dh23) IKE_PROP='aes256-sha256-modp2048s224' ;;
+	*-dh24) IKE_PROP='aes256-sha256-modp2048s256' ;;
+	*-dh27) IKE_PROP='aes256-sha256-ecp224bp' ;;
+	*-dh28) IKE_PROP='aes256-sha256-ecp256bp' ;;
+	*-dh29) IKE_PROP='aes256-sha256-ecp384bp' ;;
+	*-dh30) IKE_PROP='aes256-sha256-ecp512bp' ;;
 	*-childrekey)
 		STRONG_ESP='aes128gcm16-ecp256!'
 		;;
