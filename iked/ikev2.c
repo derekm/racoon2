@@ -148,6 +148,8 @@ static void ikev2_established_recv(struct ikev2_sa *, rc_vchar_t *,
 				   struct sockaddr *, struct sockaddr *);
 static void ikev2_dying_recv(struct ikev2_sa *, rc_vchar_t *, struct sockaddr *,
 			     struct sockaddr *);
+static void responder_ike_session_resume_recv(struct ikev2_sa *,
+    rc_vchar_t *, struct sockaddr *, struct sockaddr *);
 static rc_vchar_t *ikev2_ticket_lt_opaque(struct ikev2_sa *);
 static void ikev2_maybe_issue_ticket(struct ikev2_sa *, struct ikev2_payloads *);
 static void ikev2_dead_recv(struct ikev2_sa *, rc_vchar_t *, struct sockaddr *,
@@ -329,7 +331,12 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 
 	ike_sa = ikev2_find_sa(packet);
 
-	if (!ike_sa && ikehdr->exchange_type != IKEV2EXCH_IKE_SA_INIT) {
+	/* RFC 5723 s4.3.2: IKE_SESSION_RESUME (exchange 38) is accepted like a
+	 * fresh IKE_SA_INIT -- SPIr is 0 and SPIi is new, and the resumption
+	 * ticket travels in a N(TICKET_OPAQUE) notify.  So it is one of the two
+	 * exchange types that may address a nonexistent SA. */
+	if (!ike_sa && ikehdr->exchange_type != IKEV2EXCH_IKE_SA_INIT
+	    && ikehdr->exchange_type != IKEV2EXCH_IKE_SESSION_RESUME) {
 		ikev2_qcd_respond(packet, remote, local);
 		isakmp_log(0, local, remote, packet, PLOG_PROTOWARN, PLOGLOC,
 			   "message to a nonexistent ike_sa\n");
@@ -517,7 +524,8 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 
 	/* drop unless message_id matches expected one (duplicate or unordered); */
 
-	if (ikehdr->exchange_type == IKEV2EXCH_IKE_SA_INIT) {
+	if (ikehdr->exchange_type == IKEV2EXCH_IKE_SA_INIT
+	    || ikehdr->exchange_type == IKEV2EXCH_IKE_SESSION_RESUME) {
 #ifdef HAVE_LIBPCAP
 		if (ike_pcap_file)
 			rc_pcap_push(remote, local, packet);
@@ -1696,7 +1704,8 @@ ikev2_check_new_request(rc_vchar_t *packet, struct sockaddr *remote,
 	}
 	if (!(ikev2_spi_is_zero(&ikehdr->responder_spi) &&
 	      message_id == 0 &&
-	      ikehdr->exchange_type == IKEV2EXCH_IKE_SA_INIT)) {
+	      (ikehdr->exchange_type == IKEV2EXCH_IKE_SA_INIT ||
+	       ikehdr->exchange_type == IKEV2EXCH_IKE_SESSION_RESUME))) {
 		/* RFC 6290: unprotected QCD_TOKEN + INVALID_IKE_SPI */
 		ikev2_qcd_respond(packet, remote, local);
 		isakmp_log(0, local, remote, packet,
@@ -1754,6 +1763,14 @@ responder_state0_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 
 	ikehdr = (struct ikev2_header *)packet->v;
 	/* ikehdr->responder_spi must be zero  (checked in ikev2_input) */
+	if (ikehdr->exchange_type == IKEV2EXCH_IKE_SESSION_RESUME) {
+		/* RFC 5723 s4.3.2: first message carries Ni and
+		 * N(TICKET_OPAQUE); the SA comes from the ticket, so there is
+		 * no SAi1/KEi to negotiate here.  Route to the resumption
+		 * bookkeeper. */
+		responder_ike_session_resume_recv(ike_sa, packet, remote, local);
+		return;
+	}
 	if (ikehdr->exchange_type != IKEV2EXCH_IKE_SA_INIT) {
 		/* unexpected; */
 		isakmp_log(ike_sa, local, remote, packet,
@@ -2968,6 +2985,249 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 #endif
 
 }
+
+
+
+/* RFC 5723 s4.3.2 responder side: accept an IKE_SESSION_RESUME (exchange 38)
+ * request.  The request is HDR(SPIi=new, SPIr=0), [N(COOKIE),] Ni,
+ * N(TICKET_OPAQUE).  Validate the returned ticket against our configured
+ * ticket key, recover the "from the ticket" IKE state (IDs, SPIs, serialized
+ * SAr, OLD SK_d, auth method, expiry), rebuild the negotiated IKE SA, and
+ * derive the resumed keys:
+ *     SKEYSEED = prf(SK_d_old, "Resumption" | Ni | Nr)
+ * On success answer HDR(38), Nr exactly like an IKE_SA_INIT response (RFC
+ * Figure 5) and park in the IKE_AUTH-approved window so the peer's resumed
+ * IKE_AUTH (msgid 1) continues the build.  On rejection answer an
+ * unprotected N(TICKET_NACK) so the client falls back to a normal exchange
+ * (RFC 5723 s4.3.2).  Fail-closed: no resumed SA without a parseable,
+ * unexpired ticket and a usable negotiated SA. */
+static void
+responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
+    struct sockaddr *remote, struct sockaddr *local)
+{
+	struct ikev2_header *ikehdr;
+	struct ikev2_payload_header *p;
+	unsigned int type;
+	rc_vchar_t *tkey = NULL;
+	rc_vchar_t *ticket = NULL;
+	rc_vchar_t *n_i = NULL;
+	struct r2ticket_state st;
+	struct prop_pair **parsed = NULL;
+	struct ikev2_isakmpsa *nsa = NULL;
+	rc_vchar_t *n_r = NULL, *pkt = NULL;
+	struct ikev2_payloads payl;
+	int payl_inited = 0;
+	const char *keypath;
+	int rc = -1;
+
+	ikehdr = (struct ikev2_header *)packet->v;
+	memset(&st, 0, sizeof(st));
+
+	/* RFC 5723 s8: session_resumption must be enabled to accept tickets. */
+	if (ikev2_use_session_resumption(ike_sa->rmconf) != RCT_BOOL_ON) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
+		    "RFC 5723: IKE_SESSION_RESUME received but session "
+		    "resumption is not enabled in config\n");
+		goto nack;
+	}
+	if (!(keypath = rc_vmem2str(
+	    ikev2_session_resume_ticket_key(ike_sa->rmconf)))) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
+		    "RFC 5723: no session_resume_ticket_key configured; "
+		    "refusing resume\n");
+		goto nack;
+	}
+	if (r2ticket_key_load(keypath, &tkey) != 0) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_INTERR, PLOGLOC,
+		    "RFC 5723: cannot load session_resume_ticket_key; "
+		    "refusing resume\n");
+		goto nack;
+	}
+
+	/* Walk payloads: Ni and N(TICKET_OPAQUE)(16413). */
+	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	type = ikehdr->next_payload;
+	for (; type != IKEV2_NO_NEXT_PAYLOAD; POINT_NEXT_PAYLOAD(p, type)) {
+		switch (type) {
+		case IKEV2_PAYLOAD_NONCE:
+			if (n_i) {
+				isakmp_log(ike_sa, local, remote, packet,
+				    PLOG_PROTOERR, PLOGLOC,
+				    "RFC 5723: duplicate Ni\n");
+				goto nack;
+			}
+			n_i = isakmp_p2v((struct isakmp_gen *)p);
+			break;
+		case IKEV2_PAYLOAD_NOTIFY: {
+			struct ikev2payl_notify *n =
+			    (struct ikev2payl_notify *)p;
+			size_t ndlen;
+			if (get_notify_type(n) != IKEV2_TICKET_OPAQUE)
+				break;
+			if (n->nh.spi_size != 0) {
+				isakmp_log(ike_sa, local, remote, packet,
+				    PLOG_PROTOERR, PLOGLOC,
+				    "RFC 5723: TICKET_OPAQUE with nonzero "
+				    "spi_size\n");
+				goto nack;
+			}
+			if (ticket) {
+				isakmp_log(ike_sa, local, remote, packet,
+				    PLOG_PROTOERR, PLOGLOC,
+				    "RFC 5723: duplicate TICKET_OPAQUE\n");
+				goto nack;
+			}
+			ndlen = get_payload_length(&n->header)
+			    - sizeof(struct ikev2payl_notify) - n->nh.spi_size;
+			ticket = rc_vnew(get_notify_data(n), ndlen);
+			if (!ticket)
+				goto fail;
+			break;
+		}
+		default:
+			break;
+		}
+	}
+	if (!n_i) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
+		    "RFC 5723: no Ni in IKE_SESSION_RESUME request\n");
+		goto nack;
+	}
+	if (!ticket || ticket->l == 0) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
+		    "RFC 5723: no N(TICKET_OPAQUE) in IKE_SESSION_RESUME "
+		    "request\n");
+		goto nack;
+	}
+
+	/* Validate the ticket and recover the SA state. */
+	if (r2ticket_parse(tkey, ticket, &st) != 0) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
+		    "RFC 5723: ticket validation failed -> TICKET_NACK\n");
+		goto nack;
+	}
+
+	/* Rebuild the negotiated IKE SA from the serialized SAr.  The ticket
+	 * stores the output of ikev2_ikesa_to_proposal() -- the raw Proposal
+	 * bytes without the 4-octet SA payload header.  Wrap them back in an
+	 * SA payload header so ikev2_parse_sa() can consume them. */
+	{
+		rc_vchar_t *sap = NULL;
+		struct ikev2_payload_header *sh;
+
+		sap = rc_vmalloc(st.sa->l + sizeof(struct ikev2_payload_header));
+		if (!sap)
+			goto fail;
+		sh = (struct ikev2_payload_header *)sap->v;
+		sh->next_payload = IKEV2_NO_NEXT_PAYLOAD;
+		sh->header_byte_2 = 0;
+		put_uint16(&sh->payload_length,
+		    st.sa->l + sizeof(struct ikev2_payload_header));
+		memcpy((uint8_t *)sap->v + sizeof(struct ikev2_payload_header),
+		    st.sa->v, st.sa->l);
+		parsed = ikev2_parse_sa(&ikev2_doi, sh);
+		rc_vfree(sap);
+	}
+	nsa = NULL;
+	if (parsed) {
+		/* isakmp_parse_proposal returns an array indexed by p_no
+		 * (1-based, slot 0 is the NULL sentinel); take the first
+		 * non-NULL proposal. */
+		int _i;
+		for (_i = 1; _i < MAXPROPPAIRLEN; ++_i) {
+			if (parsed[_i]) { nsa = ikev2_proppair_to_isakmpsa(parsed[_i]); break; }
+		}
+	}
+	if (!nsa) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
+		    "RFC 5723: cannot rebuild IKE SA from ticket SAr\n");
+		goto fail;
+	}
+
+	/* Resumed exchange: fresh Nr keeps the exchange fresh; the SPIs from
+	 * this exchange (request SPIi already in index.i_ck, SPIr in
+	 * index.r_ck set at SA create) drive the prf+ below. */
+	n_r = random_bytes(ikev2_nonce_size(ike_sa->rmconf));
+	if (!n_r)
+		goto fail;
+	ike_sa->n_i = n_i;	n_i = NULL;
+	ike_sa->n_r = n_r;	n_r = NULL;
+
+	/* RFC 5723 Figure 5: the response to IKE_SESSION_RESUME is an
+	 * UNPROTECTED HDR, Nr (like IKE_SA_INIT) -- the SA and keys do not
+	 * exist yet to encrypt with.  Send it BEFORE installing the
+	 * negotiated SA (ikev2_set_negotiated_sa arms the encryptor), so
+	 * ikev2_packet_construct emits plaintext. */
+	ikev2_update_message_id(ike_sa, get_uint32(&ikehdr->message_id), FALSE);
+	ikev2_payloads_init(&payl);	payl_inited = 1;
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NONCE, ike_sa->n_r, FALSE);
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SESSION_RESUME,
+	    IKEV2FLAG_RESPONSE, 0, ike_sa, &payl);
+	if (!pkt) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_INTERR, PLOGLOC,
+		    "RFC 5723: failed building resume response\n");
+		goto fail;
+	}
+	if (ikev2_transmit_response(ike_sa, pkt, local, remote) != 0)
+		goto fail;
+	pkt = NULL;
+
+	/* Now install the resumed SA and derive the resumed SKEYSEED + keys
+	 * (RFC 5723 s5.1), used by the peer's encrypted resumed IKE_AUTH. */
+	if (ikev2_set_negotiated_sa(ike_sa, nsa) != 0) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_INTERR, PLOGLOC,
+		    "RFC 5723: failed instantiating resumed IKE SA\n");
+		goto fail;
+	}
+	nsa = NULL;			/* owned by ike_sa now */
+	ike_sa->skeyseed = r2ticket_skeyseed(ike_sa->negotiated_sa->prf,
+	    st.sk_d, ike_sa->n_i, ike_sa->n_r);
+	if (!ike_sa->skeyseed)
+		goto fail;
+	if (ikev2_compute_keys(ike_sa) != 0)
+		goto fail;
+
+	/* IDs from the ticket become this resumed SA's identities. */
+	ike_sa->id_i = st.idi;	st.idi = NULL;
+	ike_sa->id_r = st.idr;	st.idr = NULL;
+
+	/* Resumed IKE_AUTH arrives with msgid 1, encrypted under these keys;
+	 * the normal responder IKE_AUTH path takes over from here. */
+	ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_AUTH_RCVD);
+	isakmp_log(ike_sa, local, remote, packet, PLOG_INFO, PLOGLOC,
+	    "RFC 5723: accepted IKE_SESSION_RESUME ticket, resumed keys "
+	    "derived, Nr sent\n");
+	rc = 0;
+	goto done;
+
+ nack:
+	/* RFC 5723 s4.3.2: reject with an unprotected N(TICKET_NACK); the
+	 * client then falls back to a normal IKE exchange.  Abort this
+	 * half-open SA (no resumed state was established). */
+	(void)ikev2_respond_with_notify(packet, remote, local,
+	    IKEV2_TICKET_NACK, 0, 0);
+	ikev2_update_message_id(ike_sa, get_uint32(&ikehdr->message_id), FALSE);
+	ikev2_abort(ike_sa, ECONNREFUSED);
+	rc = 0;
+	goto done;
+
+ fail:
+	rc = -1;
+ done:
+	if (tkey) { OPENSSL_cleanse(tkey->v, tkey->l); rc_vfreez(tkey); }
+	if (ticket) rc_vfree(ticket);
+	if (n_i) rc_vfree(n_i);
+	if (n_r) rc_vfree(n_r);
+	if (nsa) racoon_free(nsa);
+	if (parsed) proplist_discard(parsed);
+	r2ticket_state_free(&st);
+	if (payl_inited) ikev2_payloads_destroy(&payl);
+	if (pkt) rc_vfree(pkt);
+	if (rc != 0)
+		ikev2_abort(ike_sa, ECONNREFUSED);
+}
+
+
 
 static void
 responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
