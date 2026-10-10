@@ -370,6 +370,15 @@ struct rcf_kmp {
 	rc_vchar_t *radius_server;
 	int radius_port;	/* 1812 default; int so rcf_fix_number can set it */
 	rc_vchar_t *radius_secret_file;
+	/* RFC 5723 session resumption (ticket by value).  use_session_resumption
+	 * gates the responder issuing TICKET_LT_OPAQUE on TICKET_REQUEST and
+	 * accepting IKE_SESSION_RESUME; session_resume_ticket_key is the AES-256
+	 * ticket-encryption key file (the key bytes never appear in a config,
+	 * same rule as ppk_id / radius_secret_file); lifetime is ticket expiry
+	 * in seconds from minting (a finite default, RFC 5723 s6.2). */
+	rc_type use_session_resumption;
+	rc_vchar_t *session_resume_ticket_key;
+	int session_resume_ticket_lifetime;
 };
 
 /* selector info */
