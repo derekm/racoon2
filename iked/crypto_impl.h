@@ -280,12 +280,20 @@ extern uint32_t eay_random_uint32 (void);
 
 /* DH */
 extern int eay_dh_generate (rc_vchar_t *, uint32_t, unsigned int, rc_vchar_t **,
-				rc_vchar_t **);
+			    rc_vchar_t **);
 extern int eay_dh_compute (rc_vchar_t *, uint32_t, rc_vchar_t *,
-			       rc_vchar_t *, rc_vchar_t *, rc_vchar_t **);
+			   rc_vchar_t *, rc_vchar_t *, rc_vchar_t **);
+extern int eay_dh_generate_v (rc_vchar_t *, rc_vchar_t *, rc_vchar_t **,
+			      rc_vchar_t **);
+extern int eay_dh_compute_v (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
+			     rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
+			     rc_vchar_t **);
 extern int eay_ecp_generate (size_t, rc_vchar_t **, rc_vchar_t **);
 extern int eay_ecp_compute (size_t, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
-			       rc_vchar_t **);
+			    rc_vchar_t **);
+extern int eay_brainpool_generate (size_t, rc_vchar_t **, rc_vchar_t **);
+extern int eay_brainpool_compute (size_t, rc_vchar_t *, rc_vchar_t *,
+				  rc_vchar_t *, rc_vchar_t **);
 extern int eay_xcurve_generate (size_t, rc_vchar_t **, rc_vchar_t **);
 extern int eay_xcurve_compute (size_t, rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
 			       rc_vchar_t **);

@@ -213,6 +213,13 @@ ecp384			{ DP; return(ECP384); }
 ecp521			{ DP; return(ECP521); }
 curve25519		{ DP; return(CURVE25519); }
 curve448		{ DP; return(CURVE448); }
+modp1024_160		{ DP; return(MODP1024_160); }
+modp2048_224		{ DP; return(MODP2048_224); }
+modp2048_256		{ DP; return(MODP2048_256); }
+brainpool224		{ DP; return(BRAINPOOL224); }
+brainpool256		{ DP; return(BRAINPOOL256); }
+brainpool384		{ DP; return(BRAINPOOL384); }
+brainpool512		{ DP; return(BRAINPOOL512); }
 mlkem512		{ DP; return(MLKEM512); }
 mlkem768		{ DP; return(MLKEM768); }
 mlkem1024		{ DP; return(MLKEM1024); }
