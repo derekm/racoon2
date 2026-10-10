@@ -4477,20 +4477,31 @@ ikev2_ticket_lt_opaque(struct ikev2_sa *ike_sa)
 		return NULL;				/* not configured */
 	if (ikev2_session_resume_ticket_lifetime(rmconf) <= 0)
 		return NULL;
-	if (ikev2_auth_method(ike_sa) < 0)
-		return NULL;
+	{
+		int auth_method = ikev2_auth_method(ike_sa);
+		/* ikev2_auth_method() returns 0 (not -1) on every error path
+		 * (no kmp_auth_method, EAP without a 64-octet MSK, missing
+		 * private key).  `<= 0` is the fail-closed gate: an invalid or
+		 * unresolved method must not be stamped into a ticket. */
+		if (auth_method <= 0) {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			    "RFC 5723: unresolved auth method %d, not issuing "
+			    "ticket\n", auth_method);
+			return NULL;
+		}
+		st.auth_method = (uint8_t)auth_method;
+	}
 
 	if (r2ticket_key_load(keypath, &tkey) != 0) {
 		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 		    "RFC 5723: cannot load session_resume_ticket_key '%s' - "
-		    "not issuing a ticket\\n", keypath);
+		    "not issuing a ticket\n", keypath);
 		return NULL;
 	}
 
 	memset(&st, 0, sizeof(st));
 	st.expires_at = (uint32_t)time(NULL) +
 	    (uint32_t)ikev2_session_resume_ticket_lifetime(rmconf);
-	st.auth_method = (uint8_t)ikev2_auth_method(ike_sa);
 	memcpy(&st.spi_i, &ike_sa->index.i_ck, 8);
 	memcpy(&st.spi_r, &ike_sa->index.r_ck, 8);
 
