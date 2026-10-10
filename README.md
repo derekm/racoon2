@@ -173,6 +173,20 @@ on the IKE thread. OpenSSL 3 providers (`--with-openssl-provider` /
 CREATE_CHILD DH go through `oakley_dh_*_submit` → `crypto_job_submit`
 (N=0 inlines on the IKE thread).
 
+## Runtime memory / RSS comparison
+
+The "≈8 MB (iked) vs ≈16 MB (strongSwan charon)" figure is RSS from
+`/proc/<pid>/status` (`VmRSS`) on the same Fedora box, one established
+SA, idle: iked ~8-9 MB against an *established* charon ~19 MB (a fresh
+idle charon is ~9.8 MB, so equal-footing is ~8-10 MB each while a
+live SA adds ~10 MB to charon). It is a resident-set, single-SA, idle
+observation — not a measured allocation floor, not peak, and not a
+per-1000-SA scaling number. Reproduce with:
+
+	awk '/VmRSS/{print $2}' /proc/$(pgrep -f 'sbin/iked' | head -1)/status
+	awk '/VmRSS/{print $2}' /proc/$(pgrep -f 'charon' | head -1)/status
+
+
 Currently, the system supports the following specifications:
 
 	Internet Key Exchange (IKEv2) Protocol
@@ -221,7 +235,7 @@ Currently, the system supports the following specifications:
 	          for Internet Key Exchange (IKE)
 	RFC 2367, PF_KEY Key Management API, Version 2
 
-	Not in this tree: RFC 5723 session resumption, IKEv2 EAP,
+	Not in this tree: RFC 5723 session resumption,
 	IKEv1 XAuth/mode-config (ENABLE_HYBRID scaffolding only),
 	ADDKE rounds 2+.
 
