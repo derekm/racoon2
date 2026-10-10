@@ -66,7 +66,10 @@ extern rc_vchar_t *ikev2_eap_relay_start(struct ikev2_eap_relay *relay,
  *  - code Access-Challenge: *out_eap is set to a NEW vchar the caller must
  *    transmit to the client and then free; returns CONTINUE.
  *  - code Access-Accept:    *out_msk is set to a NEW 64-octet MSK the caller
- *    uses to compute AUTH and then frees; returns SUCCESS, relay finished.
+ *    uses to compute AUTH; *out_eap MAY additionally be set to a NEW vchar
+ *    (the server's EAP-Success packet, whose Identifier is authoritative for
+ *    RFC 3748 s4.2) the caller transmits instead of building its own.
+ *    Returns SUCCESS, relay finished.
  *  - code Access-Reject:    returns FAILURE, relay finished.
  *  - any other / missing EAP on a Challenge: returns ERROR (no output).
  *

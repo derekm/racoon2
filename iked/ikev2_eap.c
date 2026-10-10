@@ -2,29 +2,29 @@
  * iked/ikev2_eap.c - EAP (RFC 3748) framing for racoon2 iked IKEv2.
  *
  * Road-warrior EAP is tunneled per RFC 7296 s2.16 inside IKE_AUTH, with
- * each EAP message proxied to a RADIUS server (see ikev2_radius.c).  That
- * responder path is NOT yet wired (see the Status note below); this module
- * is the EAP *wire* codec: it encodes and decodes RFC 3748 EAP packets
- * (the 4-byte Code/Identifier/Length header plus the single-byte Type and
- * method data), and provides the small set of method-agnostic skeleton
- * operations (Identity request/response, Nak) that any method must handle
- * before the method-specific exchange runs inside the RADIUS
- * Access-Challenge round trips.
+ * each EAP message proxied to a RADIUS server (see ikev2_radius.c).  The
+ * responder wiring lives in ikev2.c (responder_ike_sa_auth_recv0 /
+ * responder_ike_sa_auth_eap_recv) and the per-SE relay state machine in
+ * ikev2_eap_relay.c; this module is the EAP *wire* codec: it encodes and
+ * decodes RFC 3748 EAP packets (the 4-byte Code/Identifier/Length header
+ * plus the single-byte Type and method data), and provides the small set
+ * of method-agnostic skeleton operations (Identity request/response, Nak,
+ * EAP-Success, identity extraction) that any method must handle before the
+ * method-specific exchange runs inside the RADIUS Access-Challenge round
+ * trips.
  *
  * The EAP method itself is never implemented here: method types
  * (EAP-MSCHAPv2, EAP-TLS) are opaque to this module and live on the remote
- * FreeRADIUS server; iked only frames them and hands them to the RADIUS
- * proxy once the responder wiring lands.
+ * FreeRADIUS server; iked only frames them and proxies them to RADIUS.
  *
  * Status: framing codec + skeleton (milestone 1) plus the responder relay
- * engine IKEV2_EAP_RELAY (ikev2_eap_relay.c; relaytest + authdertest, and
- * clean under ASan).  NOT YET wired into the IKE_AUTH responder:
- * IKEV2_PAYLOAD_EAP (48) appears in ikev2.c only as the top of the
- * critical-payload type range (ikev2.c:1229).  The wiring that intercepts
- * an IDi-without-AUTH message for an eap-configured remote, runs each
- * RADIUS round on the worker pool, and feeds the decoded response to
- * ikev2_eap_relay_consume() is still to be written per
- * doc/eap-wiring-plan.md (milestone 3, responder wiring).
+ * engine (ikev2_eap_relay.c) and the live IKE_AUTH responder wiring
+ * (ikev2.c: an eap-configured remote with IDi and no AUTH starts the
+ * exchange, each RADIUS round runs on the worker pool via
+ * ikev2_eap_round_submit, and the decoded response feeds
+ * ikev2_eap_relay_consume via ikev2_eap_drive_advance).  Exposed as an ASan
+ * clean, 20/20-suite responder path and live-proven against strongSwan
+ * charon + FreeRADIUS (EAP-MSCHAPv2 Accept -> MSK -> EAP-Success).
  */
 
 #include <config.h>
@@ -228,23 +228,27 @@ ikev2_eap_build_success(u_int8_t identifier)
 char *
 ikev2_eap_identity_string(rc_vchar_t *raw)
 {
-	uint8_t *data;
+	uint8_t *data, *b;
+	size_t len;
 	char *idstr = NULL;
-	uint8_t *b;
 
 	if (!raw || raw->l < 5 || raw->v == NULL)
 		return NULL;
 	b = (uint8_t *)raw->v;
-	/* Code(1) Id(1) Len(2) Type(1) then Type+Data */
+	/* EAP header: Code(0) Id(1) Length(2-3, network) Type(4) Data(5+). */
 	if (b[0] != 2 /* Response */ || b[4] != 1 /* Identity */)
 		return NULL;
-	data = &b[5];
-	if (raw->l <= 5)
+	len = ((size_t)b[2] << 8) | b[3];
+	/* honor the Length field; it may be smaller than the IKEv2 payload */
+	if (len < 5 || len > raw->l)
+		len = raw->l;	/* clamp a short/over-long field, never over-read */
+	if (len == 5)
 		return NULL;	/* empty identity */
-	idstr = rc_calloc(1, raw->l - 5 + 1);
+	data = &b[5];
+	idstr = rc_calloc(1, len - 5 + 1);
 	if (!idstr)
 		return NULL;
-	memcpy(idstr, data, raw->l - 5);
+	memcpy(idstr, data, len - 5);
 	return idstr;
 }
 

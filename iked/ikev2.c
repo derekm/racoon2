@@ -3330,20 +3330,39 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 	eapmsg.v = (uint8_t *)(eap + 1);
 	eapmsg.l = get_payload_data_length(eap);
 
+	/* Remember the peer's EAP Response Identifier byte (wire offset 1).
+	 * RFC 3748 s4.2: the EAP-Success we synthesize after Acceptance must
+	 * echo THIS id (a strict peer discards a misidentified Success).  The
+	 * server's own Success packet, forwarded from the Accept, is preferred
+	 * when the Accept carries one - only that has authority over the id. */
+	if (eapmsg.l >= 2)
+		ike_sa->eap_last_peer_id =
+		    ((uint8_t *)eapmsg.v)[1];
+
 	/* Capture the EAP Identity (first round, Type=1) and carry it as
 	 * RADIUS User-Name so the server can match the account to a stored
 	 * secret (FreeRADIUS files authorize keys on it).  Store once on the
 	 * SA; later rounds re-send the same identity. */
 	if (!ike_sa->eap_user) {
 		char *id = ikev2_eap_identity_string(&eapmsg);
-		if (id) {
-			if (ike_sa->eap_user)
-				rc_free(ike_sa->eap_user);
+		if (id)
 			ike_sa->eap_user = id;
-		}
 	}
 	if (ike_sa->eap_user)
 		opt.user_name = ike_sa->eap_user;
+	/* a RADIUS User-Name attr holds at most IKEV2_RADIUS_MAX_VALUE octets;
+	 * a longer identity would fail inside radius_put_attr and the failed
+	 * round would abort the SA with a misleading 'submit failed'.  Reject
+	 * with a log that names the actual length. */
+	if (ike_sa->eap_user &&
+	    strlen(ike_sa->eap_user) > IKEV2_RADIUS_MAX_VALUE) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "EAP: identity too long for RADIUS User-Name "
+			   "(l=%zu, max %d)\n",
+			   strlen(ike_sa->eap_user),
+			   IKEV2_RADIUS_MAX_VALUE);
+		goto fail_syntax;
+	}
 
 	/* remote RADIUS options from the SA's rmconf. */
 	radius_server = ikev2_radius_server(ike_sa->rmconf);
@@ -3406,14 +3425,32 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 	rid = ike_sa->eap_rid;
 
 	/* the worker round deep-copies opt/secret; we free ours after. */
-	if (ikev2_eap_round_submit(ike_sa, ike_sa->serial_number, &eapmsg,
-				   (struct sockaddr *)&server, servlen, &opt,
-				   &ike_sa->eap_rid,
-				   responder_ike_sa_auth_eap_resume) != 0) {
-		isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
-			   "EAP: round submit failed\n");
-		rc_vfreez(secret);
-		goto fail_syntax;
+	{
+		int sr = ikev2_eap_round_submit(ike_sa, ike_sa->serial_number,
+					       &eapmsg,
+					       (struct sockaddr *)&server,
+					       servlen, &opt,
+					       &ike_sa->eap_rid,
+					       responder_ike_sa_auth_eap_resume);
+		if (sr == 1) {
+			/* a round is already in flight on this SA: this is a
+			 * retransmit of the in-flight EAP-Response.  Drop the
+			 * duplicate - the original round's resume() will answer
+			 * it.  Do NOT treat a re-entered round as a config
+			 * failure (localhost RADIUS hides this; a slow server
+			 * or a 1s peer retransmit would otherwise kill a good
+			 * exchange). */
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+				   "EAP: dropping duplicate round (in flight)\n");
+			rc_vfreez(secret);
+			return;
+		}
+		if (sr != 0) {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+				   "EAP: round submit failed\n");
+			rc_vfreez(secret);
+			goto fail_syntax;
+		}
 	}
 	(void)rid;
 	rc_vfreez(secret);
@@ -3456,40 +3493,53 @@ responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *r, int rc)
 	switch (dr) {
 	case IKEV2_EAP_DRIVE_CONTINUE:
 		/* emit the next EAP Request to the client; stay in EAP, and
-		 * advance the request window so the peer's next round
-		 * (msgid = eap_message_id + 1) is accepted. */
-		ikev2_responder_eap_send(ike_sa, ike_sa->eap_message_id,
-					 out_eap);
-		ikev2_update_message_id(ike_sa, ike_sa->eap_message_id, FALSE);
+		 * advance the request window only once the response was
+		 * actually transmitted, so the peer's next round
+		 * (msgid = eap_message_id + 1) is accepted.  A failed send
+		 * must not advance: the peer retransmits the old id. */
+		if (ikev2_responder_eap_send(ike_sa, ike_sa->eap_message_id,
+					    out_eap) == 0)
+			ikev2_update_message_id(ike_sa,
+						ike_sa->eap_message_id, FALSE);
 		if (out_eap) rc_vfree(out_eap);
 		return;
 	case IKEV2_EAP_DRIVE_SUCCESS:
 		/* MSK now stored on ike_sa->eap_msk.  Send EAP-Success to the
 		 * client (payload 48, code 3) so it knows the method
-		 * succeeded, then transition the SA back to
-		 * RES_IKE_SA_INIT_SENT so the peer's final IKE_AUTH (carrying
-		 * its MSK-based AUTH) re-enters the standard responder flow
-		 * (responder_ike_sa_auth_recv0), which verifies the AUTH via
-		 * the MSK (fail-closed: ikev2_auth_method returns SHARED_KEY
-		 * only when eap_msk is a 64-octet MSK) and completes with its
-		 * own responder AUTH + child. */
+		 * succeeded, then park and await the peer's final MSK-AUTH.
+		 *
+		 * NOTE the transition below is a PARK, not a completion: the
+		 * peer's RFC 5998 [AUTH]-only final IKE_AUTH carries no IDi,
+		 * so it cannot (yet) be routed through responder_ike_sa_auth_recv0
+		 * (which requires IDi).  Retaining the first IKE_AUTH's child
+		 * offer and completing the SA after MSK-AUTH verification is the
+		 * outstanding work; the code below must NOT be read as a claim
+		 * that RES_IKE_SA_INIT_SENT makes the exchange complete. */
 		isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
 			   "EAP: Acceptance, MSK stored (l=%u); sending "
 			   "EAP-Success\n",
 			   ike_sa->eap_msk ? (unsigned)ike_sa->eap_msk->l : 0u);
-		if (out_eap) rc_vfree(out_eap);
 		{
-			/* EAP-Success (RFC 3748 s5.2) notifies the client the
-			 * method succeeded before it sends its MSK-AUTH. */
-			rc_vchar_t *succ =
-			    ikev2_eap_build_success(ike_sa->eap_rid);
+			rc_vchar_t *succ = out_eap;
+			/* Prefer the server's own Success packet (correct RFC
+			 * 3748 s4.2 Identifier, forwarded from the Accept).
+			 * Fall back to a synthetic Success echoing the last
+			 * peer EAP Response id - never the RADIUS id. */
+			if (!succ)
+				succ = ikev2_eap_build_success(
+				    ike_sa->eap_last_peer_id);
 			if (succ) {
-				ikev2_responder_eap_send(ike_sa,
-					  ike_sa->eap_message_id, succ);
-				rc_vfree(succ);
+				if (ikev2_responder_eap_send(
+					ike_sa, ike_sa->eap_message_id,
+					succ) == 0)
+					ikev2_update_message_id(
+					    ike_sa,
+					    ike_sa->eap_message_id, FALSE);
+				if (succ != out_eap)
+					rc_vfree(succ);
 			}
 		}
-		ikev2_update_message_id(ike_sa, ike_sa->eap_message_id, FALSE);
+		if (out_eap) rc_vfree(out_eap);
 		ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_SA_INIT_SENT);
 		return;
 	case IKEV2_EAP_DRIVE_FAILURE:

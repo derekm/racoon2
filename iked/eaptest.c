@@ -104,6 +104,80 @@ main(void)
 			rc_vfree(enc);
 	}
 
+	/* EAP-Success builder: Code=3, echoed id, Len=4, no Type octet. */
+	{
+		rc_vchar_t *enc = ikev2_eap_build_success(3);
+		u_int8_t want[] = { 0x03, 0x03, 0x00, 0x04 };
+		if (!enc || enc->l != 4 || memcmp(enc->v, want, 4) != 0) {
+			printf("eaptest: FAIL build_success\n");
+			fails++;
+		} else {
+			printf("eaptest: PASS build_success (id=3, len=4)\n");
+		}
+		if (enc)
+			rc_vfree(enc);
+	}
+
+	/* identity extraction: "joe" from a Response/Identity, and the
+	 * empty / non-identity / short-Length-borderline rejections. */
+	{
+		u_int8_t w[] = { 0x02, 0x05, 0x00, 0x08, 0x01, 'j', 'o', 'e' };
+		rc_vchar_t raw; char *s;
+		raw.v = w; raw.l = sizeof(w);
+		s = ikev2_eap_identity_string(&raw);
+		if (!s || strcmp(s, "joe") != 0) {
+			printf("eaptest: FAIL identity_string(joe)\n");
+			fails++;
+		} else {
+			printf("eaptest: PASS identity_string(joe)\n");
+		}
+		if (s) rc_free(s);
+	}
+	/* short Length inside a longer payload: honor bytes 2-3, ignore tail.
+	 * Length=6 => one data byte "j"; the trailing 'o'/0xff are padding in
+	 * the larger IKEv2 payload and must NOT leak into the identity. */
+	{
+		u_int8_t w[] = { 0x02, 0x05, 0x00, 0x06, 0x01, 'j', 'o', 0xff };
+		rc_vchar_t raw; char *s;
+		raw.v = w; raw.l = sizeof(w);
+		s = ikev2_eap_identity_string(&raw);
+		if (!s || strcmp(s, "j") != 0) {
+			printf("eaptest: FAIL identity_string short-length\n");
+			fails++;
+		} else {
+			printf("eaptest: PASS identity_string short-length\n");
+		}
+		if (s) rc_free(s);
+	}
+	/* empty identity: Len=5, no data */
+	{
+		u_int8_t w[] = { 0x02, 0x05, 0x00, 0x05, 0x01 };
+		rc_vchar_t raw; char *s;
+		raw.v = w; raw.l = sizeof(w);
+		s = ikev2_eap_identity_string(&raw);
+		if (s != NULL) {
+			printf("eaptest: FAIL identity_string empty\n");
+			if (s) rc_free(s);
+			fails++;
+		} else {
+			printf("eaptest: PASS identity_string empty rejected\n");
+		}
+	}
+	/* non-identity Response: Type=MSCHAPv2(26) -> NULL */
+	{
+		u_int8_t w[] = { 0x02, 0x07, 0x00, 0x06, 26, 0x01, 0x02 };
+		rc_vchar_t raw; char *s;
+		raw.v = w; raw.l = sizeof(w);
+		s = ikev2_eap_identity_string(&raw);
+		if (s != NULL) {
+			printf("eaptest: FAIL identity_string non-identity\n");
+			if (s) rc_free(s);
+			fails++;
+		} else {
+			printf("eaptest: PASS identity_string non-identity rejected\n");
+		}
+	}
+
 	/* Nak detection: a Response carrying type 3 must report type 3. */
 	{
 		u_int8_t w[] = { 0x02, 0x09, 0x00, 0x07, 0x03, 0x04, 0x06 };

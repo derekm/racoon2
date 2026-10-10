@@ -373,6 +373,11 @@ struct ikev2_sa {
 	char *eap_user;		/* EAP Identity string (owned, NULL until known);
 				   sent as RADIUS User-Name so the server can
 				   match the account */
+	uint8_t eap_last_peer_id;	/* Identifier byte of the last peer EAP
+					   Response we proxied; RFC 3748 s4.2 the
+					   EAP-Success we synthesize must echo it
+					   (the server's own Success packet is
+					   preferred when the Accept carries one) */
 
 	IKEV2_SA_LIST_ENTRY link;
 };

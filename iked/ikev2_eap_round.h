@@ -41,7 +41,9 @@
  * relay and eap_msk in both drop paths.
  * No DH worker shares the IKE_AUTH window with an EAP round.  In this tree
  * the responder creates the AUTH child with g_i=n_i=0 -- responder_ike_sa_auth_cont
- * hardcodes the 0,0 at ikev2.c:3673-3675 into ikev2_create_child_responder, which
+ * hardcodes the 0,0 at ikev2.c responder_ike_sa_auth_cont (the
+ * ikev2_create_child_responder call that passes sa_i2,ts_i,ts_r,cfg,0,0),
+ * which
  * only submits a child DH exchange inside `if (g_i)` (ikev2_child.c:1351) -- so
  * no child DH runs at IKE_AUTH (the AUTH child is keyed from SK_d per the RFC
  * 7296 2.17 no-PFS formula; an optional KE in IKE_AUTH is allowed by 1.2 but this
@@ -120,7 +122,9 @@ typedef void (*ikev2_eap_round_resume_t)(struct ikev2_eap_round *r, int rc);
  * thread after crypto_workers_drain(), only for a live SA; if the pool is
  * disabled the round runs inline and resume() is called before submit
  * returns), -1 on failure (nothing submitted, nothing pinned, resume() never
- * called, caller keeps ownership of all inputs).
+ * called, caller keeps ownership of all inputs), or 1 when a round is already
+ * in flight on this SA (a retransmit of an in-flight round - the caller should
+ * drop the duplicate, not treat it as a failure), nothing more is submitted.
  */
 extern int ikev2_eap_round_submit(
 	struct ikev2_sa *ike_sa, int serial,
