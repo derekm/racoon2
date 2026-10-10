@@ -3433,6 +3433,7 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rc_vfree(n->ppk_id);
 	rc_vfree(n->radius_server);
 	rc_vfree(n->radius_secret_file);
+	rc_vfree(n->session_resume_ticket_key);
 	rc_free(n);
 }
 
@@ -3506,6 +3507,9 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_VDUP(src->radius_server, new->radius_server);
 	DEEPCOPY_VDUP(src->radius_secret_file, new->radius_secret_file);
 	new->radius_port = src->radius_port;
+	new->use_session_resumption = src->use_session_resumption;
+	DEEPCOPY_VDUP(src->session_resume_ticket_key, new->session_resume_ticket_key);
+	new->session_resume_ticket_lifetime = src->session_resume_ticket_lifetime;
 	DEEPCOPY_VDUP(src->addresspool, new->addresspool);
 	new->config_request = src->config_request;
 	DEEPCOPY_ADDRLIST(src->cfg_dns, new->cfg_dns);

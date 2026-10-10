@@ -4211,8 +4211,9 @@ ikev2_ticket_lt_opaque(struct ikev2_sa *ike_sa)
 		return NULL;
 	if (rmconf && ikev2_use_session_resumption(rmconf) == RCT_BOOL_OFF)
 		return NULL;
-	if (!rmconf || !(keypath = rc_vmem2str(
-	    ikev2_session_resume_ticket_key(rmconf))))
+	if (!rmconf)
+		return NULL;
+	if (!(keypath = rc_vmem2str(ikev2_session_resume_ticket_key(rmconf))))
 		return NULL;				/* not configured */
 	if (ikev2_session_resume_ticket_lifetime(rmconf) <= 0)
 		return NULL;
@@ -4223,10 +4224,8 @@ ikev2_ticket_lt_opaque(struct ikev2_sa *ike_sa)
 		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 		    "RFC 5723: cannot load session_resume_ticket_key '%s' - "
 		    "not issuing a ticket\\n", keypath);
-		rc_vfree((rc_vchar_t *)keypath);
 		return NULL;
 	}
-	rc_vfree((rc_vchar_t *)keypath);
 
 	memset(&st, 0, sizeof(st));
 	st.expires_at = (uint32_t)time(NULL) +
