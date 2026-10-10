@@ -39,17 +39,20 @@
  * In the drop cases the caller is not re-entered, so it must not retain the
  * SA pointer across a submit expecting a later cleanup - teardown owns the
  * relay and eap_msk in both drop paths.
- * The DH that can share the IKE_AUTH window with an EAP round is the
- * initial child DH (and later CREATE_CHILD_SA / rekey DH); those failure
- * paths use ikev2_child_abort / child-expire / rekey abort and leave the
- * IKE SA live - they never call ikev2_abort() - so the common case is that
- * a live overlap still resumes.  The drop path exists for SAs that went
- * DYING/DEAD/DISPOSED independently.  IKE_SA_INIT and IKE_INTERMEDIATE finish
- * before IKE_AUTH, so they cannot overlap an EAP round here; note
- * IKE_INTERMEDIATE DOES call ikev2_abort() on failure, but that is in its
- * own (earlier) exchange, never concurrent with the round.
- * A caller must therefore not condition on which worker failed; it either
- * gets resume() with a live SA or no callback at all (drop).
+ * No DH worker shares the IKE_AUTH window with an EAP round: the AUTH child
+ * is keyed from SK_d (RFC 7296 s2.17), so the responder creates it with
+ * g_i=n_i=0 (ikev2.c responder_ike_sa_auth_cont -> ikev2_create_child_responder
+ * with 0,0) and no child DH exchange runs at IKE_AUTH; CREATE_CHILD_SA / rekey
+ * DH (ikev2_child.c / ikev2_rekey.c) runs only on an ESTABLISHED SA, and
+ * IKE_SA_INIT / IKE_INTERMEDIATE finish before IKE_AUTH.  The round's pin
+ * (eap_round_pending) is therefore orthogonal to crypto_pending because no
+ * crypto_pending job is in flight during IKE_AUTH EAP anyway - the DH/rekey
+ * done()-clears-the-other-pin hazard this design guards cannot actually arise
+ * while the round runs.  Still, IKE_AUTH failure does call ikev2_abort()
+ * (DYING then DEAD, expires children, no dispose), and the SA can be torn
+ * down independently, so the drop path is real and not the EAP worker's
+ * doing.  The caller must therefore not condition on which worker failed; it
+ * either gets resume() with a confirmed-live SA or no callback at all.
  *
  * See ikev2_eap_round.c for the lifetime rationale.  The relay's per-SE
  * state and the MSK live on the caller-owned ike_sa; this module never

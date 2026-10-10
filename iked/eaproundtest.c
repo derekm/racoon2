@@ -492,6 +492,8 @@ main(void)
 				       "released EAP round\n");
 				fails++;
 			} else {
+				printf("eaproundtest: PASS 8c crypto clear "
+				       "kept EAP round pinned\n");
 				/* clear both: must now be reaped */
 				sa->eap_round_pending = 0;
 				ikev2_sa_periodic_task();
