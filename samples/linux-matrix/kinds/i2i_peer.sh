@@ -16,6 +16,12 @@
 I2I_CHARON_ID=charon-i2i
 I2I_CHARON_BIN=${I2I_CHARON_BIN:-/usr/libexec/strongswan/charon}
 I2I_SWANCTL_BIN=${I2I_SWANCTL_BIN:-/usr/bin/swanctl}
+# Libreswan initiator seat (RFC 5723 session resumption interop, kinds/i2ilw.sh):
+# pluto + whack live under /usr/libexec/ipsec on Fedora/libreswan 5.x, and can
+# be overridden per-host (e.g. the box's probe install).
+I2I_LW_PLUTO=${I2I_LW_PLUTO:-/usr/libexec/ipsec/pluto}
+I2I_LW_WHACK=${I2I_LW_WHACK:-/usr/libexec/ipsec/whack}
+I2I_LW_PSK=${I2I_LW_PSK:-racoon2-libreswan-resume-0123456789abcdef}
 I2I_CHARON_VDIR=${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}
 I2I_DH_GROUP=${I2I_DH_GROUP:-ecp256}	# charon IKE proposal DH group
 I2I_PROPOSAL=${I2I_PROPOSAL:-aes256gcm16-prfsha256-${I2I_DH_GROUP}-ke1_mlkem768}	# full charon IKE proposal string
