@@ -2388,8 +2388,34 @@ static int ikev2_retreive_ts_addr(struct ikev2_traffic_selector* ts,
     return 0;
 }
 
-static 
-int ikev2_ts_substitute(struct ikev2_traffic_selector *ts, struct sockaddr *sub)
+
+/* sub's address bytes lie within the TS [start, end] range */
+static int
+ikev2_ts_range_contains(struct ikev2_traffic_selector *ts, struct sockaddr *sub)
+{
+    size_t al = ikev2_ts_addr_size(ts->ts_type);
+    const uint8_t *s = (const uint8_t *)(ts + 1), *e = s + al, *a;
+
+    if (ts->ts_type == IKEV2_TS_IPV4_ADDR_RANGE && sub->sa_family == AF_INET)
+        a = (const uint8_t *)&((struct sockaddr_in *)sub)->sin_addr;
+    else if (ts->ts_type == IKEV2_TS_IPV6_ADDR_RANGE &&
+             sub->sa_family == AF_INET6)
+        a = (const uint8_t *)&((struct sockaddr_in6 *)sub)->sin6_addr;
+    else
+        return 0;
+    return memcmp(s, a, al) <= 0 && memcmp(a, e, al) <= 0;
+}
+
+/*
+ * allow_range: the initiator seat may narrow a returned RANGE locally to
+ * sub when the range contains sub (a responder echoing a wildcard SPD
+ * range for a transport NAT-T child, L5).  The responder seat keeps
+ * rejecting ranges: a transport proposal MUST carry one address
+ * (RFC 7296 s2.23.1).
+ */
+static int
+ikev2_ts_substitute_ex(struct ikev2_traffic_selector *ts, struct sockaddr *sub,
+                       int allow_range)
 {
     struct sockaddr *curr_saddr, *curr_eaddr;
     uint8_t *addr, *saddr;
@@ -2417,7 +2443,8 @@ int ikev2_ts_substitute(struct ikev2_traffic_selector *ts, struct sockaddr *sub)
         return -1;
     }
 
-    if (rcs_cmpsa_wop(curr_saddr, sub) == 0)
+    if (rcs_cmpsa_wop(curr_saddr, sub) == 0 &&
+        (!allow_range || rcs_cmpsa_wop(curr_eaddr, sub) == 0))
     {
         rc_free(curr_saddr);
         rc_free(curr_eaddr);
@@ -2426,11 +2453,18 @@ int ikev2_ts_substitute(struct ikev2_traffic_selector *ts, struct sockaddr *sub)
 
     if (rcs_cmpsa_wop(curr_saddr, curr_eaddr) != 0)
     {
-        plog(PLOG_INTWARN, PLOGLOC, NULL,
-             "IP addresses are range, skipping address substitution\n");
-        rc_free(curr_saddr);
-        rc_free(curr_eaddr);
-        return -1;
+        if (allow_range && ikev2_ts_range_contains(ts, sub)) {
+            plog(PLOG_INFO, PLOGLOC, NULL,
+                 "returned TS is a range %s-%s; narrowing it to %s\n",
+                 rcs_sa2str_wop(curr_saddr), rcs_sa2str_wop(curr_eaddr),
+                 rcs_sa2str_wop(sub));
+        } else {
+            plog(PLOG_INTWARN, PLOGLOC, NULL,
+                 "IP addresses are range, skipping address substitution\n");
+            rc_free(curr_saddr);
+            rc_free(curr_eaddr);
+            return -1;
+        }
     }
 
     ts_type = ts->ts_type;
@@ -2473,7 +2507,7 @@ int ikev2_ts_substitute(struct ikev2_traffic_selector *ts, struct sockaddr *sub)
  */
 static int
 ikev2_ts_payload_substitute(struct ikev2_payload_header *pl,
-                            struct sockaddr *sub)
+                            struct sockaddr *sub, int allow_range)
 {
     struct ikev2payl_traffic_selector *payl;
     uint8_t *p, *end;
@@ -2505,7 +2539,7 @@ ikev2_ts_payload_substitute(struct ikev2_payload_header *pl,
             ts_len < sizeof(struct ikev2_traffic_selector) + 2 * addrsize ||
             (size_t)(end - p) < ts_len)
             return -1;
-        if (ikev2_ts_substitute(ts, sub) != 0)
+        if (ikev2_ts_substitute_ex(ts, sub, allow_range) != 0)
             return -1;
         p += ts_len;
     }
@@ -2737,7 +2771,8 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     if (init_nated) {
         if (ike_sa->oa_i == NULL)
             ike_sa->oa_i = ikev2_ts_payload_original_addr(ts_i_pl);
-        err = ikev2_ts_payload_substitute(ts_i_pl, sub_i);
+        err = ikev2_ts_payload_substitute(ts_i_pl, sub_i,
+                                          ike_sa->is_initiator);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
                  "NAT-T transport: substituted TSi with %s\n",
@@ -2746,7 +2781,8 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     if (err == 0 && resp_nated) {
         if (ike_sa->oa_r == NULL)
             ike_sa->oa_r = ikev2_ts_payload_original_addr(ts_r_pl);
-        err = ikev2_ts_payload_substitute(ts_r_pl, sub_r);
+        err = ikev2_ts_payload_substitute(ts_r_pl, sub_r,
+                                          ike_sa->is_initiator);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
                  "NAT-T transport: substituted TSr with %s\n",
