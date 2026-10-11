@@ -315,6 +315,11 @@ int addrlist_equal(struct rc_addrlist *, struct rc_addrlist *);
 void ikev2_dump_ts(const char *, struct ikev2payl_traffic_selector *);
 void ikev2_dump_traffic_selector_h(const char *, void *);
 
-/* RFC 7296 §2.23.1: single-address TS payload from a TS payload's first
- * address (post-NAT narrowing for the NAT-T transport response). */
-rc_vchar_t *ikev2_ts_payload_single(struct ikev2_payload_header *);
+/* RFC 7296 s2.9 / s2.23.1: narrow the selector-derived response TS
+ * (ikev2payl_ts_h + selectors, as in child_param.ts_i/ts_r) to its
+ * intersection with the proposed TS payload: per-selector address range,
+ * protocol and port range intersection, so the response is never wider
+ * than the proposal.  NULL if nothing intersects or on allocation
+ * failure (*nomem set).  Caller owns the result. */
+rc_vchar_t *ikev2_ts_narrow_to_proposal(struct ikev2_payload_header *proposed,
+					const rc_vchar_t *selresp, int *nomem);

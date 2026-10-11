@@ -958,43 +958,51 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 			goto ts_unacceptable;
 
 		/*
-		 * N3 (RFC 7296 §2.23.1): when the substituted (post-NAT)
-		 * lookup won, narrow the response TS to the single addresses
-		 * we actually matched on, instead of echoing whatever the
-		 * selector's srclist/dstlist expand to.  A wildcard SPD
-		 * (0.0.0.0/0) would otherwise make the response TSi/TSr a
-		 * full range, and the initiator (which runs
-		 * ikev2_ts_substitute on the received TS) aborts the child
-		 * on any range — "Could not perform address substitution",
-		 * no SAD entries on its side (i2inatt-transport-wild).
+		 * N3 (RFC 7296 s2.23.1 + s2.9): when the substituted
+		 * (post-NAT) lookup won, the response TS is the selector's
+		 * TS (child_param.ts_i/ts_r) narrowed to the substituted
+		 * proposal: the single post-NAT addresses, with the
+		 * proposal's protocol and ports intersected with the
+		 * selector's.  Echoing the selector expansion would hand the
+		 * initiator a wildcard range, and rebuilding from the
+		 * address alone (proto ANY, ports 0-65535) would answer
+		 * wider than proposed, which s2.9 forbids.  Both address
+		 * families are narrowed the same way.
 		 */
-		if (subst_won && sel4 && !sel6) {
+		if (subst_won) {
 			struct ikev2_child_param *n3param = &child_sa->child_param;
-			rc_vchar_t *n3i, *n3r;
+			rc_vchar_t *n3i = NULL, *n3r = NULL;
+			int nm_i = 0, nm_r = 0;
 
-			/*
-			 * The already-substituted proposed_ts_i/ts_r now hold
-			 * the post-NAT single addresses (192.0.5.254 and
-			 * 192.0.5.1).  Rebuild the response TS as those exact
-			 * endpoints instead of the selector's expansion.
-			 */
-			n3i = ikev2_ts_payload_single(proposed_ts_i);
-			n3r = ikev2_ts_payload_single(proposed_ts_r);
-			if (n3i == NULL || n3r == NULL) {
+			if (n3param->ts_i)
+				n3i = ikev2_ts_narrow_to_proposal(proposed_ts_i,
+				    n3param->ts_i, &nm_i);
+			if (n3param->ts_r)
+				n3r = ikev2_ts_narrow_to_proposal(proposed_ts_r,
+				    n3param->ts_r, &nm_r);
+			if ((n3param->ts_i && !n3i) || (n3param->ts_r && !n3r)) {
 				if (n3i)
 					rc_vfree(n3i);
 				if (n3r)
 					rc_vfree(n3r);
-				goto fail_nomem;
+				if (nm_i || nm_r)
+					goto fail_nomem;
+				isakmp_log(ike_sa, local, remote, 0,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "N3: selector TS does not intersect "
+					   "the substituted proposal\n");
+				goto ts_unacceptable;
 			}
-			if (n3param->ts_i)
+			if (n3i) {
 				rc_vfree(n3param->ts_i);
-			if (n3param->ts_r)
+				n3param->ts_i = n3i;
+			}
+			if (n3r) {
 				rc_vfree(n3param->ts_r);
-			n3param->ts_i = n3i;
-			n3param->ts_r = n3r;
+				n3param->ts_r = n3r;
+			}
 			TRACE((PLOGLOC,
-			    "N3 narrowed response TS to post-NAT endpoints\n"));
+			    "N3 narrowed response TS to the post-NAT proposal\n"));
 		}
 	}
 #else

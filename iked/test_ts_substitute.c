@@ -645,6 +645,244 @@ test_natoa_originals_v6(void)
 	fixture_free(&f);
 }
 
+/* ---- N3 response narrowing (RFC 7296 s2.9 + s2.23.1) ---- */
+
+struct tsent {
+	uint8_t type, proto;
+	uint16_t sport, eport;
+	const char *start, *end;
+};
+
+/* TS payload (generic header + ts_h + entries) from n entries */
+static rc_vchar_t *
+make_ts_payload_ents(const struct tsent *e, int n)
+{
+	rc_vchar_t *v;
+	struct ikev2payl_traffic_selector *payl;
+	size_t len = sizeof(*payl);
+	uint8_t *p;
+	int i;
+
+	for (i = 0; i < n; i++)
+		len += sizeof(struct ikev2_traffic_selector) + 2 *
+		    (e[i].type == IKEV2_TS_IPV6_ADDR_RANGE ? 16 : 4);
+	v = rc_vmalloc(len);
+	if (v == NULL)
+		exit(1);
+	memset(v->v, 0, v->l);
+	payl = (struct ikev2payl_traffic_selector *)v->v;
+	payl->header.payload_length = htons((uint16_t)len);
+	payl->tsh.num_ts = (uint8_t)n;
+	p = (uint8_t *)(payl + 1);
+	for (i = 0; i < n; i++) {
+		struct ikev2_traffic_selector *ts = (void *)p;
+		size_t al = e[i].type == IKEV2_TS_IPV6_ADDR_RANGE ? 16 : 4;
+
+		ts->ts_type = e[i].type;
+		ts->protocol_id = e[i].proto;
+		ts->selector_length = htons((uint16_t)(sizeof(*ts) + 2 * al));
+		ts->start_port = htons(e[i].sport);
+		ts->end_port = htons(e[i].eport);
+		ts_pton((uint8_t *)(ts + 1), e[i].type, e[i].start);
+		ts_pton((uint8_t *)(ts + 1) + al, e[i].type, e[i].end);
+		p += sizeof(*ts) + 2 * al;
+	}
+	return v;
+}
+
+/* selector-derived response form (ts_h + entries, no generic header) */
+static rc_vchar_t *
+make_selresp(const struct tsent *e, int n)
+{
+	rc_vchar_t *pl = make_ts_payload_ents(e, n), *v;
+	size_t hl = sizeof(struct ikev2_payload_header);
+
+	v = rc_vmalloc(pl->l - hl);
+	if (v == NULL)
+		exit(1);
+	memcpy(v->v, (uint8_t *)pl->v + hl, v->l);
+	rc_vfree(pl);
+	return v;
+}
+
+/* does entry k of a ts_h-form buffer equal e? */
+static int
+resp_entry_is(const rc_vchar_t *r, int k, const struct tsent *e)
+{
+	const struct ikev2payl_ts_h *h = (const void *)r->v;
+	const uint8_t *p = (const uint8_t *)(h + 1);
+	const uint8_t *end = (const uint8_t *)r->v + r->l;
+	uint8_t want[32];
+	size_t al;
+	int i;
+
+	if (k >= h->num_ts)
+		return 0;
+	for (i = 0; i < k; i++)
+		p += ntohs(((const struct ikev2_traffic_selector *)p)
+		    ->selector_length);
+	{
+		const struct ikev2_traffic_selector *ts = (const void *)p;
+
+		al = ts->ts_type == IKEV2_TS_IPV6_ADDR_RANGE ? 16 : 4;
+		if (p + sizeof(*ts) + 2 * al > end)
+			return 0;
+		ts_pton(want, e->type, e->start);
+		ts_pton(want + al, e->type, e->end);
+		return ts->ts_type == e->type && ts->protocol_id == e->proto &&
+		    ntohs(ts->start_port) == e->sport &&
+		    ntohs(ts->end_port) == e->eport &&
+		    memcmp(ts + 1, want, 2 * al) == 0;
+	}
+}
+
+#define V4 IKEV2_TS_IPV4_ADDR_RANGE
+#define V6 IKEV2_TS_IPV6_ADDR_RANGE
+
+/* A specific proposal (TCP/80) against a wildcard selector must come back
+ * as the single post-NAT address WITH the proposed protocol and port -
+ * never proto ANY / 0-65535, which would be wider than proposed. */
+static void
+test_narrow_keeps_proposed_proto_ports(void)
+{
+	struct tsent prop[] = { { V4, 6, 80, 80, LOCAL4_ADDR, LOCAL4_ADDR } };
+	struct tsent sel[] = { { V4, 0, 0, 65535, "0.0.0.0",
+	    "255.255.255.255" } };
+	struct tsent want = { V4, 6, 80, 80, LOCAL4_ADDR, LOCAL4_ADDR };
+	rc_vchar_t *pl = make_ts_payload_ents(prop, 1);
+	rc_vchar_t *sr = make_selresp(sel, 1), *r;
+	int nm;
+
+	r = ikev2_ts_narrow_to_proposal(ts_payl(pl), sr, &nm);
+	TEST_CHECK(r != NULL && nm == 0);
+	if (r) {
+		TEST_CHECK(((struct ikev2payl_ts_h *)r->v)->num_ts == 1);
+		TEST_CHECK(resp_entry_is(r, 0, &want));
+		rc_vfree(r);
+	}
+	rc_vfree(pl);
+	rc_vfree(sr);
+}
+
+/* A proto-ANY proposal is narrowed to the selector's protocol/port. */
+static void
+test_narrow_to_selector_proto(void)
+{
+	struct tsent prop[] = { { V4, 0, 0, 65535, LOCAL4_ADDR, LOCAL4_ADDR } };
+	struct tsent sel[] = { { V4, 6, 22, 22, "203.0.113.0",
+	    "203.0.113.255" } };
+	struct tsent want = { V4, 6, 22, 22, LOCAL4_ADDR, LOCAL4_ADDR };
+	rc_vchar_t *pl = make_ts_payload_ents(prop, 1);
+	rc_vchar_t *sr = make_selresp(sel, 1), *r;
+	int nm;
+
+	r = ikev2_ts_narrow_to_proposal(ts_payl(pl), sr, &nm);
+	TEST_CHECK(r != NULL && resp_entry_is(r, 0, &want));
+	if (r)
+		rc_vfree(r);
+	rc_vfree(pl);
+	rc_vfree(sr);
+}
+
+/* Disjoint protocol or port range: nothing to answer (not a nomem). */
+static void
+test_narrow_disjoint_rejected(void)
+{
+	struct tsent prop[] = { { V4, 17, 53, 53, LOCAL4_ADDR, LOCAL4_ADDR } };
+	struct tsent sel_proto[] = { { V4, 6, 0, 65535, "0.0.0.0",
+	    "255.255.255.255" } };
+	struct tsent sel_port[] = { { V4, 0, 1000, 2000, "0.0.0.0",
+	    "255.255.255.255" } };
+	struct tsent sel_addr[] = { { V4, 0, 0, 65535, "10.0.0.0",
+	    "10.255.255.255" } };
+	rc_vchar_t *pl = make_ts_payload_ents(prop, 1), *sr;
+	int nm;
+
+	sr = make_selresp(sel_proto, 1);
+	TEST_CHECK(ikev2_ts_narrow_to_proposal(ts_payl(pl), sr, &nm) == NULL &&
+	    nm == 0);
+	rc_vfree(sr);
+	sr = make_selresp(sel_port, 1);
+	TEST_CHECK(ikev2_ts_narrow_to_proposal(ts_payl(pl), sr, &nm) == NULL &&
+	    nm == 0);
+	rc_vfree(sr);
+	sr = make_selresp(sel_addr, 1);
+	TEST_CHECK(ikev2_ts_narrow_to_proposal(ts_payl(pl), sr, &nm) == NULL &&
+	    nm == 0);
+	rc_vfree(sr);
+	rc_vfree(pl);
+}
+
+/* IPv6 wildcard transport-NAT is narrowed exactly like IPv4, and a
+ * mixed-family selector response keeps only same-family intersections. */
+static void
+test_narrow_ipv6_and_mixed_family(void)
+{
+	struct tsent prop[] = {
+		{ V6, 6, 443, 443, LOCAL6_ADDR, LOCAL6_ADDR },
+		{ V6, 0, 0, 65535, LOCAL6_ADDR, LOCAL6_ADDR },
+	};
+	struct tsent sel[] = {
+		{ V4, 0, 0, 65535, "0.0.0.0", "255.255.255.255" },
+		{ V6, 0, 0, 65535, "::",
+		  "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff" },
+	};
+	struct tsent w0 = { V6, 6, 443, 443, LOCAL6_ADDR, LOCAL6_ADDR };
+	struct tsent w1 = { V6, 0, 0, 65535, LOCAL6_ADDR, LOCAL6_ADDR };
+	rc_vchar_t *pl = make_ts_payload_ents(prop, 2);
+	rc_vchar_t *sr = make_selresp(sel, 2), *r;
+	int nm;
+
+	r = ikev2_ts_narrow_to_proposal(ts_payl(pl), sr, &nm);
+	TEST_CHECK(r != NULL);
+	if (r) {
+		TEST_CHECK(((struct ikev2payl_ts_h *)r->v)->num_ts == 2);
+		TEST_CHECK(resp_entry_is(r, 0, &w0));
+		TEST_CHECK(resp_entry_is(r, 1, &w1));
+		rc_vfree(r);
+	}
+	rc_vfree(pl);
+	rc_vfree(sr);
+}
+
+/* Truncated / empty inputs are rejected without reading past them. */
+static void
+test_narrow_malformed(void)
+{
+	struct tsent prop[] = { { V4, 0, 0, 65535, LOCAL4_ADDR, LOCAL4_ADDR } };
+	struct tsent sel[] = { { V4, 0, 0, 65535, "0.0.0.0",
+	    "255.255.255.255" } };
+	rc_vchar_t *pl = make_ts_payload_ents(prop, 1);
+	rc_vchar_t *sr = make_selresp(sel, 1);
+	int nm;
+
+	/* proposal claims 2 TS, carries 1 */
+	((struct ikev2payl_traffic_selector *)pl->v)->tsh.num_ts = 2;
+	{
+		rc_vchar_t *r = ikev2_ts_narrow_to_proposal(ts_payl(pl), sr,
+		    &nm);
+		TEST_CHECK(r != NULL &&
+		    ((struct ikev2payl_ts_h *)r->v)->num_ts == 1);
+		if (r)
+			rc_vfree(r);
+	}
+	/* selector response claims 3 TS, carries 1 */
+	((struct ikev2payl_traffic_selector *)pl->v)->tsh.num_ts = 1;
+	((struct ikev2payl_ts_h *)sr->v)->num_ts = 3;
+	{
+		rc_vchar_t *r = ikev2_ts_narrow_to_proposal(ts_payl(pl), sr,
+		    &nm);
+		TEST_CHECK(r != NULL &&
+		    ((struct ikev2payl_ts_h *)r->v)->num_ts == 1);
+		if (r)
+			rc_vfree(r);
+	}
+	TEST_CHECK(ikev2_ts_narrow_to_proposal(NULL, sr, &nm) == NULL);
+	TEST_CHECK(ikev2_ts_narrow_to_proposal(ts_payl(pl), NULL, &nm) == NULL);
+	rc_vfree(pl);
+	rc_vfree(sr);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -672,6 +910,11 @@ main(int argc, char *argv[])
 	RUN_TEST(test_natoa_originals);
 	RUN_TEST(test_natoa_range_unset);
 	RUN_TEST(test_natoa_originals_v6);
+	RUN_TEST(test_narrow_keeps_proposed_proto_ports);
+	RUN_TEST(test_narrow_to_selector_proto);
+	RUN_TEST(test_narrow_disjoint_rejected);
+	RUN_TEST(test_narrow_ipv6_and_mixed_family);
+	RUN_TEST(test_narrow_malformed);
 
 	plog_clean();
 
