@@ -916,6 +916,10 @@ void ikev2_resume_forget(struct ikev2_sa *);
 void ikev2_resume_dump_all(void);
 void ikev2_resume_load(void);
 
+/* RFC 4555 MOBIKE, defined in ikev2_mobike.c. */
+void ikev2_mobike_apply(struct ikev2_sa *, struct sockaddr *, struct sockaddr *);
+int ikev2_mobike_probe_next(struct ikev2_sa *);
+
 /* IKEv2 transmit / retransmit / msgid-window helpers, defined in
  * ikev2_transmit.c. */
 int ikev2_check_message_ordering(struct ikev2_sa *, uint32_t, int,
