@@ -797,8 +797,11 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	/* RFC 5723 s4.3.2: reject with an unprotected N(TICKET_NACK); the
 	 * client then falls back to a normal IKE exchange.  Abort this
 	 * half-open SA (no resumed state was established). */
-	(void)ikev2_respond_with_notify(packet, remote, local,
-	    IKEV2_TICKET_NACK, 0, 0);
+	ikev2_respond_with_notify_exch(packet, remote, local,
+	    IKEV2EXCH_IKE_SESSION_RESUME, IKEV2_TICKET_NACK, 0, 0);
+	isakmp_log(ike_sa, local, remote, packet, PLOG_INFO, PLOGLOC,
+	    "RFC 5723: sent N(TICKET_NACK) in IKE_SESSION_RESUME (38) "
+	    "response\n");
 	ikev2_update_message_id(ike_sa, get_uint32(&ikehdr->message_id), FALSE);
 	ikev2_abort(ike_sa, ECONNREFUSED);
 	rc = 0;

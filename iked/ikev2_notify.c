@@ -1099,6 +1099,22 @@ ikev2_respond_with_notify(rc_vchar_t *request, struct sockaddr *remote,
 			  struct sockaddr *local, int msg_type, uint8_t *nmsg,
 			  int nmsg_len)
 {
+	ikev2_respond_with_notify_exch(request, remote, local,
+				       IKEV2EXCH_IKE_SA_INIT, msg_type, nmsg,
+				       nmsg_len);
+}
+
+/*
+ * send an unprotected, SA-less response with a single Notify payload in
+ * the given exchange: IKE_SA_INIT (COOKIE, INVALID_KE_PAYLOAD, ...) or
+ * IKE_SESSION_RESUME (RFC 5723 s4.3.2 TICKET_NACK, which is the response
+ * to the exchange-38 request and so MUST carry exchange type 38).
+ */
+void
+ikev2_respond_with_notify_exch(rc_vchar_t *request, struct sockaddr *remote,
+			       struct sockaddr *local, int exch_type,
+			       int msg_type, uint8_t *nmsg, int nmsg_len)
+{
 	struct ikev2_header *reqhdr;
 	rc_vchar_t *reply = 0;
 	struct ikev2_header *replyhdr;
@@ -1121,7 +1137,7 @@ ikev2_respond_with_notify(rc_vchar_t *request, struct sockaddr *remote,
 	memset(&replyhdr->responder_spi, 0, sizeof(isakmp_cookie_t));
 	replyhdr->next_payload = IKEV2_PAYLOAD_NOTIFY;
 	replyhdr->version = IKEV2_VERSION;
-	replyhdr->exchange_type = IKEV2EXCH_IKE_SA_INIT;
+	replyhdr->exchange_type = exch_type;
 	replyhdr->flags = IKEV2FLAG_RESPONSE;
 	replyhdr->message_id = 0;
 	replyhdr->length = htonl(reply_len);
@@ -1135,7 +1151,11 @@ ikev2_respond_with_notify(rc_vchar_t *request, struct sockaddr *remote,
 	notify->nh.protocol_id = 0;
 	notify->nh.spi_size = 0;
 	put_uint16(&notify->nh.notify_message_type, msg_type);
-	memcpy(notify + 1, nmsg, nmsg_len);
+	/* A data-less notify (TICKET_NACK) passes nmsg == NULL, len 0;
+	 * memcpy(dst, NULL, 0) is undefined behaviour (C11 7.24.1p2) and
+	 * aborts a -fno-sanitize-recover build before the reply is sent. */
+	if (nmsg_len > 0)
+		memcpy(notify + 1, nmsg, nmsg_len);
 
 #ifdef HAVE_PRINT_ISAKMP_C
 	isakmp_printpacket(reply, local, remote, 1);
