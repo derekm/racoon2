@@ -23,7 +23,9 @@
 # Requires libreswan (pluto 5.x with session resumption) + racoon2 built
 # with session_resumption available.  gate=addke: runs on the box and the
 # Fedora 44 container (dnf libreswan); the ADDKE gate skips it elsewhere.
-# NOT a verified PASS until a counted CI/box run shows all gates raised.
+# COUNTED BOX PASS 2026-10-11: up1=1 up2=1 ticket=1 accepted=1
+# authby_resume=1 established=2, responder 'accepted IKE_SESSION_RESUME
+# ticket, resumed keys derived, Nr sent' + pluto authby=session-resume.
 
 kind_i2ilw() {
 	name=$1
