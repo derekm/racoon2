@@ -19,6 +19,9 @@
 
 #define R2TICK_KEY_ID_LEN	8
 
+/* filename prefix for the initiator-side persistence store (see below) */
+#define R2TICK_STORE_PREFIX	"r2tkt-"
+
 /* The "from the ticket" IKE state (RFC 5723 s5).  All rc_vchar_t members
  * are read by create / owned-by-caller on a successful parse (free with
  * rc_vfree).  expires_at is absolute unix time. */
@@ -79,5 +82,28 @@ int r2ticket_key_load(const char *path, rc_vchar_t **key);
 rc_vchar_t *r2ticket_lt_opaque(const rc_vchar_t *tkey,
     const uint8_t key_id[R2TICK_KEY_ID_LEN], const struct r2ticket_state *st,
     uint32_t lifetime_sec);
+
+/*
+ * INITIATOR-side persistence store (RFC 5723 s4.2/s4.3): the client keeps the
+ * responder-minted ticket plus the "from the ticket" IKE state so that, after
+ * the original IKE SA dies, it can resume a NEW exchange 38 to the same peer.
+ * This store is deliberately SEPARATE from the daemon's legacy crash-resume
+ * dir (iked/ikev2_resume.c) and from the responder's live ticket key.
+ *
+ * A stored entry binds a filesystem-safe 'key' (the caller formats it, e.g. a
+ * remote IP/ID string) to {lifetime||ticket} and the packed r2ticket_state.
+ * The record is length-checked on load; bytes are cleansed before free.
+ *
+ *   r2ticket_store_save(dir, key, ticket_lt, st)  0 ok / -1 on any I/O or
+ *                          (ticket_lt = 4-octet lifetime||ticket)
+ *   r2ticket_store_load(dir, key, ticket_lt, st)  0 + owned *ticket_lt and
+ *                          *st filled (caller frees) / -1 missing or corrupt
+ *   r2ticket_store_clear(dir, key)
+ */
+int r2ticket_store_save(const char *dir, const char *key,
+    const rc_vchar_t *ticket_lt, const struct r2ticket_state *st);
+int r2ticket_store_load(const char *dir, const char *key,
+    rc_vchar_t **ticket_lt, struct r2ticket_state *st);
+void r2ticket_store_clear(const char *dir, const char *key);
 
 #endif /* IKEV2_RESUME_TICKET_H */
