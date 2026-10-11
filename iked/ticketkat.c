@@ -362,6 +362,12 @@ main(void)
 				}
 				free(path);
 			}
+			/* the second load clears *ticket_lt (store_load) before
+			 * reading, so hand back the first load's ticket and fields
+			 * first -- the retry must not leak them (LeakSanitizer) */
+			if (tload) rc_vfree(tload);
+			tload = NULL;
+			free_state(&got);
 			CHECK(r2ticket_store_load(sdir, "peer-a", &tload, &got) == -1,
 			      "trailing-bytes: record refused by strict length");
 		}
