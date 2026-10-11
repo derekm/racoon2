@@ -916,6 +916,16 @@ void ikev2_resume_forget(struct ikev2_sa *);
 void ikev2_resume_dump_all(void);
 void ikev2_resume_load(void);
 
+/* IKE_SA_INIT exchange surface, defined in ikev2_sa_init.c. */
+void ikev2_initiator_start(struct ikev2_sa *);
+int ikev2_check_new_request(rc_vchar_t *, struct sockaddr *, struct sockaddr *);
+void responder_state0_recv(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void initiator_ike_sa_init_recv(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+
+int ikev2_spi_is_zero(isakmp_cookie_t *);
+
 /* RFC 5723 session-resumption surface, defined in ikev2_session_resume.c. */
 void ike_msg_resume_store_save_from_sa(struct ikev2_sa *);
 int ike_msg_session_resume_available(struct ikev2_sa *);
