@@ -5074,8 +5074,21 @@ ikev2_maybe_issue_ticket(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 	rc_vchar_t *lt;
 
 	lt = ikev2_ticket_lt_opaque(ike_sa);
-	if (!lt)
+	if (!lt) {
+		/* RFC 5723 s4.1: when a peer N(TICKET_REQUEST)s and we
+		 * support resumption but cannot (or choose not to) grant
+		 * one, we MUST answer with N(TICKET_NACK) — not silence.
+		 * A NULL here is ambiguous (also returned when no request
+		 * was received), so only NACK when ticket_requested is
+		 * actually set. */
+		if (ike_sa->ticket_requested)
+			ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(
+						IKEV2_NOTIFY_PROTO_NONE, 0, 0,
+						IKEV2_TICKET_NACK, 0, 0),
+					    TRUE);
 		return;
+	}
 	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 	    "RFC 5723: issuing session-resumption ticket\n");
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
@@ -5816,6 +5829,21 @@ responder_ike_sa_auth_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		for (type = ikehdr->next_payload;
 		     type != IKEV2_NO_NEXT_PAYLOAD;
 		     POINT_NEXT_PAYLOAD(p, type)) {
+			/* RFC 5723 s4.3.3: a resuming client typically
+			 * requests a NEW ticket in the resumed IKE_AUTH so
+			 * it can resume again after a second failure.  Open
+			 * the notify and set ticket_requested so the
+			 * resumed IKE_AUTH response (via
+			 * responder_ike_sa_auth_cont ->
+			 * ikev2_maybe_issue_ticket) re-issues one. */
+			if (type == IKEV2_PAYLOAD_NOTIFY) {
+				if (get_notify_type(
+				    (struct ikev2payl_notify *)p) ==
+				    IKEV2_TICKET_REQUEST) {
+					ike_sa->ticket_requested = 1;
+					continue;
+				}
+			}
 			switch (type) {
 			case IKEV2_PAYLOAD_AUTH:
 				if (auth) {	/* duplicate */
