@@ -761,3 +761,49 @@ r2ticket_store_clear(const char *dir, const char *key)
 	unlink(path);
 	racoon_free(path);
 }
+
+/* ---- RFC 5723 s4.3.1 used-ticket cache (see header) ---- */
+struct r2tick_seen {
+	uint32_t expires_at;		/* 0 = free slot */
+	uint8_t h[32];			/* SHA-256(opaque ticket) */
+};
+static struct r2tick_seen r2tick_seen[R2TICK_REPLAY_SLOTS];
+
+int
+r2ticket_replay_mark(const rc_vchar_t *ticket, uint32_t expires_at,
+    uint32_t now)
+{
+	uint8_t h[32];
+	unsigned int hl = 0;
+	int i, slot = -1;
+
+	if (!ticket || !ticket->l || expires_at <= now)
+		return -1;
+	if (EVP_Digest(ticket->v, ticket->l, h, &hl, EVP_sha256(), NULL) != 1
+	    || hl != sizeof(h))
+		return -1;
+	for (i = 0; i < R2TICK_REPLAY_SLOTS; i++) {
+		struct r2tick_seen *e = &r2tick_seen[i];
+
+		if (e->expires_at && e->expires_at <= now)
+			memset(e, 0, sizeof(*e));	/* ticket expired */
+		if (!e->expires_at) {
+			if (slot < 0)
+				slot = i;
+			continue;
+		}
+		if (memcmp(e->h, h, sizeof(h)) == 0)
+			return 1;
+	}
+	if (slot < 0)
+		return -1;
+	r2tick_seen[slot].expires_at = expires_at;
+	memcpy(r2tick_seen[slot].h, h, sizeof(h));
+	return 0;
+}
+
+void
+r2ticket_replay_reset(void)
+{
+	memset(r2tick_seen, 0, sizeof(r2tick_seen));
+}

@@ -315,6 +315,48 @@ main(void)
 		if (lt) rc_vfree(lt);
 	}
 
+	/* ---- RFC 5723 s4.3.1 used-ticket cache (review M4) ---- */
+	{
+		rc_vchar_t *ta = rc_vnew("ticket-A", 8);
+		rc_vchar_t *tb = rc_vnew("ticket-B", 8);
+		uint8_t buf[8];
+		int i, full_ok = 1;
+
+		r2ticket_replay_reset();
+		CHECK(r2ticket_replay_mark(ta, 2000, 1000) == 0,
+		      "replay: first use of a ticket is accepted");
+		CHECK(r2ticket_replay_mark(ta, 2000, 1001) == 1,
+		      "replay: second use of the same ticket is rejected");
+		CHECK(r2ticket_replay_mark(tb, 2000, 1001) == 0,
+		      "replay: a different ticket is accepted");
+		CHECK(r2ticket_replay_mark(ta, 2000, 1999) == 1,
+		      "replay: still rejected up to its expiry");
+		CHECK(r2ticket_replay_mark(ta, 3000, 2000) == 0,
+		      "replay: entry ages out at the ticket's expiry");
+		CHECK(r2ticket_replay_mark(ta, 900, 1000) == -1,
+		      "replay: an already-expired ticket is never recorded");
+		/* fill: every slot holds an unexpired ticket -> fail closed */
+		r2ticket_replay_reset();
+		for (i = 0; i < R2TICK_REPLAY_SLOTS; i++) {
+			rc_vchar_t *t;
+
+			memcpy(buf, &i, sizeof(i));
+			memset(buf + sizeof(i), 0x5a, sizeof(buf) - sizeof(i));
+			t = rc_vnew(buf, sizeof(buf));
+			if (!t || r2ticket_replay_mark(t, 5000, 1000) != 0)
+				full_ok = 0;
+			rc_vfree(t);
+		}
+		CHECK(full_ok, "replay: cache holds R2TICK_REPLAY_SLOTS tickets");
+		CHECK(r2ticket_replay_mark(ta, 5000, 1000) == -1,
+		      "replay: full cache of live tickets fails closed");
+		CHECK(r2ticket_replay_mark(ta, 9000, 5000) == 0,
+		      "replay: slots free again once those tickets expire");
+		r2ticket_replay_reset();
+		rc_vfree(ta);
+		rc_vfree(tb);
+	}
+
 	/* ---- zero-length-SA / corrupt-record hardening (deep-review) ----
 	 * r2tick_unpack yields st.sa==NULL for a zero-length SA field; the
 	 * resume rebuild paths MUST fail closed on that (they now NULL-guard
