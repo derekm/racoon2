@@ -459,10 +459,9 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 	if (sa->addke_link)
 		rc_vfreez(sa->addke_link);
 #ifdef WITH_ADDKE
-	if (sa->addke_priv) {
-		EVP_PKEY_free((EVP_PKEY *)sa->addke_priv);
-		sa->addke_priv = NULL;
-	}
+	/* ML-KEM keypair or classical-DH round state (RFC 9370 rounds may
+	 * be a DH group); the helper NULLs every field it frees */
+	ikev2_addke_round_state_clear(sa);
 #endif
 	/*
 	 * Informational-exchange child_sa (DPD / DELETE echo) has
@@ -2890,18 +2889,16 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 		child_sa->addke_round = 0;
 		if (nrounds > 0) {
 			rc_vchar_t *pub = NULL;
-			EVP_PKEY *kp = NULL;
 			unsigned int method = child_sa->addke_methods[0];
 
-			if (ikev2_addke_mlkem_keygen(method, &pub, &kp) == 0 &&
-			    pub && kp) {
+			if (ikev2_addke_round_keygen(child_sa, method,
+						     &pub) == 0 && pub) {
 				child_sa->addke_pending = 1;
 				/* RFC 9370 s2.2.4: echo the responder-chosen link the
 				 * CREATE_CHILD_SA response carried in N(16441); only mint a
 				 * fresh link when the peer sent none. */
 				if (child_sa->addke_link == NULL)
 					child_sa->addke_link = random_bytes(16);
-				child_sa->addke_priv = kp;
 				child_sa->addke_method = method;
 				TRACE((PLOGLOC,
 				       "initiator: negotiated %d ADDKE round(s) "
@@ -2914,8 +2911,7 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 					    PLOG_INTERR, PLOGLOC,
 					    "failed sending IKE_FOLLOWUP_KE\n");
 					rc_vfree(pub);
-					EVP_PKEY_free(kp);
-					child_sa->addke_priv = NULL;
+					ikev2_addke_round_state_clear(child_sa);
 					child_sa->addke_pending = 0;
 					goto abort;
 				}
@@ -2929,7 +2925,6 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 				goto done;
 			}
 			rc_vfree(pub);
-			EVP_PKEY_free(kp);
 		}
 	}
 #endif
