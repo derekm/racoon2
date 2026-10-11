@@ -31,6 +31,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -601,7 +602,10 @@ r2ticket_store_save(const char *dir, const char *key,
 	if (!path)
 		goto out;
 
-	fp = fopen(path, "wb");
+	/* Defend against umask: force 0600 (owner-only) regardless of the
+	 * caller's umask, like the legacy resume-dump writer.  The ticket is
+	 * keyed to us and lets the holder resume into this remote. */
+	fp = fdopen(open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600), "wb");
 	if (!fp)
 		goto out;
 	tlen = ticket_lt->l;
