@@ -916,6 +916,24 @@ void ikev2_resume_forget(struct ikev2_sa *);
 void ikev2_resume_dump_all(void);
 void ikev2_resume_load(void);
 
+/* IKE_AUTH exchange surface, defined in ikev2_sa_auth.c. */
+void initiator_ike_sa_auth_recv0(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void responder_ike_sa_auth_recv0(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void initiator_ike_sa_auth_cont(struct ikev2_sa *, int, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void responder_ike_sa_auth_cont(struct ikev2_sa *, int, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void initiator_ike_sa_auth_recv(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void responder_ike_sa_auth_recv(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void responder_ike_sa_auth_eap_recv(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void responder_ike_sa_auth_eap_final_recv(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+
 /* RFC 4555 MOBIKE, defined in ikev2_mobike.c. */
 void ikev2_mobike_apply(struct ikev2_sa *, struct sockaddr *, struct sockaddr *);
 int ikev2_mobike_probe_next(struct ikev2_sa *);
