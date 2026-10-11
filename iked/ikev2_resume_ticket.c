@@ -123,7 +123,8 @@ r2ticket_state_free(struct r2ticket_state *st)
 	if (st->sa) { rc_vfree(st->sa); st->sa = NULL; }
 	if (st->idi) { rc_vfree(st->idi); st->idi = NULL; }
 	if (st->idr) { rc_vfree(st->idr); st->idr = NULL; }
-	if (st->sk_d) { rc_vfree(st->sk_d); st->sk_d = NULL; }
+	/* the OLD SK_d resumes the session: cleanse, do not just free */
+	if (st->sk_d) { rc_vfreez(st->sk_d); st->sk_d = NULL; }
 	memset(st, 0, sizeof(*st));
 }
 
@@ -284,6 +285,7 @@ r2ticket_create(const rc_vchar_t *tkey, const uint8_t key_id[R2TICK_KEY_ID_LEN],
 	if (o != out->l) { rc_vfreez(out); out = NULL; }
 
  out:
+	OPENSSL_cleanse(subkey, sizeof(subkey));
 	if (pt) rc_vfreez(pt);
 	if (ctx) EVP_CIPHER_CTX_free(ctx);
 	if (ct) racoon_free(ct);
@@ -295,7 +297,7 @@ r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
     struct r2ticket_state *st)
 {
 	const uint8_t *p;
-	size_t len, bodylen;
+	size_t len, bodylen = 0;
 	EVP_CIPHER_CTX *ctx = NULL;
 	uint8_t subkey[32];
 	uint8_t *plain = NULL;
@@ -314,8 +316,10 @@ r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
 		return -1;
 
 	/* Reconstruct the per-SA GCM subkey (same derivation as create). */
-	if (r2tick_subkey(tkey, p + 4, subkey) != 0)
+	if (r2tick_subkey(tkey, p + 4, subkey) != 0) {
+		OPENSSL_cleanse(subkey, sizeof(subkey));
 		return -1;
+	}
 
 	if (!(ctx = EVP_CIPHER_CTX_new()))
 		goto out;
@@ -363,10 +367,14 @@ r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
 	goto out;
 
  out:
+	OPENSSL_cleanse(subkey, sizeof(subkey));
 	if (rc != 0)
 		r2ticket_state_free(st);
-	if (plain)
+	if (plain) {
+		/* the decrypted state carries the OLD SK_d */
+		OPENSSL_cleanse(plain, bodylen ? bodylen : 1);
 		racoon_free(plain);
+	}
 	if (ctx)
 		EVP_CIPHER_CTX_free(ctx);
 	return rc;
@@ -747,7 +755,7 @@ out:
 	if (tl)
 		rc_vfree(tl);
 	if (pack)
-		rc_vfree(pack);
+		rc_vfreez(pack);	/* serialized state holds the OLD SK_d */
 	fclose(fp);
 	return rc;
 }
