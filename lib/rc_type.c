@@ -538,6 +538,8 @@ rct2str(int type)
 		return "RSASIG";
 	case RCT_ALG_ECDSA:
 		return "ECDSA";
+	case RCT_ALG_EDDSA:
+		return "EDDSA";
 	case RCT_ALG_RSAENC:
 		return "RSAENC";
 	case RCT_ALG_RSAREV:

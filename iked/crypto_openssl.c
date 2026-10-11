@@ -1687,6 +1687,145 @@ eay_ecdsa_sign(const char *hash_type, rc_vchar_t *octets,
 }
 
 /*
+ * Determine the EdDSA curve of a private key: 25519 or 448.  Returns the
+ * curve id, or 0 if the key is not an EdDSA key.
+ */
+int
+eay_eddsa_curve_bits(rc_vchar_t *privkey)
+{
+	EVP_PKEY *pkey;
+	BPP_const unsigned char *bp;
+	int id = 0;
+
+	bp = (unsigned char *)privkey->v;
+	pkey = d2i_AutoPrivateKey(NULL, &bp, privkey->l);
+	if (pkey == NULL)
+		return 0;
+	if (EVP_PKEY_id(pkey) == EVP_PKEY_ED25519)
+		id = 25519;
+	else if (EVP_PKEY_id(pkey) == EVP_PKEY_ED448)
+		id = 448;
+	EVP_PKEY_free(pkey);
+	return id;
+}
+
+/*
+ * Pure EdDSA signature (RFC 8032) over octets, using the raw message - no
+ * pre-hash.  This is the RFC 8420 IKEv2 EdDSA signature value carried in
+ * the method-14 (RFC 7427) AUTH payload.  Returns a fresh rc_vchar_t
+ * (raw r||s for Ed25519=64 octets / Ed448=114), or NULL.
+ */
+rc_vchar_t *
+eay_eddsa_sign(rc_vchar_t *octets, rc_vchar_t *privkey)
+{
+	EVP_PKEY *pkey;
+	BPP_const unsigned char *bp;
+	EVP_MD_CTX *ctx = NULL;
+	unsigned char *sig = NULL;
+	size_t siglen = 0;
+	rc_vchar_t *r = NULL;
+
+	if (!octets || !privkey)
+		return NULL;
+	if (eay_eddsa_curve_bits(privkey) == 0) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "EdDSA: private key is not Ed25519/Ed448\n");
+		return NULL;
+	}
+	bp = (unsigned char *)privkey->v;
+	pkey = d2i_AutoPrivateKey(NULL, &bp, privkey->l);
+	if (pkey == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed obtaining EdDSA private key: %s\n", eay_strerror());
+		return NULL;
+	}
+	/* md=NULL: pure EdDSA signs the raw message (RFC 8032), no hash. */
+	ctx = EVP_MD_CTX_new();
+	if (!ctx)
+		goto fail;
+	if (EVP_DigestSignInit(ctx, NULL, NULL, NULL, pkey) != 1)
+		goto sslerr;
+	if (EVP_DigestSign(ctx, NULL, &siglen, octets->v, octets->l) != 1)
+		goto sslerr;
+	sig = OPENSSL_malloc(siglen);
+	if (!sig)
+		goto fail;
+	if (EVP_DigestSign(ctx, sig, &siglen, octets->v, octets->l) != 1)
+		goto sslerr;
+	r = rc_vnew(sig, siglen);
+	if (!r)
+		goto fail;
+	OPENSSL_free(sig);
+	EVP_MD_CTX_free(ctx);
+	EVP_PKEY_free(pkey);
+	return r;
+
+      sslerr:
+	plog(PLOG_INTERR, PLOGLOC, NULL,
+	     "EdDSA sign failed: %s\n", eay_strerror());
+      fail:
+	if (sig)
+		OPENSSL_free(sig);
+	if (ctx)
+		EVP_MD_CTX_free(ctx);
+	if (pkey)
+		EVP_PKEY_free(pkey);
+	if (r)
+		rc_vfree(r);
+	return NULL;
+}
+
+/*
+ * verifies the raw r||s EdDSA signature (RFC 8032 / RFC 8420) over octets,
+ * using the raw message - no pre-hash.
+ * returns 0 if successfully verified, non-0 otherwise
+ */
+int
+eay_eddsa_verify(rc_vchar_t *octets, rc_vchar_t *sig,
+		 rc_vchar_t *pubkey)
+{
+	EVP_PKEY *pkey;
+	BPP_const unsigned char *bp;
+	EVP_MD_CTX *ctx = NULL;
+	int keytype, ret = -1;
+
+	if (!octets || !sig || !pubkey)
+		return -1;
+	bp = (unsigned char *)pubkey->v;
+	pkey = d2i_PUBKEY(NULL, &bp, pubkey->l);
+	if (pkey == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed obtaining EdDSA public key: %s\n", eay_strerror());
+		return -1;
+	}
+	keytype = EVP_PKEY_id(pkey);
+	if (keytype != EVP_PKEY_ED25519 && keytype != EVP_PKEY_ED448) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "EdDSA: peer public key is not Ed25519/Ed448\n");
+		goto end;
+	}
+	ctx = EVP_MD_CTX_new();
+	if (!ctx)
+		goto end;
+	if (EVP_DigestVerifyInit(ctx, NULL, NULL, NULL, pkey) != 1)
+		goto sslerr;
+	if (EVP_DigestVerify(ctx, (unsigned char *)sig->v, sig->l,
+	    octets->v, octets->l) != 1)
+		goto sslerr;
+	ret = 0;
+	goto end;
+
+      sslerr:
+	plog(PLOG_INTERR, PLOGLOC, NULL,
+	     "EdDSA verify failed: %s\n", eay_strerror());
+      end:
+	if (ctx)
+		EVP_MD_CTX_free(ctx);
+	EVP_PKEY_free(pkey);
+	return ret;
+}
+
+/*
  * verifies the raw r||s ECDSA signature (RFC4754) over Hash(octets)
  * returns 0 if successfully verified, non-0 otherwise
  */
@@ -1815,6 +1954,7 @@ eay_ecdsa_verify(const char *hash_type, rc_vchar_t *octets, rc_vchar_t *sig,
  *   id-RSASSA-PSS                         SHA-256/384/512, MGF1 with the
  *                                         same hash, trailerField 1
  *   ecdsa-with-SHA256/384/512             DER Ecdsa-Sig-Value
+ *   id-Ed25519 / id-Ed448 (RFC 8420)      pure EdDSA (no pre-hash)
  * Anything built on SHA-1 (including PSS with default parameters) and
  * any other algorithm is refused.  Returns 0 for a good signature.
  */
@@ -1849,7 +1989,7 @@ int
 eay_rfc7427_verify(rc_vchar_t *octets, const uint8_t *ai, size_t ai_len,
 		   rc_vchar_t *sig, rc_vchar_t *pubkey)
 {
-	enum { K_NONE, K_PKCS1, K_PSS, K_ECDSA } kind = K_NONE;
+	enum { K_NONE, K_PKCS1, K_PSS, K_ECDSA, K_EDDSA } kind = K_NONE;
 	const unsigned char *p;
 	BPP_const unsigned char *bp;
 	X509_ALGOR *alg = NULL, *mgfhash = NULL;
@@ -1862,7 +2002,7 @@ eay_rfc7427_verify(rc_vchar_t *octets, const uint8_t *ai, size_t ai_len,
 	EVP_PKEY *pkey = NULL;
 	EVP_MD_CTX *ctx = NULL;
 	EVP_PKEY_CTX *pctx = NULL;
-	int keytype, error = -1;
+	int keytype, error = -1, edkeytype = 0;
 
 	p = ai;
 	alg = d2i_X509_ALGOR(NULL, &p, (long)ai_len);
@@ -1885,6 +2025,10 @@ eay_rfc7427_verify(rc_vchar_t *octets, const uint8_t *ai, size_t ai_len,
 		md = EVP_sha384(); kind = K_ECDSA; break;
 	case NID_ecdsa_with_SHA512:
 		md = EVP_sha512(); kind = K_ECDSA; break;
+	case NID_ED25519:
+		md = NULL; kind = K_EDDSA; edkeytype = EVP_PKEY_ED25519; break;
+	case NID_ED448:
+		md = NULL; kind = K_EDDSA; edkeytype = EVP_PKEY_ED448; break;
 	case NID_rsassaPss:
 		kind = K_PSS; break;
 	default:
@@ -1901,6 +2045,8 @@ eay_rfc7427_verify(rc_vchar_t *octets, const uint8_t *ai, size_t ai_len,
 	if (kind == K_PKCS1 && ptype != V_ASN1_NULL && ptype != V_ASN1_UNDEF)
 		goto badparam;
 	if (kind == K_ECDSA && ptype != V_ASN1_UNDEF)
+		goto badparam;
+	if (kind == K_EDDSA && ptype != V_ASN1_UNDEF)
 		goto badparam;
 	if (kind == K_PSS) {
 		const ASN1_STRING *seq = pval;
@@ -1947,7 +2093,8 @@ eay_rfc7427_verify(rc_vchar_t *octets, const uint8_t *ai, size_t ai_len,
 	if ((kind == K_ECDSA && keytype != EVP_PKEY_EC) ||
 	    (kind == K_PKCS1 && keytype != EVP_PKEY_RSA) ||
 	    (kind == K_PSS && keytype != EVP_PKEY_RSA &&
-	     keytype != EVP_PKEY_RSA_PSS)) {
+	     keytype != EVP_PKEY_RSA_PSS) ||
+	    (kind == K_EDDSA && keytype != edkeytype)) {
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "RFC 7427: signature algorithm does not match the "
 		     "peer's key type\n");
@@ -1976,6 +2123,10 @@ eay_rfc7427_verify(rc_vchar_t *octets, const uint8_t *ai, size_t ai_len,
 		     "(MGF1 %s, salt %ld)\n",
 		     OBJ_nid2sn(EVP_MD_type(md)), OBJ_nid2sn(EVP_MD_type(mgfmd)),
 		     salt);
+	else if (kind == K_EDDSA)
+		plog(PLOG_INFO, PLOGLOC, NULL,
+		     "RFC 7427 signature verified: EdDSA (%s)\n",
+		     keytype == EVP_PKEY_ED25519 ? "Ed25519" : "Ed448");
 	else
 		plog(PLOG_INFO, PLOGLOC, NULL,
 		     "RFC 7427 signature verified: %s %s\n",

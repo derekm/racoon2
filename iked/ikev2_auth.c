@@ -67,6 +67,15 @@ static const uint8_t rfc7427_sha256_ai[] = {
 	0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
 };
 
+/* RFC 8420 Appendix A: Ed25519 / Ed448 AlgorithmIdentifiers (DER),
+ * SEQUENCE{ OID 1.3.101.112 / 1.3.101.113 }, 7 bytes each, absent params. */
+static const uint8_t rfc7427_ed25519_ai[] = {
+	0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
+};
+static const uint8_t rfc7427_ed448_ai[] = {
+	0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x71,
+};
+
 static rc_vchar_t *ikev2_auth_input(struct ikev2_sa *, int);
 
 /*
@@ -437,9 +446,13 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 		break;
 	case IKEV2_AUTH_DS:
 		/* (RFC7427)
-		 * Digital Signature (14) - RSA signature over SHA-256, with the
-		 * auth data prefixed by [1-octet length][AlgorithmIdentifier].
-		 */
+		 * Digital Signature (14) - the auth data is prefixed by
+		 * [1-octet length][AlgorithmIdentifier][signature].  The
+		 * signature algorithm is chosen by the seat key type: an
+		 * Ed25519/Ed448 key yields a pure EdDSA signature with the
+		 * RFC 8420 AlgorithmIdentifier (no pre-hash); anything else
+		 * (RSA) yields the SHA-256 RSASSA-PKCS1-v1_5 signature with
+		 * the sha256WithRSAEncryption AlgorithmIdentifier. */
 		privkey = ikev2_private_key(sa, id);
 		if (!privkey) {
 			isakmp_log(sa, 0, 0, 0,
@@ -448,14 +461,35 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 			goto fail;
 		}
 		{
+			int ebits = eay_eddsa_curve_bits(privkey);
 			rc_vchar_t *ori;
-		const size_t _ai_len = sizeof(rfc7427_sha256_ai);
-			ori = eay_rsassa_pkcs1_v1_5_sign("SHA256", octets, privkey);
-			if (!ori) {
-				isakmp_log(sa, 0, 0, 0,
-					   PLOG_INTERR, PLOGLOC,
-					   "failed calculating RSA signature\n");
-				goto fail;
+			const uint8_t *ai;
+			size_t _ai_len;
+
+			if (ebits == 25519 || ebits == 448) {
+				ai = (ebits == 25519) ? rfc7427_ed25519_ai
+						      : rfc7427_ed448_ai;
+				_ai_len = sizeof(rfc7427_ed25519_ai);
+				ori = eay_eddsa_sign(octets, privkey);
+				if (!ori) {
+					isakmp_log(sa, 0, 0, 0,
+						   PLOG_INTERR, PLOGLOC,
+						   "failed calculating EdDSA "
+						   "signature\n");
+					goto fail;
+				}
+			} else {
+				ai = rfc7427_sha256_ai;
+				_ai_len = sizeof(rfc7427_sha256_ai);
+				ori = eay_rsassa_pkcs1_v1_5_sign
+				    ("SHA256", octets, privkey);
+				if (!ori) {
+					isakmp_log(sa, 0, 0, 0,
+						   PLOG_INTERR, PLOGLOC,
+						   "failed calculating RSA "
+						   "signature\n");
+					goto fail;
+				}
 			}
 			authdata = rc_vmalloc(1 + _ai_len + ori->l);
 			if (!authdata) {
@@ -463,9 +497,10 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 				goto fail_nomem;
 			}
 			authdata->u[0] = (uint8_t)_ai_len;
-			memcpy(authdata->u + 1, rfc7427_sha256_ai, _ai_len);
+			memcpy(authdata->u + 1, ai, _ai_len);
 			memcpy(authdata->u + 1 + _ai_len, ori->v, ori->l);
 			rc_vfree(ori);
+			/* privkey left for the shared end: cleanup */
 		}
 		break;
 	case IKEV2_AUTH_DSS:
@@ -941,6 +976,13 @@ ikev2_auth_method(struct ikev2_sa *sa)
 #else
 		return 0;
 #endif
+	case RCT_ALG_EDDSA:
+		/* RFC 8420 s2: EdDSA (Ed25519/Ed448) is carried in the Digital
+		 * Signature method (14) with the "Identity" hash (5) in the
+		 * SIG_HASH_ALGORITHMS notification.  The AUTH method number is
+		 * therefore 14 (DS), exactly like the RSA-PSS/ECDSA DS
+		 * variants. */
+		return IKEV2_AUTH_DS;
 	default:
 		isakmp_log(sa, 0, 0, 0,
 			   PLOG_INTERR, PLOGLOC,

@@ -87,8 +87,13 @@ extern int eay_dss_verify (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 extern rc_vchar_t *eay_ecdsa_sign (const char *, rc_vchar_t *,
 				    rc_vchar_t *);
 extern int eay_ecdsa_verify (const char *, rc_vchar_t *, rc_vchar_t *,
-				     rc_vchar_t *);
+			     rc_vchar_t *);
 extern int eay_ecdsa_curve_bits (rc_vchar_t *);
+
+/* EdDSA (RFC 8032 / RFC 8420), pure EdDSA (no pre-hash) */
+extern rc_vchar_t *eay_eddsa_sign (rc_vchar_t *, rc_vchar_t *);
+extern int eay_eddsa_verify (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
+extern int eay_eddsa_curve_bits (rc_vchar_t *);
 
 /* RFC 7427 Digital Signature (AUTH method 14) */
 extern int eay_rfc7427_verify (rc_vchar_t *, const uint8_t *, size_t,

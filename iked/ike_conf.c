@@ -4777,8 +4777,9 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 			case RCT_ALG_RSASIG:
 			case RCT_ALG_DSS:
 			case RCT_ALG_ECDSA:
+			case RCT_ALG_EDDSA:
 				IKEV2_CONF(peers_pubkey, rmconf, peers_pubkey,
-					   0);
+				   0);
 				/* When this signature method sits after an eap
 				 * entry, it is the RESPONDER's own signing cert
 				 * (RFC 7296 s2.16: the client authenticates via
@@ -5495,6 +5496,8 @@ ikev2_eap_responder_method(struct ikev2_sa *sa)
 			}
 		case RCT_ALG_DSS:
 			return IKEV2_AUTH_DSS;
+		case RCT_ALG_EDDSA:
+			return IKEV2_AUTH_DS;	/* RFC 8420: EdDSA via method 14 */
 		default:
 			return 0;
 		}
