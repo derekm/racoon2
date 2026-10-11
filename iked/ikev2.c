@@ -2751,6 +2751,19 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 							 0, 0),
 				    TRUE);
 
+	/* RFC 5723 s4.1: as an INITIATOR, ask the peer (a resumption
+	 * responder) to issue us a session-resumption ticket when session
+	 * resumption is enabled for this remote.  The returned
+	 * N(TICKET_LT_OPAQUE) is captured in ikev2_process_notify() and
+	 * persisted so a later connect can resume via exchange 38. */
+	if (ikev2_use_session_resumption(ike_sa->rmconf) == RCT_BOOL_ON) {
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_TICKET_REQUEST,
+							 0, 0),
+				    TRUE);
+	}
+
         /*
 	 * [[N(HTTP_CERT_LOOKUP_SUPPORTED)], CERTREQ+]
 	 */

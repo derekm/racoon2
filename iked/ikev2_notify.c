@@ -994,6 +994,41 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 			rc_vfree(ike_sa->qcd_token_peer);
 		ike_sa->qcd_token_peer = rc_vnew(data, dlen);
 		return 0;
+		}
+
+	case IKEV2_TICKET_LT_OPAQUE: {
+		/* RFC 5723 s7.1 / s4.2: the responder answers our N(TICKET_REQUEST)
+		 * with N(TICKET_LT_OPAQUE) whose DATA is the 4-octet big-endian
+		 * lifetime + opaque ticket.  As an INITIATOR we capture the ticket
+		 * verbatim (it is opaque to us) so a later reconnect can present it
+		 * via exchange 38; the from-ticket SA state needed to build that
+		 * resumed exchange (SK_d, SAr, IDs) is taken from our own live SA and
+		 * persisted at SA-disposal time.  A responder never issues itself a
+		 * ticket, so only the initiator records it. */
+		size_t tot, hdr, dlen;
+		uint8_t *data;
+
+		if (!is_safe || !ike_sa->is_initiator)
+			return 0;
+		tot = get_payload_length(&n->header);
+		hdr = sizeof(*n) + n->nh.spi_size;
+		if (tot < hdr || n->nh.spi_size != 0)
+			return 0;
+		dlen = tot - hdr;
+		/* at least the 4-octet lifetime plus the ticket
+		 * header (version+key_id+iv)=24 + GCM tag(16) */
+		if (dlen < 4 + 24 + 16)
+			return 0;
+		data = get_notify_data(n);
+		if (ike_sa->resume_ticket)
+			rc_vfree(ike_sa->resume_ticket);
+		ike_sa->resume_ticket = rc_vnew(data, dlen);
+		if (!ike_sa->resume_ticket)
+			return 1;
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "RFC 5723: captured session-resumption ticket from peer "
+			   "(%zu bytes)\n", dlen);
+		return 0;
 	}
 
 	default:

@@ -1169,6 +1169,8 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		rc_vfree(sa->my_first_message);
 	if (sa->peer_first_message)
 		rc_vfree(sa->peer_first_message);
+	if (sa->resume_ticket)
+		rc_vfree(sa->resume_ticket);
 	/* EAP responder state (RFC 7296 s2.16): the 64-octet MSK is a secret
 	 * - zeroize; the per-SE relay owns its buffers (freed internally; the
 	 * struct itself is released and the SA pointer nulled here). */

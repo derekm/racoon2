@@ -352,6 +352,14 @@ struct ikev2_sa {
 	 * IKE_AUTH must not re-run the PSK/sig/EAP method: its AUTH derives
 	 * from the resumed SK_p and its IDs come from the ticket. */
 	int resumed;
+	/* RFC 5723 (INITIATOR): the responder-minted ticket received in
+	 * N(TICKET_LT_OPAQUE) (4-octet BE lifetime || ticket) during this
+	 * SA's initial IKE_AUTH.  Held while the SA lives so it can be
+	 * presented on a later reconnect via exchange 38; the full
+	 * from-ticket state (SK_d, SAr, IDs) is serialized to the resume
+	 * store at SA disposal so a reconnect can resume after this SA is
+	 * gone. */
+	rc_vchar_t *resume_ticket;
 	rc_vchar_t *cookie2_sent;	/* RFC 4555 COOKIE2 we put on a request */
 	int cookie2_matched;
 	rc_vchar_t *qcd_token_peer;	/* RFC 6290 token from peer (taker) */
