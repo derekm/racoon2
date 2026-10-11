@@ -58,6 +58,7 @@
 #include "ikev2.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "ikev2_notify.h"
 #include "ike_conf.h"
 #include "crypto_impl.h"
 
@@ -3646,4 +3647,1754 @@ compute_keymat(struct ikev2_sa *sa,
 	if (nonces)
 		rc_vfree(nonces);
 	return keymat;
+}
+
+/*
+ * IKEv2 CREATE_CHILD_SA / Child-SA-rekey exchange.
+ *
+ * Consolidated from ikev2.c (Phase 3 of the modularization).  The explicit
+ * CREATE_CHILD_SA initiator and responder paths, the child rekey machinery,
+ * and the domain/parse helpers (ikev2_doi-consuming check_spi_size, parse_sa)
+ * now live where the Child-SA code already is.  Exports cross-file are the
+ * createchild entry points + rekey finalize + the shared poll/parse/noncecmp
+ * helpers; the internal struct ikev2_child_init_ctx and the static send-tail /
+ * dh-done / rekey-proto helpers stay file-local here.
+ */
+
+static unsigned int ikev2_child_rekey_proto(struct ikev2_child_sa *);
+
+/*
+ * IKEv2 CREATE_CHILD_SA exchange
+ */
+struct ikev2_child_init_ctx {
+	struct ikev2_sa *ike_sa;
+	struct ikev2_child_sa *child_sa;
+	int serial;	/* ike_sa->serial_number, for liveness check */
+	struct algdef *dhgrpdef;
+	struct ikev2_payloads payl;
+	int payl_inited;
+	rc_vchar_t *sa;
+	rc_vchar_t *ts_i;
+	rc_vchar_t *ts_r;
+	rc_vchar_t *ke;
+	int pfs;
+};
+
+static void
+ikev2_child_init_ctx_free(struct ikev2_child_init_ctx *ctx)
+{
+	if (ctx->sa)
+		rc_vfree(ctx->sa);
+	if (ctx->ts_i)
+		rc_vfree(ctx->ts_i);
+	if (ctx->ts_r)
+		rc_vfree(ctx->ts_r);
+	if (ctx->ke)
+		rc_vfree(ctx->ke);
+	if (ctx->payl_inited)
+		ikev2_payloads_destroy(&ctx->payl);
+	rc_free(ctx);
+}
+
+/* builds + transmits the CREATE_CHILD_SA request (IKE thread) */
+static void
+ikev2_createchild_initiator_send_tail(struct ikev2_child_init_ctx *ctx)
+{
+	struct ikev2_sa *ike_sa = ctx->ike_sa;
+	struct ikev2_child_sa *child_sa = ctx->child_sa;
+	rc_vchar_t *pkt = 0;
+	struct ikev2payl_ke_h dhgrp_hdr;
+
+	/*
+	 * (draft-17)
+	 * The initiator sends SA offer(s) in the SA payload, a nonce in the Ni
+	 * payload, optionally a Diffie-Hellman value in the KEi payload, and
+	 * the proposed traffic selectors in the TSi and TSr payloads. If this
+	 * CREATE_CHILD_SA exchange is rekeying an existing SA other than the
+	 * IKE_SA, the leading N payload of type REKEY_SA MUST identify the SA
+	 * being rekeyed. If this CREATE_CHILD_SA exchange is not rekeying an
+	 * existing SA, the N payload MUST be omitted.  If the SA offers include
+	 * different Diffie-Hellman groups, KEi MUST be an element of the group
+	 * the initiator expects the responder to accept. If it guesses wrong,
+	 * the CREATE_CHILD_SA exchange will fail and it will have to retry with
+	 * a different KEi.
+	 */
+
+	if (ctx->pfs) {
+		dhgrp_hdr.dh_group_id = htons(ctx->dhgrpdef->transform_id);
+		dhgrp_hdr.reserved = 0;
+		ctx->ke = rc_vprepend(child_sa->dhpub, &dhgrp_hdr,
+		    sizeof(dhgrp_hdr));
+		if (!ctx->ke)
+			goto fail;
+	}
+
+	/*
+	 * [N(REKEY_SA)]
+	 */
+	if (child_sa->preceding_satype != 0) {
+		uint32_t spi;
+
+		put_uint32(&spi, child_sa->preceding_spi);
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload((child_sa->preceding_satype == RCT_SATYPE_ESP ?
+							  IKEV2_NOTIFY_PROTO_ESP :
+							  IKEV2_NOTIFY_PROTO_AH),
+							 (uint8_t *)&spi,
+							 sizeof(uint32_t),
+							 IKEV2_REKEY_SA, 0, 0),
+				    TRUE);
+	}
+
+#ifdef notyet
+	/*
+	 * [N(IPCOMP_SUPPORTED...)]
+	 */
+#endif
+
+	/*
+	 * [N(USE_TRANSPORT_MODE)]
+	 */
+	if (ike_ipsec_mode(child_sa->selector->pl) == RCT_IPSM_TRANSPORT) {
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
+							 0, 0,
+							 IKEV2_USE_TRANSPORT_MODE,
+							 0, 0),
+				    TRUE);
+	}
+
+	/*
+	 * N(ESP_TFC_PADDING_NOT_SUPPORTED)
+	 */
+	if (ikev2_esp_tfc_padding_not_supported) {
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
+							 0, 0,
+							 IKEV2_ESP_TFC_PADDING_NOT_SUPPORTED,
+							 0, 0),
+				    TRUE);
+	}
+
+#ifdef notyet
+	/*
+	 * [N(NON_FIRST_FRAGMENTS_ALSO)]
+	 */
+#endif
+
+	/*
+	 * SA, Ni, [KEi], TSi, TSr
+	 */
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_SA, ctx->sa, FALSE);
+	ctx->sa = NULL;
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NONCE,
+			    child_sa->n_i, FALSE);
+	/* if the SA offers include different  Diffie-Hellman groups */
+	if (ctx->ke)
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_KE, ctx->ke, FALSE);
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_TS_I, ctx->ts_i, FALSE);
+	ctx->ts_i = NULL;
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_TS_R, ctx->ts_r, FALSE);
+	ctx->ts_r = NULL;
+
+	{
+		int t_i;
+		for (t_i = 0; t_i < ctx->payl.num; t_i++) {
+			rc_vchar_t *d = ctx->payl.payloads[t_i].data;
+			isakmp_log(ike_sa, 0, 0, 0,
+			    PLOG_DEBUG, PLOGLOC,
+			    "REKEY_REQ payl[%d] type=%d len=%zu\n",
+			    t_i, ctx->payl.payloads[t_i].type,
+			    d ? d->l : 0);
+			if (d && ctx->payl.payloads[t_i].type ==
+			    IKEV2_PAYLOAD_SA) {
+				/* dump proposal headers: each is
+				 * isakmp_pl_p (8B) + spi (4B); the
+				 * header length field covers proposal
+				 * + spi only, transforms follow */
+				size_t off = 0;
+				while (off + 12 <= d->l) {
+					uint8_t *p = d->v + off;
+					uint16_t phdrlen =
+					    get_uint16(p + 2);
+					isakmp_log(ike_sa, 0, 0, 0,
+					    PLOG_DEBUG, PLOGLOC,
+					    "REKEY_REQ SA prop#%u type=%u proto=%u "
+					    "spi=0x%08x hdrlen=%u\n",
+					    p[4], p[5], p[6],
+					    get_uint32(p + 8), phdrlen);
+					off += 12;
+				}
+			}
+		}
+	}
+
+	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
+				     ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0,
+				     child_sa->message_id, ike_sa, &ctx->payl);
+	if (!pkt)
+		goto fail;
+
+	if (ikev2_transmit(ike_sa, pkt) != 0)
+		goto fail;
+	pkt = 0;
+
+	ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_WAIT_RESPONSE);
+
+	if (pkt)
+		rc_vfree(pkt);
+	ikev2_child_init_ctx_free(ctx);
+	return;
+
+fail:
+	if (pkt)
+		rc_vfree(pkt);
+	isakmp_log(ike_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC,
+		   "failed sending CREATE_CHILD_SA request for internal error\n");
+	ikev2_child_abort(child_sa, ECONNREFUSED);	/* ??? */
+	ikev2_child_init_ctx_free(ctx);
+}
+
+static void
+ikev2_createchild_initiator_dh_done(int rc, void *arg)
+{
+	struct ikev2_child_init_ctx *ctx = arg;
+	struct ikev2_sa *ike_sa;
+	struct ikev2_child_sa *child_sa;
+
+	/*
+	 * Validate liveness before touching anything: the worker wrote
+	 * child_sa->dhpub/dhpriv while ike_sa was pinned (periodic task
+	 * skips pending SAs and their children).  Confirm the SA is a
+	 * live list member, release its pin either way, then confirm
+	 * the child is still a member.
+	 */
+	ike_sa = ikev2_find_sa_by_serial(ctx->serial);
+	if (ike_sa == NULL || ike_sa != ctx->ike_sa) {
+		ikev2_child_init_ctx_free(ctx);
+		return;
+	}
+	ike_sa->crypto_pending = 0;
+	child_sa = ctx->child_sa;
+	if (!ikev2_child_sa_is_member(ike_sa, child_sa)) {
+		ikev2_child_init_ctx_free(ctx);
+		return;
+	}
+	if (ike_sa->state == IKEV2_STATE_DYING ||
+	    ike_sa->state == IKEV2_STATE_DEAD ||
+	    child_sa->state == IKEV2_CHILD_STATE_EXPIRED) {
+		ikev2_child_init_ctx_free(ctx);
+		return;
+	}
+	if (rc != 0) {
+		TRACE((PLOGLOC, "failed generating DH values\n"));
+		ikev2_child_abort(child_sa, ECONNREFUSED);	/* ??? */
+		ikev2_child_init_ctx_free(ctx);
+		return;
+	}
+	ikev2_createchild_initiator_send_tail(ctx);
+}
+
+int
+ikev2_createchild_initiator_send(struct ikev2_sa *ike_sa,
+				 struct ikev2_child_sa *child_sa)
+{
+	rc_vchar_t *sa = 0;
+	rc_vchar_t *ts_i = 0;
+	rc_vchar_t *ts_r = 0;
+	struct ikev2_payloads payl;
+	size_t nonce_size;
+	struct ikev2_child_init_ctx *ctx;
+	int pfs;
+
+	/*assert(child_sa->message_id == 0); */
+	ikev2_payloads_init(&payl);
+	child_sa->message_id = ikev2_request_id(ike_sa);
+
+	/*
+	 * HDR, SK {[N(REKEY_SA)],
+	 *          [N(IPCOMP_SUPPORTED)+],
+	 *          [N(USE_TRANSPORT_MODE)],
+	 *          [N(ESP_TFC_PADDING_NOT_SUPPORTED)],
+	 *          [N(NON_FIRST_FRAGMENTS_ALSO)],
+	 *          SA, Ni, [KEi], TSi, TSr}
+	 */
+
+	sa = ikev2_construct_sa(child_sa);
+	if (!sa)
+		goto fail;
+
+	ts_i = ikev2_construct_ts_i(child_sa);
+	ts_r = ikev2_construct_ts_r(child_sa);
+	if (!ts_i || !ts_r)
+		goto fail;
+
+	ikev2_create_config_request(child_sa);
+
+	if (!child_sa->n_i) {
+		nonce_size = ikev2_nonce_size(ike_sa->rmconf);
+		child_sa->n_i = random_bytes(nonce_size);
+		if (!child_sa->n_i)
+			goto fail;
+	}
+
+	/*
+	 * Offer KEi only when the proposal actually contains a DH
+	 * transform.  Earlier code forced pfs=1 unconditionally
+	 * ("Apple requires it") and sent a KEi payload even when the
+	 * offered suite had no DH transform -- a peer (iOS) then
+	 * correctly accepted the rekey PFS-less (no KEr in the
+	 * response; RFC 7296 2.18) while our response parser
+	 * required KEr because dhpriv was set, aborted the child,
+	 * and iOS deleted the IKE_SA.  If the proposal has no DH
+	 * transform, send no KEi and expect none back.
+	 */
+	pfs = (ikev2_child_dhdef(child_sa->my_proposal[1], NULL) != NULL);
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx)
+		goto fail;
+	ctx->ike_sa = ike_sa;
+	ctx->child_sa = child_sa;
+	ctx->serial = ike_sa->serial_number;
+	ctx->sa = sa;
+	sa = NULL;
+	ctx->ts_i = ts_i;
+	ts_i = NULL;
+	ctx->ts_r = ts_r;
+	ts_r = NULL;
+	ctx->payl = payl;
+	ctx->payl_inited = 1;
+	ctx->pfs = pfs;
+
+	if (pfs) {
+		struct algdef *dhgrpdef;
+
+		if (child_sa->dhgrp)
+			dhgrpdef = child_sa->dhgrp;
+		else if (ike_sa->negotiated_sa)
+			dhgrpdef = ike_sa->negotiated_sa->dhdef;
+		else
+			dhgrpdef = NULL;
+		if (!dhgrpdef) {
+			ctx->payl_inited = 0;	/* fail: destroys payl once */
+			ikev2_child_init_ctx_free(ctx);
+			goto fail;
+		}
+		ctx->dhgrpdef = dhgrpdef;
+
+		/*
+		 * Remember the group we sent KEi in, so the KEr check in
+		 * ikev2_createchild_initiator_recv() compares against it
+		 * instead of the group of the KEr payload itself (which
+		 * would accept any mismatch silently).
+		 */
+		child_sa->dhgrp = dhgrpdef;
+
+		ike_sa->crypto_pending = 1;
+		if (oakley_dh_generate_submit(
+		    (struct dhgroup *)dhgrpdef->definition,
+		    &child_sa->dhpub, &child_sa->dhpriv,
+		    ikev2_createchild_initiator_dh_done, ctx) != 0) {
+			ike_sa->crypto_pending = 0;
+			TRACE((PLOGLOC, "failed dh submit\n"));
+			ctx->payl_inited = 0;	/* fail: destroys payl once */
+			ikev2_child_init_ctx_free(ctx);
+			goto fail;
+		}
+		return 0;	/* resumed in ikev2_createchild_initiator_dh_done */
+	}
+
+	ikev2_createchild_initiator_send_tail(ctx);
+	return 0;
+
+fail:
+	isakmp_log(ike_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC,
+		   "failed sending CREATE_CHILD_SA request for internal error\n");
+	ikev2_child_abort(child_sa, ECONNREFUSED);	/* ??? */
+	if (sa)
+		rc_vfree(sa);
+	if (ts_i)
+		rc_vfree(ts_i);
+	if (ts_r)
+		rc_vfree(ts_r);
+	ikev2_payloads_destroy(&payl);
+	return -1;
+}
+
+void
+ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
+				 struct sockaddr *remote,
+				 struct sockaddr *local)
+{
+	struct ikev2_header *ikehdr;
+	int type;
+	struct ikev2_payload_header *p;
+	struct ikev2_payload_header *nonce = 0;
+	struct ikev2_payload_header *sa = 0;
+	struct ikev2payl_ke *ke = 0;
+	struct ikev2_payload_header *ts_i = 0;
+	struct ikev2_payload_header *ts_r = 0;
+	struct ikev2_payload_header *cfg = 0;
+	rc_vchar_t *g_i = 0;
+	rc_vchar_t *n_i = 0;
+	int rekey_proto = 0;
+	uint32_t rekey_spi = 0;
+	struct ikev2_child_param child_param;
+	struct ikev2_child_sa *old_child_sa = 0;
+	unsigned int peer_grp = 0;	/* DH group of the KEi payload */
+	uint32_t message_id;
+	int err;
+
+	ikev2_child_param_init(&child_param);
+
+	/*
+	 * expect
+	 * HDR, SK {SA, Ni, [KEi], TSi, TSr}
+	 *
+	 * or (rekey IKE_SA)
+	 * HDR, SK {SA(proposal proto=IKE), Ni, KEi}
+	 *
+	 * or (rekey CHILD_SA)
+	 * HDR, SK {N(REKEY_SA), SA, Ni, [KEi]}
+	 *
+	 #ifdef notyet
+	 * or
+	 HDR, SK {IDi, [CERT,] [CERTREQ,]
+	 [IDr,] AUTH, CP(CFG_REQUEST),
+	 SAi2, TSi, TSr}
+	 #endif
+	 */
+	ikehdr = (struct ikev2_header *)msg->v;
+	message_id = get_uint32(&ikehdr->message_id);
+	ikev2_update_message_id(ike_sa, message_id, FALSE);
+
+	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	for (type = ikehdr->next_payload;
+	     type != IKEV2_NO_NEXT_PAYLOAD;
+	     POINT_NEXT_PAYLOAD(p, type)) {
+		switch (type) {
+		case IKEV2_PAYLOAD_ENCRYPTED:
+			break;
+		case IKEV2_PAYLOAD_NONCE:
+			if (nonce)
+				goto duplicate;
+			nonce = p;
+			break;
+		case IKEV2_PAYLOAD_SA:
+			if (sa)
+				goto duplicate;
+			sa = p;
+			break;
+		case IKEV2_PAYLOAD_KE:
+			if (ke)
+				goto duplicate;
+			ke = (struct ikev2payl_ke *)p;
+			break;
+		case IKEV2_PAYLOAD_TS_I:
+			if (ts_i)
+				goto duplicate;
+			ts_i = p;
+			break;
+		case IKEV2_PAYLOAD_TS_R:
+			if (ts_r)
+				goto duplicate;
+			ts_r = p;
+			break;
+		case IKEV2_PAYLOAD_NOTIFY:
+			if (createchild_resp_recv_notify
+			    (ike_sa, msg, remote, local, p, &child_param,
+			     &rekey_proto, &rekey_spi)) {
+				goto done;
+			}
+			break;
+		case IKEV2_PAYLOAD_VENDOR_ID:
+			/* A Vendor ID payload may be sent as part of any message. */
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOWARN, PLOGLOC,
+				   "vendor id payload ignored\n");
+			++isakmpstat.payload_ignored;
+			break;
+		case IKEV2_PAYLOAD_CONFIG:
+			cfg = p;
+			break;
+		default:
+			if (payload_is_critical(p)
+			    || ikev2_payload_type_is_critical(type)) {
+				isakmp_log(ike_sa, local, remote, msg,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "unexpected critical payload (type %d)\n",
+					   type);
+				++isakmpstat.unexpected_payload;
+				goto unsupported_critical_payload;
+			}
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOWARN, PLOGLOC,
+				   "unexpected noncritical payload (type %d) ignored\n",
+				   type);
+			++isakmpstat.payload_ignored;
+			break;
+		}
+	}
+
+	if (ike_sa->mobike_update) {
+		ike_sa->mobike_update = 0;
+		ikev2_mobike_apply(ike_sa, remote, local);
+	}
+
+	{
+		/* diagnostic: log the exact rekey request signature.
+		 * peer_grp is only assigned below (in the `ke` block),
+		 * so read the KEi group straight from the payload —
+		 * printing the local here always shows 0 and has misled
+		 * every reader into thinking iOS sent no KEi. */
+		struct ikev2proposal *pr = 0;
+		if (sa && get_payload_data_length(sa) > sizeof(struct ikev2proposal))
+			pr = (struct ikev2proposal *)(((struct ikev2payl_sa *)sa) + 1);
+		isakmp_log(ike_sa, local, remote, msg, PLOG_INFO, PLOGLOC,
+		   "CREATE_CHILD_SA request: msgid=%u proto=%s rekey_proto=%d rekey_spi=0x%x KEi_grp=%u ts_i=%c ts_r=%c nonce=%c\n",
+		   message_id,
+		   (pr && pr->protocol_id == IKEV2PROPOSAL_IKE) ? "IKE" :
+		   (pr && pr->protocol_id == IKEV2PROPOSAL_ESP) ? "ESP" : "?",
+		   rekey_proto, rekey_spi,
+		   ke ? get_uint16(&ke->ke_h.dh_group_id) : 0,
+		   ts_i ? 'Y' : 'n', ts_r ? 'Y' : 'n', nonce ? 'Y' : 'n');
+	}
+
+	if (sa) {
+		/* Request-side mirror of the response sa_hex diagnostic:
+		 * the peer's exact proposal, so the next teardown can be
+		 * diffed request vs response without reconstructing it
+		 * from the pcap. */
+		char hx[160];
+		size_t hlen = get_payload_data_length(sa);
+		size_t hl = hlen < sizeof(hx) / 2 ? hlen : sizeof(hx) / 2;
+		size_t i;
+		const u_char *dp = (const u_char *)(sa + 1);
+		for (i = 0; i < hl && i * 2 + 2 < sizeof(hx); i++)
+			snprintf(&hx[i * 2], 3, "%02x", dp[i]);
+		hx[i * 2] = '\0';
+		isakmp_log(ike_sa, local, remote, msg, PLOG_INFO, PLOGLOC,
+			   "CREATE_CHILD_SA request SA_hex=%s\n", hx);
+	}
+
+	/* RFC 7296 1.3: every CREATE_CHILD_SA request carries SA and Ni;
+	 * sa is dereferenced unconditionally below. */
+	if (!sa || !nonce)
+		goto malformed_message;
+
+	/* check if rekeying IKE_SA */
+	if (get_payload_data_length(sa) > sizeof(struct ikev2proposal) &&
+	    ((struct ikev2proposal *)(((struct ikev2payl_sa *)sa) + 1))->protocol_id == IKEV2PROPOSAL_IKE) {
+		isakmp_log(ike_sa, local, remote, msg, PLOG_INFO, PLOGLOC,
+			   "received IKE_SA rekey request\n");
+		if (!(sa && nonce && ke && !(ts_i || ts_r)))
+			goto malformed_message;
+
+		ikev2_rekey_ikesa_responder(msg, remote, local, ike_sa,
+					    sa, ke, nonce);
+		goto done;
+	}
+
+	/* otherwise, create or rekey child_sa */
+	if (!(sa && nonce && ts_i && ts_r))
+		goto malformed_message;
+
+	if (ike_sa->state == IKEV2_STATE_DYING) {
+		TRACE((PLOGLOC, "ike_sa expired already\n"));
+		(void)ikev2_respond_error(ike_sa, msg, remote, local,
+					  0, 0, 0,
+					  IKEV2_NO_ADDITIONAL_SAS,
+					  0, 0);
+		goto done;
+	}
+
+	if (rekey_proto != 0) {
+		/* rekey child_sa */
+
+		/* (draft-eronen-ipsec-ikev2-clarifications-05.txt)
+		 * NEW-1.3.3 Rekeying CHILD_SAs with the CREATE_CHILD_SA Exchange
+		 *
+		 * The CREATE_CHILD_SA request for rekeying a CHILD_SA is:
+		 *
+		 * Initiator                                 Responder
+		 * -----------                               -----------
+		 * HDR, SK {N, SA, Ni, [KEi],
+		 * TSi, TSr}             -->
+		 *
+		 * The initiator sends SA offer(s) in the SA payload, a nonce in
+		 * the Ni payload, optionally a Diffie-Hellman value in the KEi
+		 * payload, and the proposed traffic selectors for the proposed
+		 * CHILD_SA in the TSi and TSr payloads. When rekeying an existing
+		 * CHILD_SA, the leading N payload of type REKEY_SA MUST be
+		 * included and MUST give the SPI (as they would be expected in
+		 * the headers of inbound packets) of the SAs being rekeyed.
+		 *
+		 * The CREATE_CHILD_SA response for rekeying a CHILD_SA is:
+		 *
+		 * <--    HDR, SK {SA, Nr, [KEr],
+		 * TSi, TSr}
+		 *
+		 * The responder replies (using the same Message ID to respond)
+		 * with the accepted offer in an SA payload, and a Diffie-Hellman
+		 * value in the KEr payload if KEi was included in the request and
+		 * the selected cryptographic suite includes that group.
+		 *
+		 * The traffic selectors for traffic to be sent on that SA are
+		 * specified in the TS payloads in the response, which may be a
+		 * subset of what the initiator of the CHILD_SA proposed.
+		 */
+
+		/* (draft-eronen-ipsec-ikev2-clarifications-05.txt)
+		 * 5.4  SPI when rekeying a CHILD_SA
+		 *
+		 * Section 3.10.1 says that in REKEY_SA notifications, "The SPI field
+		 * identifies the SA being rekeyed."
+		 *
+		 * Since CHILD_SAs always exist in pairs, there are two different SPIs.
+		 * The SPI placed in the REKEY_SA notification is the SPI the exchange
+		 * initiator would expect in inbound ESP or AH packets (just as in
+		 * Delete payloads).
+		 */
+
+		old_child_sa =
+			ikev2_find_child_sa_by_spi(ike_sa, rekey_proto,
+						   rekey_spi, PEER);
+		if (!old_child_sa) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOWARN, PLOGLOC,
+				   "can't find corresponding child_sa for peer specified proto %d (%s) spi 0x%x\n",
+				   rekey_proto,
+				   (rekey_proto == IKEV2_NOTIFY_PROTO_AH ? "AH" :
+				    rekey_proto == IKEV2_NOTIFY_PROTO_ESP ? "ESP" :
+				    "(unknown)"),
+				   rekey_spi);
+		} else {
+			/*
+			 * RFC 9370 s2.2.4: if WE already rekeyed this
+			 * child (CREATE_CHILD_SA completed) and our
+			 * IKE_FOLLOWUP_KE series is still in progress,
+			 * a concurrent peer rekey of the same SA must be
+			 * answered with TEMPORARY_FAILURE (MUST).
+			 */
+			struct ikev2_child_sa *pending;
+
+			for (pending = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+			     !IKEV2_CHILD_LIST_END(pending);
+			     pending = IKEV2_CHILD_LIST_NEXT(pending)) {
+#ifdef WITH_ADDKE
+				{
+					unsigned int rekey_proto;
+
+					if (!pending->is_initiator ||
+					    !pending->addke_pending)
+						continue;
+					/* RFC 9370 s2.2.4 MUST: if WE already
+					 * rekeyed this child and our
+					 * IKE_FOLLOWUP_KE series is still in
+					 * progress, a concurrent peer rekey of
+					 * the same SA must be answered
+					 * TEMPORARY_FAILURE.  preceding_spi is
+					 * OUR (MINE) inbound SPI; compare it in
+					 * the same namespace by re-locking up
+					 * the SA it replaces and testing it IS
+					 * the child the peer rekey matched. */
+					rekey_proto =
+					    ikev2_child_rekey_proto(pending);
+					if (rekey_proto != 0 &&
+					    ikev2_find_child_sa_by_spi(ike_sa,
+						rekey_proto,
+						pending->preceding_spi,
+						MINE) == old_child_sa) {
+						isakmp_log(ike_sa, local, remote, msg,
+						    PLOG_PROTOWARN, PLOGLOC,
+						    "rekey collision: our ADDKE "
+						    "rekey followup in progress for "
+						    "spi 0x%x; TEMPORARY_FAILURE\n",
+						    rekey_spi);
+						(void)ikev2_respond_error(
+						    ike_sa, msg, remote, local,
+						    0, 0, 0,
+						    IKEV2_TEMPORARY_FAILURE, 0, 0);
+						goto done;
+					}
+				}
+#endif
+			}
+			TRACE((PLOGLOC, "rekey request for child_sa %p\n",
+			       old_child_sa));
+			if (old_child_sa->rekey_inprogress) {
+				TRACE((PLOGLOC, "rekey in progress already\n"));
+				old_child_sa->rekey_duplicate = TRUE;
+				old_child_sa->rekey_duplicate_message_id = message_id;
+			}
+			old_child_sa->rekey_inprogress = TRUE;
+		}
+	}
+
+	if (ke) {
+		struct algdef *dhdef;
+		unsigned int dhlen;
+
+		peer_grp = get_uint16(&ke->ke_h.dh_group_id);
+		dhdef = ikev2_dhinfo(peer_grp);
+		if (!dhdef) {
+			/* Unsupported KEi group.  RFC 7296 3.3.2:
+			 * tell the peer which group we would accept. */
+			uint16_t code = 0;
+			struct algdef *pref =
+			    ike_sa->negotiated_sa ? ike_sa->negotiated_sa->dhdef : 0;
+
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "KEi group %d not supported\n", peer_grp);
+			++isakmpstat.invalid_ke_payload;
+			if (pref)
+				code = htons(pref->transform_id);
+			(void)ikev2_respond_error(ike_sa, msg, remote, local,
+						  0, 0, 0,
+						  IKEV2_INVALID_KE_PAYLOAD,
+						  &code, sizeof(code));
+			goto done;
+		}
+
+		dhlen = get_payload_length(&ke->header) -
+			sizeof(struct ikev2payl_ke);
+		if (dhlen != dh_value_len((struct dhgroup *)dhdef->definition)) {
+			/* send repsonse INVALID_SYNTAX */
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "invalid KE payload (data length %u != %zu)\n",
+				   dhlen,
+				   dh_value_len((struct dhgroup *)dhdef->definition));
+			goto respond_invalid_syntax;
+		}
+
+		g_i = rc_vnew((uint8_t *)(ke + 1), dhlen);
+	} else if (ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "PFS required but CREATE_CHILD_SA lacks KE payload\n");
+		goto respond_invalid_syntax;
+	}
+	/* no KEi and PFS not required: KEYMAT = prf+(SK_d, Ni|Nr)
+	 * (RFC 7296 2.17, 2.18) — dhdef binding is skipped below. */
+
+	if (! old_child_sa &&
+	    ikev2_config_required(ike_sa->rmconf) == RCT_BOOL_ON &&
+	    !ike_sa->childless_established && !cfg) {
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOERR, PLOGLOC,
+			   "peer message lacks required Configuration payload\n");
+		++isakmpstat.malformed_message;
+		err = IKEV2_FAILED_CP_REQUIRED;
+		goto fail;
+	}
+	if (old_child_sa && cfg) {
+		/*
+		 * I'm assuming that the allocated addresses are
+		 * automatically inherited to the new child_sa.
+		 */
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_PROTOWARN, PLOGLOC,
+			   "rekey CHILD_SA request with Config payload is unsupported, ignoring Config payload\n");
+		cfg = 0;
+	}
+
+	n_i = isakmp_p2v((struct isakmp_gen *)nonce);
+	if (!n_i)
+		goto fail_nomem;
+
+	/* responder-rekey diagnostic: dump the raw request nonce bytes
+	 * so the exact Ni fed into KEYMAT (RFC 7296 2.17) is on record
+	 * next to the CHILD keymat nonces fingerprint in
+	 * ikev2_add_ipsec_sa.  A parse/length bug here would silently
+	 * diverge KEYMAT from what iOS derives while every internal
+	 * consistency check (DH recheck, nonce freshness) still
+	 * passes -- matching the observed AUTH-child-works /
+	 * every-rekey-fails signature. */
+	if (n_i) {
+		unsigned char hex[128];
+		size_t i, off, n = n_i->l < 48 ? n_i->l : 48;
+		for (i = 0, off = 0; i < n && off + 3 < sizeof(hex); i++) {
+			snprintf((char *)&hex[off], 4, "%02x ",
+			    ((u_char *)n_i->v)[i]);
+			off += 3;
+		}
+		hex[off] = '\0';
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_DEBUG, PLOGLOC,
+			   "CREATE_CHILD_SA request Ni len=%zu hex=%s\n",
+			   n_i->l, hex);
+	}
+
+	/* responder-rekey diagnostic: dump the REQUEST's traffic
+	 * selectors (SK-decrypted here) so a response TS mismatch is
+	 * visible.  iOS rekeys with the selectors of the old child;
+	 * if what we echo (lease/MY_NET) differs from what iOS asked
+	 * for, iOS drops the new SA and deletes the IKE_SA. */
+	if (ts_i && ts_r) {
+		struct ikev2_payload_header *ph;
+		uint8_t *p;
+		unsigned char hex[128];
+		size_t i, off, n;
+
+		ph = (struct ikev2_payload_header *)ts_i;
+		n = get_payload_length(ph);
+		if (n > 64)
+			n = 64;
+		for (i = 0, off = 0, p = (uint8_t *)ph; i < n; i++) {
+			if (off + 3 >= sizeof(hex))
+				break;
+			snprintf((char *)&hex[off], 4, "%02x ", p[i]);
+			off += 3;
+		}
+		hex[off] = '\0';
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_DEBUG, PLOGLOC,
+			   "CREATE_CHILD_SA request TSi hex=%s\n", hex);
+		ph = (struct ikev2_payload_header *)ts_r;
+		n = get_payload_length(ph);
+		if (n > 64)
+			n = 64;
+		for (i = 0, off = 0, p = (uint8_t *)ph; i < n; i++) {
+			if (off + 3 >= sizeof(hex))
+				break;
+			snprintf((char *)&hex[off], 4, "%02x ", p[i]);
+			off += 3;
+		}
+		hex[off] = '\0';
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_DEBUG, PLOGLOC,
+			   "CREATE_CHILD_SA request TSr hex=%s\n", hex);
+	}
+
+	/* responder-rekey diagnostic: dump the REQUEST's KEi bytes.
+	 * g^ir is the one keymat input exclusive to rekeys; the AUTH
+	 * child (which works) derives without it.  If iOS's KEi is not
+	 * a valid P-256 point (or our g_ir does not match it), the
+	 * derived ESP keys diverge -- iOS sends ESP that our kernel
+	 * drops (observed: pcap shows ESP arriving on the new SPI,
+	 * xfrm seq stays 0x0) and the data plane dies silently. */
+	if (g_i) {
+		unsigned char hex[256];
+		size_t i, off;
+		for (i = 0, off = 0; i < g_i->l && off + 3 < sizeof(hex); i++) {
+			snprintf((char *)&hex[off], 4, "%02x ",
+			    ((u_char *)g_i->v)[i]);
+			off += 3;
+		}
+		hex[off] = '\0';
+		isakmp_log(ike_sa, local, remote, msg,
+			   PLOG_DEBUG, PLOGLOC,
+			   "CREATE_CHILD_SA request KEi len=%zu hex=%s\n",
+			   g_i->l, hex);
+	}
+
+	err = ikev2_create_child_responder(ike_sa, local, remote, message_id,
+					   sa, ts_i, ts_r, cfg, g_i, n_i,
+					   &child_param, TRUE,
+					   peer_grp, old_child_sa);
+	if (err) {
+		/* ikev2_create_child_responder() increments isakmpstat */
+		goto fail;
+	}
+
+	/*
+	 * The new child_sa created by ikev2_create_child_responder()  must
+	 * have its state set to GETSPI.  When the state transits to
+	 * GETSPI_DONE, create_child_responder_send() gets called.
+	 */
+
+      done:
+	if (g_i)
+		rc_vfree(g_i);
+	ikev2_child_param_destroy(&child_param);
+	return;
+
+      fail:
+	if (err <= 0)
+		err = IKEV2_INVALID_SYNTAX;
+	/*
+	 * The peer's rekey request failed — clear rekey_inprogress on
+	 * the old child_sa (set in the REKEY_SA handling above), or it
+	 * would never be rekeyed again (and its expire timer rescue
+	 * paths all skip while the flag is stuck).
+	 */
+	if (old_child_sa && old_child_sa->rekey_inprogress) {
+		old_child_sa->rekey_inprogress = FALSE;
+		old_child_sa->rekey_duplicate = FALSE;
+		ikev2_child_arm_expire(old_child_sa, 30);
+	}
+	if (err == IKEV2_INVALID_KE_PAYLOAD) {
+		/*
+		 * RFC 7296 §3.14.2: INVALID_KE_PAYLOAD carries the DH
+		 * group we would accept in the Notify data.
+		 */
+		uint16_t code = htons((uint16_t)child_param.notify_code);
+		(void)ikev2_respond_error(ike_sa, msg, remote, local,
+					  0, 0, 0, err, &code, sizeof(code));
+	} else
+		(void)ikev2_respond_error(ike_sa, msg, remote, local,
+					  0, 0, 0, err, 0, 0);
+	goto done;
+
+      fail_nomem:
+	isakmp_log(ike_sa, local, remote, msg,
+		   PLOG_INTERR, PLOGLOC, "failed allocating memory\n");
+	++isakmpstat.fail_process_packet;
+	goto done;
+
+      duplicate:
+	isakmp_log(ike_sa, local, remote, msg,
+		   PLOG_PROTOERR, PLOGLOC,
+		   "unnecessary duplicated payload (type %d)\n", type);
+	++isakmpstat.duplicate_payload;
+
+      respond_invalid_syntax:
+	(void)ikev2_respond_error(ike_sa, msg, remote, local,
+				  0, 0, 0, IKEV2_INVALID_SYNTAX, 0, 0);
+	goto done;
+
+      malformed_message:
+	isakmp_log(ike_sa, local, remote, msg,
+		   PLOG_PROTOERR, PLOGLOC, "malforomed message\n");
+	++isakmpstat.malformed_message;
+	goto respond_invalid_syntax;
+
+      unsupported_critical_payload:
+	{
+		uint8_t	code;
+
+		code = type;
+		(void)ikev2_respond_error(ike_sa, msg, remote, local,
+					  0, 0, 0,
+					  IKEV2_UNSUPPORTED_CRITICAL_PAYLOAD,
+					  &code, sizeof(code));
+	}
+	goto done;
+}
+
+int
+ikev2_push_natd_report(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
+{
+	rc_vchar_t *n;
+	int ret = -1;
+
+	if (!ike_sa->natd_report)
+		return 0;
+	/*
+	 * RFC 4555 §3.8: the initiator treats our NAT_DETECTION
+	 * digests as a BINDING REPORT and compares the received
+	 * DESTINATION_IP with the value from the previous response
+	 * (INIT or last UPDATE_SA_ADDRESSES).  The check is a
+	 * stability check on what we report we see - not a value
+	 * equality check against the peer's own computation, and
+	 * certainly not an echo of the peer's digests.
+	 *
+	 * Replay the digests we sent in the INIT reply unchanged,
+	 * so a session that has not re-bound reports the same
+	 * binding forever.  Recomputing per packet drifts when the
+	 * NAT-T ports float 500->4500 (every probe then looks like
+	 * a binding change); echoing the peer's own digests fails
+	 * the same comparison, since the peer validates against OUR
+	 * INIT values, not its own computation.  Honest change
+	 * detection lives on the inbound side (peer-vs-previous-peer
+	 * drift log); the outbound report exists to be STABLE.
+	 *
+	 * When the peer sent UPDATE_SA_ADDRESSES (an actual or
+	 * suspected re-bind), re-pin the digests from the current
+	 * endpoints before replaying: after a genuine address
+	 * update the new baseline must track the new binding, and
+	 * this message's reply carries the re-pinned values.
+	 */
+	if (ike_sa->mobike_update) {
+		rc_vchar_t *hs, *hd;
+		struct rc_addrlist *pub =
+		    ikev2_natd_public_address(ike_sa->rmconf);
+
+		if (!ike_sa->local || !ike_sa->remote)
+			return -1;
+		if (pub && pub->a.ipaddr)
+			hs = natt_create_hash(ike_sa, pub->a.ipaddr, TRUE);
+		else
+			hs = natt_create_hash(ike_sa, ike_sa->local, TRUE);
+		hd = natt_create_hash(ike_sa, ike_sa->remote, TRUE);
+		if (!hs || !hd) {
+			if (hs)
+				rc_vfree(hs);
+			if (hd)
+				rc_vfree(hd);
+			return -1;
+		}
+		memcpy(ike_sa->natd_init_src_hash, hs->v, 20);
+		memcpy(ike_sa->natd_init_dst_hash, hd->v, 20);
+		rc_vfree(hs);
+		rc_vfree(hd);
+		ike_sa->mobike_update = 0;
+	}
+	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
+				 IKEV2_NAT_DETECTION_SOURCE_IP,
+				 ike_sa->natd_init_src_hash, 20);
+	if (!n)
+		goto end;
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
+	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0,
+				 IKEV2_NAT_DETECTION_DESTINATION_IP,
+				 ike_sa->natd_init_dst_hash, 20);
+	if (!n)
+		goto end;
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
+	ret = 0;
+
+      end:
+	return ret;
+}
+
+void
+ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
+				 struct ikev2_child_sa *child_sa)
+{
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+	   "CREATE_CHILD_SA response: msgid=%u child=%p dhgrp=%u dhpub=%s state=%d\n",
+	   child_sa->message_id, child_sa,
+	   child_sa->dhgrp ? child_sa->dhgrp->transform_id : 0,
+	   child_sa->dhpub ? "Y" : "n", child_sa->state);
+
+	rc_vchar_t *sa = 0;
+	rc_vchar_t *ke = 0;
+	struct ikev2_payloads payl;
+	rc_vchar_t *pkt;
+
+	/*
+	 * send HDR, SK {[N(IPCOMP_SUPPORTED)],
+	 *               [N(USE_TRANSPORT_MODE)],
+	 *               [N(ESP_TFC_PADDING_NOT_SUPPORTED)],
+	 *               [N(NON_FIRST_FRAGMENTS_ALSO)],
+	 *               SA, Nr, [KEr], TSi, TSr,
+	 *               [N(ADDITIONAL_TS_POSSIBLE)]
+	 */
+
+	ikev2_payloads_init(&payl);
+
+	if (ike_sa->natd_report &&
+	    (ikev2_nat_traversal(ike_sa->rmconf) == RCT_BOOL_ON ||
+	     ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE)) {
+		/* RFC 7296 §2.23: NAT_DETECTION over this packet's
+		 * endpoints (SRC=local, DST=remote), same as INIT. */
+		if (ikev2_push_natd_report(ike_sa, &payl) < 0)
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
+				   "failed to add NAT_DETECTION "
+				   "report for CREATE_CHILD_SA reply\n");
+		else
+			isakmp_log(ike_sa, 0, 0, 0,
+				   PLOG_INFO, PLOGLOC,
+				   "NAT_DETECTION report in "
+				   "CREATE_CHILD_SA reply\n");
+		ike_sa->natd_report = 0;
+	}
+
+	if (child_sa->state != IKEV2_CHILD_STATE_MATURE) {
+		TRACE((PLOGLOC, "child state %d, aborting exchange\n",
+		       child_sa->state));
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_INVALID_SYNTAX,
+							 0, 0),
+				    TRUE);
+		goto send_response;
+	}
+
+	/* re-offer ADDKE (type-6) in the CREATE_CHILD response: the response
+	 * SA is packed straight from my_proposal, and the rekey branch may not
+	 * reach ikev2_create_child_responder's own reoffer; cover it here so a
+	 * peer that offered ADDKE (or addke_unrequested) gets type-6 echoed. */
+	ikev2_child_maybe_reoffer_addke(child_sa);
+
+	sa = ikev2_construct_sa(child_sa);
+	if (!sa)
+		goto fail;
+
+	if (child_sa->dhpub) {
+		struct ikev2payl_ke_h dhgrp_hdr;
+
+		dhgrp_hdr.dh_group_id = htons(child_sa->dhgrp->transform_id);
+		dhgrp_hdr.reserved = 0;
+		ke = rc_vprepend(child_sa->dhpub, &dhgrp_hdr, sizeof(dhgrp_hdr));
+		if (!ke)
+			goto fail;
+	}
+
+	/*
+	 * [CP(CFG_REPLY)]
+	 */
+	if (child_sa->child_param.cfg_payload)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CONFIG,
+				    child_sa->child_param.cfg_payload, FALSE);
+
+#ifdef notyet
+	/*
+	 * [N(IPCOMP_SUPPORTED)]
+	 */
+#endif
+
+	/*
+	 * [N(USE_TRANSPORT_MODE)]
+	 */
+	if (child_sa->child_param.use_transport_mode) {
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
+							 0, 0,
+							 IKEV2_USE_TRANSPORT_MODE,
+							 0, 0),
+				    TRUE);
+	}
+
+	/*
+	 * [N(ESP_TFC_PADDING_NOT_SUPPORTED)]
+	 */
+	if (ikev2_esp_tfc_padding_not_supported) {
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
+							 0, 0,
+							 IKEV2_ESP_TFC_PADDING_NOT_SUPPORTED,
+							 0, 0),
+				    TRUE);
+	}
+
+#ifdef notyet
+	/*
+	 * [N(NON_FIRST_FRAGMENTS_ALSO)]
+	 */
+#endif
+
+	/*
+	 * RFC 9370 s2.2.4: when the CREATE_CHILD_SA selected an ADDKE
+	 * transform, the response MUST carry the ADDITIONAL_KEY_EXCHANGE
+	 * notification (16441) with responder-chosen link data; the
+	 * initiator echoes it in the IKE_FOLLOWUP_KE request so we can
+	 * associate the followup with this child.
+	 */
+	if (child_sa->addke_pending && child_sa->addke_link) {
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
+							 0, 0,
+							 IKEV2_ADDITIONAL_KEY_EXCHANGE,
+							 child_sa->addke_link->v,
+							 child_sa->addke_link->l),
+				    TRUE);
+		TRACE((PLOGLOC,
+		       "ADDKE: attached ADDITIONAL_KEY_EXCHANGE link "
+		       "(%zu bytes) to CREATE_CHILD_SA response\n",
+		       child_sa->addke_link->l));
+	}
+
+	/*
+	 * SA, Nr, [KEr], TSi, TSr
+	 */
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_SA, sa, FALSE);
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NONCE, child_sa->n_r, FALSE);
+	if (ke)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ke, FALSE);
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_TS_I, child_sa->child_param.ts_i, FALSE);
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_TS_R, child_sa->child_param.ts_r, FALSE);
+
+#ifdef notyet
+	if (param.additional_ts_possible)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_...,
+							 IKEV2_ADDITIONAL_TS_POSSIBLE,
+							 0, 0),
+				    TRUE);
+#endif
+
+      send_response:
+	ikev2_push_cookie2_echo(ike_sa, &payl);
+	{
+		int t_i;
+		for (t_i = 0; t_i < payl.num; t_i++)
+			isakmp_log(ike_sa, child_sa->parent->local, child_sa->parent->remote,
+			    0, PLOG_DEBUG, PLOGLOC,
+			    "CHILD_RESP payl[%d] type=%d len=%zu\n",
+			    t_i, payl.payloads[t_i].type,
+			    payl.payloads[t_i].data ? payl.payloads[t_i].data->l : 0);
+		/*
+		 * Responder-rekey diagnostics: dump the exact SA proposal
+		 * we packed (transform types/ids, DH group, SPI) and the
+		 * keymat inputs, so an iOS-instantiated rekey that ends in
+		 * DELETE IKE_SA can be compared byte-for-byte against the
+		 * request's accepted proposal.  The 07:00:40 run on
+		 * 0ead7d5 was wire-clean yet iOS tore the IKE_SA down
+		 * without ever sending ESP on the new child.
+		 */
+		if (sa) {
+			char hx[128];
+			size_t hl = sa->l < 40 ? sa->l : 40;
+			size_t i;
+			for (i = 0; i < hl && i * 2 + 2 < sizeof(hx); i++)
+				snprintf(&hx[i * 2], 3, "%02x",
+				    ((u_char *)sa->v)[i]);
+			hx[i * 2] = '\0';
+			isakmp_log(ike_sa, child_sa->parent->local, child_sa->parent->remote,
+			    0, PLOG_DEBUG, PLOGLOC,
+			    "CHILD_RESP SA len=%zu spi(prop+1)=0x%08x dhgrp_id=%u "
+			    "n_i.len=%zu n_r.len=%zu g_ir.len=%zu%s%s%s "
+			    "sa_hex=%s\n",
+			    sa->l,
+			    child_sa->my_proposal && child_sa->my_proposal[1] &&
+			    child_sa->my_proposal[1]->prop ?
+			    (unsigned)get_uint32(child_sa->my_proposal[1]->prop + 1) : 0,
+			    child_sa->dhgrp ? child_sa->dhgrp->transform_id : 0,
+			    child_sa->n_i ? child_sa->n_i->l : 0,
+			    child_sa->n_r ? child_sa->n_r->l : 0,
+			    child_sa->g_ir ? child_sa->g_ir->l : 0,
+			    child_sa->dhpub ? " dhpub=Y" : "",
+			    child_sa->g_ir ? " g_ir=Y" : "",
+			    child_sa->peer_proposal ? " peer_prop=Y" : "",
+			    hx);
+		}
+		/*
+		 * Dump the exact bytes we are about to put on the wire
+		 * beyond the SA: KEr (dhgrp_hdr + dhpub), TSi, TSr.
+		 * These are the only remaining unlogged response fields;
+		 * a responder-rekey death (09:08 / 11:55) with clean SA
+		 * and keymat hashes makes the TS/KEr content the last
+		 * byte-level suspect.
+		 */
+		{
+			char hx[160];
+			size_t i;
+			struct {
+				const char *tag;
+				rc_vchar_t *d;
+			} dump[] = {
+				{ "KEr", ke },
+				{ "TSi", child_sa->child_param.ts_i },
+				{ "TSr", child_sa->child_param.ts_r },
+			};
+			size_t d_i;
+			for (d_i = 0; d_i < sizeof(dump) / sizeof(dump[0]);
+			    d_i++) {
+				rc_vchar_t *d = dump[d_i].d;
+				size_t hl;
+				if (!d) {
+					isakmp_log(ike_sa,
+					    child_sa->parent->local,
+					    child_sa->parent->remote, 0,
+					    PLOG_DEBUG, PLOGLOC,
+					    "CHILD_RESP %s=NULL\n",
+					    dump[d_i].tag);
+					continue;
+				}
+				hl = d->l < (sizeof(hx) - 1) / 2 ? d->l
+				    : (sizeof(hx) - 1) / 2;
+				for (i = 0; i < hl && i * 2 + 2 < sizeof(hx);
+				    i++)
+					snprintf(&hx[i * 2], 3, "%02x",
+					    ((u_char *)d->v)[i]);
+				hx[i * 2] = '\0';
+				isakmp_log(ike_sa, child_sa->parent->local,
+				    child_sa->parent->remote, 0, PLOG_DEBUG,
+				    PLOGLOC,
+				    "CHILD_RESP %s len=%zu hex(<=%zu)=%s\n",
+				    dump[d_i].tag, d->l, hl, hx);
+			}
+		}
+		if (child_sa->peer_proposal) {
+			struct prop_pair *pr;
+			unsigned pn = 0;
+			for (pr = child_sa->peer_proposal; pr;
+			     pr = pr->next, pn++) {
+				struct prop_pair *t2;
+				isakmp_log(ike_sa, child_sa->parent->local,
+				    child_sa->parent->remote, 0, PLOG_DEBUG,
+				    PLOGLOC,
+				    "CHILD_RESP peer_prop[%u] proto=%d "
+				    "spi_size=%d trns:",
+				    pn,
+				    pr->prop ? pr->prop->proto_id : -1,
+				    pr->prop ? pr->prop->spi_size : -1);
+				for (t2 = pr->tnext; t2; t2 = t2->next) {
+					struct ikev2transform *tr =
+					    (struct ikev2transform *)t2->trns;
+					if (!tr)
+						continue;
+					isakmp_log(ike_sa,
+					    child_sa->parent->local,
+					    child_sa->parent->remote, 0,
+					    PLOG_DEBUG, PLOGLOC,
+					    "  type=%u id=%u len=%u\n",
+					    tr->transform_type,
+					    get_uint16(&tr->transform_id),
+					    get_uint16(&tr->transform_length));
+				}
+			}
+		}
+	}
+	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
+				     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
+				     IKEV2FLAG_RESPONSE, child_sa->message_id,
+				     ike_sa, &payl);
+	if (!pkt)
+		goto fail;
+
+	if (ikev2_transmit_response(ike_sa, pkt, child_sa->parent->local, child_sa->parent->remote) != 0)
+		goto fail;
+
+      done:
+	if (ke)
+		rc_vfree(ke);
+	if (sa)
+		rc_vfree(sa);
+	ikev2_payloads_destroy(&payl);
+	return;
+
+      fail:
+	isakmp_log(ike_sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC,
+		   "failed sending CREATE_CHILD response for internal error\n");
+	++isakmpstat.fail_send_packet;
+	/* no way to recover.  should abort? */
+	goto done;
+}
+
+/*
+ * compare nonce
+ * (to determine lowest of nonces.  draft-17 section 2.8)
+ */
+int
+ikev2_noncecmp(rc_vchar_t *n1, rc_vchar_t *n2)
+{
+	size_t len;
+	int result;
+
+	len = (n1->l < n2->l) ? n1->l : n2->l;
+	result = memcmp(n1->v, n2->v, len);
+	if (result != 0)
+		return result;
+	if (n1->l < n2->l)
+		return -1;
+	if (n1->l > n2->l)
+		return 1;
+	return 0;
+}
+
+/*
+ * Map a child's preceding_satype (the SA it is rekeying) to the IKE v2
+ * proposal protocol id used to look that SA up.  0 when the child is not a
+ * rekey.  Shared by ikev2_initiator_rekey_finalize() and the RFC 9370
+ * §2.2.4 rekey-collision check so the two never drift.
+ */
+static unsigned int
+ikev2_child_rekey_proto(struct ikev2_child_sa *child_sa)
+{
+	if (child_sa->preceding_satype == 0)
+		return 0;
+	return (child_sa->preceding_satype == RCT_SATYPE_ESP ?
+		IKEV2PROPOSAL_ESP : IKEV2PROPOSAL_AH);
+}
+
+/*
+ * RFC 7296 §2.8 initiator rekey finalize, shared by the plain CREATE_CHILD
+ * finalize path (ikev2_createchild_initiator_recv) and the ADDKE completion
+ * (ikev2_initiator_followup_complete, after the IKE_FOLLOWUP_KE installs the
+ * rekeyed child with the KEM keymat).  The replaced (preceding) SA is cleared
+ * once the new child is live.  On a rekey collision it follows the draft-17
+ * rule: keep both NEW SAs briefly and the one created with the lowest of the
+ * four nonces is closed by the endpoint that created it — here we close our
+ * just-rekeyed child if it loses, otherwise leave both (the duplicate's
+ * creator clears its own).  The caller decides whether to call us at all:
+ * the plain path defers while addke_pending so the followup can install the
+ * KEM child first.
+ */
+void
+ikev2_initiator_rekey_finalize(struct ikev2_sa *ike_sa,
+			       struct ikev2_child_sa *child_sa)
+{
+	struct ikev2_child_sa *old_child_sa;
+	struct ikev2_child_sa *duplicate_child_sa;
+
+	if (ikev2_child_rekey_proto(child_sa) == 0)
+		return;
+
+	old_child_sa = ikev2_find_child_sa_by_spi(ike_sa,
+	    ikev2_child_rekey_proto(child_sa),
+	    child_sa->preceding_spi, MINE);
+	if (old_child_sa == NULL) {
+		TRACE((PLOGLOC,
+		       "can't find preceding sa satype %d spi 0x%x\n",
+		       child_sa->preceding_satype,
+		       child_sa->preceding_spi));
+		return;
+	}
+
+	if (old_child_sa->rekey_duplicate) {
+		/*
+		 * (draft-17) A rekey collision may temporarily create two
+		 * similar SAs; accept packets through either, and the SA
+		 * created with the lowest of the four nonces used in the two
+		 * exchanges SHOULD be closed by the endpoint that created it.
+		 */
+		duplicate_child_sa =
+		    ikev2_find_child_sa(ike_sa,
+					TRUE,
+					old_child_sa->rekey_duplicate_message_id);
+		if (duplicate_child_sa == NULL) {
+			TRACE((PLOGLOC,
+			       "can't find duplicate child_sa (message_id 0x%08x\n",
+			       old_child_sa->rekey_duplicate_message_id));
+		} else {
+			rc_vchar_t *n1;
+			rc_vchar_t *n2;
+
+			TRACE((PLOGLOC, "checking duplicate...\n"));
+			n1 = (ikev2_noncecmp(child_sa->n_i, child_sa->n_r) < 0) ?
+			    child_sa->n_i :
+			    child_sa->n_r;
+			n2 = (ikev2_noncecmp(duplicate_child_sa->n_i,
+					     duplicate_child_sa->n_r) < 0) ?
+			    duplicate_child_sa->n_i :
+			    duplicate_child_sa->n_r;
+			if (ikev2_noncecmp(n1, n2) < 0) {
+				/* our just-rekeyed child has the lowest
+				 * nonce: close it (RFC 7296 §2.8.2) */
+				TRACE((PLOGLOC, "need initiating delete\n"));
+				ikev2_child_delete(child_sa);
+			} else {
+				TRACE((PLOGLOC, "leave it\n"));
+			}
+		}
+		return;
+	}
+
+	/*
+	 * RFC 7296 2.8: "when the new one is established, delete the old
+	 * one".  The rekey initiator deletes the replaced child SA once the
+	 * new SA is live; ikev2_child_delete() sends the DELETE payload (old
+	 * SPI) via an Informational exchange and removes the inbound SADB
+	 * now, outbound when the response arrives.  Skipping this left the
+	 * old SA resident and iOS deleted the IKE_SA ~30 s after every
+	 * completed rekey.
+	 */
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+	    "rekey complete: deleting old child spi=0x%08x\n",
+	    child_sa->preceding_spi);
+	ikev2_child_delete(old_child_sa);
+}
+
+void
+ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
+				 struct sockaddr *remote,
+				 struct sockaddr *local)
+{
+	struct ikev2_header *ikehdr;
+	uint32_t message_id;
+	struct ikev2_payload_header *p;
+	int type;
+	struct ikev2_payload_header *nonce = 0;
+	struct ikev2_payload_header *sa = 0;
+	struct ikev2payl_ke *ke = 0;
+	struct ikev2_payload_header *ts_i = 0;
+	struct ikev2_payload_header *ts_r = 0;
+	rc_vchar_t *n_r;
+	rc_vchar_t *g_r = 0;
+	struct ikev2_child_param child_param;
+	struct ikev2_child_sa *child_sa;
+
+	ikev2_child_param_init(&child_param);
+
+	ikehdr = (struct ikev2_header *)msg->v;
+	message_id = get_uint32(&ikehdr->message_id);
+	child_sa = ikev2_find_request(ike_sa, message_id);
+	if (child_sa && child_sa->state == IKEV2_CHILD_STATE_REQUEST_SENT) {
+		if (child_sa->callback) {
+			child_sa->callback(REQUEST_CALLBACK_RESPONSE,
+					   child_sa, msg);
+		} else {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTWARN, PLOGLOC,
+				   "no callback defined for response\n");
+		}
+		goto done;
+	}
+	if (!child_sa
+	    || child_sa->state != IKEV2_CHILD_STATE_WAIT_RESPONSE)
+		goto unexpected;
+	/* commit the window only on a real WAIT_RESPONSE match (mirrors the
+	 * informational_initiator_recv fix in d627063): a duplicate or
+	 * unknown CREATE_CHILD response must not stop retransmit of the
+	 * request actually in flight (review 2026-09-24). */
+	ikev2_update_message_id(ike_sa, message_id, TRUE);
+
+#ifdef notyet
+	if (Notify) {
+
+	}
+#endif
+
+	/*
+	 * expect HDR, SK {SA, Nr, [KEr], TSi, TSr}
+	 */
+	/* optional N(ADDITIONAL_TS_POSSIBLE) */
+	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	for (type = ikehdr->next_payload;
+	     type != IKEV2_NO_NEXT_PAYLOAD;
+	     POINT_NEXT_PAYLOAD(p, type)) {
+		switch (type) {
+		case IKEV2_PAYLOAD_ENCRYPTED:
+			break;
+		case IKEV2_PAYLOAD_NONCE:
+			if (nonce)
+				goto duplicate;
+			nonce = p;
+			break;
+		case IKEV2_PAYLOAD_SA:
+			if (sa)
+				goto duplicate;
+			sa = p;
+			break;
+		case IKEV2_PAYLOAD_KE:
+			if (ke)
+				goto duplicate;
+			ke = (struct ikev2payl_ke *)p;
+			break;
+		case IKEV2_PAYLOAD_TS_I:
+			if (ts_i)
+				goto duplicate;
+			ts_i = p;
+			break;
+		case IKEV2_PAYLOAD_TS_R:
+			if (ts_r)
+				goto duplicate;
+			ts_r = p;
+			break;
+		case IKEV2_PAYLOAD_NOTIFY:
+			if (createchild_init_recv_notify
+			    (ike_sa, p, &child_param, child_sa) < 0) {
+				goto done;
+			}
+			break;
+		case IKEV2_PAYLOAD_VENDOR_ID:
+			/* A Vendor ID payload may be sent as part of any message. */
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOWARN, PLOGLOC,
+				   "vendor id payload ignored\n");
+			++isakmpstat.payload_ignored;
+			break;
+
+		default:
+			if (payload_is_critical(p)
+			    || ikev2_payload_type_is_critical(type)) {
+				isakmp_log(ike_sa, local, remote, msg,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "unexpected critical payload (type %d)\n",
+					   type);
+				++isakmpstat.unexpected_payload;
+				goto unsupported_critical_payload;
+			}
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOWARN, PLOGLOC,
+				   "unexpected noncritical payload (type %d) ignored\n",
+				   type);
+			++isakmpstat.payload_ignored;
+			break;
+		}
+	}
+
+	if (!(sa && nonce && ts_i && ts_r))
+		goto malformed_message;
+
+	n_r = isakmp_p2v((struct isakmp_gen *)nonce);
+	if (!n_r)
+		goto fail;
+
+	if (child_sa->n_r)
+		goto fail;
+	child_sa->n_r = n_r;
+
+	if (child_sa->dhpriv) {
+		struct algdef *dhdef;
+		unsigned int dhlen;
+
+		if (!ke)
+			goto malformed_message;
+		dhdef = child_sa->dhgrp;
+		if (!dhdef)
+			dhdef = ikev2_dhinfo(get_uint16(&ke->ke_h.dh_group_id));
+		if (!dhdef)
+			goto malformed_message;
+
+		if (get_uint16(&ke->ke_h.dh_group_id) != dhdef->transform_id) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "received KE type %d, expected %d\n",
+				   get_uint16(&ke->ke_h.dh_group_id),
+				   dhdef->transform_id);
+			++isakmpstat.unexpected_payload;	/* ??? */
+			goto abort;
+		}
+		dhlen = get_payload_length(&ke->header) -
+			sizeof(struct ikev2payl_ke);
+		if (dhlen != dh_value_len((struct dhgroup *)dhdef->definition)) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "invalid KE payload (data length %u != %zu)\n",
+				   dhlen,
+				   dh_value_len((struct dhgroup *)dhdef->definition));
+			++isakmpstat.malformed_payload;
+			goto abort;
+		}
+
+		dhlen = get_payload_length(&ke->header) -
+			sizeof(struct ikev2payl_ke);
+		g_r = rc_vnew((uint8_t *)(ke + 1), dhlen);
+		if (oakley_dh_compute((struct dhgroup *)dhdef->definition,
+				      child_sa->dhpub, child_sa->dhpriv,
+				      g_r, &child_sa->g_ir) != 0) {
+			TRACE((PLOGLOC, "failed dh_compute\n"));
+			goto fail;
+		}
+	}
+
+	ikev2_update_child(child_sa, sa, ts_i, ts_r, &child_param);
+
+	/*
+	 * RFC 9370 s2.2.4: an ADDKE child rekey defers the keymat/XFRM
+	 * install inside ikev2_update_child() until the IKE_FOLLOWUP_KE
+	 * supplies SK(1).  The rekey must NOT be finalized here while
+	 * the child is still addke_pending: deleting the old child now
+	 * would tear down the live SA before the followup installs the
+	 * rekeyed one (SA interruption; and if the followup were lost
+	 * the child would be left dead).  The old-child delete and
+	 * "rekey complete" are deferred to the ADDKE completion
+	 * (ikev2_initiator_followup_complete).
+	 */
+	if (child_sa->preceding_satype != 0 && !child_sa->addke_pending)
+		ikev2_initiator_rekey_finalize(ike_sa, child_sa);
+
+      done:
+	if (g_r)
+		rc_vfree(g_r);
+	ikev2_child_param_destroy(&child_param);
+
+	/* if there are still more pending request, start it */
+	child_sa = ikev2_choose_pending_child(ike_sa, TRUE);
+	if (child_sa)
+		ikev2_wakeup_child_sa(child_sa);
+
+	return;
+
+      abort:
+	if (child_sa)
+		ikev2_child_abort(child_sa, ECONNREFUSED); /* ??? */
+	goto done;
+
+      malformed_message:
+	isakmp_log(ike_sa, local, remote, msg,
+		   PLOG_PROTOERR, PLOGLOC, "packet lacks expected payload\n");
+	++isakmpstat.malformed_message;
+	goto abort;
+      duplicate:
+	isakmp_log(ike_sa, local, remote, msg,
+		   PLOG_PROTOERR, PLOGLOC, "unexpected duplicated payloads\n");
+	++isakmpstat.duplicate_payload;
+	goto abort;
+      unexpected:
+	isakmp_log(ike_sa, local, remote, msg,
+		   PLOG_PROTOERR, PLOGLOC, "unexpected message\n");
+	++isakmpstat.unexpected_packet;
+	goto abort;
+
+      unsupported_critical_payload:
+	goto abort;
+
+      fail:
+	isakmp_log(ike_sa, local, remote, msg,
+		   PLOG_INTERR, PLOGLOC,
+		   "failed processing CREATE_CHILD_SA response for internal error\n");
+	++isakmpstat.fail_process_packet;
+	goto abort;
+}
+
+/*
+ * RFC 4555 §3.7: the peer listed additional addresses.  When the
+ * current path's retransmits are exhausted, probe the next same-family
+ * address with COOKIE2 before aborting the SA.  Do not migrate the
+ * kernel SAs until that COOKIE2 comes back matching.
+ * Returns 1 if a probe was armed, 0 if there is nothing left to try.
+ */
+
+
+
+/*
+ * Dead Peer Detection
+ */
+void
+ikev2_poll(struct ikev2_sa *ike_sa)
+{
+	struct ikev2_payloads *payl;
+
+	TRACE((PLOGLOC, "ikev2_poll(%p)\n", ike_sa));
+
+	payl = racoon_malloc(sizeof(struct ikev2_payloads));
+	ikev2_payloads_init(payl);
+	ikev2_informational_initiator_notify(ike_sa, payl);
+}
+
+/*
+ * parse a SA payload
+ */
+struct prop_pair **
+ikev2_parse_sa(struct isakmp_domain *doi,
+	       struct ikev2_payload_header *sa_payload)
+{
+	struct ikev2payl_sa *sa = (struct ikev2payl_sa *)sa_payload;
+	size_t proposal_bytes;
+	uint8_t *prop;
+	int err;
+
+	proposal_bytes =
+		get_payload_length(sa_payload) -
+		sizeof(struct ikev2_payload_header);
+	prop = (uint8_t *)(sa + 1);
+	err = isakmp_check_proposal_syntax(doi, prop, proposal_bytes);
+	if (err)
+		return 0;
+
+	return isakmp_parse_proposal(doi, prop, proposal_bytes);
+}
+
+/*
+ * ikev2_check_spi_size() called from isakmp_check_proposal_syntax()
+ * through ikev2_doi struct
+ */
+int
+ikev2_check_spi_size(struct isakmp_domain *doi, int proto_id, int spi_size)
+{
+	/* (draft-ietf-ipsec-ikev2-17)
+	 * o  SPI Size (1 octet) - For an initial IKE_SA negotiation,
+	 * this field MUST be zero; the SPI is obtained from the
+	 * outer header. During subsequent negotiations,
+	 * it is equal to the size, in octets, of the SPI of the
+	 * corresponding protocol (8 for IKE, 4 for ESP and AH).
+	 */
+	switch (proto_id) {
+	case IKEV2PROPOSAL_IKE:
+		if (spi_size != doi->ike_spi_size)
+			return -1;
+		break;
+
+	case IKEV2PROPOSAL_AH:
+	case IKEV2PROPOSAL_ESP:
+		if (spi_size != sizeof(uint32_t))
+			return -1;
+		break;
+
+	default:
+		return -1;
+	}
+
+	return 0;
 }
