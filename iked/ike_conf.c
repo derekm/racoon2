@@ -3650,6 +3650,8 @@ alglist_to_addke_proppair(struct rc_alglist *alg)
 	struct prop_pair *head = 0, **tail = &head, *t;
 	int code = 0;
 	int round = 0;
+	int seen[7];
+	int i;
 
 	for (; alg; ++round, alg = alg->next) {
 		if (round >= 7) {
@@ -3676,6 +3678,18 @@ alglist_to_addke_proppair(struct rc_alglist *alg)
 			     rct2str(alg->algtype));
 			goto fail;
 		}
+		/* RFC 9370 s2.2.2: a negotiated set never repeats a method,
+		 * so a config listing one twice can only fail; reject it */
+		for (i = 0; i < round; ++i) {
+			if (seen[i] == code) {
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				     "addke_alg: %s listed more than once "
+				     "(RFC 9370 s2.2.2)\n",
+				     rct2str(alg->algtype));
+				goto fail;
+			}
+		}
+		seen[round] = code;
 		plog(PLOG_DEBUG, PLOGLOC, NULL,
 		     "addke_alg: round %d -> type %d method %d\n",
 		     round, IKEV2TRANSFORM_TYPE_ADDKE + round, code);
