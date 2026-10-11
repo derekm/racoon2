@@ -3728,7 +3728,7 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	 * once the resumed IKE_AUTH succeeds we can silently delete it and
 	 * its children (no DELETE informational).  st.spi_i/spi_r are in the
 	 * same u64 form ike_msg_cookie_to_u64() produces, so the match in
-	 * ikev2_responder_delete_resumed_old_sa() uses that conversion. */
+	 * ikev2_silently_delete_old_resumed_sa() uses that conversion. */
 	ike_sa->resume_old_spi_i = st.spi_i;
 	ike_sa->resume_old_spi_r = st.spi_r;
 
@@ -5874,6 +5874,7 @@ responder_ike_sa_auth_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		struct ikev2_payload_header *p;
 		struct ikev2payl_auth *auth = NULL;
 		struct ikev2_payload_header *id_i = NULL;
+		struct ikev2_payload_header *id_r = NULL;
 		int type;
 		int result;
 
@@ -5911,6 +5912,13 @@ responder_ike_sa_auth_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				}
 				id_i = p;
 				break;
+			case IKEV2_PAYLOAD_ID_R:
+				if (id_r) {	/* duplicate */
+					ikev2_abort(ike_sa, ECONNREFUSED);
+					return;
+				}
+				id_r = p;
+				break;
 			}
 		}
 		if (!auth) {
@@ -5937,6 +5945,24 @@ responder_ike_sa_auth_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_PROTOERR, PLOGLOC,
 				   "RFC 5723: resumed IKE_AUTH IDi does not "
+				   "match the ticket identity\n");
+			++isakmpstat.authentication_failed;
+			ikev2_abort(ike_sa, ECONNREFUSED);
+			return;
+		}
+		/* RFC 5723 s4.3.3: the IDr a client sends in the resumed
+		 * IKE_AUTH (optional — the responder sends it) MUST ALSO be
+		 * identical to the ticket's IDr; a new IDr cannot be
+		 * negotiated on a resume (it would not be authenticated by
+		 * the AUTH MAC).  Absent IDr is fine (client omits it); a
+		 * present one that differs is refused. */
+		if (id_r && ike_sa->id_r &&
+		    (get_payload_data_length(id_r) != ike_sa->id_r->l ||
+		     memcmp(id_r + 1, ike_sa->id_r->v,
+			    ike_sa->id_r->l) != 0)) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "RFC 5723: resumed IKE_AUTH IDr does not "
 				   "match the ticket identity\n");
 			++isakmpstat.authentication_failed;
 			ikev2_abort(ike_sa, ECONNREFUSED);
