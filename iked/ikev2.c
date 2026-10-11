@@ -5808,6 +5808,7 @@ responder_ike_sa_auth_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		    (struct ikev2_header *)msg->v;
 		struct ikev2_payload_header *p;
 		struct ikev2payl_auth *auth = NULL;
+		struct ikev2_payload_header *id_i = NULL;
 		int type;
 		int result;
 
@@ -5815,12 +5816,21 @@ responder_ike_sa_auth_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		for (type = ikehdr->next_payload;
 		     type != IKEV2_NO_NEXT_PAYLOAD;
 		     POINT_NEXT_PAYLOAD(p, type)) {
-			if (type == IKEV2_PAYLOAD_AUTH) {
+			switch (type) {
+			case IKEV2_PAYLOAD_AUTH:
 				if (auth) {	/* duplicate */
 					ikev2_abort(ike_sa, ECONNREFUSED);
 					return;
 				}
 				auth = (struct ikev2payl_auth *)p;
+				break;
+			case IKEV2_PAYLOAD_ID_I:
+				if (id_i) {	/* duplicate */
+					ikev2_abort(ike_sa, ECONNREFUSED);
+					return;
+				}
+				id_i = p;
+				break;
 			}
 		}
 		if (!auth) {
@@ -5828,6 +5838,26 @@ responder_ike_sa_auth_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				   PLOG_PROTOERR, PLOGLOC,
 				   "RFC 5723: resumed IKE_AUTH lacks AUTH "
 				   "payload\n");
+			++isakmpstat.authentication_failed;
+			ikev2_abort(ike_sa, ECONNREFUSED);
+			return;
+		}
+		/* RFC 5723 s4.3.3: on a resumed SA the initiator sends
+		 * IDi/IDr in the resumed IKE_AUTH; the AUTH MAC covers only
+		 * the IKE_SESSION_RESUME exchange octets, so a mismatched,
+		 * unauthenticated identity would otherwise slip through.  The
+		 * resumed identity adopted from the ticket is the one bound
+		 * at mint time (ike_sa->id_i); the IDi the initiator now
+		 * asserts must equal it byte-for-byte (header-stripped data,
+		 * same form as id_i is stored on a fresh exchange). */
+		if (!id_i ||
+		    get_payload_data_length(id_i) != ike_sa->id_i->l ||
+		    memcmp(id_i + 1, ike_sa->id_i->v,
+			   ike_sa->id_i->l) != 0) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "RFC 5723: resumed IKE_AUTH IDi does not "
+				   "match the ticket identity\n");
 			++isakmpstat.authentication_failed;
 			ikev2_abort(ike_sa, ECONNREFUSED);
 			return;
