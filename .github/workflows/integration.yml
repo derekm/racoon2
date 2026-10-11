@@ -177,7 +177,7 @@ jobs:
             autoconf automake libtool pkgconf-pkg-config gcc make \
             openssl openssl-devel libpcap-devel krb5-devel bison flex git \
             iproute iproute-tc strongswan procps-ng python3 \
-            libreswan nss-tools
+            libreswan nss-tools nftables
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -231,7 +231,7 @@ jobs:
           # rows (ike-gcm192/128, esp-ctr192/256, esp-gcm192/128,
           # esp-3des, ike-3des) are exercised on CI too.  gate=box and
           # gate=dpd rows are still skipped by run.sh (R2_BOX/R2_DPD unset)
-          # per the i2ike-drop576 staging rule.  inputs.cases overrides.
+          # per the box staging rule.  inputs.cases overrides.
           # charon interop rows (-charon/-charonr) use Fedora's strongSwan
           # 6.0.x package (ML-KEM through the openssl plugin on OpenSSL 3.5).
           # Resolve swanctl wherever the package put it instead of assuming
