@@ -718,6 +718,25 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	if (!st.sa || !st.sk_d)
 		goto nack;
 
+	/* RFC 5723 s4.3.1: "A reused ticket SHOULD be rejected by a gateway".
+	 * Each ticket resumes at most once; the client must then run a full
+	 * exchange (and may obtain a fresh ticket there). */
+	switch (r2ticket_replay_mark(ticket, st.expires_at,
+	    (uint32_t)time(NULL))) {
+	case 0:
+		break;
+	case 1:
+		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR,
+		    PLOGLOC, "RFC 5723: ticket was already used (s4.3.1) -> "
+		    "TICKET_NACK\n");
+		goto nack;
+	default:
+		isakmp_log(ike_sa, local, remote, packet, PLOG_INTWARN,
+		    PLOGLOC, "RFC 5723: used-ticket cache full (%d unexpired "
+		    "tickets) -> TICKET_NACK\n", R2TICK_REPLAY_SLOTS);
+		goto nack;
+	}
+
 	/* Rebuild the negotiated IKE SA from the serialized SAr.  The ticket
 	 * stores the output of ikev2_ikesa_to_proposal() -- the raw Proposal
 	 * bytes without the 4-octet SA payload header.  Wrap them back in an
