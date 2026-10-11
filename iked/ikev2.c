@@ -634,6 +634,18 @@ ikev2_timeout(struct transmit_info *info)
 	if (ikev2_mobike_probe_next(ike_sa))
 		return;
 
+	/* RFC 5723 s4.3.2: an unanswered IKE_SESSION_RESUME (the responder
+	 * may not implement exchange 38 at all) falls back to a regular
+	 * IKE_SA_INIT instead of failing the SA, and forgets the ticket so
+	 * later attempts do not present it again. */
+	if (ike_sa->is_initiator &&
+	    ike_sa->state == IKEV2_STATE_INI_IKE_SESSION_RESUME_SENT) {
+		ike_msg_session_resume_fallback(ike_sa,
+		    "no IKE_SESSION_RESUME response");
+		++isakmpstat.timeout;
+		return;
+	}
+
 	ikev2_abort(ike_sa, ETIMEDOUT);	/* ECONNREFUSED? */
 
 	++isakmpstat.timeout;
