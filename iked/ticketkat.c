@@ -103,7 +103,7 @@ main(void)
 	CHECK(seed && seed->l == 32, "s5.1 SKEYSEED is 32 bytes (HMAC-SHA256)");
 	CHECK(seed && memcmp(seed->v, expect, 32) == 0,
 	    "s5.1 SKEYSEED = prf(SK_d_old, Resumption|Ni|Nr) matches python pin");
-	free(seed);
+	rc_vfree(seed);
 
 	/* ---- s5.1 prf+ key expansion (pinned vs python hmac prf+) ---- */
 	{
@@ -158,28 +158,31 @@ main(void)
 		free_state(&back);
 	}
 	/* (free_state above freed back's members; re-parse for field checks) */
-	CHECK(r2ticket_parse(tkey, ticket, &back) == 0, "ticket parses again");
-	if (r2ticket_parse(tkey, ticket, &back) == 0) {
-		CHECK(back.expires_at == 0x7fffffffu, "expires_at round-trips");
-		CHECK(back.auth_method == 7, "auth_method round-trips");
-		CHECK(back.spi_i == 0x0123456789abcdefULL, "spi_i round-trips");
-		CHECK(back.spi_r == 0xfedcba9876543210ULL, "spi_r round-trips");
-		CHECK(back.sa && back.sa->l == 3 &&
-		      memcmp((uint8_t *)back.sa->v, "\x01\x6e\x19", 3) == 0,
-		    "SAr round-trips");
-		CHECK(back.idi && back.idi->l == 4 &&
-		      memcmp((uint8_t *)back.idi->v, "IDI_", 4) == 0, "IDi round-trips");
-		CHECK(back.idr && back.idr->l == 4 &&
-		      memcmp((uint8_t *)back.idr->v, "IDR_", 4) == 0, "IDr round-trips");
-		CHECK(back.sk_d && back.sk_d->l == 32, "sk_d_len round-trips");
-		{
-			int skdok = 1;
-			for (i = 0; i < 32; i++)
-				if (((uint8_t *)back.sk_d->v)[i] != (uint8_t)i)
-					skdok = 0;
-			CHECK(skdok, "SK_d round-trips byte-for-byte");
+	{
+		int ok = (r2ticket_parse(tkey, ticket, &back) == 0);
+		CHECK(ok, "ticket parses again");
+		if (ok) {
+			CHECK(back.expires_at == 0x7fffffffu, "expires_at round-trips");
+			CHECK(back.auth_method == 7, "auth_method round-trips");
+			CHECK(back.spi_i == 0x0123456789abcdefULL, "spi_i round-trips");
+			CHECK(back.spi_r == 0xfedcba9876543210ULL, "spi_r round-trips");
+			CHECK(back.sa && back.sa->l == 3 &&
+			      memcmp((uint8_t *)back.sa->v, "\x01\x6e\x19", 3) == 0,
+			    "SAr round-trips");
+			CHECK(back.idi && back.idi->l == 4 &&
+			      memcmp((uint8_t *)back.idi->v, "IDI_", 4) == 0, "IDi round-trips");
+			CHECK(back.idr && back.idr->l == 4 &&
+			      memcmp((uint8_t *)back.idr->v, "IDR_", 4) == 0, "IDr round-trips");
+			CHECK(back.sk_d && back.sk_d->l == 32, "sk_d_len round-trips");
+			{
+				int skdok = 1;
+				for (i = 0; i < 32; i++)
+					if (((uint8_t *)back.sk_d->v)[i] != (uint8_t)i)
+						skdok = 0;
+				CHECK(skdok, "SK_d round-trips byte-for-byte");
+			}
+			free_state(&back);
 		}
-		free_state(&back);
 	}
 
 	/* ---- tamper detection ---- */
@@ -214,6 +217,7 @@ main(void)
 		CHECK(exp && r2ticket_parse(tkey, exp, &back) == -1,
 		    "expired ticket rejected");
 		if (exp) rc_vfree(exp);
+		free_state(&st2);
 	}
 
 	/* ---- key_id round trip: KID2 also mints valid ---- */
@@ -221,10 +225,11 @@ main(void)
 		rc_vchar_t *tk2;
 		/* key_id is opaque to create/parse (caller picks key by id);
 		 * KID2 with the same key still round-trips */
+		int ok;
 		tk2 = r2ticket_create(tkey, KID2, &st);
-		CHECK(tk2 && r2ticket_parse(tkey, tk2, &back) == 0,
-		    "alternate key_id mints + parses OK");
-		if (tk2 && r2ticket_parse(tkey, tk2, &back) == 0)
+		ok = (tk2 && r2ticket_parse(tkey, tk2, &back) == 0);
+		CHECK(ok, "alternate key_id mints + parses OK");
+		if (ok)
 			free_state(&back);
 		if (tk2) rc_vfree(tk2);
 	}
@@ -248,15 +253,17 @@ main(void)
 			 * run-to-run even for equal state, so the body is
 			 * verified by parsing it back, not by byte compare. */
 			tail = rc_vnew((uint8_t *)lt->v + 4, lt->l - 4);
-			CHECK(tail && r2ticket_parse(tkey, tail, &back2) == 0,
-			    "opaque ticket body parses back out of N()");
-			if (tail && r2ticket_parse(tkey, tail, &back2) == 0) {
-				CHECK(back2.expires_at == st.expires_at &&
-				      back2.auth_method == st.auth_method &&
-				      back2.spi_i == st.spi_i &&
-				      back2.spi_r == st.spi_r,
-				    "parsed ticket state equals the minted state");
-				free_state(&back2);
+			{
+				int ok = (tail && r2ticket_parse(tkey, tail, &back2) == 0);
+				CHECK(ok, "opaque ticket body parses back out of N()");
+				if (ok) {
+					CHECK(back2.expires_at == st.expires_at &&
+					      back2.auth_method == st.auth_method &&
+					      back2.spi_i == st.spi_i &&
+					      back2.spi_r == st.spi_r,
+					    "parsed ticket state equals the minted state");
+					free_state(&back2);
+				}
 			}
 			if (tail) rc_vfree(tail);
 		}
@@ -268,6 +275,7 @@ main(void)
 	rc_vfree(nrv);
 	if (tkey) rc_vfree(tkey);
 	if (ticket) rc_vfree(ticket);
+	free_state(&st);
 
 	printf("# ticketkat: %d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
