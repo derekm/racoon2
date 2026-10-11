@@ -915,6 +915,19 @@ int ikev2_resume_save(struct ikev2_sa *);
 void ikev2_resume_forget(struct ikev2_sa *);
 void ikev2_resume_dump_all(void);
 void ikev2_resume_load(void);
+
+/* RFC 5723 session-resumption surface, defined in ikev2_session_resume.c. */
+void ike_msg_resume_store_save_from_sa(struct ikev2_sa *);
+int ike_msg_session_resume_available(struct ikev2_sa *);
+void initiator_ike_session_resume_recv(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void responder_ike_session_resume_recv(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void ikev2_maybe_issue_ticket(struct ikev2_sa *, struct ikev2_payloads *);
+
+/* Shared proposal->isakmpsa conversion used by several modules; defined in
+ * ikev2.c. */
+struct ikev2_isakmpsa *ikev2_proppair_to_isakmpsa(struct prop_pair *);
 void ikev2_child_arm_expire(struct ikev2_child_sa *, time_t);
 
 int ikev2_qcd_init(void);
