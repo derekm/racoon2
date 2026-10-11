@@ -534,7 +534,7 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 				rc_vchar_t *skx = i_to_r ? sa->sk_p_i :
 							  sa->sk_p_r;
 				if (!skx)
-					goto fail_nomem;
+					goto fail_no_resumed_key;
 				authdata = keyed_hash(sa->prf, skx, octets);
 				if (!authdata)
 					goto fail_nomem;
@@ -609,6 +609,12 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
       fail_no_shared_key:
 	isakmp_log(sa, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "no shared key with peer\n");
+	goto fail;
+
+      fail_no_resumed_key:
+	isakmp_log(sa, 0, 0, 0,
+		   PLOG_INTERR, PLOGLOC,
+		   "resumed IKE SA has no SK_px for AUTH\n");
 	goto fail;
 
       fail_bad_preshared_key:
