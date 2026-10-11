@@ -119,6 +119,10 @@ enum ikev2_state {
 	, IKEV2_STATE_RES_IKE_AUTH_EAP_FINAL = 11
 	/* IKEV2_STATE_EAP  = 12 */
 
+	/* RFC 5723 initiator: we sent IKE_SESSION_RESUME (exchange 38) with a
+	 * stored ticket and await the unprotected Nr response. */
+	, IKEV2_STATE_INI_IKE_SESSION_RESUME_SENT = 13
+
 	/* IKEV2_STATE_ESTABLISHED_WAIT_INITIATOR, */
 };
 
