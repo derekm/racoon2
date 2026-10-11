@@ -295,6 +295,48 @@ ikev2_eap_response_type(rc_vchar_t *resp)
 	return type;
 }
 
+/*
+ * RFC 5998 s4 safe-method table (EAP Type numbers from the IANA EAP
+ * registry).  The RFC's list is explicitly non-exhaustive; anything not
+ * listed is refused rather than guessed at.  EAP-MSCHAPv2 (26), MD5 (4)
+ * and GTC (6) are absent on purpose: not mutual and/or not resistant to
+ * dictionary attacks.
+ */
+int
+ikev2_eap_rfc5998_safe_method(int type)
+{
+	switch (type) {
+	case 13:	/* EAP-TLS   RFC 5216 */
+	case 18:	/* EAP-SIM   RFC 4186 */
+	case 19:	/* EAP-SRP-SHA1 */
+	case 21:	/* EAP-TTLS  RFC 5281 */
+	case 23:	/* EAP-AKA   RFC 4187 */
+	case 32:	/* EAP-POTP  RFC 4793 (mutual variant) */
+	case 43:	/* EAP-FAST  RFC 4851 */
+	case 46:	/* EAP-PAX   RFC 4746 */
+	case 48:	/* EAP-SAKE  RFC 4763 */
+	case 50:	/* EAP-AKA'  RFC 5448 */
+	case 51:	/* EAP-GPSK  RFC 5433 */
+	case 52:	/* EAP-pwd   RFC 5931 */
+	case 53:	/* EAP-EKE   RFC 6124 */
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+enum ikev2_eap_only_decision
+ikev2_eap_only_policy(int rmethod, int sig_configured, int peer_eap_only)
+{
+	if (rmethod != 0)
+		return IKEV2_EAPONLY_SIGN;
+	if (sig_configured)
+		return IKEV2_EAPONLY_SIGFAIL;
+	if (peer_eap_only)
+		return IKEV2_EAPONLY_HONOR;
+	return IKEV2_EAPONLY_REFUSE;
+}
+
 void
 ikev2_eap_packet_free(struct ikev2_eap_packet *p)
 {
