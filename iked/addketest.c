@@ -1005,6 +1005,76 @@ initiator_classical_round_tests(void)
 	}
 }
 
+/* M3: RFC 9370 s2.2.1/s2.2.2 round derivation from a selected proposal.
+ * Build a proposal whose transforms are (type, id) pairs and check the
+ * rounds ikev2_addke_collect_rounds() derives from it. */
+#define CR_MAXT	10
+static int
+collect(const unsigned int (*tt)[2], int nt, unsigned int *methods,
+	int *nrounds, int *offered)
+{
+	static struct ikev2transform tr[CR_MAXT];
+	static struct prop_pair pp[CR_MAXT], head;
+	int i;
+
+	memset(&head, 0, sizeof(head));
+	memset(pp, 0, sizeof(pp));
+	memset(tr, 0, sizeof(tr));
+	for (i = 0; i < nt && i < CR_MAXT; i++) {
+		tr[i].transform_type = (uint8_t)tt[i][0];
+		tr[i].transform_id = htons((uint16_t)tt[i][1]);
+		pp[i].trns = (struct isakmp_pl_t *)&tr[i];
+		pp[i].next = (i + 1 < nt) ? &pp[i + 1] : NULL;
+	}
+	head.tnext = nt ? &pp[0] : NULL;
+	return ikev2_addke_collect_rounds(&head, methods, nrounds, offered);
+}
+
+static void
+collect_rounds_tests(void)
+{
+	unsigned int m[IKEV2_ADDKE_MAX_ROUNDS];
+	int n, off;
+
+	printf("--- RFC 9370 round derivation (NONE, duplicates) ---\n");
+	{	/* ENCR + ADDKE1=768, ADDKE2=NONE, ADDKE3=ECP256 */
+		static const unsigned int t[][2] = {
+			{ 1, 20 }, { 6, 36 }, { 7, 0 }, { 8, 19 } };
+		CHECK(collect(t, 4, m, &n, &off) == 0 && off == 1 && n == 2 &&
+		      m[0] == 36 && m[1] == 19,
+		      "collect: NONE choice is skipped, not a round");
+	}
+	{	/* every ADDKE type NONE: standard IKEv2, zero rounds */
+		static const unsigned int t[][2] = { { 6, 0 }, { 7, 0 } };
+		CHECK(collect(t, 2, m, &n, &off) == 0 && off == 1 && n == 0,
+		      "collect: all-NONE selection runs no rounds");
+	}
+	{	/* repeated method across types: MUST fail */
+		static const unsigned int t[][2] = {
+			{ 6, 36 }, { 7, 19 }, { 8, 36 } };
+		CHECK(collect(t, 3, m, &n, &off) < 0,
+		      "collect: duplicated method is rejected");
+	}
+	{	/* NONE twice is allowed (s2.2.2 "except for NONE") */
+		static const unsigned int t[][2] = {
+			{ 6, 0 }, { 7, 0 }, { 8, 35 } };
+		CHECK(collect(t, 3, m, &n, &off) == 0 && n == 1 && m[0] == 35,
+		      "collect: repeated NONE is not a duplicate");
+	}
+	{	/* wire order != type order; type 13 is not ADDKE */
+		static const unsigned int t[][2] = {
+			{ 12, 31 }, { 13, 37 }, { 6, 35 } };
+		CHECK(collect(t, 3, m, &n, &off) == 0 && n == 2 &&
+		      m[0] == 35 && m[1] == 31,
+		      "collect: rounds in type order, ADDKE7 last, type 13 ignored");
+	}
+	{	/* no ADDKE transform at all */
+		static const unsigned int t[][2] = { { 1, 20 }, { 4, 19 } };
+		CHECK(collect(t, 2, m, &n, &off) == 0 && off == 0 && n == 0,
+		      "collect: no ADDKE types -> not offered, zero rounds");
+	}
+}
+
 int
 main(void)
 {
@@ -1039,6 +1109,7 @@ main(void)
 	followup_multiround_tests();
 	initiator_multiround_tests();
 	initiator_classical_round_tests();
+	collect_rounds_tests();
 
 	if (have_cli) {
 		for (s = 0; sets[s].alg != NULL; ++s) {
