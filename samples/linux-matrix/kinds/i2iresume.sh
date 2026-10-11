@@ -24,13 +24,17 @@
 #   - initiator logs 'accepted resume response' + sends resumed IKE_AUTH
 #     and the child is up on the initiator too, AND
 #   - the resume pass did NOT re-run a full IKE_SA_INIT/AUTH (the
-#     initiator's resume-present branch fired, not a fallback).
+#     initiator's resume-present branch fired, not a fallback: the
+#     'falling back to IKE_SA_INIT'-class fallback markers must be absent), AND
+#   - up2 is measured after an xfrm state flush on BOTH seats, so it can
+#     only be satisfied by SAs the RESUME actually installs (never stale
+#     pass-1 ESP), mirroring the i2ilw drain.
 # A pass that only reaches a partial exchange-38 Nr proves nothing; the
 # resumed IKE_AUTH must establish.
 #
 # Needs session_resumption built in.  gate=addke rows run under the addke
 # gate only (matching i2ike/i2ilw); the box and Fedora 44 container run
-# them.  Initator requires the RACOON2_RESUME_TICKET_DIR store to persist.
+# them.  Initiator requires the RACOON2_RESUME_TICKET_DIR store to persist.
 kind_i2iresume() {
 	name=$1
 	require_root || return 1
@@ -226,6 +230,17 @@ EOF
 	    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init2-iked.log" ) >"$D/init2-iked.out" 2>&1 &
 	sleep 2
 
+	# Drain: the pass-1 ESP SAs survive both the initiator's pkill -9
+	# (SIGKILL never removes kernel XFRM state; the netns is kept) and the
+	# responder's (never restarted, DPD 60s > poll).  Without a drain the
+	# up2 poll below would satisfy re>=2 && ie>=2 from STALE pass-1 state
+	# at i=0 — a vacuous up2 that passes even if the resumed IKE_AUTH
+	# later fails.  Flush kernel ESP state on both seats so up2 can only
+	# be raised by SAs the RESUME actually installs (the xfrm UDP-allow
+	# *policies* are untouched by `state flush`).
+	ip netns exec "$NSR" ip xfrm state flush 2>/dev/null || true
+	ip netns exec "$NSI" ip xfrm state flush 2>/dev/null || true
+
 	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 	up2=0; i=0
 	while [ "$i" -lt 45 ]; do
@@ -240,21 +255,23 @@ EOF
 
 	# GATES
 	accepted=$(grep -c 'accepted IKE_SESSION_RESUME ticket' "$D/resp-iked.log" 2>/dev/null || true)
-	presented=$(grep -c 'resuming via IKE_SESSION_RESUME\|present.*ticket\|accepted resume response' \
+	presented=$(grep -c 'resuming via IKE_SESSION_RESUME\|accepted resume response' \
 		"$D/init2-iked.log" 2>/dev/null || true)
-	# the resume pass must NOT have done a full re-auth (no TICKET_REQUEST on
-	# the initiator after the store exists; the present branch fired instead)
-	fresh_auth=$(grep -c 'SENDING initial contact\|requesting ticket' "$D/init2-iked.log" 2>/dev/null || true)
+	# the resume pass must NOT have fallen back to a full IKE_SA_INIT/AUTH
+	# (the present branch fired instead).  Real fallback markers (only).
+	fresh_auth=$(grep -c 'falling back to IKE_SA_INIT\|fresh IKE_SA_INIT' \
+		"$D/init2-iked.log" 2>/dev/null || true)
 
 	log "i2iresume gates: up1=$up1 up2=$up2 minted=$minted stored=$stored accepted=$accepted presented=$presented fresh_auth=$fresh_auth"
 	ok=0
 	if [ "$up1" -eq 1 ] && [ "$up2" -eq 1 ] \
 	   && [ "${minted:-0}" -ge 1 ] && [ "${stored:-0}" -ge 1 ] \
-	   && [ "${accepted:-0}" -ge 1 ] && [ "${presented:-0}" -ge 1 ]; then
+	   && [ "${accepted:-0}" -ge 1 ] && [ "${presented:-0}" -ge 1 ] \
+	   && [ "${fresh_auth:-0}" -eq 0 ]; then
 		ok=1
 		log "i2iresume: RFC 5723 session resumption ESTABLISHED racoon2<->racoon2 (full resumed IKE_AUTH)"
 	else
-		log "i2iresume: FAIL gates (up1=$up1 up2=$up2 minted=${minted:-0} stored=${stored:-0} accepted=${accepted:-0} presented=${presented:-0})"
+		log "i2iresume: FAIL gates (up1=$up1 up2=$up2 minted=${minted:-0} stored=${stored:-0} accepted=${accepted:-0} presented=${presented:-0} fresh_auth=${fresh_auth:-0})"
 	fi
 
 	# cleanup (scoped to this row's conf dir + netnss)
