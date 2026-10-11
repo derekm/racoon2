@@ -376,9 +376,9 @@ initiator_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			n_r = isakmp_p2v((struct isakmp_gen *)p);
 		}
 	}
-	if (!n_r) {
+	if (!n_r || n_r->l < 16) {
 		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
-		    "RFC 5723: no Nr in resume response\n");
+		    "RFC 5723: no or short Nr in resume response\n");
 		goto drop;
 	}
 	ike_sa->n_r = n_r;	n_r = NULL;
@@ -388,6 +388,13 @@ initiator_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		goto fail;
 	if (r2ticket_store_load(ike_msg_resume_store_dir(), key,
 	    &ticket_lt, &st) != 0)
+		goto fail;
+
+	/* RFC 5723 s5 / s6: the resumed keys are derived from the OLD SK_d and
+	 * the negotiated SA carried in the ticket.  A ticket whose serialized
+	 * state is missing either (corrupt/truncated store record) cannot
+	 * resume; fail closed rather than deref a NULL length below. */
+	if (!st.sa || !st.idi || !st.sk_d)
 		goto fail;
 
 	/* Rebuild the negotiated IKE SA from the serialized SAr (the ticket
@@ -571,6 +578,13 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 				goto nack;
 			}
 			n_i = isakmp_p2v((struct isakmp_gen *)p);
+			if (n_i && n_i->l < 16) {
+				isakmp_log(ike_sa, local, remote, packet,
+				    PLOG_PROTOERR, PLOGLOC,
+				    "RFC 5723: short Ni in IKE_SESSION_RESUME "
+				    "request\n");
+				goto nack;
+			}
 			break;
 		case IKEV2_PAYLOAD_NOTIFY: {
 			struct ikev2payl_notify *n =
@@ -621,6 +635,13 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		    "TICKET_NACK\n", ticket ? ticket->l : 0);
 		goto nack;
 	}
+
+	/* RFC 5723 s6: the resumed keys and negotiated SA come from the ticket.
+	 * A validly-MAC'd ticket missing SA or OLD SK_d state (defensive: a
+	 * crafted ticket that passes AEAD can't exist, but a zero-length
+	 * packed field is possible) cannot resume; fail closed. */
+	if (!st.sa || !st.sk_d)
+		goto nack;
 
 	/* Rebuild the negotiated IKE SA from the serialized SAr.  The ticket
 	 * stores the output of ikev2_ikesa_to_proposal() -- the raw Proposal
