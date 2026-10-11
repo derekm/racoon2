@@ -1129,10 +1129,10 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				   "ADDKE DH compute failed (group %u)\n",
 				   ke_method);
 			rc_vfree(our_pub);
-			rc_vfree(our_priv);
+			rc_vfreez(our_priv);
 			goto invalid;
 		}
-		rc_vfree(our_priv);
+		rc_vfreez(our_priv);
 		/* KEr carries our public value; ss = g^xy */
 		ct = our_pub;
 		ss = gxy;

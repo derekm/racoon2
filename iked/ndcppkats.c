@@ -713,9 +713,14 @@ dh_two_party(const struct dhgroup *dg, size_t vlen)
 				 "out-of-subgroup public y=p-g (RFC 6989)");
 			goto out;
 		}
+		/* failure contract: no partial shared secret is returned
+		 * (an unfreed *gxy leaked prime->l bytes per bad KE) */
 		if (neg) {
+			kat_fail("A9", "oakley_dh_compute failure left *gxy "
+				 "allocated");
 			rc_vfree(neg);
 			neg = NULL;
+			goto out;
 		}
 	}
 	rc = 0;
