@@ -117,6 +117,12 @@ r2tick_pack(const struct r2ticket_state *st)
 	return out;
 }
 
+int
+r2ticket_expired(uint32_t expires_at, uint32_t now)
+{
+	return expires_at == 0 || now >= expires_at;
+}
+
 void
 r2ticket_state_free(struct r2ticket_state *st)
 {
@@ -354,13 +360,10 @@ r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
 	if (r2tick_unpack(plain, plen, st) != 0)
 		goto out;
 
-	/* Expired: strict, no grace window.  `expires_at < now` (rather
-	 * than <=) keeps a ticket valid through the last instant of its
-	 * lifetime, then rejects it — the conservative edge: a client
+	/* Expired: strict, no grace window (r2ticket_expired()); a client
 	 * boundary-skewed past expiry is refused and must do a fresh
-	 * IKE_SA_INIT.  expires_at == 0 on a legacy record means "never",
-	 * which is kept. */
-	if (st->expires_at && st->expires_at < (uint32_t)time(NULL))
+	 * IKE_SA_INIT. */
+	if (r2ticket_expired(st->expires_at, (uint32_t)time(NULL)))
 		goto out;	/* expired */
 
 	rc = 0;
@@ -789,7 +792,7 @@ r2ticket_replay_mark(const rc_vchar_t *ticket, uint32_t expires_at,
 	unsigned int hl = 0;
 	int i, slot = -1;
 
-	if (!ticket || !ticket->l || expires_at <= now)
+	if (!ticket || !ticket->l || r2ticket_expired(expires_at, now))
 		return -1;
 	if (EVP_Digest(ticket->v, ticket->l, h, &hl, EVP_sha256(), NULL) != 1
 	    || hl != sizeof(h))
@@ -797,7 +800,7 @@ r2ticket_replay_mark(const rc_vchar_t *ticket, uint32_t expires_at,
 	for (i = 0; i < R2TICK_REPLAY_SLOTS; i++) {
 		struct r2tick_seen *e = &r2tick_seen[i];
 
-		if (e->expires_at && e->expires_at <= now)
+		if (e->expires_at && r2ticket_expired(e->expires_at, now))
 			memset(e, 0, sizeof(*e));	/* ticket expired */
 		if (!e->expires_at) {
 			if (slot < 0)
