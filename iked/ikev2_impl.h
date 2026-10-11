@@ -413,15 +413,13 @@ struct ikev2_sa {
 	rc_vchar_t *eap_msk;	/* 64-octet EAP MSK (MSCHAPv2 or TLS), AUTH seed */
 	uint8_t eap_rid;	/* running RADIUS Identifier for EAP rounds */
 	uint8_t eap_only;	/* peer sent N(EAP_ONLY_AUTHENTICATION) (16417)
-				   in first IKE_AUTH.  RECORDED for logging
-				   only: this responder does NOT honor it by
-				   omitting CERT+AUTH when a signature method
-				   is configured, because it cannot know the
-				   EAP method is mutual (EAP-MSCHAPv2, the
-				   non-mutual case, must keep responder-cert
-				   auth).  RFC 5998 s3 makes honoring the
-				   notify the responder's choice; see
-				   ikev2_responder_eap_auth_send(). */
+				   in the first IKE_AUTH (RFC 5998 s3) */
+	uint8_t eap_only_honored; /* responder omitted AUTH: the initiator
+				   asked AND kmp_auth_method is eap-only;
+				   the EAP method must then be RFC 5998 s4
+				   safe and produce an MSK (ikev2_eap.c) */
+	int eap_method;		/* last EAP Type the peer answered with
+				   (> Nak); 0 until a method round */
 	uint32_t eap_message_id;	/* msgid of the in-flight peer EAP-Response
 					   IKE_AUTH, echoed in our EAP response */
 	char *eap_user;		/* EAP Identity string (owned, NULL until known);
