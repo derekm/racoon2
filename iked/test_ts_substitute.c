@@ -883,6 +883,88 @@ test_narrow_malformed(void)
 	rc_vfree(sr);
 }
 
+/* L5: a responder that echoes its wildcard SPD range for a transport
+ * NAT-T child must not cost the initiator the child: a returned range
+ * that contains the substitute target is narrowed locally to it.  The
+ * range has no single original, so that side's OA stays unset. */
+static void
+test_initiator_range_narrowed(void)
+{
+	struct ts_fixture f;
+
+	fixture_init_v4(&f, TRUE, TRUE, TRUE, TRUE);
+	rc_vfree(f.ts_i);
+	rc_vfree(f.ts_r);
+	f.ts_i = make_ts_payload(IKEV2_TS_IPV4_ADDR_RANGE, "0.0.0.0",
+	    "255.255.255.255");
+	f.ts_r = make_ts_payload(IKEV2_TS_IPV4_ADDR_RANGE, "198.51.100.0",
+	    "198.51.100.255");
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(ts_addr_is(f.ts_i, LOCAL4_ADDR, LOCAL4_ADDR));
+	TEST_CHECK(ts_addr_is(f.ts_r, REMOTE4_ADDR, REMOTE4_ADDR));
+	TEST_CHECK(f.parent.oa_i == NULL);
+	TEST_CHECK(f.parent.oa_r == NULL);
+	fixture_free(&f);
+
+	/* a range starting AT the target is still narrowed, not kept */
+	fixture_init_v4(&f, TRUE, TRUE, TRUE, FALSE);
+	rc_vfree(f.ts_i);
+	f.ts_i = make_ts_payload(IKEV2_TS_IPV4_ADDR_RANGE, LOCAL4_ADDR,
+	    "203.0.113.255");
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(ts_addr_is(f.ts_i, LOCAL4_ADDR, LOCAL4_ADDR));
+	fixture_free(&f);
+
+	/* IPv6 wildcard */
+	fixture_init(&f, TRUE, TRUE, TRUE, FALSE, AF_INET6,
+	    IKEV2_TS_IPV6_ADDR_RANGE, TS_I_ADDR6, TS_R_ADDR6);
+	rc_vfree(f.ts_i);
+	f.ts_i = make_ts_payload(IKEV2_TS_IPV6_ADDR_RANGE, "::",
+	    "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff");
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(ts_addr_is(f.ts_i, LOCAL6_ADDR, LOCAL6_ADDR));
+	fixture_free(&f);
+}
+
+/* The responder seat still refuses a range proposal (a transport TS MUST
+ * carry exactly one address), even one containing the target. */
+static void
+test_responder_range_still_rejected(void)
+{
+	struct ts_fixture f;
+
+	fixture_init_v4(&f, FALSE, TRUE, FALSE, TRUE);
+	rc_vfree(f.ts_i);
+	f.ts_i = make_ts_payload(IKEV2_TS_IPV4_ADDR_RANGE, "0.0.0.0",
+	    "255.255.255.255");
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == -1);
+	TEST_CHECK(ts_addr_is(f.ts_i, "0.0.0.0", "255.255.255.255"));
+	fixture_free(&f);
+}
+
+/* Handoff case: the response TS is already post-NAT (the responder
+ * narrowed to IPN1 as RFC 7296 s2.23.1 says).  The initiator rewrites it
+ * to its own local address and keeps IPN1 as the OA. */
+static void
+test_initiator_response_already_post_nat(void)
+{
+	struct ts_fixture f;
+
+	fixture_init(&f, TRUE, TRUE, TRUE, FALSE, AF_INET,
+	    IKEV2_TS_IPV4_ADDR_RANGE, "192.0.5.254", REMOTE4_ADDR);
+	TEST_CHECK(ikev2_addr_substitute(&f.child, ts_payl(f.ts_i),
+	    ts_payl(f.ts_r)) == 0);
+	TEST_CHECK(ts_addr_is(f.ts_i, LOCAL4_ADDR, LOCAL4_ADDR));
+	TEST_CHECK(ts_addr_is(f.ts_r, REMOTE4_ADDR, REMOTE4_ADDR));
+	TEST_CHECK(oa_is(f.parent.oa_i, "192.0.5.254"));
+	TEST_CHECK(f.parent.oa_r == NULL);
+	fixture_free(&f);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -915,6 +997,9 @@ main(int argc, char *argv[])
 	RUN_TEST(test_narrow_disjoint_rejected);
 	RUN_TEST(test_narrow_ipv6_and_mixed_family);
 	RUN_TEST(test_narrow_malformed);
+	RUN_TEST(test_initiator_range_narrowed);
+	RUN_TEST(test_responder_range_still_rejected);
+	RUN_TEST(test_initiator_response_already_post_nat);
 
 	plog_clean();
 
