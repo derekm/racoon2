@@ -48,6 +48,13 @@ rc_vchar_t *r2ticket_create(const rc_vchar_t *tkey,
 int r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
     struct r2ticket_state *st);
 
+/* One expiry rule for every ticket check (responder parse, initiator
+ * store, replay cache): a ticket is usable while now < expires_at, i.e.
+ * for exactly its lifetime after minting.  expires_at == 0 is never
+ * minted (both mint sites add a lifetime to the clock) and is treated as
+ * expired, so a zeroed or corrupt record fails closed. */
+int r2ticket_expired(uint32_t expires_at, uint32_t now);
+
 /* Free the heap members of a state returned by r2ticket_parse and zero it. */
 void r2ticket_state_free(struct r2ticket_state *st);
 
