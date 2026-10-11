@@ -69,6 +69,7 @@ static char last_log[256];
 static int n_respond_error;
 static unsigned int last_error_type;
 static int n_rekey_complete;
+static int n_child_install;	/* ikev2_child_addke_install() invocations */
 
 void
 isakmp_log(struct ikev2_sa *ike_sa, struct sockaddr *local,
@@ -162,9 +163,12 @@ rc_vchar_t *
 ikev2_packet_construct(int exch_type, int flags, uint32_t message_id,
 		       struct ikev2_sa *sa, struct ikev2_payloads *payl)
 {
+	/* the unit test drives the followup happy path, so return a real
+	 * buffer the transmit-response stub frees, letting the handler
+	 * advance the round cursor instead of failing at the reply */
 	(void)exch_type; (void)flags; (void)message_id;
 	(void)sa; (void)payl;
-	return NULL;
+	return rc_vmalloc(1);
 }
 
 uint32_t
@@ -200,15 +204,22 @@ int
 ikev2_transmit_response(struct ikev2_sa *sa, rc_vchar_t *pkt,
 			struct sockaddr *local, struct sockaddr *remote)
 {
-	(void)sa; (void)pkt; (void)local; (void)remote;
+	/* take ownership like the real path (handler expects the pkt to be
+	 * consumed here); free so the unit test does not leak */
+	(void)sa; (void)local; (void)remote;
+	if (pkt)
+		rc_vfree(pkt);
 	return -1;
 }
 
 int
 ikev2_transmit(struct ikev2_sa *sa, rc_vchar_t *pkt)
 {
-	(void)sa; (void)pkt;
-	return -1;
+	/* consume like the real path; keep for followup_send success */
+	(void)sa;
+	if (pkt)
+		rc_vfree(pkt);
+	return 0;
 }
 
 void
@@ -236,7 +247,8 @@ int
 ikev2_child_addke_install(struct ikev2_child_sa *child_sa)
 {
 	(void)child_sa;
-	return -1;
+	++n_child_install;
+	return 0;
 }
 
 void
@@ -503,6 +515,7 @@ followup_reset(void)
 	n_respond_error = 0;
 	last_error_type = 0;
 	n_rekey_complete = 0;
+	n_child_install = 0;
 }
 
 static int
@@ -622,6 +635,208 @@ followup_link_tests(void)
 	EVP_PKEY_free(kp);
 }
 
+/* Multi-round ADDKE (RFC 9370 s2.2.1): the responder accumulates SK(1..n)
+ * one round per IKE_FOLLOWUP_KE, in Transform Type order, and installs the
+ * child only after the last round.  Each round's KE method must equal the
+ * round's negotiated method (methods[round]); a mismatch is refused. */
+static void
+followup_multiround_tests(void)
+{
+	const unsigned int m512 = IKEV2TRANSF_ADDKE_MLKEM512;
+	const unsigned int m768 = IKEV2TRANSF_ADDKE_MLKEM768;
+	rc_vchar_t *pub512 = NULL, *pub768 = NULL;
+	rc_vchar_t *msg = NULL;
+	EVP_PKEY *kp512 = NULL, *kp768 = NULL;
+	struct ikev2_sa *sa;
+	struct ikev2_child_sa *c;
+	struct sockaddr_in loc, rem;
+
+	printf("--- IKE_FOLLOWUP_KE multi-round (2 rounds) ---\n");
+	memset(&loc, 0, sizeof(loc));
+	memset(&rem, 0, sizeof(rem));
+	loc.sin_family = rem.sin_family = AF_INET;
+	CHECK(ikev2_addke_mlkem_keygen(m512, &pub512, &kp512) == 0 && pub512,
+	      "multi-round: keygen ML-KEM-512 (round 0)");
+	CHECK(ikev2_addke_mlkem_keygen(m768, &pub768, &kp768) == 0 && pub768,
+	      "multi-round: keygen ML-KEM-768 (round 1)");
+	if (!pub512 || !pub768) {
+		fail = 1;
+		return;
+	}
+	sa = calloc(1, sizeof(*sa));
+	if (!sa) {
+		fail = 1;
+		return;
+	}
+	IKEV2_CHILD_LIST_INIT(&sa->children);
+	sa->recv_message_id = 3;
+
+	c = calloc(1, sizeof(*c));
+	if (!c) {
+		fail = 1;
+		return;
+	}
+	c->parent = sa;
+	c->addke_pending = 1;
+	c->addke_nrounds = 2;
+	c->addke_round = 0;
+	c->addke_methods[0] = m512;
+	c->addke_methods[1] = m768;
+	c->addke_link = rc_vnew("mround", 6);
+	IKEV2_CHILD_LIST_LINK(&sa->children, c);
+
+	/* round 0: method m512 accumulates SK(1); child still pending */
+	followup_reset();
+	n_child_install = 0;
+	msg = followup_msg(m512, pub512, "mround", 6);
+	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+			       (struct sockaddr *)&loc);
+	rc_vfree(msg);
+	CHECK(n_respond_error == 0 && n_child_install == 0,
+	      "multi-round: round 0 not installed, no error");
+	CHECK(c->addke_round == 1 &&
+	      c->addke_sk && c->addke_sk->l == OSSL_ML_KEM_SHARED_SECRET_BYTES,
+	      "multi-round: round 0 accumulated SK(1), cursor advanced");
+
+	/* wrong method on round 1 is refused (methods[1]=m768) */
+	followup_reset();
+	msg = followup_msg(m512, pub512, "mround", 6);
+	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+			       (struct sockaddr *)&loc);
+	rc_vfree(msg);
+	CHECK(n_respond_error == 1 && last_error_type == IKEV2_STATE_NOT_FOUND,
+	      "multi-round: round-1 method mismatch refused (STATE_NOT_FOUND)");
+
+	/* round 1: method m768 completes the pair and installs */
+	followup_reset();
+	msg = followup_msg(m768, pub768, "mround", 6);
+	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+			       (struct sockaddr *)&loc);
+	rc_vfree(msg);
+	CHECK(n_child_install == 1,
+	      "multi-round: final round (m768) triggers install");
+	CHECK(n_respond_error == 0,
+	      "multi-round: final round clean");
+
+	IKEV2_CHILD_LIST_REMOVE(&sa->children, c);
+	rc_vfree(c->addke_link);
+	rc_vfreez(c->addke_sk);
+	free(c);
+	free(sa);
+	rc_vfree(pub512);
+	rc_vfree(pub768);
+	EVP_PKEY_free(kp512);
+	EVP_PKEY_free(kp768);
+}
+
+/* Initiator-side multi-round ADDKE driver: after each IKE_FOLLOWUP_KE
+ * response, ikev2_initiator_followup_complete() decapsulates that round's
+ * ciphertext with the round's keypair (addke_priv), appends SK to the
+ * accumulated addke_sk, advances the round cursor, and when rounds remain
+ * generates the next keypair and sends the next followup instead of
+ * installing.  Only the final round installs the child. */
+static void
+initiator_multiround_tests(void)
+{
+	const unsigned int m512 = IKEV2TRANSF_ADDKE_MLKEM512;
+	const unsigned int m768 = IKEV2TRANSF_ADDKE_MLKEM768;
+	EVP_PKEY *kp0 = NULL;
+	rc_vchar_t *pub0 = NULL, *ct0 = NULL, *ss0 = NULL;
+	rc_vchar_t *ct1 = NULL;
+	struct ikev2_sa *sa;
+	struct ikev2_child_sa *c;
+
+	printf("--- IKE_FOLLOWUP_KE initiator multi-round (2 rounds) ---\n");
+	/* round-0 keypair: the initiator's KEi (= pub0) is what the
+	 * responder encapsulates against; the responder's ciphertext ct0
+	 * and its shared secret ss0 are the role we drive here */
+	CHECK(ikev2_addke_mlkem_keygen(m512, &pub0, &kp0) == 0 && pub0 && kp0,
+	      "init-mr: round-0 keygen (KEi)");
+	if (!pub0 || !kp0) {
+		fail = 1;
+		return;
+	}
+	/* responder encapsulates against our KEi: ct0, ss0 */
+	CHECK(ikev2_addke_mlkem_encap(m512, pub0, &ct0, &ss0) == 0
+	      && ct0 && ss0,
+	      "init-mr: responder encapsulate against KEi -> ct0/ss0");
+	if (!ct0 || !ss0) {
+		fail = 1;
+		return;
+	}
+
+	sa = calloc(1, sizeof(*sa));
+	c = calloc(1, sizeof(*c));
+	if (!sa || !c) {
+		fail = 1;
+		return;
+	}
+	IKEV2_CHILD_LIST_INIT(&sa->children);
+	c->parent = sa;
+	c->addke_pending = 1;
+	c->addke_nrounds = 2;
+	c->addke_round = 0;
+	c->addke_methods[0] = m512;
+	c->addke_methods[1] = m768;
+	c->addke_link = rc_vnew("imag", 4);
+	c->addke_priv = kp0;	/* round-0 keypair */
+	IKEV2_CHILD_LIST_LINK(&sa->children, c);
+
+	n_child_install = 0;
+	followup_reset();
+	CHECK(ikev2_initiator_followup_complete(c, ct0) == 0,
+	      "init-mr: complete round 0 (decap SK(1))");
+	CHECK(c->addke_sk && c->addke_sk->l == OSSL_ML_KEM_SHARED_SECRET_BYTES &&
+	      memcmp(c->addke_sk->v, ss0->v, ss0->l) == 0,
+	      "init-mr: accumulated SK(1) equals responder decap");
+	CHECK(c->addke_round == 1 && n_child_install == 0,
+	      "init-mr: round 0 advanced, not yet installed");
+	CHECK(c->addke_priv != NULL &&
+	      c->addke_method == m768,
+	      "init-mr: round-1 keypair generated, method advanced");
+
+	/* round-1: encapsulate against the new round-1 pub (addke_priv) */
+	{
+		unsigned char rawpub[4096];
+		size_t rawlen = sizeof(rawpub);
+		rc_vchar_t *peerpub1, *ss1 = NULL;
+
+		CHECK(EVP_PKEY_get_raw_public_key(
+		    (EVP_PKEY *)c->addke_priv, rawpub, &rawlen) > 0
+		    && rawlen == OSSL_ML_KEM_768_PUBLIC_KEY_BYTES,
+		    "init-mr: round-1 raw pub is ML-KEM-768");
+		peerpub1 = rc_vnew(rawpub, rawlen);
+		CHECK(ikev2_addke_mlkem_encap(m768, peerpub1, &ct1,
+					      &ss1) == 0 && ct1,
+		      "init-mr: encapsulate round-1 ct");
+		if (ss1)
+			rc_vfree(ss1);
+		rc_vfree(peerpub1);
+	}
+	if (!ct1) {
+		fail = 1;
+		return;
+	}
+	followup_reset();
+	CHECK(ikev2_initiator_followup_complete(c, ct1) == 0,
+	      "init-mr: complete round 1");
+	CHECK(c->addke_sk && c->addke_sk->l == 2 * OSSL_ML_KEM_SHARED_SECRET_BYTES,
+	      "init-mr: SK(1)+SK(2) accumulated (64 bytes)");
+	CHECK(n_child_install == 1,
+	      "init-mr: final round installed the child");
+
+	IKEV2_CHILD_LIST_REMOVE(&sa->children, c);
+	rc_vfree(c->addke_link);
+	rc_vfreez(c->addke_sk);
+	/* addke_priv was consumed by the driver (freed) on each round */
+	free(c);
+	free(sa);
+	rc_vfree(pub0);
+	rc_vfree(ct0);
+	rc_vfree(ss0);
+	rc_vfree(ct1);
+}
+
 int
 main(void)
 {
@@ -653,6 +868,8 @@ main(void)
 
 	CHECK(ikev2_addke_selftest() == 0, "mlkem selftest (round-trip)");
 	followup_link_tests();
+	followup_multiround_tests();
+	initiator_multiround_tests();
 
 	if (have_cli) {
 		for (s = 0; sets[s].alg != NULL; ++s) {

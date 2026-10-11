@@ -2852,50 +2852,62 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 
 #ifdef WITH_ADDKE
 	/*
-	 * RFC 9370 initiator side: we proposed ADDKE (type-6 transform
-	 * in MINE via esp_addke_alg); if the peer response echoes it,
-	 * the child keys must wait for the IKE_FOLLOWUP_KE exchange.
-	 * Generate the ML-KEM keypair now, send the followup request
-	 * carrying our public key, and defer ikev2_add_ipsec_sa until
-	 * the followup response supplies SK(1) (decapsulated from the
-	 * peer's KEr(1) ciphertext).
+	 * RFC 9370 initiator side: we proposed ADDKE (ADDKE1..ADDKE7
+	 * transforms in MINE via esp_addke_alg).  If the peer response
+	 * echoes one or more of them, the child keys must wait for the
+	 * IKE_FOLLOWUP_KE exchanges -- one round per echoed ADDKE
+	 * transform type, in Transform Type order (RFC 9370 s2.2.1).
+	 * Generate the round-0 ML-KEM keypair now, send the first
+	 * followup request, and defer ikev2_add_ipsec_sa until the last
+	 * round's response supplies the accumulated SK(1..n).
 	 */
 	if (child_sa->my_proposal && child_sa->my_proposal[1]) {
-		struct prop_pair *peer_tr;
-		int peer_addke_id = 0;
+		int round;
+		int nrounds = 0;
 
-		for (peer_tr = child_sa->peer_proposal ?
-		     child_sa->peer_proposal->tnext : NULL;
-		     peer_tr; peer_tr = peer_tr->next) {
-			struct ikev2transform *t =
-			    (struct ikev2transform *)peer_tr->trns;
-			if (t &&
-			    t->transform_type == IKEV2TRANSFORM_TYPE_ADDKE) {
-				peer_addke_id =
-				    get_uint16(&t->transform_id);
+		for (round = 0; round < 8; ++round)
+			child_sa->addke_methods[round] = 0;
+		for (round = 0; round < 8; ++round) {
+			struct prop_pair *peer_tr;
+			int type = IKEV2TRANSFORM_TYPE_ADDKE + round;
+
+			if (nrounds >= 8)
 				break;
+			for (peer_tr = child_sa->peer_proposal ?
+			     child_sa->peer_proposal->tnext : NULL;
+			     peer_tr; peer_tr = peer_tr->next) {
+				struct ikev2transform *t =
+				    (struct ikev2transform *)peer_tr->trns;
+				if (t && t->transform_type == (unsigned)type) {
+					/* one round per type */
+					child_sa->addke_methods[nrounds++] =
+					    get_uint16(&t->transform_id);
+					break;
+				}
 			}
 		}
-		if (peer_addke_id != 0) {
+		child_sa->addke_nrounds = nrounds;
+		child_sa->addke_round = 0;
+		if (nrounds > 0) {
 			rc_vchar_t *pub = NULL;
 			EVP_PKEY *kp = NULL;
+			unsigned int method = child_sa->addke_methods[0];
 
-			if (ikev2_addke_mlkem_keygen(peer_addke_id, &pub,
-						     &kp) == 0 &&
+			if (ikev2_addke_mlkem_keygen(method, &pub, &kp) == 0 &&
 			    pub && kp) {
 				child_sa->addke_pending = 1;
 				/* RFC 9370 s2.2.4: echo the responder-chosen link the
-				 * CREATE_CHILD_SA response carried in N(16441) (captured
-				 * in createchild_init_recv_notify); only mint a fresh
-				 * link when the peer sent none. */
+				 * CREATE_CHILD_SA response carried in N(16441); only mint a
+				 * fresh link when the peer sent none. */
 				if (child_sa->addke_link == NULL)
 					child_sa->addke_link = random_bytes(16);
 				child_sa->addke_priv = kp;
-				child_sa->addke_method = peer_addke_id;
+				child_sa->addke_method = method;
 				TRACE((PLOGLOC,
-				       "initiator: negotiated ADDKE id %u; "
-				       "sending IKE_FOLLOWUP_KE\n",
-				       peer_addke_id));
+				       "initiator: negotiated %d ADDKE round(s) "
+				       "(round 0 method %u); sending "
+				       "IKE_FOLLOWUP_KE\n",
+				       nrounds, method));
 				if (ikev2_initiator_followup_send(child_sa,
 								   pub) != 0) {
 					isakmp_log(child_sa->parent, 0, 0, 0,
