@@ -136,48 +136,82 @@ r2tick_unpack(const uint8_t *p, size_t len, struct r2ticket_state *st)
 
 	memset(st, 0, sizeof(*st));
 
-	if (o + 4 > len) return -1;
+	if (o + 4 > len) goto err;
 	st->expires_at = ((uint32_t)p[o] << 24) | ((uint32_t)p[o+1] << 16) |
 	    ((uint32_t)p[o+2] << 8) | p[o+3]; o += 4;
-	if (o + 1 > len) return -1;
+	if (o + 1 > len) goto err;
 	st->auth_method = p[o++];
 
-	if (o + 8 > len) return -1;
+	if (o + 8 > len) goto err;
 	for (int i = 0; i < 8; i++) st->spi_i = (st->spi_i << 8) | p[o++];
-	if (o + 8 > len) return -1;
+	if (o + 8 > len) goto err;
 	for (int i = 0; i < 8; i++) st->spi_r = (st->spi_r << 8) | p[o++];
 
-	if (o + 2 > len) return -1; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
-	if (o + v16 > len) return -1;
+	if (o + 2 > len) goto err; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
+	if (o + v16 > len) goto err;
 	if (v16) {
 		st->sa = rc_vnew(p + o, v16);
-		if (!st->sa) return -1;
+		if (!st->sa) goto err;
 	}
 	o += v16;
 
-	if (o + 2 > len) return -1; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
-	if (o + v16 > len) return -1;
+	if (o + 2 > len) goto err; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
+	if (o + v16 > len) goto err;
 	if (v16) {
 		st->idi = rc_vnew(p + o, v16);
-		if (!st->idi) return -1;
+		if (!st->idi) goto err;
 	}
 	o += v16;
 
-	if (o + 2 > len) return -1; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
-	if (o + v16 > len) return -1;
+	if (o + 2 > len) goto err; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
+	if (o + v16 > len) goto err;
 	if (v16) {
 		st->idr = rc_vnew(p + o, v16);
-		if (!st->idr) return -1;
+		if (!st->idr) goto err;
 	}
 	o += v16;
 
-	if (o + 1 > len) return -1; v8 = p[o++];
-	if (o + v8 > len) return -1;
+	if (o + 1 > len) goto err; v8 = p[o++];
+	if (o + v8 > len) goto err;
 	if (v8) {
 		st->sk_d = rc_vnew(p + o, v8);
-		if (!st->sk_d) return -1;
+		if (!st->sk_d) goto err;
 	}
+	o += v8;
 
+	/* The store record has no MAC, so be strict: trailing bytes past the
+	 * last field make the record self-delimiting and refuse a mangled
+	 * offset/length (a corrupt record must fail here, not be misparsed). */
+	if (o != len)
+		goto err;
+
+	return 0;
+err:
+	/* Keep the documented "-1 => *st cleared / nothing owned" contract no
+	 * matter how far the parse got: mid-parse failure may have allocated
+	 * sa/idi/idr/sk_d already, and not every caller cleans up on -1
+	 * (r2ticket_parse does; r2ticket_store_load does not). */
+	r2ticket_state_free(st);
+	return -1;
+}
+
+/* Derive the per-SA GCM subkey for ticket encryption/decryption from the
+ * static ticket key and the key_id (which is based on the SA SPIs).  The
+ * subkey is deterministic and reproduced identically by both r2ticket_create
+ * and r2ticket_parse, so binding here needs no wire-format change, while it
+ * bounds random-IV reuse to a single SA's tickets instead of the whole
+ * ticket-key lifetime (cf. NIST SP 800-38D §6 per-key IV limits). */
+static int
+r2tick_subkey(const rc_vchar_t *tkey, const uint8_t key_id[R2TICK_KEY_ID_LEN],
+    uint8_t sub[32])
+{
+	unsigned int l = 0;
+
+	if (!tkey || tkey->l != 32 || !key_id || !sub)
+		return -1;
+	if (HMAC(EVP_sha256(), tkey->v, (int)tkey->l, key_id,
+	    R2TICK_KEY_ID_LEN, sub, &l) != sub || l != 32)
+		return -1;
 	return 0;
 }
 
@@ -187,6 +221,7 @@ r2ticket_create(const rc_vchar_t *tkey, const uint8_t key_id[R2TICK_KEY_ID_LEN],
 {
 	rc_vchar_t *pt = NULL, *out = NULL;
 	EVP_CIPHER_CTX *ctx = NULL;
+	uint8_t subkey[32];
 	uint8_t iv[R2TICK_IV_LEN];
 	uint8_t tag[R2TICK_TAG_LEN];
 	uint8_t *ct = NULL;
@@ -199,6 +234,14 @@ r2ticket_create(const rc_vchar_t *tkey, const uint8_t key_id[R2TICK_KEY_ID_LEN],
 		return NULL;
 	if (!(pt = r2tick_pack(st)))
 		return NULL;
+	/* Per-SA GCM subkey from the static ticket key: bind the encryption
+	 * key to key_id (which is derived from the SA's SPIs), so a fresh
+	 * random IV is only ever reused within one SA's tickets rather than
+	 * under a single key across the whole key lifetime (NIST SP 800-38D §6
+	 * caps random-IV use per key well below unbounded).  Deterministic and
+	 * header-derived, so r2ticket_parse() reproduces the same key. */
+	if (r2tick_subkey(tkey, key_id, subkey) != 0)
+		goto out;
 
 	if (!(ctx = EVP_CIPHER_CTX_new()))
 		goto out;
@@ -212,7 +255,7 @@ r2ticket_create(const rc_vchar_t *tkey, const uint8_t key_id[R2TICK_KEY_ID_LEN],
 	hdr[0] = R2TICK_VERSION; hdr[1] = 0; hdr[2] = 0; hdr[3] = 0;
 	memcpy(hdr + 4, key_id, R2TICK_KEY_ID_LEN);
 
-	if (EVP_EncryptInit_ex(ctx, NULL, NULL, tkey->v, iv) != 1)
+	if (EVP_EncryptInit_ex(ctx, NULL, NULL, subkey, iv) != 1)
 		goto out;
 	if (EVP_EncryptUpdate(ctx, NULL, &outl, hdr, sizeof(hdr)) != 1)
 		goto out;	/* GCM AAD = cleartext header */
@@ -254,6 +297,7 @@ r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
 	const uint8_t *p;
 	size_t len, bodylen;
 	EVP_CIPHER_CTX *ctx = NULL;
+	uint8_t subkey[32];
 	uint8_t *plain = NULL;
 	int outl, plen = 0;
 	int rc = -1;
@@ -269,6 +313,10 @@ r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
 	if (p[0] != R2TICK_VERSION)
 		return -1;
 
+	/* Reconstruct the per-SA GCM subkey (same derivation as create). */
+	if (r2tick_subkey(tkey, p + 4, subkey) != 0)
+		return -1;
+
 	if (!(ctx = EVP_CIPHER_CTX_new()))
 		goto out;
 	if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1)
@@ -276,7 +324,7 @@ r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
 	if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, R2TICK_IV_LEN,
 	    NULL) != 1)
 		goto out;
-	if (EVP_DecryptInit_ex(ctx, NULL, NULL, tkey->v,
+	if (EVP_DecryptInit_ex(ctx, NULL, NULL, subkey,
 	    p + 4 + R2TICK_KEY_ID_LEN) != 1)
 		goto out;
 	if (EVP_DecryptUpdate(ctx, NULL, &outl, p, 4 + R2TICK_KEY_ID_LEN) != 1)
