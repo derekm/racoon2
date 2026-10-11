@@ -512,9 +512,12 @@ ikev2_followup_wakeup_next(struct ikev2_sa *ike_sa)
 }
 
 /*
- * Initiator side: complete the ADDKE child once the followup response
- * carried the peer's KEr(1) ciphertext.  Decapsulate to SK(1), then
- * install the child with the ADDKE keymat (same path as the
+ * Initiator side: complete one ADDKE round once the followup response
+ * carried the peer's KEr ciphertext.  Decapsulate to this round's shared
+ * secret, append it to the accumulated SK(1..n).  If more ADDKE rounds
+ * remain (multi-round, RFC 9370 s2.2.1), generate the next round's keypair
+ * and send its IKE_FOLLOWUP_KE, keeping the child pending.  After the last
+ * round, install the child with the ADDKE keymat (same path as the
  * responder's deferred install).
  */
 int
@@ -542,10 +545,67 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 	}
 	EVP_PKEY_free(kp);
 
-	child_sa->addke_sk = ss;
+	/* append this round's shared secret to SK(1)..SK(n), in order */
+	{
+		rc_vchar_t *acc;
+
+		acc = rc_vmalloc((child_sa->addke_sk ?
+				  child_sa->addke_sk->l : 0) + ss->l);
+		if (!acc) {
+			rc_vfreez(ss);
+			return -1;
+		}
+		if (child_sa->addke_sk) {
+			memcpy(acc->v, child_sa->addke_sk->v,
+			       child_sa->addke_sk->l);
+			rc_vfreez(child_sa->addke_sk);
+			child_sa->addke_sk = 0;
+		}
+		memcpy(acc->v + acc->l - ss->l, ss->v, ss->l);
+		child_sa->addke_sk = acc;
+		rc_vfreez(ss);
+		ss = 0;
+	}
+
+	/* advance the round cursor; install only after the last round */
+	++child_sa->addke_round;
+	if (child_sa->addke_round < child_sa->addke_nrounds) {
+		/* more rounds: keygen next method, send next followup, stay pending */
+		rc_vchar_t *pub = NULL;
+		EVP_PKEY *nxt = NULL;
+		unsigned int method =
+		    child_sa->addke_methods[child_sa->addke_round];
+
+		if (ikev2_addke_mlkem_keygen(method, &pub, &nxt) < 0 ||
+		    !pub || !nxt) {
+			rc_vfree(pub);
+			EVP_PKEY_free(nxt);
+			return -1;
+		}
+		child_sa->addke_priv = nxt;
+		child_sa->addke_method = method;
+		if (ikev2_initiator_followup_send(child_sa, pub) != 0) {
+			isakmp_log(child_sa->parent, 0, 0, 0,
+			    PLOG_INTERR, PLOGLOC,
+			    "failed sending IKE_FOLLOWUP_KE (round %d)\n",
+			    child_sa->addke_round);
+			rc_vfree(pub);
+			EVP_PKEY_free(nxt);
+			child_sa->addke_priv = NULL;
+			return -1;
+		}
+		rc_vfree(pub);
+		/* re-arm the followup-wait timeout for the next round */
+		ikev2_child_addke_arm_timeout(child_sa);
+		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+		    "initiator ADDKE round %d/%d done; next followup sent\n",
+		    child_sa->addke_round, child_sa->addke_nrounds);
+		return 0;
+	}
+
 	if (ikev2_child_addke_install(child_sa) < 0) {
 		child_sa->addke_sk = NULL;
-		rc_vfreez(ss);
+		rc_vfreez(child_sa->addke_sk);
 		return -1;
 	}
 	/*
