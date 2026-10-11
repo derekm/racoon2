@@ -39,9 +39,17 @@ Success/Failure.
   methods (e.g. MSCHAPv2) still require the responder to authenticate itself
   with its certificate; silently dropping CERT+AUTH on a client's notify
   would let a single-slot IKE_AUTH carry no responder authentication at all.
-  EAP-only final is emitted only when no signature method is actually
-  configured.  This is a policy choice, not an RFC violation — RFC 5998 §3
-  makes honoring the notify optional.
+  An AUTH-less (EAP-only) first response is sent only when BOTH the
+  operator configured an EAP-only responder (`kmp_auth_method { eap; }`,
+  no signature method) AND the initiator sent N(EAP_ONLY_AUTHENTICATION)
+  (`ikev2_eap_only_policy()`).  An EAP-only config facing an initiator that
+  did not ask is refused with AUTHENTICATION_FAILED (RFC 7296 §2.16 requires
+  the responder's AUTH otherwise).  When EAP-only is honoured, Acceptance
+  is only completed if the method the peer ran is on the RFC 5998 §4 safe
+  list (mutual, key-generating, dictionary-attack resistant;
+  `ikev2_eap_rfc5998_safe_method()`) and an MSK was produced; otherwise the
+  responder answers EAP-Failure.  MSCHAPv2 is therefore never accepted
+  without responder CERT+AUTH.
 - Responder certificate + signature AUTH alongside EAP (or the pure EAP-only
   path), with the ECDSA method selected from the certificate curve
   (P-256/384/521), not hardcoded.  Fail-closed: if a signature method is

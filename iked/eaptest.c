@@ -270,6 +270,59 @@ main(void)
 		}
 	}
 
+	/* RFC 5998 s4 safe-method table: listed methods accepted, the
+	 * non-mutual / dictionary-attackable ones (MSCHAPv2 26, MD5 4,
+	 * GTC 6) and the non-methods (Identity 1, Notify 2, Nak 3) refused. */
+	{
+		static const int safe[] = { 13, 18, 19, 21, 23, 32, 43, 46,
+					    48, 50, 51, 52, 53 };
+		static const int unsafe[] = { 0, 1, 2, 3, 4, 6, 25, 26, 254,
+					      255, -1 };
+		size_t k;
+		for (k = 0; k < sizeof(safe) / sizeof(safe[0]); k++)
+			if (!ikev2_eap_rfc5998_safe_method(safe[k])) {
+				printf("eaptest: FAIL rfc5998 safe %d refused\n",
+				       safe[k]);
+				fails++;
+			}
+		for (k = 0; k < sizeof(unsafe) / sizeof(unsafe[0]); k++)
+			if (ikev2_eap_rfc5998_safe_method(unsafe[k])) {
+				printf("eaptest: FAIL rfc5998 unsafe %d accepted\n",
+				       unsafe[k]);
+				fails++;
+			}
+		printf("eaptest: PASS rfc5998 safe-method table\n");
+	}
+	/* RFC 5998 s3 / RFC 7296 s2.16 responder decision: AUTH may be
+	 * omitted only for an eap-only config AND a peer EAP_ONLY notify. */
+	{
+		struct { int rm, sig, peer; enum ikev2_eap_only_decision want; }
+		    c[] = {
+			{ 14, 1, 0, IKEV2_EAPONLY_SIGN },
+			{ 14, 1, 1, IKEV2_EAPONLY_SIGN },  /* sig wins over notify */
+			{ 0, 1, 0, IKEV2_EAPONLY_SIGFAIL },
+			{ 0, 1, 1, IKEV2_EAPONLY_SIGFAIL },/* never downgrade */
+			{ 0, 0, 1, IKEV2_EAPONLY_HONOR },
+			{ 0, 0, 0, IKEV2_EAPONLY_REFUSE }, /* peer did not ask */
+		};
+		size_t k;
+		int bad = 0;
+		for (k = 0; k < sizeof(c) / sizeof(c[0]); k++) {
+			enum ikev2_eap_only_decision got =
+			    ikev2_eap_only_policy(c[k].rm, c[k].sig, c[k].peer);
+			if (got != c[k].want) {
+				printf("eaptest: FAIL eap-only policy rm=%d "
+				       "sig=%d peer=%d -> %d (want %d)\n",
+				       c[k].rm, c[k].sig, c[k].peer, got,
+				       c[k].want);
+				bad++;
+			}
+		}
+		fails += bad;
+		if (!bad)
+			printf("eaptest: PASS rfc5998 eap-only policy\n");
+	}
+
 	printf("eaptest: %s (%d failures)\n", fails ? "FAIL" : "ALL PASS", fails);
 	return fails ? 1 : 0;
 }
