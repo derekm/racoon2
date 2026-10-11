@@ -21,7 +21,9 @@
 # resumed IKE_AUTH must establish.
 #
 # Requires libreswan (pluto 5.x with session resumption) + racoon2 built
-# with session_resumption available.  gate=box until a counted box PASS.
+# with session_resumption available.  gate=addke: runs on the box and the
+# Fedora 44 container (dnf libreswan); the ADDKE gate skips it elsewhere.
+# NOT a verified PASS until a counted CI/box run shows all gates raised.
 
 kind_i2ilw() {
 	name=$1
@@ -183,10 +185,8 @@ EOF
 			"$LWIPSEC" initnss --nssdir "$C/lw-nss" >"$D/lw-nssinit.log" 2>&1 \
 				|| { [ -f "$C/lw-nss/cert9.db" ] || { cat "$D/lw-nssinit.log" >&2; log "FAIL: ipsec initnss"; return 1; }; }
 		else
-			LWCERTUTIL=$(command -v certutil || echo /usr/bin/certutil)
-			[ -x "$LWCERTUTIL" ] || { log "FAIL: libreswan needs `ipsec` (or certutil) to init its NSS db"; return 1; }
-			"$LWCERTUTIL" -N -d "sql:$C/lw-nss" --empty-password >"$D/lw-nssinit.log" 2>&1
-			[ -f "$C/lw-nss/cert9.db" ] || { cat "$D/lw-nssinit.log" >&2; log "FAIL: certutil NSS init"; return 1; }
+			log "FAIL: no 'ipsec' binary to init the libreswan NSS db (certutil -N is rejected: pluto SEC_ERROR_BAD_DATABASE)"
+			return 1
 		fi
 	fi
 
@@ -229,7 +229,21 @@ EOF
 	# --- pass 2: terminate, then re-initiate to RESUME ---
 	log "i2ilw: pass 2 terminate + re-initiate (resume via exchange 38)"
 	lwwhack --terminate >/dev/null 2>&1 || true
-	sleep 2
+	# Drain: require the pass-1 ESP SAs to ACTUALLY go away before
+	# re-initiating.  Otherwise async terminate could leave pass-1 SAs up
+	# and the up2 poll below would count stale state as a "resume pass".
+	# Fail fast if we cannot tear the old SA down - that would make up2 a
+	# false positive.
+	drained=0; i=0
+	while [ "$i" -lt 30 ]; do
+		re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+		if [ "${re:-0}" -lt 2 ]; then drained=1; break; fi
+		i=$((i+1)); sleep 1
+	done
+	if [ "$drained" -ne 1 ]; then
+		log "i2ilw: FAIL - pass-1 ESP did not drain within 30s (up2 would be a false positive)"
+		return 1
+	fi
 	lwwhack --initiate >"$D/pass2-whack.txt" 2>&1 || true
 	cat "$D/pass2-whack.txt"
 	up2=0; i=0
