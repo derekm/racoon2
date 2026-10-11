@@ -356,6 +356,15 @@ struct ikev2_sa {
 	 * IKE_AUTH must not re-run the PSK/sig/EAP method: its AUTH derives
 	 * from the resumed SK_p and its IDs come from the ticket. */
 	int resumed;
+	/* RFC 5723 (RESPONDER) s4.3.4: the original IKE SA's SPI_i/SPI_r
+	 * recovered from the accepted ticket (u64 form, as the ticket
+	 * serializes them).  After the resumed IKE_AUTH succeeds these
+	 * identify the still-live "old" SA the client resumed from, which
+	 * SHOULD be silently deleted (no DELETE informational) along with
+	 * its children.  Zero when not resumed from a ticket, or when the
+	 * old SA must not be touched. */
+	uint64_t resume_old_spi_i;
+	uint64_t resume_old_spi_r;
 	/* RFC 5723 (INITIATOR): the responder-minted ticket received in
 	 * N(TICKET_LT_OPAQUE) (4-octet BE lifetime || ticket) during this
 	 * SA's initial IKE_AUTH.  Held while the SA lives so it can be
@@ -783,6 +792,8 @@ void ikev2_delete_sa(struct ikev2_child_sa *, int, struct sockaddr *,
 		     struct sockaddr *, uint32_t);
 
 void ikev2_abort(struct ikev2_sa *, int);
+void ikev2_silently_delete_old_resumed_sa(struct ikev2_sa *, uint64_t,
+					  uint64_t);
 void ikev2_child_abort(struct ikev2_child_sa *, int);
 
 extern int ikev2_child_getspi(struct ikev2_child_sa *);

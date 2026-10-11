@@ -330,6 +330,46 @@ ikev2_abort(struct ikev2_sa *ike_sa, int err)
 	++isakmpstat.abort;
 }
 
+/*
+ * RFC 5723 s4.3.4: after a resumed IKE_AUTH succeeds, silently delete the
+ * "old" IKE SA the client resumed from (no DELETE informational exchange),
+ * identified by its SPI_i/SPI_r recovered from the ticket.  `not_me` is the
+ * new (resuming) SA, which shares no SPIs with the old one but is excluded
+ * defensively anyway.  Uses ikev2_abort() (kills children + marks DEAD; the
+ * main-loop reaper frees it once its children are gone).
+ */
+void
+ikev2_silently_delete_old_resumed_sa(struct ikev2_sa *resumed_sa,
+    uint64_t old_spi_i, uint64_t old_spi_r)
+{
+	struct ikev2_sa *sa, *next;
+	uint64_t spi_i, spi_r;
+	unsigned i;
+
+	/* Match in the same big-endian u64 form the ticket stored
+	 * (ike_msg_cookie_to_u64 in ikev2.c). */
+	if (!old_spi_i && !old_spi_r)
+		return;
+	for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa; sa = next) {
+		next = IKEV2_SA_LIST_NEXT(sa);
+		if (sa == resumed_sa)
+			continue;
+		if (sa->state != IKEV2_STATE_ESTABLISHED)
+			continue;
+		for (spi_i = 0, i = 0; i < 8; i++)
+			spi_i = (spi_i << 8) | sa->index.i_ck[i];
+		for (spi_r = 0, i = 0; i < 8; i++)
+			spi_r = (spi_r << 8) | sa->index.r_ck[i];
+		if (spi_i == old_spi_i && spi_r == old_spi_r) {
+			isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			    "RFC 5723 s4.3.4: silently deleting the old IKE SA "
+			    "resumed from\n");
+			ikev2_abort(sa, ECONNREFUSED);
+			return;
+		}
+	}
+}
+
 void
 ikev2_child_abort(struct ikev2_child_sa *child_sa, int err)
 {

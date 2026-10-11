@@ -3712,6 +3712,14 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	ike_sa->id_r = st.idr;	st.idr = NULL;
 	ike_sa->resumed = 1;	/* established by ticket, not full IKE_AUTH */
 
+	/* RFC 5723 s4.3.4: remember the OLD SA the client resumed from, so
+	 * once the resumed IKE_AUTH succeeds we can silently delete it and
+	 * its children (no DELETE informational).  st.spi_i/spi_r are in the
+	 * same u64 form ike_msg_cookie_to_u64() produces, so the match in
+	 * ikev2_responder_delete_resumed_old_sa() uses that conversion. */
+	ike_sa->resume_old_spi_i = st.spi_i;
+	ike_sa->resume_old_spi_r = st.spi_r;
+
 	/* The peer is already authenticated by the ticket: the resumed
 	 * IKE_AUTH must not re-run a full auth method.  Mark the SA
 	 * authenticated so responder_ike_sa_auth_cont() skips the
@@ -4717,6 +4725,16 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 		goto done;
 
 	case VERIFIED_SUCCESS:
+		/* RFC 5723 s4.3.4: the resumed IKE_AUTH succeeded; the old
+		 * SA the client resumed from (if it is still live) is now
+		 * redundant and MUST be silently deleted along with its
+		 * children - no DELETE informational.  Only meaningful on a
+		 * resumed SA (resume_old_spi_* set from the ticket). */
+		if (ike_sa->resumed &&
+		    (ike_sa->resume_old_spi_i || ike_sa->resume_old_spi_r))
+			ikev2_silently_delete_old_resumed_sa(ike_sa,
+			    ike_sa->resume_old_spi_i,
+			    ike_sa->resume_old_spi_r);
 		break;
 
 	case VERIFIED_FAILURE:
