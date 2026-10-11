@@ -165,6 +165,23 @@ end-to-end in a netns row with `esp_addke_alg { mlkem512; mlkem768; }` on
 both seats (both types on the wire, both seats completed round 1 and
 round 2, matching KEM keymat installed).
 
+Landed, not remaining: **classical DH groups as ADDKE round methods**.  RFC
+9370 says any KE method may run in the additional key exchanges (the ADDKE
+types share the transform-type-4 / KE-method registry), so a round can be a
+classical ECP/MODP/curve group, not only ML-KEM.  This lets all 7 ADDKE
+types carry distinct methods and interoperates with strongSwan's `keX_ecp256`
+style multi-KE proposals.  A classical round is a standard IKEv2 DH: both
+seats send their public value in the IKE_FOLLOWUP_KE KE payload and each
+computes g^xy from its own generated keypair (`oakley_dh_generate` /
+`oakley_dh_compute`); the responder replies its public value as KEr (not a
+KEM ciphertext).  Config `esp_addke_alg { mlkem512; mlkem768; ecp256;
+modp2048; mlkem1024; curve25519; curve448; }` negotiates all 7 rounds with
+4 classical + 3 ML-KEM methods.  Live netns proof (iked<->iked, Fedora box):
+all types 6..12 on the wire, both seats reach round 6/7 done, accumulated
+SK(1)||..||SK(7) keymat sha256 matches both sides.  Matrix rows:
+`i2ike-addke-fr3` (3 rounds, 1 classical) and `i2ike-addke-fr7` (max 7
+rounds, mixed).
+
 Landed, not remaining: RFC 8784 PPK (`use_ppk` / `ppk_mandatory`;
 iked↔iked row `i2iinit-ppk`; a phone proving it is not claimed here).
 A non-racoon2 ML-KEM peer is a box row (`i2iinit-charon`, strongSwan
