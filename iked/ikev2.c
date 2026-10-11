@@ -2069,9 +2069,24 @@ initiator_start_after_gen(int rc, void *arg)
 			TRACE((PLOGLOC, "offering SIG_HASH_ALGORITHMS (16431)\n"));
 			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 					    ikev2_notify_payload(0, 0, 0,
-								 IKEV2_SIG_HASH_ALGORITHMS,
-								 (uint8_t *)sig_hash_sha2,
-								 sizeof(sig_hash_sha2)),
+							 IKEV2_SIG_HASH_ALGORITHMS,
+							 (uint8_t *)sig_hash_sha2,
+							 sizeof(sig_hash_sha2)),
+					    TRUE);
+		} else if (_kmp && _kmp->algtype == RCT_ALG_EDDSA &&
+		    ikev2_offer_sig_hash_algorithms(ike_sa->rmconf) == RCT_BOOL_ON) {
+			/* RFC 8420 s4: an EdDSA seat must advertise the
+			 * Identity hash (0x0005) in SIG_HASH_ALGORITHMS. */
+			static const uint8_t sig_hash_id[] = {
+				0x00, 0x05,
+			};
+			TRACE((PLOGLOC, "offering SIG_HASH_ALGORITHMS (16431, "
+				"Identity/EdDSA)\n"));
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_SIG_HASH_ALGORITHMS,
+							 (uint8_t *)sig_hash_id,
+							 sizeof(sig_hash_id)),
 					    TRUE);
 		}
 	}
@@ -2604,9 +2619,13 @@ responder_state0_after_gen(int rc, void *arg)
 		 * seat may be rsasig even when the client authenticates via
 		 * eap (RFC 7296 s2.16, kmp_auth_method { eap; rsasig; }). */
 		int _has_rsa = 0;
-		for (; _kmp; _kmp = _kmp->next)
+		int _has_eddsa = 0;
+		for (; _kmp; _kmp = _kmp->next) {
 			if (_kmp->algtype == RCT_ALG_RSASIG)
 				_has_rsa = 1;
+			if (_kmp->algtype == RCT_ALG_EDDSA)
+				_has_eddsa = 1;
+		}
 		if (_has_rsa) {
 			static const uint8_t sig_hash_sha2[] = {
 				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
@@ -2615,9 +2634,24 @@ responder_state0_after_gen(int rc, void *arg)
 			TRACE((PLOGLOC, "echoing SIG_HASH_ALGORITHMS (16431)\n"));
 			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 					    ikev2_notify_payload(0, 0, 0,
-								 IKEV2_SIG_HASH_ALGORITHMS,
-								 (uint8_t *)sig_hash_sha2,
-								 sizeof(sig_hash_sha2)),
+							 IKEV2_SIG_HASH_ALGORITHMS,
+							 (uint8_t *)sig_hash_sha2,
+							 sizeof(sig_hash_sha2)),
+					    TRUE);
+		} else if (_has_eddsa) {
+			/* RFC 8420 s4: an EdDSA responder echoes the Identity
+			 * hash; method 14 is the only way EdDSA is carried. */
+			static const uint8_t sig_hash_id[] = {
+				0x00, 0x05,
+			};
+			ike_sa->sig_hash_algos_ds = 1;
+			TRACE((PLOGLOC, "echoing SIG_HASH_ALGORITHMS (16431, "
+				"Identity/EdDSA)\n"));
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_SIG_HASH_ALGORITHMS,
+							 (uint8_t *)sig_hash_id,
+							 sizeof(sig_hash_id)),
 					    TRUE);
 		}
 	}

@@ -104,6 +104,7 @@ int dhtest __P((int, char **));
 int dhrangetest __P((int, char **));
 int xcurvetest __P((int, char **));
 int rfc7427test __P((int, char **));
+int eddsatest __P((int, char **));
 int rsam1test __P((int, char **));
 int bntest __P((int, char **));
 #ifndef RACOON2
@@ -1282,6 +1283,21 @@ r7427_pub(EVP_PKEY *k)
 	return v;
 }
 
+/* the DER PKCS#8 form of a private key (what d2i_AutoPrivateKey accepts) */
+static vchar_t *
+r7427_privder(EVP_PKEY *k)
+{
+	int l = i2d_PrivateKey(k, NULL);
+	unsigned char *p;
+	vchar_t *v;
+
+	if (l <= 0 || (v = vmalloc(l)) == NULL)
+		return NULL;
+	p = (unsigned char *)v->v;
+	i2d_PrivateKey(k, &p);
+	return v;
+}
+
 int
 rfc7427test(ac, av)
 	int ac;
@@ -1397,6 +1413,162 @@ rfc7427test(ac, av)
 
 
 /*
+ * RFC 8420 EdDSA (Ed25519/Ed448) carried in RFC 7427 method 14: pure EdDSA
+ * sign/verify round-trips plus the AlgorithmIdentifier and key-type refusal
+ * cases through eay_rfc7427_verify and the direct eay_eddsa_sign/verify.
+ */
+int
+eddsatest(ac, av)
+	int ac;
+	char **av;
+{
+	/* RFC 8420 App. A: 30 05 06 03 2b 65 70 (Ed25519), 2b 65 71 (Ed448) */
+	static const uint8_t ai_ed25519[] = { 0x30,0x05,0x06,0x03,0x2b,0x65,0x70 };
+	static const uint8_t ai_ed448[]   = { 0x30,0x05,0x06,0x03,0x2b,0x65,0x71 };
+	static const char msg[] = "IKEv2 AUTH octets for the RFC 8420 EdDSA test";
+	EVP_PKEY *ed25519 = NULL, *ed448 = NULL;
+	vchar_t m, *e255pv, *e448pv, *e255pub, *e448pub;
+	int fails = 0;
+
+	printf("\n**Test for RFC 8420 EdDSA (RFC 7427 method 14).**\n");
+
+	ed25519 = r7427_keygen(EVP_PKEY_ED25519, 0);
+	ed448 = r7427_keygen(EVP_PKEY_ED448, 0);
+	if (!ed25519 || !ed448) {
+		printf("error: EdDSA keygen\n");
+		return -1;
+	}
+	e255pv = r7427_privder(ed25519);
+	e448pv = r7427_privder(ed448);
+	e255pub = r7427_pub(ed25519);
+	e448pub = r7427_pub(ed448);
+	m.v = (caddr_t)msg;
+	m.l = sizeof(msg) - 1;
+
+	{
+		/* sign with the in-tree EdDSA signer, verify with the in-tree
+		 * EdDSA verifier (pure EdDSA, raw message, no hash) */
+		vchar_t *sig = eay_eddsa_sign(&m, e255pv);
+		if (!sig) {
+			printf("FAIL: Ed25519 sign\n"); fails++;
+		} else {
+			if (eay_eddsa_verify(&m, sig, e255pub) != 0) {
+				printf("FAIL: Ed25519 verify\n"); fails++;
+			} else
+				printf("ok: Ed25519 sign/verify (%lu octets)\n",
+				    (unsigned long)sig->l);
+			vfree(sig);
+		}
+	}
+	{
+		vchar_t *sig = eay_eddsa_sign(&m, e448pv);
+		if (!sig) {
+			printf("FAIL: Ed448 sign\n"); fails++;
+		} else {
+			if (eay_eddsa_verify(&m, sig, e448pub) != 0) {
+				printf("FAIL: Ed448 verify\n"); fails++;
+			} else
+				printf("ok: Ed448 sign/verify (%lu octets)\n",
+				    (unsigned long)sig->l);
+			vfree(sig);
+		}
+	}
+	{
+		/* Ed25519 signature MUST NOT verify against an Ed448 key */
+		vchar_t *sig = eay_eddsa_sign(&m, e255pv);
+		if (sig) {
+			if (eay_eddsa_verify(&m, sig, e448pub) == 0) {
+				printf("FAIL: Ed25519 sig accepted by Ed448 key\n");
+				fails++;
+			} else
+				printf("ok: Ed25519 sig refused by Ed448 key\n");
+			vfree(sig);
+		}
+	}
+	{
+		/* pure EdDSA through the RFC 7427 method-14 verify, good key */
+		vchar_t *sig = eay_eddsa_sign(&m, e255pv);
+		if (!sig) {
+			printf("FAIL: Ed25519 sign (7427)\n"); fails++;
+		} else {
+			if (eay_rfc7427_verify(&m, ai_ed25519,
+			    sizeof(ai_ed25519), sig, e255pub) != 0) {
+				printf("FAIL: Ed25519 via RFC 7427\n"); fails++;
+			} else
+				printf("ok: Ed25519 verified via RFC 7427\n");
+			vfree(sig);
+		}
+	}
+	{
+		/* Ed448 through the RFC 7427 method-14 verify */
+		vchar_t *sig = eay_eddsa_sign(&m, e448pv);
+		if (!sig) {
+			printf("FAIL: Ed448 sign (7427)\n"); fails++;
+		} else {
+			if (eay_rfc7427_verify(&m, ai_ed448,
+			    sizeof(ai_ed448), sig, e448pub) != 0) {
+				printf("FAIL: Ed448 via RFC 7427\n"); fails++;
+			} else
+				printf("ok: Ed448 verified via RFC 7427\n");
+			vfree(sig);
+		}
+	}
+	{
+		/* Ed448 signature under the Ed25519 AI must be refused */
+		vchar_t *sig = eay_eddsa_sign(&m, e448pv);
+		if (!sig) {
+			printf("FAIL: Ed448 sign (AI mismatch)\n"); fails++;
+		} else {
+			if (eay_rfc7427_verify(&m, ai_ed25519,
+			    sizeof(ai_ed25519), sig, e448pub) == 0) {
+				printf("FAIL: Ed448 sig accepted under Ed25519 AI\n");
+				fails++;
+			} else
+				printf("ok: Ed448 sig refused under Ed25519 AI\n");
+			vfree(sig);
+		}
+	}
+	{
+		/* corrupted Ed25519 signature refused */
+		vchar_t *sig = eay_eddsa_sign(&m, e255pv);
+		if (!sig) {
+			printf("FAIL: Ed25519 sign (corrupt)\n"); fails++;
+		} else {
+			sig->u[sig->l / 2] ^= 0x01;
+			if (eay_rfc7427_verify(&m, ai_ed25519,
+			    sizeof(ai_ed25519), sig, e255pub) == 0) {
+				printf("FAIL: corrupted Ed25519 sig accepted\n");
+				fails++;
+			} else
+				printf("ok: corrupted Ed25519 sig refused\n");
+			vfree(sig);
+		}
+	}
+	{
+		/* truncated Ed25519 AI refused */
+		vchar_t *sig = eay_eddsa_sign(&m, e255pv);
+		if (!sig) {
+			printf("FAIL: Ed25519 sign (trunc AI)\n"); fails++;
+		} else {
+			if (eay_rfc7427_verify(&m, ai_ed25519,
+			    sizeof(ai_ed25519) - 1, sig, e255pub) == 0) {
+				printf("FAIL: truncated Ed25519 AI accepted\n");
+				fails++;
+			} else
+				printf("ok: truncated Ed25519 AI refused\n");
+			vfree(sig);
+		}
+	}
+
+	vfree(e255pv); vfree(e448pv);
+	vfree(e255pub); vfree(e448pub);
+	EVP_PKEY_free(ed25519);
+	EVP_PKEY_free(ed448);
+	return fails ? -1 : 0;
+}
+
+
+/*
  * F6 — IKEv2 AUTH method 1 hash: peers historically sign SHA-1; this tree
  * signed/verified SHA-256 only.  eay_rsassa_pkcs1_v1_5_verify_auth recovers
  * the DigestInfo and accepts either.  The SHA-256-only verify must FAIL a
@@ -1490,6 +1662,7 @@ struct {
 	{ "dhrange", dhrangetest, },
 	{ "xcurve", xcurvetest, },
 	{ "rfc7427", rfc7427test, },
+	{ "eddsa", eddsatest, },
 	{ "rsam1", rsam1test, },
 	{ "md5", md5test, },
 	{ "sha1", sha1test, },
