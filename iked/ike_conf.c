@@ -3626,6 +3626,62 @@ alglist_to_proppair(struct rc_alglist *alg, int type,
 	return 0;
 }
 
+/*
+ * RFC 9370 multi-round ADDKE emission (addke_alg { mlkem512; mlkem768; }).
+ *
+ * Each configured additional key exchange is its own Transform Type:
+ * ADDKE1=6, ADDKE2=7, ..., ADDKE7=12 (RFC 9370 §1.3 / IANA Transform Type
+ * registry).  The number of ADDKE transform types in the proposal selects
+ * the number of rounds, and each round's KE method is that type's transform
+ * id.  Per §2.2.1 the rounds run in Transform Type order, so round r maps
+ * to type ADDKE1+r and the r-th configured method.
+ *
+ * This is unlike the other transforms: ENCR/INTEG/DH offer alternatives of
+ * one type linked on tnext.  ADDKE rounds are *distinct* types, so each
+ * round is a separate prop_pair linked on `next`; there is exactly one
+ * transform per round (no alternates).  The caller appends the returned
+ * chain to the proposal's tail and the generic matcher/echo carries every
+ * type through, so a proposal built from a multi-method addke_alg list
+ * negotiates as many IKE_FOLLOWUP_KE rounds as there are methods.
+ */
+static struct prop_pair *
+alglist_to_addke_proppair(struct rc_alglist *alg)
+{
+	struct prop_pair *head = 0, **tail = &head, *t;
+	int code = 0;
+	int round = 0;
+
+	for (; alg; ++round, alg = alg->next) {
+		if (round >= 7) {
+			plog(PLOG_INTWARN, PLOGLOC, NULL,
+			     "addke_alg: extra rounds past ADDKE7 ignored\n");
+			break;
+		}
+		code = ikeconf_rcf_alg(alg->algtype, &ikev2_transf_addke[0]);
+		if (code == 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "addke_alg: unsupported ADDKE algorithm %s\n",
+			     rct2str(alg->algtype));
+			goto fail;
+		}
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		     "addke_alg: round %d -> type %d method %d\n",
+		     round, IKEV2TRANSFORM_TYPE_ADDKE + round, code);
+		t = transform_new(IKEV2TRANSFORM_TYPE_ADDKE + round, code, 0, 0);
+		if (!t)
+			goto fail;
+		*tail = t;
+		tail = &t->next;
+	}
+
+	return head;
+
+      fail:
+	if (head)
+		proppair_discard(head);
+	return 0;
+}
+
 static int auth_alg_is_none(struct rc_alglist *auth_alg);
 
 struct prop_pair **
@@ -3876,13 +3932,15 @@ ikev2_child_maybe_reoffer_addke(struct ikev2_child_sa *child_sa)
 		    child_sa->is_initiator, child_sa->addke_nrounds);
 		return;
 	}
-	/* already carrying an ADDKE transform? */
+	/* already carrying an ADDKE transform (any type ADDKE1..ADDKE7)? */
 	for (p = child_sa->my_proposal[1]->tnext; p; p = p->next)
 		if (p->trns &&
-		    ((struct ikev2transform *)p->trns)->transform_type ==
-		    IKEV2TRANSFORM_TYPE_ADDKE)
+		    ((struct ikev2transform *)p->trns)->transform_type >=
+			IKEV2TRANSFORM_TYPE_ADDKE &&
+		    ((struct ikev2transform *)p->trns)->transform_type <=
+			IKEV2TRANSFORM_TYPE_ADDKE + 6)
 			return;
-	/* find the sa block's esp_addke_alg and append it as type-6 */
+	/* find the sa block's esp_addke_alg and append it (multi-round) */
 	for (conf = (child_sa->selector && child_sa->selector->pl)
 		    ? child_sa->selector->pl->ips : NULL;
 	     conf; conf = conf->next) {
@@ -3897,14 +3955,10 @@ ikev2_child_maybe_reoffer_addke(struct ikev2_child_sa *child_sa)
 			/* find end of the transform chain */;
 		if (!tail)
 			child_sa->my_proposal[1]->tnext =
-			    alglist_to_proppair(addke_alg,
-					    IKEV2TRANSFORM_TYPE_ADDKE,
-					    &ikev2_transf_addke[0]);
+			    alglist_to_addke_proppair(addke_alg);
 		else
 			tail->next =
-			    alglist_to_proppair(addke_alg,
-					    IKEV2TRANSFORM_TYPE_ADDKE,
-					    &ikev2_transf_addke[0]);
+			    alglist_to_addke_proppair(addke_alg);
 		isakmp_log(child_sa->parent, 0, 0, 0,
 		    PLOG_DEBUG, PLOGLOC,
 		    "reoffer-ADDKE: appended type-6 after %p (ini=%d)\n",
@@ -4149,9 +4203,7 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 	     child_sa->addke_nrounds > 0 ||
 	     child_sa->parent->rmconf &&
 	     ikev2_addke_unrequested(child_sa->parent->rmconf) == RCT_BOOL_ON)) {
-		*tail = alglist_to_proppair(proto_info->addke_alg,
-					    IKEV2TRANSFORM_TYPE_ADDKE,
-					    &ikev2_transf_addke[0]);
+		*tail = alglist_to_addke_proppair(proto_info->addke_alg);
 		if (!*tail) {
 			isakmp_log(0, 0, 0, 0,
 				   PLOG_INTERR, PLOGLOC,
