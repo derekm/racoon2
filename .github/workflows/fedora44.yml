@@ -100,6 +100,58 @@ jobs:
             if [ -f "$f" ]; then echo "== $f =="; cat "$f"; fi
           done
 
+  # The ADDKE unit tests (addketest, addkekat) only build against OpenSSL
+  # 3.5, so the Ubuntu ASan job never runs them.  This job runs the same
+  # unit suite as above under ASan+UBSan (LeakSanitizer included), so the
+  # classical-round teardown double free (review H1), the install-failure
+  # SK leak (N2) and the bad-DH-value leak (M5) fail CI if they return.
+  build-fedora44-asan:
+    name: 'Fedora 44 ASan+UBSan unit suite (OpenSSL 3.5, ADDKE)'
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:44
+      # --privileged: set vm.mmap_rnd_bits=28 (see ubuntu.yml build-asan)
+      options: --privileged
+
+    steps:
+      - name: Install build dependencies (dnf, incl. git for checkout)
+        run: |
+          dnf install -y -q \
+            autoconf automake libtool pkgconf-pkg-config gcc make \
+            openssl openssl-devel libpcap-devel krb5-devel bison flex \
+            git libasan libubsan procps-ng iproute
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ASan-compatible mmap randomisation
+        run: sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Bootstrap
+        run: autoreconf -fi
+
+      - name: Configure (ASan + UBSan, UBSan errors fatal, ADDKE on)
+        run: |
+          ./configure --prefix=/usr/local/racoon2 --enable-addke \
+            CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined" \
+            LDFLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        run: make -j2
+
+      - name: 'Unit suite under ASan/UBSan (lib)'
+        run: make -C lib check
+
+      - name: 'Unit suite under ASan/UBSan (iked, incl. addketest + addkekat)'
+        run: make -C iked check
+
+      - name: 'Dump unit logs on failure'
+        if: failure()
+        run: |
+          for f in lib/test-suite.log iked/test-suite.log iked/*.log; do
+            if [ -f "$f" ]; then echo "== $f =="; cat "$f"; fi
+          done
+
   integration:
     name: 'Integration (Fedora PQC matrix, ADDKE)'
     needs: build-fedora44
