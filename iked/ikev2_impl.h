@@ -34,6 +34,7 @@
 
 #ifdef WITH_ADDKE
 #include <openssl/evp.h>	/* EVP_PKEY in the ML-KEM prototypes */
+struct dhgroup;		/* classical-DH ADDKE round state (oakley.h defs) */
 #endif
 
 #define	IKEV2_DEFAULT_RETRY	10
@@ -538,6 +539,15 @@ struct ikev2_child_sa {
 #ifdef WITH_ADDKE
 	void *addke_priv;	/* initiator: ML-KEM private key (EVP_PKEY *)
 				 * held until the followup response decaps */
+	/* Classical-DH ADDKE round state (RFC 9370: rounds may carry any
+	 * KE method, ML-KEM or classical).  A round is classical when its
+	 * method id is a DH group (not 35/36/37); then we hold our own
+	 * keypair + the group so the followup computes g^xy against the
+	 * peer's public value, and the responder sends its public value as
+	 * KEr instead of a KEM ciphertext. */
+	const struct dhgroup *addke_dh;	/* group for the current classical round */
+	rc_vchar_t *addke_dh_pub;	/* classical round: our public value */
+	rc_vchar_t *addke_dh_priv;	/* classical round: our private value */
 #endif
 
 	/* for informational exchange */
@@ -632,6 +642,10 @@ extern void ikev2_followup_ke_recv(struct ikev2_sa *, rc_vchar_t *,
 				   struct sockaddr *, struct sockaddr *);
 extern int ikev2_addke_selectable(void);
 extern int ikev2_addke_selftest(void);
+extern int ikev2_addke_method_is_mlkem(unsigned int);
+extern int ikev2_addke_round_keygen(struct ikev2_child_sa *,
+				    unsigned int, rc_vchar_t **);
+extern void ikev2_addke_round_state_clear(struct ikev2_child_sa *);
 extern int ikev2_addke_mlkem_keygen(unsigned int, rc_vchar_t **,
 				    EVP_PKEY **);
 extern int ikev2_addke_mlkem_encap(unsigned int, rc_vchar_t *,

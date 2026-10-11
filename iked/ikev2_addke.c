@@ -63,6 +63,9 @@
 #include "racoon.h"
 #include "isakmp.h"
 #include "isakmp_impl.h"
+#include "dhgroup.h"
+#include "oakley.h"
+#include "ike_conf.h"
 #include "ikev2.h"
 #include "ikev2_impl.h"
 #include "plog.h"
@@ -127,6 +130,117 @@ ikev2_addke_mlkem_param(unsigned int transform_id)
 		if (p->transform_id == transform_id)
 			return p;
 	return NULL;
+}
+
+/*
+ * RFC 9370 ADDKE rounds may carry any KE method (transform id shares the
+ * Transform Type 4 / KE-method registry): ML-KEM ids 35/36/37 are a KEM,
+ * any classical DH group id (19=ECP256, 14=MODP2048, 31=CURVE25519, ...)
+ * is a classical key exchange where BOTH sides send their public value in
+ * the KE payload and each computes g^xy from its own generated keypair and
+ * the peer's public value (standard IKEv2 DH).  The round engine below
+ * dispatches on whether the method is ML-KEM or classical.
+ */
+int
+ikev2_addke_method_is_mlkem(unsigned int transform_id)
+{
+	return ikev2_addke_mlkem_param(transform_id) != NULL;
+}
+/* dhgroup for a classical ADDKE method id, or NULL if not a DH group. */
+static const struct dhgroup *
+ikev2_addke_method_dhgroup(unsigned int transform_id)
+{
+	struct algdef *def;
+
+	if (ikev2_addke_method_is_mlkem(transform_id))
+		return NULL;
+	def = ikev2_dhinfo(transform_id);
+	if (def == NULL || def->definition == NULL)
+		return NULL;
+	return (const struct dhgroup *)def->definition;
+}
+
+/*
+ * Generate this ADDKE round's keypair and store the private round state.
+ * The public value is returned in *pub (the KEi payload).  ML-KEM keeps an
+ * EVP_PKEY in child_sa->addke_priv; a classical DH group keeps the group
+ * plus our public/private values (addke_dh / addke_dh_pub / addke_dh_priv)
+ * so the followup completion can compute g^xy against the peer's value.
+ * Also records the method for the round.  Returns 0 / -1 and leaves *pub
+ * NULL on failure.
+ */
+int
+ikev2_addke_round_keygen(struct ikev2_child_sa *child_sa,
+			 unsigned int method, rc_vchar_t **pub)
+{
+	*pub = NULL;
+	if (ikev2_addke_method_is_mlkem(method)) {
+		EVP_PKEY *kp = NULL;
+
+		if (ikev2_addke_mlkem_keygen(method, pub, &kp) < 0 ||
+		    !*pub || !kp) {
+			rc_vfree(*pub);
+			*pub = NULL;
+			EVP_PKEY_free(kp);
+			return -1;
+		}
+		child_sa->addke_priv = kp;
+	} else {
+		const struct dhgroup *dh =
+		    ikev2_addke_method_dhgroup(method);
+		rc_vchar_t *priv = NULL;
+
+		if (dh == NULL)
+			return -1;
+		if (oakley_dh_generate((struct dhgroup *)dh, pub,
+				       &priv) < 0 || !*pub || !priv) {
+			rc_vfree(*pub);
+			rc_vfree(priv);
+			*pub = NULL;
+			return -1;
+		}
+		child_sa->addke_dh = dh;
+		child_sa->addke_dh_priv = priv;
+		/* keep a copy of our public value for the g^xy compute */
+		child_sa->addke_dh_pub = rc_vnew((*pub)->v, (*pub)->l);
+		if (child_sa->addke_dh_pub == NULL) {
+			rc_vfree(*pub);
+			rc_vfree(priv);
+			child_sa->addke_dh_priv = NULL;
+			*pub = NULL;
+			return -1;
+		}
+	}
+	child_sa->addke_method = method;
+	return 0;
+}
+
+/*
+ * Release this ADDKE round's private state -- the ML-KEM EVP_PKEY or the
+ * classical-DH group/public/private values -- and NULL every field, so a
+ * later caller (the next round's keygen, an error path, or child-SA
+ * teardown) never sees a dangling pointer.  Safe to call repeatedly.
+ * rc_vfreez() takes its argument by value and cannot clear the caller's
+ * pointer, which is why each field is reset here explicitly.
+ */
+void
+ikev2_addke_round_state_clear(struct ikev2_child_sa *child_sa)
+{
+	if (child_sa == NULL)
+		return;
+	if (child_sa->addke_priv) {
+		EVP_PKEY_free((EVP_PKEY *)child_sa->addke_priv);
+		child_sa->addke_priv = NULL;
+	}
+	if (child_sa->addke_dh_pub) {
+		rc_vfreez(child_sa->addke_dh_pub);
+		child_sa->addke_dh_pub = NULL;
+	}
+	if (child_sa->addke_dh_priv) {
+		rc_vfreez(child_sa->addke_dh_priv);
+		child_sa->addke_dh_priv = NULL;
+	}
+	child_sa->addke_dh = NULL;
 }
 
 /*
@@ -526,24 +640,45 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 {
 	EVP_PKEY *kp;
 	rc_vchar_t *ss = NULL;
+	unsigned int method = child_sa->addke_method;
+	const struct dhgroup *dh = NULL;
 
-	kp = (EVP_PKEY *)child_sa->addke_priv;
-	child_sa->addke_priv = NULL;
-	if (!kp)
+	if (!ciphertext)
 		return -1;
-	if (!ciphertext) {
-		EVP_PKEY_free(kp);
-		return -1;
-	}
 
-	if (ikev2_addke_mlkem_decap(kp, ciphertext, &ss) < 0 ||
-	    ss == NULL ||
-	    ss->l != OSSL_ML_KEM_SHARED_SECRET_BYTES) {
-		rc_vfreez(ss);
+	if (ikev2_addke_method_is_mlkem(method)) {
+		/* KEM round: decap the ciphertext with our round keypair */
+		kp = (EVP_PKEY *)child_sa->addke_priv;
+		child_sa->addke_priv = NULL;
+		if (!kp)
+			return -1;
+		if (ikev2_addke_mlkem_decap(kp, ciphertext, &ss) < 0 ||
+		    ss == NULL ||
+		    ss->l != OSSL_ML_KEM_SHARED_SECRET_BYTES) {
+			rc_vfreez(ss);
+			EVP_PKEY_free(kp);
+			return -1;
+		}
 		EVP_PKEY_free(kp);
-		return -1;
+	} else {
+		/* classical DH round: the peer-returned value is its public
+		 * value; compute g^xy from our stored keypair (RFC 9370
+		 * allows classical key exchanges in the rounds) */
+		dh = child_sa->addke_dh;
+		if (dh == NULL || child_sa->addke_dh_pub == NULL ||
+		    child_sa->addke_dh_priv == NULL) {
+			return -1;
+		}
+		if (oakley_dh_compute((struct dhgroup *)dh,
+		    child_sa->addke_dh_pub, child_sa->addke_dh_priv,
+		    ciphertext, &ss) < 0 || ss == NULL) {
+			rc_vfreez(ss);
+			return -1;
+		}
+		/* this round's keypair is consumed; clear (and NULL) the
+		 * round state so child teardown cannot free it again */
+		ikev2_addke_round_state_clear(child_sa);
 	}
-	EVP_PKEY_free(kp);
 
 	/* append this round's shared secret to SK(1)..SK(n), in order */
 	{
@@ -572,26 +707,21 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 	if (child_sa->addke_round < child_sa->addke_nrounds) {
 		/* more rounds: keygen next method, send next followup, stay pending */
 		rc_vchar_t *pub = NULL;
-		EVP_PKEY *nxt = NULL;
 		unsigned int method =
 		    child_sa->addke_methods[child_sa->addke_round];
 
-		if (ikev2_addke_mlkem_keygen(method, &pub, &nxt) < 0 ||
-		    !pub || !nxt) {
+		if (ikev2_addke_round_keygen(child_sa, method, &pub) < 0 ||
+		    !pub) {
 			rc_vfree(pub);
-			EVP_PKEY_free(nxt);
 			return -1;
 		}
-		child_sa->addke_priv = nxt;
-		child_sa->addke_method = method;
 		if (ikev2_initiator_followup_send(child_sa, pub) != 0) {
 			isakmp_log(child_sa->parent, 0, 0, 0,
 			    PLOG_INTERR, PLOGLOC,
 			    "failed sending IKE_FOLLOWUP_KE (round %d)\n",
 			    child_sa->addke_round);
 			rc_vfree(pub);
-			EVP_PKEY_free(nxt);
-			child_sa->addke_priv = NULL;
+			ikev2_addke_round_state_clear(child_sa);
 			return -1;
 		}
 		rc_vfree(pub);
@@ -604,8 +734,8 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 	}
 
 	if (ikev2_child_addke_install(child_sa) < 0) {
-		child_sa->addke_sk = NULL;
 		rc_vfreez(child_sa->addke_sk);
+		child_sa->addke_sk = NULL;
 		return -1;
 	}
 	/*
@@ -878,9 +1008,12 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	if (!link)
 		goto nomem;
 
-	/* KE payload must reference a supported ADDKE method */
+	/* KE payload must reference a supported ADDKE method: an ML-KEM id
+	 * (35/36/37) or a classical DH group id from the KE-method registry.
+	 * RFC 9370 allows classical key exchanges in the multiple rounds. */
 	ke_method = get_uint16(&ke->ke_h.dh_group_id);
-	if (ikev2_addke_mlkem_param(ke_method) == NULL) {
+	if (!ikev2_addke_method_is_mlkem(ke_method) &&
+	    ikev2_addke_method_dhgroup(ke_method) == NULL) {
 		isakmp_log(ike_sa, local, remote, msg,
 			   PLOG_PROTOERR, PLOGLOC,
 			   "IKE_FOLLOWUP_KE method %u unsupported\n",
@@ -888,7 +1021,8 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		goto invalid;
 	}
 
-	/* the KE payload carries the initiator's ML-KEM public key */
+	/* the KE payload carries the initiator's public value: the ML-KEM
+	 * public key for a KEM round, or the DH public value otherwise */
 	if (get_payload_data_length(&ke->header) < sizeof(ke->ke_h))
 		goto invalid;	/* underflow guard before the size_t subtract */
 	peer_ke = rc_vnew((const u_char *)(ke + 1),
@@ -896,7 +1030,10 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			  sizeof(ke->ke_h));
 	if (!peer_ke)
 		goto nomem;
-	{
+
+	/* bind the round to the negotiated method and length-check the peer
+	 * public value (ML-KEM pub_len, or the DH group's public length) */
+	if (ikev2_addke_method_is_mlkem(ke_method)) {
 		const struct ikev2_addke_mlkem_param *param =
 		    ikev2_addke_mlkem_param(ke_method);
 
@@ -906,6 +1043,20 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				   "IKE_FOLLOWUP_KE KEi length %zu != %zu "
 				   "(method %u)\n",
 				   peer_ke->l, param->pub_len, ke_method);
+			goto invalid;
+		}
+	} else {
+		const struct dhgroup *dh =
+		    ikev2_addke_method_dhgroup(ke_method);
+
+		if (peer_ke->l != dh_value_len((struct dhgroup *)dh)) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "IKE_FOLLOWUP_KE KEi length %zu != %zu "
+				   "(group %u)\n",
+				   peer_ke->l,
+				   dh_value_len((struct dhgroup *)dh),
+				   ke_method);
 			goto invalid;
 		}
 	}
@@ -946,15 +1097,47 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		goto done;
 	}
 
-	/* responder encapsulates against the initiator's public key */
-	if (ikev2_addke_mlkem_encap(ke_method, peer_ke, &ct, &ss) < 0) {
-		isakmp_log(ike_sa, local, remote, msg,
-			   PLOG_INTERR, PLOGLOC,
-			   "ML-KEM encapsulate failed (method %u)\n",
-			   ke_method);
-		goto invalid;
+	/* responder side of the round: ML-KEM encapsulates (KEr = ciphertext);
+	 * a classical DH round generates OUR keypair, sends OUR public value
+	 * as KEr, and computes g^xy from both public values. */
+	if (ikev2_addke_method_is_mlkem(ke_method)) {
+		if (ikev2_addke_mlkem_encap(ke_method, peer_ke, &ct, &ss) < 0) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "ML-KEM encapsulate failed (method %u)\n",
+				   ke_method);
+			goto invalid;
+		}
+	} else {
+		const struct dhgroup *dh =
+		    ikev2_addke_method_dhgroup(ke_method);
+		rc_vchar_t *our_pub = NULL, *our_priv = NULL, *gxy = NULL;
+
+		if (oakley_dh_generate((struct dhgroup *)dh, &our_pub,
+				       &our_priv) < 0) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "ADDKE DH generate failed (group %u)\n",
+				   ke_method);
+			goto invalid;
+		}
+		/* g^xy from our generated keypair and the peer's public value */
+		if (oakley_dh_compute((struct dhgroup *)dh, our_pub,
+				      our_priv, peer_ke, &gxy) < 0) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "ADDKE DH compute failed (group %u)\n",
+				   ke_method);
+			rc_vfree(our_pub);
+			rc_vfreez(our_priv);
+			goto invalid;
+		}
+		rc_vfreez(our_priv);
+		/* KEr carries our public value; ss = g^xy */
+		ct = our_pub;
+		ss = gxy;
 	}
-	{
+	if (ikev2_addke_method_is_mlkem(ke_method)) {
 		const struct ikev2_addke_mlkem_param *param =
 		    ikev2_addke_mlkem_param(ke_method);
 
@@ -963,6 +1146,24 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_INTERR, PLOGLOC,
 				   "ML-KEM sizes ct=%zu ss=%zu (method %u)\n",
+				   ct->l, ss->l, ke_method);
+			goto invalid;
+		}
+	} else {
+		/* KEr carries the public value (x||y for ECP = dh_value_len);
+		 * the derived shared secret is the bare group field length
+		 * (s* = g^xy, and for ECP just the x-coordinate = prime->l).
+		 * These differ for the ECP/Brainpool groups. */
+		size_t klen = dh_value_len((struct dhgroup *)
+		    ikev2_addke_method_dhgroup(ke_method));
+		size_t slen = ((struct dhgroup *)
+		    ikev2_addke_method_dhgroup(ke_method))->prime->l;
+
+		if (ct->l != klen || ss->l != slen) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "classical DH sizes KEr=%zu ss=%zu "
+				   "(group %u)\n",
 				   ct->l, ss->l, ke_method);
 			goto invalid;
 		}
