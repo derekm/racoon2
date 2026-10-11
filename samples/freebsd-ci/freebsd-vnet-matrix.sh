@@ -567,7 +567,9 @@ fb_charon_gate() {
 		_what="$_what, initial_child_ke immediate rekey (Y $(fb_ys $_il | head -1 | cut -c1-16)...) + charon ESP KE1_ML_KEM_768" ;;
 	*-firstchild-charonr)
 		grep -q 'sending modified (SA-less) IKE_AUTH' $FI || _bad="${_bad:+$_bad; }iked initiator sent no childless IKE_AUTH"
-		grep -qE 'parsed CREATE_CHILD_SA request [0-9]+ \[ SA [^]]* TSi' $FB_CL || _bad="${_bad:+$_bad; }no new-child CREATE_CHILD_SA"
+		# a NEW child: SA + TSi without N(REKEY_SA) (a rekey request
+		# carries SA+TSi+N(REKEY_SA) too), same filter as the one-child gate
+		grep -E 'parsed CREATE_CHILD_SA request [0-9]+ \[ SA [^]]* TSi' $FB_CL 2>/dev/null | grep -qv 'N(REKEY_SA)' || _bad="${_bad:+$_bad; }no new-child CREATE_CHILD_SA"
 		grep -q 'initial_child_ke [a-z]*: rekeying the IKE_AUTH child' $FI $FR 2>/dev/null && _bad="${_bad:+$_bad; }initial_child_ke rekey on a childless IKE_SA"
 		_what="$_what, RFC 6023 firstchild: SA-less IKE_AUTH + CREATE_CHILD first child" ;;
 	*-clresp-charon)
