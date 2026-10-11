@@ -734,8 +734,8 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 	}
 
 	if (ikev2_child_addke_install(child_sa) < 0) {
-		child_sa->addke_sk = NULL;
 		rc_vfreez(child_sa->addke_sk);
+		child_sa->addke_sk = NULL;
 		return -1;
 	}
 	/*

@@ -71,6 +71,7 @@ static int n_respond_error;
 static unsigned int last_error_type;
 static int n_rekey_complete;
 static int n_child_install;	/* ikev2_child_addke_install() invocations */
+static int child_install_fail;	/* make ikev2_child_addke_install() fail */
 
 void
 isakmp_log(struct ikev2_sa *ike_sa, struct sockaddr *local,
@@ -249,7 +250,7 @@ ikev2_child_addke_install(struct ikev2_child_sa *child_sa)
 {
 	(void)child_sa;
 	++n_child_install;
-	return 0;
+	return child_install_fail ? -1 : 0;
 }
 
 void
@@ -926,7 +927,9 @@ initiator_classical_round_tests(void)
 	int shape;
 
 	printf("--- IKE_FOLLOWUP_KE initiator classical-DH round (H1) ---\n");
-	for (shape = 0; shape < 2; shape++) {
+	/* shape 2: final round with a failing child install -- the
+	 * accumulated SK must be freed, not leaked (LeakSanitizer) */
+	for (shape = 0; shape < 3; shape++) {
 		sa = calloc(1, sizeof(*sa));
 		c = calloc(1, sizeof(*c));
 		if (!sa || !c) {
@@ -941,7 +944,7 @@ initiator_classical_round_tests(void)
 		c->addke_methods[0] = FAKE_DH_ID;
 		/* shape 0: one classical round (last round classical);
 		 * shape 1: classical round then an ML-KEM round */
-		c->addke_nrounds = shape == 0 ? 1 : 2;
+		c->addke_nrounds = shape == 1 ? 2 : 1;
 		c->addke_methods[1] = m768;
 		c->addke_link = rc_vnew("clas", 4);
 		IKEV2_CHILD_LIST_LINK(&sa->children, c);
@@ -957,14 +960,25 @@ initiator_classical_round_tests(void)
 
 		n_child_install = 0;
 		followup_reset();
-		CHECK(ikev2_initiator_followup_complete(c, peer) == 0,
-		      "classical: complete round 0 (g^xy)");
-		CHECK(c->addke_sk && c->addke_sk->l == FAKE_DH_SSLEN,
-		      "classical: SK(1) is the group field length");
+		if (shape == 2) {
+			child_install_fail = 1;
+			CHECK(ikev2_initiator_followup_complete(c, peer) < 0,
+			      "classical: failing install fails the round");
+			child_install_fail = 0;
+			CHECK(c->addke_sk == NULL && n_child_install == 1,
+			      "classical: SK dropped on install failure (N2)");
+		} else {
+			CHECK(ikev2_initiator_followup_complete(c, peer) == 0,
+			      "classical: complete round 0 (g^xy)");
+			CHECK(c->addke_sk && c->addke_sk->l == FAKE_DH_SSLEN,
+			      "classical: SK(1) is the group field length");
+		}
 		CHECK(c->addke_dh_pub == NULL && c->addke_dh_priv == NULL &&
 		      c->addke_dh == NULL,
 		      "classical: consumed round state is NULLed (H1)");
-		if (shape == 0)
+		if (shape == 2)
+			;
+		else if (shape == 0)
 			CHECK(n_child_install == 1,
 			      "classical: last (classical) round installs");
 		else
