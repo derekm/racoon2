@@ -1998,12 +1998,196 @@ NEOF
 	return 1
 }
 
+# ==== RFC 5723 session resumption rows (port of linux kinds/i2iresume.sh) ===
+# iked<->iked over one epair: initiator 192.0.5.2 (r2vi), responder 192.0.5.1
+# (r2vr), tunnel mode, session_resumption on, responder ticket key file,
+# initiator ticket store RACOON2_RESUME_TICKET_DIR.  Pass 1 establishes and
+# stores a ticket; the initiator is restarted fresh (store kept, legacy
+# crash-resume dir wiped, SADB flushed in both jails) and re-establishes:
+#   i2iresume-resume  the ticket is presented in IKE_SESSION_RESUME (38),
+#                     accepted, child up, no fallback, no NACK.
+#   i2iresume-nack    the RESPONDER rotates its ticket key first: the old
+#                     ticket must be refused with N(TICKET_NACK) in an
+#                     exchange-38 response, the initiator must drop it and
+#                     fall back to a full IKE_SA_INIT + IKE_AUTH (child up)
+#                     and store the newly minted ticket (review H2).
+#   i2iresume-reuse   pass 2 resumes; pass 3 presents the SAME ticket again
+#                     and must be NACKed as reused and fall back (review M4).
+run_resume_row() {
+	_name=$1
+	echo "$SEP"
+	echo "=== ROW $_name (RFC 5723 resume: 192.0.5.2 -> 192.0.5.1, iked<->iked) ==="
+	jails_teardown
+	_e=$(ifconfig epair create) || { echo "FAIL freebsd-vnet $_name (epair create)"; return 1; }
+	_e=${_e%a}
+	jail -c name=$jr persist vnet vnet.interface="${_e}a" &&
+	jail -c name=$ji persist vnet vnet.interface="${_e}b" || { echo "FAIL freebsd-vnet $_name (jail -c)"; return 1; }
+	for _j in $jr $ji; do jexec $_j ifconfig lo0 inet 127.0.0.1/8 up; done
+	jexec $jr ifconfig "${_e}a" inet 192.0.5.1/24 up
+	jexec $ji ifconfig "${_e}b" inet 192.0.5.2/24 up
+	install -d -m 0755 /tmp/freeb
+	_T=/tmp/freeb/resume; rm -rf "$_T"; install -d -m 0700 "$_T" "$_T/tickets"
+	dd if=/dev/urandom of=/tmp/freeb/test.psk bs=32 count=1 2>/dev/null; chmod 600 /tmp/freeb/test.psk
+	printf 'ci-spmd-pw\n' > /tmp/freeb/spmd.pwd; chmod 600 /tmp/freeb/spmd.pwd
+	dd if=/dev/urandom of="$_T/ticketkey.bin" bs=32 count=1 2>/dev/null; chmod 600 "$_T/ticketkey.bin"
+	_rconf() { # $1 seat $2 my $3 peer $4 myid $5 peerid $6 passive $7 extra $8 selector_index
+		cat > /tmp/freeb/$1.conf <<REOF
+interface {
+	ike { $2; };
+	spmd { unix "/tmp/freeb/$1-spmif"; };
+	spmd_password "/tmp/freeb/spmd.pwd";
+};
+resolver { resolver off; };
+remote matrix_$1 {
+	acceptable_kmp { ikev2; };
+	ikev2 {
+		passive $6;
+		my_id fqdn "$4";
+		peers_id fqdn "$5";
+		peers_ipaddr $3;
+		kmp_enc_alg { aes256_cbc; };
+		kmp_prf_alg { hmac_sha2_256; };
+		kmp_hash_alg { hmac_sha2_256; };
+		kmp_dh_group { ecp256; };
+		kmp_auth_method { psk; };
+		pre_shared_key "/tmp/freeb/test.psk";
+		session_resumption on;
+$7
+		dpd_delay 60 sec;
+	};
+	selector_index $8;
+};
+selector sel_out {
+	direction outbound;
+	src $2; dst $3;
+	policy_index pol;
+};
+selector sel_in {
+	direction inbound;
+	dst $2; src $3;
+	policy_index pol;
+};
+policy pol {
+	action auto_ipsec;
+	remote_index matrix_$1;
+	ipsec_mode tunnel;
+	ipsec_index { ipsec_e; };
+	ipsec_level require;
+	peers_sa_ipaddr $3;
+	my_sa_ipaddr $2;
+};
+ipsec ipsec_e {
+	ipsec_sa_lifetime_time 300 sec;
+	sa_index esp_e;
+};
+sa esp_e {
+	sa_protocol esp;
+	esp_enc_alg { aes256_cbc; };
+	esp_auth_alg { hmac_sha2_256; };
+};
+REOF
+	}
+	_rconf $jr 192.0.5.1 192.0.5.2 racoon2-sr racoon2-si on "		session_resume_ticket_key \"$_T/ticketkey.bin\";
+		session_resume_ticket_lifetime 3600;" sel_in
+	_rconf $ji 192.0.5.2 192.0.5.1 racoon2-si racoon2-sr off "" sel_out
+	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $SBIN/spmd -F -f /tmp/freeb/$jr.conf > /tmp/freeb/resp-spmd.log 2>&1 &"
+	i=0; while [ "$i" -lt 15 ] && [ ! -S /tmp/freeb/$jr-spmif ]; do i=$((i+1)); sleep 1; done
+	jexec $jr /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/resp-ctl RACOON2_RESUME_DIR=/tmp/freeb/resp-resume $SBIN/iked -F -f /tmp/freeb/$jr.conf -D 0x0001 > $FR 2>&1 &"
+	# start (or restart) the initiator seat; $1 = pass number (log suffix)
+	_rinit() {
+		jexec $ji /bin/sh -c 'killall -9 iked spmd 2>/dev/null' || true
+		sleep 1
+		rm -rf /tmp/freeb/init-resume; rm -f /tmp/freeb/$ji-spmif /tmp/freeb/init-ctl
+		jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl RACOON2_RESUME_DIR=/tmp/freeb/init-resume $SBIN/spmd -F -f /tmp/freeb/$ji.conf > /tmp/freeb/init$1-spmd.log 2>&1 &"
+		i=0; while [ "$i" -lt 15 ] && [ ! -S /tmp/freeb/$ji-spmif ]; do i=$((i+1)); sleep 1; done
+		jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl RACOON2_RESUME_DIR=/tmp/freeb/init-resume RACOON2_RESUME_TICKET_DIR=$_T/tickets $SBIN/iked -F -f /tmp/freeb/$ji.conf -D 0x0001 > /tmp/freeb/init$1-iked.log 2>&1 &"
+		sleep 3
+	}
+	# flush both SADBs, establish, wait for a fresh tunnel SA pair
+	_rup() {
+		jexec $jr /usr/local/sbin/setkey -F >/dev/null 2>&1 || true
+		jexec $ji /usr/local/sbin/setkey -F >/dev/null 2>&1 || true
+		jexec $ji $SBIN/ikedctl -s /tmp/freeb/init-ctl establish-sa isakmp inet 192.0.5.2 192.0.5.1 sel_out >/dev/null 2>&1 || true
+		i=0
+		while [ "$i" -lt 45 ]; do
+			[ "$(jexec $jr /usr/local/sbin/setkey -D 2>/dev/null | grep -c 'esp mode=tunnel')" -ge 2 ] &&
+			[ "$(jexec $ji /usr/local/sbin/setkey -D 2>/dev/null | grep -c 'esp mode=tunnel')" -ge 2 ] && return 0
+			i=$((i+1)); sleep 1
+		done
+		return 1
+	}
+	_rinit 1; _up1=0; _rup && _up1=1
+	_minted1=$(grep -c 'issuing session-resumption ticket' $FR 2>/dev/null || true)
+	_tk1=$(ls "$_T/tickets"/r2tkt-* 2>/dev/null | head -1)
+	[ -n "$_tk1" ] && cp -p "$_tk1" "$_T/pass1-ticket"
+	case $_name in
+	*-nack)
+		dd if=/dev/urandom of="$_T/ticketkey.new" bs=32 count=1 2>/dev/null
+		chmod 600 "$_T/ticketkey.new"; mv -f "$_T/ticketkey.new" "$_T/ticketkey.bin"
+		echo "row $_name: rotated responder ticket key before pass 2" ;;
+	esac
+	_rinit 2; _up2=0; _rup && _up2=1
+	_up3=0
+	if [ "${_name%-reuse}" != "$_name" ]; then
+		jexec $ji /bin/sh -c 'killall -9 iked spmd 2>/dev/null' || true
+		sleep 1
+		[ -n "$_tk1" ] && [ -f "$_T/pass1-ticket" ] && cp -p "$_T/pass1-ticket" "$_tk1"
+		_rinit 3; _rup && _up3=1
+	fi
+	_acc=$(grep -c 'accepted IKE_SESSION_RESUME ticket' $FR 2>/dev/null || true)
+	_nsent=$(grep -c 'sent N(TICKET_NACK) in IKE_SESSION_RESUME (38) response' $FR 2>/dev/null || true)
+	_minted=$(grep -c 'issuing session-resumption ticket' $FR 2>/dev/null || true)
+	_pres=$(grep -c 'resuming via IKE_SESSION_RESUME\|accepted resume response' /tmp/freeb/init2-iked.log 2>/dev/null || true)
+	_fresh=$(grep -c 'falling back to IKE_SA_INIT\|falling back to a full IKE_SA_INIT\|fresh IKE_SA_INIT' /tmp/freeb/init2-iked.log 2>/dev/null || true)
+	_ok=0
+	case $_name in
+	*-nack)
+		_nrcv=$(grep -c 'received N(TICKET_NACK) in IKE_SESSION_RESUME response' /tmp/freeb/init2-iked.log 2>/dev/null || true)
+		_fb=$(grep -c 'ticket refused (TICKET_NACK); dropped stored ticket, falling back to a full IKE_SA_INIT' /tmp/freeb/init2-iked.log 2>/dev/null || true)
+		_kfail=$(grep -c 'ticket validation failed' $FR 2>/dev/null || true)
+		_full=$(grep -c 'INI_IKE_SA_INIT_SENT -> ' /tmp/freeb/init2-iked.log 2>/dev/null || true)
+		_tk2=$(ls "$_T/tickets"/r2tkt-* 2>/dev/null | head -1)
+		_repl=0; [ -n "$_tk2" ] && [ -f "$_T/pass1-ticket" ] && ! cmp -s "$_tk2" "$_T/pass1-ticket" && _repl=1
+		echo "row $_name gates: up1=$_up1 up2=$_up2 minted=$_minted kfail=$_kfail nack_sent=$_nsent nack_rcvd=$_nrcv fellback=$_fb full=$_full accepted=$_acc replaced=$_repl"
+		[ "$_up1" = 1 ] && [ "$_up2" = 1 ] && [ "${_kfail:-0}" -ge 1 ] && [ "${_nsent:-0}" -ge 1 ] &&
+		[ "${_nrcv:-0}" -ge 1 ] && [ "${_fb:-0}" -ge 1 ] && [ "${_full:-0}" -ge 1 ] &&
+		[ "${_acc:-0}" -eq 0 ] && [ "${_minted:-0}" -ge 2 ] && [ "$_repl" = 1 ] && _ok=1 ;;
+	*-reuse)
+		_rn=$(grep -c 'ticket was already used' $FR 2>/dev/null || true)
+		_nrcv3=$(grep -c 'received N(TICKET_NACK) in IKE_SESSION_RESUME response' /tmp/freeb/init3-iked.log 2>/dev/null || true)
+		_fb3=$(grep -c 'falling back to a full IKE_SA_INIT' /tmp/freeb/init3-iked.log 2>/dev/null || true)
+		echo "row $_name gates: up1=$_up1 up2=$_up2 up3=$_up3 accepted=$_acc presented=$_pres fresh_auth=$_fresh reuse_nack=$_rn nack_sent=$_nsent nack_rcvd3=$_nrcv3 fellback3=$_fb3"
+		[ "$_up1" = 1 ] && [ "$_up2" = 1 ] && [ "$_up3" = 1 ] && [ "${_acc:-0}" -eq 1 ] &&
+		[ "${_pres:-0}" -ge 1 ] && [ "${_fresh:-0}" -eq 0 ] && [ "${_rn:-0}" -ge 1 ] &&
+		[ "${_nsent:-0}" -ge 1 ] && [ "${_nrcv3:-0}" -ge 1 ] && [ "${_fb3:-0}" -ge 1 ] && _ok=1 ;;
+	*)
+		echo "row $_name gates: up1=$_up1 up2=$_up2 minted=$_minted1 accepted=$_acc presented=$_pres fresh_auth=$_fresh nack_sent=$_nsent"
+		[ "$_up1" = 1 ] && [ "$_up2" = 1 ] && [ "${_minted1:-0}" -ge 1 ] && [ -n "$_tk1" ] &&
+		[ "${_acc:-0}" -ge 1 ] && [ "${_pres:-0}" -ge 1 ] && [ "${_fresh:-0}" -eq 0 ] &&
+		[ "${_nsent:-0}" -eq 0 ] && _ok=1 ;;
+	esac
+	if [ "$_ok" = 1 ]; then
+		echo "PASS freebsd-vnet $_name (RFC 5723 over pfkey: resume/NACK/fallback gates met)"
+		jails_teardown; rm -f /tmp/freeb/init[123]-*.log
+		return 0
+	fi
+	echo "FAIL freebsd-vnet $_name (RFC 5723 gates not met)"
+	echo "--- resp iked (ticket/resume) ---"; grep -aiE 'ticket|resum|NACK|IKE_SA_INIT|ESTABLISHED|error|fail' $FR 2>/dev/null | tail -30
+	for _p in 1 2 3; do
+		[ -f /tmp/freeb/init$_p-iked.log ] || continue
+		echo "--- init pass $_p iked ---"; grep -aiE 'ticket|resum|NACK|IKE_SA_INIT|ESTABLISHED|error|fail' /tmp/freeb/init$_p-iked.log | tail -20
+	done
+	jails_teardown; rm -f /tmp/freeb/init[123]-*.log
+	return 1
+}
+
 fail=0
 run() {
 	# 0-based dispatcher index, matching linux run.sh --shard K M
 	if [ $((_shard_idx % SHARD_M)) -eq "$SHARD_K" ]; then
 		case "$1" in
 		i2inatt-*) run_nat_row "$1" || fail=1 ;;
+		i2iresume-*) run_resume_row "$1" || fail=1 ;;
 		*)         run_row "$@" || fail=1 ;;
 		esac
 	fi
@@ -2201,6 +2385,10 @@ case "$ROW" in
 		run i2inatt-transport
 		# --- N3: same topology, responder wildcard SPD (0.0.0.0/0) ---
 		run i2inatt-transport-wild
+		# RFC 5723 resume / TICKET_NACK key-rotation fallback / reuse
+		run i2iresume-resume
+		run i2iresume-nack
+		run i2iresume-reuse
 		run i2io4-gcm256        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a ""
 		;;
 	i2iinit-esp-cbc128) run_row i2iinit-esp-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
@@ -2288,6 +2476,7 @@ case "$ROW" in
 	i2idh-ecp521-charonr) run_row i2idh-ecp521-charonr inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp521 aes_gcm non_auth 300 300 0 a "" ;;
 	i2inatt-transport) run_nat_row i2inatt-transport || fail=1 ;;
 	i2inatt-transport-wild) run_nat_row i2inatt-transport-wild || fail=1 ;;
+	i2iresume-resume|i2iresume-nack|i2iresume-reuse) run_resume_row "$ROW" || fail=1 ;;
 	*) echo "unknown ROW=$ROW"; exit 2 ;;
 esac
 echo "$SEP"
