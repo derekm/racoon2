@@ -86,6 +86,7 @@ void responder_ike_sa_auth_eap_final_recv(struct ikev2_sa *,
 					  struct sockaddr *, struct sockaddr *);
 static void responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *, int);
 static int ikev2_responder_eap_send(struct ikev2_sa *, uint32_t, rc_vchar_t *);
+static int ikev2_eap_sig_configured(struct ikev2_sa *);
 static int ikev2_responder_eap_auth_send(struct ikev2_sa *, uint32_t,
 					 rc_vchar_t *);
 
@@ -623,14 +624,10 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			/* RFC 5998 s3: an EAP client that does not want the
 			 * responder to authenticate with its public-key AUTH/CERT
 			 * sends N(EAP_ONLY_AUTHENTICATION) (16417) in the first
-			 * IKE_AUTH (message 3).  Record it on the eap remote
-			 * for LOGGING only: this responder does NOT honor it by
-			 * omitting CERT+AUTH from msg 4 when a signature method
-			 * is configured, because it cannot know the EAP method
-			 * is mutual (EAP-MSCHAPv2, the non-mutual case, must
-			 * keep responder-cert auth).  RFC 5998 s3 makes
-			 * honoring the notify the responder's choice; see
-			 * ikev2_responder_eap_auth_send(). */
+			 * IKE_AUTH (message 3).  Record it; whether it is
+			 * honored is decided by ikev2_eap_only_policy() (only
+			 * an eap-only kmp_auth_method config honors it, and
+			 * then only an RFC 5998 s4 safe method may finish). */
 			if (get_notify_type(n) == IKEV2_EAP_ONLY_AUTHENTICATION &&
 			    ikev2_eap_remote(ike_sa))
 				ike_sa->eap_only = 1;
@@ -696,6 +693,28 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		if (id_i && !auth && ikev2_eap_remote(ike_sa)) {
 			struct ikev2_eap_relay *relay;
 			rc_vchar_t *identity_req;
+
+			/* RFC 7296 s2.16 / RFC 5998 s3: a responder may omit
+			 * its AUTH only when the initiator asked for EAP-only
+			 * authentication.  An eap-only config (no signature
+			 * method, so nothing that could make rmethod nonzero)
+			 * facing a peer that did not send
+			 * N(EAP_ONLY_AUTHENTICATION) has no AUTH to send:
+			 * refuse rather than emit an AUTH-less response the
+			 * peer never agreed to. */
+			if (ikev2_eap_only_policy(0,
+				ikev2_eap_sig_configured(ike_sa),
+				ike_sa->eap_only) == IKEV2_EAPONLY_REFUSE) {
+				isakmp_log(ike_sa, local, remote, msg,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "EAP-only responder (no signature "
+					   "method) but the initiator did not "
+					   "send N(EAP_ONLY_AUTHENTICATION) "
+					   "(RFC 5998 s3); refusing\n");
+				++isakmpstat.authentication_failed;
+				error = IKEV2_AUTHENTICATION_FAILED;
+				goto notify;
+			}
 
 			relay = racoon_calloc(1, sizeof(*relay));
 			if (!relay)
@@ -1178,6 +1197,14 @@ responder_ike_sa_auth_eap_cont(struct ikev2_sa *ike_sa, uint32_t message_id,
 		if (eapmsg.l >= 2)
 			ike_sa->eap_last_peer_id =
 			    ((uint8_t *)eapmsg.v)[1];
+		/* remember the EAP method the peer is running (RFC 5998 s4
+		 * check at Acceptance); Identity (1), Notification (2) and
+		 * Nak (3) are not methods. */
+		{
+			int et = ikev2_eap_response_type(&eapmsg);
+			if (et > 3)
+				ike_sa->eap_method = et;
+		}
 	}
 	(void)rid;
 	rc_vfreez(secret);
@@ -1217,6 +1244,21 @@ responder_ike_sa_auth_eap_resume(struct ikev2_eap_round *r, int rc)
 	dr = ikev2_eap_drive_advance(ike_sa,
 				     (struct ikev2_eap_relay *)ike_sa->eap_relay,
 				     resp, secret, &out_eap);
+	/* RFC 5998 s4: when the responder omitted its AUTH (EAP-only
+	 * honored), the EAP method itself must have authenticated the
+	 * responder: it must be a listed safe (mutual, key-generating,
+	 * dictionary-resistant) method AND have produced an MSK.  Anything
+	 * else is answered with EAP-Failure. */
+	if (dr == IKEV2_EAP_DRIVE_SUCCESS && ike_sa->eap_only_honored &&
+	    (!ike_sa->eap_msk || ike_sa->eap_msk->l == 0 ||
+	     !ikev2_eap_rfc5998_safe_method(ike_sa->eap_method))) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "EAP-only (RFC 5998): method %d is not a safe "
+			   "mutual key-generating method or produced no MSK; "
+			   "failing\n", ike_sa->eap_method);
+		++isakmpstat.authentication_failed;
+		dr = IKEV2_EAP_DRIVE_FAILURE;
+	}
 	switch (dr) {
 	case IKEV2_EAP_DRIVE_CONTINUE:
 		/* emit the next EAP Request to the client; stay in EAP, and
@@ -1901,6 +1943,18 @@ ikev2_responder_eap_send(struct ikev2_sa *ike_sa, uint32_t message_id,
 	goto done;
 }
 
+/* nonzero iff kmp_auth_method lists a non-EAP (signature/PSK) method */
+static int
+ikev2_eap_sig_configured(struct ikev2_sa *ike_sa)
+{
+	struct rc_alglist *m;
+
+	for (m = ikev2_kmp_auth_method(ike_sa->rmconf); m; m = m->next)
+		if (m->algtype != RCT_ALG_EAP)
+			return 1;
+	return 0;
+}
+
 /*
  * Send the FIRST responder EAP IKE_AUTH response (the EAP-Identity request).
  * RFC 7296 s2.16 responder-cert case: when a signature method is configured
@@ -1927,53 +1981,35 @@ ikev2_responder_eap_auth_send(struct ikev2_sa *ike_sa, uint32_t message_id,
 	ikev2_payloads_init(&payl);
 
 	rmethod = ikev2_eap_responder_method(ike_sa);
-	if (rmethod == 0) {
-		/* rmethod==0 can mean either (a) a genuinely EAP-only
-		 * config (no signature method beside eap) or (b) a
-		 * signature method is configured but resolution FAILED
-		 * (private-key load error or unsupported ECDSA curve).
-		 * (b) must NOT be treated as EAP-only: omitting
-		 * CERT+AUTH there would silently downgrade a responder
-		 * that is supposed to authenticate itself with a
-		 * signature - exactly the downgrade the RFC 5998
-		 * walk-back below forbids.  Distinguish by checking the
-		 * configured auth-method list directly. */
-		struct rc_alglist *m;
-		int sig_configured = 0;
-		for (m = ikev2_kmp_auth_method(ike_sa->rmconf);
-		     m; m = m->next) {
-			if (m->algtype != RCT_ALG_EAP) {
-				sig_configured = 1;
-				break;
-			}
-		}
-		if (sig_configured) {
-			/* signature method configured but no method number
-			 * could be resolved (key missing/unreadable, or
-			 * unsupported ECDSA curve) -> fail hard, never
-			 * degrade to EAP-only. */
-			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-			   "EAP responder: signature method configured but "
-			   "method resolution failed; aborting (no CERT+AUTH "
-			   "downgrade)\n");
-			ikev2_payloads_destroy(&payl);
-			ikev2_abort(ike_sa, ECONNREFUSED);
-			return -1;
-		}
-		/* genuinely EAP-only responder: this first round is just IDr + EAP.
-		 * Even when the peer sent N(EAP_ONLY_AUTHENTICATION) (16417,
-		 * RFC 5998 s3) to request EAP-only auth, a responder that is
-		 * CONFIGURED with a signature method must NOT omit its
-		 * CERT+AUTH here: RFC 5998 s3 says honoring the notify is the
-		 * responder choice, and this responder cannot know the EAP
-		 * method is mutual (EAP-MSCHAPv2, the non-mutual case, must
-		 * keep responder-cert auth).  A signature-configured responder
-		 * ignores the notify and sends CERT+AUTH (RFC 5998 permits);
-		 * only a genuinely EAP-only config (rmethod==0) drops them.
-		 * eap_only is recorded for logging, not honored over a
-		 * configured signature method. */
+	switch (ikev2_eap_only_policy(rmethod, ikev2_eap_sig_configured(ike_sa),
+				      ike_sa->eap_only)) {
+	case IKEV2_EAPONLY_SIGN:
+		break;
+	case IKEV2_EAPONLY_SIGFAIL:
+		/* rmethod==0 with a signature method configured means
+		 * resolution FAILED (key missing/unreadable, unsupported
+		 * ECDSA curve).  Never degrade to an AUTH-less response. */
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		   "EAP responder: signature method configured but "
+		   "method resolution failed; aborting (no CERT+AUTH "
+		   "downgrade)\n");
+		ikev2_payloads_destroy(&payl);
+		ikev2_abort(ike_sa, ECONNREFUSED);
+		return -1;
+	case IKEV2_EAPONLY_HONOR:
+		/* RFC 5998 s3: eap-only config AND the initiator sent
+		 * N(EAP_ONLY_AUTHENTICATION): IDr + EAP, no AUTH.  The
+		 * method is checked for RFC 5998 s4 safety at Acceptance. */
+		ike_sa->eap_only_honored = 1;
 		ikev2_payloads_destroy(&payl);
 		return ikev2_responder_eap_send(ike_sa, message_id, eap_req);
+	case IKEV2_EAPONLY_REFUSE:
+	default:
+		/* the caller refuses this before parking; never send an
+		 * AUTH-less response the initiator did not ask for. */
+		ikev2_payloads_destroy(&payl);
+		ikev2_abort(ike_sa, ECONNREFUSED);
+		return -1;
 	}
 
 	/* responder-cert (RFC 7296 s2.16): IDr + [CERT] + AUTH + EAP. */

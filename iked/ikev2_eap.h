@@ -34,6 +34,27 @@ extern char *ikev2_eap_identity_string(rc_vchar_t *);
 /* Return the Type of a Response, or -1 if not a Response (Nak detection). */
 extern int ikev2_eap_response_type(rc_vchar_t *);
 
+/* RFC 5998 s4: nonzero iff EAP Type is in the RFC's list of methods that
+ * are mutual, key-generating and dictionary-attack resistant.  Only such a
+ * method may complete an exchange in which the responder omitted AUTH. */
+extern int ikev2_eap_rfc5998_safe_method(int type);
+
+/* RFC 5998 s3 responder decision for the first IKE_AUTH response.
+ *   rmethod        responder signature method (0 = none resolved)
+ *   sig_configured a non-EAP method is listed in kmp_auth_method
+ *   peer_eap_only  the initiator sent N(EAP_ONLY_AUTHENTICATION)
+ * EAP-only (omit AUTH) is honored only when BOTH the operator configured
+ * an EAP-only responder (kmp_auth_method { eap; }) AND the initiator asked
+ * for it; otherwise RFC 7296 s2.16 requires the responder's AUTH. */
+enum ikev2_eap_only_decision {
+	IKEV2_EAPONLY_SIGN = 0,	/* send IDr + [CERT] + AUTH + EAP */
+	IKEV2_EAPONLY_HONOR,	/* send IDr + EAP; method must be RFC 5998 safe */
+	IKEV2_EAPONLY_REFUSE,	/* EAP-only config, peer did not ask: AUTH_FAILED */
+	IKEV2_EAPONLY_SIGFAIL	/* signature configured but unresolvable: abort */
+};
+extern enum ikev2_eap_only_decision
+ikev2_eap_only_policy(int rmethod, int sig_configured, int peer_eap_only);
+
 /* Free a packet returned by ikev2_eap_decode(). */
 extern void ikev2_eap_packet_free(struct ikev2_eap_packet *);
 
