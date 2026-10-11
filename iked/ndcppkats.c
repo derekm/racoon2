@@ -813,11 +813,18 @@ test_dh_new_groups(void)
 		}
 		nbp++;
 	}
-	if (nbp == (sizeof(bp) / sizeof(bp[0])) &&
-	    EC_GROUP_new_by_curve_name(NID_brainpoolP224r1) == NULL)
-		fprintf(stderr, "KAT A9: NOTE group 27 passed via explicit "
-			"RFC 5639 params (named curve absent in this OpenSSL "
-			"EC provider)\n");
+	{
+		/* Probe whether the named curve exists in this OpenSSL's EC
+		 * provider table; free the probe group (it would otherwise be
+		 * a 184-byte leak every run). */
+		EC_GROUP *nm = EC_GROUP_new_by_curve_name(NID_brainpoolP224r1);
+		if (nbp == (sizeof(bp) / sizeof(bp[0])) && nm == NULL)
+			fprintf(stderr, "KAT A9: NOTE group 27 passed via explicit "
+				"RFC 5639 params (named curve absent in this "
+				"OpenSSL EC provider)\n");
+		if (nm)
+			EC_GROUP_free(nm);
+	}
 	if (ok)
 		kat_pass("A9", "RFC 5114 %d/3 (MODP-POS) and RFC 6954 %d/4 "
 			 "(Brainpool) two-party key agreement reach equal "
