@@ -5748,8 +5748,54 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 
 static void
 responder_ike_sa_auth_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
-			   struct sockaddr *remote, struct sockaddr *local)
+		   struct sockaddr *remote, struct sockaddr *local)
 {
+	/* RFC 5723 s4.3.3: a RESUMED IKE_SA's AUTH is a fresh
+	 * AUTH = prf(SK_px, <message>) MAC over the IKE_SESSION_RESUME
+	 * exchange, not a trust-the-ticket pass.  The ticket authenticated
+	 * the peer's identity once; the AUTH payload must still be verified
+	 * on the resumed IKE_AUTH (RealMessage1 = the initiator's resume
+	 * request, keyed with the resumed SK_pi).  Route it through the
+	 * normal verify arm (which dispatches on sa->resumed) so a forged or
+	 * stale AUTH is rejected here, exactly as the RFC requires. */
+	if (ike_sa->resumed) {
+		struct ikev2_header *ikehdr =
+		    (struct ikev2_header *)msg->v;
+		struct ikev2_payload_header *p;
+		struct ikev2payl_auth *auth = NULL;
+		int type;
+		int result;
+
+		p = (struct ikev2_payload_header *)(ikehdr + 1);
+		for (type = ikehdr->next_payload;
+		     type != IKEV2_NO_NEXT_PAYLOAD;
+		     POINT_NEXT_PAYLOAD(p, type)) {
+			if (type == IKEV2_PAYLOAD_AUTH) {
+				if (auth) {	/* duplicate */
+					ikev2_abort(ike_sa, ECONNREFUSED);
+					return;
+				}
+				auth = (struct ikev2payl_auth *)p;
+			}
+		}
+		if (!auth) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "RFC 5723: resumed IKE_AUTH lacks AUTH "
+				   "payload\n");
+			++isakmpstat.authentication_failed;
+			ikev2_abort(ike_sa, ECONNREFUSED);
+			return;
+		}
+		/* i_to_r=TRUE: verify the initiator's AUTH over the resume
+		 * request with the resumed SK_pi (the ikev2_auth_verify
+		 * resumed arm keys with sk_p_i / sk_p_r by direction). */
+		result = ikev2_auth_verify(ike_sa, TRUE, auth);
+		responder_ike_sa_auth_cont(ike_sa, result,
+					   msg, remote, local);
+		return;
+	}
+
 	responder_ike_sa_auth_cont(ike_sa, ike_sa->verified_info.result,
 				   msg, remote, local);
 }
