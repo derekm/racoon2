@@ -242,9 +242,14 @@ Currently, the system supports the following specifications:
 	Not in this tree: IKEv1 XAuth/mode-config (ENABLE_HYBRID scaffolding only),
 	ADDKE rounds 2+.
 
-	RFC 5723 (IKEv2 Session Resumption) is partially in this tree: the
-	responder ticket-by-value codec and the s5.1 resumed key derivation
-	(IKE_SESSION_RESUME ticket issuance / resumption exchange not yet wired).
+	RFC 5723 (IKEv2 Session Resumption) is implemented: responder
+	ticket-by-value codec, the s5.1 resumed key derivation, the
+	IKE_SESSION_RESUME (exchange 38) accept path, and — on the initiator
+	side — ticket request/capture, persistence, and presentation on a
+	later reconnect.  Cross-vendor (racoon2 responder / Libreswan
+	initiator) and self-consistent (racoon2<->racoon2) resumed sessions are
+	verified to reach ESTABLISHED with a Child SA.  Session resumption is
+	opt-in per remote (session_resumption on) and off by default.
 
 
 The system provides three daemons: iked, kinkd and spmd.
