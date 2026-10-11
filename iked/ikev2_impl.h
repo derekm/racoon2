@@ -916,6 +916,20 @@ void ikev2_resume_forget(struct ikev2_sa *);
 void ikev2_resume_dump_all(void);
 void ikev2_resume_load(void);
 
+/* INFORMATIONAL / ESTABLISHED-state dispatch, defined in
+ * ikev2_informational.c. */
+void ikev2_established_recv(struct ikev2_sa *, rc_vchar_t *,
+    struct sockaddr *, struct sockaddr *);
+void ikev2_dying_recv(struct ikev2_sa *, rc_vchar_t *, struct sockaddr *,
+    struct sockaddr *);
+void ikev2_dead_recv(struct ikev2_sa *, rc_vchar_t *, struct sockaddr *,
+    struct sockaddr *);
+
+/* Cookie-echo and NAT-D-report builders, defined in ikev2.c but used by the
+ * informational responder path. */
+void ikev2_push_cookie2_echo(struct ikev2_sa *, struct ikev2_payloads *);
+int ikev2_push_natd_report(struct ikev2_sa *, struct ikev2_payloads *);
+
 /* IKE_SA_INIT exchange surface, defined in ikev2_sa_init.c. */
 void ikev2_initiator_start(struct ikev2_sa *);
 int ikev2_check_new_request(rc_vchar_t *, struct sockaddr *, struct sockaddr *);
