@@ -223,6 +223,23 @@ ikev2_auth_input(struct ikev2_sa *sa, int i_to_r)
 		id = sa->id_r;
 	}
 
+	if (sa->resumed) {
+		/* RFC 5723 s4.3.3: the resumed IKE_AUTH's AUTH payload is
+		 * AUTH = prf(SK_px, <message octets>), where <message octets>
+		 * is the whole IKE_SESSION_RESUME message (RealMessage1 = the
+		 * resume request for the initiator, RealMessage2 = the resume
+		 * response for the responder) -- WITHOUT the appended nonce and
+		 * WITHOUT the prf(SK,ID) appendix of classical PSK/signature
+		 * AUTH (RFC 7296 s2.15).  The ticket already authenticated the
+		 * identities and the resumed SKEYSEED bound the nonces; the
+		 * octets are the bare first message.  The SK_px key is applied
+		 * by the caller (ikev2_auth_resumed()). */
+		octets = rc_vdup(message);
+		if (!octets)
+			goto end;
+		return octets;
+	}
+
 	/* NOTE: `sk` here is sk_p_r / sk_p_i — an IKE SKEYSEED-derived secret.
 	 * It and the signed octets (which carry the IntAuth appendix when
 	 * WITH_INTERMEDIATE) must NEVER be plogdumped. */
@@ -498,6 +515,23 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 		 * secret MUST be of that fixed size.
 		 */
 		{
+			/* RFC 5723 s4.3.3 resumed AUTH: AUTH = prf(SK_px,
+			 * <message octets>) uses the resumed SA's own keying
+			 * material SK_px directly as the prf key (SK_pi for the
+			 * initiator's AUTH, SK_pr for the responder's), NOT the
+			 * configured pre-shared secret -- there is no PSK in a
+			 * ticket-established SA. */
+			if (sa->resumed) {
+				rc_vchar_t *skx = i_to_r ? sa->sk_p_i :
+							  sa->sk_p_r;
+				if (!skx)
+					goto fail_nomem;
+				authdata = keyed_hash(sa->prf, skx, octets);
+				if (!authdata)
+					goto fail_nomem;
+				break;
+			}
+
 			static rc_vchar_t keypad =
 				VCHAR_INIT(IKEV2_SHAREDSECRET_KEYPAD,
 					   IKEV2_SHAREDSECRET_KEYPADLEN);
@@ -718,6 +752,21 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 		 * secret MUST be of that fixed size.
 		 */
 		{
+			/* RFC 5723 s4.3.3 resumed AUTH: key the verified
+			 * octets with the resumed SK_px directly (SK_pi to
+			 * verify the initiator's AUTH, SK_pr for the
+			 * responder's), not a PSK keypad. */
+			if (sa->resumed) {
+				rc_vchar_t *skx = i_to_r ? sa->sk_p_i :
+							  sa->sk_p_r;
+				if (!skx)
+					goto fail_nomem;
+				prf_output = keyed_hash(sa->prf, skx, octets);
+				if (!prf_output)
+					goto fail_nomem;
+				goto resumed_compare;
+			}
+
 			static rc_vchar_t keypad =
 				VCHAR_INIT(IKEV2_SHAREDSECRET_KEYPAD,
 					   IKEV2_SHAREDSECRET_KEYPADLEN);
@@ -748,6 +797,7 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 				plogdump(PLOG_DEBUG, PLOGLOC, 0, prf_output->v,
 					 prf_output->l);
 			});
+			resumed_compare:
 			if (prf_output->l == authdata->l &&
 			    CRYPTO_memcmp(prf_output->v, authdata->v,
 				      prf_output->l) == 0)

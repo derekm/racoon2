@@ -3168,6 +3168,22 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		    "RFC 5723: failed building resume response\n");
 		goto fail;
 	}
+
+	/* RFC 5723 s4.3.3: the resumed IKE_AUTH's AUTH payloads are
+	 * computed as prf(SK_px,<message octets>) per RFC 7296 s2.15, but
+	 * over the IKE_SESSION_RESUME messages instead of IKE_SA_INIT.
+	 * Record both windows on the resumed SA so ikev2_auth_input() can
+	 * verify the initiator's AUTH (RealMessage1 = this request) and
+	 * compute the responder's own AUTH (RealMessage2 = this response)
+	 * without tripping its my_first_message/peer_first_message
+	 * asserts. */
+	ike_sa->peer_first_message = rc_vdup(packet);
+	if (!ike_sa->peer_first_message)
+		goto fail;
+	ike_sa->my_first_message = rc_vdup(pkt);
+	if (!ike_sa->my_first_message)
+		goto fail;
+
 	if (ikev2_transmit_response(ike_sa, pkt, local, remote) != 0)
 		goto fail;
 	pkt = NULL;
