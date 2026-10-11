@@ -645,6 +645,7 @@ extern int ikev2_addke_selftest(void);
 extern int ikev2_addke_method_is_mlkem(unsigned int);
 extern int ikev2_addke_round_keygen(struct ikev2_child_sa *,
 				    unsigned int, rc_vchar_t **);
+extern void ikev2_addke_round_state_clear(struct ikev2_child_sa *);
 extern int ikev2_addke_mlkem_keygen(unsigned int, rc_vchar_t **,
 				    EVP_PKEY **);
 extern int ikev2_addke_mlkem_encap(unsigned int, rc_vchar_t *,

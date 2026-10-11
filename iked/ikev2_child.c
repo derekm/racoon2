@@ -459,16 +459,9 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 	if (sa->addke_link)
 		rc_vfreez(sa->addke_link);
 #ifdef WITH_ADDKE
-	if (sa->addke_priv) {
-		EVP_PKEY_free((EVP_PKEY *)sa->addke_priv);
-		sa->addke_priv = NULL;
-	}
-	/* classical-DH ADDKE round state (RFC 9370 rounds may be a DH group) */
-	if (sa->addke_dh_pub)
-		rc_vfreez(sa->addke_dh_pub);
-	if (sa->addke_dh_priv)
-		rc_vfreez(sa->addke_dh_priv);
-	sa->addke_dh = NULL;
+	/* ML-KEM keypair or classical-DH round state (RFC 9370 rounds may
+	 * be a DH group); the helper NULLs every field it frees */
+	ikev2_addke_round_state_clear(sa);
 #endif
 	/*
 	 * Informational-exchange child_sa (DPD / DELETE echo) has
@@ -2918,18 +2911,7 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 					    PLOG_INTERR, PLOGLOC,
 					    "failed sending IKE_FOLLOWUP_KE\n");
 					rc_vfree(pub);
-					if (ikev2_addke_method_is_mlkem(method) &&
-					    child_sa->addke_priv) {
-						EVP_PKEY_free((EVP_PKEY *)
-						    child_sa->addke_priv);
-						child_sa->addke_priv = NULL;
-					} else {
-						if (child_sa->addke_dh_pub)
-							rc_vfreez(child_sa->addke_dh_pub);
-						if (child_sa->addke_dh_priv)
-							rc_vfreez(child_sa->addke_dh_priv);
-						child_sa->addke_dh = NULL;
-					}
+					ikev2_addke_round_state_clear(child_sa);
 					child_sa->addke_pending = 0;
 					goto abort;
 				}

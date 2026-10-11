@@ -216,6 +216,34 @@ ikev2_addke_round_keygen(struct ikev2_child_sa *child_sa,
 }
 
 /*
+ * Release this ADDKE round's private state -- the ML-KEM EVP_PKEY or the
+ * classical-DH group/public/private values -- and NULL every field, so a
+ * later caller (the next round's keygen, an error path, or child-SA
+ * teardown) never sees a dangling pointer.  Safe to call repeatedly.
+ * rc_vfreez() takes its argument by value and cannot clear the caller's
+ * pointer, which is why each field is reset here explicitly.
+ */
+void
+ikev2_addke_round_state_clear(struct ikev2_child_sa *child_sa)
+{
+	if (child_sa == NULL)
+		return;
+	if (child_sa->addke_priv) {
+		EVP_PKEY_free((EVP_PKEY *)child_sa->addke_priv);
+		child_sa->addke_priv = NULL;
+	}
+	if (child_sa->addke_dh_pub) {
+		rc_vfreez(child_sa->addke_dh_pub);
+		child_sa->addke_dh_pub = NULL;
+	}
+	if (child_sa->addke_dh_priv) {
+		rc_vfreez(child_sa->addke_dh_priv);
+		child_sa->addke_dh_priv = NULL;
+	}
+	child_sa->addke_dh = NULL;
+}
+
+/*
  * Generate an ML-KEM keypair for the given transform id.  Public key
  * is written to *pub (caller frees); key returned via **pkey
  * (EVP_PKEY_free).  Returns 0 on success, -1 on failure.
@@ -647,10 +675,9 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 			rc_vfreez(ss);
 			return -1;
 		}
-		/* this round's keypair is consumed; clear the round state */
-		child_sa->addke_dh = NULL;
-		rc_vfreez(child_sa->addke_dh_pub);
-		rc_vfreez(child_sa->addke_dh_priv);
+		/* this round's keypair is consumed; clear (and NULL) the
+		 * round state so child teardown cannot free it again */
+		ikev2_addke_round_state_clear(child_sa);
 	}
 
 	/* append this round's shared secret to SK(1)..SK(n), in order */
@@ -694,18 +721,7 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 			    "failed sending IKE_FOLLOWUP_KE (round %d)\n",
 			    child_sa->addke_round);
 			rc_vfree(pub);
-			if (ikev2_addke_method_is_mlkem(method) &&
-			    child_sa->addke_priv) {
-				EVP_PKEY_free((EVP_PKEY *)
-				    child_sa->addke_priv);
-				child_sa->addke_priv = NULL;
-			} else {
-				if (child_sa->addke_dh_pub)
-					rc_vfreez(child_sa->addke_dh_pub);
-				if (child_sa->addke_dh_priv)
-					rc_vfreez(child_sa->addke_dh_priv);
-				child_sa->addke_dh = NULL;
-			}
+			ikev2_addke_round_state_clear(child_sa);
 			return -1;
 		}
 		rc_vfree(pub);
