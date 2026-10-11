@@ -637,6 +637,11 @@ extern void ikev2_createchild_initiator_recv(struct ikev2_sa *, rc_vchar_t *,
 				     struct sockaddr *,
 				     struct sockaddr *);
 
+/* ADDKE1..ADDKE7 (RFC 9370 Transform Types 6..12) */
+#define	IKEV2_ADDKE_MAX_ROUNDS	7
+extern int ikev2_addke_collect_rounds(struct prop_pair *, unsigned int *,
+				      int *, int *);
+
 #ifdef WITH_ADDKE
 extern void ikev2_followup_ke_recv(struct ikev2_sa *, rc_vchar_t *,
 				   struct sockaddr *, struct sockaddr *);

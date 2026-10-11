@@ -1481,27 +1481,23 @@ ikev2_child_addke_mark(struct ikev2_child_sa *child_sa)
 	 * single round is the common case; the array generalizes it.
 	 */
 	if (child_sa->peer_proposal != NULL) {
-		struct prop_pair *ptype;
-		int type;
-
-		for (type = IKEV2TRANSFORM_TYPE_ADDKE;
-		     type <= IKEV2TRANSFORM_TYPE_ADDKE + 6; ++type) {
-			for (ptype = child_sa->peer_proposal->tnext;
-			     ptype; ptype = ptype->next) {
-				struct ikev2transform *t =
-				    (struct ikev2transform *)ptype->trns;
-				if (t &&
-				    t->transform_type == (unsigned)type) {
-					/* first transform of this type wins */
-					if (nrounds < 8)
-						child_sa->addke_methods[nrounds] =
-						    get_uint16(&t->transform_id);
-					++nrounds;
-					peer_addke = 1;
-					break;
-				}
-			}
+		/* RFC 9370 s2.2.1: NONE choices are not rounds; s2.2.2:
+		 * our choice MUST NOT repeat an algorithm.  The generic
+		 * matcher selects each ADDKE type independently and does not
+		 * search for a distinct combination, so a repeated method is
+		 * answered with NO_PROPOSAL_CHOSEN rather than sent. */
+		if (ikev2_addke_collect_rounds(child_sa->peer_proposal,
+					       child_sa->addke_methods,
+					       &nrounds, NULL) < 0) {
+			isakmp_log(child_sa->parent, 0, 0, 0,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "ADDKE selection would repeat a key "
+				   "exchange method (RFC 9370 s2.2.2); "
+				   "refusing child\n");
+			child_sa->addke_nrounds = 0;
+			return -1;
 		}
+		peer_addke = (nrounds > 0);
 		child_sa->addke_nrounds = nrounds;
 		child_sa->addke_round = 0;
 		child_sa->addke_peer_offer = (nrounds > 0);
@@ -2861,29 +2857,21 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 	 * round's response supplies the accumulated SK(1..n).
 	 */
 	if (child_sa->my_proposal && child_sa->my_proposal[1]) {
-		int round;
 		int nrounds = 0;
 
-		for (round = 0; round < 8; ++round)
-			child_sa->addke_methods[round] = 0;
-		for (round = 0; round < 8; ++round) {
-			struct prop_pair *peer_tr;
-			int type = IKEV2TRANSFORM_TYPE_ADDKE + round;
-
-			if (nrounds >= 8)
-				break;
-			for (peer_tr = child_sa->peer_proposal ?
-			     child_sa->peer_proposal->tnext : NULL;
-			     peer_tr; peer_tr = peer_tr->next) {
-				struct ikev2transform *t =
-				    (struct ikev2transform *)peer_tr->trns;
-				if (t && t->transform_type == (unsigned)type) {
-					/* one round per type */
-					child_sa->addke_methods[nrounds++] =
-					    get_uint16(&t->transform_id);
-					break;
-				}
-			}
+		/* one round per echoed ADDKE1..ADDKE7 type; NONE is not a
+		 * round (RFC 9370 s2.2.1).  A response repeating a method
+		 * MUST be treated as failed with no IKE_FOLLOWUP_KE (s2.2.2). */
+		if (ikev2_addke_collect_rounds(child_sa->peer_proposal,
+					       child_sa->addke_methods,
+					       &nrounds, NULL) < 0) {
+			isakmp_log(child_sa->parent, 0, 0, 0,
+				   PLOG_PROTOERR, PLOGLOC,
+				   "responder chose a key exchange method "
+				   "more than once (RFC 9370 s2.2.2); "
+				   "failing the exchange\n");
+			child_sa->addke_nrounds = 0;
+			goto abort;
 		}
 		child_sa->addke_nrounds = nrounds;
 		child_sa->addke_round = 0;
