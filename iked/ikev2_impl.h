@@ -357,6 +357,12 @@ struct ikev2_sa {
 	 * IKE_AUTH must not re-run the PSK/sig/EAP method: its AUTH derives
 	 * from the resumed SK_p and its IDs come from the ticket. */
 	int resumed;
+	/* RFC 5723 (INITIATOR) s4.3.2: the stored ticket was refused
+	 * (N(TICKET_NACK)) or the IKE_SESSION_RESUME request went
+	 * unanswered; this SA restarted with a full IKE_SA_INIT and must
+	 * never present a ticket again (even one a failed store clear left
+	 * on disk), so the fallback cannot loop. */
+	int resume_declined;
 	/* RFC 5723 (RESPONDER) s4.3.4: the original IKE SA's SPI_i/SPI_r
 	 * recovered from the accepted ticket (u64 form, as the ticket
 	 * serializes them).  After the resumed IKE_AUTH succeeds these
@@ -991,6 +997,7 @@ int ikev2_spi_is_zero(isakmp_cookie_t *);
 /* RFC 5723 session-resumption surface, defined in ikev2_session_resume.c. */
 void ike_msg_resume_store_save_from_sa(struct ikev2_sa *);
 int ike_msg_session_resume_available(struct ikev2_sa *);
+void ike_msg_session_resume_fallback(struct ikev2_sa *, const char *);
 void initiator_ike_session_resume_recv(struct ikev2_sa *, rc_vchar_t *,
     struct sockaddr *, struct sockaddr *);
 void responder_ike_session_resume_recv(struct ikev2_sa *, rc_vchar_t *,

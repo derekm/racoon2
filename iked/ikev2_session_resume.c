@@ -207,6 +207,8 @@ ike_msg_session_resume_available(struct ikev2_sa *ike_sa)
 
 	if (ikev2_use_session_resumption(ike_sa->rmconf) != RCT_BOOL_ON)
 		return 0;
+	if (ike_sa->resume_declined)
+		return 0;	/* NACKed / unanswered: full exchange only */
 	if (!ike_sa->remote) {
 		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 		    "RFC 5723: no peer address yet, cannot resume\n");
@@ -244,6 +246,50 @@ ike_msg_session_resume_available(struct ikev2_sa *ike_sa)
 		return 1;
 	}
 	return 0;
+}
+
+/* RFC 5723 s4.3.2: the responder refused our ticket (N(TICKET_NACK)) or
+ * never answered the IKE_SESSION_RESUME request.  Drop the stored ticket
+ * and run a regular IKE_SA_INIT on this same half-open SA, so the pending
+ * children ride the full exchange instead of being aborted.  Mirrors the
+ * INVALID_KE_PAYLOAD restart (ikev2_notify.c): same SPIi, SPIr reset,
+ * fresh nonce and first message.  resume_declined stops
+ * ikev2_initiator_start() from presenting a ticket again. */
+void
+ike_msg_session_resume_fallback(struct ikev2_sa *ike_sa, const char *why)
+{
+	char *key;
+
+	if ((key = ike_msg_resume_store_key(ike_sa->remote)) != NULL) {
+		r2ticket_store_clear(ike_msg_resume_store_dir(), key);
+		racoon_free(key);
+	}
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+	    "RFC 5723: %s; dropped stored ticket, falling back to a full "
+	    "IKE_SA_INIT\n", why);
+	ike_sa->resume_declined = 1;
+	ike_sa->resumed = 0;
+	ikev2_stop_retransmit(ike_sa);
+	if (ike_sa->n_i) {
+		rc_vfree(ike_sa->n_i);
+		ike_sa->n_i = NULL;
+	}
+	if (ike_sa->n_r) {
+		rc_vfree(ike_sa->n_r);
+		ike_sa->n_r = NULL;
+	}
+	if (ike_sa->my_first_message) {
+		rc_vfree(ike_sa->my_first_message);
+		ike_sa->my_first_message = NULL;
+	}
+	if (ike_sa->peer_first_message) {
+		rc_vfree(ike_sa->peer_first_message);
+		ike_sa->peer_first_message = NULL;
+	}
+	memset(&ike_sa->index.r_ck, 0, sizeof(ike_sa->index.r_ck));
+	ike_sa->crypto_pending = 0;
+	ikev2_set_state(ike_sa, IKEV2_STATE_IDLING);
+	ikev2_initiator_start(ike_sa);
 }
 
 /* Build + send IKE_SESSION_RESUME (exchange 38) as INITIATOR:
@@ -372,6 +418,25 @@ initiator_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		++isakmpstat.unexpected_packet;
 		goto drop;
 	}
+	/* RFC 5723 s4.3.2: a refusal is HDR(38), N(TICKET_NACK) with no
+	 * Nr.  The client then "SHOULD initiate a regular IKE exchange":
+	 * forget the ticket and restart this SA with IKE_SA_INIT. */
+	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	type = ikehdr->next_payload;
+	for (; type != IKEV2_NO_NEXT_PAYLOAD; POINT_NEXT_PAYLOAD(p, type)) {
+		if (type == IKEV2_PAYLOAD_NOTIFY &&
+		    get_notify_type((struct ikev2payl_notify *)p) ==
+		    IKEV2_TICKET_NACK) {
+			isakmp_log(ike_sa, local, remote, packet,
+			    PLOG_INFO, PLOGLOC,
+			    "RFC 5723: received N(TICKET_NACK) in "
+			    "IKE_SESSION_RESUME response\n");
+			ike_msg_session_resume_fallback(ike_sa,
+			    "ticket refused (TICKET_NACK)");
+			goto done;
+		}
+	}
+
 	/* Capture the responder's SPI from this exchange. */
 	memcpy(&ike_sa->index.r_ck, &ikehdr->responder_spi,
 	    sizeof(isakmp_cookie_t));

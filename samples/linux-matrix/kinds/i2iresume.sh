@@ -32,6 +32,23 @@
 # A pass that only reaches a partial exchange-38 Nr proves nothing; the
 # resumed IKE_AUTH must establish.
 #
+# Variants (row name suffix):
+#   -resume  the happy path above.
+#   -nack    RFC 5723 s4.3.2 refusal + fallback (review H2): between the
+#            passes the RESPONDER rotates its ticket key (the key file is
+#            re-read per request), so the stored ticket no longer
+#            authenticates.  Gate: the responder sends N(TICKET_NACK) in an
+#            IKE_SESSION_RESUME (38) response; the initiator recognises it
+#            (it only parses NACKs in an exchange-38 response), drops the
+#            stored ticket and re-runs a full IKE_SA_INIT + IKE_AUTH on the
+#            same SA; the child comes up; the responder never accepts the
+#            old ticket; a NEW ticket is minted and stored in its place.
+#   -reuse   RFC 5723 s4.3.1 "A reused ticket SHOULD be rejected" (review
+#            M4): pass 2 resumes from the pass-1 ticket; pass 3 restarts the
+#            initiator again with that SAME ticket restored into the store.
+#            Gate: pass 2 resumes, pass 3 is NACKed as a reused ticket and
+#            falls back to a full exchange that establishes.
+#
 # Needs session_resumption built in.  gate=addke rows run under the addke
 # gate only (matching i2ike/i2ilw); the box and Fedora 44 container run
 # them.  Initiator requires the RACOON2_RESUME_TICKET_DIR store to persist.
@@ -222,6 +239,19 @@ EOF
 	pkill -9 -f "$C/initiator.conf" 2>/dev/null || true
 	rm -rf "$PRIVRES_I"; mkdir -p "$PRIVRES_I"
 	rm -f "$SPMIF_I" "$SOCK_I"
+	# keep a copy of the pass-1 ticket record (the -nack gate proves it was
+	# replaced; the -reuse pass 3 presents it again)
+	TK1=$(ls "$TKSTORE"/r2tkt-* 2>/dev/null | head -1)
+	[ -n "$TK1" ] && cp -p "$TK1" "$C/pass1-ticket" 2>/dev/null
+	case $name in
+	*-nack)
+		# rotate the responder's ticket key: same length, new bytes
+		python3 -c 'import os,sys; sys.stdout.buffer.write(os.urandom(32))' > "$TKKEY.new" 2>/dev/null \
+			|| dd if=/dev/urandom of="$TKKEY.new" bs=32 count=1 2>/dev/null
+		chmod 600 "$TKKEY.new"; mv -f "$TKKEY.new" "$TKKEY"
+		log "i2iresume: rotated responder ticket key before pass 2"
+		;;
+	esac
 	sleep 2
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init2-spmd.log" 2>&1 &
 	i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
@@ -253,26 +283,101 @@ EOF
 		i=$((i+1)); sleep 1
 	done
 
+	# PASS 3 (-reuse only): restart the initiator once more and put the
+	# pass-1 ticket back into its store, so it presents a ticket the
+	# responder already accepted in pass 2.
+	up3=0
+	if [ "${name%-reuse}" != "$name" ]; then
+		pkill -9 -f "$C/initiator.conf" 2>/dev/null || true
+		rm -rf "$PRIVRES_I"; mkdir -p "$PRIVRES_I"
+		rm -f "$SPMIF_I" "$SOCK_I"
+		[ -n "$TK1" ] && [ -f "$C/pass1-ticket" ] && cp -p "$C/pass1-ticket" "$TK1"
+		sleep 2
+		( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init3-spmd.log" 2>&1 &
+		i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+		( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK="$SOCK_I" \
+		    RACOON2_RESUME_DIR="$PRIVRES_I" RACOON2_RESUME_TICKET_DIR="$TKSTORE" \
+		    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init3-iked.log" ) >"$D/init3-iked.out" 2>&1 &
+		sleep 2
+		ip netns exec "$NSR" ip xfrm state flush 2>/dev/null || true
+		ip netns exec "$NSI" ip xfrm state flush 2>/dev/null || true
+		"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+		i=0
+		while [ "$i" -lt 45 ]; do
+			re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+			ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+			if [ "${re:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ]; then
+				log "i2iresume: pass3 child UP (resp=$re init=$ie) after ${i}s"
+				up3=1; break
+			fi
+			i=$((i+1)); sleep 1
+		done
+	fi
+
 	# GATES
 	accepted=$(grep -c 'accepted IKE_SESSION_RESUME ticket' "$D/resp-iked.log" 2>/dev/null || true)
 	presented=$(grep -c 'resuming via IKE_SESSION_RESUME\|accepted resume response' \
 		"$D/init2-iked.log" 2>/dev/null || true)
 	# the resume pass must NOT have fallen back to a full IKE_SA_INIT/AUTH
 	# (the present branch fired instead).  Real fallback markers (only).
-	fresh_auth=$(grep -c 'falling back to IKE_SA_INIT\|fresh IKE_SA_INIT' \
+	fresh_auth=$(grep -c 'falling back to IKE_SA_INIT\|falling back to a full IKE_SA_INIT\|fresh IKE_SA_INIT' \
 		"$D/init2-iked.log" 2>/dev/null || true)
+	nack_sent=$(grep -c 'sent N(TICKET_NACK) in IKE_SESSION_RESUME (38) response' \
+		"$D/resp-iked.log" 2>/dev/null || true)
+	minted=$(grep -c 'issuing session-resumption ticket' "$D/resp-iked.log" 2>/dev/null || true)
 
-	log "i2iresume gates: up1=$up1 up2=$up2 minted=$minted stored=$stored accepted=$accepted presented=$presented fresh_auth=$fresh_auth"
 	ok=0
-	if [ "$up1" -eq 1 ] && [ "$up2" -eq 1 ] \
-	   && [ "${minted:-0}" -ge 1 ] && [ "${stored:-0}" -ge 1 ] \
-	   && [ "${accepted:-0}" -ge 1 ] && [ "${presented:-0}" -ge 1 ] \
-	   && [ "${fresh_auth:-0}" -eq 0 ]; then
-		ok=1
-		log "i2iresume: RFC 5723 session resumption ESTABLISHED racoon2<->racoon2 (full resumed IKE_AUTH)"
-	else
-		log "i2iresume: FAIL gates (up1=$up1 up2=$up2 minted=${minted:-0} stored=${stored:-0} accepted=${accepted:-0} presented=${presented:-0} fresh_auth=${fresh_auth:-0})"
-	fi
+	case $name in
+	*-nack)
+		nack_rcvd=$(grep -c 'received N(TICKET_NACK) in IKE_SESSION_RESUME response' \
+			"$D/init2-iked.log" 2>/dev/null || true)
+		fellback=$(grep -c 'ticket refused (TICKET_NACK); dropped stored ticket, falling back to a full IKE_SA_INIT' \
+			"$D/init2-iked.log" 2>/dev/null || true)
+		kfail=$(grep -c 'ticket validation failed' "$D/resp-iked.log" 2>/dev/null || true)
+		# the full exchange re-ran on the initiator: an IKE_SA_INIT
+		# response was processed and the SA reached ESTABLISHED
+		full=$(grep -c 'INI_IKE_SA_INIT_SENT -> ' "$D/init2-iked.log" 2>/dev/null || true)
+		TK2=$(ls "$TKSTORE"/r2tkt-* 2>/dev/null | head -1)
+		replaced=0
+		[ -n "$TK2" ] && [ -f "$C/pass1-ticket" ] && ! cmp -s "$TK2" "$C/pass1-ticket" && replaced=1
+		log "i2iresume-nack gates: up1=$up1 up2=$up2 minted=$minted kfail=$kfail nack_sent=$nack_sent nack_rcvd=$nack_rcvd fellback=$fellback full=$full accepted=$accepted replaced=$replaced"
+		if [ "$up1" -eq 1 ] && [ "$up2" -eq 1 ] \
+		   && [ "${kfail:-0}" -ge 1 ] && [ "${nack_sent:-0}" -ge 1 ] \
+		   && [ "${nack_rcvd:-0}" -ge 1 ] && [ "${fellback:-0}" -ge 1 ] \
+		   && [ "${full:-0}" -ge 1 ] && [ "${accepted:-0}" -eq 0 ] \
+		   && [ "${minted:-0}" -ge 2 ] && [ "$replaced" -eq 1 ]; then
+			ok=1
+			log "i2iresume-nack: rotated key -> TICKET_NACK (38) -> full IKE_SA_INIT fallback ESTABLISHED, new ticket stored"
+		fi
+		;;
+	*-reuse)
+		reuse_nack=$(grep -c 'ticket was already used' "$D/resp-iked.log" 2>/dev/null || true)
+		nack_rcvd3=$(grep -c 'received N(TICKET_NACK) in IKE_SESSION_RESUME response' \
+			"$D/init3-iked.log" 2>/dev/null || true)
+		fellback3=$(grep -c 'falling back to a full IKE_SA_INIT' "$D/init3-iked.log" 2>/dev/null || true)
+		log "i2iresume-reuse gates: up1=$up1 up2=$up2 up3=$up3 accepted=$accepted presented=$presented fresh_auth=$fresh_auth reuse_nack=$reuse_nack nack_sent=$nack_sent nack_rcvd3=$nack_rcvd3 fellback3=$fellback3"
+		# pass 2 resumed (exactly one accept), pass 3 reuse was refused
+		if [ "$up1" -eq 1 ] && [ "$up2" -eq 1 ] && [ "$up3" -eq 1 ] \
+		   && [ "${accepted:-0}" -eq 1 ] && [ "${presented:-0}" -ge 1 ] \
+		   && [ "${fresh_auth:-0}" -eq 0 ] && [ "${reuse_nack:-0}" -ge 1 ] \
+		   && [ "${nack_sent:-0}" -ge 1 ] && [ "${nack_rcvd3:-0}" -ge 1 ] \
+		   && [ "${fellback3:-0}" -ge 1 ]; then
+			ok=1
+			log "i2iresume-reuse: second presentation of one ticket NACKed, full exchange ESTABLISHED"
+		fi
+		;;
+	*)
+		log "i2iresume gates: up1=$up1 up2=$up2 minted=$minted stored=$stored accepted=$accepted presented=$presented fresh_auth=$fresh_auth nack_sent=$nack_sent"
+		if [ "$up1" -eq 1 ] && [ "$up2" -eq 1 ] \
+		   && [ "${minted:-0}" -ge 1 ] && [ "${stored:-0}" -ge 1 ] \
+		   && [ "${accepted:-0}" -ge 1 ] && [ "${presented:-0}" -ge 1 ] \
+		   && [ "${fresh_auth:-0}" -eq 0 ] && [ "${nack_sent:-0}" -eq 0 ]; then
+			ok=1
+			log "i2iresume: RFC 5723 session resumption ESTABLISHED racoon2<->racoon2 (full resumed IKE_AUTH)"
+		fi
+		;;
+	esac
+	[ "$ok" -eq 1 ] || log "i2iresume: FAIL gates ($name)"
 
 	# cleanup (scoped to this row's conf dir + netnss)
 	pkill -9 -f "$C/" 2>/dev/null || true
@@ -287,6 +392,7 @@ EOF
 		sed -n 's/.*\(TICKET\|accepted IKE_SESSION\|RFC 5723\|resumed\|err=\).*/\1: &/p' "$D/resp-iked.log" 2>/dev/null | tail -8
 		log "--- init2-iked.log (present/resume) ---"
 		grep -aiE 'resum|ticket|IKE_AUTH|established|accepted resume' "$D/init2-iked.log" 2>/dev/null | tail -10
+		[ -f "$D/init3-iked.log" ] && { log "--- init3-iked.log ---"; grep -aiE 'resum|ticket|NACK|IKE_SA_INIT|established' "$D/init3-iked.log" 2>/dev/null | tail -10; }
 		return 1
 	}
 	return 0
