@@ -639,7 +639,6 @@ ikev2_push_cookie2_echo(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 	ike_sa->cookie2_echo = 0;
 }
 
-static int ikev2_mobike_probe_next(struct ikev2_sa *);
 
 /*
  * ikev2_timeout
@@ -5468,73 +5467,6 @@ ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
  * kernel SAs until that COOKIE2 comes back matching.
  * Returns 1 if a probe was armed, 0 if there is nothing left to try.
  */
-static int
-ikev2_mobike_probe_next(struct ikev2_sa *ike_sa)
-{
-	int n, idx;
-	struct sockaddr *alt;
-	struct ikev2_payloads *payl;
-	rc_vchar_t *cookie;
-
-	if (!ike_sa || ike_sa->state != IKEV2_STATE_ESTABLISHED ||
-	    !ike_sa->mobike_supported || !ike_sa->remote || !ike_sa->local)
-		return 0;
-	if (ike_sa->remote->sa_family == AF_INET)
-		n = ike_sa->n_extra_addr4;
-#ifdef INET6
-	else if (ike_sa->remote->sa_family == AF_INET6)
-		n = ike_sa->n_extra_addr6;
-#endif
-	else
-		return 0;
-	idx = ike_sa->mobike_alt_idx;
-	if (idx < 0 || idx >= n)
-		return 0;
-	alt = rcs_sadup(ike_sa->remote);
-	if (!alt)
-		return 0;
-	if (alt->sa_family == AF_INET)
-		memcpy(&((struct sockaddr_in *)alt)->sin_addr,
-		       ike_sa->extra_addr4[idx], 4);
-#ifdef INET6
-	else
-		memcpy(&((struct sockaddr_in6 *)alt)->sin6_addr,
-		       ike_sa->extra_addr6[idx], 16);
-#endif
-	ike_sa->mobike_alt_idx = idx + 1;
-	if (ike_sa->mobike_rr_prev)
-		rc_free(ike_sa->mobike_rr_prev);
-	ike_sa->mobike_rr_prev = ike_sa->remote;
-	ike_sa->remote = alt;
-	ike_sa->mobike_rr_pending = 1;
-	cookie = eay_set_random(16);
-	if (!cookie)
-		goto restore;
-	if (ike_sa->cookie2_sent)
-		rc_vfree(ike_sa->cookie2_sent);
-	ike_sa->cookie2_sent = cookie;
-	ike_sa->cookie2_matched = 0;
-	payl = racoon_malloc(sizeof(*payl));
-	if (!payl)
-		goto restore;
-	ikev2_payloads_init(payl);
-	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
-			    ikev2_notify_payload(0, 0, 0, IKEV2_COOKIE2,
-						 cookie->v, cookie->l),
-			    TRUE);
-	isakmp_log(ike_sa, ike_sa->local, alt, 0, PLOG_INFO, PLOGLOC,
-		   "MOBIKE responder-follow COOKIE2 probe %s\n",
-		   rcs_sa2str(alt));
-	ikev2_informational_initiator_notify(ike_sa, payl);
-	return 1;
-
-restore:
-	ike_sa->remote = ike_sa->mobike_rr_prev;
-	ike_sa->mobike_rr_prev = NULL;
-	ike_sa->mobike_rr_pending = 0;
-	rc_free(alt);
-	return 0;
-}
 
 
 
