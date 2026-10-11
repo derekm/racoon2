@@ -315,6 +315,63 @@ main(void)
 		if (lt) rc_vfree(lt);
 	}
 
+	/* ---- zero-length-SA / corrupt-record hardening (deep-review) ----
+	 * r2tick_unpack yields st.sa==NULL for a zero-length SA field; the
+	 * resume rebuild paths MUST fail closed on that (they now NULL-guard
+	 * st.sa/st.sk_d).  Verify the store round-trip preserves it so the
+	 * guard is reachable, and that a trailing-byte record is rejected. */
+	{
+		const char *sdir = "/tmp/r2tkt-kat";
+		struct r2ticket_state z = make_state(0x7fffffffu);
+		struct r2ticket_state got;
+		rc_vchar_t *tload = NULL, *lt = NULL;
+		int ok;
+
+		rc_vfree(z.sa); z.sa = NULL;	/* zero-length SA */
+		rc_vfree(z.sk_d); z.sk_d = NULL;/* zero-length OLD SK_d */
+
+		lt = r2ticket_lt_opaque(tkey, KID1, &z, 0x4e1fb000u);
+		CHECK(lt != NULL, "zero-sa: mint lifetime+opaque ticket");
+		r2ticket_store_clear(sdir, "peer-a");
+		ok = (r2ticket_store_save(sdir, "peer-a", lt, &z) == 0);
+		CHECK(ok, "zero-sa: store save succeeds");
+		memset(&got, 0, sizeof(got));
+		ok = (r2ticket_store_load(sdir, "peer-a", &tload, &got) == 0);
+		CHECK(ok, "zero-sa: store load succeeds");
+		if (ok)
+			CHECK(got.sa == NULL && got.sk_d == NULL,
+			      "zero-sa: load yields NULL sa/sk_d (caller guard fires)");
+		/* trailing bytes past the record must be refused: the store file
+		 * has no MAC, and r2tick_unpack is strict (o == len) so a
+		 * mangled/truncated/extended record fails load, not misparse */
+		if (ok) {
+			char *path;
+			FILE *fp;
+			path = malloc(strlen(sdir) + 1
+			    + strlen(R2TICK_STORE_PREFIX) + strlen("peer-a") + 1);
+			if (path) {
+				snprintf(path, strlen(sdir) + 1
+				    + strlen(R2TICK_STORE_PREFIX)
+				    + strlen("peer-a") + 1, "%s/%s%s", sdir,
+				    R2TICK_STORE_PREFIX, "peer-a");
+				fp = fopen(path, "ab");
+				if (fp) {
+					size_t w = fwrite("XX", 1, 2, fp);
+					CHECK(w == 2, "trailing-bytes: garbage appended");
+					fclose(fp);
+				}
+				free(path);
+			}
+			CHECK(r2ticket_store_load(sdir, "peer-a", &tload, &got) == -1,
+			      "trailing-bytes: record refused by strict length");
+		}
+		if (tload) rc_vfree(tload);
+		free_state(&got);
+		r2ticket_store_clear(sdir, "peer-a");
+		if (lt) rc_vfree(lt);
+		free_state(&z);
+	}
+
 	rc_vfree(kdv);
 	rc_vfree(niv);
 	rc_vfree(nrv);
