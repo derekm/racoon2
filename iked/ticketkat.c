@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <string.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -313,6 +314,30 @@ main(void)
 		CHECK(r2ticket_store_load(sdir, "peer-a", &tload, &got) == -1,
 		      "store: clear removes the entry");
 		if (lt) rc_vfree(lt);
+	}
+
+	/* ---- key file must be exactly 32 octets (review L1) ---- */
+	{
+		const char *kp = "/tmp/r2tkt-kat-key";
+		rc_vchar_t *k = NULL;
+		uint8_t kb[33];
+		FILE *kf;
+
+		memset(kb, 0x42, sizeof(kb));
+		kf = fopen(kp, "wb");
+		if (kf) { fwrite(kb, 1, 32, kf); fclose(kf); }
+		CHECK(r2ticket_key_load(kp, &k) == 0 && k && k->l == 32,
+		      "key: 32-octet file loads");
+		if (k) { rc_vfreez(k); k = NULL; }
+		kf = fopen(kp, "wb");
+		if (kf) { fwrite(kb, 1, 33, kf); fclose(kf); }
+		CHECK(r2ticket_key_load(kp, &k) == -1 && k == NULL,
+		      "key: 33-octet file is refused, not truncated");
+		kf = fopen(kp, "wb");
+		if (kf) { fwrite(kb, 1, 31, kf); fclose(kf); }
+		CHECK(r2ticket_key_load(kp, &k) == -1 && k == NULL,
+		      "key: 31-octet file is refused");
+		unlink(kp);
 	}
 
 	/* ---- RFC 5723 s4.3.1 used-ticket cache (review M4) ---- */

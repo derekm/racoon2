@@ -554,7 +554,7 @@ int
 r2ticket_key_load(const char *path, rc_vchar_t **key)
 {
 	FILE *f;
-	uint8_t buf[32];
+	uint8_t buf[32 + 1];
 	size_t n;
 
 	/* Fail-closed on a missing/unreadable/wrong-length file (must be
@@ -569,11 +569,15 @@ r2ticket_key_load(const char *path, rc_vchar_t **key)
 	f = fopen(path, "rb");
 	if (!f)
 		return -1;
+	/* read one octet more than a key: a longer file is a different
+	 * (wrong) key, not one whose first 32 octets may be used */
 	n = fread(buf, 1, sizeof(buf), f);
 	fclose(f);
-	if (n != sizeof(buf))		/* must be exactly 32 bytes */
+	if (n != 32) {			/* must be exactly 32 bytes */
+		OPENSSL_cleanse(buf, sizeof(buf));
 		return -1;
-	*key = rc_vnew(buf, sizeof(buf));
+	}
+	*key = rc_vnew(buf, 32);
 	OPENSSL_cleanse(buf, sizeof(buf));
 	return *key ? 0 : -1;
 }
