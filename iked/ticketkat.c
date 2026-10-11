@@ -8,6 +8,7 @@
 #endif
 
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -267,6 +268,50 @@ main(void)
 			}
 			if (tail) rc_vfree(tail);
 		}
+		if (lt) rc_vfree(lt);
+	}
+
+	/* ---- initiator persistence store: save -> load -> clear ---- */
+	{
+		const char *sdir = "/tmp/r2tkt-kat";
+		struct r2ticket_state got;
+		rc_vchar_t *tload = NULL;
+		rc_vchar_t *lt = NULL;
+		int s, l, ok;
+
+		mkdir(sdir, 0700);
+		r2ticket_store_clear(sdir, "peer-a");
+		lt = r2ticket_lt_opaque(tkey, KID1, &st, 0x4e1fb000u);
+		CHECK(lt != NULL, "store: minted lifetime+opaque ticket");
+
+		s = r2ticket_store_save(sdir, "peer-a", lt, &st);
+		CHECK(s == 0, "store: save returns 0");
+		memset(&got, 0, sizeof(got));
+		l = r2ticket_store_load(sdir, "peer-a", &tload, &got);
+		ok = (l == 0 && tload && tload->l == 4 + (lt ? lt->l - 4 : 0) &&
+		      got.expires_at == st.expires_at &&
+		      got.auth_method == st.auth_method &&
+		      got.spi_i == st.spi_i && got.spi_r == st.spi_r);
+		CHECK(ok, "store: load round-trips lifetime+ticket+state");
+		/* loaded opaque ticket tail must parse back */
+		if (ok && tload && tload->l >= 4) {
+			rc_vchar_t *tail = rc_vnew((uint8_t *)tload->v + 4,
+						     tload->l - 4);
+			struct r2ticket_state b3;
+			int p = (tail && r2ticket_parse(tkey, tail, &b3) == 0);
+			CHECK(p, "store: persisted ticket is a valid parse ticket");
+			if (p)
+				free_state(&b3);
+			if (tail) rc_vfree(tail);
+		}
+		if (tload) rc_vfree(tload);
+		free_state(&got);
+		/* missing key must fail, not confuse a later fresh load */
+		CHECK(r2ticket_store_load(sdir, "no-such-peer", &tload, &got) == -1,
+		      "store: load of unknown key fails closed");
+		r2ticket_store_clear(sdir, "peer-a");
+		CHECK(r2ticket_store_load(sdir, "peer-a", &tload, &got) == -1,
+		      "store: clear removes the entry");
 		if (lt) rc_vfree(lt);
 	}
 

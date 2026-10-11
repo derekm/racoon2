@@ -24,10 +24,12 @@
 #include <config.h>
 
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -529,4 +531,160 @@ r2ticket_prf_md(int prf_id)
 	default:
 		return NULL;
 	}
+}
+
+/*
+ * Initiator-side persistence store (see header).  Record layout on disk:
+ *   [0]  version (R2TICK_STORE_VERSION)
+ *   [1..4]  ticket_lt length (big-endian u32)
+ *   [5..4+tlen]  ticket_lt bytes (4-octet BE lifetime || ticket)
+ *   [...]  packed r2ticket_state (r2tick_pack format, self-delimiting)
+ */
+#define R2TICK_STORE_VERSION	1
+
+static char *
+r2tick_store_path(const char *dir, const char *key)
+{
+	char *path;
+	size_t n;
+
+	if (!dir || !key || *key == '\0')
+		return NULL;
+	n = strlen(dir) + 1 + strlen(R2TICK_STORE_PREFIX) + strlen(key) + 1;
+	path = racoon_malloc(n);
+	if (!path)
+		return NULL;
+	snprintf(path, n, "%s/%s%s", dir, R2TICK_STORE_PREFIX, key);
+	return path;
+}
+
+int
+r2ticket_store_save(const char *dir, const char *key,
+    const rc_vchar_t *ticket_lt, const struct r2ticket_state *st)
+{
+	rc_vchar_t *pack;
+	char *path;
+	FILE *fp;
+	size_t tlen;
+	uint8_t hdr[1 + 4];
+	int rc = -1;
+
+	if (!dir || !key || !ticket_lt || !ticket_lt->v || ticket_lt->l == 0
+	    || !st)
+		return -1;
+	if (ticket_lt->l > 0xffffffffu)
+		return -1;
+	if (!(pack = r2tick_pack(st)))
+		return -1;
+	path = r2tick_store_path(dir, key);
+	if (!path)
+		goto out;
+
+	fp = fopen(path, "wb");
+	if (!fp)
+		goto out;
+	tlen = ticket_lt->l;
+	hdr[0] = R2TICK_STORE_VERSION;
+	hdr[1] = (uint8_t)(tlen >> 24); hdr[2] = (uint8_t)(tlen >> 16);
+	hdr[3] = (uint8_t)(tlen >> 8);  hdr[4] = (uint8_t)tlen;
+	if (fwrite(hdr, 1, sizeof(hdr), fp) != sizeof(hdr)
+	    || fwrite(ticket_lt->v, 1, tlen, fp) != tlen
+	    || fwrite(pack->v, 1, pack->l, fp) != pack->l) {
+		fclose(fp);
+		goto out;
+	}
+	if (fflush(fp) != 0 || fclose(fp) != 0)
+		goto out;
+	rc = 0;
+out:
+	if (path)
+		racoon_free(path);
+	rc_vfreez(pack);
+	return rc;
+}
+
+int
+r2ticket_store_load(const char *dir, const char *key,
+    rc_vchar_t **ticket_lt, struct r2ticket_state *st)
+{
+	char *path;
+	FILE *fp;
+	uint8_t hdr[5];
+	size_t tlen, rd;
+	rc_vchar_t *tl = NULL, *pack = NULL;
+	uint8_t *buf;
+	long flen;
+	int rc = -1;
+
+	if (!dir || !key || !ticket_lt || !st)
+		return -1;
+	*ticket_lt = NULL;
+	memset(st, 0, sizeof(*st));
+
+	path = r2tick_store_path(dir, key);
+	if (!path)
+		return -1;
+	fp = fopen(path, "rb");
+	racoon_free(path);
+	if (!fp)
+		return -1;
+	if (fread(hdr, 1, sizeof(hdr), fp) != sizeof(hdr))
+		goto out;
+	if (hdr[0] != R2TICK_STORE_VERSION)
+		goto out;
+	tlen = ((size_t)hdr[1] << 24) | ((size_t)hdr[2] << 16)
+	    | ((size_t)hdr[3] << 8) | (size_t)hdr[4];
+	/* bound the ticket size to a sane ceiling (e.g. 1 MiB) */
+	if (tlen == 0 || tlen > (1u << 20))
+		goto out;
+
+	tl = rc_vmalloc(tlen);
+	if (!tl)
+		goto out;
+	rd = fread(tl->v, 1, tlen, fp);
+	if (rd != tlen)
+		goto out;
+
+	if (fseek(fp, 0L, SEEK_END) != 0)
+		goto out;
+	flen = ftell(fp);
+	if (flen < (long)sizeof(hdr) + (long)tlen
+	    || flen - (long)tlen - (long)sizeof(hdr) > (long)(1u << 20))
+		goto out;
+	if (fseek(fp, (long)sizeof(hdr) + (long)tlen, SEEK_SET) != 0)
+		goto out;
+	pack = rc_vmalloc((size_t)(flen - (long)tlen - (long)sizeof(hdr)));
+	if (!pack)
+		goto out;
+	buf = (uint8_t *)pack->v;
+	rd = fread(buf, 1, pack->l, fp);
+	if (rd != pack->l)
+		goto out;
+	if (r2tick_unpack(buf, pack->l, st) != 0)
+		goto out;
+
+	*ticket_lt = tl;
+	tl = NULL;
+	rc = 0;
+out:
+	if (tl)
+		rc_vfree(tl);
+	if (pack)
+		rc_vfree(pack);
+	fclose(fp);
+	return rc;
+}
+
+void
+r2ticket_store_clear(const char *dir, const char *key)
+{
+	char *path;
+
+	if (!dir || !key)
+		return;
+	path = r2tick_store_path(dir, key);
+	if (!path)
+		return;
+	unlink(path);
+	racoon_free(path);
 }
