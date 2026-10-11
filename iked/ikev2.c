@@ -4950,6 +4950,10 @@ ikev2_ticket_lt_opaque(struct ikev2_sa *ike_sa)
 	rc_vchar_t *sarl = NULL;
 	int r;
 
+	/* Zero the state up front so a later assignment (e.g. auth_method in
+	 * the validation block below) is not clobbered by a second memset. */
+	memset(&st, 0, sizeof(st));
+
 	if (!ike_sa->ticket_requested)
 		return NULL;
 	if (rmconf && ikev2_use_session_resumption(rmconf) == RCT_BOOL_OFF)
@@ -4982,7 +4986,6 @@ ikev2_ticket_lt_opaque(struct ikev2_sa *ike_sa)
 		return NULL;
 	}
 
-	memset(&st, 0, sizeof(st));
 	st.expires_at = (uint32_t)time(NULL) +
 	    (uint32_t)ikev2_session_resume_ticket_lifetime(rmconf);
 	memcpy(&st.spi_i, &ike_sa->index.i_ck, 8);
@@ -5029,7 +5032,7 @@ ikev2_maybe_issue_ticket(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
 	if (!lt)
 		return;
 	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-	    "RFC 5723: issuing session-resumption ticket\\n");
+	    "RFC 5723: issuing session-resumption ticket\n");
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
 			    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
 						 0, 0, IKEV2_TICKET_LT_OPAQUE,
