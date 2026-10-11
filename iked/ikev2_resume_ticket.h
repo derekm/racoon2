@@ -106,4 +106,18 @@ int r2ticket_store_load(const char *dir, const char *key,
     rc_vchar_t **ticket_lt, struct r2ticket_state *st);
 void r2ticket_store_clear(const char *dir, const char *key);
 
+/* RFC 5723 s4.3.1 "A reused ticket SHOULD be rejected by a gateway":
+ * bounded in-memory cache of the tickets this responder has accepted,
+ * each kept until the ticket's own expiry (after which r2ticket_parse()
+ * refuses it anyway).  r2ticket_replay_mark() records the SHA-256 of the
+ * opaque ticket and returns 0 on first use, 1 when the ticket was seen
+ * before, -1 when every slot holds an unexpired ticket (fail closed: the
+ * caller NACKs, the client falls back to a full exchange).  The cache does
+ * not survive an iked restart; rotate session_resume_ticket_key across
+ * restarts when replay after restart matters. */
+#define R2TICK_REPLAY_SLOTS	4096
+int r2ticket_replay_mark(const rc_vchar_t *ticket, uint32_t expires_at,
+    uint32_t now);
+void r2ticket_replay_reset(void);
+
 #endif /* IKEV2_RESUME_TICKET_H */
