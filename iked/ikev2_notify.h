@@ -59,5 +59,8 @@ int ikev2_process_child_notify(struct ikev2payl_notify *,
 
 void ikev2_respond_with_notify(rc_vchar_t *, struct sockaddr *, struct sockaddr *,
 			       int, uint8_t *, int);
+void ikev2_respond_with_notify_exch(rc_vchar_t *, struct sockaddr *,
+				    struct sockaddr *, int, int, uint8_t *,
+				    int);
 
 const char *ikev2_notify_type_str(int);
