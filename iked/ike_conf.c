@@ -2533,6 +2533,37 @@ ikev2_ts_payload_first_addr(struct ikev2_payload_header *pl)
 	return saddr;
 }
 
+/*
+ * The single IP address of a transport-mode TS payload's first selector
+ * (RFC 7296 s2.23.1: transport TS entries carry exactly one address), or
+ * NULL when that selector is a range.  A range has no "original address"
+ * to give the kernel for the checksum fixup; returning its start (often
+ * 0.0.0.0) would program a bogus delta.  Caller owns the copy.
+ */
+static struct sockaddr *
+ikev2_ts_payload_original_addr(struct ikev2_payload_header *pl)
+{
+	struct ikev2payl_traffic_selector *payl;
+	struct ikev2_traffic_selector *ts;
+	struct sockaddr *saddr = NULL, *eaddr = NULL;
+
+	if (pl == NULL)
+		return NULL;
+	payl = (struct ikev2payl_traffic_selector *)pl;
+	if (get_payload_length(pl) < sizeof(*payl) + sizeof(*ts) ||
+	    payl->tsh.num_ts == 0)
+		return NULL;
+	ts = (struct ikev2_traffic_selector *)(payl + 1);
+	if (ikev2_retreive_ts_addr(ts, &saddr, &eaddr) != 0)
+		return NULL;
+	if (rcs_cmpsa_wop(saddr, eaddr) != 0) {
+		rc_free(saddr);
+		saddr = NULL;
+	}
+	rc_free(eaddr);
+	return saddr;
+}
+
 /* Single-address TS payload built from a TS payload's first selector, or
  * NULL on failure.  RFC 7296 §2.23.1 post-NAT narrowing for the NAT-T
  * transport response: the narrowed TSi/TSr must be the single endpoints we
@@ -2597,31 +2628,25 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     sub_r = ike_sa->is_initiator ? ike_sa->remote : ike_sa->local; 
 
     /*
-     * N4 (RFC 3948 §3.1.2 / 7296 §2.23.1): stash the ORIGINAL addresses
-     * carried in the received TS payloads into oa_i/oa_r BEFORE rewriting.
-     * FreeBSD (and Linux) compute the TCP/UDP checksum delta from
-     * (OA, SA endpoint); the OA must be the address the peer used when it
-     * computed the checksum — i.e. the TS it put on the wire — never our
-     * local SA endpoint.  Stashing the substitute target on the initiator
-     * made FreeBSD apply a non-zero delta of (local_addr − post-NAT_addr)
-     * and drop every TCP segment (ICMP kept working because its checksum
-     * does not cover the IP addresses).
+     * N4 (RFC 3948 s3.1.2 / RFC 7296 s2.23.1): stash the ORIGINAL
+     * addresses carried in the received TS payloads into oa_i/oa_r BEFORE
+     * rewriting, on BOTH seats.  The kernel's incremental TCP/UDP checksum
+     * fixup needs the addresses the SENDER used in its pseudo-header,
+     * i.e. the addresses as the peer sees them:
+     *   responder: the initiator's proposed TSi/TSr (IP1, IPN2);
+     *   initiator: the TSi/TSr the responder returned, which per s2.23.1
+     *              it narrowed from its substituted TS (IPN1, IP2) - the
+     *              RFC's "store the original returned Traffic Selectors".
+     * Never our own SA endpoint: an OA equal to the SA address is ignored
+     * by FreeBSD key_setnatt() ("Ignore address if it the same"), leaving
+     * no OA at all, and udp_ipsec_adjust_cksum() then marks TCP
+     * CSUM_DATA_VALID so its checksum is never checked.  A range TS has
+     * no single original; leave that OA unset rather than guessing.
      */
     err = 0;
     if (init_nated) {
-        /* N4: the OA must be the ORIGINAL (pre-NAT) address the peer used
-         * to compute the checksum.  From the responder seat that is the
-         * initiator's private address in the received TSi (read before
-         * rewrite); from the initiator seat the received TSi is the
-         * post-NAT address the responder already echoed back, so the
-         * original is the address we ourselves put on the wire:
-         * ike_sa->local. */
-        if (ike_sa->oa_i == NULL) {
-            if (ike_sa->is_initiator)
-                ike_sa->oa_i = rcs_sadup(ike_sa->local);
-            else
-                ike_sa->oa_i = ikev2_ts_payload_first_addr(ts_i_pl);
-        }
+        if (ike_sa->oa_i == NULL)
+            ike_sa->oa_i = ikev2_ts_payload_original_addr(ts_i_pl);
         err = ikev2_ts_payload_substitute(ts_i_pl, sub_i);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
@@ -2629,16 +2654,8 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
                  rcs_sa2str_wop(sub_i));
     }
     if (err == 0 && resp_nated) {
-        /* Symmetric: from the initiator seat the received TSr is the
-         * responder's post-NAT echo, so the responder's original is the
-         * remote address of this IKE SA; from the responder seat it is
-         * the private address in the received TSr before rewrite. */
-        if (ike_sa->oa_r == NULL) {
-            if (ike_sa->is_initiator)
-                ike_sa->oa_r = rcs_sadup(ike_sa->remote);
-            else
-                ike_sa->oa_r = ikev2_ts_payload_first_addr(ts_r_pl);
-        }
+        if (ike_sa->oa_r == NULL)
+            ike_sa->oa_r = ikev2_ts_payload_original_addr(ts_r_pl);
         err = ikev2_ts_payload_substitute(ts_r_pl, sub_r);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,

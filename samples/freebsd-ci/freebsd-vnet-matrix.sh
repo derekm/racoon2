@@ -1745,10 +1745,16 @@ echo "=== verdict (row $_name) ==="
 # seats install esp-udp TRANSPORT SAs (RFC 3948), the responder has to
 # substitute the initiator's private TSi with the NAT address (RFC 7296
 # s2.23.1), and ICMP plus a TCP exchange must cross it.  TCP over
-# transport-mode NAT-T is where the checksum fixup (NAT-OA, review N4)
-# would matter: iked passes no NAT-OA, so this relies on FreeBSD's
-# default net.inet.ipsec.natt_cksum_policy=0 (TCP checksum marked valid,
-# UDP checksum zeroed) in udp_ipsec_adjust_cksum.
+# transport-mode NAT-T is where the checksum fixup (NAT-OA, review N4/M1)
+# matters.  FreeBSD key_setnatt() drops an OA equal to the SA endpoint and
+# udp_ipsec_adjust_cksum() then marks TCP CSUM_DATA_VALID (checksum never
+# checked), so TCP crossing proves nothing by itself.  The row therefore
+# also asserts that BOTH seats' kernel SAs carry an OA that differs from
+# the SA endpoints (initiator: the returned post-NAT TSi 192.0.5.254;
+# responder: the proposed private TSi 10.9.0.2, RFC 7296 s2.23.1), and
+# that no TCP segment was discarded for a bad checksum during the probe:
+# with an OA programmed the kernel applies the delta and tcp_input
+# verifies the result.
 jn=r2vn   # NAT jail
 run_nat_row() {
 	_name=$1
@@ -1882,11 +1888,21 @@ NEOF
 		# computed covers its private address, the responder sees the
 		# NAT address
 		rm -f /tmp/freeb/tcp-recv.txt
+		_badck() { jexec $1 netstat -s -p tcp 2>/dev/null | awk '/discarded for bad checksum/ {print $1; exit}'; }
+		_ckr0=$(_badck $jr); _cki0=$(_badck $ji)
 		jexec $jr /bin/sh -c "nc -l -w 15 5001 > /tmp/freeb/tcp-recv.txt 2>/dev/null &"
 		sleep 1
 		echo "racoon2-natt-tcp-$$" | jexec $ji nc -w 5 192.0.5.1 5001 > /tmp/freeb/tcp-send.txt 2>&1 || true
 		_w=0; while [ "$_w" -lt 10 ] && ! grep -q "racoon2-natt-tcp-$$" /tmp/freeb/tcp-recv.txt 2>/dev/null; do _w=$((_w+1)); sleep 1; done
 		grep -q "racoon2-natt-tcp-$$" /tmp/freeb/tcp-recv.txt 2>/dev/null || _bad="${_bad:+$_bad; }TCP payload did not cross the NAT-T transport SA"
+		_ckr1=$(_badck $jr); _cki1=$(_badck $ji)
+		if [ -z "$_ckr0" ] || [ -z "$_cki0" ] || [ -z "$_ckr1" ] || [ -z "$_cki1" ]; then
+			_bad="${_bad:+$_bad; }cannot read tcp 'discarded for bad checksums' counter"
+		elif [ "$_ckr1" != "$_ckr0" ] || [ "$_cki1" != "$_cki0" ]; then
+			_bad="${_bad:+$_bad; }TCP bad-checksum discards moved during probe (resp $_ckr0->$_ckr1, init $_cki0->$_cki1): NAT-OA delta wrong"
+		else
+			echo "row $_name: TCP bad-checksum discards unchanged (resp $_ckr1, init $_cki1)"
+		fi
 		# the probes must have used the SAs: both seats' SPD carries the
 		# transport policies, and every SA counted bytes (a missing
 		# policy would let ICMP/TCP cross in clear)
@@ -1917,6 +1933,29 @@ NEOF
 			echo "row $_name: N4 OK - NAT-OA carries original TSi 10.9.0.2"
 		else
 			_bad="N4: no NAT-OA with original TSi 10.9.0.2 in responder log"
+		fi
+	fi
+	# M1 (RFC 7296 s2.23.1): the INITIATOR's OA is the TSi the responder
+	# returned (post-NAT 192.0.5.254), never its own SA endpoint 10.9.0.2.
+	# Checked in iked's log and in the KERNEL SADB: an OA equal to the SA
+	# endpoint is silently dropped by key_setnatt(), so "NAT OA=" is only
+	# listed when it differs from the endpoints (setkey prints the
+	# OAI / src-side OA).  Initiator outbound SA: OAI 192.0.5.254;
+	# responder inbound SA: OAI 10.9.0.2.
+	if [ -z "$_bad" ]; then
+		if ! grep -qE 'NAT-T OA for outbound SA: src=192\.0\.5\.254 ' "$FI" 2>/dev/null; then
+			_bad="M1: initiator OA is not the returned post-NAT TSi 192.0.5.254 (iked log)"
+		elif grep -qE 'NAT-T OA for (inbound|outbound) SA:.*=10\.9\.0\.2( |$)' "$FI" 2>/dev/null; then
+			_bad="M1: initiator OA equals its own SA endpoint 10.9.0.2"
+		elif ! grep -qE 'NAT OA[IiRr]?=192\.0\.5\.254' /tmp/freeb/init-sadb.txt; then
+			_bad="M1: initiator kernel SADB has no NAT OA=192.0.5.254 (OA dropped as equal to the SA endpoint?)"
+		elif ! grep -qE 'NAT OA[IiRr]?=10\.9\.0\.2' /tmp/freeb/resp-sadb.txt; then
+			_bad="M1: responder kernel SADB has no NAT OA=10.9.0.2"
+		elif grep -qE 'NAT OA[IiRr]?=(10\.9\.0\.2|192\.0\.5\.1)$' /tmp/freeb/init-sadb.txt ||
+		     grep -qE 'NAT OA[IiRr]?=(192\.0\.5\.254|192\.0\.5\.1)$' /tmp/freeb/resp-sadb.txt; then
+			_bad="M1: a kernel SA carries an OA equal to its SA endpoint"
+		else
+			echo "row $_name: M1 OK - kernel OA initiator 192.0.5.254, responder 10.9.0.2 (not the SA endpoints)"
 		fi
 	fi
 	if [ -z "$_bad" ]; then
