@@ -25,6 +25,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <errno.h>
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
@@ -573,6 +574,8 @@ r2ticket_store_save(const char *dir, const char *key,
 	    || !st)
 		return -1;
 	if (ticket_lt->l > 0xffffffffu)
+		return -1;
+	if (mkdir(dir, 0700) < 0 && errno != EEXIST)
 		return -1;
 	if (!(pack = r2tick_pack(st)))
 		return -1;

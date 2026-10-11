@@ -1591,13 +1591,16 @@ ike_msg_resume_store_key(const struct sockaddr *remote)
 	return key;
 }
 
-/* Dir for the initiator ticket store: the RACOON2_RESUME_DIR override when
- * set (mirrors the legacy resume override) else the compiled default. */
+/* Dir for the initiator ticket store: the RACOON2_RESUME_TICKET_DIR override
+ * when set else the compiled default.  Deliberately SEPARATE from
+ * RACOON2_RESUME_DIR (the legacy crash-resume dir): the legacy loader scans
+ * that dir for its own dumps and treating a r2tkt-* file as a dump would
+ * both fail and never present our ticket. */
 static const char *
 ike_msg_resume_store_dir(void)
 {
-	const char *e = getenv("RACOON2_RESUME_DIR");
-	return (e && *e) ? e : "/var/lib/racoon2/resume";
+	const char *e = getenv("RACOON2_RESUME_TICKET_DIR");
+	return (e && *e) ? e : "/var/lib/racoon2/resume-tickets";
 }
 
 /* Read the 8-octet IKE SA SPI (a cookie) as a big-endian u64, matching the
@@ -1674,22 +1677,35 @@ ike_msg_session_resume_available(struct ikev2_sa *ike_sa)
 
 	if (ikev2_use_session_resumption(ike_sa->rmconf) != RCT_BOOL_ON)
 		return 0;
-	if (!ike_sa->remote)
+	if (!ike_sa->remote) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		    "RFC 5723: no peer address yet, cannot resume\n");
 		return 0;
+	}
 	if (!(key = ike_msg_resume_store_key(ike_sa->remote)))
 		return 0;
-	if (r2ticket_store_load(ike_msg_resume_store_dir(), key,
-	    &ticket_lt, &st) == 0) {
-		if ((uint32_t)time(NULL) < st.expires_at
-		    && ticket_lt && ticket_lt->l > 4)
-			have = 1;
-		else
-			r2ticket_state_free(&st);	/* discard expired */
+	{
+		int lrc;
+		lrc = r2ticket_store_load(ike_msg_resume_store_dir(), key,
+		    &ticket_lt, &st);
+		if (lrc == 0) {
+			if ((uint32_t)time(NULL) < st.expires_at
+			    && ticket_lt && ticket_lt->l > 4)
+				have = 1;
+			else
+				r2ticket_state_free(&st);	/* discard expired */
+		} else {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			    "RFC 5723: no stored ticket for %s (load rc=%d), "
+			    "fresh IKE_SA_INIT\n", key, lrc);
+		}
 	}
 	if (ticket_lt)
 		rc_vfree(ticket_lt);
 	racoon_free(key);
 	if (have) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		    "RFC 5723: resuming via IKE_SESSION_RESUME\n");
 		initiator_ike_session_resume_send(ike_sa);
 		return 1;
 	}
@@ -1889,9 +1905,12 @@ initiator_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	if (ikev2_compute_keys(ike_sa) != 0)
 		goto fail;
 
-	/* The ticket authenticated the peer and carries the identities. */
-	ike_sa->id_i = st.idi;	st.idi = NULL;
-	ike_sa->id_r = st.idr;	st.idr = NULL;
+	/* RFC 5723: the ticket authenticated the peer.  The INITIATOR does not
+	 * install ticket-carried IDs here: its own IDi comes from config and
+	 * the peer's IDr from the resumed IKE_AUTH response (the normal
+	 * initiator IKE_AUTH-response path manages both and asserts id_r is
+	 * unset on entry).  The responder side, in contrast, adopts the peer's
+	 * IDs from the ticket because it receives no fresh ones. */
 	ike_sa->resumed = 1;
 
 	/* RealMessage1 = our resume request (my_first_message, set at send);
@@ -1910,6 +1929,14 @@ initiator_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	/* The ticket already authenticated the peer: short-circuit the full
 	 * auth verify on the resumed IKE_AUTH response. */
 	ike_sa->verified_info.result = VERIFIED_SUCCESS;
+
+	/* Advance the send Message ID past the IKE_SESSION_RESUME exchange
+	 * (which used msgid 0) so the resumed IKE_AUTH uses msgid 1 -- exactly
+	 * what initiator_state1_send() builds (auth_msgid=1) and what
+	 * ikev2_request_id() hands to the IKE_AUTH child.  Without this the
+	 * child is registered under msgid 0 and the IKE_AUTH response (echoing
+	 * 1) finds no matching request. */
+	ikev2_update_message_id(ike_sa, get_uint32(&ikehdr->message_id), TRUE);
 
 	/* Send the resumed IKE_AUTH as initiator (CHILD + IDs + AUTH over
 	 * the resume request).  It reuses the full initiator IKE_AUTH
@@ -3534,7 +3561,8 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	/* Validate the ticket and recover the SA state. */
 	if (r2ticket_parse(tkey, ticket, &st) != 0) {
 		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
-		    "RFC 5723: ticket validation failed -> TICKET_NACK\n");
+		    "RFC 5723: ticket validation failed (len=%zu) -> "
+		    "TICKET_NACK\n", ticket ? ticket->l : 0);
 		goto nack;
 	}
 
