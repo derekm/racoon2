@@ -221,11 +221,20 @@ ike_msg_session_resume_available(struct ikev2_sa *ike_sa)
 		lrc = r2ticket_store_load(ike_msg_resume_store_dir(), key,
 		    &ticket_lt, &st);
 		if (lrc == 0) {
-			if ((uint32_t)time(NULL) < st.expires_at
-			    && ticket_lt && ticket_lt->l > 4)
+			if (!r2ticket_expired(st.expires_at,
+			    (uint32_t)time(NULL)) && ticket_lt &&
+			    ticket_lt->l > 4)
 				have = 1;
-			else
-				r2ticket_state_free(&st);	/* discard expired */
+			else {
+				/* expired or empty: remove it from the store
+				 * too, it can never resume */
+				r2ticket_state_free(&st);
+				r2ticket_store_clear(
+				    ike_msg_resume_store_dir(), key);
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+				    "RFC 5723: stored ticket for %s expired; "
+				    "removed, fresh IKE_SA_INIT\n", key);
+			}
 		} else {
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
 			    "RFC 5723: no stored ticket for %s (load rc=%d), "
@@ -317,7 +326,8 @@ initiator_ike_session_resume_send(struct ikev2_sa *ike_sa)
 	if (r2ticket_store_load(ike_msg_resume_store_dir(), key,
 	    &ticket_lt, &st) != 0)
 		goto fail;
-	if (ticket_lt->l <= 4 || (uint32_t)time(NULL) >= st.expires_at)
+	if (ticket_lt->l <= 4 ||
+	    r2ticket_expired(st.expires_at, (uint32_t)time(NULL)))
 		goto fail;
 
 	nonce = random_bytes(ikev2_nonce_size(ike_sa->rmconf));

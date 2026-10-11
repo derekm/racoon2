@@ -316,6 +316,22 @@ main(void)
 		if (lt) rc_vfree(lt);
 	}
 
+	/* ---- one expiry rule everywhere (review L3) ---- */
+	CHECK(!r2ticket_expired(1001, 1000), "expiry: usable before expires_at");
+	CHECK(r2ticket_expired(1000, 1000), "expiry: expired at expires_at");
+	CHECK(r2ticket_expired(999, 1000), "expiry: expired after expires_at");
+	CHECK(r2ticket_expired(0, 1000), "expiry: expires_at 0 is expired, not never");
+	{
+		struct r2ticket_state z0 = make_state(0);
+		rc_vchar_t *t0 = r2ticket_create(tkey, KID1, &z0);
+		struct r2ticket_state b0;
+
+		CHECK(t0 && r2ticket_parse(tkey, t0, &b0) == -1,
+		      "expiry: parse refuses an expires_at 0 ticket");
+		if (t0) rc_vfree(t0);
+		free_state(&z0);
+	}
+
 	/* ---- key file must be exactly 32 octets (review L1) ---- */
 	{
 		const char *kp = "/tmp/r2tkt-kat-key";
