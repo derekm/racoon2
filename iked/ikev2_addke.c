@@ -195,7 +195,7 @@ ikev2_addke_round_keygen(struct ikev2_child_sa *child_sa,
 		if (oakley_dh_generate((struct dhgroup *)dh, pub,
 				       &priv) < 0 || !*pub || !priv) {
 			rc_vfree(*pub);
-			rc_vfree(priv);
+			rc_vfreez(priv);
 			*pub = NULL;
 			return -1;
 		}
@@ -205,7 +205,7 @@ ikev2_addke_round_keygen(struct ikev2_child_sa *child_sa,
 		child_sa->addke_dh_pub = rc_vnew((*pub)->v, (*pub)->l);
 		if (child_sa->addke_dh_pub == NULL) {
 			rc_vfree(*pub);
-			rc_vfree(priv);
+			rc_vfreez(priv);
 			child_sa->addke_dh_priv = NULL;
 			*pub = NULL;
 			return -1;
