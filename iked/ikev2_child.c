@@ -4179,8 +4179,11 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		/* Request-side mirror of the response sa_hex diagnostic:
 		 * the peer's exact proposal, so the next teardown can be
 		 * diffed request vs response without reconstructing it
-		 * from the pcap. */
-		char hx[160];
+		 * from the pcap.  Sized generously: a multi-round ADDKE
+		 * proposal carries one transform per ADDKE type (6..12),
+		 * up to 7 additional transforms on top of the ESP core,
+		 * which can exceed 80 wire bytes. */
+		char hx[512];
 		size_t hlen = get_payload_data_length(sa);
 		size_t hl = hlen < sizeof(hx) / 2 ? hlen : sizeof(hx) / 2;
 		size_t i;
