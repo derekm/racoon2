@@ -136,46 +136,46 @@ r2tick_unpack(const uint8_t *p, size_t len, struct r2ticket_state *st)
 
 	memset(st, 0, sizeof(*st));
 
-	if (o + 4 > len) return -1;
+	if (o + 4 > len) goto err;
 	st->expires_at = ((uint32_t)p[o] << 24) | ((uint32_t)p[o+1] << 16) |
 	    ((uint32_t)p[o+2] << 8) | p[o+3]; o += 4;
-	if (o + 1 > len) return -1;
+	if (o + 1 > len) goto err;
 	st->auth_method = p[o++];
 
-	if (o + 8 > len) return -1;
+	if (o + 8 > len) goto err;
 	for (int i = 0; i < 8; i++) st->spi_i = (st->spi_i << 8) | p[o++];
-	if (o + 8 > len) return -1;
+	if (o + 8 > len) goto err;
 	for (int i = 0; i < 8; i++) st->spi_r = (st->spi_r << 8) | p[o++];
 
-	if (o + 2 > len) return -1; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
-	if (o + v16 > len) return -1;
+	if (o + 2 > len) goto err; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
+	if (o + v16 > len) goto err;
 	if (v16) {
 		st->sa = rc_vnew(p + o, v16);
-		if (!st->sa) return -1;
+		if (!st->sa) goto err;
 	}
 	o += v16;
 
-	if (o + 2 > len) return -1; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
-	if (o + v16 > len) return -1;
+	if (o + 2 > len) goto err; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
+	if (o + v16 > len) goto err;
 	if (v16) {
 		st->idi = rc_vnew(p + o, v16);
-		if (!st->idi) return -1;
+		if (!st->idi) goto err;
 	}
 	o += v16;
 
-	if (o + 2 > len) return -1; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
-	if (o + v16 > len) return -1;
+	if (o + 2 > len) goto err; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
+	if (o + v16 > len) goto err;
 	if (v16) {
 		st->idr = rc_vnew(p + o, v16);
-		if (!st->idr) return -1;
+		if (!st->idr) goto err;
 	}
 	o += v16;
 
-	if (o + 1 > len) return -1; v8 = p[o++];
-	if (o + v8 > len) return -1;
+	if (o + 1 > len) goto err; v8 = p[o++];
+	if (o + v8 > len) goto err;
 	if (v8) {
 		st->sk_d = rc_vnew(p + o, v8);
-		if (!st->sk_d) return -1;
+		if (!st->sk_d) goto err;
 	}
 	o += v8;
 
@@ -183,9 +183,16 @@ r2tick_unpack(const uint8_t *p, size_t len, struct r2ticket_state *st)
 	 * last field make the record self-delimiting and refuse a mangled
 	 * offset/length (a corrupt record must fail here, not be misparsed). */
 	if (o != len)
-		return -1;
+		goto err;
 
 	return 0;
+err:
+	/* Keep the documented "-1 => *st cleared / nothing owned" contract no
+	 * matter how far the parse got: mid-parse failure may have allocated
+	 * sa/idi/idr/sk_d already, and not every caller cleans up on -1
+	 * (r2ticket_parse does; r2ticket_store_load does not). */
+	r2ticket_state_free(st);
+	return -1;
 }
 
 /* Derive the per-SA GCM subkey for ticket encryption/decryption from the
