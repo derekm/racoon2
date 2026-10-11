@@ -257,14 +257,14 @@ oakley_dh_compute(const struct dhgroup *dh, rc_vchar_t *pub, rc_vchar_t *priv,
 			    pub, priv, pub_p, gxy) < 0) {
 				plog(PLOG_INTERR, PLOGLOC, NULL,
 				     "failed to compute dh value.\n");
-				return -1;
+				goto fail;
 			}
 		} else {
 			if (eay_dh_compute(dh->prime, dh->gen1, pub, priv,
 			    pub_p, gxy) < 0) {
 				plog(PLOG_INTERR, PLOGLOC, NULL,
 				     "failed to compute dh value.\n");
-				return -1;
+				goto fail;
 			}
 		}
 		break;
@@ -272,7 +272,7 @@ oakley_dh_compute(const struct dhgroup *dh, rc_vchar_t *pub, rc_vchar_t *priv,
 		if (eay_ecp_compute(dh->prime->l, pub, priv, pub_p, gxy) < 0) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 			     "failed to compute ecp256 dh value.\n");
-			return -1;
+			goto fail;
 		}
 		break;
 	case DHGROUP_TYPE_BRAINPOOL:
@@ -280,24 +280,24 @@ oakley_dh_compute(const struct dhgroup *dh, rc_vchar_t *pub, rc_vchar_t *priv,
 		    gxy) < 0) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 			     "failed to compute brainpool dh value.\n");
-			return -1;
+			goto fail;
 		}
 		break;
 	case DHGROUP_TYPE_CURVE:
 		if (eay_xcurve_compute(dh->prime->l, pub, priv, pub_p, gxy) < 0) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 			     "failed to compute xcurve dh value.\n");
-			return -1;
+			goto fail;
 		}
 		break;
 	case OAKLEY_ATTR_GRP_TYPE_EC2N:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "dh type %d isn't supported.\n", dh->type);
-		return -1;
+		goto fail;
 	default:
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "invalid dh type %d.\n", dh->type);
-		return -1;
+		goto fail;
 	}
 
 #ifdef ENABLE_STATS
@@ -313,6 +313,13 @@ oakley_dh_compute(const struct dhgroup *dh, rc_vchar_t *pub, rc_vchar_t *priv,
 	});
 
 	return 0;
+
+ fail:
+	/* never hand back a partial shared secret: callers on the error
+	 * path must not have to free (or cleanse) *gxy themselves */
+	rc_vfreez(*gxy);
+	*gxy = NULL;
+	return -1;
 }
 
 int

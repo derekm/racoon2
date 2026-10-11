@@ -35,6 +35,7 @@
 #include "isakmp_impl.h"
 #include "ikev2.h"
 #include "ikev2_impl.h"
+#include "dhgroup.h"
 
 /* logging stubs (same rationale as fragtest.c) */
 char *
@@ -70,6 +71,7 @@ static int n_respond_error;
 static unsigned int last_error_type;
 static int n_rekey_complete;
 static int n_child_install;	/* ikev2_child_addke_install() invocations */
+static int child_install_fail;	/* make ikev2_child_addke_install() fail */
 
 void
 isakmp_log(struct ikev2_sa *ike_sa, struct sockaddr *local,
@@ -248,13 +250,84 @@ ikev2_child_addke_install(struct ikev2_child_sa *child_sa)
 {
 	(void)child_sa;
 	++n_child_install;
-	return 0;
+	return child_install_fail ? -1 : 0;
 }
 
 void
 ikev2_child_addke_arm_timeout(struct ikev2_child_sa *child_sa)
 {
 	(void)child_sa;
+}
+
+/* classical-DH ADDKE round symbols (dh.c / ike_conf.c) are not part of the
+ * standalone addketest link.  A deterministic fake group stands in for them
+ * so the classical round engine -- keygen, followup completion and round
+ * state teardown -- runs under ASan here (H1: the classical round used to
+ * leave addke_dh_pub/addke_dh_priv dangling, and child teardown freed them
+ * a second time).  The real group arithmetic is KATed in ndcppkats and
+ * proven live in the netns matrix (i2ike-addke-fr3/fr7). */
+#define FAKE_DH_ID	19	/* ECP256 transform id */
+#define FAKE_DH_PUBLEN	64	/* x||y */
+#define FAKE_DH_SSLEN	32
+static uint8_t fake_dh_prime_bytes[FAKE_DH_SSLEN];
+static rc_vchar_t fake_dh_prime = { FAKE_DH_SSLEN, { fake_dh_prime_bytes } };
+static struct dhgroup fake_dh = { 0, &fake_dh_prime, 0, 0, NULL, NULL, NULL, NULL };
+static struct algdef fake_dh_def;
+static int fake_dh_compute_fail;
+static int fake_dh_gen_count;
+
+struct algdef *
+ikev2_dhinfo(unsigned int id)
+{
+	if (id != FAKE_DH_ID)
+		return NULL;
+	fake_dh_def.transform_id = FAKE_DH_ID;
+	fake_dh_def.definition = &fake_dh;
+	return &fake_dh_def;
+}
+
+int
+oakley_dh_generate(const struct dhgroup *dh, rc_vchar_t **pub,
+    rc_vchar_t **priv)
+{
+	if (dh != &fake_dh)
+		return -1;
+	*pub = rc_vmalloc(FAKE_DH_PUBLEN);
+	*priv = rc_vmalloc(FAKE_DH_SSLEN);
+	if (!*pub || !*priv) {
+		rc_vfree(*pub); rc_vfree(*priv);
+		*pub = *priv = NULL;
+		return -1;
+	}
+	memset((*pub)->v, 0x40 + fake_dh_gen_count, FAKE_DH_PUBLEN);
+	memset((*priv)->v, 0x10 + fake_dh_gen_count, FAKE_DH_SSLEN);
+	++fake_dh_gen_count;
+	return 0;
+}
+
+/* Same ownership contract as dh.c: on failure *gxy is freed and NULL. */
+int
+oakley_dh_compute(const struct dhgroup *dh, rc_vchar_t *pub,
+    rc_vchar_t *priv, rc_vchar_t *pub_p, rc_vchar_t **gxy)
+{
+	size_t i;
+
+	(void)pub;
+	*gxy = NULL;
+	if (dh != &fake_dh || fake_dh_compute_fail || !priv || !pub_p ||
+	    pub_p->l != FAKE_DH_PUBLEN)
+		return -1;
+	if ((*gxy = rc_vmalloc(FAKE_DH_SSLEN)) == NULL)
+		return -1;
+	for (i = 0; i < FAKE_DH_SSLEN; i++)
+		(*gxy)->u[i] = priv->u[i] ^ pub_p->u[i];
+	return 0;
+}
+
+size_t
+dh_value_len(struct dhgroup *dhgrp)
+{
+	return dhgrp == &fake_dh ? FAKE_DH_PUBLEN : 0;
 }
 
 int
@@ -780,6 +853,7 @@ initiator_multiround_tests(void)
 	c->addke_methods[1] = m768;
 	c->addke_link = rc_vnew("imag", 4);
 	c->addke_priv = kp0;	/* round-0 keypair */
+	c->addke_method = m512;	/* round-0 method (set by round_keygen in prod) */
 	IKEV2_CHILD_LIST_LINK(&sa->children, c);
 
 	n_child_install = 0;
@@ -837,6 +911,100 @@ initiator_multiround_tests(void)
 	rc_vfree(ct1);
 }
 
+/* H1 regression: a classical-DH ADDKE round must leave no dangling round
+ * state behind.  ikev2_initiator_followup_complete() consumed the round's
+ * DH keypair with rc_vfreez() but did not NULL addke_dh_pub/addke_dh_priv,
+ * so child-SA teardown freed both a second time (double free / UAF) when
+ * the last classical round was followed by ML-KEM rounds or by none.
+ * Drive both shapes and then the real teardown helper under ASan. */
+static void
+initiator_classical_round_tests(void)
+{
+	const unsigned int m768 = IKEV2TRANSF_ADDKE_MLKEM768;
+	struct ikev2_sa *sa;
+	struct ikev2_child_sa *c;
+	rc_vchar_t *pub = NULL, *peer = NULL;
+	int shape;
+
+	printf("--- IKE_FOLLOWUP_KE initiator classical-DH round (H1) ---\n");
+	/* shape 2: final round with a failing child install -- the
+	 * accumulated SK must be freed, not leaked (LeakSanitizer) */
+	for (shape = 0; shape < 3; shape++) {
+		sa = calloc(1, sizeof(*sa));
+		c = calloc(1, sizeof(*c));
+		if (!sa || !c) {
+			free(sa); free(c);
+			fail = 1;
+			return;
+		}
+		IKEV2_CHILD_LIST_INIT(&sa->children);
+		c->parent = sa;
+		c->addke_pending = 1;
+		c->addke_round = 0;
+		c->addke_methods[0] = FAKE_DH_ID;
+		/* shape 0: one classical round (last round classical);
+		 * shape 1: classical round then an ML-KEM round */
+		c->addke_nrounds = shape == 1 ? 2 : 1;
+		c->addke_methods[1] = m768;
+		c->addke_link = rc_vnew("clas", 4);
+		IKEV2_CHILD_LIST_LINK(&sa->children, c);
+
+		CHECK(ikev2_addke_round_keygen(c, FAKE_DH_ID, &pub) == 0 &&
+		      pub && pub->l == FAKE_DH_PUBLEN,
+		      "classical: round-0 keygen (KEi = DH public value)");
+		CHECK(c->addke_dh != NULL && c->addke_dh_pub != NULL &&
+		      c->addke_dh_priv != NULL && c->addke_method == FAKE_DH_ID,
+		      "classical: round state stored");
+		peer = rc_vmalloc(FAKE_DH_PUBLEN);
+		memset(peer->v, 0x77, peer->l);
+
+		n_child_install = 0;
+		followup_reset();
+		if (shape == 2) {
+			child_install_fail = 1;
+			CHECK(ikev2_initiator_followup_complete(c, peer) < 0,
+			      "classical: failing install fails the round");
+			child_install_fail = 0;
+			CHECK(c->addke_sk == NULL && n_child_install == 1,
+			      "classical: SK dropped on install failure (N2)");
+		} else {
+			CHECK(ikev2_initiator_followup_complete(c, peer) == 0,
+			      "classical: complete round 0 (g^xy)");
+			CHECK(c->addke_sk && c->addke_sk->l == FAKE_DH_SSLEN,
+			      "classical: SK(1) is the group field length");
+		}
+		CHECK(c->addke_dh_pub == NULL && c->addke_dh_priv == NULL &&
+		      c->addke_dh == NULL,
+		      "classical: consumed round state is NULLed (H1)");
+		if (shape == 2)
+			;
+		else if (shape == 0)
+			CHECK(n_child_install == 1,
+			      "classical: last (classical) round installs");
+		else
+			CHECK(n_child_install == 0 && c->addke_round == 1 &&
+			      c->addke_priv != NULL && c->addke_method == m768,
+			      "classical: ML-KEM round 1 armed after DH round 0");
+
+		/* child-SA teardown path: must not touch the consumed DH
+		 * round state again (ASan reports a double free if it does) */
+		ikev2_addke_round_state_clear(c);
+		CHECK(c->addke_priv == NULL && c->addke_dh_pub == NULL &&
+		      c->addke_dh_priv == NULL,
+		      "classical: teardown clears remaining round state");
+		ikev2_addke_round_state_clear(c);	/* idempotent */
+
+		IKEV2_CHILD_LIST_REMOVE(&sa->children, c);
+		rc_vfree(c->addke_link);
+		rc_vfreez(c->addke_sk);
+		free(c);
+		free(sa);
+		rc_vfree(pub);
+		rc_vfree(peer);
+		pub = peer = NULL;
+	}
+}
+
 int
 main(void)
 {
@@ -870,6 +1038,7 @@ main(void)
 	followup_link_tests();
 	followup_multiround_tests();
 	initiator_multiround_tests();
+	initiator_classical_round_tests();
 
 	if (have_cli) {
 		for (s = 0; sets[s].alg != NULL; ++s) {

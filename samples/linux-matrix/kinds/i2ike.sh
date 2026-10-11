@@ -18,17 +18,61 @@ kind_i2ike() {
 	# Each method = its own ADDKE "round" (ML-KEM-512/768/1024 transform ids
 	# 35/36/37).  The charon seats only speak ke1_mlkem768 on this box, so
 	# the 512/1024 rows are iked<->iked (no -charon suffix accepted here).
+	# Multi-round rows: -fr3 / -fr7 select a MIXED method list (RFC 9370
+	# allows classical key exchanges in the rounds) so ADDKE types 6..12 can
+	# each carry a distinct method -- ML-KEM and classical DH groups.
 	I2I_MLKEM=${I2I_MLKEM:-768}
+	MULTI_ADDKE=""
 	case "${name##*-}" in
 	512)   I2I_MLKEM=512 ;;
 	1024)  I2I_MLKEM=1024 ;;
+	fr3)   MULTI_ADDKE="mlkem512 mlkem768 ecp256" ;;
+	fr7)   MULTI_ADDKE="mlkem512 mlkem768 ecp256 modp2048 mlkem1024 curve25519 curve448" ;;
 	esac
-	MLKEM=mlkem${I2I_MLKEM}
+	if [ -n "$MULTI_ADDKE" ]; then
+		# per-round wire transform id hex for the gate (ADDKE type 6+r).
+		# MLKEM512=0x23, MLKEM768=0x24, MLKEM1024=0x25, ECP256=0x13,
+		# MODP2048=0x0e, CURVE25519=0x1f, CURVE448=0x20.
+		MLKEM=""
+		MR_HEX=""
+		MR_RND=0
+		for m in $MULTI_ADDKE; do
+			MLKEM="$MLKEM;$m"
+			case "$m" in
+			mlkem512)   idh=23 ;;
+			mlkem768)   idh=24 ;;
+			mlkem1024)  idh=25 ;;
+			ecp256)     idh=13 ;;
+			ecp384)     idh=14 ;;
+			ecp521)     idh=15 ;;
+			modp2048)   idh=0e ;;
+			modp3072)   idh=0f ;;
+			modp4096)   idh=10 ;;
+			curve25519) idh=1f ;;
+			curve448)   idh=20 ;;
+			*) idh=00 ;;
+			esac
+			tt=$((6 + MR_RND))
+			th=$(printf '%02x0000%s' "$tt" "$idh")
+			MR_HEX="$MR_HEX $th"
+			MR_RND=$((MR_RND + 1))
+		done
+		MLKEM=${MLKEM#;}" "
+		NROUNDS=$MR_RND
+	else
+		MLKEM=mlkem${I2I_MLKEM}
+		NROUNDS=1
+	fi
 	case "$I2I_MLKEM" in
 	512)  T6=06000023 ;;
 	768)  T6=06000024 ;;
 	1024) T6=06000025 ;;
 	esac
+	# For multi-round rows the gate's T6 must be the FIRST round's type-6
+	# wire hex (fr3 starts with mlkem512 -> 06000023, not the 768 default).
+	if [ "$NROUNDS" -gt 1 ]; then
+		T6=$(printf '%s' "$MR_HEX" | awk '{print $1}')
+	fi
 
 	# -immediate: initiator policy initial_child_ke immediate, so the plain
 	# IKE_AUTH child is rekeyed with KE + type-6 right after it is installed
@@ -262,13 +306,33 @@ EOF
 	t6=$(grep -c "SA_hex=.*$T6" "$D/resp-iked.log" 2>/dev/null || true)
 	abt=$(grep -cE 'ADDKE followup timeout; abort' "$D/resp-iked.log" 2>/dev/null || true)
 	kh_i=$ky_i; kh_r=$ky_r
+	# Multi-round: every ADDKE type 6..6+N-1 must be on the wire, and both
+	# seats must drive/await the full round sequence (last-round messages).
+	mr_ok=1
+	round_i=0; round_r=0
+	if [ "$NROUNDS" -gt 1 ]; then
+		for th in $MR_HEX; do
+			[ "$(grep -c "SA_hex=.*$th" "$D/resp-iked.log" 2>/dev/null || true)" -ge 1 ] \
+				|| mr_ok=0
+		done
+		last_rnd=$((NROUNDS - 1))
+		round_i=$(grep -cE "initiator ADDKE round $last_rnd/$NROUNDS done; next followup sent" \
+			"$D/init-iked.log" 2>/dev/null || true)
+		round_r=$(grep -cE "ADDKE round $last_rnd/$NROUNDS done; waiting for next followup" \
+			"$D/resp-iked.log" 2>/dev/null || true)
+	fi
 	pqc=0
 	if [ "${t6:-0}" -ge 1 ] && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
-	   && [ "${abt:-0}" -eq 0 ]; then
+	   && [ "${abt:-0}" -eq 0 ] && [ "$mr_ok" -eq 1 ] \
+	   && { [ "$NROUNDS" -eq 1 ] || { [ "$round_i" -ge 1 ] && [ "$round_r" -ge 1 ]; }; }; then
 		pqc=1
-		log "PQC rekey: type-6 offered (x$t6), KEM keymat sha256=$kh_i matches both sides, no followup abort"
+		if [ "$NROUNDS" -gt 1 ]; then
+			log "PQC rekey: $NROUNDS ADDKE rounds (types 6..$((6+NROUNDS-1)) on wire), KEM keymat sha256=$kh_i matches both sides, rounds $last_rnd/$NROUNDS both seats, no abort"
+		else
+			log "PQC rekey: type-6 offered (x$t6), KEM keymat sha256=$kh_i matches both sides, no followup abort"
+		fi
 	else
-		log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt)"
+		log "FAIL: rekey not ADDKE/ML-KEM (type6=$t6 kh_i=${kh_i:-none} kh_r=${kh_r:-none} abort=$abt mr_ok=$mr_ok rounds_i=$round_i rounds_r=$round_r N=$NROUNDS)"
 	fi
 
 	# NDcPP v3.0e compliance report for this row (A/B cells) — runs while
