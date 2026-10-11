@@ -3696,7 +3696,18 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	if (ikev2_compute_keys(ike_sa) != 0)
 		goto fail;
 
-	/* IDs from the ticket become this resumed SA's identities. */
+	/* IDs from the ticket become this resumed SA's identities.
+	 *
+	 * Trust boundary (RFC 5723 s4): the ticket is MAC'd (AEAD) with the
+	 * responder's own ticket key and bound to the original SPIs, so the
+	 * embedded IDi/IDr are trustworthy — no peers_id re-check is needed
+	 * here because the ticket is not forgeable by the peer.  POLICY: this
+	 * trusts whatever IDi was accepted when the ticket was minted on a
+	 * fresh exchange for this responder.  If ticket keys are shared
+	 * across gateways, a ticket minted for peer A could be replayed to a
+	 * second gateway that trusts the same key; keep ticket keys per
+	 * responder (default: a single local key file per iked) so a ticket
+	 * only ever binds to the gateway that minted it. */
 	ike_sa->id_i = st.idi;	st.idi = NULL;
 	ike_sa->id_r = st.idr;	st.idr = NULL;
 	ike_sa->resumed = 1;	/* established by ticket, not full IKE_AUTH */

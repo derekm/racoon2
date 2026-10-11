@@ -301,6 +301,12 @@ r2ticket_parse(const rc_vchar_t *tkey, const rc_vchar_t *ticket,
 	if (r2tick_unpack(plain, plen, st) != 0)
 		goto out;
 
+	/* Expired: strict, no grace window.  `expires_at < now` (rather
+	 * than <=) keeps a ticket valid through the last instant of its
+	 * lifetime, then rejects it — the conservative edge: a client
+	 * boundary-skewed past expiry is refused and must do a fresh
+	 * IKE_SA_INIT.  expires_at == 0 on a legacy record means "never",
+	 * which is kept. */
 	if (st->expires_at && st->expires_at < (uint32_t)time(NULL))
 		goto out;	/* expired */
 
@@ -502,6 +508,12 @@ r2ticket_key_load(const char *path, rc_vchar_t **key)
 	uint8_t buf[32];
 	size_t n;
 
+	/* Fail-closed on a missing/unreadable/wrong-length file (must be
+	 * exactly 32 raw octets).  The file's mode is NOT enforced here:
+	 * the deployable keys are root-owned 0600 (the matrix kchmods them),
+	 * and enforcing a mode would break ad-hoc probe setups that rely on
+	 * yescorp-readable scratch keys.  Owners should keep this file out
+	 * of group/other read; the loader must never log its contents. */
 	if (!path || !key)
 		return -1;
 	*key = NULL;
@@ -563,6 +575,12 @@ int
 r2ticket_store_save(const char *dir, const char *key,
     const rc_vchar_t *ticket_lt, const struct r2ticket_state *st)
 {
+	/* Store is keyed by peer socket-address (one ticket per peer); a
+	 * roaming/multi-identity client that re-establishes from a new
+	 * address overwrites the old address's ticket.  Acceptable for the
+	 * first implementation (a fresh IAU/terminate re-mints anyway), and
+	 * the address->ticket mapping keeps concurrent SAs to different
+	 * peers from colliding. */
 	rc_vchar_t *pack;
 	char *path;
 	FILE *fp;
