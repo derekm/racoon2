@@ -390,6 +390,15 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 	if (method == 0)
 		goto fail;
 
+	/* RFC 5723 s4.3.3: on a RESUMED IKE_SA the AUTH payload is ALWAYS
+	 * AUTH = prf(SK_px, <message octets>) — a MAC with the resumed SA's
+	 * own SK_pi/SK_pr — regardless of what the original IKE_SA was
+	 * configured to authenticate with (PSK, cert/sig, or EAP-derived).
+	 * Force the shared-key method so a cert/rsasig-configured peer does
+	 * not emit a signature AUTH over the bare resume message. */
+	if (sa->resumed)
+		method = IKEV2_AUTH_SHARED_KEY;
+
 	if (i_to_r) {
 		id = sa->id_i;
 	} else {
