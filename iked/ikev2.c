@@ -127,6 +127,14 @@ static void responder_ike_sa_auth_cont(struct ikev2_sa *, int, rc_vchar_t *,
 					struct sockaddr *, struct sockaddr *);
 static void initiator_ike_sa_auth_recv(struct ikev2_sa *, rc_vchar_t *,
 			       struct sockaddr *, struct sockaddr *);
+/* Shared peer-identity validation, used by BOTH a fresh IKE_AUTH
+ * (responder_ike_sa_auth_recv0) and a resumed (ticket) IKE_AUTH accept
+ * (the responder IKE_SESSION_RESUME path): verify that the initiator's
+ * asserted IDi satisfies this remote's configured peers_id.  Returns 0 if
+ * it matches a configured peers_id, -1 on no-match.  Mirrors the fresh
+ * RFC 7296 s3.5 check so both entry points enforce the same identity
+ * policy on the reseated/resumed SA. */
+static int ikev2_peer_id_ok(struct ikev2_sa *, rc_type, rc_vchar_t *);
 static void initiator_ike_session_resume_recv(struct ikev2_sa *, rc_vchar_t *,
 					struct sockaddr *, struct sockaddr *);
 static void initiator_ike_session_resume_send(struct ikev2_sa *);
@@ -3700,14 +3708,18 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	 *
 	 * Trust boundary (RFC 5723 s4): the ticket is MAC'd (AEAD) with the
 	 * responder's own ticket key and bound to the original SPIs, so the
-	 * embedded IDi/IDr are trustworthy — no peers_id re-check is needed
-	 * here because the ticket is not forgeable by the peer.  POLICY: this
-	 * trusts whatever IDi was accepted when the ticket was minted on a
-	 * fresh exchange for this responder.  If ticket keys are shared
-	 * across gateways, a ticket minted for peer A could be replayed to a
-	 * second gateway that trusts the same key; keep ticket keys per
-	 * responder (default: a single local key file per iked) so a ticket
-	 * only ever binds to the gateway that minted it. */
+	 * embedded IDi/IDr are cryptographically trustworthy — the ticket
+	 * cannot be forged by the peer.  POLICY: the ticket-carried IDi is
+	 * still re-checked against this remote's configured peers_id in
+	 * the resumed IKE_AUTH accept (ikev2_peer_id_ok, the same routine
+	 * the fresh path uses), so a ticket minted under an older/looser
+	 * identity policy, or replayed onto a gateway whose peers_id
+	 * changed since mint, is refused just as a fresh IKE_AUTH would
+	 * be.  If ticket keys are shared across gateways, a ticket minted
+	 * for peer A could otherwise be replayed to a second gateway that
+	 * trusts the same key; keep ticket keys per responder (default: a
+	 * single local key file per iked) so a ticket only ever binds to
+	 * the gateway that minted it. */
 	ike_sa->id_i = st.idi;	st.idi = NULL;
 	ike_sa->id_r = st.idr;	st.idr = NULL;
 	ike_sa->resumed = 1;	/* established by ticket, not full IKE_AUTH */
@@ -3762,6 +3774,34 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	if (rc != 0)
 		ikev2_abort(ike_sa, ECONNREFUSED);
 }
+
+/*
+ * Shared peer-identity validation: does the initiator's asserted IDi
+ * (as an IKEv2 id value + rc type, i.e. the payload after the
+ * Identification-Data length header) match one of this remote's
+ * configured peers_id entries?  Used by BOTH a fresh IKE_AUTH accept
+ * (responder_ike_sa_auth_recv0, RFC 7296 s3.5) and the resumed
+ * (ticket) accept (responder_ike_session_resume_recv), so the same
+ * identity policy is enforced on a reseated SA as on a first exchange.
+ * Returns 0 on a match, -1 when no configured peers_id matches (or the
+ * remote has no peers_id constraint).
+ */
+static int
+ikev2_peer_id_ok(struct ikev2_sa *ike_sa, rc_type rc_id_type,
+		 rc_vchar_t *id_data)
+{
+	struct rc_idlist *peers_id;
+
+	if (!id_data)
+		return -1;
+	for (peers_id = ikev2_peers_id(ike_sa->rmconf);
+	     peers_id; peers_id = peers_id->next) {
+		if (ike_compare_id(rc_id_type, id_data, peers_id) == 0)
+			return 0;
+	}
+	return -1;
+}
+
 
 
 
@@ -4101,19 +4141,13 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 	} else if (ikev2_verify_id(ike_sa->rmconf) == RCT_BOOL_ON) {
 		rc_type rc_id_type;
-		struct rc_idlist *peers_id;
 
-		/* compare id_i and conf->peers_id */
+		/* compare id_i and conf->peers_id (shared with the resumed
+		 * accept path, ikev2_peer_id_ok) */
 		id_data = ikev2_id2rct_id(id_i, &rc_id_type);
 		if (!id_data)
 			goto fail_nomem;
-		for (peers_id = ikev2_peers_id(ike_sa->rmconf);
-		     peers_id;
-		     peers_id = peers_id->next) {
-			if (ike_compare_id(rc_id_type, id_data, peers_id) == 0)
-				break;
-		}
-		if (!peers_id) {
+		if (ikev2_peer_id_ok(ike_sa, rc_id_type, id_data) != 0) {
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_PROTOERR, PLOGLOC,
 				   "received ID_I (type %s [%s]) does not match peers id\n",
@@ -5907,6 +5941,34 @@ responder_ike_sa_auth_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			++isakmpstat.authentication_failed;
 			ikev2_abort(ike_sa, ECONNREFUSED);
 			return;
+		}
+		/* RFC 5723 s4.4 / RFC 7296 s3.5: the ticket bound IDi must
+		 * still satisfy this remote's configured peers_id — the SAME
+		 * check a fresh IKE_AUTH runs, via the shared
+		 * ikev2_peer_id_ok().  This refuses a ticket whose identity
+		 * no longer matches policy (e.g. peers_id changed since the
+		 * ticket was minted, or the ticket key is shared and the
+		 * ticket was replayed onto a gateway with a different peer
+		 * set). */
+		if (ikev2_verify_id(ike_sa->rmconf) == RCT_BOOL_ON) {
+			rc_type rc_id_type;
+			rc_vchar_t *idin;
+
+			idin = ikev2_id2rct_id(id_i, &rc_id_type);
+			if (idin) {
+				if (ikev2_peer_id_ok(ike_sa,
+				    rc_id_type, idin) != 0) {
+					isakmp_log(ike_sa, local, remote,
+					    msg, PLOG_PROTOERR, PLOGLOC,
+					    "RFC 5723: resumed IKE_AUTH IDi "
+					    "does not match peers id\n");
+					rc_vfree(idin);
+					++isakmpstat.authentication_failed;
+					ikev2_abort(ike_sa, ECONNREFUSED);
+					return;
+				}
+				rc_vfree(idin);
+			}
 		}
 		/* i_to_r=TRUE: verify the initiator's AUTH over the resume
 		 * request with the resumed SK_pi (the ikev2_auth_verify
