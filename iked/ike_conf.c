@@ -3640,7 +3640,19 @@ alglist_to_addke_proppair(struct rc_alglist *alg)
 			     "addke_alg: extra rounds past ADDKE7 ignored\n");
 			break;
 		}
+		/* Round method: the transform id IS the KE method (RFC 9370
+		 * s2.2.1: ADDKE transform ids share the Transform Type 4 /
+		 * KE-method registry).  ML-KEM ids 35/36/37 come from the
+		 * addke table; any classical DH group (ECP/ECP2/MODP/curve,
+		 * e.g. ECP256=19, MODP2048=14, CURVE25519=31) is resolved
+		 * from the DH table and runs a classical oakley DH round.
+		 * This is what lets all 7 ADDKE types carry distinct methods
+		 * and interoperate with strongSwan keX_ (RFC 9370 allows
+		 * classical key exchanges in the multiple rounds). */
 		code = ikeconf_rcf_alg(alg->algtype, &ikev2_transf_addke[0]);
+		if (code == 0)
+			code = ikeconf_rcf_alg(alg->algtype,
+					       &ikev2_transf_dh[0]);
 		if (code == 0) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 			     "addke_alg: unsupported ADDKE algorithm %s\n",

@@ -463,6 +463,12 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 		EVP_PKEY_free((EVP_PKEY *)sa->addke_priv);
 		sa->addke_priv = NULL;
 	}
+	/* classical-DH ADDKE round state (RFC 9370 rounds may be a DH group) */
+	if (sa->addke_dh_pub)
+		rc_vfreez(sa->addke_dh_pub);
+	if (sa->addke_dh_priv)
+		rc_vfreez(sa->addke_dh_priv);
+	sa->addke_dh = NULL;
 #endif
 	/*
 	 * Informational-exchange child_sa (DPD / DELETE echo) has
@@ -2890,18 +2896,16 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 		child_sa->addke_round = 0;
 		if (nrounds > 0) {
 			rc_vchar_t *pub = NULL;
-			EVP_PKEY *kp = NULL;
 			unsigned int method = child_sa->addke_methods[0];
 
-			if (ikev2_addke_mlkem_keygen(method, &pub, &kp) == 0 &&
-			    pub && kp) {
+			if (ikev2_addke_round_keygen(child_sa, method,
+						     &pub) == 0 && pub) {
 				child_sa->addke_pending = 1;
 				/* RFC 9370 s2.2.4: echo the responder-chosen link the
 				 * CREATE_CHILD_SA response carried in N(16441); only mint a
 				 * fresh link when the peer sent none. */
 				if (child_sa->addke_link == NULL)
 					child_sa->addke_link = random_bytes(16);
-				child_sa->addke_priv = kp;
 				child_sa->addke_method = method;
 				TRACE((PLOGLOC,
 				       "initiator: negotiated %d ADDKE round(s) "
@@ -2914,8 +2918,18 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 					    PLOG_INTERR, PLOGLOC,
 					    "failed sending IKE_FOLLOWUP_KE\n");
 					rc_vfree(pub);
-					EVP_PKEY_free(kp);
-					child_sa->addke_priv = NULL;
+					if (ikev2_addke_method_is_mlkem(method) &&
+					    child_sa->addke_priv) {
+						EVP_PKEY_free((EVP_PKEY *)
+						    child_sa->addke_priv);
+						child_sa->addke_priv = NULL;
+					} else {
+						if (child_sa->addke_dh_pub)
+							rc_vfreez(child_sa->addke_dh_pub);
+						if (child_sa->addke_dh_priv)
+							rc_vfreez(child_sa->addke_dh_priv);
+						child_sa->addke_dh = NULL;
+					}
 					child_sa->addke_pending = 0;
 					goto abort;
 				}
@@ -2929,7 +2943,6 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 				goto done;
 			}
 			rc_vfree(pub);
-			EVP_PKEY_free(kp);
 		}
 	}
 #endif

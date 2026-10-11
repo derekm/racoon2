@@ -257,6 +257,18 @@ ikev2_child_addke_arm_timeout(struct ikev2_child_sa *child_sa)
 	(void)child_sa;
 }
 
+/* classical-DH ADDKE round symbols (dh.c / ike_conf.c) are not part of the
+ * standalone addketest link; the ML-KEM round engine under test only needs
+ * them when a round method is a DH group, which the unit tests do not use
+ * (the classical-DH rounds are proven live in the netns matrix). */
+struct algdef *ikev2_dhinfo(unsigned int id) { (void)id; return NULL; }
+int oakley_dh_generate(const struct dhgroup *dh, rc_vchar_t **pub,
+    rc_vchar_t **priv) { (void)dh; (void)pub; (void)priv; return -1; }
+int oakley_dh_compute(const struct dhgroup *dh, rc_vchar_t *pub,
+    rc_vchar_t *priv, rc_vchar_t *pub_p, rc_vchar_t **gxy)
+{ (void)dh; (void)pub; (void)priv; (void)pub_p; (void)gxy; return -1; }
+size_t dh_value_len(struct dhgroup *dhgrp) { (void)dhgrp; return 0; }
+
 int
 ikev2_rekey_responder_addke_complete(struct ikev2_sa *sa, rc_vchar_t *sk,
 				     rc_vchar_t *ct, uint32_t followup_msgid)
@@ -780,6 +792,7 @@ initiator_multiround_tests(void)
 	c->addke_methods[1] = m768;
 	c->addke_link = rc_vnew("imag", 4);
 	c->addke_priv = kp0;	/* round-0 keypair */
+	c->addke_method = m512;	/* round-0 method (set by round_keygen in prod) */
 	IKEV2_CHILD_LIST_LINK(&sa->children, c);
 
 	n_child_install = 0;
