@@ -1,13 +1,13 @@
 #!/bin/sh
 # kinds/admin.sh — ikedctl against a running iked. $1 = case name.
 #
-# On a systemd host (the box, Ubuntu CI) the row exercises the persistent
-# iked service on :500.  Where there is no live iked and no systemd to
-# start one (the Fedora PQC container ships no units), the row brings up
-# its own spmd + iked in a private netns with a dedicated admin socket and
-# runs the SAME assertions against that daemon.  ikedctl only needs an
-# iked behind an admin socket; nothing in the checks depends on systemd,
-# so the row runs everywhere instead of being skipped.
+# The row always brings up its own spmd + iked in a private netns with a
+# dedicated admin socket and runs the assertions against that daemon via
+# ikedctl -s.  It never touches the host's live (systemd) iked: that
+# daemon's state (existing SAs, config, peers) is outside the test's
+# control, so asserting "empty" against it is not deterministic, and
+# starting/inspecting it would disturb whatever the host is running.
+# Unit-file bring-up is covered separately by ci-setup.sh on Ubuntu CI.
 
 admin_ephemeral_down() {
 	pkill -9 -f "$C/" 2>/dev/null || true
@@ -86,7 +86,7 @@ CONF
 	i=0; until [ -S "$SOCK_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	[ -S "$SOCK_R" ] || { die "ephemeral iked admin socket $SOCK_R did not appear"; tail -20 "$D/iked.log" "$D/iked.out" 2>/dev/null; return 1; }
 	ip netns exec "$NSR" ss -ulnp 2>/dev/null | grep -q '192.0.13.1:500 ' || { die "ephemeral iked not on 192.0.13.1:500"; return 1; }
-	log "admin: no live iked/systemd here; testing an ephemeral iked in netns $NSR via $SOCK_R"
+	log "admin: testing a private iked in netns $NSR via $SOCK_R"
 	return 0
 }
 
@@ -95,29 +95,8 @@ kind_admin() {
 	require_root || return 1
 	ctl="$SBIN/ikedctl"
 	[ -x "$ctl" ] || { die "no $ctl"; return 1; }
-	_eph=0
-	# admin-case rows test the persistent iked (ikedctl against the live
-	# service), so ensure it is listening first.  A prior shard row may
-	# have stopped/started :500 (ephemeral R2_WORKERS path or systemd
-	# restore), and the very first row of a shard can race the service
-	# coming up.  Bring the unit up and wait, mirroring iked_restore().
-	if ! iked_listening; then
-		if systemctl is-system-running >/dev/null 2>&1 || \
-		   [ -d /run/systemd/system ]; then
-			systemctl start "$IKED_UNIT" 2>/dev/null || true
-			i=0
-			while ! iked_listening; do
-				i=$((i + 1))
-				[ "$i" -gt 20 ] && break
-				sleep 1
-			done
-			iked_listening || { die "iked not on :500"; return 1; }
-		else
-			admin_ephemeral_up "$name" || { admin_ephemeral_down; return 1; }
-			_eph=1
-			ctl="$SBIN/ikedctl -s $SOCK_R"
-		fi
-	fi
+	admin_ephemeral_up "$name" || { admin_ephemeral_down; return 1; }
+	ctl="$ctl -s $SOCK_R"
 
 	_rc=0
 	case $name in
@@ -137,6 +116,6 @@ kind_admin() {
 		_rc=1
 		;;
 	esac
-	[ "$_eph" -eq 1 ] && admin_ephemeral_down
+	admin_ephemeral_down
 	return $_rc
 }
