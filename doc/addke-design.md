@@ -150,11 +150,20 @@ is not that proof.
 
 ## Roadmap (remaining)
 
-1. **ADDKE rounds 2-7** as config. One ML-KEM round is implemented and
-   matrix-proven (`i2iinit-addke`, `i2ikesa-addke`, `i2ike-addke`).
-2. Fragmented-response loss recovery is cached in `response_info`
+1. Fragmented-response loss recovery is cached in `response_info`
    (not intermediate-only). A 576-MTU kill test that drops a FOLLOWUP
    fragment and gates on the replay is still TODO.
+
+Landed, not remaining: **multi-round ADDKE (rounds 2-7)** — each configured
+`esp_addke_alg` method is its own transform type (ADDKE1..ADDKE7 = 6..12),
+the initiator drives one IKE_FOLLOWUP_KE per round (decapping each into an
+accumulated SK(1..n)) and only installs after the last, the responder
+validates the per-round KE method against the negotiated order and
+installs after the last. Unit-proven in `addketest` (responder 2-round
+accumulation + initiator 2-round driver, ASan-clean) and proven
+end-to-end in a netns row with `esp_addke_alg { mlkem512; mlkem768; }` on
+both seats (both types on the wire, both seats completed round 1 and
+round 2, matching KEM keymat installed).
 
 Landed, not remaining: RFC 8784 PPK (`use_ppk` / `ppk_mandatory`;
 iked↔iked row `i2iinit-ppk`; a phone proving it is not claimed here).

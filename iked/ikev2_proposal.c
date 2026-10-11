@@ -335,13 +335,14 @@ ikev2_compare_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 			 * Peer proposal lacks a transform type we carry.
 			 * RFC 9370 s1.3 makes ADDKE types OPTIONAL: the
 			 * responder that configured addke_alg must still
-			 * accept a peer proposal without type-6 (the
-			 * peer simply negotiates plain IKEv2 -- no
-			 * ADDKE echo, no followup).  Only when the peer
-			 * DOES offer ADDKE do we select/echo it.  Any
-			 * other missing type stays a hard failure.
+			 * accept a peer proposal without any ADDKE type
+			 * ADDKE1..ADDKE7 (the peer simply negotiates plain
+			 * IKEv2 -- no ADDKE echo, no followup).  Only when
+			 * the peer DOES offer an ADDKE type do we select/echo
+			 * it.  Any other missing type stays a hard failure.
 			 */
-			if (type == IKEV2TRANSFORM_TYPE_ADDKE) {
+			if (type >= IKEV2TRANSFORM_TYPE_ADDKE &&
+			    type <= IKEV2TRANSFORM_TYPE_ADDKE + 6) {
 				TRACE((PLOGLOC,
 				       "peer proposal lacks ADDKE; "
 				       "treating as optional\n"));
@@ -437,14 +438,16 @@ ikev2_compare_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 			 * Peer offers a transform type we have no
 			 * counterpart for.  RFC 9370 ADDKE is optional in
 			 * this direction too: when compiled WITH_ADDKE the
-			 * responder can honor a peer's type-6 proposal via
-			 * the IKE_FOLLOWUP_KE deferral (child SA and
-			 * IKE-SA rekey paths), so accept it rather than
-			 * rejecting the proposal.
+			 * responder can honor a peer's ADDKE1..ADDKE7
+			 * proposal via the IKE_FOLLOWUP_KE deferral (child
+			 * SA and IKE-SA rekey paths), so accept it rather
+			 * than rejecting the proposal.
 			 */
 #ifdef WITH_ADDKE
-			if (peer_transf->transform_type ==
-			    IKEV2TRANSFORM_TYPE_ADDKE) {
+			if (peer_transf->transform_type >=
+			    IKEV2TRANSFORM_TYPE_ADDKE &&
+			    peer_transf->transform_type <=
+			    IKEV2TRANSFORM_TYPE_ADDKE + 6) {
 				TRACE((PLOGLOC,
 				       "peer offers optional ADDKE; keeping proposal\n"));
 				continue;
@@ -570,12 +573,14 @@ ikev2_match_transforms(struct isakmp_domain *doi, struct prop_pair *mine,
 		}
 		if (!p) {
 			/* ADDKE is optional (rfc9370 s1.3): a peer without
-			 * type-6 negotiates plain IKEv2 -- omit it from
-			 * the response, no followup. */
-			if (type == IKEV2TRANSFORM_TYPE_ADDKE) {
+			 * the type negotiates that round out of the series --
+			 * omit it from the response.  Covers ADDKE1..ADDKE7. */
+			if (type >= IKEV2TRANSFORM_TYPE_ADDKE &&
+			    type <= IKEV2TRANSFORM_TYPE_ADDKE + 6) {
 				TRACE((PLOGLOC,
 				       "omit optional ADDKE transform from "
-				       "response (peer lacks type-6)\n"));
+				       "response (peer lacks type %d)\n",
+				       type));
 				continue;
 			}
 			/* RFC 7296 / RFC 5282: an AEAD ENCR carries its own
