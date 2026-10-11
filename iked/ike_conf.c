@@ -2512,27 +2512,6 @@ ikev2_ts_payload_substitute(struct ikev2_payload_header *pl,
     return 0;
 }
 
-/* First start-address of a TS payload, or NULL.  Caller owns the copy. */
-static struct sockaddr *
-ikev2_ts_payload_first_addr(struct ikev2_payload_header *pl)
-{
-	struct ikev2payl_traffic_selector *payl;
-	struct ikev2_traffic_selector *ts;
-	struct sockaddr *saddr = NULL, *eaddr = NULL;
-
-	if (pl == NULL)
-		return NULL;
-	payl = (struct ikev2payl_traffic_selector *)pl;
-	if (payl->tsh.num_ts == 0)
-		return NULL;
-	ts = (struct ikev2_traffic_selector *)(payl + 1);
-	if (ikev2_retreive_ts_addr(ts, &saddr, &eaddr) != 0)
-		return NULL;
-	if (eaddr)
-		rc_free(eaddr);
-	return saddr;
-}
-
 /*
  * The single IP address of a transport-mode TS payload's first selector
  * (RFC 7296 s2.23.1: transport TS entries carry exactly one address), or
@@ -2564,24 +2543,135 @@ ikev2_ts_payload_original_addr(struct ikev2_payload_header *pl)
 	return saddr;
 }
 
-/* Single-address TS payload built from a TS payload's first selector, or
- * NULL on failure.  RFC 7296 §2.23.1 post-NAT narrowing for the NAT-T
- * transport response: the narrowed TSi/TSr must be the single endpoints we
- * substituted, not whatever the (possibly wildcard) SPD selector expands
- * to.  Caller owns the result. */
-rc_vchar_t *
-ikev2_ts_payload_single(struct ikev2_payload_header *pl)
+/*
+ * Intersect one proposed TS with one selector-derived TS of the same type.
+ * Writes the result into out (sizeof(*ts) + 2*addrsize bytes) and returns
+ * 1, or 0 when they do not overlap.  Addresses, ports and protocol are all
+ * intersected, so the result is a subset of BOTH inputs (RFC 7296 s2.9).
+ */
+static int
+ikev2_ts_intersect(const struct ikev2_traffic_selector *p,
+		   const struct ikev2_traffic_selector *q, size_t addrsize,
+		   struct ikev2_traffic_selector *out)
 {
-	struct sockaddr *saddr;
-	rc_vchar_t *out;
-	int prefixlen;
+	const uint8_t *ps = (const uint8_t *)(p + 1), *pe = ps + addrsize;
+	const uint8_t *qs = (const uint8_t *)(q + 1), *qe = qs + addrsize;
+	uint8_t *os = (uint8_t *)(out + 1), *oe = os + addrsize;
+	unsigned int psp, pep, qsp, qep, sp, ep;
+	uint8_t proto;
 
-	saddr = ikev2_ts_payload_first_addr(pl);
-	if (saddr == NULL)
+	if (p->ts_type != q->ts_type)
+		return 0;
+	if (p->protocol_id == IKEV2_TS_PROTO_ANY)
+		proto = q->protocol_id;
+	else if (q->protocol_id == IKEV2_TS_PROTO_ANY ||
+		 q->protocol_id == p->protocol_id)
+		proto = p->protocol_id;
+	else
+		return 0;
+	psp = get_uint16(&p->start_port); pep = get_uint16(&p->end_port);
+	qsp = get_uint16(&q->start_port); qep = get_uint16(&q->end_port);
+	sp = psp > qsp ? psp : qsp;
+	ep = pep < qep ? pep : qep;
+	if (sp > ep)
+		return 0;
+	memcpy(os, memcmp(ps, qs, addrsize) >= 0 ? ps : qs, addrsize);
+	memcpy(oe, memcmp(pe, qe, addrsize) <= 0 ? pe : qe, addrsize);
+	if (memcmp(os, oe, addrsize) > 0)
+		return 0;
+	out->ts_type = p->ts_type;
+	out->protocol_id = proto;
+	put_uint16(&out->selector_length, sizeof(*out) + 2 * addrsize);
+	put_uint16(&out->start_port, sp);
+	put_uint16(&out->end_port, ep);
+	return 1;
+}
+
+rc_vchar_t *
+ikev2_ts_narrow_to_proposal(struct ikev2_payload_header *proposed,
+			    const rc_vchar_t *selresp, int *nomem)
+{
+	struct ikev2payl_traffic_selector *payl;
+	const struct ikev2payl_ts_h *qh;
+	const uint8_t *pp, *pend, *qp, *qend;
+	rc_vchar_t *out;
+	struct ikev2payl_ts_h *oh;
+	size_t pl_len, olen, cap;
+	unsigned int i, j, n = 0;
+
+	*nomem = 0;
+	if (proposed == NULL || selresp == NULL ||
+	    selresp->l < sizeof(struct ikev2payl_ts_h))
 		return NULL;
-	prefixlen = saddr->sa_family == AF_INET6 ? 128 : 32;
-	out = ts_add_return(NULL, IKEV2_TS_PROTO_ANY, saddr, prefixlen);
-	rc_free(saddr);
+	pl_len = get_payload_length(proposed);
+	if (pl_len < sizeof(*payl))
+		return NULL;
+	payl = (struct ikev2payl_traffic_selector *)proposed;
+	qh = (const struct ikev2payl_ts_h *)selresp->v;
+
+	/* worst case: every pair intersects; IPv6 entries are the largest */
+	cap = (size_t)payl->tsh.num_ts * qh->num_ts;
+	if (cap > 255)
+		cap = 255;
+	olen = sizeof(*oh) + cap * (sizeof(struct ikev2_traffic_selector) +
+				    2 * sizeof(struct in6_addr));
+	out = rc_vmalloc(olen);
+	if (out == NULL) {
+		*nomem = 1;
+		return NULL;
+	}
+	memset(out->v, 0, out->l);
+	oh = (struct ikev2payl_ts_h *)out->v;
+	olen = sizeof(*oh);
+
+	pp = (const uint8_t *)(payl + 1);
+	pend = (const uint8_t *)proposed + pl_len;
+	for (i = 0; i < payl->tsh.num_ts && n < cap; ++i) {
+		const struct ikev2_traffic_selector *p =
+		    (const struct ikev2_traffic_selector *)pp;
+		size_t paddr, plen;
+
+		if ((size_t)(pend - pp) < sizeof(*p))
+			break;
+		paddr = ikev2_ts_addr_size(p->ts_type);
+		plen = get_uint16(&p->selector_length);
+		if (paddr == 0 || plen < sizeof(*p) + 2 * paddr ||
+		    (size_t)(pend - pp) < plen)
+			break;
+
+		qp = (const uint8_t *)(qh + 1);
+		qend = (const uint8_t *)selresp->v + selresp->l;
+		for (j = 0; j < qh->num_ts && n < cap; ++j) {
+			const struct ikev2_traffic_selector *q =
+			    (const struct ikev2_traffic_selector *)qp;
+			size_t qlen;
+
+			if ((size_t)(qend - qp) < sizeof(*q))
+				break;
+			qlen = get_uint16(&q->selector_length);
+			if (qlen < sizeof(*q) || (size_t)(qend - qp) < qlen)
+				break;
+			if (q->ts_type == p->ts_type &&
+			    qlen >= sizeof(*q) + 2 * paddr &&
+			    ikev2_ts_intersect(p, q, paddr,
+				(struct ikev2_traffic_selector *)
+				((uint8_t *)out->v + olen))) {
+				olen += sizeof(*q) + 2 * paddr;
+				++n;
+			}
+			qp += qlen;
+		}
+		pp += plen;
+	}
+	if (n == 0) {
+		rc_vfree(out);
+		return NULL;
+	}
+	oh->num_ts = (uint8_t)n;
+	/* shrink to the exact length (a failed shrink keeps the larger
+	 * buffer, which is still valid for olen bytes) */
+	if (rc_vrealloc(out, olen) == NULL)
+		out->l = olen;
 	return out;
 }
 
