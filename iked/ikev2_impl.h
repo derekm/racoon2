@@ -916,6 +916,13 @@ void ikev2_resume_forget(struct ikev2_sa *);
 void ikev2_resume_dump_all(void);
 void ikev2_resume_load(void);
 
+/* IKEv2 transmit / retransmit / msgid-window helpers, defined in
+ * ikev2_transmit.c. */
+int ikev2_check_message_ordering(struct ikev2_sa *, uint32_t, int,
+    struct sockaddr *, struct sockaddr *);
+int ikev2_retransmit_forced(struct ikev2_sa *, uint32_t, int);
+int ikev2_check_icv_prev_gen(struct ikev2_sa *, rc_vchar_t *);
+
 /* INFORMATIONAL / ESTABLISHED-state dispatch, defined in
  * ikev2_informational.c. */
 void ikev2_established_recv(struct ikev2_sa *, rc_vchar_t *,
