@@ -316,6 +316,63 @@ main(void)
 		if (lt) rc_vfree(lt);
 	}
 
+	/* ---- store record mode / symlink hardening (review L4) ---- */
+	{
+		const char *sdir = "/tmp/r2tkt-kat-l4";
+		struct r2ticket_state sm = make_state(0x7fffffffu);
+		struct r2ticket_state got;
+		rc_vchar_t *lt, *tl = NULL;
+		struct stat sb;
+		char rec[256], target[256];
+		FILE *pf;
+		mode_t om;
+
+		mkdir(sdir, 0700);
+		snprintf(rec, sizeof(rec), "%s/%speer-l4", sdir,
+			 R2TICK_STORE_PREFIX);
+		snprintf(target, sizeof(target), "%s/elsewhere", sdir);
+		unlink(rec); unlink(target);
+		lt = r2ticket_lt_opaque(tkey, KID1, &sm, 3600);
+		/* a pre-created 0644 file at the record name */
+		om = umask(0);
+		pf = fopen(rec, "wb");
+		if (pf) fclose(pf);
+		chmod(rec, 0644);
+		umask(om);
+		CHECK(lt && r2ticket_store_save(sdir, "peer-l4", lt, &sm) == 0 &&
+		      stat(rec, &sb) == 0 && (sb.st_mode & 0777) == 0600,
+		      "store: save forces 0600 over a pre-created 0644 file");
+		/* a symlink at the record name is replaced, not followed */
+		unlink(rec);
+		pf = fopen(target, "wb");
+		if (pf) fclose(pf);
+		CHECK(symlink(target, rec) == 0 &&
+		      r2ticket_store_save(sdir, "peer-l4", lt, &sm) == 0 &&
+		      lstat(rec, &sb) == 0 && S_ISREG(sb.st_mode) &&
+		      stat(target, &sb) == 0 && sb.st_size == 0,
+		      "store: save replaces a symlink instead of writing through it");
+		/* load refuses a group/other-readable record */
+		chmod(rec, 0640);
+		CHECK(r2ticket_store_load(sdir, "peer-l4", &tl, &got) == -1,
+		      "store: load refuses a group-readable record");
+		chmod(rec, 0600);
+		CHECK(r2ticket_store_load(sdir, "peer-l4", &tl, &got) == 0,
+		      "store: load accepts the owner-only record");
+		if (tl) rc_vfree(tl);
+		free_state(&got);
+		tl = NULL;
+		/* load refuses to follow a symlink */
+		unlink(target);
+		rename(rec, target);
+		CHECK(symlink(target, rec) == 0 &&
+		      r2ticket_store_load(sdir, "peer-l4", &tl, &got) == -1,
+		      "store: load does not follow a symlink");
+		if (tl) rc_vfree(tl);
+		unlink(rec); unlink(target); rmdir(sdir);
+		if (lt) rc_vfree(lt);
+		free_state(&sm);
+	}
+
 	/* ---- one expiry rule everywhere (review L3) ---- */
 	CHECK(!r2ticket_expired(1001, 1000), "expiry: usable before expires_at");
 	CHECK(r2ticket_expired(1000, 1000), "expiry: expired at expires_at");

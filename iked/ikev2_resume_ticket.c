@@ -646,10 +646,11 @@ r2ticket_store_save(const char *dir, const char *key,
 	 * the address->ticket mapping keeps concurrent SAs to different
 	 * peers from colliding. */
 	rc_vchar_t *pack;
-	char *path;
+	char *path, *tmp = NULL;
 	FILE *fp;
-	size_t tlen;
+	size_t tlen, plen;
 	uint8_t hdr[1 + 4];
+	int fd = -1;
 	int rc = -1;
 
 	if (!dir || !key || !ticket_lt || !ticket_lt->v || ticket_lt->l == 0
@@ -665,12 +666,24 @@ r2ticket_store_save(const char *dir, const char *key,
 	if (!path)
 		goto out;
 
-	/* Defend against umask: force 0600 (owner-only) regardless of the
-	 * caller's umask, like the legacy resume-dump writer.  The ticket is
-	 * keyed to us and lets the holder resume into this remote. */
-	fp = fdopen(open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600), "wb");
-	if (!fp)
+	/* The record holds the OLD SK_d and lets its holder resume into
+	 * this remote: owner-only, whatever the umask, and never written
+	 * through a pre-created file or symlink at the final name.  Write a
+	 * fresh mkstemp() file in the store dir, force 0600 on it, then
+	 * rename() it over the final name (rename replaces a symlink, it
+	 * does not follow it). */
+	plen = strlen(path) + sizeof(".XXXXXX");
+	if (!(tmp = racoon_malloc(plen)))
 		goto out;
+	snprintf(tmp, plen, "%s.XXXXXX", path);
+	if ((fd = mkstemp(tmp)) < 0) {
+		racoon_free(tmp);
+		tmp = NULL;
+		goto out;
+	}
+	if (fchmod(fd, 0600) != 0 || !(fp = fdopen(fd, "wb")))
+		goto out;
+	fd = -1;		/* owned by fp now */
 	tlen = ticket_lt->l;
 	hdr[0] = R2TICK_STORE_VERSION;
 	hdr[1] = (uint8_t)(tlen >> 24); hdr[2] = (uint8_t)(tlen >> 16);
@@ -681,10 +694,24 @@ r2ticket_store_save(const char *dir, const char *key,
 		fclose(fp);
 		goto out;
 	}
-	if (fflush(fp) != 0 || fclose(fp) != 0)
+	if (fflush(fp) != 0 || fsync(fileno(fp)) != 0) {
+		fclose(fp);
 		goto out;
+	}
+	if (fclose(fp) != 0)
+		goto out;
+	if (rename(tmp, path) != 0)
+		goto out;
+	racoon_free(tmp);
+	tmp = NULL;
 	rc = 0;
 out:
+	if (fd >= 0)
+		close(fd);
+	if (tmp) {
+		unlink(tmp);
+		racoon_free(tmp);
+	}
 	if (path)
 		racoon_free(path);
 	rc_vfreez(pack);
@@ -702,6 +729,8 @@ r2ticket_store_load(const char *dir, const char *key,
 	rc_vchar_t *tl = NULL, *pack = NULL;
 	uint8_t *buf;
 	long flen;
+	struct stat sb;
+	int fd;
 	int rc = -1;
 
 	if (!dir || !key || !ticket_lt || !st)
@@ -712,10 +741,18 @@ r2ticket_store_load(const char *dir, const char *key,
 	path = r2tick_store_path(dir, key);
 	if (!path)
 		return -1;
-	fp = fopen(path, "rb");
+	/* only a regular, owner-only file we own: never follow a symlink,
+	 * never trust a record someone else could have written or read */
+	fd = open(path, O_RDONLY | O_NOFOLLOW);
 	racoon_free(path);
-	if (!fp)
+	if (fd < 0)
 		return -1;
+	if (fstat(fd, &sb) != 0 || !S_ISREG(sb.st_mode) ||
+	    sb.st_uid != geteuid() || (sb.st_mode & 077) != 0 ||
+	    !(fp = fdopen(fd, "rb"))) {
+		close(fd);
+		return -1;
+	}
 	if (fread(hdr, 1, sizeof(hdr), fp) != sizeof(hdr))
 		goto out;
 	if (hdr[0] != R2TICK_STORE_VERSION)
