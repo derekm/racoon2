@@ -1071,6 +1071,11 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	if (!my_proposal)
 		goto fail;
 
+	/* allow_nsa_deprecated / allow_rfc_deprecated: a disallowed peer
+	 * transform is never selectable (IKE_SA_INIT both roles, IKE_SA
+	 * rekey both roles), also not as a carried ADDKE round. */
+	ikev2_proplist_filter_deprecated(rminfo, peer_proposal);
+
 #ifdef WITH_INTERMEDIATE
 	/* RFC 9370 s2.2.1: a peer type-6/ADDKE on the INITIAL IKE_SA is only
 	 * actionable when IKE_INTERMEDIATE (16438) was negotiated
