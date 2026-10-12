@@ -243,6 +243,7 @@ table inet r2drop {
 }
 NFT
 		y_arm=$(grep -c 'g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null || true)
+		yi_arm=$(grep -c 'g_ir_present=Y' "$D/init-iked.log" 2>/dev/null || true)
 		resp0=$(grep -c 'CREATE_CHILD_SA response:' "$D/resp-iked.log" 2>/dev/null || true)
 		i=0
 		resp1=$resp0
@@ -272,6 +273,25 @@ NFT
 			fi
 			i=$((i+1)); sleep 1
 		done
+		# The responder's Y keymat only proves IT finished; the dropped
+		# fragment is still missing on the initiator, which recovers only
+		# when its retransmit timer (interval_to_send, 10s default) fires
+		# and the responder replays the cached response.  Wait for the
+		# initiator's own new Y keymat (and the replay) before sampling;
+		# sampling right after the responder's Y caught the initiator
+		# holding fragments 2/3 of 3 (CI 38185214699: init log ends with
+		# two 'SKF fragment recv' lines, no retransmit yet).
+		yi1=${yi_arm:-0}
+		if [ "$rekeyed" -eq 1 ]; then
+			i=0
+			while [ "$i" -lt 35 ]; do
+				yi1=$(grep -c 'g_ir_present=Y' "$D/init-iked.log" 2>/dev/null || true)
+				nr=$(grep -c 'R2 replay' "$D/resp-iked.log" 2>/dev/null || true)
+				[ "${yi1:-0}" -gt "${yi_arm:-0}" ] && [ "${nr:-0}" -ge 1 ] && break
+				i=$((i+1)); sleep 1
+			done
+			log "initiator recovery: init Y ${yi_arm:-0}->${yi1:-0} R2 replay=${nr:-0} after ${i}s"
+		fi
 		ndrop=$(ip netns exec "$NSR" nft list table inet r2drop 2>/dev/null \
 			| grep -oE 'counter packets [0-9]+' | head -1 | awk '{print $3}')
 		ip netns exec "$NSR" nft delete table inet r2drop 2>/dev/null || true
@@ -295,6 +315,7 @@ NFT
 		skf=$(grep -c 'SKF fragment recv' "$D/resp-iked.log" 2>/dev/null || true)
 		pqc=0
 		if [ "${t6:-0}" -ge 1 ] && [ -n "$kh_i" ] && [ "$kh_i" = "$kh_r" ] \
+		   && [ "${yi1:-0}" -gt "${yi_arm:-0}" ] \
 		   && [ "${abt:-0}" -eq 0 ]; then
 			pqc=1
 			log "PQC rekey: type-6 offered (x$t6), last KEM keymat $kh_i matches both sides, no followup timeout"
