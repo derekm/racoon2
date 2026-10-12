@@ -277,6 +277,20 @@ jobs:
           ASAN_OPTIONS: log_path=/tmp/r2-asan/asan:detect_leaks=0:abort_on_error=1
           UBSAN_OPTIONS: log_path=/tmp/r2-asan/asan:print_stacktrace=1:halt_on_error=1
 
+      - name: Collect ASan live-row logs
+        if: failure()
+        run: |
+          mkdir -p /tmp/asan-rows
+          sudo sh -c 'cp -r /tmp/r2-* /tmp/asan-rows/ 2>/dev/null; chmod -R a+rX /tmp/asan-rows' || true
+
+      - name: Upload ASan live-row logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan-live-rows
+          path: /tmp/asan-rows
+          if-no-files-found: warn
+
       - name: 'Dump unit logs on failure'
         if: failure()
         run: |
