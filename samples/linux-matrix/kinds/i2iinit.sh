@@ -620,7 +620,7 @@ fi
 		# = charon) into private/.  Both seats are generated above, so this
 		# must come AFTER the openssl pairs.
 		if [ "$PEER" = charon ]; then
-			_privdir="${I2I_CHARON_KEYS_DIR:-/etc/strongswan/swanctl/private}"
+			_privdir="${I2I_CHARON_KEYS_DIR:-${I2I_CHARON_VDIR%/conf.d}/private}"
 			mkdir -p "$_privdir" || { log "FAIL: no charon private key dir $_privdir"; return 1; }
 			cp "$C/key-i.pem" "$_privdir/r2-${name}-key-i.pem" || { log "FAIL: cp key-i->$_privdir"; return 1; }
 			chmod 644 "$_privdir/r2-${name}-key-i.pem" 2>/dev/null || true
@@ -1122,7 +1122,7 @@ fi
 	i2i_peer_r_cleanup "$PEER_R" "$name"
 	pkill -9 -f "$C/" 2>/dev/null || true
 	rm -f "$PPK_FILE"
-	rm -f /etc/strongswan/swanctl/conf.d/r2-${name}.conf
+	rm -f "$I2I_CHARON_VDIR"/r2-${name}.conf
 	sleep 1
 	ip netns del "$NSR" 2>/dev/null || true
 	ip netns del "$NSI" 2>/dev/null || true

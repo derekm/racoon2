@@ -22,7 +22,18 @@ I2I_SWANCTL_BIN=${I2I_SWANCTL_BIN:-/usr/bin/swanctl}
 I2I_LW_PLUTO=${I2I_LW_PLUTO:-/usr/libexec/ipsec/pluto}
 I2I_LW_WHACK=${I2I_LW_WHACK:-/usr/libexec/ipsec/whack}
 I2I_LW_PSK=${I2I_LW_PSK:-racoon2-libreswan-resume-0123456789abcdef}
-I2I_CHARON_VDIR=${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}
+# swanctl's conf dir: /etc/strongswan/swanctl (Fedora, Ubuntu <= 24.04
+# strongswan 5.x) or /etc/swanctl (Debian strongswan 6.x, kernel lane on
+# sid: rows wrote to the missing old dir and charon loaded nothing).
+if [ -z "${I2I_CHARON_VDIR:-}" ]; then
+	if [ -d /etc/strongswan/swanctl ]; then
+		I2I_CHARON_VDIR=/etc/strongswan/swanctl/conf.d
+	elif [ -d /etc/swanctl ]; then
+		I2I_CHARON_VDIR=/etc/swanctl/conf.d
+	else
+		I2I_CHARON_VDIR=/etc/strongswan/swanctl/conf.d
+	fi
+fi
 I2I_DH_GROUP=${I2I_DH_GROUP:-ecp256}	# charon IKE proposal DH group
 I2I_PROPOSAL=${I2I_PROPOSAL:-aes256gcm16-prfsha256-${I2I_DH_GROUP}-ke1_mlkem768}	# full charon IKE proposal string
 # Child (ESP) proposal: ${I2I_ESP:-aes128gcm16} default.  PFS-child rows
