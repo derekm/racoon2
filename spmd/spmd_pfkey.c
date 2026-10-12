@@ -808,6 +808,11 @@ spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
 	if (b == NULL)
 		return -1;
 	b->pltype = RCT_ACT_NONE;
+	/* no SA behind a bypass, but the PF_KEY SPDADD/SPDUPDATE builder
+	 * still emits SA2 and rct2pfk_samode() errx()s on 0: on the Linux
+	 * pfkey backend spmd died at start-up with "samode=0 not
+	 * supported".  Same choice as spmd_spd_add() for non-IPsec rows. */
+	b->samode = RCT_IPSM_TRANSPORT;
 	b->dir = dir;
 	b->ul_proto = IPPROTO_UDP;
 	b->sp_src = rcs_sadup(src);
