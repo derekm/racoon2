@@ -211,5 +211,19 @@ endif
 LIBS = @LIBS@
 
 man_MANS = iked.8
-EXTRA_DIST = evloop.h evloop_select.c evloop_epoll.c crypto_workers.h \
+# libFuzzer harnesses (configure --enable-fuzz, clang).  Not run by make
+# check: CI runs each for a bounded time (fuzz-smoke job).
+if FUZZ
+noinst_PROGRAMS = fuzz_ikev2_payloads fuzz_ikev1_parse
+fuzz_ikev2_payloads_SOURCES = fuzz/fuzz_ikev2_payloads.c
+fuzz_ikev2_payloads_LDADD = $(addtest_ikedsrc) $(LDADD)
+fuzz_ikev2_payloads_LDFLAGS = -fsanitize=fuzzer
+fuzz_ikev1_parse_SOURCES = fuzz/fuzz_ikev1_parse.c
+fuzz_ikev1_parse_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/ikev1
+fuzz_ikev1_parse_LDADD = $(addtest_ikedsrc) $(LDADD)
+fuzz_ikev1_parse_LDFLAGS = -fsanitize=fuzzer
+endif
+
+EXTRA_DIST = fuzz/fuzz_common.h fuzz/corpus \
+	evloop.h evloop_select.c evloop_epoll.c crypto_workers.h \
 	ikedctl.c ikedctl.h ikedctl_unix.c admin.c admin.h samplecheck.sh
