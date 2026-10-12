@@ -215,8 +215,10 @@ EOF
 		_ikev1_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	fi
-	( ip netns exec "$NSI" "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
-	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 ) >"$D/charon-init.log" 2>&1 &
+	# line-buffered (i2i_charon_run): a plain redirect left charon-init.log
+	# EMPTY on the sid kernel lane (stdio buffer lost to the SIGKILL), so a
+	# failed row carried no charon diagnostics at all
+	i2i_charon_run "$NSI" "$D/charon-init.log"
 	_CHARON_PID=$!
 	sleep 2
 	( ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --load-all --debug 2 ) >"$D/swanctl-load.log" 2>&1
