@@ -289,7 +289,7 @@ EOF
 	# r2eap from an earlier run) would hijack --initiate --child and
 	# send the wrong IKE proposal (e.g. MODP_2048 instead of the dh31
 	# curve25519) or target a stale peer.  Same class as c4ed997.
-	rm -f /etc/strongswan/swanctl/conf.d/*.conf 2>/dev/null || true
+	rm -f "$I2I_CHARON_VDIR"/*.conf 2>/dev/null || true
 	rm -f "$CHARON_CONN"
 	cat > "$CHARON_CONN" <<EOF
 connections {
