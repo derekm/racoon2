@@ -119,15 +119,28 @@ vid_string_by_id (int id)
 	return current ? current->string : NULL;
 }
 
+/*
+ * Match a received VID body of `len' bytes against the known hashes.  The
+ * body comes straight from an unauthenticated Main/Aggressive Mode packet,
+ * so never read more than `len' bytes: a known hash only matches when the
+ * body is at least that long (longer is the "broken Microsoft ID" case).
+ * The old strncmp() read hash->l (16) bytes regardless and stopped early on
+ * NUL, so a short VID payload at the end of a datagram was over-read.
+ * Fix idea from rdratlos/racoon-ipsec-tools babf1bd (#39).
+ */
 static struct vendor_id *
-lookup_vendor_id_by_hash (const char *hash)
+lookup_vendor_id_by_hash (const char *hash, size_t len)
 {
 	size_t i;
 
-	for (i = 0; i < NUMVENDORIDS; i++)
-		if (strncmp(all_vendor_ids[i].hash->v, hash,
-			    all_vendor_ids[i].hash->l) == 0)
+	for (i = 0; i < NUMVENDORIDS; i++) {
+		if (all_vendor_ids[i].hash == NULL ||
+		    all_vendor_ids[i].hash->l > len)
+			continue;
+		if (memcmp(all_vendor_ids[i].hash->v, hash,
+			   all_vendor_ids[i].hash->l) == 0)
 			return &all_vendor_ids[i];
+	}
 
 	return NULL;
 }
@@ -206,15 +219,23 @@ set_vendorid(int vendorid)
 int
 check_vendorid(struct isakmp_gen *gen)
 {
-	uint16_t vidlen;
+	uint16_t plen;
+	size_t vidlen;
 	struct vendor_id *current;
 
 	if (gen == NULL)
 		return (VENDORID_UNKNOWN);
 
-	vidlen = get_uint16(&gen->len) - sizeof(*gen);
+	plen = get_uint16(&gen->len);
+	if (plen < sizeof(*gen)) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "Vendor ID payload length %u is shorter than its header\n",
+		     (unsigned)plen);
+		return (VENDORID_UNKNOWN);
+	}
+	vidlen = plen - sizeof(*gen);
 
-	current = lookup_vendor_id_by_hash((char *)(gen + 1));
+	current = lookup_vendor_id_by_hash((char *)(gen + 1), vidlen);
 	if (!current)
 		goto unknown;
 
@@ -230,6 +251,25 @@ check_vendorid(struct isakmp_gen *gen)
 	return current->id;
 
 unknown:
+	/* name a truncated known VID: it is the shape of the old over-read */
+	{
+		size_t i;
+
+		for (i = 0; vidlen > 0 && i < NUMVENDORIDS; i++) {
+			if (all_vendor_ids[i].hash == NULL ||
+			    vidlen >= all_vendor_ids[i].hash->l)
+				continue;
+			if (memcmp(all_vendor_ids[i].hash->v, gen + 1,
+				   vidlen) == 0) {
+				plog(PLOG_PROTOERR, PLOGLOC, NULL,
+				     "truncated Vendor ID (%zu of %zu bytes) "
+				     "of %s ignored\n", vidlen,
+				     all_vendor_ids[i].hash->l,
+				     all_vendor_ids[i].string);
+				break;
+			}
+		}
+	}
 	plog(PLOG_DEBUG, PLOGLOC, NULL, "received unknown Vendor ID\n");
 	plogdump(PLOG_DEBUG, PLOGLOC, 0, (char *)(gen + 1), vidlen);
 	return (VENDORID_UNKNOWN);
