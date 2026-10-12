@@ -130,6 +130,14 @@ test_vendorid_short(void)
 	rc_vfree(rfc);
 }
 
+static void
+test_natt_drafts_dropped(void)
+{
+	TEST_CHECK(natt_vendorid(VENDORID_NATT_00) == 0);
+	TEST_CHECK(natt_vendorid(VENDORID_NATT_01) == 0);
+	TEST_CHECK(natt_vendorid(VENDORID_NATT_RFC) != 0);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -142,6 +150,7 @@ main(int argc, char *argv[])
 	RUN_TEST(test_payload_body_cmp);
 	RUN_TEST(test_ct_equal);
 	RUN_TEST(test_vendorid_short);
+	RUN_TEST(test_natt_drafts_dropped);
 
 	plog_clean();
 	return test_exit_status();
