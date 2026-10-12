@@ -48,6 +48,83 @@ struct encryptor_method encr_triple_des = {
 	eay_3des_decrypt
 };
 
+/*
+ * Deprecated CBC ciphers (RFC 8247 s2.1 / RFC 8221 s5 MUST NOT or RFC
+ * 9395 s5 DEPRECATED; DES-family also NSA-deprecated).  Offered only when
+ * allow_nsa_deprecated / allow_rfc_deprecated permit; served by the
+ * OpenSSL 3 legacy provider, probed at runtime by .available.
+ * Fields: name, block, IV, key octets (see crypto_openssl.c eay_evp_cbc).
+ */
+struct encryptor_method encr_des = {		/* RFC 2405 */
+	"des-cbc",
+	8, 8, 8,
+	eay_des_weakkey,
+	eay_des_evp_encrypt,
+	eay_des_evp_decrypt,
+	0, NULL, NULL,
+	eay_des_evp_available,
+};
+
+struct encryptor_method encr_des_iv64 = {	/* RFC 1827 / 1829, 64-bit IV */
+	"des-cbc-iv64",
+	8, 8, 8,
+	eay_des_weakkey,
+	eay_des_evp_encrypt,
+	eay_des_evp_decrypt,
+	0, NULL, NULL,
+	eay_des_evp_available,
+};
+
+struct encryptor_method encr_des_iv32 = {	/* RFC 1829 s2.1, 32-bit IV */
+	"des-cbc-iv32",
+	8, 4, 8,
+	eay_des_weakkey,
+	eay_des_iv32_evp_encrypt,
+	eay_des_iv32_evp_decrypt,
+	0, NULL, NULL,
+	eay_des_evp_available,
+};
+
+struct encryptor_method encr_cast128 = {	/* RFC 2451, 128-bit key */
+	"cast128-cbc",
+	8, 8, 16,
+	eay_evp_noweakkey,	/* RFC 2451 s2.3: no known weak keys */
+	eay_cast128_evp_encrypt,
+	eay_cast128_evp_decrypt,
+	0, NULL, NULL,
+	eay_cast128_evp_available,
+};
+
+struct encryptor_method encr_blowfish128 = {	/* RFC 2451, 128-bit key */
+	"blowfish-cbc",
+	8, 8, 16,
+	eay_evp_noweakkey,	/* RFC 2451 s2.3: not testable pre-schedule */
+	eay_blowfish128_evp_encrypt,
+	eay_blowfish128_evp_decrypt,
+	0, NULL, NULL,
+	eay_blowfish128_evp_available,
+};
+
+struct encryptor_method encr_idea = {		/* RFC 2451, 128-bit key */
+	"idea-cbc",
+	8, 8, 16,
+	eay_evp_noweakkey,
+	eay_idea_evp_encrypt,
+	eay_idea_evp_decrypt,
+	0, NULL, NULL,
+	eay_idea_evp_available,
+};
+
+struct encryptor_method encr_rc5_128 = {	/* RFC 2451, 128-bit, 16 rounds */
+	"rc5-cbc",
+	8, 8, 16,
+	eay_evp_noweakkey,	/* RFC 2451 s2.3: none at 16 rounds */
+	eay_rc5_128_evp_encrypt,
+	eay_rc5_128_evp_decrypt,
+	0, NULL, NULL,
+	eay_rc5_128_evp_available,
+};
+
 struct encryptor_method encr_aes128 = {
 	"aes-128-cbc",
 	AES_BLOCK_SIZE, AES_BLOCK_SIZE, 128 / 8,

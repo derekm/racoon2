@@ -113,6 +113,27 @@ extern rc_vchar_t *eay_get_pkcs12_privkey (rc_vchar_t *, const char *);
 /* string error */
 extern char *eay_strerror (void);
 
+/* EVP CBC (legacy provider) ciphers for the deprecated transforms */
+extern int eay_evp_cipher_available (const char *);
+extern rc_vchar_t *eay_evp_cbc (const char *, rc_vchar_t *, rc_vchar_t *,
+				const unsigned char *, int, int);
+extern int eay_evp_noweakkey (rc_vchar_t *);
+#define	EAY_EVP_CBC_DECL(fn)						\
+extern rc_vchar_t *eay_ ## fn ## _evp_encrypt (rc_vchar_t *, rc_vchar_t *, \
+					       rc_vchar_t *);		\
+extern rc_vchar_t *eay_ ## fn ## _evp_decrypt (rc_vchar_t *, rc_vchar_t *, \
+					       rc_vchar_t *);		\
+extern int eay_ ## fn ## _evp_available (void);
+EAY_EVP_CBC_DECL(des)
+EAY_EVP_CBC_DECL(cast128)
+EAY_EVP_CBC_DECL(blowfish128)
+EAY_EVP_CBC_DECL(idea)
+EAY_EVP_CBC_DECL(rc5_128)
+extern rc_vchar_t *eay_des_iv32_evp_encrypt (rc_vchar_t *, rc_vchar_t *,
+					     rc_vchar_t *);
+extern rc_vchar_t *eay_des_iv32_evp_decrypt (rc_vchar_t *, rc_vchar_t *,
+					     rc_vchar_t *);
+
 /* DES */
 extern rc_vchar_t *eay_des_encrypt (rc_vchar_t *, rc_vchar_t *,
 				        rc_vchar_t *);

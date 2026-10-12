@@ -56,7 +56,7 @@ check_PROGRAMS = eaytest evlooptest workerstest resumetest fragtest ndcppkats ea
 # RFC 8247 / RFC 8221 / RFC 9395 codepoint maps to the right class, level
 # and citation, per protocol context.  Pure table, links standalone.
 deprtest_SOURCES = deprtest.c ike_deprecated.c
-eaytest_SOURCES = eaytest.c crypto_openssl.c str2val.c
+eaytest_SOURCES = eaytest.c crypto_openssl.c str2val.c encryptor.c
 # RFC 5723 ticket-layer KAT: the s5.1 resumed-SKEYSEED derivation pinned
 # against a python hmac/sha256 vector and the ticket-by-value codec
 # round-trip + tamper/wrong-key/expired rejection.  Standalone (lib + EVP

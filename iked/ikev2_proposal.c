@@ -488,8 +488,28 @@ ikev2_compare_attributes(struct isakmp_domain *doi,
 
 	if (my_attrib_bytes == 0 && peer_attrib_bytes == 0)
 		return 0;
-	if (my_attrib_bytes == 0 || peer_attrib_bytes == 0)
-		return -1;
+	if (my_attrib_bytes == 0 || peer_attrib_bytes == 0) {
+		/* RFC 7296 s3.3.5: ENCR_RC5, ENCR_CAST and ENCR_BLOWFISH
+		 * have a default key length when the attribute is omitted
+		 * (RFC 2451 s2.2: 128 bits), so an attribute-less offer
+		 * equals KEY_LENGTH 128. */
+		struct ikev2transform *mt = (struct ikev2transform *)my_transf;
+		struct isakmp_data *a;
+		unsigned int id = get_uint16(&mt->transform_id);
+
+		if (mt->transform_type != IKEV2TRANSFORM_TYPE_ENCR ||
+		    (id != IKEV2TRANSF_ENCR_RC5 && id != IKEV2TRANSF_ENCR_CAST &&
+		     id != IKEV2TRANSF_ENCR_BLOWFISH))
+			return -1;
+		a = (struct isakmp_data *)(my_attrib_bytes ? (void *)my_attrib
+							   : (void *)peer_attrib);
+		if ((my_attrib_bytes ? my_attrib_bytes : peer_attrib_bytes) >
+		    sizeof(struct isakmp_data) ||
+		    get_uint16(&a->type) !=
+		    (IKEV2ATTRIB_KEY_LENGTH | IKEV2ATTRIB_SHORT))
+			return -1;
+		return get_uint16(&a->lorv) == 128 ? 0 : -1;
+	}
 
 	/*
 	 * for each of my attribute, see whether there's corresponding
