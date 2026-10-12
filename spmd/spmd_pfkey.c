@@ -822,8 +822,12 @@ spmd_ike_bypass_one(struct sockaddr *src, struct sockaddr *dst,
 	b->pref_dst = (dst->sa_family == AF_INET6) ? 128 : 32;
 	b->seq = pfkey_seq_next();
 	ret = rcpfk_send_spdupdate(b);
-	if (ret == 0)
+	if (ret == 0) {
+		/* read the ACK only: a queued multicast event must not be
+		 * taken for the reply (rcpfk WAITREPLY) */
+		b->flags |= PFK_FLAG_WAITREPLY;
 		ret = rcpfk_handler(b);
+	}
 	if (ret != 0)
 		SPMD_PLOG(SPMD_L_INTERR,
 		    "IKE bypass %u->%u/%s %s->%s failed: %s",
@@ -965,6 +969,7 @@ retry:
 		if (ret<0) {
 			goto fin;
 		}
+		rc->flags |= PFK_FLAG_WAITREPLY;
 		ret = rcpfk_handler(rc);
 	} else {
 		t = task_alloc(0);
@@ -1072,6 +1077,7 @@ spmd_spd_delete(uint32_t spid, int urgent)
 			SPMD_PLOG(SPMD_L_INTERR, "Failed to send spddelete2 message for spid(%u)", spid);
 			goto err_fin;
 		}
+		rc->flags |= PFK_FLAG_WAITREPLY;
 		ret = rcpfk_handler(rc);
 		if (ret<0) {
 			SPMD_PLOG(SPMD_L_INTERR, "Failed to receive spddelete2 response for spid(%u)", spid);
@@ -1162,11 +1168,18 @@ spmd_spd_match_delete(uint32_t spid, rc_type samode,
 	rc->seq = pfkey_seq_next();
 	rc->slid = spid;
 
+	/*
+	 * The SPDGET reply decides dodelete below.  WAITREPLY makes the
+	 * backend consume messages until the reply to this seq arrives;
+	 * before it, whatever came first (e.g. another process's
+	 * multicast policy event) was parsed into rc as the reply.
+	 */
 	ret = rcpfk_send_spdget(rc);
 	if (ret<0) {
 		SPMD_PLOG(SPMD_L_INTERR, "Failed to send spdget message for spid(%u)", spid);
 		goto err_fin;
 	}
+	rc->flags |= PFK_FLAG_WAITREPLY;
 	ret = rcpfk_handler(rc);
 	if (ret<0) {
 		SPMD_PLOG(SPMD_L_INTERR, "Failed to receive spdget response for spid(%u)", spid);
@@ -1243,6 +1256,7 @@ spmd_spd_match_delete(uint32_t spid, rc_type samode,
 				SPMD_PLOG(SPMD_L_INTERR, "Failed to send spddelete2 message for spid(%u)", spid);
 				goto err_fin;
 			}
+			rc->flags |= PFK_FLAG_WAITREPLY;
 			ret = rcpfk_handler(rc);
 			if (ret<0) {
 				SPMD_PLOG(SPMD_L_INTERR, "Failed to receive spddelete2 response for spid(%u)", spid);
@@ -1361,6 +1375,7 @@ spmd_migrate(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 		ret = rcpfk_send_migrate(rc);
 		if (ret < 0)
 			goto fin;
+		rc->flags |= PFK_FLAG_WAITREPLY;
 		ret = rcpfk_handler(rc);
 	} else {
 		t = task_alloc(0);
