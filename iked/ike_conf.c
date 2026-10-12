@@ -4806,6 +4806,9 @@ oakley_encdef_doi_keylen(rc_type type, int keylen)
 #endif
 
 #ifdef IKEV1
+static void ike_conf_check_deprecated_ikev1(struct rcf_remote *, int,
+					    const char *, int *, int *);
+
 /* check ikev1 clause of remote section of configuration */
 static void
 ike_conf_check_ikev1(struct rcf_remote *rmconf, int *err, int *warn,
@@ -4977,6 +4980,9 @@ ike_conf_check_ikev1(struct rcf_remote *rmconf, int *err, int *warn,
 			}
 		}
 	}
+
+	ike_conf_check_deprecated_ikev1(rmconf, is_default_clause, rm_index,
+					err, warn);
 
     done:
 	free(rm_index);
@@ -5201,10 +5207,13 @@ ike_conf_depr_check(const char *where, const char *field, int ctx,
 			++*warn;
 			plog(PLOG_INTWARN, PLOGLOC, 0,
 			     "%s %s %s is RFC-deprecated (%s %s %s) - allowed by "
-			     "allow_rfc_deprecated on; remove the suite (see "
+			     "allow_rfc_deprecated on; %s (see "
 			     "doc/nsa-ipsec-hardening.md)\n", where, field,
 			     algname, ike_depr_ctx_str(ctx), di.rfc_cite,
-			     ike_depr_level_str(di.rfc_level));
+			     ike_depr_level_str(di.rfc_level),
+			     type == IKE_DEPR_T_V1_PROTO ?
+			     "migrate the remote to IKEv2" :
+			     "remove the suite");
 		}
 	}
 }
@@ -5338,6 +5347,128 @@ ike_conf_check_deprecated_ikev2(struct rcf_remote *rm, int is_default_clause,
 	}
 }
 
+#ifdef IKEV1
+/* IKEv1 auth method -> RFC 2409 class 3 base value: the hybrid and XAUTH
+ * DSS variants sign with DSS too. */
+int
+ikev1_depr_authmethod(int am)
+{
+	switch (am) {
+#ifdef ENABLE_HYBRID
+	case OAKLEY_ATTR_AUTH_METHOD_HYBRID_DSS_I:
+	case OAKLEY_ATTR_AUTH_METHOD_HYBRID_DSS_R:
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_DSSSIG_I:
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_DSSSIG_R:
+		return OAKLEY_ATTR_AUTH_METHOD_DSSSIG;
+#endif
+	default:
+		return am;
+	}
+}
+
+/* effective ikev1-clause switch values: the remote's own ikev1 clause
+ * (a per-remote override), else the default clause's, else builtin */
+static rc_type
+depr_switch_v1(struct rcf_remote *rm, int is_default_clause, int rfc)
+{
+	struct rcf_kmp *kmp;
+	rc_type v;
+
+	if (!rm || is_default_clause) {
+		rm = rcf_default_head ? rcf_default_head->remote : NULL;
+		kmp = rm ? rm->ikev1 : NULL;
+		v = kmp ? (rfc ? kmp->allow_rfc_deprecated
+			       : kmp->allow_nsa_deprecated) : 0;
+		if (!v)
+			v = rfc ? ikev2_default_values.allow_rfc_deprecated
+				: ikev2_default_values.allow_nsa_deprecated;
+		return v;
+	}
+	return rfc ? ikev1_allow_rfc_deprecated(rm)
+		   : ikev1_allow_nsa_deprecated(rm);
+}
+
+/* one IKEv1 Phase 1 list: RCT code -> RFC 2409 App A value by DOI map */
+static void
+ike_conf_depr_check_v1list(const char *where, const char *field,
+			   unsigned int type, struct rc_alglist *list,
+			   int (*doi)(rc_type), rc_type an, rc_type ar,
+			   int *err, int *warn)
+{
+	struct rc_alglist *a;
+	int id;
+
+	for (a = list; a; a = a->next) {
+		id = doi(a->algtype);
+		if (id <= 0)
+			continue;	/* unsupported: reported elsewhere */
+		if (type == IKE_DEPR_T_V1_AUTH)
+			id = ikev1_depr_authmethod(id);
+		ike_conf_depr_check(where, field, IKE_DEPR_CTX_IKEV1, type,
+				    (unsigned int)id, rct2str(a->algtype), an,
+				    ar, err, warn);
+	}
+}
+
+/* a remote that can negotiate IKEv1: it has an ikev1 clause and its
+ * acceptable_kmp (own or inherited) is unset or lists ikev1 */
+int
+ikev1_remote_speaks_ikev1(struct rcf_remote *rm)
+{
+	uint acc;
+
+	if (!rm || !rm->ikev1)
+		return 0;
+	acc = ike_acceptable_kmp(rm);
+	return !acc || (acc & RCF_ALLOW_IKEV1);
+}
+
+/* IKEv1 side of a remote, under its ikev1 clause's switches:
+ *  - the protocol itself (RFC 9395 s3): RFC-class, so a remote that can
+ *    speak IKEv1 needs allow_rfc_deprecated on -- set in that remote's
+ *    ikev1 clause it is a per-remote override that opens nothing on any
+ *    other remote, nor on this remote's ikev2 clause;
+ *  - Phase 1 kmp_enc/hash_alg, kmp_dh_group (also the Phase 2 PFS group)
+ *    and kmp_auth_method, each classified on its own (3DES also needs
+ *    allow_nsa_deprecated). */
+static void
+ike_conf_check_deprecated_ikev1(struct rcf_remote *rm, int is_default_clause,
+				const char *rm_index, int *err, int *warn)
+{
+	struct rcf_kmp *kmp = rm->ikev1;
+	rc_type an = depr_switch_v1(rm, is_default_clause, 0);
+	rc_type ar = depr_switch_v1(rm, is_default_clause, 1);
+	struct rc_alglist *enc, *hash, *dh, *auth;
+	char where[256];
+
+	if (!is_default_clause && !ikev1_remote_speaks_ikev1(rm))
+		return;
+	snprintf(where, sizeof(where), "remote %s ikev1", rm_index);
+	if (is_default_clause) {
+		enc = kmp->kmp_enc_alg;
+		hash = kmp->kmp_hash_alg;
+		dh = kmp->kmp_dh_group;
+		auth = kmp->kmp_auth_method;
+	} else {
+		enc = ikev1_kmp_enc_alg(rm);
+		hash = ikev1_kmp_hash_alg(rm);
+		dh = ikev1_kmp_dh_group(rm);
+		auth = ikev1_kmp_auth_method(rm);
+		ike_conf_depr_check(where, "acceptable_kmp", IKE_DEPR_CTX_IKEV1,
+		    IKE_DEPR_T_V1_PROTO, 1, "ikev1", an, ar, err, warn);
+	}
+	ike_conf_depr_check_v1list(where, "kmp_enc_alg", IKE_DEPR_T_V1_ENC,
+	    enc, alg_oakley_encdef_doi, an, ar, err, warn);
+	ike_conf_depr_check_v1list(where, "kmp_hash_alg", IKE_DEPR_T_V1_HASH,
+	    hash, alg_oakley_hashdef_doi, an, ar, err, warn);
+	ike_conf_depr_check_v1list(where, "kmp_dh_group", IKE_DEPR_T_KE,
+	    dh, alg_oakley_dhdef_doi, an, ar, err, warn);
+	ike_conf_depr_check_v1list(where, "kmp_auth_method",
+	    IKE_DEPR_T_V1_AUTH, auth, alg_oakley_authdef_doi, an, ar, err,
+	    warn);
+}
+#endif
+
 static struct rcf_remote *
 ike_conf_remote_of_policy(struct rcf_policy *policy)
 {
@@ -5351,10 +5482,13 @@ ike_conf_remote_of_policy(struct rcf_policy *policy)
 	return NULL;
 }
 
-/* child side: esp/ah enc + auth, esp_addke_alg, RFC 8221 s6 AUTH_NONE */
+/* child side: esp/ah enc + auth, esp_addke_alg, RFC 8221 s6 AUTH_NONE.
+ * ikev1 != 0: the IKEv1 Phase 2 view of the same SA -- the ikev1
+ * clause's switches, the RFC 2407 s4.5 auth attribute codepoints, no
+ * ADDKE. */
 static void
 ike_conf_check_deprecated_sa(struct rcf_sa *sa, struct rcf_remote *rm,
-			     int *err, int *warn)
+			     int ikev1, int *err, int *warn)
 {
 	rc_type an, ar, proto;
 	struct rc_alglist *enc = NULL, *auth = NULL, *addke = NULL, *a;
@@ -5363,8 +5497,16 @@ ike_conf_check_deprecated_sa(struct rcf_sa *sa, struct rcf_remote *rm,
 
 	if (!sa)
 		return;
-	an = depr_switch(rm, rm == NULL, 0);
-	ar = depr_switch(rm, rm == NULL, 1);
+#ifdef IKEV1
+	if (ikev1) {
+		an = depr_switch_v1(rm, rm == NULL, 0);
+		ar = depr_switch_v1(rm, rm == NULL, 1);
+	} else
+#endif
+	{
+		an = depr_switch(rm, rm == NULL, 0);
+		ar = depr_switch(rm, rm == NULL, 1);
+	}
 	SA_CONF(proto, sa, sa_protocol, 0);
 	if (proto == RCT_SATYPE_ESP)
 		ctx = IKE_DEPR_CTX_ESP;
@@ -5375,9 +5517,35 @@ ike_conf_check_deprecated_sa(struct rcf_sa *sa, struct rcf_remote *rm,
 	SA_CONF(enc, sa, enc_alg, 0);
 	SA_CONF(auth, sa, auth_alg, 0);
 	SA_CONF(addke, sa, addke_alg, 0);
-	snprintf(where, sizeof(where), "sa %s",
-		 sa->sa_index ? rc_vmem2str(sa->sa_index) : "(default)");
+	snprintf(where, sizeof(where), "sa %s%s",
+		 sa->sa_index ? rc_vmem2str(sa->sa_index) : "(default)",
+		 ikev1 ? " (ikev1)" : "");
 
+#ifdef IKEV1
+	if (ikev1) {
+		/* RFC 2407 s4.4.4 ESP transform IDs are the IKEv2 type-1
+		 * codepoints; the s4.5 auth attribute numbers its own way */
+		if (ctx == IKE_DEPR_CTX_ESP)
+			for (a = enc; a; a = a->next)
+				if (alg_ipsec_encdef_doi(a->algtype) > 0)
+					ike_conf_depr_check(where,
+					    "esp_enc_alg", ctx, IKE_DEPR_T_ENCR,
+					    (unsigned int)alg_ipsec_encdef_doi(
+						a->algtype),
+					    rct2str(a->algtype), an, ar, err,
+					    warn);
+		for (a = auth; a; a = a->next)
+			if (a->algtype != RCT_ALG_NON_AUTH &&
+			    alg_ipsec_hmacdef_doi(a->algtype) > 0)
+				ike_conf_depr_check(where,
+				    ctx == IKE_DEPR_CTX_ESP ? "esp_auth_alg" :
+				    "ah_auth_alg", ctx, IKE_DEPR_T_V1_P2AUTH,
+				    (unsigned int)alg_ipsec_hmacdef_doi(
+					a->algtype),
+				    rct2str(a->algtype), an, ar, err, warn);
+		goto combo;
+	}
+#endif
 	if (ctx == IKE_DEPR_CTX_ESP)
 		ike_conf_depr_check_list(where, "esp_enc_alg", ctx,
 		    IKE_DEPR_T_ENCR, enc, &ikev2_transf_encr[0], NULL, an, ar,
@@ -5389,6 +5557,9 @@ ike_conf_check_deprecated_sa(struct rcf_sa *sa, struct rcf_remote *rm,
 	    IKE_DEPR_T_KE, addke, &ikev2_transf_addke[0], &ikev2_transf_dh[0],
 	    an, ar, err, warn);
 
+#ifdef IKEV1
+    combo:
+#endif
 	/* RFC 8221 s6: AUTH_NONE only with an AEAD cipher */
 	if (ctx == IKE_DEPR_CTX_ESP && auth && auth_alg_is_none(auth)) {
 		for (a = enc; a; a = a->next)
@@ -6098,12 +6269,31 @@ ike_conf_check_consistency(void)
 			ike_conf_check_sa(ipsec->sa_ipcomp, &error, &warn,
 					  FALSE);
 			if (!depr_skip) {
-				ike_conf_check_deprecated_sa(ipsec->sa_ah,
-				    ike_conf_remote_of_policy(policy), &error,
-				    &warn);
-				ike_conf_check_deprecated_sa(ipsec->sa_esp,
-				    ike_conf_remote_of_policy(policy), &error,
-				    &warn);
+				struct rcf_remote *prm =
+				    ike_conf_remote_of_policy(policy);
+				uint acc = ike_acceptable_kmp(prm);
+
+				/* once per protocol version the policy's
+				 * remote can negotiate the SA with, under
+				 * that version's clause switches */
+				if (!acc || (acc & RCF_ALLOW_IKEV2)) {
+					ike_conf_check_deprecated_sa(
+					    ipsec->sa_ah, prm, 0, &error,
+					    &warn);
+					ike_conf_check_deprecated_sa(
+					    ipsec->sa_esp, prm, 0, &error,
+					    &warn);
+				}
+#ifdef IKEV1
+				if (ikev1_remote_speaks_ikev1(prm)) {
+					ike_conf_check_deprecated_sa(
+					    ipsec->sa_ah, prm, 1, &error,
+					    &warn);
+					ike_conf_check_deprecated_sa(
+					    ipsec->sa_esp, prm, 1, &error,
+					    &warn);
+				}
+#endif
 			}
 		}
 	}
