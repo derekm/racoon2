@@ -499,6 +499,16 @@ ikev1_spec
 			MKRCFDIR($$, CFD_EXCHANGE_MODE);
 			$$->nextp = $2;
 		}
+	|	ALLOW_NSA_DEPRECATED boolean
+		{
+			MKRCFDIR($$, CFD_ALLOW_NSA_DEPRECATED);
+			$$->nextp = $2;
+		}
+	|	ALLOW_RFC_DEPRECATED boolean
+		{
+			MKRCFDIR($$, CFD_ALLOW_RFC_DEPRECATED);
+			$$->nextp = $2;
+		}
 	|	MY_GSSAPI_ID string
 		{
 			MKRCFDIR($$, CFD_MY_GSSAPI_ID);

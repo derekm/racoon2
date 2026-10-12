@@ -293,6 +293,27 @@ IKEV1_CONF_ATTR(int, dpd_interval)
 IKEV1_CONF_ATTR(int, dpd_retry)
 IKEV1_CONF_ATTR(int, dpd_maxfails)
 
+/* allow_nsa_deprecated / allow_rfc_deprecated in the ikev1 clause (remote,
+ * then default clause).  Unset in both falls back to the one builtin
+ * default shared with IKEv2 (ikev2_default_values). */
+rc_type
+ikev1_allow_nsa_deprecated(struct rcf_remote *conf)
+{
+	rc_type v;
+
+	IKEV1_CONF(v, conf, allow_nsa_deprecated, 0);
+	return v ? v : ikev2_default_values.allow_nsa_deprecated;
+}
+
+rc_type
+ikev1_allow_rfc_deprecated(struct rcf_remote *conf)
+{
+	rc_type v;
+
+	IKEV1_CONF(v, conf, allow_rfc_deprecated, 0);
+	return v ? v : ikev2_default_values.allow_rfc_deprecated;
+}
+
 
 int
 ikev1_conf_exmode_to_isakmp(struct rcf_remote *conf)

@@ -128,6 +128,8 @@ extern rc_type ikev1_support_proxy(struct rcf_remote *);
 extern rc_type ikev1_nat_traversal(struct rcf_remote *);
 extern rc_type ikev1_selector_check(struct rcf_remote *);
 extern rc_type ikev1_proposal_check(struct rcf_remote *);
+extern rc_type ikev1_allow_nsa_deprecated(struct rcf_remote *);
+extern rc_type ikev1_allow_rfc_deprecated(struct rcf_remote *);
 extern rc_type ikev1_random_pad_content(struct rcf_remote *);
 extern rc_type ikev1_random_padlen(struct rcf_remote *);
 extern int ikev1_max_padlen(struct rcf_remote *);
