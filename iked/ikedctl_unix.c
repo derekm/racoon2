@@ -395,6 +395,38 @@ main(int ac, char **av)
 			((char *)req + sizeof(struct admin_com));
 		fill_index(ndx, af, src, av[0]);
 		transact(req, reqlen);
+	} else if (strcmp(cmd, "delete-sa") == 0 ||
+		   strcmp(cmd, "ds") == 0) {
+		/* delete-sa <peer> [esp|ah] -- silent local Child-SA
+		 * delete for the given peer (defaults to ESP).  The
+		 * daemon drops the Child SA's kernel SAs and marks it
+		 * EXPIRED but sends NO DELETE to the peer and keeps
+		 * the IKE_SA, so a later rekey of that child is
+		 * answered CHILD_SA_NOT_FOUND. */
+		struct admin_com_indexes *ndx;
+		const char *src;
+		uint16_t dproto;
+		int af;
+
+		if (ac < 1 || ac > 2)
+			usage(pname);
+		(void)local_for(av[0], &af);
+		src = (af == AF_INET6) ? "::" : "0.0.0.0";
+		dproto = ADMIN_PROTO_ESP;
+		if (ac == 2) {
+			if (strcmp(av[1], "esp") == 0)
+				dproto = ADMIN_PROTO_ESP;
+			else if (strcmp(av[1], "ah") == 0)
+				dproto = ADMIN_PROTO_AH;
+			else
+				usage(pname);
+		}
+		req = make_req(ADMIN_DELETE_SA, dproto,
+			       sizeof(*ndx), &reqlen);
+		ndx = (struct admin_com_indexes *)
+			((char *)req + sizeof(struct admin_com));
+		fill_index(ndx, af, src, av[0]);
+		transact(req, reqlen);
 	} else {
 		usage(pname);
 	}
