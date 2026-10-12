@@ -138,6 +138,10 @@ EOF
 	case "$name" in
 	*-r2rekey)
 		sed -i 's/ipsec_sa_lifetime_time 3600 sec/ipsec_sa_lifetime_time 30 sec/' "$C/responder.conf"
+		# charon's child proposal is 'aes128gcm16-ecp256!' (PFS required
+		# on CREATE_CHILD): racoon2 must rekey WITH a KE
+		sed -i 's/^\(\t*\)dpd_delay 60 sec;$/&\n\1need_pfs on;/' "$C/responder.conf"
+		grep -q 'need_pfs on;' "$C/responder.conf" || { log "FAIL: r2rekey need_pfs not set"; return 1; }
 		;;
 	esac
 
@@ -487,6 +491,14 @@ EOF
 		showr=$("$SBIN/ikedctl" -s "$SOCK_R" show-sa isakmp) || true
 		echo "$showr" | grep -q "$HI" || {
 			log "FAIL: IKE_SA gone after r2 child rekey"
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
+			return 1
+		}
+		# the old gate passed on leftover ALLOCSPI larval states of FAILED
+		# rekeys (each NO_PROPOSAL_CHOSEN left a fresh 'proto esp' SPI in
+		# the SAD); a refused rekey is a FAIL, whatever the SAD shows
+		grep -q 'NO_PROPOSAL_CHOSEN' "$D/resp-iked.log" && {
+			log "FAIL: charon refused racoon2's CHILD rekey (NO_PROPOSAL_CHOSEN)"
 			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		}
