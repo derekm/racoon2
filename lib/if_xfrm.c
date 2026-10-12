@@ -1421,6 +1421,198 @@ rcpfk_send_spddump(struct rcpfk_msg *rc)
 	return xfrm_nl_send(rc, n);
 }
 
+#ifdef XFRM_MSG_MIGRATE
+/*
+ * Synchronous request on the request socket: send n, then read until the
+ * kernel's reply for n's seq arrives.  For a plain request that is its
+ * NLMSG_ERROR (0 = ACK); for a dump (NLM_F_DUMP) every NEWSA part goes to
+ * each_sa() and NLMSG_DONE ends it.  Replies for OTHER requests met on
+ * the way are dispatched normally, so nothing pending is lost.  Returns
+ * 0 or a positive errno.
+ */
+#define XFRM_SYNC_TIMEOUT_MS	3000
+static int xfrm_dispatch(struct nlmsghdr *, struct rcpfk_msg *, int);
+static int xfrm_wait_req(int);
+static uint32_t xfrm_sync_seq = 0xe0000000u;
+
+static int
+xfrm_sync(struct nlmsghdr *n, int (*each_sa)(struct nlmsghdr *, void *),
+    void *arg)
+{
+	static char *rbuf;
+	struct rcpfk_msg scratch;
+	struct nlmsghdr *h;
+	unsigned int ulen;
+	ssize_t len;
+	uint32_t seq;
+	int e;
+
+	if (rbuf == NULL && (rbuf = malloc(XFRM_RCVBUFLEN)) == NULL)
+		return ENOMEM;
+	if (++xfrm_sync_seq < 0xe0000000u || xfrm_sync_seq >= XFRM_RESYNC_SEQ_BASE)
+		xfrm_sync_seq = 0xe0000001u;
+	n->nlmsg_seq = seq = xfrm_sync_seq;
+	n->nlmsg_pid = (uint32_t)pid;
+	if (send(xfrm_req_fd, n, n->nlmsg_len, 0) != (ssize_t)n->nlmsg_len)
+		return errno ? errno : EIO;
+	for (;;) {
+		if (xfrm_wait_req(XFRM_SYNC_TIMEOUT_MS) <= 0)
+			return ETIMEDOUT;
+		len = xfrm_recv(xfrm_req_fd, rbuf, XFRM_RCVBUFLEN, 0);
+		if (len < 0) {
+			if (errno == EINTR || errno == EAGAIN)
+				continue;
+			return errno;
+		}
+		ulen = (unsigned int)len;
+		for (h = (struct nlmsghdr *)rbuf; NLMSG_OK(h, ulen);
+		     h = NLMSG_NEXT(h, ulen)) {
+			uint32_t hs = h->nlmsg_seq;
+			char al[XFRM_BUFLEN];
+			struct nlmsghdr *m = h;
+
+			if (h->nlmsg_type == NLMSG_ERROR &&
+			    h->nlmsg_len >= NLMSG_LENGTH(sizeof(struct nlmsgerr)))
+				hs = ((struct nlmsgerr *)NLMSG_DATA(h))->msg.nlmsg_seq;
+			if (hs != seq) {
+				memset(&scratch, 0, sizeof(scratch));
+				(void)xfrm_dispatch(h, &scratch, 1);
+				continue;
+			}
+			if (h->nlmsg_type == NLMSG_DONE)
+				return 0;
+			if (h->nlmsg_type == NLMSG_ERROR) {
+				e = -((struct nlmsgerr *)NLMSG_DATA(h))->error;
+				return e;
+			}
+			if (each_sa == NULL || h->nlmsg_type != XFRM_MSG_NEWSA)
+				continue;
+			/* 4-byte netlink alignment: hand over an aligned copy */
+			if (((uintptr_t)h & 7) != 0 && h->nlmsg_len <= sizeof(al)) {
+				memcpy(al, h, h->nlmsg_len);
+				m = (struct nlmsghdr *)(void *)al;
+			}
+			if ((e = each_sa(m, arg)) != 0)
+				return e;
+		}
+	}
+}
+
+/* NAT-T port change without CONFIG_XFRM_MIGRATE (see rcpfk_send_migrate) */
+struct xfrm_encap_job {
+	struct rcpfk_msg *rc;
+	int family;
+	xfrm_address_t s, d;
+	int matched, updated;
+	int err;
+	char (*msgs)[XFRM_BUFLEN];
+	int nmsgs;
+};
+#define XFRM_ENCAP_MAX	64
+
+static int
+xfrm_encap_collect(struct nlmsghdr *h, void *arg)
+{
+	struct xfrm_encap_job *j = arg;
+	const struct xfrm_usersa_info *sa = NLMSG_DATA(h);
+	uint32_t want = (uint32_t)j->rc->reqid;
+
+	if (h->nlmsg_len < NLMSG_LENGTH(sizeof(*sa)))
+		return 0;
+	if (sa->family != j->family ||
+	    sa->id.proto != satype_to_proto(j->rc->satype) ||
+	    memcmp(&sa->saddr, &j->s, sizeof(j->s)) != 0 ||
+	    memcmp(&sa->id.daddr, &j->d, sizeof(j->d)) != 0 ||
+	    (want != 0 && sa->reqid != want))
+		return 0;
+	if (j->nmsgs < XFRM_ENCAP_MAX && h->nlmsg_len <= XFRM_BUFLEN) {
+		memcpy(j->msgs[j->nmsgs], h, h->nlmsg_len);
+		j->nmsgs++;
+	}
+	j->matched++;
+	return 0;
+}
+
+/*
+ * Rewrite the XFRMA_ENCAP ports of every SA saddr=sa_src daddr=sa_dst
+ * (proto, reqid) to the new natt_sport/natt_dport with XFRM_MSG_UPDSA: the
+ * kernel's xfrm_state_update() copies a new encap template into a VALID
+ * state in place (keys, replay and lifetimes stay), which is enough when
+ * a NAT only re-mapped the PORT.  The UPDSA is the SA's own GETSA dump
+ * (it carries the keys) with the encap ports changed.
+ */
+static int
+xfrm_update_encap_ports(struct rcpfk_msg *rc)
+{
+	struct xfrm_encap_job j;
+	char req[NLMSG_SPACE(sizeof(struct xfrm_usersa_info))];
+	struct nlmsghdr *n = (void *)req;
+	uint16_t fam = AF_INET;
+	int i, e;
+
+	memset(&j, 0, sizeof(j));
+	j.rc = rc;
+	if (sa_to_xaddr(rc->sa_src, &j.s, &fam) != 0 ||
+	    sa_to_xaddr(rc->sa_dst, &j.d, &fam) != 0)
+		return EINVAL;
+	j.family = fam;
+	j.msgs = malloc(sizeof(*j.msgs) * XFRM_ENCAP_MAX);
+	if (j.msgs == NULL)
+		return ENOMEM;
+	memset(req, 0, sizeof(req));
+	n->nlmsg_len = NLMSG_LENGTH(sizeof(struct xfrm_usersa_info));
+	n->nlmsg_type = XFRM_MSG_GETSA;
+	n->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	e = xfrm_sync(n, xfrm_encap_collect, &j);
+	for (i = 0; e == 0 && i < j.nmsgs; i++) {
+		struct nlmsghdr *m = (void *)j.msgs[i];
+		struct rtattr *rta;
+		int alen, found = 0;
+
+		rta = (struct rtattr *)((char *)NLMSG_DATA(m) +
+		    NLMSG_ALIGN(sizeof(struct xfrm_usersa_info)));
+		alen = (int)m->nlmsg_len -
+		    (int)NLMSG_LENGTH(sizeof(struct xfrm_usersa_info));
+		for (; RTA_OK(rta, alen); rta = RTA_NEXT(rta, alen)) {
+			struct xfrm_encap_tmpl et;
+
+			if (rta->rta_type != XFRMA_ENCAP ||
+			    RTA_PAYLOAD(rta) < sizeof(et))
+				continue;
+			memcpy(&et, RTA_DATA(rta), sizeof(et));
+			if (rc->natt_sport)
+				et.encap_sport = rc->natt_sport;
+			if (rc->natt_dport)
+				et.encap_dport = rc->natt_dport;
+			memcpy(RTA_DATA(rta), &et, sizeof(et));
+			found = 1;
+		}
+		if (!found)
+			continue;	/* not UDP-encapsulated: nothing to move */
+		m->nlmsg_type = XFRM_MSG_UPDSA;
+		m->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+		e = xfrm_sync(m, NULL, NULL);
+		if (e == 0)
+			j.updated++;
+	}
+	free(j.msgs);
+	if (e == 0 && j.updated == 0)
+		e = ESRCH;
+	if (e == 0)
+		plog(PLOG_INFO, PLOGLOC, NULL,
+		    "xfrm: no XFRM_MSG_MIGRATE in this kernel "
+		    "(CONFIG_XFRM_MIGRATE off); NAT-T port change applied "
+		    "to %d SA(s) with XFRM_MSG_UPDSA\n", j.updated);
+	return e;
+}
+
+static int
+xfrm_same_addr(const struct sockaddr *a, const struct sockaddr *b)
+{
+	return a != NULL && b != NULL && rcs_cmpsa_wop(a, b) == 0;
+}
+#endif
+
 int
 rcpfk_send_migrate(struct rcpfk_msg *rc)
 {
@@ -1469,8 +1661,29 @@ rcpfk_send_migrate(struct rcpfk_msg *rc)
 		return -1;
 	}
 #endif
-	pending_set(rc, XFRM_MSG_MIGRATE, n->nlmsg_seq);
-	return xfrm_nl_send(rc, n);
+	/*
+	 * Synchronous: the caller (MOBIKE / NAT mapping move, spmd) commits
+	 * the new endpoints only if the kernel really moved the SAs.  Sent
+	 * fire-and-forget, a refusal arrived later as a stray error while
+	 * iked had already re-pinned the IKE SA to an address the kernel
+	 * SAs did not use.
+	 */
+	{
+		int e = xfrm_sync(n, NULL, NULL);
+
+		if (e == ENOPROTOOPT && rc->natt_type != 0 &&
+		    xfrm_same_addr(rc->sa_src, rc->sa2_src) &&
+		    xfrm_same_addr(rc->sa_dst, rc->sa2_dst))
+			e = xfrm_update_encap_ports(rc);
+		if (e != 0) {
+			xfrm_seterror(rc, e, "xfrm migrate: %s%s", strerror(e),
+			    e == ENOPROTOOPT ? " (kernel built without "
+			    "CONFIG_XFRM_MIGRATE; only a NAT port change can "
+			    "be applied without it)" : "");
+			return -1;
+		}
+		return 0;
+	}
 #else
 	xfrm_seterror(rc, EOPNOTSUPP, "XFRM_MSG_MIGRATE not in headers");
 	return -1;
