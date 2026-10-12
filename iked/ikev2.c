@@ -1009,7 +1009,15 @@ ikev2_proppair_to_isakmpsa(struct prop_pair *prop)
 			if (transf->transform_type == IKEV2TRANSFORM_TYPE_ENCR
 			    && keylen != 0) {
 				switch (s->encr) {
-					/* XXX CAST, BLOWFISH, RC5??? */
+				/* RFC 7296 s3.3.5 / RFC 2451: variable-key
+				 * CBC ciphers carry KEY_LENGTH too; keep it so
+				 * the IKE_SA_INIT response echoes the offer
+				 * (strongSwan rejects an attribute-less reply
+				 * to its CAST_CBC_128 / BLOWFISH_CBC_128 offer
+				 * as "peer's proposal selection invalid") */
+				case IKEV2TRANSF_ENCR_RC5:
+				case IKEV2TRANSF_ENCR_CAST:
+				case IKEV2TRANSF_ENCR_BLOWFISH:
 				case IKEV2TRANSF_ENCR_AES_CBC:
 				case IKEV2TRANSF_ENCR_AES_CTR:
 				case IKEV2TRANSF_ENCR_AES_GCM_ICV8:

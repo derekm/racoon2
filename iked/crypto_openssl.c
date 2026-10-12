@@ -86,6 +86,12 @@ static const char *eay_engine_id;
  */
 static OSSL_PROVIDER *eay_prov_default;
 static OSSL_PROVIDER *eay_prov_extra;
+/* OpenSSL 3 moved DES, CAST5, Blowfish, IDEA and RC5 to the legacy
+ * provider; it is loaded (if the module exists) so the deprecated IKE/ESP
+ * ciphers can be offered when allow_*_deprecated permits.  A build or
+ * install without it (or without IDEA/RC5 compiled in) simply reports
+ * those ciphers as unavailable (eay_evp_cipher_available). */
+static OSSL_PROVIDER *eay_prov_legacy;
 static int eay_initialized;
 #endif
 #ifdef WITH_OPENSSL_ENGINE
@@ -117,6 +123,13 @@ eay_init(void)
 	if (eay_prov_default == NULL)
 		plog(PLOG_INTWARN, PLOGLOC, NULL,
 		    "OpenSSL default provider failed to load\n");
+	eay_prov_legacy = OSSL_PROVIDER_try_load(NULL, "legacy", 1);
+	if (eay_prov_legacy == NULL) {
+		ERR_clear_error();
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		    "OpenSSL legacy provider not available: DES/CAST/Blowfish/"
+		    "IDEA/RC5 are unsupported by the crypto library\n");
+	}
 	if (eay_provider_name && *eay_provider_name) {
 		eay_prov_extra = OSSL_PROVIDER_load(NULL, eay_provider_name);
 		if (eay_prov_extra == NULL)
@@ -189,6 +202,10 @@ eay_cleanup(void)
 	if (eay_prov_extra != NULL) {
 		OSSL_PROVIDER_unload(eay_prov_extra);
 		eay_prov_extra = NULL;
+	}
+	if (eay_prov_legacy != NULL) {
+		OSSL_PROVIDER_unload(eay_prov_legacy);
+		eay_prov_legacy = NULL;
 	}
 	if (eay_prov_default != NULL) {
 		OSSL_PROVIDER_unload(eay_prov_default);
@@ -2596,6 +2613,210 @@ eay_rc5_keylen(int len)
 	return len;
 }
 #endif
+
+/*
+ * EVP CBC ciphers for the deprecated IKEv2/ESP transforms (DES, DES_IV64,
+ * DES_IV32, CAST-128, Blowfish, IDEA, RC5).  OpenSSL 3 serves them from
+ * the legacy provider (loaded in eay_init); availability is a runtime
+ * property of the installed library, so eay_evp_cipher_available() is what
+ * config check consults ("unsupported by crypto library").
+ *
+ * Parameters per RFC:
+ *   DES        RFC 2405: 64-bit key (56 + parity), 8-octet block and IV.
+ *   DES_IV64   RFC 1827/1829: DES-CBC with a 64-bit IV (= ENCR_DES wire).
+ *   DES_IV32   RFC 1829 s2.1: 32-bit IV; the 64-bit CBC IV is the 32-bit
+ *              value followed by its bit-wise complement.
+ *   CAST-128   RFC 2451: 40..128-bit key, default 128 (shorter keys are
+ *              zero-padded to 128 bits, RFC 2451 s2.2 note 1).
+ *   Blowfish   RFC 2451: 40..448-bit key, default 128.
+ *   RC5        RFC 2451: 40..2040-bit key, default 128, 16 rounds
+ *              (s2.5; OpenSSL's EVP default is 12, so it is set).
+ *   IDEA       RFC 2451: 128-bit key, 8 rounds (fixed).
+ * iked uses the RFC 7296 s3.3.5 default length (128 bits) for the
+ * variable-length ciphers.
+ */
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/core_names.h>
+#include <openssl/params.h>
+
+int
+eay_evp_cipher_available(const char *name)
+{
+	EVP_CIPHER *c;
+
+	c = EVP_CIPHER_fetch(NULL, name, NULL);
+	if (!c) {
+		ERR_clear_error();
+		return 0;
+	}
+	EVP_CIPHER_free(c);
+	return 1;
+}
+
+rc_vchar_t *
+eay_evp_cbc(const char *name, rc_vchar_t *data, rc_vchar_t *key,
+	    const unsigned char *iv, int enc, int rc5_rounds)
+{
+	EVP_CIPHER *c = NULL;
+	EVP_CIPHER_CTX *ctx = NULL;
+	rc_vchar_t *res = NULL;
+	int outl = 0, finl = 0;
+	OSSL_PARAM params[2];
+	unsigned int rounds;
+
+	c = EVP_CIPHER_fetch(NULL, name, NULL);
+	if (!c) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "cipher %s unsupported by crypto library: %s\n", name,
+		     eay_strerror());
+		return NULL;
+	}
+	if (data->l % (size_t)EVP_CIPHER_get_block_size(c) != 0)
+		goto fail;
+	ctx = EVP_CIPHER_CTX_new();
+	if (!ctx)
+		goto fail;
+	if (EVP_CipherInit_ex2(ctx, c, NULL, NULL, enc, NULL) != 1)
+		goto fail;
+	if ((size_t)EVP_CIPHER_CTX_get_key_length(ctx) != key->l &&
+	    EVP_CIPHER_CTX_set_key_length(ctx, (int)key->l) != 1)
+		goto fail;
+	if (rc5_rounds > 0) {
+		rounds = (unsigned int)rc5_rounds;
+		params[0] = OSSL_PARAM_construct_uint(OSSL_CIPHER_PARAM_ROUNDS,
+						      &rounds);
+		params[1] = OSSL_PARAM_construct_end();
+		if (EVP_CIPHER_CTX_set_params(ctx, params) != 1)
+			goto fail;
+	}
+	if (EVP_CIPHER_CTX_set_padding(ctx, 0) != 1)
+		goto fail;
+	if (EVP_CipherInit_ex2(ctx, NULL, (const unsigned char *)key->v, iv,
+			       enc, NULL) != 1)
+		goto fail;
+	res = rc_vmalloc(data->l);
+	if (!res)
+		goto fail;
+	if (EVP_CipherUpdate(ctx, (unsigned char *)res->v, &outl,
+			     (const unsigned char *)data->v, (int)data->l) != 1 ||
+	    EVP_CipherFinal_ex(ctx, (unsigned char *)res->v + outl,
+			       &finl) != 1 ||
+	    (size_t)(outl + finl) != data->l)
+		goto fail;
+	EVP_CIPHER_CTX_free(ctx);
+	EVP_CIPHER_free(c);
+	return res;
+
+      fail:
+	plog(PLOG_INTERR, PLOGLOC, NULL, "%s %s failed: %s\n", name,
+	     enc ? "encrypt" : "decrypt", eay_strerror());
+	if (res)
+		rc_vfree(res);
+	if (ctx)
+		EVP_CIPHER_CTX_free(ctx);
+	EVP_CIPHER_free(c);
+	return NULL;
+}
+#else
+int
+eay_evp_cipher_available(const char *name)
+{
+	(void)name;
+	return 0;
+}
+
+rc_vchar_t *
+eay_evp_cbc(const char *name, rc_vchar_t *data, rc_vchar_t *key,
+	    const unsigned char *iv, int enc, int rc5_rounds)
+{
+	(void)data; (void)key; (void)iv; (void)enc; (void)rc5_rounds;
+	plog(PLOG_INTERR, PLOGLOC, NULL,
+	     "cipher %s unsupported by crypto library (needs OpenSSL 3)\n",
+	     name);
+	return NULL;
+}
+#endif
+
+#define	EAY_EVP_CBC_PAIR(fn, evpname, klen, rounds)			\
+rc_vchar_t *								\
+eay_ ## fn ## _evp_encrypt(rc_vchar_t *data, rc_vchar_t *key,		\
+			   rc_vchar_t *iv)				\
+{									\
+	if (key->l < (klen) || iv->l < 8)				\
+		return NULL;						\
+	{								\
+		rc_vchar_t k;						\
+		k.l = (klen);						\
+		k.v = key->v;						\
+		return eay_evp_cbc(evpname, data, &k,			\
+				   (const unsigned char *)iv->v, 1,	\
+				   (rounds));				\
+	}								\
+}									\
+rc_vchar_t *								\
+eay_ ## fn ## _evp_decrypt(rc_vchar_t *data, rc_vchar_t *key,		\
+			   rc_vchar_t *iv)				\
+{									\
+	if (key->l < (klen) || iv->l < 8)				\
+		return NULL;						\
+	{								\
+		rc_vchar_t k;						\
+		k.l = (klen);						\
+		k.v = key->v;						\
+		return eay_evp_cbc(evpname, data, &k,			\
+				   (const unsigned char *)iv->v, 0,	\
+				   (rounds));				\
+	}								\
+}									\
+int									\
+eay_ ## fn ## _evp_available(void)					\
+{									\
+	return eay_evp_cipher_available(evpname);			\
+}
+
+EAY_EVP_CBC_PAIR(des, "DES-CBC", 8, 0)
+EAY_EVP_CBC_PAIR(cast128, "CAST5-CBC", 16, 0)
+EAY_EVP_CBC_PAIR(blowfish128, "BF-CBC", 16, 0)
+EAY_EVP_CBC_PAIR(idea, "IDEA-CBC", 16, 0)
+EAY_EVP_CBC_PAIR(rc5_128, "RC5-CBC", 16, 16)
+
+/* RFC 1829 s2.1: a 32-bit IV is expanded to IV || ~IV */
+static rc_vchar_t *
+eay_des_iv32_cbc(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv, int enc)
+{
+	unsigned char iv64[8];
+	rc_vchar_t k;
+	int i;
+
+	if (key->l < 8 || iv->l < 4)
+		return NULL;
+	for (i = 0; i < 4; ++i) {
+		iv64[i] = (unsigned char)iv->u[i];
+		iv64[i + 4] = (unsigned char)~iv->u[i];
+	}
+	k.l = 8;
+	k.v = key->v;
+	return eay_evp_cbc("DES-CBC", data, &k, iv64, enc, 0);
+}
+
+rc_vchar_t *
+eay_des_iv32_evp_encrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv)
+{
+	return eay_des_iv32_cbc(data, key, iv, 1);
+}
+
+rc_vchar_t *
+eay_des_iv32_evp_decrypt(rc_vchar_t *data, rc_vchar_t *key, rc_vchar_t *iv)
+{
+	return eay_des_iv32_cbc(data, key, iv, 0);
+}
+
+int
+eay_evp_noweakkey(rc_vchar_t *key)
+{
+	(void)key;
+	return 0;
+}
 
 /*
  * 3DES-CBC
