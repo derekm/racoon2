@@ -159,8 +159,41 @@ ikev2_kernel_migrated(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 	return ikev2_move_sa(ike_sa, remote, local, 0, "kernel MIGRATE");
 }
 
+static int ikev2_move_sa_impl(struct ikev2_sa *, struct sockaddr *,
+    struct sockaddr *, int, const char *);
+
+/*
+ * Callers may pass the IKE SA's own endpoint (the NAT mapping path passes
+ * ike_sa->local as "local"), which ikev2_move_sa_impl frees when it
+ * commits the move and then copies again for the retransmit caches: a
+ * use-after-free that ASan caught on the live i2inatt-rebind row (and
+ * that silently read freed memory everywhere else).  Work on private
+ * copies of both endpoints.
+ */
 static int
 ikev2_move_sa(struct ikev2_sa *ike_sa, struct sockaddr *remote,
+    struct sockaddr *local, int migrate_kernel, const char *why)
+{
+	struct sockaddr *r, *l;
+	int ret;
+
+	r = rcs_sadup(remote);
+	l = rcs_sadup(local);
+	if (r == NULL || l == NULL) {
+		if (r)
+			rc_free(r);
+		if (l)
+			rc_free(l);
+		return -1;
+	}
+	ret = ikev2_move_sa_impl(ike_sa, r, l, migrate_kernel, why);
+	rc_free(r);
+	rc_free(l);
+	return ret;
+}
+
+static int
+ikev2_move_sa_impl(struct ikev2_sa *ike_sa, struct sockaddr *remote,
     struct sockaddr *local, int migrate_kernel, const char *why)
 {
 	struct ikev2_child_sa *c;
