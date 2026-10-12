@@ -105,6 +105,28 @@ exits.  Upon receiving SIGHUP,
 similarly shuts down IKEv2 IKE_SAs and deletes relevant IPsec SAs,
 then reloads the configuration file.
 .Pp
+Transforms that NSA/CNSSP-15 lists as obsolete, or that RFC 8247,
+RFC 8221 or RFC 9395 mark MUST NOT, SHOULD NOT or DEPRECATED, are
+refused by default:
+.Nm
+will not load a configuration that offers one, and never lets a peer
+select one.
+The
+.Cm allow_nsa_deprecated
+and
+.Cm allow_rfc_deprecated
+directives of the ikev2 and ikev1 clauses turn each class back on, with
+a warning at configuration load and proposal build.
+IKEv1 itself is RFC-deprecated (RFC 9395): a remote that can negotiate
+IKEv1 needs
+.Cm allow_rfc_deprecated on
+in its ikev1 clause, which affects no other remote.
+This default changed from earlier releases, which accepted such
+transforms with a warning.
+The deprecated ciphers DES, DES_IV64, DES_IV32, CAST, Blowfish, IDEA
+and RC5 need the OpenSSL legacy provider; a cipher the linked library
+does not provide is refused as unsupported by the crypto library.
+.Pp
 IPsec policies are managed by
 .Xr spmd 8 ,
 thus it must be started before

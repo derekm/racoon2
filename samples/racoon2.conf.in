@@ -66,6 +66,10 @@ include "@prefix@/etc/racoon2/default.conf";
 remote 192.168.2.67 {
 	acceptable_kmp { ikev1; };
 	ikev1 {
+		## IKEv1 is RFC-deprecated (RFC 9395 s3): this remote loads only
+		## with allow_rfc_deprecated on in its own ikev1 clause, which
+		## opens nothing on other remotes (doc/nsa-ipsec-hardening.md s8)
+		allow_rfc_deprecated on;
 		peers_ipaddr "192.168.2.67";
 		kmp_auth_method { psk; };
 		pre_shared_key "${PSKDIR}/${PRESHRD_KEY}";

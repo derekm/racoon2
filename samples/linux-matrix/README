@@ -80,10 +80,17 @@ PQC round (`I2I_CLASSICAL=1`); AEAD/PRF/ESP arms keep it and are
 a REAL transform (3des_cbc IKE-ENCR; hmac_md5/hmac_sha1 as PRF+HASH;
 modp768/1024/1536 as IKE DH; 3des_cbc + hmac_sha1 ESP-side) asserting
 the `configuring obsolete algorithm <rct2str>` warning fires on BOTH
-seats while negotiation still lands compliant (advisory-only), plus the
-fail-closed `i2i-nsawarn-des` row (DES-CBC: commented out of the IKE
-transform table, so `kmp_enc_alg DES-CBC unsupported` at conf-check —
-DES cannot be offered at all).  A4/A6/A12 compliance cells report
+seats while negotiation still lands compliant (advisory-only).  Both
+deprecation switches default OFF, so each advisory row's config turns
+on exactly the class it needs (`DEPR_SW`).  Refusal rows prove the
+default: `i2i-nsawarn-des` (DES is now implemented, so the refusal is
+the default-off `kmp_enc_alg DES-CBC is NSA-deprecated ... is off` plus
+its RFC twin), `-default-nsa`, `-default-rfc`, `-rfcoff-md5`.  The
+`i2i-cipher-*` rows cover ENCR IDs 1, 2, 4-9: each cipher works with
+its switch on (`IKE SA encryption <name>` on both seats; ESP rows read
+the kernel SA) and is refused by default; IDEA/RC5 follow the linked
+OpenSSL (refused as `unsupported by crypto library` when absent) and
+3IDEA is always refused (no specification).  A4/A6/A12 compliance cells report
 AES-192-CBC and AES-CTR rows as INFO (not PASS/FAIL) because those
 ciphers are NOT in the NDcPP v3.0e claimed set.
 

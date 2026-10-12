@@ -33,6 +33,15 @@ kind_i2idh() {
 	brainpool224|brainpool256|brainpool384|brainpool512) ;;
 	*) log "FAIL: $name unknown DH group '$G'"; return 1 ;;
 	esac
+	# allow_*_deprecated default off: groups 1/2/5 are NSA + RFC 8247 s2.4
+	# deprecated, 22/23/24 RFC-only; the row enables exactly that class.
+	DH_DEPR_SW=
+	case "$G" in
+	modp768|modp1024|modp1536)
+		DH_DEPR_SW="allow_nsa_deprecated on; allow_rfc_deprecated on;" ;;
+	modp1024_160|modp2048_224|modp2048_256)
+		DH_DEPR_SW="allow_rfc_deprecated on;" ;;
+	esac
 	# charon (seat suffix -charon/-charonr) does not implement
 	# brainpoolP224r1: strongSwan 6.0.7 parses ecp224bp but its OpenSSL
 	# backend reports "ECP_224_BP not supported".  The other RFC 5114
@@ -98,6 +107,7 @@ remote matrix_resp {
 		kmp_dh_group { $G; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
+		$DH_DEPR_SW
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -152,6 +162,7 @@ remote matrix_init {
 		kmp_dh_group { $G; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
+		$DH_DEPR_SW
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;

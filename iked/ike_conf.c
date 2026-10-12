@@ -228,8 +228,8 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* use_session_resumption (RFC 5723) */
 	NULL,			/* session_resume_ticket_key (file path) */
 	IKEV2_DEFAULT_SESSION_RESUME_LIFETIME, /* session_resume_ticket_lifetime */
-	RCT_BOOL_ON,		/* allow_nsa_deprecated (allowed + warned) */
-	RCT_BOOL_ON,		/* allow_rfc_deprecated (allowed + warned) */
+	RCT_BOOL_OFF,		/* allow_nsa_deprecated: refused unless on */
+	RCT_BOOL_OFF,		/* allow_rfc_deprecated: refused unless on */
 };
 
 #ifdef IKEV1
