@@ -4927,6 +4927,179 @@ ike_conf_check_ikev1(struct rcf_remote *rmconf, int *err, int *warn,
 #endif
 
 /*
+ * Negotiation-time enforcement of allow_nsa_deprecated /
+ * allow_rfc_deprecated.  The config check keeps disallowed transforms
+ * out of OUR proposals, but the matcher also carries peer-only types into
+ * the selected suite (RFC 9370 ADDKE rounds, ikev2_match_transforms), and
+ * a peer response or a stored ticket is not our proposal at all.  So every
+ * received SA payload is filtered here before matching: a disallowed
+ * alternative is removed (the peer's other alternatives stay selectable);
+ * a proposal left with no alternative for some transform type is dropped
+ * whole (the responder then picks a later proposal or answers
+ * NO_PROPOSAL_CHOSEN; an initiator treats the response as unmatched).
+ */
+int
+ikev2_depr_refused(struct rcf_remote *rm, int ctx, unsigned int type,
+		   unsigned int id, struct ike_depr_info *di)
+{
+	unsigned int cl = ike_depr_classify(ctx, type, id, di);
+	int refused = 0;
+
+	if ((cl & IKE_DEPR_NSA) &&
+	    ikev2_allow_nsa_deprecated(rm) == RCT_BOOL_OFF)
+		refused |= IKE_DEPR_NSA;
+	if ((cl & IKE_DEPR_RFC) &&
+	    ikev2_allow_rfc_deprecated(rm) == RCT_BOOL_OFF)
+		refused |= IKE_DEPR_RFC;
+	return refused;
+}
+
+void
+ikev2_depr_log_refusal(int refused, const char *what,
+		       const struct ike_depr_info *di, int ctx)
+{
+	if (refused & IKE_DEPR_NSA)
+		plog(PLOG_PROTOWARN, PLOGLOC, 0,
+		     "%s: %s is NSA-deprecated (CNSSP-15) and "
+		     "allow_nsa_deprecated is off - not selectable\n",
+		     what, di->name ? di->name : "?");
+	if (refused & IKE_DEPR_RFC)
+		plog(PLOG_PROTOWARN, PLOGLOC, 0,
+		     "%s: %s is RFC-deprecated (%s %s %s) and "
+		     "allow_rfc_deprecated is off - not selectable\n",
+		     what, di->name ? di->name : "?", ike_depr_ctx_str(ctx),
+		     di->rfc_cite ? di->rfc_cite : "-",
+		     ike_depr_level_str(di->rfc_level));
+}
+
+static int
+depr_proto_ctx(const struct prop_pair *proto)
+{
+	if (!proto->prop)
+		return IKE_DEPR_CTX_IKE;
+	switch (proto->prop->proto_id) {
+	case IKEV2PROPOSAL_AH:
+		return IKE_DEPR_CTX_AH;
+	case IKEV2PROPOSAL_ESP:
+		return IKE_DEPR_CTX_ESP;
+	default:
+		return IKE_DEPR_CTX_IKE;
+	}
+}
+
+int
+ikev2_proplist_filter_deprecated(struct rcf_remote *rm,
+				 struct prop_pair **proplist)
+{
+	int pno, removed = 0;
+
+	if (!proplist)
+		return 0;
+	for (pno = 0; pno < MAXPROPPAIRLEN; ++pno) {
+		struct prop_pair *proto;
+		int drop = 0;
+
+		if (!proplist[pno])
+			continue;
+		for (proto = proplist[pno]; proto; proto = proto->next) {
+			int ctx = depr_proto_ctx(proto);
+			struct prop_pair **tp = &proto->tnext;
+
+			while (*tp) {
+				struct prop_pair *head = *tp;
+				struct prop_pair *nexttype = head->next;
+				struct prop_pair *keep = NULL, **kp = &keep;
+				struct prop_pair *a, *an;
+
+				for (a = head; a; a = an) {
+					struct ikev2transform *t =
+					    (struct ikev2transform *)a->trns;
+					struct ike_depr_info di;
+					int refused = 0;
+					char what[96];
+
+					an = a->tnext;
+					a->tnext = NULL;
+					a->next = NULL;
+					if (t)
+						refused = ikev2_depr_refused(rm,
+						    ctx, t->transform_type,
+						    get_uint16(&t->transform_id),
+						    &di);
+					if (!refused) {
+						*kp = a;
+						kp = &a->tnext;
+						continue;
+					}
+					snprintf(what, sizeof(what),
+					    "peer proposal #%d %s %s id %u",
+					    pno, ike_depr_ctx_str(ctx),
+					    ike_depr_type_str(t->transform_type),
+					    get_uint16(&t->transform_id));
+					ikev2_depr_log_refusal(refused, what,
+					    &di, ctx);
+					++removed;
+					proppair_discard(a);
+				}
+				if (!keep) {
+					drop = 1;
+					*tp = nexttype;
+					continue;
+				}
+				keep->next = nexttype;
+				*tp = keep;
+				tp = &keep->next;
+			}
+		}
+		if (drop) {
+			plog(PLOG_PROTOWARN, PLOGLOC, 0,
+			     "peer proposal #%d: every offered alternative of a "
+			     "transform type is deprecated and disallowed - "
+			     "proposal not selectable\n", pno);
+			proppair_discard(proplist[pno]);
+			proplist[pno] = NULL;
+		}
+	}
+	return removed;
+}
+
+/* A negotiated IKE SA rebuilt without a fresh proposal match (RFC 5723
+ * ticket, restart restore): refuse it when any transform is disallowed. */
+int
+ikev2_isakmpsa_deprecated_refused(struct rcf_remote *rm,
+				  const struct ikev2_isakmpsa *sa,
+				  const char *what)
+{
+	struct ike_depr_info di;
+	int r, any = 0;
+	struct {
+		unsigned int type;
+		int id;
+	} t[5];
+	int i;
+
+	if (!sa)
+		return 0;
+	t[0].type = IKE_DEPR_T_ENCR;	t[0].id = sa->encr;
+	t[1].type = IKE_DEPR_T_PRF;	t[1].id = sa->prf;
+	t[2].type = IKE_DEPR_T_INTEG;	t[2].id = sa->integr;
+	t[3].type = IKE_DEPR_T_KE;
+	t[3].id = sa->dhdef ? (int)sa->dhdef->transform_id : 0;
+	t[4].type = IKEV2TRANSFORM_TYPE_ADDKE;	t[4].id = sa->addke;
+	for (i = 0; i < 5; ++i) {
+		if (t[i].id <= 0)
+			continue;
+		r = ikev2_depr_refused(rm, IKE_DEPR_CTX_IKE, t[i].type,
+				       (unsigned int)t[i].id, &di);
+		if (r) {
+			ikev2_depr_log_refusal(r, what, &di, IKE_DEPR_CTX_IKE);
+			any = 1;
+		}
+	}
+	return any;
+}
+
+/*
  * Deprecated-transform config check (doc/nsa-ipsec-hardening.md s8).
  * Classifies one configured algorithm by its wire codepoint
  * (ike_deprecated.c) and, per class, either warns (switch on: usable)

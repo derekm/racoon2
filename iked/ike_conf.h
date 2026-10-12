@@ -192,6 +192,18 @@ extern rc_type ikev2_parent_child_strength(struct rcf_remote *);
 extern rc_type ikev2_addke_unrequested(struct rcf_remote *);
 extern rc_type ikev2_allow_nsa_deprecated(struct rcf_remote *);
 extern rc_type ikev2_allow_rfc_deprecated(struct rcf_remote *);
+struct ike_depr_info;
+struct prop_pair;
+struct ikev2_isakmpsa;
+extern int ikev2_depr_refused(struct rcf_remote *, int, unsigned int,
+			      unsigned int, struct ike_depr_info *);
+extern void ikev2_depr_log_refusal(int, const char *,
+				   const struct ike_depr_info *, int);
+extern int ikev2_proplist_filter_deprecated(struct rcf_remote *,
+					    struct prop_pair **);
+extern int ikev2_isakmpsa_deprecated_refused(struct rcf_remote *,
+					     const struct ikev2_isakmpsa *,
+					     const char *);
 extern rc_type ikev2_offer_intermediate(struct rcf_remote *);
 extern rc_type ikev2_offer_sig_hash_algorithms(struct rcf_remote *);
 extern rc_type ikev2_use_ppk(struct rcf_remote *);

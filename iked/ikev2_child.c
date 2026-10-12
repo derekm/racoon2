@@ -833,6 +833,10 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	parsed_sa = ikev2_parse_sa(&ikev2_createchild_doi, sa_payload);
 	if (!parsed_sa)
 		goto invalid_sa_syntax;	/* ??? maybe nomem? */
+	/* IKE_AUTH / CREATE_CHILD child (and child rekey) responder: a
+	 * disallowed deprecated transform -- including a peer-only ADDKE
+	 * round or PFS group the matcher would carry -- is not selectable */
+	ikev2_proplist_filter_deprecated(ike_sa->rmconf, parsed_sa);
 
 	child_sa = ikev2_create_child_sa(ike_sa, TRUE);
 	if (!child_sa)
@@ -2741,6 +2745,8 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 		goto abort;
 	}
 
+	/* initiator: the responder may not select a disallowed transform */
+	ikev2_proplist_filter_deprecated(child_sa->parent->rmconf, parsed_sa);
 	matching_proposal =
 		ikev2_find_match(child_sa->my_proposal, parsed_sa, PEER);
 	if (!matching_proposal) {
