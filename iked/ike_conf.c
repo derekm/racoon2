@@ -2749,6 +2749,7 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     struct ikev2_sa* ike_sa;
     int err = -1;
     int init_nated, resp_nated;
+    int xi;
 
     if (child_sa == NULL || ts_i_pl == NULL || ts_r_pl == NULL)
         return err;
@@ -2760,7 +2761,19 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     if (ike_sa->behind_nat == 0 && ike_sa->peer_behind_nat == 0)
         return 0;
     
-    if (ike_sa->is_initiator) 
+    /*
+     * TSi/TSr name the initiator/responder of THIS exchange, which for a
+     * CREATE_CHILD_SA is not necessarily the IKE SA initiator: the
+     * original responder may start a rekey (e.g. after its inbound SA
+     * vanished).  Every role below is therefore the child exchange role
+     * (child_sa->is_initiator), not the IKE SA role.  Keying it on the
+     * IKE SA made a NATed IKE initiator, answering its peer's
+     * CREATE_CHILD_SA, rewrite the PEER's TSi with its own address and
+     * refuse the rekey with TS_UNACCEPTABLE.
+     */
+    xi = child_sa->is_initiator ? 1 : 0;
+
+    if (xi)
     {                                                                                                                                                              
         if (child_sa->selector == NULL || ike_ipsec_mode(child_sa->selector->pl) != RCT_IPSM_TRANSPORT)                                                                                                                    
             return 0;                                                                                                                                                                        
@@ -2776,12 +2789,12 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
      * behind_nat / peer_behind_nat flags:
      *   initiator NATed → rewrite TSi; responder NATed → rewrite TSr.
      */
-    init_nated = ike_sa->is_initiator ? ike_sa->behind_nat
+    init_nated = xi ? ike_sa->behind_nat
                                       : ike_sa->peer_behind_nat;
-    resp_nated = ike_sa->is_initiator ? ike_sa->peer_behind_nat
+    resp_nated = xi ? ike_sa->peer_behind_nat
                                       : ike_sa->behind_nat;
-    sub_i = ike_sa->is_initiator ? ike_sa->local : ike_sa->remote;
-    sub_r = ike_sa->is_initiator ? ike_sa->remote : ike_sa->local; 
+    sub_i = xi ? ike_sa->local : ike_sa->remote;
+    sub_r = xi ? ike_sa->remote : ike_sa->local; 
 
     /*
      * N4 (RFC 3948 s3.1.2 / RFC 7296 s2.23.1): stash the ORIGINAL
@@ -2803,8 +2816,7 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     if (init_nated) {
         if (ike_sa->oa_i == NULL)
             ike_sa->oa_i = ikev2_ts_payload_original_addr(ts_i_pl);
-        err = ikev2_ts_payload_substitute(ts_i_pl, sub_i,
-                                          ike_sa->is_initiator);
+        err = ikev2_ts_payload_substitute(ts_i_pl, sub_i, xi);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
                  "NAT-T transport: substituted TSi with %s\n",
@@ -2813,8 +2825,7 @@ int ikev2_addr_substitute(struct ikev2_child_sa *child_sa,
     if (err == 0 && resp_nated) {
         if (ike_sa->oa_r == NULL)
             ike_sa->oa_r = ikev2_ts_payload_original_addr(ts_r_pl);
-        err = ikev2_ts_payload_substitute(ts_r_pl, sub_r,
-                                          ike_sa->is_initiator);
+        err = ikev2_ts_payload_substitute(ts_r_pl, sub_r, xi);
         if (err == 0)
             plog(PLOG_INFO, PLOGLOC, NULL,
                  "NAT-T transport: substituted TSr with %s\n",
