@@ -13,6 +13,9 @@
 #       (natt_process_natd read 20 bytes past the packet before 7af5626)
 #   F2  28-byte ISAKMP header announcing a fragment payload (np 132) with
 #       no fragment header (isakmp_handler read past it before 04827fa)
+#   F3  IKEv1 Main Mode msg 1 whose last payload is a Vendor ID carrying
+#       only the first 4 bytes of the RFC 3947 NAT-T hash: the VID lookup
+#       strncmp()ed 16 bytes past the datagram end (ipsec-tools babf1bd)
 set -u
 B=${1:?usage: preauth_oneshot.sh <build-dir>}
 B=$(cd "$B" && pwd)
@@ -45,7 +48,19 @@ start_case() {
 	};
 	resolver { resolver off; };
 	remote r1 {
-		acceptable_kmp { ikev2; };
+		acceptable_kmp { ikev2; ikev1; };
+		ikev1 {
+			allow_rfc_deprecated on;
+			passive on;
+			my_id ipaddr "127.0.0.1";
+			peers_id ipaddr "127.0.0.1";
+			peers_ipaddr "127.0.0.1";
+			kmp_enc_alg { aes128_cbc; };
+			kmp_hash_alg { sha2_256; };
+			kmp_dh_group { modp2048; };
+			kmp_auth_method { psk; };
+			pre_shared_key "$W/test.psk";
+		};
 		ikev2 {
 			passive on;
 			my_id fqdn "resp.test";
@@ -102,6 +117,11 @@ if case == "F1":
     pkt = hdr + notify
 elif case == "F2":
     pkt = os.urandom(8) + os.urandom(8) + struct.pack('!BBBBII', 132, 0x10, 5, 0, 0x11223344, 28)
+elif case == "F3":
+    sa = struct.pack('!BBH', 13, 0, 12) + struct.pack('!II', 1, 1)
+    vid = struct.pack('!BBH', 0, 0, 8) + bytes.fromhex('4a131c81')
+    body = sa + vid
+    pkt = os.urandom(8) + b'\0' * 8 + struct.pack('!BBBBII', 1, 0x10, 2, 0, 0, 28 + len(body)) + body
 else:
     sys.exit(2)
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -144,6 +164,7 @@ check() {	# check <case> <guard-regex>
 
 check F1 'NAT_DETECTION notify data length 0 != 20'
 check F2 'IKE fragment too short \(28\)'
+check F3 'truncated Vendor ID \(4 of 16 bytes\)'
 
 if [ "$fail" = 0 ]; then echo "ONESHOT: all cases passed"; else echo "ONESHOT: FAILURES"; fi
 exit "$fail"
