@@ -1,0 +1,3 @@
+# Expected skips on the Fedora 44 lane (OpenSSL 3.5, ADDKE on).
+gate dpd   11-timer DPD ladder (~16 min) is box-only
+gate box   new rows are box-verified before CI admits them
