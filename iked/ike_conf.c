@@ -4290,7 +4290,8 @@ ikev2_child_add_rekey_dh(struct ikev2_child_sa *child_sa, int force)
 	isakmp_log(child_sa->parent, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
 		   "rekey-DH: %s; appended kmp_dh_group "
 		   "to the DH-less rekey proposal so KE+ADDKE can run\n",
-		   force ? "initial_child_ke" : "esp_addke_alg configured");
+		   force ? "initial_child_ke or need_pfs" :
+		   "esp_addke_alg configured");
 	return 1;
 }
 
