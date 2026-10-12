@@ -62,7 +62,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
             libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \
-            libsystemd-dev iputils-ping xxd iptables
+            libsystemd-dev iputils-ping xxd iptables conntrack
 
       - name: Matrix harness self-test (root-free)
         if: matrix.shard == 0
@@ -254,7 +254,7 @@ jobs:
             autoconf automake libtool pkgconf-pkg-config gcc make \
             openssl openssl-devel libpcap-devel krb5-devel bison flex git \
             iproute iproute-tc strongswan procps-ng python3 \
-            libreswan nss-tools nftables iptables-nft nmap-ncat
+            libreswan nss-tools nftables iptables-nft nmap-ncat conntrack-tools
 
       - name: Checkout repository
         uses: actions/checkout@v4

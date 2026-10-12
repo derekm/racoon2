@@ -253,6 +253,16 @@ EOF
 		ip netns exec "$NSN" iptables -t nat -I POSTROUTING 1 -s 10.9.0.0/24 \
 			-o "$VR1" -p udp -j SNAT --to-source 192.0.5.254:40000-40100
 		sleep 6
+		# The idle timeout alone did not drop the 4500 mapping on CI (any
+		# IKE/keepalive datagram in the window refreshes it; first CI run:
+		# encap unchanged, 6/6 pings over the OLD port).  Delete the NAT's
+		# UDP conntrack entries explicitly so the next ESP-in-UDP datagram
+		# MUST take a new 40000-40100 mapping.
+		if ! command -v conntrack >/dev/null 2>&1; then
+			_bad="rebind: conntrack(8) not installed (needed to drop the NAT mapping)"
+		else
+			ip netns exec "$NSN" conntrack -D -p udp -s 10.9.0.2 >/dev/null 2>&1 || true
+		fi
 		ip netns exec "$NSI" ping -c 6 -i 1 -W 2 192.0.5.1 > "$D/ping-rebind.txt" 2>&1 || true
 		_w=0; while [ "$_w" -lt 10 ] && ! grep -q 'received XFRM MAPPING' "$D/resp-iked.log" 2>/dev/null; do
 			_w=$((_w+1)); sleep 1
@@ -301,8 +311,15 @@ EOF
 				_k=$((_k+1))
 			done
 			kill -STOP "$_ikp" "$_smp"
-			ip -n "$NSR" -batch "$D/flood.batch" > "$D/flood.out" 2>&1 || true
-			ip -n "$NSR" xfrm state deleteall src 198.18.0.1 dst 198.18.0.2 2>/dev/null || true
+			# explicit per-SPI deletes in the same batch: twice the events
+			# (the filtered "deleteall" left all 3000 behind on CI)
+			_k=1
+			while [ "$_k" -le 3000 ]; do
+				printf 'xfrm state delete src 198.18.0.1 dst 198.18.0.2 proto esp spi %d\n' \
+					$((65536 + _k)) >> "$D/flood.batch"
+				_k=$((_k+1))
+			done
+			ip -n "$NSR" -force -batch "$D/flood.batch" > "$D/flood.out" 2>&1 || true
 			# the event iked needs is now lost in the overflow
 			ip -n "$NSR" xfrm state delete src 192.0.5.254 dst 192.0.5.1 proto esp spi "$_inspi" 2>/dev/null || true
 			kill -CONT "$_ikp" "$_smp"
