@@ -78,8 +78,8 @@ static void informational_initiator_recv(struct ikev2_sa *, rc_vchar_t *,
 					 struct sockaddr *, struct sockaddr *);
 static void info_init_notify_callback(enum request_callback, struct ikev2_child_sa *, void *);
 static void info_init_delete_callback(enum request_callback, struct ikev2_child_sa *, void *);
-static void ikev2_process_delete(struct ikev2_sa *, struct ikev2_payload_header *,
-				 struct ikev2_payloads *);
+void ikev2_process_delete(struct ikev2_sa *, struct ikev2_payload_header *,
+			  struct ikev2_payloads *);
 
 /* Cookie-echo + NAT-D-report builders live in ikev2.c (shared with the
  * CREATE_CHILD_SA/other exchanges); exported for use here. */
@@ -883,7 +883,7 @@ ikev2_respond_error(struct ikev2_sa *ike_sa,
  *
  * if response_payloads is non-null, this payload is a request, and a response payload must be constructed and pushed into response_payloads
  */
-static void
+void
 ikev2_process_delete(struct ikev2_sa *ike_sa, struct ikev2_payload_header *p,
 		     struct ikev2_payloads *response_payloads)
 {
@@ -981,6 +981,29 @@ ikev2_process_delete(struct ikev2_sa *ike_sa, struct ikev2_payload_header *p,
 					   (protocol_id == IKEV2_DELETE_PROTO_AH ? "AH" :
 					    protocol_id == IKEV2_DELETE_PROTO_ESP ? "ESP" :
 					    "(unknown)"), spi);
+				/* RFC 7296 §2.8.2: a Delete naming an SA we do
+				 * not hold must be answered with INVALID_SPI
+				 * echoing the protocol + SPI the peer named,
+				 * rather than a generic delete echo (which
+				 * would silently claim we deleted it) or a
+				 * silent drop.  Only on a request (we are the
+				 * responder to an INFORMATIONAL). */
+				if (this_is_request &&
+				    (protocol_id == IKEV2_DELETE_PROTO_ESP ||
+				     protocol_id == IKEV2_DELETE_PROTO_AH)) {
+					uint8_t spi_buf[sizeof(uint32_t)];
+					put_uint32(spi_buf, spi);
+					ikev2_payloads_push(response_payloads,
+					    IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(protocol_id,
+						spi_buf, sizeof(spi_buf),
+						IKEV2_INVALID_SPI, 0, 0),
+					    TRUE);
+					isakmp_log(ike_sa, 0, 0, 0,
+					    PLOG_PROTOWARN, PLOGLOC,
+					    "responding INVALID_SPI proto %d spi 0x%08x\n",
+					    protocol_id, spi);
+				}
 				continue;
 			}
 			switch (child_sa->state) {
