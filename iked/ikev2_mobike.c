@@ -95,9 +95,73 @@ ikev2_mobike_migrate_dir(struct ikev2_sa *ike_sa, rc_type dir,
 	return 0;
 }
 
+/*
+ * Move an ESTABLISHED IKE SA and its Child SAs to new endpoints.
+ * migrate_kernel == 0 when the kernel already moved the SAs (an
+ * XFRM_MSG_MIGRATE / SADB_X_MIGRATE from another KM): only the in-memory
+ * endpoints, armed retransmit caches and NAT-D pins are updated.
+ * Returns 0 when the endpoints were committed.
+ */
+static int ikev2_move_sa(struct ikev2_sa *, struct sockaddr *,
+    struct sockaddr *, int, const char *);
+
 void
 ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
     struct sockaddr *local)
+{
+	if (!ike_sa || !ike_sa->mobike_supported || !remote || !local)
+		return;
+	(void)ikev2_move_sa(ike_sa, remote, local, 1,
+	    "MOBIKE UPDATE_SA_ADDRESSES");
+}
+
+/*
+ * The kernel reported (XFRM_MSG_MAPPING) that authenticated ESP-in-UDP
+ * for one of this IKE SA's Child SAs now arrives from new_remote.  With
+ * natt_follow_mapping on and the peer behind a NAT, follow it the same
+ * way an implicit MOBIKE update does (RFC 7296 s2.23).
+ */
+int
+ikev2_natt_follow_mapping_event(struct ikev2_sa *ike_sa,
+    struct sockaddr *new_remote)
+{
+	if (!ike_sa || !new_remote || !ike_sa->remote || !ike_sa->local)
+		return -1;
+	if (ike_sa->state != IKEV2_STATE_ESTABLISHED)
+		return -1;
+	if (ikev2_natt_follow_mapping(ike_sa->rmconf) != RCT_BOOL_ON) {
+		isakmp_log(ike_sa, ike_sa->local, new_remote, 0, PLOG_INFO,
+			   PLOGLOC,
+			   "NAT-T mapping change %s -> %s ignored "
+			   "(natt_follow_mapping off)\n",
+			   rcs_sa2str(ike_sa->remote), rcs_sa2str(new_remote));
+		return -1;
+	}
+	if (!ike_sa->peer_behind_nat) {
+		isakmp_log(ike_sa, ike_sa->local, new_remote, 0, PLOG_PROTOWARN,
+			   PLOGLOC,
+			   "NAT-T mapping change %s -> %s ignored: NAT-D did "
+			   "not place the peer behind a NAT\n",
+			   rcs_sa2str(ike_sa->remote), rcs_sa2str(new_remote));
+		return -1;
+	}
+	return ikev2_move_sa(ike_sa, new_remote, ike_sa->local, 1,
+	    "NAT-T mapping change");
+}
+
+/* Another KM already migrated the kernel SAs; follow in memory. */
+int
+ikev2_kernel_migrated(struct ikev2_sa *ike_sa, struct sockaddr *remote,
+    struct sockaddr *local)
+{
+	if (!ike_sa || !remote || !local || !ike_sa->remote || !ike_sa->local)
+		return -1;
+	return ikev2_move_sa(ike_sa, remote, local, 0, "kernel MIGRATE");
+}
+
+static int
+ikev2_move_sa(struct ikev2_sa *ike_sa, struct sockaddr *remote,
+    struct sockaddr *local, int migrate_kernel, const char *why)
 {
 	struct ikev2_child_sa *c;
 	struct sockaddr *old_r, *old_l;
@@ -108,17 +172,15 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 	rc_type samode = RCT_IPSM_TUNNEL;
 	uint32_t reqid = 0;
 
-	if (!ike_sa || !ike_sa->mobike_supported || !remote || !local)
-		return;
 	if (ike_sa->remote && ike_sa->local &&
 	    rcs_cmpsa(ike_sa->remote, remote) == 0 &&
 	    rcs_cmpsa(ike_sa->local, local) == 0)
-		return;
+		return 0;
 
 	old_r = ike_sa->remote;
 	old_l = ike_sa->local;
 	isakmp_log(ike_sa, local, remote, 0, PLOG_INFO, PLOGLOC,
-		   "MOBIKE UPDATE_SA_ADDRESSES %s -> %s\n",
+		   "%s %s -> %s\n", why,
 		   rcs_sa2str(old_r), rcs_sa2str(remote));
 
 	/*
@@ -168,7 +230,7 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 		}
 	}
 
-	if (old_l && old_r && lan && inner) {
+	if (migrate_kernel && old_l && old_r && lan && inner) {
 		if (ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_OUTBOUND,
 		    old_l, old_r, local, remote,
 		    lan, inner, lan_pref, inner_pref, samode, reqid) != 0 ||
@@ -184,7 +246,7 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 				   PLOGLOC,
 				   "MOBIKE migrate incomplete; keeping %s\n",
 				   rcs_sa2str(old_r));
-			return;
+			return -1;
 		}
 	}
 
@@ -234,6 +296,7 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 	ikev2_sa_repin_natd(ike_sa);
 	isakmp_log(ike_sa, local, remote, 0, PLOG_INFO, PLOGLOC,
 		   "MOBIKE binding report re-pinned\n");
+	return 0;
 }
 
 int

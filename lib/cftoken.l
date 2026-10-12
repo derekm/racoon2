@@ -375,6 +375,7 @@ use_ppk			{ DP; return(USE_PPK); }
 ppk_mandatory		{ DP; return(PPK_MANDATORY); }
 ppk_id			{ DP; return(PPK_ID); }
 childless		{ DP; return(CHILDLESS); }
+natt_follow_mapping	{ DP; return(NATT_FOLLOW_MAPPING); }
 send_peers_id		{ DP; return(SEND_PEERS_ID); }
 	/* valid for kink */
 my_principal		{ DP; return(MY_PRINCIPAL); }
