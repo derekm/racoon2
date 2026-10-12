@@ -88,7 +88,7 @@ echo "guest up after ${W}s: $(G 15 'uname -r; . /etc/os-release; echo $PRETTY_NA
 
 G 1200 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq &&
 	apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
-	libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \
+	libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-swanctl iproute2 \
 	libsystemd-dev iputils-ping xxd iptables conntrack nftables python3 procps \
 	netcat-openbsd psmisc kmod >/dev/null && echo deps ok'
 tar czf - --exclude="kl-*" --exclude='.git' . | G 300 'mkdir -p /root/rc2 && tar xzf - -C /root/rc2'
@@ -105,5 +105,9 @@ set -e
 timeout 120 scp -q -i "$P-key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 	-o IdentitiesOnly=yes -P "$SSHPORT" root@127.0.0.1:/root/matrix.log "$LOG"
 test -s "$LOG" || { echo "FAIL: matrix log missing"; exit 1; }
+# per-row daemon/peer logs (charon, iked, spmd) for the artifact
+G 120 'tar czf /root/rowlogs.tgz /tmp/r2-* 2>/dev/null; true' || true
+timeout 120 scp -q -i "$P-key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+	-o IdentitiesOnly=yes -P "$SSHPORT" root@127.0.0.1:/root/rowlogs.tgz "${LOG%.log}-rows.tgz" || true
 { echo "== guest kernel: $(G 15 'uname -r') =="; cat "$LOG"; } | tail -c 200000
 grep -q '^matrix_rc=0$' "$LOG"

@@ -51,5 +51,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ matrix.image }}-shard-${{ matrix.shard }}
-          path: kernel-*-matrix-shard-*.log
+          path: |
+            kernel-*-matrix-shard-*.log
+            kernel-*-matrix-shard-*-rows.tgz
           if-no-files-found: warn
