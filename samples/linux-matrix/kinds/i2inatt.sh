@@ -8,6 +8,23 @@
 #   i2inatt-transport       specific SPD (G5 twin): ICMP + TCP across NAT-T
 #   i2inatt-transport-wild  N3: responder wildcard 0.0.0.0/0 SPD; assert
 #                           'substituted TSi with 192.0.5.254' + N4 NAT-OA
+#   i2inatt-rebind          XFRM_MSG_MAPPING: after the SA is up, the NAT
+#                           box rebinds the initiator to a new UDP port
+#                           (conntrack expiry + SNAT to :40000-40100).  The
+#                           responder (natt_follow_mapping on) must get the
+#                           kernel MAPPING event, migrate its outbound SA to
+#                           the new encap dport, and replies must flow again.
+#   i2inatt-rebind-off      same rebind with natt_follow_mapping off: the
+#                           MAPPING is logged and ignored, the outbound encap
+#                           dport stays 4500 and replies stay lost (proves
+#                           the on-row is not passing by accident).
+#   i2inatt-xfrmflood       netlink ENOBUFS: SIGSTOP the responder iked and
+#                           spmd, flood ~6000 XFRM SA events and delete the
+#                           live inbound SA behind iked's back, SIGCONT.  Both
+#                           daemons must report the overflow and resync;
+#                           iked must notice its inbound SA is gone and rekey
+#                           the child (new SPI, ping works); the SPD policy
+#                           count must be unchanged.
 kind_i2inatt() {
 	name=$1
 	require_root || return 1
@@ -16,8 +33,13 @@ kind_i2inatt() {
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
 
-	_wild=0
-	case "$name" in *-wild) _wild=1 ;; esac
+	_wild=0 _rebind=0 _follow=off _flood=0
+	case "$name" in
+	*-wild) _wild=1 ;;
+	*-rebind-off) _rebind=1 _follow=off ;;
+	*-rebind) _rebind=1 _follow=on ;;
+	*-xfrmflood) _flood=1 ;;
+	esac
 
 	_tag=$(printf '%s' "$name" | cksum | awk '{printf "%06x", $1}')
 	NSI="n${name}-i"; NSN="n${name}-n"; NSR="n${name}-r"
@@ -102,7 +124,7 @@ remote matrix_$_seat {
 		kmp_dh_group { ecp256; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$D/test.psk";
-		dpd_delay 60 sec;
+		dpd_delay 60 sec;$_extra
 	};
 	selector_index sel_in;
 };
@@ -136,7 +158,10 @@ sa esp_e {
 };
 EOF
 	}
+	_extra=
 	_nat_conf init 10.9.0.2 192.0.5.1 r2init-matrix racoon2-matrix off 0
+	[ "$_rebind" = 1 ] && _extra="
+		natt_follow_mapping $_follow;"
 	_nat_conf resp 192.0.5.1 192.0.5.254 racoon2-matrix r2init-matrix on $_wild
 
 	ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$D/resp-ctl" RACOON2_RESUME_DIR="$PRIVRES_R" \
@@ -205,9 +230,140 @@ EOF
 		fi
 	fi
 
+	# --- NAT rebinding (XFRM_MSG_MAPPING, natt_follow_mapping) ---
+	_out_encap() {
+		# encap line of the responder's OUTBOUND SA (192.0.5.1 -> NAT)
+		ip netns exec "$NSR" ip xfrm state 2>/dev/null | awk '
+			/^src /{ f = ($2 == "192.0.5.1" && $4 == "192.0.5.254") }
+			f && /encap type/ { print; exit }'
+	}
+	if [ "$_rebind" = 1 ] && [ -z "$_bad" ]; then
+		_e0=$(_out_encap)
+		log "rebind: outbound encap before: ${_e0:-none}"
+		case "$_e0" in *"dport 4500"*) ;; *)
+			_bad="rebind: outbound SA encap is not dport 4500 before the rebind (${_e0:-none})" ;;
+		esac
+	fi
+	if [ "$_rebind" = 1 ] && [ -z "$_bad" ]; then
+		# Expire the UDP conntrack entry fast, stay silent past it, then
+		# force new mappings onto 40000-40100: the next ESP-in-UDP from the
+		# initiator arrives at the responder from a new source port.
+		ip netns exec "$NSN" sysctl -q net.netfilter.nf_conntrack_udp_timeout=2 \
+			net.netfilter.nf_conntrack_udp_timeout_stream=2 2>/dev/null || true
+		ip netns exec "$NSN" iptables -t nat -I POSTROUTING 1 -s 10.9.0.0/24 \
+			-o "$VR1" -p udp -j SNAT --to-source 192.0.5.254:40000-40100
+		sleep 6
+		# The idle timeout alone did not drop the 4500 mapping on CI (any
+		# IKE/keepalive datagram in the window refreshes it; first CI run:
+		# encap unchanged, 6/6 pings over the OLD port).  Delete the NAT's
+		# UDP conntrack entries explicitly so the next ESP-in-UDP datagram
+		# MUST take a new 40000-40100 mapping.
+		if ! command -v conntrack >/dev/null 2>&1; then
+			_bad="rebind: conntrack(8) not installed (needed to drop the NAT mapping)"
+		else
+			ip netns exec "$NSN" conntrack -D -p udp -s 10.9.0.2 >/dev/null 2>&1 || true
+		fi
+		ip netns exec "$NSI" ping -c 6 -i 1 -W 2 192.0.5.1 > "$D/ping-rebind.txt" 2>&1 || true
+		_w=0; while [ "$_w" -lt 10 ] && ! grep -q 'received XFRM MAPPING' "$D/resp-iked.log" 2>/dev/null; do
+			_w=$((_w+1)); sleep 1
+		done
+		_e1=$(_out_encap)
+		_rx=$(sed -n 's/.* \([0-9][0-9]*\) received.*/\1/p' "$D/ping-rebind.txt" | head -1)
+		log "rebind: outbound encap after: ${_e1:-none}; pings answered: ${_rx:-0}/6"
+		if ! grep -qE 'received XFRM MAPPING spi=0x[0-9a-f]+ .*192\.0\.5\.254.*-> .*192\.0\.5\.254' "$D/resp-iked.log" 2>/dev/null; then
+			_bad="rebind: responder never got an XFRM MAPPING event for the new NAT port"
+		elif [ "$_follow" = on ]; then
+			grep -q 'NAT-T mapping change' "$D/resp-iked.log" 2>/dev/null ||
+				_bad="rebind: no 'NAT-T mapping change' (iked did not follow)"
+			case "$_e1" in *"dport 40"[01][0-9][0-9]*) ;; *)
+				_bad="${_bad:+$_bad; }rebind: outbound encap did not move to the new port (${_e1:-none})" ;;
+			esac
+			[ "${_rx:-0}" -ge 3 ] ||
+				_bad="${_bad:+$_bad; }rebind: only ${_rx:-0}/6 pings answered after the rebind"
+		else
+			grep -q 'ignored (natt_follow_mapping off)' "$D/resp-iked.log" 2>/dev/null ||
+				_bad="rebind-off: MAPPING was not logged as ignored"
+			case "$_e1" in *"dport 4500"*) ;; *)
+				_bad="${_bad:+$_bad; }rebind-off: outbound encap moved although natt_follow_mapping is off (${_e1:-none})" ;;
+			esac
+			[ "${_rx:-0}" -eq 0 ] ||
+				_bad="${_bad:+$_bad; }rebind-off: ${_rx} pings answered although replies go to the dead mapping"
+		fi
+	fi
+
+	# --- netlink notification overflow (ENOBUFS) + resync ---
+	if [ "$_flood" = 1 ] && [ -z "$_bad" ]; then
+		_inspi=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | awk '
+			/^src /{ f = ($2 == "192.0.5.254" && $4 == "192.0.5.1"); next }
+			f && /proto esp spi/ { print $4; exit }')
+		_pol0=$(ip netns exec "$NSR" ip xfrm policy 2>/dev/null | grep -c '^src')
+		_ikp=$(pgrep -f "$SBIN/iked -F -f $C/resp.conf" | head -1)
+		_smp=$(pgrep -f "$SBIN/spmd -F -f $C/resp.conf" | head -1)
+		log "flood: responder inbound spi=${_inspi:-?} policies=$_pol0 iked=$_ikp spmd=$_smp"
+		if [ -z "$_inspi" ] || [ -z "$_ikp" ] || [ -z "$_smp" ]; then
+			_bad="flood: could not find the inbound SA or the responder daemons"
+		else
+			: > "$D/flood.batch"
+			_k=1
+			while [ "$_k" -le 3000 ]; do
+				printf 'xfrm state add src 198.18.0.1 dst 198.18.0.2 proto esp spi %d mode transport enc cbc(aes) 0x00112233445566778899aabbccddeeff auth-trunc hmac(sha256) 0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff 128\n' \
+					$((65536 + _k)) >> "$D/flood.batch"
+				_k=$((_k+1))
+			done
+			kill -STOP "$_ikp" "$_smp"
+			# explicit per-SPI deletes in the same batch: twice the events
+			# (the filtered "deleteall" left all 3000 behind on CI)
+			_k=1
+			while [ "$_k" -le 3000 ]; do
+				printf 'xfrm state delete src 198.18.0.1 dst 198.18.0.2 proto esp spi %d\n' \
+					$((65536 + _k)) >> "$D/flood.batch"
+				_k=$((_k+1))
+			done
+			ip -n "$NSR" -force -batch "$D/flood.batch" > "$D/flood.out" 2>&1 || true
+			# the event iked needs is now lost in the overflow
+			ip -n "$NSR" xfrm state delete src 192.0.5.254 dst 192.0.5.1 proto esp spi "$_inspi" 2>/dev/null || true
+			kill -CONT "$_ikp" "$_smp"
+			_w=0; _newspi=
+			while [ "$_w" -lt 40 ]; do
+				_newspi=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | awk -v old="$_inspi" '
+					/^src /{ f = ($2 == "192.0.5.254" && $4 == "192.0.5.1"); next }
+					f && /proto esp spi/ && $4 != old { print $4; exit }')
+				[ -n "$_newspi" ] && break
+				_w=$((_w+1)); sleep 1
+			done
+			sleep 2
+			ip netns exec "$NSI" ping -c 3 -W 3 192.0.5.1 > "$D/ping-flood.txt" 2>&1 || true
+			_pol1=$(ip netns exec "$NSR" ip xfrm policy 2>/dev/null | grep -c '^src')
+			_left=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c '^src 198\.18\.0\.1 ' || true)
+			log "flood: new inbound spi=${_newspi:-none} policies $_pol0 -> $_pol1 leftover-dummies=$_left"
+			grep -q 'notification socket overflowed (ENOBUFS)' "$D/resp-iked.log" 2>/dev/null ||
+				_bad="flood: iked never saw ENOBUFS on its notification socket"
+			grep -qE 'SAD/SPD resync [0-9]+ complete' "$D/resp-iked.log" 2>/dev/null ||
+				_bad="${_bad:+$_bad; }flood: iked did not complete a SAD/SPD resync"
+			grep -q "resync: inbound SA spi=$_inspi is gone from the kernel" "$D/resp-iked.log" 2>/dev/null ||
+				_bad="${_bad:+$_bad; }flood: iked did not notice its deleted inbound SA $_inspi"
+			grep -q 'notification socket overflowed (ENOBUFS)' "$D/resp-spmd.log" 2>/dev/null ||
+				_bad="${_bad:+$_bad; }flood: spmd never saw ENOBUFS"
+			grep -qE 'SAD/SPD resync [0-9]+ complete' "$D/resp-spmd.log" 2>/dev/null ||
+				_bad="${_bad:+$_bad; }flood: spmd did not complete a resync"
+			[ -n "$_newspi" ] ||
+				_bad="${_bad:+$_bad; }flood: child was not rekeyed after the resync"
+			grep -q '[1-9][0-9]* received' "$D/ping-flood.txt" 2>/dev/null ||
+				_bad="${_bad:+$_bad; }flood: no ICMP across the tunnel after the resync"
+			[ "$_pol1" = "$_pol0" ] ||
+				_bad="${_bad:+$_bad; }flood: SPD changed across the overflow ($_pol0 -> $_pol1 policies)"
+			[ "${_left:-0}" -eq 0 ] ||
+				_bad="${_bad:+$_bad; }flood: $_left dummy SAs left behind"
+		fi
+	fi
+
 	if [ -z "$_bad" ]; then
 		if [ "$_wild" = 1 ]; then
 			log "PASS $name (N3 wildcard SPD + post-NAT TSi, N4 NAT-OA, ICMP+TCP)"
+		elif [ "$_rebind" = 1 ]; then
+			log "PASS $name (NAT rebinding, natt_follow_mapping $_follow)"
+		elif [ "$_flood" = 1 ]; then
+			log "PASS $name (ENOBUFS overflow resynced, child rekeyed, SPD intact)"
 		else
 			log "PASS $name (NAT-T transport across SNAT: esp SAs, ICMP+TCP, N4 NAT-OA)"
 		fi
@@ -216,7 +372,9 @@ EOF
 	fi
 	log "FAIL $name ($_bad)"
 	log "--- resp iked (NAT/TS) ---"
-	grep -iE 'nat|TS|substitut|OA|error|fail' "$D/resp-iked.log" 2>/dev/null | tail -40 || true
+	grep -iE 'nat|TS|substitut|OA|error|fail|mapping|resync|enobufs|overflow' "$D/resp-iked.log" 2>/dev/null | tail -60 || true
+	log "--- resp spmd ---"
+	tail -30 "$D/resp-spmd.log" 2>/dev/null || true
 	log "--- init iked (NAT/TS) ---"
 	grep -iE 'nat|TS|substitut|OA|error|fail' "$D/init-iked.log" 2>/dev/null | tail -40 || true
 	trap - EXIT; cleanup
