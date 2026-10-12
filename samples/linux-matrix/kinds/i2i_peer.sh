@@ -14,8 +14,23 @@
 # libstrongswan-ml.so; mlkem768/ML_KEM_768 in libstrongswan.so.0).
 
 I2I_CHARON_ID=charon-i2i
-I2I_CHARON_BIN=${I2I_CHARON_BIN:-/usr/libexec/strongswan/charon}
-I2I_SWANCTL_BIN=${I2I_SWANCTL_BIN:-/usr/bin/swanctl}
+# charon: /usr/libexec/strongswan/charon (Fedora) or /usr/lib/ipsec/charon
+# (Debian/Ubuntu; the sid kernel lane runs the charon rows, and they
+# started a missing binary and failed as "SAD missing ...")
+if [ -z "${I2I_CHARON_BIN:-}" ]; then
+	for _c in /usr/libexec/strongswan/charon /usr/lib/ipsec/charon /usr/libexec/ipsec/charon; do
+		[ -x "$_c" ] && { I2I_CHARON_BIN=$_c; break; }
+	done
+	I2I_CHARON_BIN=${I2I_CHARON_BIN:-/usr/libexec/strongswan/charon}
+fi
+# swanctl: /usr/bin (Fedora) or /usr/sbin (Debian/Ubuntu)
+if [ -z "${I2I_SWANCTL_BIN:-}" ]; then
+	I2I_SWANCTL_BIN=$(command -v swanctl 2>/dev/null || true)
+	[ -n "$I2I_SWANCTL_BIN" ] || for _c in /usr/bin/swanctl /usr/sbin/swanctl; do
+		[ -x "$_c" ] && { I2I_SWANCTL_BIN=$_c; break; }
+	done
+	I2I_SWANCTL_BIN=${I2I_SWANCTL_BIN:-/usr/bin/swanctl}
+fi
 # Libreswan initiator seat (RFC 5723 session resumption interop, kinds/i2ilw.sh):
 # pluto + whack live under /usr/libexec/ipsec on Fedora/libreswan 5.x, and can
 # be overridden per-host (e.g. the box's probe install).
