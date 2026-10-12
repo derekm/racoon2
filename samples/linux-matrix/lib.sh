@@ -109,6 +109,13 @@ i2i_dataplane() {
 	fi
 	if ip netns exec "$1" ping -c 3 -i 0.2 -W 2 "$2" >/dev/null 2>&1; then
 		log "data plane: ICMP echo ${3:+($3) }to $2 answered across the ESP child"
+		# snapshot the counters now: a charon seat removes its SAs as
+		# soon as the row tears it down, and the 0.5 s sampler can miss
+		# the window between this echo and that teardown (Fedora: the
+		# echo was answered, yet the initiator's last sample predated it)
+		if [ -n "${XA_PID:-}" ] && [ -n "${XA_DIR:-}" ]; then
+			xa_sample "$XA_ROW" SAMPLE "$XA_DIR"
+		fi
 		return 0
 	fi
 	log "FAIL: data plane: no ICMP echo reply from $2 across the ESP child${3:+ ($3)}"
