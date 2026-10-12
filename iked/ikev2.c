@@ -490,6 +490,13 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 					   "dropping unordered message (id %d)\n",
 					   message_id);
 				++isakmpstat.unordered;
+				/* RFC 7296 §2.3: an out-of-window REQUEST
+				 * must not be acknowledged; initiate our own
+				 * INFORMATIONAL with N(INVALID_MESSAGE_ID,
+				 * data=the invalid id), rate-limited. */
+				if (!is_response)
+					(void)ikev2_send_invalid_message_id(
+					    ike_sa, message_id);
 				goto end;
 			}
 			if (ikev2_decrypt(ike_sa, packet) != 0) {
@@ -533,6 +540,11 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 					   "dropping unordered message (id %d)\n",
 					   message_id);
 				++isakmpstat.unordered;
+				/* RFC 7296 §2.3: out-of-window REQUEST — see
+				 * the SK-path note above. */
+				if (!is_response)
+					(void)ikev2_send_invalid_message_id(
+					    ike_sa, message_id);
 				goto end;
 			}
 		}

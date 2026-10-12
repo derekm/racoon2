@@ -218,6 +218,53 @@ ikev2_informational_initiator_notify(struct ikev2_sa *ike_sa,
 					     payl);
 }
 
+/*
+ * RFC 7296 §2.3: when a request's Message ID is outside the (window-1)
+ * supported window, the receiver MUST NOT acknowledge it; instead it
+ * informs the peer by initiating its own INFORMATIONAL carrying
+ * N(INVALID_MESSAGE_ID, data=the 4-octet invalid id).  Sending is optional
+ * but MUST be rate limited, so we allow at most one per SA per second.
+ * The caller (ikev2_input) calls this only after ICV validation, so we are
+ * not answering an unauthenticated packet — we are starting a fresh
+ * authenticated exchange of our own.  Returns 1 if an INFORMATIONAL was
+ * initiated, 0 if rate-limited/skipped.
+ */
+int
+ikev2_send_invalid_message_id(struct ikev2_sa *ike_sa, uint32_t message_id)
+{
+	struct ikev2_payloads *payl;
+	uint8_t idbuf[4];
+
+	if (ike_sa->invalid_msgid_last_sent &&
+	    time(NULL) - ike_sa->invalid_msgid_last_sent < 1) {
+		/* RFC 7296 §2.3: notifications of this type MUST be rate
+		 * limited.  Drop the out-of-window request silently (it was
+		 * never going to be acknowledged anyway) rather than fan
+		 * out one INVALID_MESSAGE_ID per packet a storm sends. */
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
+			   "INVALID_MESSAGE_ID rate-limited (last %lds ago)\n",
+			   (long)(time(NULL) - ike_sa->invalid_msgid_last_sent));
+		return 0;
+	}
+
+	payl = racoon_malloc(sizeof(*payl));
+	if (!payl)
+		return 0;
+	ikev2_payloads_init(payl);
+	put_uint32(idbuf, message_id);
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0,
+						 IKEV2_INVALID_MESSAGE_ID,
+						 idbuf, sizeof(idbuf)),
+			    TRUE);
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+		   "Message ID %u outside window: initiating INVALID_MESSAGE_ID\n",
+		   message_id);
+	ike_sa->invalid_msgid_last_sent = time(NULL);
+	ikev2_informational_initiator_notify(ike_sa, payl);
+	return 1;
+}
+
 static void
 info_init_notify_callback(enum request_callback action,
 			  struct ikev2_child_sa *child_sa, void *data)
