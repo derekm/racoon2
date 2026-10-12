@@ -21,7 +21,7 @@ else
 libracoon_la_SOURCES += if_pfkeyv2.c
 endif
 endif
-EXTRA_DIST = if_xfrm.c if_pfkeyv2.c if_userspace.c xfrmnatt.c xfrmtmpl.c
+EXTRA_DIST = if_xfrm.c if_pfkeyv2.c if_userspace.c xfrmnatt.c xfrmtmpl.c xfrmnltest.c
 libracoon_la_LIBADD = $(LTLIBOBJS) -lpcap
 TESTS = sample kmtest loginkat icketest
 check_PROGRAMS = sample kmtest loginkat icketest
@@ -37,8 +37,12 @@ LOG_COMPILER = $(SHELL) $(srcdir)/sample-wrapper.sh
 AM_TESTS_ENVIRONMENT = R2_SAMPLE_CONF='$(abs_srcdir)/../samples/libsample.conf'; export R2_SAMPLE_CONF;
 kmtest_SOURCES = kmtest.c kmtest_backend.c
 if USE_XFRM
-TESTS += xfrmnatt xfrmtmpl
-check_PROGRAMS += xfrmnatt xfrmtmpl
+TESTS += xfrmnatt xfrmtmpl xfrmnltest
+check_PROGRAMS += xfrmnatt xfrmtmpl xfrmnltest
+# xfrmnltest #includes if_xfrm.c (XFRM_UNITTEST) and mocks the kernel
+# with socketpairs; libracoon only supplies plog/rcs_* helpers.
+xfrmnltest_SOURCES = xfrmnltest.c
+xfrmnltest_LDADD = libracoon.la -lpthread
 xfrmnatt_SOURCES = xfrmnatt.c
 xfrmnatt_LDADD = libracoon.la
 xfrmtmpl_SOURCES = xfrmtmpl.c
