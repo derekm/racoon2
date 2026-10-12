@@ -44,6 +44,7 @@
 #  endif
 #endif
 #include <sys/errno.h>
+#include <time.h>
 #include <netinet/in.h>
 
 #ifdef HAVE_INTTYPES_H
@@ -3189,6 +3190,132 @@ ikev2_child_expire_callback(void *param)
 	ikev2_expire_child(child_sa);
 }
 /* #endif */
+
+/*
+ * Child SA whose local (inbound) SPI is spi (network order) for proto
+ * IKEV2PROPOSAL_ESP/AH, or NULL.  my_proposal[1] holds the SPIs we chose,
+ * the same list ikev2_expired() matches inbound expires against.
+ */
+struct ikev2_child_sa *
+ikev2_find_child_by_inbound_spi(uint32_t spi, int proto)
+{
+	struct ikev2_sa *sa;
+	struct ikev2_child_sa *c;
+	struct prop_pair *p;
+
+	for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa;
+	     sa = IKEV2_SA_LIST_NEXT(sa)) {
+		for (c = IKEV2_CHILD_LIST_FIRST(&sa->children);
+		     !IKEV2_CHILD_LIST_END(c);
+		     c = IKEV2_CHILD_LIST_NEXT(c)) {
+			if (!c->my_proposal)
+				continue;
+			for (p = c->my_proposal[1]; p; p = p->next) {
+				struct isakmp_pl_p *prop = p->prop;
+
+				if (prop && prop->proto_id == proto &&
+				    *(uint32_t *)(prop + 1) == spi)
+					return c;
+			}
+		}
+	}
+	return NULL;
+}
+
+static int
+resync_has(const struct sadb_resync_ent *e, size_t n, uint32_t spi,
+    int satype)
+{
+	size_t i;
+
+	for (i = 0; i < n; i++)
+		if (e[i].spi == spi && e[i].satype == satype)
+			return 1;
+	return 0;
+}
+
+/*
+ * After lost kernel notifications (ENOBUFS) the backend dumped the SAD.
+ * Bring every MATURE Child SA in line with it:
+ *  - an inbound SA that is gone from the kernel lost its DELSA/hard
+ *    EXPIRE with the overflow: treat it as hard-expired (rekey, which
+ *    replaces the pair; deleting the missing half is idempotent);
+ *  - an inbound SA whose soft lifetime passed with traffic lost its soft
+ *    EXPIRE: treat it as soft-expired.
+ * ikev2_expire_sa() ignores a child whose rekey is already in progress,
+ * so an EXPIRE that did get through is not acted on twice.
+ */
+void
+ikev2_sadb_resync(const struct sadb_resync_ent *ent, size_t n)
+{
+	struct ikev2_sa *sa, *next_sa;
+	struct ikev2_child_sa *c, *next_c;
+	struct prop_pair *p;
+	time_t now = time(NULL);
+	size_t i;
+	int missing = 0, soft = 0;
+
+	for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa; sa = next_sa) {
+		next_sa = IKEV2_SA_LIST_NEXT(sa);
+		for (c = IKEV2_CHILD_LIST_FIRST(&sa->children);
+		     !IKEV2_CHILD_LIST_END(c); c = next_c) {
+			next_c = IKEV2_CHILD_LIST_NEXT(c);
+			if (c->state != IKEV2_CHILD_STATE_MATURE ||
+			    !c->my_proposal)
+				continue;
+			for (p = c->my_proposal[1]; p; p = p->next) {
+				struct isakmp_pl_p *prop = p->prop;
+				uint32_t spi;
+				rc_type st;
+
+				if (!prop)
+					continue;
+				if (prop->proto_id == IKEV2PROPOSAL_ESP)
+					st = RCT_SATYPE_ESP;
+				else if (prop->proto_id == IKEV2PROPOSAL_AH)
+					st = RCT_SATYPE_AH;
+				else
+					continue;
+				spi = *(uint32_t *)(prop + 1);
+				if (!resync_has(ent, n, spi, st)) {
+					isakmp_log(sa, 0, 0, 0, PLOG_INTWARN,
+					    PLOGLOC,
+					    "resync: inbound SA spi=0x%08x is "
+					    "gone from the kernel; rekeying "
+					    "child\n", ntohl(spi));
+					missing++;
+					ikev2_expire_sa(c, 2, st, ntohl(spi));
+					goto next_child;	/* c may be gone */
+				}
+				for (i = 0; i < n; i++) {
+					if (ent[i].spi != spi ||
+					    ent[i].satype != st)
+						continue;
+					if (ent[i].soft_time &&
+					    ent[i].alloc &&
+					    ent[i].add_time + ent[i].soft_time
+					    <= (uint64_t)now) {
+						isakmp_log(sa, 0, 0, 0,
+						    PLOG_INFO, PLOGLOC,
+						    "resync: spi=0x%08x passed "
+						    "its soft lifetime\n",
+						    ntohl(spi));
+						soft++;
+						ikev2_expire_sa(c, 1, st,
+						    ntohl(spi));
+						goto next_child;
+					}
+					break;
+				}
+			}
+		next_child:
+			;
+		}
+	}
+	plog(PLOG_INFO, PLOGLOC, 0,
+	     "resync: %zu kernel SAs, %d child SAs missing, %d soft-expired\n",
+	     n, missing, soft);
+}
 
 int
 ikev2_expired(struct sadb_request *req, struct rcpfk_msg *param)

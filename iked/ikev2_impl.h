@@ -960,6 +960,9 @@ void responder_ike_sa_auth_eap_final_recv(struct ikev2_sa *, rc_vchar_t *,
 /* RFC 4555 MOBIKE, defined in ikev2_mobike.c. */
 void ikev2_mobike_apply(struct ikev2_sa *, struct sockaddr *, struct sockaddr *);
 int ikev2_mobike_probe_next(struct ikev2_sa *);
+struct ikev2_child_sa *ikev2_find_child_by_inbound_spi(uint32_t, int);
+struct sadb_resync_ent;
+void ikev2_sadb_resync(const struct sadb_resync_ent *, size_t);
 
 /* IKEv2 transmit / retransmit / msgid-window helpers, defined in
  * ikev2_transmit.c. */
