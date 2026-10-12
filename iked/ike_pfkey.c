@@ -37,6 +37,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #ifdef HAVE_INTTYPES_H
 #  include <inttypes.h>
 #endif
@@ -136,6 +137,8 @@ static int sadb_get_callback(struct rcpfk_msg *param);
 static int sadb_expire_callback(struct rcpfk_msg *param);
 static int sadb_acquire_callback(struct rcpfk_msg *param);
 static int sadb_delete_callback(struct rcpfk_msg *param);
+static int sadb_sadump_callback(struct rcpfk_msg *param);
+static int sadb_resync_callback(struct rcpfk_msg *param);
 #ifdef SADB_X_MIGRATE
 static int sadb_x_migrate_callback(struct rcpfk_msg *param);
 #endif
@@ -170,6 +173,9 @@ sadb_init(void)
 		return 0;
 
 	param.flags = 0;
+	/* optional members after the #ifdef'd cb_migrate: assign by name */
+	ike_rcpfk_callback.cb_sadump = sadb_sadump_callback;
+	ike_rcpfk_callback.cb_resync = sadb_resync_callback;
 
 	if (rcpfk_init(&param, &ike_rcpfk_callback) != 0)
 		return -1;
@@ -673,6 +679,45 @@ sadb_delete_callback(struct rcpfk_msg *param)
 	plog(PLOG_INFO, PLOGLOC, 0,
 	     "received PFKEY_DELETE seq=%d satype=%s spi=0x%08x\n",
 	     param->seq, rct2str(param->satype), ntohl(param->spi));
+	return 0;
+}
+
+/* post-ENOBUFS resync: collect the dumped SAD, then reconcile */
+static struct sadb_resync_ent *resync_ent;
+static size_t resync_n, resync_cap;
+
+static int
+sadb_sadump_callback(struct rcpfk_msg *param)
+{
+	struct sadb_resync_ent *e;
+
+	if (resync_n == resync_cap) {
+		size_t ncap = resync_cap ? resync_cap * 2 : 64;
+
+		e = realloc(resync_ent, ncap * sizeof(*e));
+		if (e == NULL)
+			return -1;
+		resync_ent = e;
+		resync_cap = ncap;
+	}
+	e = &resync_ent[resync_n++];
+	e->spi = param->spi;
+	e->satype = param->satype;
+	e->add_time = param->lft_current_add;
+	e->soft_time = param->lft_soft_time;
+	e->alloc = param->lft_current_alloc;
+	return 0;
+}
+
+static int
+sadb_resync_callback(struct rcpfk_msg *param)
+{
+	(void)param;
+	isakmp_log(0, 0, 0, 0, PLOG_INTWARN, PLOGLOC,
+		   "kernel notifications were lost (ENOBUFS); reconciling "
+		   "Child SAs against %zu kernel SAs\n", resync_n);
+	ikev2_sadb_resync(resync_ent, resync_n);
+	resync_n = 0;
 	return 0;
 }
 

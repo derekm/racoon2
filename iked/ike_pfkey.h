@@ -108,6 +108,15 @@ struct sadb_response_method {
 #define	SADB_LIST_LINK(head_, p_)	TAILQ_INSERT_TAIL((head_), (p_), link)
 #define	SADB_LIST_REMOVE(head_, p_)	TAILQ_REMOVE((head_), (p_), link)
 
+/* one kernel SA from a post-ENOBUFS resync dump (ike_pfkey.c) */
+struct sadb_resync_ent {
+	uint32_t spi;		/* network order */
+	uint8_t satype;		/* RCT_SATYPE_* */
+	uint64_t add_time;	/* curlft add time (wall clock seconds) */
+	uint64_t soft_time;	/* soft add-expire seconds, 0 = none */
+	uint64_t alloc;		/* nonzero = the SA carried traffic */
+};
+
 struct sadb_request {
 	struct sadb_request_method *method;
 	struct sadb_response_method *callback;
