@@ -343,7 +343,11 @@ main(int argc, char **argv)
 			eay_set_engine(EAY_OPENSSL_ENGINE);
 #endif
 	}
-	eay_init();
+	if (eay_init() != 0) {
+		plog(PLOG_CRITICAL, PLOGLOC, NULL,
+		    "crypto library initialisation failed\n");
+		exit(1);
+	}
 	INFO((PLOGLOC, "reading config %s\n", racoon_config_path));
 #ifdef YYDEBUG
 	if (opt_debug & DEBUG_FLAG_CONFIG) {

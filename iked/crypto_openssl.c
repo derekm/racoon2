@@ -110,19 +110,47 @@ eay_set_engine(const char *id)
 	eay_engine_id = id;
 }
 
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+/* provider that must load; only eaytest's "provider" case changes it */
+static const char *eay_default_prov_name = "default";
+
 void
+eay_test_set_default_provider(const char *name)
+{
+	eay_default_prov_name = name ? name : "default";
+}
+#else
+void
+eay_test_set_default_provider(const char *name)
+{
+	(void)name;
+}
+#endif
+
+/*
+ * Returns 0, or -1 when the OpenSSL default provider cannot be loaded.
+ * Without it every non-legacy algorithm fails at first use, mid-exchange;
+ * iked must refuse to start instead (idea from rdratlos/racoon-ipsec-tools
+ * f757084, which made the same failure fatal).  A missing *legacy*
+ * provider stays non-fatal: only the opt-in deprecated ciphers need it.
+ */
+int
 eay_init(void)
 {
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 	/* idempotent: eaytest (and re-entrant callers) may call twice */
 	if (eay_initialized)
-		return;
-	eay_initialized = 1;
+		return 0;
 	OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, NULL);
-	eay_prov_default = OSSL_PROVIDER_load(NULL, "default");
-	if (eay_prov_default == NULL)
-		plog(PLOG_INTWARN, PLOGLOC, NULL,
-		    "OpenSSL default provider failed to load\n");
+	eay_prov_default = OSSL_PROVIDER_load(NULL, eay_default_prov_name);
+	if (eay_prov_default == NULL) {
+		ERR_clear_error();
+		plog(PLOG_CRITICAL, PLOGLOC, NULL,
+		    "OpenSSL %s provider failed to load; refusing to run "
+		    "without it\n", eay_default_prov_name);
+		return -1;
+	}
+	eay_initialized = 1;
 	eay_prov_legacy = OSSL_PROVIDER_try_load(NULL, "legacy", 1);
 	if (eay_prov_legacy == NULL) {
 		ERR_clear_error();
@@ -187,6 +215,7 @@ eay_init(void)
 		ENGINE_register_all_complete();
 	}
 #endif
+	return 0;
 }
 
 void
