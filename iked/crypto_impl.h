@@ -34,7 +34,8 @@
 
 #include "crypto_openssl.h"
 
-extern void eay_init (void);
+extern int eay_init (void);
+extern void eay_test_set_default_provider (const char *);
 extern void eay_cleanup (void);
 extern void eay_set_provider (const char *);
 extern void eay_set_engine (const char *);

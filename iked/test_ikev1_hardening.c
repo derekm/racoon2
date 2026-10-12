@@ -144,7 +144,10 @@ main(int argc, char *argv[])
 	(void)argc;
 
 	test_init(argv[0]);
-	eay_init();
+	if (eay_init() != 0) {
+		printf("eay_init failed\n");
+		return 1;
+	}
 	compute_vendorids();
 
 	RUN_TEST(test_payload_body_cmp);
