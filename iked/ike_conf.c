@@ -153,6 +153,9 @@ struct rcf_kmp ikev1_default_values = {
 };
 #endif
 
+/* iked -C: skip the kernel algorithm probe (needs PF_KEY) */
+int ike_conf_check_skip_kernel = 0;
+
 struct rcf_kmp ikev2_default_values = {
 	RCT_KMP_IKEV2,		/* kmp_proto    */
 	NULL,			/* plog         */
@@ -6123,6 +6126,8 @@ ike_conf_check_sa(struct rcf_sa *sa, int *err, int *warn, int is_default_clause)
 	if (debug_pfkey)
 		return;
 #endif
+	if (ike_conf_check_skip_kernel)
+		return;		/* iked -C: no PF_KEY registration */
 
 	for (alg = sa->enc_alg; alg; alg = alg->next) {
 		if (!rcpfk_supported_enc(alg->algtype)) {
