@@ -75,6 +75,7 @@
 
 const char *racoon_config_path = RACOON_CONF;
 int opt_foreground = FALSE;
+static int opt_check_config = FALSE;
 int opt_debug = 0;
 int opt_ipv4_only = FALSE;
 int opt_ipv6_only = FALSE;
@@ -117,15 +118,16 @@ static void iked_pidfile_remove(void);
 static void fatal(const char *);
 
 #ifdef HAVE_LIBPCAP
-const char *options_short = "f:hVFvdD:p:t:46l:I:S:P:";
+const char *options_short = "f:hVFvdCD:p:t:46l:I:S:P:";
 #else
-const char *options_short = "f:hVFvdD:p:t:46l:I:S:";
+const char *options_short = "f:hVFvdCD:p:t:46l:I:S:";
 #endif
 
 #ifdef HAVE_GETOPT_LONG
 #include <getopt.h>
 const struct option options_long[] = {
 	{"config-file", required_argument, 0, 'f'},
+	{"check-config", no_argument, 0, 'C'},
 	{"help", no_argument, 0, 'h'},
 	{"version", no_argument, 0, 'V'},
 	{"foreground", no_argument, 0, 'F'},
@@ -217,6 +219,10 @@ main(int argc, char **argv)
 			break;
 		case 'I':
 			dest_addr = optarg;
+			break;
+		case 'C':
+			opt_check_config = TRUE;
+			opt_foreground = TRUE;
 			break;
 		case 'F':
 			opt_foreground = TRUE;
@@ -348,7 +354,27 @@ main(int argc, char **argv)
 	if (rcf_read(racoon_config_path,
 		     (opt_debug & DEBUG_FLAG_CONFIG) ? RCF_PARSE_DEBUG : 0)) {
 		plog(PLOG_CRITICAL, PLOGLOC, NULL, "failed reading config\n");
+		if (opt_check_config) {
+			fprintf(stderr, "%s: %s: failed reading config\n",
+				getprogname(), racoon_config_path);
+			exit(IKED_EXIT_FAILURE);
+		}
 		iked_exit(IKED_EXIT_FAILURE);
+	}
+	if (opt_check_config) {
+		/* -C: the full configuration check (incl. the deprecated-
+		 * transform switches) without opening PF_KEY / spmd; only
+		 * the kernel algorithm probe is skipped, which needs the
+		 * running kernel. */
+		ike_conf_check_skip_kernel = 1;
+		if (ike_conf_check_consistency() != 0) {
+			fprintf(stderr, "%s: %s: configuration check failure\n",
+				getprogname(), racoon_config_path);
+			exit(IKED_EXIT_FAILURE);
+		}
+		fprintf(stderr, "%s: %s: configuration OK\n", getprogname(),
+			racoon_config_path);
+		exit(IKED_EXIT_SUCCESS);
 	}
 #ifdef SELFTEST
 	{
@@ -643,8 +669,9 @@ static void
 iked_help(void)
 {
 	fprintf(stderr,
-		"usage: iked [-f file] [-p port] [-46] [-I address] [-S selector_index] [-D number] [-FdvVh] [-l logfile]\n");
+		"usage: iked [-f file] [-p port] [-46] [-I address] [-S selector_index] [-D number] [-CFdvVh] [-l logfile]\n");
 	fprintf(stderr, "\t-f  specify the configuration file.\n");
+	fprintf(stderr, "\t-C  check the configuration and exit (no kernel algorithm probe).\n");
 	fprintf(stderr, "\t-p  specify the isakmp port number to listen to.\n");
 	fprintf(stderr, "\t-4  use IPv4 only.\n");
 	fprintf(stderr, "\t-6  use IPv6 only.\n");
