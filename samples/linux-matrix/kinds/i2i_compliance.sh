@@ -44,9 +44,9 @@ i2i_compliance() {
 	# established pair and NO ESP child BY DESIGN.  The wired cells that
 	# prove the architecture (SPD shape, no clear path, peer-auth declared,
 	# ref-id pinned, nonce/DH source) still hold and are checked; the
-	# established/ESP-dependent cells (A3 A4 A5 A7 A8 A12) are demoted to
-	# NEG-waived INFO because their precondition (an established SA) is
-	# intentionally absent.  The refusal itself is the row's own gate.
+	# established/ESP-dependent cells (A3 A4 A5 A8) assert their exact
+	# expected value on a refusal (no keyed ESP SA, no child established);
+	# A7 (resume) is reported N/A.  The refusal itself is the row's own gate.
 	if case "$_name" in *-cfgneg*) true ;; *) false ;; esac; then
 	# On a refused childless exchange every seat keeps its IKE-port BYPASS
 	# (500/4500) rows; the ESP PROTECT row can only exist on a seat whose
@@ -119,12 +119,37 @@ i2i_compliance() {
 		else
 			PLOG A15 FAIL "NEG row: no FAILED_CP_REQUIRED refusal marker in responder log"
 		fi
-		PLOG A3 INFO "NEG-waived: no ESP SAD by design (refused exchange)"
-		PLOG A4 INFO "NEG-waived: no ESP cipher by design (refused exchange)"
-		PLOG A5 INFO "NEG-waived: no ESTABLISHED by design (refused exchange)"
+		# A3/A4/A5/A7/A8 used to be "NEG-waived" INFO.  Their expected
+		# value on a refused exchange is exact and checkable: NO keyed ESP
+		# SA on either seat and NO child ESTABLISHED in the responder log.
+		# Assert that instead of excusing the cells.
+		_neg_sa=0
+		for _ns in "$_NSR" "$_NSI"; do
+			_k=$(ip netns exec "$_ns" ip xfrm state 2>/dev/null | grep -cE '^[[:space:]]+(enc|aead|auth-trunc) ' || true)
+			_neg_sa=$((_neg_sa + ${_k:-0}))
+		done
+		if [ "$_neg_sa" -eq 0 ]; then
+			PLOG A3 PASS "NEG row: no keyed ESP SA on either seat (exact expected value of a refused exchange)"
+			PLOG A4 PASS "NEG row: no ESP cipher installed (refused exchange)"
+			PLOG A8 PASS "NEG row: no CHILD_SA, so no CHILD_SA lifetime to check (refused exchange)"
+		else
+			PLOG A3 FAIL "NEG row: $_neg_sa keyed ESP SA algorithm line(s) installed although the exchange was refused"
+			PLOG A4 FAIL "NEG row: ESP cipher installed on a refused exchange"
+			PLOG A8 FAIL "NEG row: CHILD_SA state present on a refused exchange"
+		fi
+		# same marker the positive A5 uses ("-> ESTABLISHED", iked state
+		# change); FAILED_CP_REQUIRED refuses IKE_AUTH as a whole, so the
+		# iked responder must never reach it.  A charon responder seat has
+		# no iked log: INFO, not a vacuous PASS.
+		if [ "$_per" != iked ]; then
+			PLOG A5 INFO "NEG row: charon responder seat; refusal proven by A15 on the iked side"
+		elif grep -q -- "-> ESTABLISHED" "$_D/resp-iked.log" 2>/dev/null; then
+			PLOG A5 FAIL "NEG row: iked responder reached ESTABLISHED on a refused exchange"
+		else
+			PLOG A5 PASS "NEG row: iked responder never reached ESTABLISHED (refused exchange)"
+		fi
 		PLOG A6 PASS "IKE payload cipher (aes256_cbc|aes_gcm) in claimed set (conf)"
-		PLOG A7 INFO "NEG-waived: no resume ike_remain (refused exchange)"
-		PLOG A8 INFO "NEG-waived: no CHILD_SA lifetime (refused exchange)"
+		PLOG A7 INFO "NEG row: resume ike_remain not applicable (no IKE SA to resume after a refusal)"
 		[ "$CPL_FAIL" -eq 0 ]
 		return $?
 	fi

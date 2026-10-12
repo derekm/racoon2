@@ -750,8 +750,13 @@ fi
 		log "INITIAL IKE_SA ADDKE: IKE_INTERMEDIATE round on BOTH sides, ESP child up => SK(1) key material matched"
 	elif [ "${I2I_CLASSICAL:-0}" != 1 ]; then
 		log "FAIL: initial IKE_SA not ADDKE/ML-KEM (nint=${nint:-0})"
+	elif [ "${nint:-0}" -eq 0 ]; then
+		# exact expected value, not a waiver: a classical row runs ZERO
+		# IKE_INTERMEDIATE rounds
+		log "classical-CBC row: nint=0 IKE_INTERMEDIATE rounds, exactly as expected (I2I_CLASSICAL=1)"
 	else
-		log "waived: classical-CBC row has no ADDKE round (I2I_CLASSICAL=1, expected)"
+		log "FAIL: classical-CBC row ran ${nint} IKE_INTERMEDIATE round(s), expected exactly 0"
+		R2_CASE_FAIL=1
 	fi
 
 	# RFC 8784 PPK rows: with USE_PPK on both seats the child only lands if

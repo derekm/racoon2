@@ -214,8 +214,21 @@ fbsd_comply() {
 			END { print c+0 }' "/tmp/freeb/$_sa" 2>/dev/null || echo 0)
 		[ "${_c:-0}" -ge 1 ] || _a3=0
 	done
-	[ "$_a3" -eq 1 ] && _plog A3 PASS "esp mode=tunnel state=mature SAs in both jails (setkey -D)"
-	[ "$_a3" -eq 0 ] && _plog A3 INFO "no mature tunnel ESP SA on a jail (NEG-refusal or dump timing); not a FAIL"
+	# Used to be INFO "NEG-refusal or dump timing; not a FAIL" on every
+	# row.  Now exact per row class: a positive row (a) MUST have mature
+	# tunnel SAs in both jails (the dump is taken after up=1 and TUN_OK);
+	# a refusal / expected-reject row (r/x) must have NONE.
+	_a3any=0
+	for _sa in resp-sadb.txt init-sadb.txt; do
+		grep -q 'esp mode=' "/tmp/freeb/$_sa" 2>/dev/null && _a3any=1
+	done
+	if [ "$_neg" = a ]; then
+		[ "$_a3" -eq 1 ] && _plog A3 PASS "esp mode=tunnel state=mature SAs in both jails (setkey -D)"
+		[ "$_a3" -eq 0 ] && _plog A3 FAIL "positive row without a mature tunnel ESP SA in a jail (setkey -D)"
+	else
+		[ "$_a3any" -eq 0 ] && _plog A3 PASS "refused/expected-reject row: no ESP SA in either jail (exact expected value)"
+		[ "$_a3any" -eq 1 ] && _plog A3 FAIL "refused/expected-reject row but an ESP SA is installed"
+	fi
 
 	# ---- A4  ESP cipher in claimed set (iked child ENCR line) ------------
 	# claimed set {AES-CBC (RFC 4868), AES-GCM}; AES-CTR/others -> INFO.
@@ -240,8 +253,12 @@ fbsd_comply() {
 		_plog A4 PASS "ESP cipher in claimed set (iked child ENCR: AES-GCM/AES-CBC, row $_name)"
 	elif [ "$_a4c" -eq 1 ]; then
 		_plog A4 INFO "ESP cipher AES-CTR established but outside v3.0e claimed set ($_name)"
+	elif [ "$_neg" = a ] && cat /tmp/freeb/resp-iked.log /tmp/freeb/init-iked.log 2>/dev/null | grep -aq 'child ENCR transform_id='; then
+		_plog A4 INFO "ESP cipher outside the v3.0e claimed set for $_name ($(cat /tmp/freeb/resp-iked.log /tmp/freeb/init-iked.log 2>/dev/null | grep -aoE 'child ENCR transform_id=[0-9]+' | head -1))"
+	elif [ "$_neg" = a ]; then
+		_plog A4 FAIL "positive row but no child ENCR transform logged for $_name"
 	else
-		_plog A4 INFO "no ESP cipher transform observed for $_name (NEG-refusal expected)"
+		_plog A4 PASS "refused/expected-reject row: no ESP cipher negotiated for $_name (exact expected value)"
 	fi
 
 	# ---- A5  IKEv2 ESTABLISHED + NAT-T encap socket (iked logs) ----------
@@ -255,8 +272,10 @@ fbsd_comply() {
 	done
 	if [ "$_a5" -eq 1 ]; then
 		_plog A5 PASS "IKEv2 ESTABLISHED both seats ($_name); NAT-T 4500 socket claimed=$_a5nat (iked log)"
+	elif [ "$_neg" = a ]; then
+		_plog A5 FAIL "positive row but no IKEv2 ESTABLISHED on a seat ($_name)"
 	else
-		_plog A5 INFO "no IKEv2 ESTABLISHED on a seat ($_name) — expected on NEG-refusal"
+		_plog A5 INFO "no IKEv2 ESTABLISHED on a seat ($_name): refusal row, the refusal marker is the row verdict"
 	fi
 
 	# ---- A6  IKE payload cipher in claimed set (conf kmp_enc_alg) --------
