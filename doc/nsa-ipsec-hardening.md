@@ -84,19 +84,30 @@ racoon2 mapping:
 
 * The IKEv2 transform tables in `iked/ike_conf.c`
   (`ikev2_transf_encr[]`, `ikev2_transf_integr[]`, `ikev2_transf_dh[]`)
-  still **list** 3DES, MD5, SHA-1, and groups 1/2/5 so that a legacy
-  interop config can still be written — but the daemon now emits a
-  `PLOG_INTWARN` at proposal-build time whenever one of those algorithms
-  is actually offered:
+  still **list** DES, 3DES, MD5, SHA-1, and groups 1/2/5 (plus the other
+  RFC-deprecated transforms, see §8) so that a legacy interop config can
+  still be written — but **by default iked refuses them**.  Since the
+  defaults flip (behavior change), `allow_nsa_deprecated` and
+  `allow_rfc_deprecated` are both **off**: a config that offers an
+  NSA- or RFC-deprecated transform fails `ike_conf_check` and iked
+  refuses to start or reload, e.g.
 
   ```
-  configuring obsolete algorithm 3des_cbc - remove the suite (NSA/CNSSP-15; see doc/nsa-ipsec-hardening.md)
+  remote r1 ikev2 kmp_enc_alg 3DES-CBC is NSA-deprecated (CNSSP-15) and allow_nsa_deprecated is off - refusing the configuration
+  ```
+
+  Turning the class's switch on makes the transform usable again, and
+  then the daemon emits a `PLOG_INTWARN` at config load and at
+  proposal-build time whenever one of those algorithms is offered:
+
+  ```
+  configuring obsolete algorithm 3DES-CBC - remove the suite (NSA/CNSSP-15; see doc/nsa-ipsec-hardening.md)
+  configuring RFC-deprecated algorithm MODP2048-224POS (IKE RFC 8247 s2.4 SHOULD NOT) - remove the suite (see doc/nsa-ipsec-hardening.md)
   ```
 
   This is the "review the current IKE policy" step made explicit at
   load/proposal time: if you see the line, the configuration you shipped
-  can negotiate below the CNSA baseline.  The warning is advisory;
-  removing the algorithm from the config makes it go away.
+  can negotiate below the CNSA baseline.
 
 * Recommend configurations take the compliant set directly:
 
@@ -147,8 +158,11 @@ periodically (wizards/user error can reintroduce them).
 
 racoon2 mapping:
 
-* The `PLOG_INTWARN` in §2 is the per-run validation: any offer of a
-  listed obsolete algorithm is logged at proposal-build time.
+* With the switches at their default (off) a non-compliant suite cannot
+  be configured at all, and a peer can never select one (§8).  When an
+  operator turns a switch on, the `PLOG_INTWARN` in §2 is the per-run
+  validation: any offer of a listed deprecated algorithm is logged at
+  config load and proposal-build time.
 * Prefer a config that lists **only** the compliant algorithms (one
   row per SA), rather than a compatibility ladder.  racoon2's proposal
   matching picks the strongest mutually-offered transform; if the config
@@ -232,3 +246,136 @@ Not in scope / explicitly out: vendored-gateway IPS/ACL appliances
 (§1 firewall + IPS is host/network policy, partially sample-only here),
 web/SAML/MFA identity layers, and SSL-VPN replacement (racoon2 is the
 IKE/IPsec side of that recommendation).
+
+## 8. Deprecated-transform switches (`allow_nsa_deprecated`, `allow_rfc_deprecated`)
+
+Two independent directives of the `ikev2 { }` and `ikev1 { }` clauses,
+valid in a `remote` and in the `default` clause, gate every deprecated
+transform by class
+(`iked/ike_deprecated.c` is the classification table, keyed by IANA
+transform type, codepoint and protocol context):
+
+| switch | class | covers |
+|---|---|---|
+| `allow_nsa_deprecated` | NSA/CNSSP-15 obsolete | DES family (DES, DES_IV64, DES_IV32, 3DES), MD5, SHA-1 (PRF, integrity, AUTH method 1 SHA-1 DigestInfo, DSS), MODP groups 1/2/5 |
+| `allow_rfc_deprecated` | RFC 8247 / RFC 8221 MUST NOT + SHOULD NOT, RFC 9395 s5 DEPRECATED | e.g. ENCR_DES / RC5 / IDEA / CAST / BLOWFISH / 3IDEA, IKE ENCR_NULL, PRF_HMAC_MD5 / TIGER, AUTH_HMAC_MD5_*, AUTH_DES_MAC, AUTH_KPDK_MD5, groups 1/2/5/22/23/24, ESP 3DES and Blowfish, ESP AUTH_NONE with a non-AEAD cipher (RFC 8221 s6), DSS AUTH (RFC 8247 s3.1) |
+
+The RFC level of one codepoint can differ by protocol (3DES is MAY for
+IKE in RFC 8247 but SHOULD NOT for ESP in RFC 8221), so the same token
+can need different switches in `kmp_enc_alg` and `esp_enc_alg`.  A
+transform in both classes needs both switches.
+
+**Default: both off (behavior change).**  Deprecated algorithms are
+refused unless the config explicitly turns the class on:
+
+* **Config load** (`ike_conf_check_consistency`): a deprecated token in
+  `kmp_enc_alg` / `kmp_prf_alg` / `kmp_hash_alg` / `kmp_dh_group`,
+  `kmp_auth_method` (DSS; `rsasig` with `offer_sig_hash_algorithms off`,
+  which pins AUTH method 1 with SHA-1), `esp_enc_alg` / `esp_auth_alg` /
+  `ah_auth_alg` / `esp_addke_alg`, or `non_auth` with a non-AEAD cipher
+  is a configuration error, and iked refuses to start or reload.  With
+  the switch on it is a warning naming the class, RFC section and level.
+* **Negotiation**: every received SA payload is filtered before
+  matching (IKE_SA_INIT and IKE_SA rekey both roles, IKE_AUTH child,
+  CREATE_CHILD and child rekey incl. RFC 9370 ADDKE rounds), so a peer
+  can never make iked select a disallowed transform, even as a
+  peer-only ADDKE type the matcher would otherwise carry.  RFC 5723
+  resume answers TICKET_NACK (full-exchange fallback) and the restart
+  restore skips a record whose suite is now disallowed.
+* **AUTH**: with `allow_nsa_deprecated` off iked neither signs nor
+  accepts AUTH method 1 with a SHA-1 DigestInfo (a peer that did not
+  negotiate RFC 7427 fails AUTH closed); DSS (method 3) needs both
+  switches.  Method 14 never uses SHA-1, switch or not.
+
+### IKEv1 (RFC 9395)
+
+The same two switches exist in the `ikev1 { }` clause and govern that
+remote's IKEv1 side only; the ikev2 clause keeps its own values.
+
+* **IKEv1 itself is RFC-deprecated** (RFC 9395 s3; RFCs 2407-2409 are
+  Historic).  A remote that can speak IKEv1 (it has an `ikev1` clause
+  and its `acceptable_kmp`, own or inherited from `default`, is unset or
+  lists `ikev1`) needs `allow_rfc_deprecated on`.  Off (the default),
+  the configuration is refused:
+  `remote X ikev1 acceptable_kmp ikev1 is RFC-deprecated (IKEv1 RFC 9395 s3 DEPRECATED) and allow_rfc_deprecated is off`.
+  On, it loads with a warning to migrate the remote to IKEv2, and at
+  negotiation time `get_ph1approval` refuses IKEv1 for a remote whose
+  switch is off.
+* **Per-remote override.**  The value in a remote's own `ikev1` clause
+  overrides the `default` clause.  Turning one legacy peer on therefore
+  opens nothing on other remotes, nor on the same remote's ikev2
+  clause: an IKEv2 remote using hmac_md5 in the same file is still
+  refused (`iked/samplecheck.sh`).  `samples/default.conf` leaves the
+  switch unset in the default ikev1 clause for this reason.  Each
+  shipped sample remote that speaks IKEv1 sets it itself.
+* **Algorithms inside IKEv1** are classified separately, by their IKEv1
+  codepoints, and need their own class switch as well.  For example,
+  IKEv1 with 3DES needs `allow_nsa_deprecated on` too.
+
+RFC 9395 s3 retires IKEv1 together with the IKEv1-only suites and s5
+retires the rest, so every RFC-class IKEv1 entry has level DEPRECATED.
+IKEv1 never had an RFC 8247-style MUST/SHOULD table.
+
+| IKEv1 attribute (codepoints) | value | NSA | RFC |
+|---|---|---|---|
+| protocol | IKEv1 | - | RFC 9395 s3 |
+| Phase 1 enc (RFC 2409 App A class 1) | 1 DES-CBC, 5 3DES-CBC | yes | RFC 9395 s3 |
+| | 2 IDEA, 3 Blowfish, 4 RC5, 6 CAST | - | RFC 9395 s5 |
+| | 7 AES-CBC (and later) | - | - |
+| Phase 1 hash (class 2) | 1 MD5 | yes | RFC 9395 s3 |
+| | 2 SHA-1 | yes | - |
+| | 3 Tiger | - | RFC 9395 s5 |
+| | 4-6 SHA2-256/384/512 | - | - |
+| Phase 1 auth method (class 3) | 2 DSS (also hybrid/XAUTH DSS) | yes | RFC 9395 s3 |
+| | 1 PSK, 3 RSA signatures | - | - |
+| group (class 4, also the Phase 2 PFS group) | 1 modp768, 2 modp1024, 5 modp1536 | yes | RFC 9395 s3 |
+| | 22-24 RFC 5114 groups | - | RFC 9395 s3 |
+| ESP transform (RFC 2407 s4.4.4) | the IKEv2 type-1 ids, with RFC 8221 levels (ESP DES MUST NOT, 3DES and Blowfish SHOULD NOT) | as IKEv2 ESP | as IKEv2 ESP |
+| Phase 2 auth attribute (RFC 2407 s4.5; AH via AH_MD5/SHA/DES) | 1 HMAC-MD5, 3 DES-MAC, 4 KPDK | yes | MUST NOT, RFC 8221 s6 |
+| | 2 HMAC-SHA1 | yes | - |
+| | 5-7 HMAC-SHA2 | - | - |
+| ESP without auth, non-AEAD cipher | | - | MUST NOT, RFC 8221 s6 |
+
+Config load and negotiation both apply this table: received Phase 1
+transforms and Phase 2 bundles (ESP/AH transforms, auth attribute, PFS
+group) are screened in `ikev1/ipsec_doi.c` before matching.  A refused
+bundle is skipped, and the peer's next bundle is still considered.
+`iked -C -f racoon2.conf` checks a configuration without starting the
+daemon.
+
+### The deprecated ENCR transforms
+
+ENCR transform IDs 1, 2 and 4-9 are implemented for IKE over the OpenSSL
+3 legacy provider (loaded by `eay_init` when present), and offered only
+when the switches permit.  Parameters follow the RFCs (RFC 7296 s3.3.5
+for the Key Length attribute):
+
+| ID | name | key | IV | Key Length attr | spec |
+|---|---|---|---|---|---|
+| 1 | DES_IV64 | 64 bit | 8 | none | RFC 1827 / RFC 1829 |
+| 2 | DES | 64 bit | 8 | none | RFC 2405 |
+| 4 | RC5 | 128 bit (default), 16 rounds | 8 | 128 (absent = 128) | RFC 2451 |
+| 5 | IDEA | 128 bit | 8 | none | RFC 2451 |
+| 6 | CAST | 128 bit (default) | 8 | 128 (absent = 128) | RFC 2451 / RFC 2144 |
+| 7 | BLOWFISH | 128 bit (default) | 8 | 128 (absent = 128) | RFC 2451 |
+| 8 | 3IDEA | — | — | — | **no specification** |
+| 9 | DES_IV32 | 64 bit | 4 (expanded to IV ‖ ~IV) | none | RFC 1829 s2.1 |
+
+Availability is a runtime property of the linked OpenSSL.  A cipher the
+library does not provide is refused by config check with
+`kmp_enc_alg <X> unsupported by crypto library`; Debian, Ubuntu and
+Fedora build OpenSSL without IDEA and RC5, so those two are refused
+there.  ENCR_3IDEA has no specification (IANA lists no reference and RFC
+2451 does not define it), so it is always refused with
+`kmp_enc_alg IDEA3-CBC unsupported: ENCR_3IDEA has no specification`.
+
+For ESP the kernel decides: Linux XFRM offers `cbc(des)`, `cbc(cast5)`
+and `cbc(blowfish)` (no IDEA, RC5, 3IDEA, or the DES_IV32/IV64 framings);
+FreeBSD `key.c` offers none of them (AES-CBC/CTR/GCM/GMAC, NULL and
+ChaCha20-Poly1305 only), so the ESP side is refused there with
+`not supported by kernel`.
+
+Evidence: `iked/deprtest` (classification table), `eaytest legacycipher`
+(KATs), and the `i2i-nsawarn*` / `i2i-cipher-*` matrix rows on Linux and
+FreeBSD plus the `ikev2-netns-{des,cast,blowfish}` strongSwan interop
+rows on Linux.

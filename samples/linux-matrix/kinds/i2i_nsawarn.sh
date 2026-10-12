@@ -1,27 +1,38 @@
 #!/bin/sh
-# kinds/i2i_nsawarn.sh — NSA/CNSSP-15 hardening check family: EVERY obsolete
-# algorithm (nsa_deprecated_alg in iked/ike_conf.c) MUST emit the iked
-# deprecation warning at proposal-build AND must NOT silently downgrade the
-# negotiated suite.  Two outcome classes:
+# kinds/i2i_nsawarn.sh — deprecated-transform family (NSA/CNSSP-15 and RFC
+# 8247 / RFC 8221 / RFC 9395), iked<->iked.  Both switches default OFF
+# (allow_nsa_deprecated / allow_rfc_deprecated): a deprecated algorithm is
+# refused unless the config turns its class on.  Row classes:
 #
 #   advisory  (3des_cbc, hmac_md5, hmac_sha1, modp768/1024/1536, ESP-side
-#              variants): the weak token has a real transform, so the warning
-#              fires but negotiation still lands on the compliant first-common
-#              offer and the ESP child establishes (advisory-only, never
-#              fails closed).  PASS = warning in BOTH iked logs + child up.
+#              variants): the row's config enables exactly the switch(es)
+#              the token's class needs (DEPR_SW), so the token is usable;
+#              the "configuring obsolete algorithm" warning must fire at
+#              proposal-build on BOTH seats while negotiation lands on the
+#              compliant first-common offer and the ESP child establishes.
+#              PASS = warning in BOTH iked logs + child up.
 #
-#   fail-closed (des_cbc): RCT_ALG_DES_CBC is commented OUT of the IKE
-#              transform table (iked/ike_conf.c), so iked refuses the config
-#              at ike_conf_check_ikev2 with "kmp_enc_alg DES-CBC
-#              unsupported" BEFORE proposal build -- there is no
-#              "configuring obsolete algorithm" warning for DES.  PASS =
-#              that conf-check reject string in BOTH logs + child did NOT
-#              establish (DES cannot be offered at all).
+#   refusal   (i2i-nsawarn-des, *-default-*, *-rfcoff-*, i2i-cipher-*-default,
+#              i2i-cipher-3idea, and an unavailable cipher): iked refuses the
+#              config at ike_conf_check before any proposal build.  PASS =
+#              the row's refusal string(s) in BOTH logs + NO child.
+#              i2i-nsawarn-des keeps its fail-closed gate; since DES is now
+#              implemented, the refusal it proves is the default-off one
+#              ("is NSA-deprecated ... allow_nsa_deprecated is off").
+#
+#   cipher    (i2i-cipher-<x>): kmp_enc_alg / esp_enc_alg lists ONLY the
+#              deprecated cipher on both seats with its switch(es) on, so
+#              nothing else can be negotiated.  PASS = "IKE SA encryption
+#              <name>" in BOTH logs (ESP rows: the kernel SA carries the
+#              cipher on BOTH netns) + child up.  IDEA/RC5 depend on the
+#              linked OpenSSL: the row probes `openssl list` and expects
+#              either a working SA or the "unsupported by crypto library"
+#              refusal accordingly.
 #
 # Topology: two netnss + P2P veth, iked<->iked (192.0.9.x) — copy of the
 # i2iinit/i2i_neg shape with distinct netns/socket/resume names.
 #
-# Each row configures the deprecated token in ONE proposal position (IKE
+# Advisory rows configure the deprecated token in ONE proposal position (IKE
 # ENCR / IKE PRF / IKE HASH / IKE DH / ESP ENCR / ESP AUTH); every other
 # position stays compliant.  The weak token is always listed AFTER the
 # compliant one so "first common" negotiation picks the compliant suite —
@@ -29,6 +40,15 @@
 #
 # Not an NDcPP cell — this is the NSA-hardening adjunct (mk_report Appendix
 # A notes the obsolete-alg warning).  No gate: runs on any build.
+
+# legacy_cipher_available EVPNAME: the linked OpenSSL provides the cipher
+# (default or legacy provider).  Matches iked's runtime probe
+# (eay_evp_cipher_available) because both use the system libcrypto.
+legacy_cipher_available() {
+	openssl list -cipher-algorithms -provider default -provider legacy 2>/dev/null |
+		grep -qiE "(^|[[:space:],{])$1([[:space:],}]|$)"
+}
+
 kind_i2i_nsawarn() {
 	name=$1
 	require_root || return 1
@@ -37,7 +57,8 @@ kind_i2i_nsawarn() {
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 
 	# Weak-algorithm placement per row.  WARN_STR is the REAL rct2str output
-	# (lib/rc_type.c); EXPECT_FAILCLOSED=1 flips the gate for des_cbc.
+	# (lib/rc_type.c).  MODE: advisory | refusal | cipher (see header).
+	# DEPR_SW: the switch line(s) the row's config needs (both seats).
 	WEAK_ENC='kmp_enc_alg { aes256_cbc; };'
 	WEAK_PRF='kmp_prf_alg { hmac_sha2_256; };'
 	WEAK_HASH='kmp_hash_alg { hmac_sha2_256; };'
@@ -45,49 +66,150 @@ kind_i2i_nsawarn() {
 	WEAK_ESP_ENC='esp_enc_alg { aes_gcm; };'
 	WEAK_ESP_AUTH='esp_auth_alg { non_auth; };'
 	WARN_STR=
-	EXPECT_FAILCLOSED=0
+	MODE=advisory
+	DEPR_SW=
+	REFUSE_STR=
+	REFUSE_STR2=
+	CIPHER=
+	ESP_XFRM=
+	SW_NSA='allow_nsa_deprecated on;'
+	SW_RFC='allow_rfc_deprecated on;'
+	SW_BOTH='allow_nsa_deprecated on; allow_rfc_deprecated on;'
+	# ERE patterns (grep -E) for the ike_conf_check refusal lines
+	off_nsa() { echo "$1 is NSA-deprecated \\(CNSSP-15\\) and allow_nsa_deprecated is off"; }
+	off_rfc() { echo "$1 is RFC-deprecated \\(.*\\) and allow_rfc_deprecated is off"; }
 	case "$name" in
 	i2i-nsawarn)
-		WARN_STR="3DES-CBC"
+		WARN_STR="3DES-CBC"; DEPR_SW=$SW_NSA
 		WEAK_ENC='kmp_enc_alg { aes256_cbc; 3des_cbc; };'
 		;;
 	i2i-nsawarn-md5)
-		WARN_STR="HMAC-MD5"
+		WARN_STR="HMAC-MD5"; DEPR_SW=$SW_BOTH
 		WEAK_PRF='kmp_prf_alg { hmac_sha2_256; hmac_md5; };'
 		WEAK_HASH='kmp_hash_alg { hmac_sha2_256; hmac_md5; };'
 		;;
 	i2i-nsawarn-sha1)
-		WARN_STR="HMAC-SHA-1"
+		WARN_STR="HMAC-SHA-1"; DEPR_SW=$SW_NSA
 		WEAK_PRF='kmp_prf_alg { hmac_sha2_256; hmac_sha1; };'
 		WEAK_HASH='kmp_hash_alg { hmac_sha2_256; hmac_sha1; };'
 		;;
 	i2i-nsawarn-modp768)
-		WARN_STR="MODP768"
+		WARN_STR="MODP768"; DEPR_SW=$SW_BOTH
 		WEAK_DH='kmp_dh_group { ecp256; modp768; };'
 		;;
 	i2i-nsawarn-modp1024)
-		WARN_STR="MODP1024"
+		WARN_STR="MODP1024"; DEPR_SW=$SW_BOTH
 		WEAK_DH='kmp_dh_group { ecp256; modp1024; };'
 		;;
 	i2i-nsawarn-modp1536)
-		WARN_STR="MODP1536"
+		WARN_STR="MODP1536"; DEPR_SW=$SW_BOTH
 		WEAK_DH='kmp_dh_group { ecp256; modp1536; };'
 		;;
 	i2i-nsawarn-esp3des)
-		WARN_STR="3DES-CBC"
+		WARN_STR="3DES-CBC"; DEPR_SW=$SW_BOTH
 		WEAK_ESP_ENC='esp_enc_alg { aes256_cbc; 3des_cbc; };'
 		WEAK_ESP_AUTH='esp_auth_alg { hmac_sha2_256; };'
 		;;
 	i2i-nsawarn-espsha1)
-		WARN_STR="HMAC-SHA-1"
+		WARN_STR="HMAC-SHA-1"; DEPR_SW=$SW_NSA
 		WEAK_ESP_ENC='esp_enc_alg { aes256_cbc; };'
 		WEAK_ESP_AUTH='esp_auth_alg { hmac_sha2_256; hmac_sha1; };'
 		;;
 	i2i-nsawarn-des)
-		WARN_STR="DES-CBC"
-		EXPECT_FAILCLOSED=1
+		# fail-closed: switches left at the default (off)
+		WARN_STR="DES-CBC"; MODE=refusal
 		WEAK_ENC='kmp_enc_alg { aes256_cbc; des_cbc; };'
+		REFUSE_STR="kmp_enc_alg $(off_nsa DES-CBC)"
+		REFUSE_STR2="kmp_enc_alg $(off_rfc DES-CBC)"
 		;;
+	# --- default-off refusal, one row per class -------------------------
+	i2i-nsawarn-default-nsa)
+		# NSA-only token (3DES is MAY in RFC 8247): the NSA switch alone
+		MODE=refusal
+		WEAK_ENC='kmp_enc_alg { aes256_cbc; 3des_cbc; };'
+		REFUSE_STR="kmp_enc_alg $(off_nsa 3DES-CBC)"
+		;;
+	i2i-nsawarn-default-rfc)
+		# RFC-only token (group 23, RFC 8247 s2.4 SHOULD NOT; not NSA)
+		MODE=refusal
+		WEAK_DH='kmp_dh_group { ecp256; modp2048_224; };'
+		REFUSE_STR="kmp_dh_group $(off_rfc MODP2048-224POS)"
+		;;
+	i2i-nsawarn-rfcoff-md5)
+		# independence: NSA on does not admit an RFC MUST NOT
+		MODE=refusal; DEPR_SW=$SW_NSA
+		WEAK_PRF='kmp_prf_alg { hmac_sha2_256; hmac_md5; };'
+		REFUSE_STR="kmp_prf_alg $(off_rfc HMAC-MD5)"
+		;;
+	# --- deprecated ENCR transforms (RFC 9395 s5 / RFC 8247 s2.1) ---------
+	i2i-cipher-des)      MODE=cipher; DEPR_SW=$SW_BOTH; CIPHER=des-cbc
+		WEAK_ENC='kmp_enc_alg { des_cbc; };' ;;
+	i2i-cipher-desiv64)  MODE=cipher; DEPR_SW=$SW_BOTH; CIPHER=des-cbc-iv64
+		WEAK_ENC='kmp_enc_alg { des_cbc_iv64; };' ;;
+	i2i-cipher-desiv32)  MODE=cipher; DEPR_SW=$SW_BOTH; CIPHER=des-cbc-iv32
+		WEAK_ENC='kmp_enc_alg { des_cbc_iv32; };' ;;
+	i2i-cipher-cast)     MODE=cipher; DEPR_SW=$SW_RFC; CIPHER=cast128-cbc
+		WEAK_ENC='kmp_enc_alg { cast128_cbc; };' ;;
+	i2i-cipher-blowfish) MODE=cipher; DEPR_SW=$SW_RFC; CIPHER=blowfish-cbc
+		WEAK_ENC='kmp_enc_alg { blowfish_cbc; };' ;;
+	i2i-cipher-idea)     MODE=cipher; DEPR_SW=$SW_RFC; CIPHER=idea-cbc
+		WEAK_ENC='kmp_enc_alg { idea_cbc; };'
+		legacy_cipher_available IDEA-CBC || {
+			MODE=refusal
+			REFUSE_STR="kmp_enc_alg IDEA-CBC unsupported by crypto library"
+		} ;;
+	i2i-cipher-rc5)      MODE=cipher; DEPR_SW=$SW_RFC; CIPHER=rc5-cbc
+		WEAK_ENC='kmp_enc_alg { rc5_cbc; };'
+		legacy_cipher_available RC5-CBC || {
+			MODE=refusal
+			REFUSE_STR="kmp_enc_alg RC5-CBC unsupported by crypto library"
+		} ;;
+	i2i-cipher-3idea)
+		# no specification exists: refused even with the switch on
+		MODE=refusal; DEPR_SW=$SW_RFC
+		WEAK_ENC='kmp_enc_alg { 3idea_cbc; };'
+		REFUSE_STR="kmp_enc_alg IDEA3-CBC unsupported: ENCR_3IDEA has no specification"
+		;;
+	i2i-cipher-des-default)      MODE=refusal
+		WEAK_ENC='kmp_enc_alg { des_cbc; };'
+		REFUSE_STR="kmp_enc_alg $(off_nsa DES-CBC)"
+		REFUSE_STR2="kmp_enc_alg $(off_rfc DES-CBC)" ;;
+	i2i-cipher-desiv64-default)  MODE=refusal
+		WEAK_ENC='kmp_enc_alg { des_cbc_iv64; };'
+		REFUSE_STR="kmp_enc_alg $(off_nsa DES-CBC-IV64)"
+		REFUSE_STR2="kmp_enc_alg $(off_rfc DES-CBC-IV64)" ;;
+	i2i-cipher-desiv32-default)  MODE=refusal
+		WEAK_ENC='kmp_enc_alg { des_cbc_iv32; };'
+		REFUSE_STR="kmp_enc_alg $(off_nsa DES-CBC-IV32)"
+		REFUSE_STR2="kmp_enc_alg $(off_rfc DES-CBC-IV32)" ;;
+	i2i-cipher-cast-default)     MODE=refusal
+		WEAK_ENC='kmp_enc_alg { cast128_cbc; };'
+		REFUSE_STR="kmp_enc_alg $(off_rfc CAST-128-CBC)" ;;
+	i2i-cipher-blowfish-default) MODE=refusal
+		WEAK_ENC='kmp_enc_alg { blowfish_cbc; };'
+		REFUSE_STR="kmp_enc_alg $(off_rfc Blowfish-CBC)" ;;
+	i2i-cipher-idea-default)     MODE=refusal
+		WEAK_ENC='kmp_enc_alg { idea_cbc; };'
+		REFUSE_STR="kmp_enc_alg $(off_rfc IDEA-CBC)" ;;
+	i2i-cipher-rc5-default)      MODE=refusal
+		WEAK_ENC='kmp_enc_alg { rc5_cbc; };'
+		REFUSE_STR="kmp_enc_alg $(off_rfc RC5-CBC)" ;;
+	# ESP: Linux XFRM offers cbc(des), cbc(cast5), cbc(blowfish) (no
+	# IDEA/RC5/3IDEA, no DES_IV32/IV64 framings)
+	i2i-cipher-esp-des)      MODE=cipher; DEPR_SW=$SW_BOTH; ESP_XFRM='cbc(des)'
+		WEAK_ESP_ENC='esp_enc_alg { des_cbc; };'
+		WEAK_ESP_AUTH='esp_auth_alg { hmac_sha2_256; };' ;;
+	i2i-cipher-esp-cast)     MODE=cipher; DEPR_SW=$SW_RFC; ESP_XFRM='cbc(cast5)'
+		WEAK_ESP_ENC='esp_enc_alg { cast128_cbc; };'
+		WEAK_ESP_AUTH='esp_auth_alg { hmac_sha2_256; };' ;;
+	i2i-cipher-esp-blowfish) MODE=cipher; DEPR_SW=$SW_RFC; ESP_XFRM='cbc(blowfish)'
+		WEAK_ESP_ENC='esp_enc_alg { blowfish_cbc; };'
+		WEAK_ESP_AUTH='esp_auth_alg { hmac_sha2_256; };' ;;
+	i2i-cipher-esp-des-default) MODE=refusal
+		WEAK_ESP_ENC='esp_enc_alg { des_cbc; };'
+		WEAK_ESP_AUTH='esp_auth_alg { hmac_sha2_256; };'
+		REFUSE_STR="esp_enc_alg $(off_nsa DES-CBC)"
+		REFUSE_STR2="esp_enc_alg $(off_rfc DES-CBC)" ;;
 	*)
 		log "FAIL: unknown NSA warning case $name"; return 1 ;;
 	esac
@@ -116,6 +238,7 @@ remote matrix_resp {
 		$WEAK_DH
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
+		$DEPR_SW
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -170,6 +293,7 @@ remote matrix_init {
 		$WEAK_DH
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
+		$DEPR_SW
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -261,28 +385,51 @@ EOF
 	warn_r=$(grep -c "configuring obsolete algorithm $WARN_STR" "$D/resp-iked.log" 2>/dev/null || true)
 	warn_i=$(grep -c "configuring obsolete algorithm $WARN_STR" "$D/init-iked.log" 2>/dev/null || true)
 
-	if [ "$EXPECT_FAILCLOSED" = 1 ]; then
-		# des_cbc is rejected at IKE_CONF CHECK time (ike_conf.c
-		# ike_conf_check_ikev2 -> "kmp_enc_alg DES-CBC unsupported",
-		# since the DES transform row is commented out), so iked refuses
-		# the config before any proposal-build -- there is no
-		# "configuring obsolete" warning for DES.  PASS requires the
-		# conf-check reject string on both seats and NO child.
-		uns_r=$(grep -c "kmp_enc_alg $WARN_STR unsupported" "$D/resp-iked.log" 2>/dev/null || true)
-		uns_i=$(grep -c "kmp_enc_alg $WARN_STR unsupported" "$D/init-iked.log" 2>/dev/null || true)
-		gote=0
-		if [ "$up" -eq 0 ] && [ "${uns_r:-0}" -ge 1 ] && [ "${uns_i:-0}" -ge 1 ]; then
-			gote=1
-			printf 'CPL A4: PASS fail-closed DES refusal at conf-check on both seats (unsupported r=%s i=%s; no child) — obsolete DES-CBC cannot be offered\n' \
-			    "$uns_r" "$uns_i"
-			log "PASS $name: conf-check refusal of DES-CBC both seats (r=$uns_r i=$uns_i), no child"
-		else
-			log "FAIL $name: fail-closed DES alloy — up=$up unsupported(r=$uns_r i=$uns_i)"
+	gote=0
+	case "$MODE" in
+	refusal)
+		# Config refused at ike_conf_check (both seats) BEFORE any
+		# proposal build; PASS requires the row's refusal string(s) on
+		# both seats and NO child.
+		uns_r=$(grep -cE "$REFUSE_STR" "$D/resp-iked.log" 2>/dev/null || true)
+		uns_i=$(grep -cE "$REFUSE_STR" "$D/init-iked.log" 2>/dev/null || true)
+		un2_r=1; un2_i=1
+		if [ -n "$REFUSE_STR2" ]; then
+			un2_r=$(grep -cE "$REFUSE_STR2" "$D/resp-iked.log" 2>/dev/null || true)
+			un2_i=$(grep -cE "$REFUSE_STR2" "$D/init-iked.log" 2>/dev/null || true)
 		fi
-	else
+		if [ "$up" -eq 0 ] && [ "${uns_r:-0}" -ge 1 ] && [ "${uns_i:-0}" -ge 1 ] &&
+		   [ "${un2_r:-0}" -ge 1 ] && [ "${un2_i:-0}" -ge 1 ]; then
+			gote=1
+			printf 'CPL A4: PASS fail-closed refusal at conf-check on both seats (r=%s/%s i=%s/%s; no child): %s\n' \
+			    "$uns_r" "$un2_r" "$uns_i" "$un2_i" "$REFUSE_STR"
+			log "PASS $name: conf-check refusal both seats (r=$uns_r/$un2_r i=$uns_i/$un2_i), no child"
+		else
+			log "FAIL $name: fail-closed — up=$up refusal(r=$uns_r/$un2_r i=$uns_i/$un2_i) want '$REFUSE_STR' ${REFUSE_STR2:+and '$REFUSE_STR2'}"
+		fi
+		;;
+	cipher)
+		if [ -n "$CIPHER" ]; then
+			ev_r=$(grep -c "IKE SA encryption $CIPHER " "$D/resp-iked.log" 2>/dev/null || true)
+			ev_i=$(grep -c "IKE SA encryption $CIPHER " "$D/init-iked.log" 2>/dev/null || true)
+			what="IKE SA encryption $CIPHER"
+		else
+			ev_r=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -cF "enc $ESP_XFRM " || true)
+			ev_i=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -cF "enc $ESP_XFRM " || true)
+			what="kernel ESP SA enc $ESP_XFRM"
+		fi
+		if [ "$up" -eq 1 ] && [ "${ev_r:-0}" -ge 1 ] && [ "${ev_i:-0}" -ge 1 ]; then
+			gote=1
+			printf 'CPL A4: PASS deprecated cipher usable with its switch on: %s on both seats (r=%s i=%s), child up\n' \
+			    "$what" "$ev_r" "$ev_i"
+			log "PASS $name: $what both seats (r=$ev_r i=$ev_i), child up"
+		else
+			log "FAIL $name: cipher row — up=$up evidence(r=${ev_r:-0} i=${ev_i:-0}) want '$what'"
+		fi
+		;;
+	*)
 		# advisory: warning fires on both seats AND the exchange still lands
 		# a compliant ESP child (the weak offer never blocks / downgrades).
-		gote=0
 		if [ "$up" -eq 1 ] && [ "${warn_r:-0}" -ge 1 ] && [ "${warn_i:-0}" -ge 1 ]; then
 			gote=1
 			printf 'CPL A4: PASS obsolete-alg warning emitted on both seats (resp %s, init %s) yet ESP child established (esp resp=%s init=%s) — advisory-only\n' \
@@ -295,13 +442,14 @@ EOF
 				log "FAIL $name: warning fired but exchange did not establish (resp=${re} init=${ie})"
 			fi
 		fi
-	fi
+		;;
+	esac
 
 	if [ "$gote" -eq 0 ]; then
 		log "--- resp-iked.log (warning grep) ---"
-		grep -E 'configuring obsolete algorithm|unsupported algorithm|ESTABLISHED|NO_PROPOSAL|abort|err=' "$D/resp-iked.log" 2>/dev/null | tail -6
+		grep -E 'configuring obsolete algorithm|deprecated|unsupported|IKE SA encryption|ESTABLISHED|NO_PROPOSAL|abort|err=' "$D/resp-iked.log" 2>/dev/null | tail -8
 		log "--- init-iked.log (warning grep) ---"
-		grep -E 'configuring obsolete algorithm|unsupported algorithm|ESTABLISHED|NO_PROPOSAL|abort|err=' "$D/init-iked.log" 2>/dev/null | tail -6
+		grep -E 'configuring obsolete algorithm|deprecated|unsupported|IKE SA encryption|ESTABLISHED|NO_PROPOSAL|abort|err=' "$D/init-iked.log" 2>/dev/null | tail -8
 	fi
 
 	pkill -9 -f "$C/" 2>/dev/null || true
