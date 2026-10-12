@@ -167,6 +167,7 @@ unsigned long xfrm_stat_resync;
 unsigned long xfrm_stat_idempotent;
 unsigned long xfrm_stat_ebusy_retry;
 unsigned long xfrm_stat_stale_reply;
+unsigned long xfrm_stat_late_error;
 
 #ifdef XFRM_UNITTEST
 /* The unit test (lib/xfrmnltest.c) replaces the kernel with socketpairs
@@ -2026,6 +2027,28 @@ xfrm_dispatch(struct nlmsghdr *nlh, struct rcpfk_msg *rc, int from_req)
 		      (pending_dump_seq != 0 && seq == pending_dump_seq) ||
 		      (resync_spd_seq != 0 && seq == resync_spd_seq) ||
 		      (resync_sa_seq != 0 && seq == resync_sa_seq))) {
+			int e = 0;
+
+			if (nlh->nlmsg_type == NLMSG_ERROR &&
+			    nlh->nlmsg_len >= NLMSG_LENGTH(sizeof(struct nlmsgerr)))
+				e = -((struct nlmsgerr *)NLMSG_DATA(nlh))->error;
+			if (e != 0 && (nlh->nlmsg_pid == 0 ||
+			    nlh->nlmsg_pid == (uint32_t)pid)) {
+				/*
+				 * A failure for one of OUR requests that is no
+				 * longer the awaited one (a second request was
+				 * sent before its reply came back).  Before the
+				 * reply matching such an error reached sadb_poll
+				 * as "xfrm netlink: ..."; never let it vanish at
+				 * DEBUG level.  It cannot complete the current
+				 * wait, so it is logged and counted, not returned.
+				 */
+				xfrm_stat_late_error++;
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				    "xfrm netlink: request seq %u failed: %s\n",
+				    seq, strerror(e));
+				return 0;
+			}
 			xfrm_stat_stale_reply++;
 			plog(PLOG_DEBUG, PLOGLOC, NULL,
 			    "xfrm: dropping unmatched reply type %u seq %u "

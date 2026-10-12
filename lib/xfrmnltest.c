@@ -132,6 +132,7 @@ setup(void)
 	k_ntf = b[1];
 	xfrm_stat_enobufs = xfrm_stat_resync = xfrm_stat_idempotent = 0;
 	xfrm_stat_ebusy_retry = xfrm_stat_stale_reply = 0;
+	xfrm_stat_late_error = 0;
 	reset_counts();
 }
 
@@ -469,6 +470,38 @@ test_waitreply_error(void)
 	    "SPDGET ENOENT reported (eno %d)", rc.eno);
 }
 
+/*
+ * Two requests in flight: the failure of the FIRST arrives after the
+ * second was sent.  It must be surfaced (counted + logged), never dropped
+ * as a stale reply, and must not complete or abort the second's wait.
+ */
+static void
+test_late_error_not_lost(void)
+{
+	struct rcpfk_msg rc;
+	char buf[256];
+
+	setup();
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	rc.seq = 0x700;
+	rc.slid = 7;
+	CHECK(rcpfk_send_spdget(&rc) == 0, "send 1");
+	(void)kget();
+	rc.seq = 0x701;
+	CHECK(rcpfk_send_spdget(&rc) == 0, "send 2");
+	(void)kget();
+	kput(k_req, buf, mk_err(buf, 0x700, PORTID, EINVAL, XFRM_MSG_GETPOLICY));
+	kput(k_req, buf, mk_err(buf, 0x701, PORTID, ENOENT, XFRM_MSG_GETPOLICY));
+	rc.flags |= PFK_FLAG_WAITREPLY;
+	CHECK(rcpfk_handler(&rc) == -1 && rc.eno == ENOENT,
+	    "wait for seq 0x701 gets ITS error (eno %d)", rc.eno);
+	CHECK(xfrm_stat_late_error == 1, "seq 0x700 EINVAL surfaced (%lu)",
+	    xfrm_stat_late_error);
+	CHECK(xfrm_stat_stale_reply == 0, "and not counted as stale (%lu)",
+	    xfrm_stat_stale_reply);
+}
+
 /* "kernel" thread answering dump requests on the request socket */
 static volatile int kthr_stop;
 static int kthr_spd, kthr_sa;
@@ -728,6 +761,7 @@ main(void)
 	test_ebusy_retry();
 	test_interleaved_waitreply();
 	test_waitreply_error();
+	test_late_error_not_lost();
 	test_enobufs_resync();
 	test_mapping_migrate_fresh();
 	test_short_messages();
