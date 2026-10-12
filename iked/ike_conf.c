@@ -226,6 +226,8 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* use_session_resumption (RFC 5723) */
 	NULL,			/* session_resume_ticket_key (file path) */
 	IKEV2_DEFAULT_SESSION_RESUME_LIFETIME, /* session_resume_ticket_lifetime */
+	RCT_BOOL_ON,		/* allow_nsa_deprecated (allowed + warned) */
+	RCT_BOOL_ON,		/* allow_rfc_deprecated (allowed + warned) */
 };
 
 #ifdef IKEV1
@@ -288,6 +290,27 @@ IKEV1_CONF_ATTR(rc_type, dpd)
 IKEV1_CONF_ATTR(int, dpd_interval)
 IKEV1_CONF_ATTR(int, dpd_retry)
 IKEV1_CONF_ATTR(int, dpd_maxfails)
+
+/* allow_nsa_deprecated / allow_rfc_deprecated in the ikev1 clause (remote,
+ * then default clause).  Unset in both falls back to the one builtin
+ * default shared with IKEv2 (ikev2_default_values). */
+rc_type
+ikev1_allow_nsa_deprecated(struct rcf_remote *conf)
+{
+	rc_type v;
+
+	IKEV1_CONF(v, conf, allow_nsa_deprecated, 0);
+	return v ? v : ikev2_default_values.allow_nsa_deprecated;
+}
+
+rc_type
+ikev1_allow_rfc_deprecated(struct rcf_remote *conf)
+{
+	rc_type v;
+
+	IKEV1_CONF(v, conf, allow_rfc_deprecated, 0);
+	return v ? v : ikev2_default_values.allow_rfc_deprecated;
+}
 
 
 int
@@ -449,6 +472,8 @@ IKEV2_CONF_ATTR(int, natk_interval)
 IKEV2_CONF_ATTR(rc_type, addke_required)
 IKEV2_CONF_ATTR(rc_type, parent_child_strength)
 IKEV2_CONF_ATTR(rc_type, addke_unrequested)
+IKEV2_CONF_ATTR(rc_type, allow_nsa_deprecated)
+IKEV2_CONF_ATTR(rc_type, allow_rfc_deprecated)
 IKEV2_CONF_ATTR(rc_type, offer_intermediate)
 IKEV2_CONF_ATTR(rc_type, offer_sig_hash_algorithms)
 IKEV2_CONF_ATTR(rc_type, use_ppk)
