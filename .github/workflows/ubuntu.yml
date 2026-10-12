@@ -197,6 +197,32 @@ jobs:
       - name: 'Pre-auth one-datagram negatives (F1, F2) against ASan iked'
         run: sudo bash samples/linux-matrix/tools/preauth_oneshot.sh .
 
+      # A subset of LIVE matrix rows against the sanitized daemons: real
+      # IKE_SA_INIT/IKE_AUTH/CREATE_CHILD_SA, NAT-T rebinding (XFRM
+      # MAPPING) and the netlink ENOBUFS resync, where the parsers and the
+      # new lib/if_xfrm.c paths see real traffic.  Any sanitizer report
+      # (ASan aborts the daemon; the report lands in /tmp/r2-asan) fails.
+      - name: 'Live rows against the ASan/UBSan daemons'
+        run: |
+          set -o pipefail
+          sudo apt-get install -y -qq strongswan iproute2 iputils-ping xxd iptables
+          sudo make install >/dev/null
+          sudo rm -rf /tmp/r2-asan && sudo mkdir -p /tmp/r2-asan
+          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            --cases '^(i2iinit-ike-cbc128|i2iinit-ike-cbc128-esp-sha384|i2inatt-rebind|i2inatt-xfrmflood|icvaudit-ok) ' \
+            | tee /tmp/r2-asan-matrix.log
+          if ls /tmp/r2-asan/asan.* >/dev/null 2>&1; then
+            echo "FAIL: sanitizer report(s) from live daemons:"; sudo cat /tmp/r2-asan/asan.*; exit 1
+          fi
+          echo "no sanitizer report from the live rows"
+        env:
+          R2_PREFIX: /usr/local/racoon2
+          R2_REQUIRE_LIVE: 1
+          R2_LANE: ubuntu
+          R2_MIN_PASS: 5
+          ASAN_OPTIONS: log_path=/tmp/r2-asan/asan:detect_leaks=0:abort_on_error=1
+          UBSAN_OPTIONS: log_path=/tmp/r2-asan/asan:print_stacktrace=1:halt_on_error=1
+
       - name: 'Dump unit logs on failure'
         if: failure()
         run: |
