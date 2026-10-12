@@ -439,14 +439,22 @@ admin_dispatch(int so2, char *combuf)
 		/*
 		 * Silent local Child-SA delete for the peer named in the
 		 * admin_com_indexes dst.  Unlike ikev2_child_delete() this
-		 * sends NO DELETE payload to the peer and keeps the IKE_SA
-		 * up: it drops each MATURE Child SA's kernel SAs and marks
-		 * it EXPIRED, so a later peer rekey request for that child
-		 * (which ikev2_find_child_sa_by_spi() skips because it is
-		 * no longer MATURE) is answered CHILD_SA_NOT_FOUND.  This
-		 * is the deterministic seam the RFC 7296 s1.4/s3.10.1
-		 * rekey-collision test drives: orphan the responder's child,
-		 * then have the initiator rekey it.
+		 * sends NO DELETE payload to the peer: it drops each MATURE
+		 * Child SA's kernel SAs and marks it EXPIRED, so a later peer
+		 * rekey request for that child (which ikev2_find_child_sa_by_spi()
+		 * skips because it is no longer MATURE) is answered
+		 * CHILD_SA_NOT_FOUND.  This is the deterministic seam the RFC
+		 * 7296 s1.4/s3.10.1 rekey-collision test drives: orphan the
+		 * responder's child, then have the initiator rekey it.
+		 *
+		 * Note: "keeps the IKE_SA" is true only briefly.  Once the last
+		 * MATURE child is gone, the periodic tick (ike_sa.c,
+		 * ESTABLISHED && no children && !rekey_inprogress) starts the
+		 * childless-grace timer and tears the IKE_SA down.  The test
+		 * rekeys within that window; for a real "orphan a child but
+		 * hold the tunnel" op, establish a replacement child or the SA
+		 * will close.  This is deliberate — delete-sa is a
+		 * test/recovery seam, not a keep-alive.
 		 */
 		struct admin_com_indexes *ndx;
 		struct sockaddr *dst;
@@ -470,6 +478,16 @@ admin_dispatch(int so2, char *combuf)
 		ndx = (struct admin_com_indexes *)(com + 1);
 		dst = (struct sockaddr *)&ndx->dst;
 #ifdef IKEV2
+		{
+			/* the CLI's [esp|ah] selector is honored: prune only
+			 * MATURE children whose negotiated protocol matches
+			 * ac_proto.  ADMIN_PROTO_ESP=0x0202 vs
+			 * IKEV2PROPOSAL_ESP=3 and ADMIN_PROTO_AH=0x0201 vs
+			 * IKEV2PROPOSAL_AH=2 (the numeric values differ), so map
+			 * explicitly rather than reuse the id. */
+			unsigned int want_proto = (com->ac_proto == ADMIN_PROTO_AH)
+			    ? IKEV2PROPOSAL_AH : IKEV2PROPOSAL_ESP;
+
 		for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa;
 		     sa = next_sa) {
 			next_sa = IKEV2_SA_LIST_NEXT(sa);
@@ -479,7 +497,9 @@ admin_dispatch(int so2, char *combuf)
 			for (c = IKEV2_CHILD_LIST_FIRST(&sa->children);
 			     !IKEV2_CHILD_LIST_END(c); c = next_c) {
 				next_c = IKEV2_CHILD_LIST_NEXT(c);
-				if (c->state != IKEV2_CHILD_STATE_MATURE)
+				if (c->state != IKEV2_CHILD_STATE_MATURE ||
+				    !c->my_proposal[1] ||
+				    c->my_proposal[1]->prop->proto_id != (int)want_proto)
 					continue;
 				ikev2_child_delete_ipsecsa(c);
 				ikev2_child_state_set(c,
@@ -490,6 +510,7 @@ admin_dispatch(int so2, char *combuf)
 				     "child spi (local) for peer %s\n",
 				     rcs_sa2str(dst));
 			}
+		}
 		}
 		if (n_deleted == 0) {
 			plog(PLOG_INFO, PLOGLOC, NULL,

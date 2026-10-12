@@ -50,9 +50,10 @@ usage(const char *p)
 "  %s [-s socket] establish-sa isakmp inet <src> <dst> [selector_index]\\n"
 "  %s [-s socket] vpn-connect <gateway>\n"
 "  %s [-s socket] vpn-disconnect <gateway>\n"
+"  %s [-s socket] delete-sa <peer> [esp|ah]\n"
 "\n"
 "esp/ah SAD: ip xfrm state / ip xfrm policy\n",
-		p, p, p, p, p, p);
+		p, p, p, p, p, p, p);
 	exit(EXIT_FAILURE);
 }
 
