@@ -22,6 +22,19 @@
  *     CAST, BLOWFISH, 3IDEA, DES_IV32; PRF_HMAC_TIGER; AUTH_HMAC_MD5_128,
  *     AUTH_HMAC_SHA1_160.
  *
+ * IKEv1 (RFC 9395 s3: IKEv1 deprecated, RFCs 2407-2409 Historic; RFC
+ * 8247 is IKEv2-only and RFC 4109, the IKEv1 algorithm RFC, has no
+ * negative levels).  Phase 1 RFC rows are the IKEv1 codepoints of the
+ * primitives the live algorithm RFCs reject -- DES, 3DES (RFC 8221 s5
+ * SHOULD NOT), MD5, DSS, groups 1/2/5/22/23/24 -- recorded as DEPRECATED
+ * under RFC 9395 s3, plus the RFC 9395 s5 names (IDEA, Blowfish, RC5,
+ * CAST, Tiger), which that section deprecates by algorithm, not by
+ * registry.  SHA-1 is NSA-only, as for IKEv2 and for ESP (RFC 8221 s6
+ * keeps HMAC-SHA1-96 at MUST-).  Phase 2 ESP/AH are classified under the
+ * ESP/AH contexts (RFC 8221); the IPsec DOI Authentication Algorithm
+ * attribute has its own numbering (5..7 are SHA-2, not MD5_128 /
+ * SHA1_160), hence IKE_DEPR_T_V1_P2AUTH.
+ *
  * NSA-class rows reproduce the historic nsa_deprecated_alg() set (DES,
  * 3DES, HMAC-MD5/MD5, HMAC-SHA1/SHA-1, MODP 768/1024/1536) on the wire
  * codepoints that carry those primitives, plus the SHA-1 signatures
@@ -37,6 +50,7 @@
 #define	AH	C(IKE_DEPR_CTX_AH)
 #define	CHILD	(ESP | AH)
 #define	ALL	(IKE | ESP | AH)
+#define	V1	C(IKE_DEPR_CTX_IKEV1)
 
 #define	N	IKE_DEPR_NSA
 #define	R	IKE_DEPR_RFC
@@ -97,9 +111,42 @@ static const struct ike_depr_entry depr_table[] = {
 	{ IKE,	IKE_DEPR_T_SIG_LEGACY, 1, N, NL, NULL,
 	  "AUTH method 1 (RSA) with SHA-1 DigestInfo" },
 
-	/* ESP/AH combination rule */
+	/* ESP/AH combination rule (IKEv1 Phase 2 too) */
 	{ CHILD, IKE_DEPR_T_COMBO, 1, R, MN, "RFC 8221 s6",
 	  "AUTH_NONE with non-AEAD ENCR" },
+
+	/* IKEv1 itself: RFC 9395 s3 deprecates the protocol (RFCs 2407-2409
+	 * Historic), so any remote that can speak IKEv1 is RFC-class --
+	 * independent of, and in addition to, its algorithms below. */
+	{ V1,	IKE_DEPR_T_V1_PROTO, 1, R, DP, "RFC 9395 s3", "IKEv1 (RFC 2409)" },
+
+	/* IKEv1 Phase 1: RFC 2409 Appendix A attribute values */
+	{ V1,	IKE_DEPR_T_V1_ENC, 1,  N|R, DP, "RFC 9395 s3", "OAKLEY DES-CBC" },
+	{ V1,	IKE_DEPR_T_V1_ENC, 2,  R,   DP, "RFC 9395 s5", "OAKLEY IDEA-CBC" },
+	{ V1,	IKE_DEPR_T_V1_ENC, 3,  R,   DP, "RFC 9395 s5", "OAKLEY Blowfish-CBC" },
+	{ V1,	IKE_DEPR_T_V1_ENC, 4,  R,   DP, "RFC 9395 s5", "OAKLEY RC5-R16-B64-CBC" },
+	{ V1,	IKE_DEPR_T_V1_ENC, 5,  N|R, DP, "RFC 9395 s3", "OAKLEY 3DES-CBC" },
+	{ V1,	IKE_DEPR_T_V1_ENC, 6,  R,   DP, "RFC 9395 s5", "OAKLEY CAST-CBC" },
+	{ V1,	IKE_DEPR_T_V1_HASH, 1, N|R, DP, "RFC 9395 s3", "OAKLEY MD5" },
+	{ V1,	IKE_DEPR_T_V1_HASH, 2, N,   NL, NULL,          "OAKLEY SHA" },
+	{ V1,	IKE_DEPR_T_V1_HASH, 3, R,   DP, "RFC 9395 s5", "OAKLEY Tiger" },
+	{ V1,	IKE_DEPR_T_V1_AUTH, 2, N|R, DP, "RFC 9395 s3",
+	  "OAKLEY DSS signatures (SHA-1)" },
+	/* Group Description (Phase 1 and the Phase 2 PFS group) */
+	{ V1,	IKE_DEPR_T_KE, 1,    N|R, DP, "RFC 9395 s3", "MODP768 (group 1)" },
+	{ V1,	IKE_DEPR_T_KE, 2,    N|R, DP, "RFC 9395 s3", "MODP1024 (group 2)" },
+	{ V1,	IKE_DEPR_T_KE, 5,    N|R, DP, "RFC 9395 s3", "MODP1536 (group 5)" },
+	{ V1,	IKE_DEPR_T_KE, 22,   R,   DP, "RFC 9395 s3", "MODP1024_160POS (group 22)" },
+	{ V1,	IKE_DEPR_T_KE, 23,   R,   DP, "RFC 9395 s3", "MODP2048_224POS (group 23)" },
+	{ V1,	IKE_DEPR_T_KE, 24,   R,   DP, "RFC 9395 s3", "MODP2048_256POS (group 24)" },
+
+	/* IKEv1 Phase 2: RFC 2407 s4.5 Authentication Algorithm attribute
+	 * (ESP auth, and AH via its transform id: AH_MD5 -> 1, AH_SHA -> 2,
+	 * AH_DES -> 3).  Levels as RFC 8221 s6 for the same primitive. */
+	{ CHILD, IKE_DEPR_T_V1_P2AUTH, 1, N|R, MN, "RFC 8221 s6", "HMAC-MD5" },
+	{ CHILD, IKE_DEPR_T_V1_P2AUTH, 2, N,   NL, NULL,          "HMAC-SHA" },
+	{ CHILD, IKE_DEPR_T_V1_P2AUTH, 3, N|R, MN, "RFC 8221 s6", "DES-MAC" },
+	{ CHILD, IKE_DEPR_T_V1_P2AUTH, 4, N|R, MN, "RFC 8221 s6", "KPDK" },
 };
 
 #define	NENTRIES	(sizeof(depr_table) / sizeof(depr_table[0]))
@@ -125,7 +172,7 @@ ike_depr_classify(int ctx, unsigned int type, unsigned int id,
 		out->rfc_cite = NULL;
 		out->name = NULL;
 	}
-	if (ctx < IKE_DEPR_CTX_IKE || ctx > IKE_DEPR_CTX_AH)
+	if (ctx < IKE_DEPR_CTX_IKE || ctx > IKE_DEPR_CTX_IKEV1)
 		return 0;
 	/* RFC 9370: ADDKE1..ADDKE7 (types 6..12) use the type-4 registry */
 	if (type >= 6 && type <= 12)
@@ -174,6 +221,8 @@ ike_depr_ctx_str(int ctx)
 		return "ESP";
 	case IKE_DEPR_CTX_AH:
 		return "AH";
+	case IKE_DEPR_CTX_IKEV1:
+		return "IKEv1";
 	}
 	return "?";
 }
@@ -198,6 +247,16 @@ ike_depr_type_str(unsigned int type)
 		return "SIGHASH";
 	case IKE_DEPR_T_SIG_LEGACY:
 		return "SIG";
+	case IKE_DEPR_T_V1_ENC:
+		return "V1ENC";
+	case IKE_DEPR_T_V1_HASH:
+		return "V1HASH";
+	case IKE_DEPR_T_V1_AUTH:
+		return "V1AUTH";
+	case IKE_DEPR_T_V1_P2AUTH:
+		return "V1P2AUTH";
+	case IKE_DEPR_T_V1_PROTO:
+		return "V1PROTO";
 	case IKE_DEPR_T_COMBO:
 		return "COMBO";
 	}

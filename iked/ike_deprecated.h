@@ -2,7 +2,7 @@
  * iked/ike_deprecated.h -- deprecated-transform classification.
  *
  * Two independent classes, each with its own config switch
- * (allow_nsa_deprecated / allow_rfc_deprecated, remote ikev2 clause,
+ * (allow_nsa_deprecated / allow_rfc_deprecated, remote ikev1 / ikev2 clause,
  * global via the default clause; see doc/nsa-ipsec-hardening.md s8):
  *
  *   IKE_DEPR_NSA  NSA "Securing / Configuring IPsec VPNs" (CNSSP-15):
@@ -12,11 +12,13 @@
  *                 keeps its level (MUST NOT / SHOULD NOT / DEPRECATED)
  *                 and the section it comes from.
  *
- * An algorithm may be in both classes.  The lookup is keyed by the IANA
- * IKEv2 registries (transform type + transform id), so the same table
- * serves config check (RCT code -> transform id) and negotiation (the
- * peer's wire transform).  Pure table: no iked state, links standalone
- * (deprtest).
+ * An algorithm may be in both classes.  The lookup is keyed by the wire
+ * registries -- the IANA IKEv2 Transform Type registries for IKEv2, the
+ * RFC 2409 Appendix A / RFC 2407 s4.4-4.6 IKEv1 attribute registries for
+ * IKEv1 (IKE_DEPR_CTX_IKEV1 and the IKE_DEPR_T_V1_* types) -- so the same
+ * table serves config check (RCT code -> codepoint) and negotiation (the
+ * peer's wire transform or attribute).  Pure table: no iked state, links
+ * standalone (deprtest).
  */
 #ifndef IKE_DEPRECATED_H
 #define IKE_DEPRECATED_H
@@ -36,6 +38,11 @@
 #define	IKE_DEPR_CTX_IKE	1
 #define	IKE_DEPR_CTX_ESP	2
 #define	IKE_DEPR_CTX_AH		3
+/* IKEv1 Phase 1 (ISAKMP SA attributes) and the Phase 2 PFS group.  IKEv1
+ * Phase 2 ESP/AH use IKE_DEPR_CTX_ESP / _AH: RFC 8221 is protocol-version
+ * independent, and the RFC 2407 s4.4.4 ESP transform IDs 1..12 are the
+ * same codepoints as IKEv2 Transform Type 1. */
+#define	IKE_DEPR_CTX_IKEV1	4
 
 /* key types: IANA transform types 1..4 (ADDKE1..7 = 6..12 share the
  * type-4 Key Exchange Method registry and are folded onto 4), plus
@@ -48,6 +55,14 @@
 #define	IKE_DEPR_T_SIG_HASH	0x101	/* RFC 7427 hash (method 14) */
 #define	IKE_DEPR_T_SIG_LEGACY	0x102	/* id 1: AUTH method 1 SHA-1 DigestInfo */
 #define	IKE_DEPR_T_COMBO	0x103	/* id 1: ESP/AH AUTH_NONE + non-AEAD ENCR */
+/* IKEv1 registries.  The Group Description (RFC 2409 App A class 4) uses
+ * the same numbers as IKEv2 Transform Type 4 and is keyed as
+ * IKE_DEPR_T_KE under IKE_DEPR_CTX_IKEV1. */
+#define	IKE_DEPR_T_V1_ENC	0x200	/* RFC 2409 App A class 1 Encryption */
+#define	IKE_DEPR_T_V1_HASH	0x201	/* RFC 2409 App A class 2 Hash */
+#define	IKE_DEPR_T_V1_AUTH	0x202	/* RFC 2409 App A class 3 Auth Method */
+#define	IKE_DEPR_T_V1_P2AUTH	0x203	/* RFC 2407 s4.5 Authentication Algorithm */
+#define	IKE_DEPR_T_V1_PROTO	0x204	/* id 1: IKEv1 itself (RFC 9395 s3) */
 
 struct ike_depr_info {
 	unsigned int classes;	/* IKE_DEPR_NSA | IKE_DEPR_RFC */
