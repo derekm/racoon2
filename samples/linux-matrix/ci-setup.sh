@@ -27,6 +27,12 @@ mkdir -p "$ETC/psk"
 if [ -z "$IP" ]; then
 	IP=$(ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
 fi
+# hosts with predictable interface names (cloud images in the kernel
+# lane: enp0s2, ens3 ...) have no eth0: use the source address of the
+# default route instead
+if [ -z "$IP" ]; then
+	IP=$(ip -4 -o route get 192.0.2.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
+fi
 [ -n "$IP" ] || { echo "no IP (set --ip)" >&2; exit 1; }
 echo "staging racoon2 config for $IP under $ETC"
 
