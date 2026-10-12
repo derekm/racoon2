@@ -1684,8 +1684,7 @@ static int
 legacy_kat_1(const char *name, struct encryptor_method *m, const char *k,
 	     const char *iv, const char *pt, const char *ct)
 {
-	vchar_t key, ivv, ivv2, data, *enc = NULL, *dec = NULL;
-	vchar_t *want;
+	vchar_t key, ivv, ivv2, data, want, *enc = NULL, *dec = NULL;
 	int rc = -1;
 
 	if (!m->available || !m->available()) {
@@ -1697,15 +1696,14 @@ legacy_kat_1(const char *name, struct encryptor_method *m, const char *k,
 	ivv.v = str2val(iv, 16, &ivv.l);
 	ivv2.v = str2val(iv, 16, &ivv2.l);
 	data.v = str2val(pt, 16, &data.l);
-	want = vmalloc(1);
-	want->v = str2val(ct, 16, &want->l);
+	want.v = str2val(ct, 16, &want.l);
 	if (key.l != (size_t)m->key_len || ivv.l != (size_t)m->iv_len) {
 		printf("%-9s FAIL: vector key/IV %zu/%zu != method %d/%d\n",
 		       name, key.l, ivv.l, m->key_len, m->iv_len);
 		goto out;
 	}
 	enc = m->encrypt(&data, &key, &ivv);
-	if (!enc || enc->l != want->l || memcmp(enc->v, want->v, want->l)) {
+	if (!enc || enc->l != want.l || memcmp(enc->v, want.v, want.l)) {
 		printf("%-9s FAIL: ciphertext mismatch\n", name);
 		goto out;
 	}
@@ -1720,7 +1718,7 @@ legacy_kat_1(const char *name, struct encryptor_method *m, const char *k,
 out:
 	if (enc) vfree(enc);
 	if (dec) vfree(dec);
-	free(key.v); free(ivv.v); free(ivv2.v); free(data.v);
+	free(key.v); free(ivv.v); free(ivv2.v); free(data.v); free(want.v);
 	return rc;
 }
 
