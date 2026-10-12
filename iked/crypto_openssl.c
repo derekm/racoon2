@@ -1341,9 +1341,11 @@ eay_rsassa_pkcs1_v1_5_verify(const char *hash_type, rc_vchar_t *octets, rc_vchar
  *
  * returns 0 if successful, non-0 otherwise
  */
-int
-eay_rsassa_pkcs1_v1_5_verify_auth(rc_vchar_t *octets, rc_vchar_t *sig,
-				 rc_vchar_t *pubkey)
+/* hash_id (out, may be NULL): RFC 7427 hash id of the recovered
+ * DigestInfo, 1 = SHA1, 2 = SHA2-256; 0 when verification failed. */
+static int
+eay_rsassa_pkcs1_v1_5_verify_auth_sub(rc_vchar_t *octets, rc_vchar_t *sig,
+				 rc_vchar_t *pubkey, int *hash_id)
 {
 	/* DigestInfo prefixes (RFC 8017 DigestInfo / RFC 7427 App. A) */
 	static const uint8_t di_sha1[] = {
@@ -1366,7 +1368,10 @@ eay_rsassa_pkcs1_v1_5_verify_auth(rc_vchar_t *octets, rc_vchar_t *sig,
 	const char *hash_name;
 	size_t expect_hash;
 	int ok = -1;
+	int hid = 0;
 
+	if (hash_id)
+		*hash_id = 0;
 	bp = (unsigned char *)pubkey->v;
 	pkey = d2i_PUBKEY(NULL, &bp, pubkey->l);
 	if (pkey == NULL) {
@@ -1402,11 +1407,13 @@ eay_rsassa_pkcs1_v1_5_verify_auth(rc_vchar_t *octets, rc_vchar_t *sig,
 		md = EVP_sha1();
 		hash_name = "SHA1";
 		expect_hash = 20;
+		hid = 1;
 	} else if (di_len == sizeof(di_sha256) + 32 &&
 		   memcmp(di, di_sha256, sizeof(di_sha256)) == 0) {
 		md = EVP_sha256();
 		hash_name = "SHA256";
 		expect_hash = 32;
+		hid = 2;
 	} else {
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		     "AUTH method 1: unsupported DigestInfo (len=%zu)\n",
@@ -1426,6 +1433,8 @@ eay_rsassa_pkcs1_v1_5_verify_auth(rc_vchar_t *octets, rc_vchar_t *sig,
 	     "AUTH method 1 signature verified: RSASSA-PKCS1-v1_5 %s\n",
 	     hash_name);
 	ok = 0;
+	if (hash_id)
+		*hash_id = hid;
 
 out:
 	if (di)
@@ -1435,6 +1444,22 @@ out:
 	if (pkey)
 		EVP_PKEY_free(pkey);
 	return ok;
+}
+
+int
+eay_rsassa_pkcs1_v1_5_verify_auth(rc_vchar_t *octets, rc_vchar_t *sig,
+				 rc_vchar_t *pubkey)
+{
+	return eay_rsassa_pkcs1_v1_5_verify_auth_sub(octets, sig, pubkey,
+						     NULL);
+}
+
+int
+eay_rsassa_pkcs1_v1_5_verify_auth_hash(rc_vchar_t *octets, rc_vchar_t *sig,
+				      rc_vchar_t *pubkey, int *hash_id)
+{
+	return eay_rsassa_pkcs1_v1_5_verify_auth_sub(octets, sig, pubkey,
+						     hash_id);
 }
 
 /*
