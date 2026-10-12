@@ -104,6 +104,54 @@ jobs:
         continue-on-error: true
         run: OPENSSL_CFLAGS="-I/tmp/ossl/include" sh samples/ci/openssl-canary.sh .
 
+  fuzz-smoke:
+    name: 'libFuzzer smoke (IKEv2 payload chain, IKEv1 pre-auth parsers)'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq autoconf automake libtool pkg-config clang make \
+            libssl-dev libkrb5-dev libpcap-dev bison flex
+
+      - name: ASan-compatible mmap randomisation
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Build with libFuzzer instrumentation
+        run: |
+          autoreconf -fi
+          ./configure --prefix=/usr/local/racoon2 --enable-fuzz CC=clang \
+            CFLAGS="-O1 -g -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined" \
+            LDFLAGS="-fsanitize=address,undefined" >/dev/null
+          make -j"$(nproc)" >/dev/null
+
+      # Bounded smoke, not a campaign: 120 s per harness from the checked-in
+      # seed corpus.  Any crash, sanitizer report, leak or timeout fails the
+      # job and the reproducer is uploaded.
+      - name: Fuzz each harness for 120 s
+        run: |
+          set -eo pipefail
+          mkdir -p /tmp/fuzz-out
+          for t in ikev2_payloads:ikev2 ikev1_parse:ikev1; do
+            b=${t%%:*}; c=${t##*:}
+            mkdir -p /tmp/fuzz-out/corpus-$c
+            cp iked/fuzz/corpus/$c/* /tmp/fuzz-out/corpus-$c/
+            ./iked/fuzz_$b -max_total_time=120 -max_len=4096 -timeout=10 \
+              -artifact_prefix=/tmp/fuzz-out/$b- -print_final_stats=1 \
+              /tmp/fuzz-out/corpus-$c 2>&1 | tail -15
+          done
+
+      - name: Upload fuzz reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-reproducers
+          path: /tmp/fuzz-out/*-*
+          if-no-files-found: warn
+
   build-pfkey:
     name: 'Ubuntu pfkey compat build (sanity only)'
     runs-on: ubuntu-latest
