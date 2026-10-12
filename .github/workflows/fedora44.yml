@@ -29,6 +29,9 @@ on:
   pull_request:
     branches: [linux-km, int/gsoc2026]
   workflow_dispatch:
+  # nightly: 07:27 UTC = 02:27 CDT / 01:27 CST (America/Chicago)
+  schedule:
+    - cron: '27 7 * * *'
 
 permissions:
   contents: read
