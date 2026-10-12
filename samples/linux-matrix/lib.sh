@@ -80,6 +80,42 @@ require_root() {
 	fi
 }
 
+# i2i_dataplane NSI DST [label]: once an i2i row's ESP child is up, prove it
+# carries traffic BOTH ways: ping DST (the responder's tunnel address) from
+# the initiator netns; the echo reply returns over the reverse SA.  The
+# data-plane audit (xfrm_audit.sh) then asserts that both SAs' packet
+# counters rose and that no integrity or xfrm_stat error appeared.  A row
+# whose child is up but carries nothing fails here (R2_CASE_FAIL=1).
+# i2i_wait_seat_sa NS [secs]: wait until NS holds a keyed inbound+outbound
+# ESP pair (>= 2 ESP states).  The charon-initiator rows used to stop as
+# soon as the RESPONDER's SAD appeared, so charon was killed before it
+# installed its own side (Fedora container: always), and the child was
+# never shown to carry anything.
+i2i_wait_seat_sa() {
+	_w=${2:-20}
+	while [ "$_w" -gt 0 ]; do
+		[ "$(ip -n "$1" xfrm state 2>/dev/null | grep -c '^	proto esp ')" -ge 2 ] && return 0
+		sleep 1; _w=$((_w-1))
+	done
+	log "FAIL: data plane: $1 never installed its ESP SA pair (initiator side of the child)"
+	return 1
+}
+
+i2i_dataplane() {
+	if ! command -v ping >/dev/null 2>&1; then
+		log "FAIL: data plane: ping(8) not installed, the row cannot prove its ESP child carries traffic"
+		R2_CASE_FAIL=1
+		return 1
+	fi
+	if ip netns exec "$1" ping -c 3 -i 0.2 -W 2 "$2" >/dev/null 2>&1; then
+		log "data plane: ICMP echo ${3:+($3) }to $2 answered across the ESP child"
+		return 0
+	fi
+	log "FAIL: data plane: no ICMP echo reply from $2 across the ESP child${3:+ ($3)}"
+	R2_CASE_FAIL=1
+	return 1
+}
+
 detect_rip() {
 	if [ -n "$RIP" ]; then
 		return 0

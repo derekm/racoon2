@@ -188,6 +188,7 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
+	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 
 	# The responder asserted type-6 was NOT actionable (it got SAi1 with
 	# type-6 but NO 16438 notify), so NO IKE_INTERMEDIATE round may have run.

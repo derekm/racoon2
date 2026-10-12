@@ -1,0 +1,9 @@
+# xfrm_audit.tsv -- KNOWN data-plane defects, declared at their exact value.
+# Every live row is audited by xfrm_audit.sh (ICV length, packet counters,
+# per-SA integrity failures, /proc/net/xfrm_stat error counters).  A row
+# listed here is XFAIL for that check; when the defect is fixed the audit
+# reports XPASS and FAILS the row so the entry has to be deleted.
+#
+# row-regex (full match)	check	value	why
+#   check: icv | traffic | safail  (value: 1)
+#          stat  (value: Counter=N[,Counter=N]  -- may rise by at most N)
