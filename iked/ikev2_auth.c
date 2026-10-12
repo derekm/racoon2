@@ -54,6 +54,7 @@
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 #include "ike_conf.h"
+#include "ike_deprecated.h"
 #include "crypto_impl.h"
 
 #include "debug.h"
@@ -77,6 +78,28 @@ static const uint8_t rfc7427_ed448_ai[] = {
 };
 
 static rc_vchar_t *ikev2_auth_input(struct ikev2_sa *, int);
+
+/* allow_nsa_deprecated / allow_rfc_deprecated on the AUTH side: DSS
+ * (RFC 8247 s3.1 SHOULD NOT; SHA-1 bound) and the method-1 SHA-1
+ * DigestInfo (NSA: SHA-1).  Method 14 never signs or accepts SHA-1
+ * regardless of the switches (eay_rfc7427_verify, RFC 8247 s3.2). */
+static int
+ikev2_auth_depr_refused(struct ikev2_sa *sa, unsigned int type,
+			unsigned int id, const char *what)
+{
+	struct ike_depr_info di;
+	int r;
+
+	r = ikev2_depr_refused(sa->rmconf, IKE_DEPR_CTX_IKE, type, id, &di);
+	if (r) {
+		ikev2_depr_log_refusal(r, what, &di, IKE_DEPR_CTX_IKE);
+		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "%s refused: deprecated signature (%s)\n", what,
+			   di.name ? di.name : "?");
+	}
+	return r;
+}
+
 
 /*
  * Shared secret for the IKEV2_AUTH_SHARED_KEY AUTH computation (RFC 7296
@@ -716,11 +739,25 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 				   "failed to get public key\n");
 			goto fail;
 		}
-		if (eay_rsassa_pkcs1_v1_5_verify_auth(octets, authdata,
-						      pubkey) == 0)
+		{
+			int hid = 0;
+
+			if (eay_rsassa_pkcs1_v1_5_verify_auth_hash(octets,
+			    authdata, pubkey, &hid) != 0) {
+				result = VERIFIED_FAILURE;
+				break;
+			}
+			/* allow_nsa_deprecated off: a SHA-1 DigestInfo is an
+			 * NSA-deprecated signature hash -- refuse it even
+			 * though the signature itself is valid */
+			if (hid == 1 &&
+			    ikev2_auth_depr_refused(sa, IKE_DEPR_T_SIG_LEGACY,
+			    1, "peer AUTH")) {
+				result = VERIFIED_FAILURE;
+				break;
+			}
 			result = VERIFIED_SUCCESS;
-		else
-			result = VERIFIED_FAILURE;
+		}
 		break;
 	case IKEV2_AUTH_DS:
 		/* (RFC7427 s3)
@@ -762,6 +799,11 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 		 * DSS Digital Signature (3) - Computed as specified in section
 		 * 2.15 using a DSS private key over a SHA-1 hash.
 		 */
+		if (ikev2_auth_depr_refused(sa, IKE_DEPR_T_AUTH_METHOD,
+		    IKEV2_AUTH_DSS, "peer AUTH")) {
+			result = VERIFIED_FAILURE;
+			break;
+		}
 		pubkey = ikev2_public_key(sa, id, &sa->due_time);
 		if (!pubkey) {
 			isakmp_log(sa, 0, 0, 0,
@@ -932,13 +974,21 @@ ikev2_auth_method(struct ikev2_sa *sa)
 			   "eap auth configured but no EAP MSK yet\n");
 		return 0;
 	case RCT_ALG_DSS:
+		if (ikev2_auth_depr_refused(sa, IKE_DEPR_T_AUTH_METHOD,
+		    IKEV2_AUTH_DSS, "own AUTH"))
+			return 0;
 		return IKEV2_AUTH_DSS;
 	case RCT_ALG_RSASIG:
 		/* RFC 7427: when N(SIG_HASH_ALGORITHMS) was exchanged, use method
 		 * 14 (DS) with a SHA-2 AlgorithmIdentifier.  Otherwise method 1
-		 * with the historic SHA-1 DigestInfo (interop). */
+		 * with the historic SHA-1 DigestInfo (interop) -- unless
+		 * allow_nsa_deprecated is off, which fails AUTH closed rather
+		 * than sign with SHA-1. */
 		if (sa->sig_hash_algos_ds)
 			return IKEV2_AUTH_DS;
+		if (ikev2_auth_depr_refused(sa, IKE_DEPR_T_SIG_LEGACY, 1,
+		    "own AUTH (peer did not negotiate RFC 7427)"))
+			return 0;
 		return IKEV2_AUTH_RSASIG;
 	case RCT_ALG_ECDSA:
 #ifdef HAVE_SIGNING_C
