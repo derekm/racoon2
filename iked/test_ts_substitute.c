@@ -245,6 +245,35 @@ test_initiator_transport_substitutes(void)
 	    TS_I_ADDR4, REMOTE4_ADDR);
 }
 
+/*
+ * CREATE_CHILD_SA started by the IKE RESPONDER (e.g. its rekey after a lost
+ * inbound SA): the NATed IKE initiator answers it, so in this exchange it
+ * is the responder and the NATed party is TSr.  Roles follow the child
+ * exchange (child.is_initiator), not the IKE SA.
+ */
+static void
+fixup_child_responder(struct ts_fixture *f)
+{
+	f->child.is_initiator = FALSE;
+}
+
+static void
+fixup_child_initiator(struct ts_fixture *f)
+{
+	f->child.is_initiator = TRUE;
+}
+
+static void
+test_rekey_started_by_ike_responder(void)
+{
+	/* NATed IKE initiator answers: TSr <- its own address, TSi kept */
+	run_ts_case_v4(TRUE, TRUE, TRUE, FALSE, fixup_child_responder, 0,
+	    TS_I_ADDR4, LOCAL4_ADDR);
+	/* IKE responder starts it, its peer (IKE initiator) NATed: TSr <- peer */
+	run_ts_case_v4(FALSE, TRUE, FALSE, TRUE, fixup_child_initiator, 0,
+	    TS_I_ADDR4, REMOTE4_ADDR);
+}
+
 static void
 test_responder_transport_substitutes(void)
 {
@@ -975,6 +1004,7 @@ main(int argc, char *argv[])
 	RUN_TEST(test_no_nat_leaves_ts_alone);
 	RUN_TEST(test_initiator_transport_substitutes);
 	RUN_TEST(test_responder_transport_substitutes);
+	RUN_TEST(test_rekey_started_by_ike_responder);
 	RUN_TEST(test_tunnel_mode_untouched);
 	RUN_TEST(test_initiator_without_selector_untouched);
 	RUN_TEST(test_already_matching_ts_untouched);
