@@ -186,8 +186,10 @@ ikev2_child_state_set(struct ikev2_child_sa *child_sa,
 		     old_state == IKEV2_CHILD_STATE_WAIT_RESPONSE) &&
 		    child_sa->parent && child_sa->selector &&
 		    child_sa->selector->pl && child_sa->my_proposal[1]) {
-			TRACE((PLOGLOC, "child_sa %p: releasing reserved "
-			       "inbound SPI(s)\n", child_sa));
+			isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO,
+			    PLOGLOC, "child aborted in state %s: releasing "
+			    "its reserved inbound SPI(s)\n",
+			    ikev2_child_state_str(old_state));
 			ikev2_child_delete_inbound(child_sa);
 		}
 	}
