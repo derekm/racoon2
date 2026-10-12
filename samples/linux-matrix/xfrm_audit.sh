@@ -146,6 +146,9 @@ xa_check() {	# xa_check <row>  -> 0 ok, 1 audit failure
 			-v allow_safail=$_as -v statallow="$_sa" \
 			-f "$XA_HERE/tools/xfrm_audit.awk" "$_f" || _rc=1
 	done
+	if [ "$_rc" != 0 ] && ! command -v ping >/dev/null 2>&1; then
+		log "XA $1 FAIL ping(8) is not installed: the harness data-path probe could not run"
+	fi
 	[ "$_any" = 1 ] || log "XA $1 INFO row created no n$1-* netns (not a live two-seat row)"
 	return $_rc
 }
