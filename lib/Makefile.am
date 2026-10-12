@@ -42,7 +42,13 @@ check_PROGRAMS += xfrmnatt xfrmtmpl xfrmnltest
 # xfrmnltest #includes if_xfrm.c (XFRM_UNITTEST) and mocks the kernel
 # with socketpairs; libracoon only supplies plog/rcs_* helpers.
 xfrmnltest_SOURCES = xfrmnltest.c
-xfrmnltest_LDADD = libracoon.la -lpthread
+# Link the library's objects, NOT libracoon.la: xfrmnltest compiles its
+# own copy of if_xfrm.c, and linking the library too defines every
+# if_xfrm.c global twice (ASan odr-violation under the sanitizer builds).
+xfrmnltest_LDADD = vmbuf.lo rc_type.lo rc_net.lo rc_str.lo if_spmd.lo \
+	cfsetup.lo rc_pcap.lo cftoken.lo cfparse.lo pidfile.lo sd_listenfds.lo \
+	plog.lo safefile.lo version.lo rbuf.lo addresspool.lo \
+	$(LTLIBOBJS) -lpcap -lpthread
 xfrmnatt_SOURCES = xfrmnatt.c
 xfrmnatt_LDADD = libracoon.la
 xfrmtmpl_SOURCES = xfrmtmpl.c
