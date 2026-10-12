@@ -1,0 +1,6 @@
+# Kernel-version lane (samples/linux-kernel-ci, xfrm build in a cloud
+# image guest; distro OpenSSL, no ADDKE build).
+gate addke RFC 9370 ADDKE rows run on the Fedora lane
+gate dpd   11-timer DPD ladder (~16 min) is box-only
+gate box   new rows are box-verified before CI admits them
+gate pfkey Linux pfkey-backend rows run in the pfkey lane only
