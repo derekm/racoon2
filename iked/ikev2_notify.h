@@ -64,3 +64,9 @@ void ikev2_respond_with_notify_exch(rc_vchar_t *, struct sockaddr *,
 				    int);
 
 const char *ikev2_notify_type_str(int);
+
+/* DEL-reply / INVALID_SPI send on a Delete naming an SA we don't hold
+ * (RFC 7296 §2.8.2).  Exported for the notifytest unit driver, which
+ * exercises the send path with a crafted bogus-SPI Delete payload. */
+void ikev2_process_delete(struct ikev2_sa *, struct ikev2_payload_header *,
+			  struct ikev2_payloads *);

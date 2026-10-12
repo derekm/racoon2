@@ -149,6 +149,60 @@ main(int argc, char *argv[])
 		  "SET_WINDOW_SIZE") == 0,
 	   "notify_type_str(16385) == SET_WINDOW_SIZE");
 
+	/*
+	 * Send side: a Delete payload naming an ESP/AH SPI we do not hold
+	 * must be answered with N(INVALID_SPI) echoing the protocol + SPI
+	 * (RFC 7296 §2.8.2).  Drive the real ikev2_process_delete() send
+	 * path with a crafted bogus-SPI Delete and inspect the response
+	 * payloads it builds.  Using a NULL ike_sa (no children) means the
+	 * SPI is never found, so the INVALID_SPI branch must fire.
+	 */
+	{
+		struct ikev2_payloads resp;
+		struct ikev2_payload_header *delp;
+		struct ikev2payl_delete *del;
+		unsigned char buf[sizeof(*del) + 4];
+		struct ikev2_sa sa;
+		unsigned int found_invalid_spi = 0;
+		int j;
+
+		/* A real (empty) IKE_SA: ikev2_process_delete looks the SPI
+		 * up in the child list, so a live SA with no children makes
+		 * the bogus SPI never match.  A stack SA with an initialized
+		 * (empty) children TAILQ avoids pulling in the scheduler via
+		 * ikev2_allocate_sa — the delete path only walks this list. */
+		memset(&sa, 0, sizeof(sa));
+		TAILQ_INIT(&sa.children);
+
+		del = (struct ikev2payl_delete *)buf;
+		memset(buf, 0, sizeof(buf));
+		set_payload_header(&del->header, IKEV2_NO_NEXT_PAYLOAD,
+				   sizeof(*del) + 4);
+		del->dh.protocol_id = IKEV2_DELETE_PROTO_ESP;
+		del->dh.spi_size = 4;
+		put_uint16(&del->dh.num_spi, 1);
+		put_uint32(buf + sizeof(*del), 0xdeadbeefU); /* bogus SPI */
+		delp = (struct ikev2_payload_header *)del;
+
+		ikev2_payloads_init(&resp);
+		ikev2_process_delete(&sa, delp, &resp);
+		for (j = 0; j < resp.num; j++) {
+			if (resp.payloads[j].type == IKEV2_PAYLOAD_NOTIFY) {
+				/* ikev2_notify_payload() returns the notify
+				 * BODY (starting at notify_h: proto, spi_size,
+				 * type) with no payload header. */
+				struct ikev2payl_notify_h *nh = (struct
+				    ikev2payl_notify_h *)resp.payloads[j].data->v;
+				if (get_uint16(&nh->notify_message_type) ==
+				    IKEV2_INVALID_SPI)
+					found_invalid_spi = 1;
+			}
+		}
+		ck(found_invalid_spi,
+		   "ikev2_process_delete(unknown SPI) builds N(INVALID_SPI)");
+		ikev2_payloads_destroy(&resp);
+	}
+
 	if (fails) {
 		printf("notifytest: %d FAILURE(S)\n", fails);
 		return 1;
