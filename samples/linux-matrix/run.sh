@@ -159,6 +159,22 @@ xfail=0
 xpass=0
 uskip=0
 LANE_SKIP=$HERE/lanes/${R2_LANE:-none}.skip
+# charon_ikev1_absent: succeed (printing the proof) only when the installed
+# strongSwan libcharon demonstrably has no IKEv1 (no main_mode/quick_mode
+# task strings).  Fails when charon is missing or still speaks IKEv1.
+charon_ikev1_absent() {
+	for _l in /usr/lib/ipsec/libcharon.so.0 /usr/libexec/ipsec/libcharon.so.0 \
+	    /usr/lib64/strongswan/libcharon.so.0 /usr/lib/strongswan/libcharon.so.0 \
+	    /usr/lib/x86_64-linux-gnu/strongswan/libcharon.so.0; do
+		[ -f "$_l" ] || continue
+		grep -qa 'main_mode' "$_l" && return 1
+		grep -qa 'quick_mode' "$_l" && return 1
+		_v=$(dpkg-query -W -f '${Version}' strongswan-charon 2>/dev/null || rpm -q --qf '%{VERSION}' strongswan 2>/dev/null || echo '?')
+		echo "$_l (strongSwan $_v) has no main_mode/quick_mode task"
+		return 0
+	done
+	return 1
+}
 # lane_expects_skip <name> <reason-class>: is this skip in the manifest?
 # Manifest lines: "row <name> <why>" or "gate <gate> <why>".
 lane_expects_skip() {
@@ -232,6 +248,21 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 		row_skip "$name" pfkey "PFKEY gate off: R2_KM=${R2_KM:-xfrm}"
 		continue
 	fi
+	# CHARON-IKEv1 capability: strongSwan 6.1 removed IKEv1 upstream
+	# (Debian sid 6.1.0-2: "the IKEv1 protocol has been disabled"), so the
+	# rows that put charon on the IKEv1 initiator seat cannot run against
+	# it.  Skip only on PROOF: the installed libcharon carries none of the
+	# IKEv1 phase tasks (main_mode / quick_mode).  Lanes list the class
+	# (gate charonv1) so R2_REQUIRE_LIVE accepts it; anywhere charon still
+	# has IKEv1 the rows run and must pass.
+	case $name in
+	ikev1-strongswan|ikev1-depr-clean|ikev1-depr-3des)
+		if _cv1=$(charon_ikev1_absent); then
+			row_skip "$name" charonv1 "charon has no IKEv1: $_cv1"
+			continue
+		fi
+		;;
+	esac
 	if [ "$gate" = box ] && [ "${R2_BOX:-no}" != "yes" ]; then
 		row_skip "$name" box "BOX gate off: R2_BOX=${R2_BOX:-no}"
 		continue

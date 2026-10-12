@@ -151,6 +151,19 @@ SCEOF
 	    "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
 	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) \
 	    >"${_log%.log}.stdout.log" 2>&1 &
+	_I2I_CHARON_PID=$!
+	# strongSwan 6.1 (sid) aborted on the row conf ("abort initialization
+	# due to invalid configuration"): say so, and fall back to the stock
+	# config so the row is decided by the protocol, not the logger
+	sleep 1
+	if grep -q 'invalid configuration' "${_log%.log}.stdout.log" 2>/dev/null; then
+		echo "i2i_charon_run: charon rejected $_scf; stock config, stdout log only" >>"$_log"
+		( ip netns exec "$_ns" $_sb env ${I2I_OPENSSL_ENV:-} \
+		    "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
+		    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) \
+		    >>"$_log" 2>&1 &
+		_I2I_CHARON_PID=$!
+	fi
 }
 
 # i2i_charon_list_sas <D> <NS> <tag> — snapshot charon's own view of its SAs
