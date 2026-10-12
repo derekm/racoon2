@@ -1,0 +1,770 @@
+/*
+ * Mock-socket unit test for the NETLINK_XFRM backend's socket model
+ * (lib/if_xfrm.c): separate request/notification sockets, reply matching
+ * by seq/pid, RFC 0002-style error classification (EEXIST/ENOENT/ESRCH
+ * idempotence, bounded EBUSY retry), ENOBUFS drain + SAD/SPD resync,
+ * MAPPING/MIGRATE delivery and per-message containers.
+ *
+ * The kernel is replaced by two AF_UNIX SOCK_DGRAM socketpairs; this file
+ * #includes if_xfrm.c with XFRM_UNITTEST so the test sees its statics.
+ * No root, no netlink.  Socket-model ideas follow rdratlos/
+ * racoon-ipsec-tools docs/rfcs/0002 (KernelPaws); no code was copied.
+ *
+ * Copyright (C) 2026 racoon2 contributors.  BSD-3-Clause (see COPYRIGHT).
+ */
+#define XFRM_UNITTEST 1
+#include "if_xfrm.c"
+
+
+#include <assert.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+
+#define PORTID 4242u
+
+static int k_req = -1, k_ntf = -1;	/* "kernel" ends */
+static int fails;
+static struct rcpfk_msg rcm;
+
+static int n_add, n_upd, n_del, n_spdadd, n_spdupd, n_spddel, n_spddump;
+static int n_sadump, n_resync, n_mapping, n_migrate, n_acquire, n_getspi;
+static int acquire_saw_sa2;
+static struct rcpfk_msg last;
+
+#define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL %s:%d: ", \
+	__func__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
+
+static int cb_add(struct rcpfk_msg *r) { n_add++; last = *r; return 0; }
+static int cb_upd(struct rcpfk_msg *r) { n_upd++; last = *r; return 0; }
+static int cb_del(struct rcpfk_msg *r) { n_del++; last = *r; return 0; }
+static int cb_getspi(struct rcpfk_msg *r) { n_getspi++; last = *r; return 0; }
+static int cb_spdadd(struct rcpfk_msg *r) { n_spdadd++; last = *r; return 0; }
+static int cb_spdupd(struct rcpfk_msg *r) { n_spdupd++; last = *r; return 0; }
+static int cb_spddel(struct rcpfk_msg *r) { n_spddel++; last = *r; return 0; }
+static int dump_flag_ok = 1;
+static int cb_spddump(struct rcpfk_msg *r)
+{
+	n_spddump++;
+	if (!(r->flags & PFK_FLAG_RESYNC))
+		dump_flag_ok = 0;
+	return 0;
+}
+static int cb_sadump(struct rcpfk_msg *r)
+{
+	n_sadump++;
+	if (!(r->flags & PFK_FLAG_RESYNC))
+		dump_flag_ok = 0;
+	return 0;
+}
+static int cb_resync(struct rcpfk_msg *r) { n_resync++; (void)r; return 0; }
+/* the container is per-message scratch: keep a copy of what it points at */
+static struct sockaddr_storage last_sa2;
+static void
+keep(struct rcpfk_msg *r)
+{
+	last = *r;
+	if (r->sa2_src) {
+		memcpy(&last_sa2, r->sa2_src, sizeof(struct sockaddr_in));
+		last.sa2_src = (void *)&last_sa2;
+	}
+	last.sa_src = last.sa_dst = last.sp_src = last.sp_dst = NULL;
+}
+static int cb_mapping(struct rcpfk_msg *r) { n_mapping++; keep(r); return 0; }
+#ifdef SADB_X_MIGRATE
+static int cb_migrate(struct rcpfk_msg *r) { n_migrate++; keep(r); return 0; }
+#endif
+static int
+cb_acquire(struct rcpfk_msg *r)
+{
+	n_acquire++;
+	acquire_saw_sa2 = r->sa2_src != NULL;
+	return 0;
+}
+
+static struct rcpfk_cb tcb;
+
+static void
+reset_counts(void)
+{
+	n_add = n_upd = n_del = n_spdadd = n_spdupd = n_spddel = n_spddump = 0;
+	n_sadump = n_resync = n_mapping = n_migrate = n_acquire = n_getspi = 0;
+	memset(&last, 0, sizeof(last));
+}
+
+static void
+setup(void)
+{
+	int a[2], b[2];
+
+	if (k_req >= 0) {
+		close(k_req);
+		close(k_ntf);
+	}
+	if (socketpair(AF_UNIX, SOCK_DGRAM, 0, a) || socketpair(AF_UNIX,
+	    SOCK_DGRAM, 0, b)) {
+		perror("socketpair");
+		exit(99);
+	}
+	/* library reads ntf non-blocking */
+	fcntl(b[0], F_SETFL, fcntl(b[0], F_GETFL) | O_NONBLOCK);
+	memset(&rcm, 0, sizeof(rcm));
+	memset(&tcb, 0, sizeof(tcb));
+	tcb.cb_add = cb_add;
+	tcb.cb_update = cb_upd;
+	tcb.cb_delete = cb_del;
+	tcb.cb_getspi = cb_getspi;
+	tcb.cb_spdadd = cb_spdadd;
+	tcb.cb_spdupdate = cb_spdupd;
+	tcb.cb_spddelete = cb_spddel;
+	tcb.cb_spddump = cb_spddump;
+	tcb.cb_sadump = cb_sadump;
+	tcb.cb_resync = cb_resync;
+	tcb.cb_mapping = cb_mapping;
+	tcb.cb_acquire = cb_acquire;
+#ifdef SADB_X_MIGRATE
+	tcb.cb_migrate = cb_migrate;
+#endif
+	if (xfrm_test_open(&rcm, &tcb, a[0], b[0], PORTID)) {
+		perror("xfrm_test_open");
+		exit(99);
+	}
+	k_req = a[1];
+	k_ntf = b[1];
+	xfrm_stat_enobufs = xfrm_stat_resync = xfrm_stat_idempotent = 0;
+	xfrm_stat_ebusy_retry = xfrm_stat_stale_reply = 0;
+	xfrm_stat_late_error = 0;
+	reset_counts();
+}
+
+/* --- message builders ("kernel" side) --- */
+
+static size_t
+mk_err(char *buf, uint32_t seq, uint32_t pidv, int err, uint16_t origtype)
+{
+	struct nlmsghdr *n = (void *)buf;
+	struct nlmsgerr *e;
+
+	memset(buf, 0, NLMSG_SPACE(sizeof(*e)));
+	n->nlmsg_len = NLMSG_LENGTH(sizeof(*e));
+	n->nlmsg_type = NLMSG_ERROR;
+	n->nlmsg_seq = seq;
+	n->nlmsg_pid = pidv;
+	e = NLMSG_DATA(n);
+	e->error = -err;
+	e->msg.nlmsg_seq = seq;
+	e->msg.nlmsg_pid = pidv;
+	e->msg.nlmsg_type = origtype;
+	return n->nlmsg_len;
+}
+
+static void
+v4(xfrm_address_t *a, const char *s)
+{
+	memset(a, 0, sizeof(*a));
+	inet_pton(AF_INET, s, &a->a4);
+}
+
+static size_t
+mk_policy(char *buf, uint16_t type, uint32_t seq, uint32_t pidv,
+    const char *src, const char *dst, uint16_t flags)
+{
+	struct nlmsghdr *n = (void *)buf;
+	struct xfrm_userpolicy_info *xp;
+
+	memset(buf, 0, NLMSG_SPACE(sizeof(*xp)));
+	n->nlmsg_len = NLMSG_LENGTH(sizeof(*xp));
+	n->nlmsg_type = type;
+	n->nlmsg_flags = flags;
+	n->nlmsg_seq = seq;
+	n->nlmsg_pid = pidv;
+	xp = NLMSG_DATA(n);
+	xp->sel.family = AF_INET;
+	v4(&xp->sel.saddr, src);
+	v4(&xp->sel.daddr, dst);
+	xp->sel.prefixlen_s = 32;
+	xp->sel.prefixlen_d = 24;
+	xp->dir = XFRM_POLICY_OUT;
+	xp->index = 0x1234;
+	return n->nlmsg_len;
+}
+
+static size_t
+mk_sa(char *buf, uint16_t type, uint32_t seq, uint32_t pidv, uint32_t spi,
+    uint16_t flags)
+{
+	struct nlmsghdr *n = (void *)buf;
+	struct xfrm_usersa_info *sa;
+
+	memset(buf, 0, NLMSG_SPACE(sizeof(*sa)));
+	n->nlmsg_len = NLMSG_LENGTH(sizeof(*sa));
+	n->nlmsg_type = type;
+	n->nlmsg_flags = flags;
+	n->nlmsg_seq = seq;
+	n->nlmsg_pid = pidv;
+	sa = NLMSG_DATA(n);
+	sa->family = AF_INET;
+	v4(&sa->saddr, "192.0.2.1");
+	v4(&sa->id.daddr, "192.0.2.2");
+	sa->id.spi = htonl(spi);
+	sa->id.proto = IPPROTO_ESP;
+	sa->lft.soft_add_expires_seconds = 100;
+	sa->curlft.add_time = 1000;
+	sa->curlft.packets = 5;
+	return n->nlmsg_len;
+}
+
+static size_t
+mk_done(char *buf, uint32_t seq, uint32_t pidv)
+{
+	struct nlmsghdr *n = (void *)buf;
+
+	memset(buf, 0, NLMSG_SPACE(sizeof(int)));
+	n->nlmsg_len = NLMSG_LENGTH(sizeof(int));
+	n->nlmsg_type = NLMSG_DONE;
+	n->nlmsg_flags = NLM_F_MULTI;
+	n->nlmsg_seq = seq;
+	n->nlmsg_pid = pidv;
+	return n->nlmsg_len;
+}
+
+static void
+kput(int fd, const void *buf, size_t len)
+{
+	if (send(fd, buf, len, 0) != (ssize_t)len) {
+		perror("send");
+		exit(99);
+	}
+}
+
+/* read one request the library sent; returns its header (static buf) */
+static struct nlmsghdr *
+kget(void)
+{
+	static char buf[XFRM_BUFLEN];
+	ssize_t n = recv(k_req, buf, sizeof(buf), MSG_DONTWAIT);
+
+	if (n < (ssize_t)sizeof(struct nlmsghdr))
+		return NULL;
+	return (void *)buf;
+}
+
+static void
+fill_sa_rc(struct rcpfk_msg *rc, struct sockaddr_in *s, struct sockaddr_in *d,
+    uint32_t seq, uint32_t spi)
+{
+	memset(rc, 0, sizeof(*rc));
+	memset(s, 0, sizeof(*s));
+	memset(d, 0, sizeof(*d));
+	s->sin_family = d->sin_family = AF_INET;
+	inet_pton(AF_INET, "192.0.2.1", &s->sin_addr);
+	inet_pton(AF_INET, "192.0.2.2", &d->sin_addr);
+	rc->sa_src = (void *)s;
+	rc->sa_dst = (void *)d;
+	rc->seq = seq;
+	rc->spi = htonl(spi);
+	rc->satype = RCT_SATYPE_ESP;
+	rc->samode = RCT_IPSM_TUNNEL;
+	rc->so = rcm.so;
+}
+
+/* --- tests --- */
+
+static void
+test_request_goes_to_req_socket(void)
+{
+	struct rcpfk_msg rc;
+	struct sockaddr_in s, d;
+	struct nlmsghdr *n;
+	char tmp[64];
+
+	setup();
+	fill_sa_rc(&rc, &s, &d, 0x4000001, 0x1001);
+	CHECK(rcpfk_send_delete(&rc) == 0, "send_delete: %s", rc.estr);
+	n = kget();
+	CHECK(n && n->nlmsg_type == XFRM_MSG_DELSA, "DELSA on request socket");
+	CHECK(n && n->nlmsg_seq == 0x4000001 && n->nlmsg_pid == PORTID,
+	    "seq/pid stamped (seq %u pid %u)", n ? n->nlmsg_seq : 0,
+	    n ? n->nlmsg_pid : 0);
+	CHECK(recv(k_ntf, tmp, sizeof(tmp), MSG_DONTWAIT) < 0,
+	    "nothing sent on the notification socket");
+	CHECK(rcm.so >= 0 && rcm.so != xfrm_req_fd && rcm.so != xfrm_ntf_fd,
+	    "rc->so is the epoll fd");
+}
+
+static void
+idem(uint16_t optype, int err, int expect_ok, int *counter, const char *what)
+{
+	struct rcpfk_msg rc;
+	struct sockaddr_in s, d;
+	char buf[256];
+	int before = *counter, r;
+
+	fill_sa_rc(&rc, &s, &d, 0x4000100 + optype, 0x2002);
+	rc.pltype = RCT_ACT_AUTO_IPSEC;
+	switch (optype) {
+	case XFRM_MSG_NEWSA:
+		rc.enctype = RCT_ALG_AES_GCM; rc.enckeylen = 20;
+		rc.enckey = (caddr_t)"0123456789abcdefghij";
+		r = rcpfk_send_add(&rc); break;
+	case XFRM_MSG_DELSA:
+		r = rcpfk_send_delete(&rc); break;
+	case XFRM_MSG_NEWPOLICY:
+		rc.pltype = RCT_ACT_DISCARD;
+		r = rcpfk_send_spdadd(&rc); break;
+	case XFRM_MSG_DELPOLICY:
+		r = rcpfk_send_spddelete(&rc); break;
+	default:
+		r = -1;
+	}
+	CHECK(r == 0, "%s: send failed: %s", what, rc.estr);
+	(void)kget();
+	kput(k_req, buf, mk_err(buf, rc.seq, PORTID, err, optype));
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	if (expect_ok) {
+		CHECK(r == 0, "%s: %s must be success, got %d (%s)", what,
+		    strerror(err), r, rc.estr);
+		CHECK(*counter == before + 1, "%s: callback fired once (%d)",
+		    what, *counter - before);
+	} else {
+		CHECK(r == -1 && rc.eno == err, "%s: %s must be an error (r=%d "
+		    "eno=%d)", what, strerror(err), r, rc.eno);
+		CHECK(*counter == before, "%s: no success callback", what);
+	}
+	CHECK(pending_type == 0, "%s: pending op cleared", what);
+}
+
+static void
+test_idempotence(void)
+{
+	setup();
+	idem(XFRM_MSG_NEWSA, EEXIST, 1, &n_add, "NEWSA/EEXIST");
+	idem(XFRM_MSG_DELSA, ENOENT, 1, &n_del, "DELSA/ENOENT");
+	idem(XFRM_MSG_DELSA, ESRCH, 1, &n_del, "DELSA/ESRCH");
+	idem(XFRM_MSG_NEWPOLICY, EEXIST, 1, &n_spdadd, "NEWPOLICY/EEXIST");
+	idem(XFRM_MSG_DELPOLICY, ENOENT, 1, &n_spddel, "DELPOLICY/ENOENT");
+	CHECK(xfrm_stat_idempotent == 5, "5 idempotent ACKs counted (%lu)",
+	    xfrm_stat_idempotent);
+	/* the classification is per message type, not blanket */
+	idem(XFRM_MSG_NEWSA, ENOENT, 0, &n_add, "NEWSA/ENOENT");
+	idem(XFRM_MSG_DELSA, EEXIST, 0, &n_del, "DELSA/EEXIST");
+	idem(XFRM_MSG_DELSA, EINVAL, 0, &n_del, "DELSA/EINVAL");
+	idem(XFRM_MSG_NEWPOLICY, EPERM, 0, &n_spdadd, "NEWPOLICY/EPERM");
+}
+
+static void
+test_ebusy_retry(void)
+{
+	struct rcpfk_msg rc;
+	struct sockaddr_in s, d;
+	char buf[256], first[XFRM_BUFLEN];
+	struct nlmsghdr *n;
+	size_t flen;
+	int i, r;
+
+	setup();
+	fill_sa_rc(&rc, &s, &d, 0x4000200, 0x3003);
+	CHECK(rcpfk_send_delete(&rc) == 0, "send");
+	n = kget();
+	flen = n ? n->nlmsg_len : 0;
+	if (n)
+		memcpy(first, n, flen);
+	for (i = 1; i <= XFRM_EBUSY_RETRIES; i++) {
+		kput(k_req, buf, mk_err(buf, 0x4000200, PORTID, EBUSY,
+		    XFRM_MSG_DELSA));
+		memset(&rc, 0, sizeof(rc));
+		rc.so = rcm.so;
+		r = rcpfk_handler(&rc);
+		CHECK(r == 0, "EBUSY #%d is retried, not an error", i);
+		n = kget();
+		CHECK(n && n->nlmsg_len == flen && memcmp(n, first, flen) == 0,
+		    "retry #%d resends the identical request", i);
+	}
+	kput(k_req, buf, mk_err(buf, 0x4000200, PORTID, EBUSY, XFRM_MSG_DELSA));
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == -1 && rc.eno == EBUSY, "EBUSY after %d retries is an error",
+	    XFRM_EBUSY_RETRIES);
+	CHECK(kget() == NULL, "no 4th resend");
+	CHECK(xfrm_stat_ebusy_retry == XFRM_EBUSY_RETRIES, "retry count %lu",
+	    xfrm_stat_ebusy_retry);
+}
+
+/*
+ * spmd sends SPDGET then reads "the reply".  A foreign multicast policy
+ * event queued first must not be parsed into rc (old single-socket bug),
+ * a stale unicast reply must be dropped, and our own echo must not fire
+ * cb_spdadd.
+ */
+static void
+test_interleaved_waitreply(void)
+{
+	struct rcpfk_msg rc;
+	char buf[512];
+	struct sockaddr_in *sp;
+	char a[INET_ADDRSTRLEN];
+	int r;
+
+	setup();
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	rc.seq = 0x500;
+	rc.slid = 0x1234;
+	rc.dir = RCT_DIR_OUTBOUND;
+	CHECK(rcpfk_send_spdget(&rc) == 0, "send spdget");
+	(void)kget();
+	/* foreign event first (other daemon, pid 999), and our echo */
+	kput(k_ntf, buf, mk_policy(buf, XFRM_MSG_NEWPOLICY, 77, 999,
+	    "203.0.113.9", "203.0.113.0", 0));
+	kput(k_ntf, buf, mk_policy(buf, XFRM_MSG_UPDPOLICY, 0x4ff, PORTID,
+	    "198.51.100.1", "198.51.100.0", 0));
+	/* stale reply to an old request, then the real reply + ACK */
+	kput(k_req, buf, mk_policy(buf, XFRM_MSG_NEWPOLICY, 0x3ff, PORTID,
+	    "192.0.2.250", "192.0.2.0", 0));
+	kput(k_req, buf, mk_policy(buf, XFRM_MSG_NEWPOLICY, 0x500, PORTID,
+	    "10.1.1.1", "10.2.2.0", 0));
+	kput(k_req, buf, mk_err(buf, 0x500, PORTID, 0, XFRM_MSG_GETPOLICY));
+	rc.flags |= PFK_FLAG_WAITREPLY;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0, "WAITREPLY returns the reply: %s", rc.estr);
+	sp = (void *)rc.sp_src;
+	CHECK(sp != NULL, "sp_src filled from the reply");
+	if (sp) {
+		inet_ntop(AF_INET, &sp->sin_addr, a, sizeof(a));
+		CHECK(strcmp(a, "10.1.1.1") == 0,
+		    "rc holds the SPDGET reply, not an event (got %s)", a);
+	}
+	CHECK(xfrm_stat_stale_reply == 1, "stale reply dropped (%lu)",
+	    xfrm_stat_stale_reply);
+	CHECK(n_spdadd == 0 && n_spdupd == 0,
+	    "events not dispatched during WAITREPLY");
+	/* next select() round: the foreign event is delivered, our echo isn't */
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0, "event round");
+	CHECK(n_spdadd == 1, "foreign NEWPOLICY event delivered (%d)", n_spdadd);
+	CHECK(n_spdupd == 0, "own UPDPOLICY echo suppressed (%d)", n_spdupd);
+	CHECK((last.flags & PFK_FLAG_EVENT) != 0, "event flagged");
+}
+
+/* WAITREPLY must not hang when the reply is an error */
+static void
+test_waitreply_error(void)
+{
+	struct rcpfk_msg rc;
+	char buf[256];
+
+	setup();
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	rc.seq = 0x600;
+	rc.slid = 9;
+	CHECK(rcpfk_send_spdget(&rc) == 0, "send");
+	(void)kget();
+	kput(k_req, buf, mk_err(buf, 0x600, PORTID, ENOENT, XFRM_MSG_GETPOLICY));
+	rc.flags |= PFK_FLAG_WAITREPLY;
+	CHECK(rcpfk_handler(&rc) == -1 && rc.eno == ENOENT,
+	    "SPDGET ENOENT reported (eno %d)", rc.eno);
+}
+
+/*
+ * Two requests in flight: the failure of the FIRST arrives after the
+ * second was sent.  It must be surfaced (counted + logged), never dropped
+ * as a stale reply, and must not complete or abort the second's wait.
+ */
+static void
+test_late_error_not_lost(void)
+{
+	struct rcpfk_msg rc;
+	char buf[256];
+
+	setup();
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	rc.seq = 0x700;
+	rc.slid = 7;
+	CHECK(rcpfk_send_spdget(&rc) == 0, "send 1");
+	(void)kget();
+	rc.seq = 0x701;
+	CHECK(rcpfk_send_spdget(&rc) == 0, "send 2");
+	(void)kget();
+	kput(k_req, buf, mk_err(buf, 0x700, PORTID, EINVAL, XFRM_MSG_GETPOLICY));
+	kput(k_req, buf, mk_err(buf, 0x701, PORTID, ENOENT, XFRM_MSG_GETPOLICY));
+	rc.flags |= PFK_FLAG_WAITREPLY;
+	CHECK(rcpfk_handler(&rc) == -1 && rc.eno == ENOENT,
+	    "wait for seq 0x701 gets ITS error (eno %d)", rc.eno);
+	CHECK(xfrm_stat_late_error == 1, "seq 0x700 EINVAL surfaced (%lu)",
+	    xfrm_stat_late_error);
+	CHECK(xfrm_stat_stale_reply == 0, "and not counted as stale (%lu)",
+	    xfrm_stat_stale_reply);
+}
+
+/* "kernel" thread answering dump requests on the request socket */
+static volatile int kthr_stop;
+static int kthr_spd, kthr_sa;
+
+static void *
+kthr(void *arg)
+{
+	char in[XFRM_BUFLEN], out[1024];
+	struct nlmsghdr *n = (void *)in;
+	struct pollfd pfd;
+
+	(void)arg;
+	while (!kthr_stop) {
+		pfd.fd = k_req;
+		pfd.events = POLLIN;
+		if (poll(&pfd, 1, 50) <= 0)
+			continue;
+		if (recv(k_req, in, sizeof(in), 0) < (ssize_t)sizeof(*n))
+			continue;
+		if (!(n->nlmsg_flags & NLM_F_DUMP))
+			continue;
+		if (n->nlmsg_type == XFRM_MSG_GETPOLICY) {
+			kthr_spd++;
+			kput(k_req, out, mk_policy(out, XFRM_MSG_NEWPOLICY,
+			    n->nlmsg_seq, PORTID, "10.0.0.1", "10.0.1.0",
+			    NLM_F_MULTI));
+			kput(k_req, out, mk_done(out, n->nlmsg_seq, PORTID));
+		} else if (n->nlmsg_type == XFRM_MSG_GETSA) {
+			kthr_sa++;
+			kput(k_req, out, mk_sa(out, XFRM_MSG_NEWSA, n->nlmsg_seq,
+			    PORTID, 0xa1, NLM_F_MULTI));
+			kput(k_req, out, mk_sa(out, XFRM_MSG_NEWSA, n->nlmsg_seq,
+			    PORTID, 0xa2, NLM_F_MULTI));
+			kput(k_req, out, mk_done(out, n->nlmsg_seq, PORTID));
+		}
+	}
+	return NULL;
+}
+
+static void
+test_enobufs_resync(void)
+{
+	struct rcpfk_msg rc;
+	char buf[1024];
+	struct nlmsghdr *n;
+	int r, saw_spd = 0, saw_sa = 0;
+
+	setup();
+	/* a pending GETSPI whose reply will be lost with the request socket */
+	{
+		struct sockaddr_in s, d;
+
+		fill_sa_rc(&rc, &s, &d, 0x4000700, 0);
+		CHECK(rcpfk_send_getspi(&rc) == 0, "getspi");
+		(void)kget();
+	}
+	{
+		pthread_t th;
+
+		kthr_stop = 0;
+		kthr_spd = kthr_sa = 0;
+		dump_flag_ok = 1;
+		if (pthread_create(&th, NULL, kthr, NULL) != 0)
+			exit(99);
+		pthread_detach(th);
+	}
+	/* an event that survived the overflow */
+	kput(k_ntf, buf, mk_policy(buf, XFRM_MSG_NEWPOLICY, 5, 999,
+	    "203.0.113.1", "203.0.113.0", 0));
+	xfrm_test_enobufs_fd = xfrm_ntf_fd;
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0, "handler survives ENOBUFS: %s", rc.estr);
+	CHECK(xfrm_stat_enobufs == 1 && xfrm_stat_resync == 1,
+	    "ENOBUFS counted and resynced (%lu/%lu)", xfrm_stat_enobufs,
+	    xfrm_stat_resync);
+	CHECK(n_spdadd == 1, "surviving event still drained and delivered");
+	CHECK(n_spddump == 1, "SPD dump delivered (%d)", n_spddump);
+	CHECK(dump_flag_ok, "dumped SA/SP flagged PFK_FLAG_RESYNC");
+	CHECK(n_sadump == 2, "two SAs delivered to cb_sadump (%d)", n_sadump);
+	CHECK(n_resync == 1, "cb_resync once (%d)", n_resync);
+	CHECK(resync_sa_seq == 0 && resync_spd_seq == 0, "dumps finished");
+	saw_spd = kthr_spd;
+	saw_sa = kthr_sa;
+	(void)n;
+	CHECK(saw_spd == 1 && saw_sa == 1, "dump requests sent on the request "
+	    "socket (spd %d sa %d)", saw_spd, saw_sa);
+	CHECK(pending_type == XFRM_MSG_ALLOCSPI,
+	    "notify overflow leaves the request-socket op pending");
+
+	/* now the request socket overflows: its pending op is dropped */
+	xfrm_test_enobufs_fd = xfrm_req_fd;
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0, "request-socket ENOBUFS handled: %s", rc.estr);
+	CHECK(pending_type == 0, "stranded pending op dropped");
+	CHECK(xfrm_stat_resync == 2 && n_resync == 2, "second resync (%lu)",
+	    xfrm_stat_resync);
+	kthr_stop = 1;
+	usleep(120000);
+}
+
+static void
+test_mapping_migrate_fresh(void)
+{
+	char buf[1024];
+	struct nlmsghdr *n = (void *)buf;
+	struct xfrm_user_mapping *um;
+	struct rcpfk_msg rc;
+	struct sockaddr_in *ns;
+	size_t off;
+	int r;
+
+	setup();
+	/* one datagram: MAPPING then ACQUIRE (fresh container per msg) */
+	memset(buf, 0, sizeof(buf));
+	n->nlmsg_len = NLMSG_LENGTH(sizeof(*um));
+	n->nlmsg_type = XFRM_MSG_MAPPING;
+	um = NLMSG_DATA(n);
+	um->id.family = AF_INET;
+	um->id.proto = IPPROTO_ESP;
+	um->id.spi = htonl(0xc0ffee);
+	v4(&um->id.daddr, "192.0.2.2");
+	v4(&um->old_saddr, "198.51.100.7");
+	v4(&um->new_saddr, "198.51.100.7");
+	um->old_sport = htons(4500);
+	um->new_sport = htons(31337);
+	um->reqid = 7;
+	off = NLMSG_ALIGN(n->nlmsg_len);
+	{
+		struct nlmsghdr *a = (void *)(buf + off);
+		struct xfrm_user_acquire *ac;
+		struct rtattr *rta;
+		struct xfrm_user_tmpl *t;
+
+		a->nlmsg_len = NLMSG_LENGTH(sizeof(*ac)) +
+		    RTA_LENGTH(sizeof(*t));
+		a->nlmsg_type = XFRM_MSG_ACQUIRE;
+		ac = NLMSG_DATA(a);
+		ac->sel.family = AF_INET;
+		v4(&ac->sel.saddr, "10.0.0.1");
+		v4(&ac->sel.daddr, "10.0.1.1");
+		rta = (void *)((char *)ac + NLMSG_ALIGN(sizeof(*ac)));
+		rta->rta_type = XFRMA_TMPL;
+		rta->rta_len = RTA_LENGTH(sizeof(*t));
+		t = RTA_DATA(rta);
+		t->family = AF_INET;
+		t->id.proto = IPPROTO_ESP;
+		v4(&t->saddr, "192.0.2.1");
+		v4(&t->id.daddr, "192.0.2.2");
+		off += NLMSG_ALIGN(a->nlmsg_len);
+	}
+	kput(k_ntf, buf, off);
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0, "mapping round: %s", rc.estr);
+	CHECK(n_mapping == 1, "cb_mapping fired (%d)", n_mapping);
+	ns = (void *)last.sa2_src;
+	(void)ns;
+	CHECK(n_acquire == 1, "acquire in same datagram delivered");
+	CHECK(!acquire_saw_sa2,
+	    "MAPPING's sa2_src did not leak into the ACQUIRE container");
+
+	/* check the mapping contents with a lone MAPPING */
+	kput(k_ntf, buf, NLMSG_ALIGN(n->nlmsg_len));
+	reset_counts();
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	(void)rcpfk_handler(&rc);
+	CHECK(n_mapping == 1, "lone mapping");
+	CHECK(last.spi == htonl(0xc0ffee) && last.reqid == 7 &&
+	    last.satype == RCT_SATYPE_ESP, "mapping spi/reqid/satype");
+	CHECK(last.natt_dport == htons(31337), "new NAT-T port %u",
+	    ntohs(last.natt_dport));
+
+#ifdef SADB_X_MIGRATE
+	{
+		struct xfrm_userpolicy_id *id;
+		struct rtattr *rta;
+		struct xfrm_user_migrate *m;
+
+		memset(buf, 0, sizeof(buf));
+		n->nlmsg_len = NLMSG_LENGTH(sizeof(*id)) + RTA_LENGTH(sizeof(*m));
+		n->nlmsg_type = XFRM_MSG_MIGRATE;
+		n->nlmsg_pid = 31;	/* another KM */
+		id = NLMSG_DATA(n);
+		id->dir = XFRM_POLICY_OUT;
+		id->sel.family = AF_INET;
+		rta = (void *)((char *)id + NLMSG_ALIGN(sizeof(*id)));
+		rta->rta_type = XFRMA_MIGRATE;
+		rta->rta_len = RTA_LENGTH(sizeof(*m));
+		m = RTA_DATA(rta);
+		m->proto = IPPROTO_ESP;
+		m->mode = XFRM_MODE_TUNNEL;
+		m->reqid = 9;
+		m->old_family = m->new_family = AF_INET;
+		v4(&m->old_saddr, "192.0.2.1");
+		v4(&m->old_daddr, "192.0.2.2");
+		v4(&m->new_saddr, "192.0.2.11");
+		v4(&m->new_daddr, "192.0.2.2");
+		kput(k_ntf, buf, n->nlmsg_len);
+		/* and our own migrate's echo, which must not be delivered */
+		n->nlmsg_pid = PORTID;
+		kput(k_ntf, buf, n->nlmsg_len);
+		reset_counts();
+		memset(&rc, 0, sizeof(rc));
+		rc.so = rcm.so;
+		(void)rcpfk_handler(&rc);
+		CHECK(n_migrate == 1, "foreign MIGRATE delivered once, own echo "
+		    "suppressed (%d)", n_migrate);
+		CHECK(last.reqid == 9 && last.sa2_src != NULL &&
+		    ((struct sockaddr_in *)last.sa2_src)->sin_addr.s_addr ==
+		    inet_addr("192.0.2.11"), "migrate new src");
+	}
+#endif
+}
+
+/* short messages are rejected, never read past the end */
+static void
+test_short_messages(void)
+{
+	char buf[64];
+	struct nlmsghdr *n = (void *)buf;
+	struct rcpfk_msg rc;
+
+	setup();
+	memset(buf, 0, sizeof(buf));
+	n->nlmsg_len = NLMSG_LENGTH(4);
+	n->nlmsg_type = XFRM_MSG_MAPPING;
+	kput(k_ntf, buf, n->nlmsg_len);
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	CHECK(rcpfk_handler(&rc) == -1 && rc.eno == EINVAL,
+	    "short MAPPING rejected");
+	CHECK(n_mapping == 0, "no callback for a short MAPPING");
+	n->nlmsg_type = NLMSG_ERROR;
+	n->nlmsg_len = NLMSG_LENGTH(2);
+	kput(k_req, buf, n->nlmsg_len);
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	(void)rcpfk_handler(&rc);
+	CHECK(1, "short NLMSG_ERROR did not crash");
+}
+
+int
+main(void)
+{
+	setvbuf(stdout, NULL, _IONBF, 0);
+	if (rbuf_init(8, 80, 4, 160, 4))
+		return 99;
+	plog_setmode(RCT_LOGMODE_NORMAL, NULL, "xfrmnltest", 1, 0);
+	test_request_goes_to_req_socket();
+	test_idempotence();
+	test_ebusy_retry();
+	test_interleaved_waitreply();
+	test_waitreply_error();
+	test_late_error_not_lost();
+	test_enobufs_resync();
+	test_mapping_migrate_fresh();
+	test_short_messages();
+	printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);
+	return fails ? 1 : 0;
+}

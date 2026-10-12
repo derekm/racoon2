@@ -93,6 +93,13 @@ struct rcpfk_msg {
 #define PFK_FLAG_SEEADD		0x00000004
 #define PFK_FLAG_NOPORTS	0x00000008
 #define PFK_FLAG_EVENT		0x00000010
+	/* rcpfk_handler(): consume messages until the reply to the request
+	 * whose seq is rc->seq has been processed (or 5 s pass).  Other
+	 * messages read meanwhile are dispatched with a scratch container,
+	 * never parsed into rc.  For send-then-read callers (spmd). */
+#define PFK_FLAG_WAITREPLY	0x00000020
+	/* set on messages produced by a post-ENOBUFS resync dump */
+#define PFK_FLAG_RESYNC		0x00000040
 
 	uint32_t slid;			/* "spid" in KAME impl. */
 	struct sockaddr *sp_src;
@@ -139,6 +146,21 @@ struct rcpfk_cb {
 #ifdef SADB_X_MIGRATE
 	int (*cb_migrate) (struct rcpfk_msg *);
 #endif
+	/*
+	 * Optional (NULL = ignored).  XFRM backend only for now.
+	 *
+	 * cb_mapping: the kernel saw an authenticated ESP-in-UDP packet for
+	 *   the inbound SA rc->spi (dst rc->sa_dst) arrive from a new NAT
+	 *   mapping.  rc->sa_src is the old peer address:port, rc->sa2_src
+	 *   the new one (XFRM_MSG_MAPPING, XFRMNLGRP_MAPPING).
+	 * cb_sadump: one SA from a resync dump (flags has PFK_FLAG_RESYNC).
+	 * cb_resync: a notification overflow (ENOBUFS) was recovered from;
+	 *   the SPD (cb_spddump) and SAD (cb_sadump) dumps that preceded
+	 *   this call describe the kernel state now.  rc->eno = ENOBUFS.
+	 */
+	int (*cb_mapping) (struct rcpfk_msg *);
+	int (*cb_sadump) (struct rcpfk_msg *);
+	int (*cb_resync) (struct rcpfk_msg *);
 };
 
 extern int rcpfk_handler (struct rcpfk_msg *);
