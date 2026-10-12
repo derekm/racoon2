@@ -50,7 +50,14 @@ struct encryptor_method {
 				     rc_vchar_t *);
 	rc_vchar_t *(*decrypt_aead) (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *,
 				     rc_vchar_t *);
+	/* NULL = always available; otherwise a runtime probe of the crypto
+	 * library (legacy-provider ciphers may be absent) */
+	int (*available) (void);
 };
+
+/* method usable with the linked crypto library? */
+#define	ENCRYPTOR_METHOD_AVAILABLE(m)	\
+	((m) != NULL && ((m)->available == NULL || (m)->available()))
 
 /* with the current calling structure, there's no state to hold */
 struct encryptor;
@@ -76,6 +83,14 @@ extern struct encryptor_method encr_aesccm16;
 extern struct encryptor_method encr_aesccm16_192;
 extern struct encryptor_method encr_aesccm16_256;
 extern struct encryptor_method encr_null;
+/* deprecated (allow_nsa_deprecated / allow_rfc_deprecated gated) */
+extern struct encryptor_method encr_des;
+extern struct encryptor_method encr_des_iv64;
+extern struct encryptor_method encr_des_iv32;
+extern struct encryptor_method encr_cast128;
+extern struct encryptor_method encr_blowfish128;
+extern struct encryptor_method encr_idea;
+extern struct encryptor_method encr_rc5_128;
 
 struct encryptor *encryptor_new(struct encryptor_method *);
 void encryptor_destroy(struct encryptor *);
