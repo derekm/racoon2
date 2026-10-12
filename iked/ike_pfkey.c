@@ -821,7 +821,6 @@ sadb_x_migrate_callback(struct rcpfk_msg *param)
 	struct rcf_selector *selector;
 	struct rcf_policy *policy;
 	struct ikev2_sa *ike_sa;
-	struct ikev2_child_sa *child_sa;
 #ifdef IKEV1
 	struct ph1handle *iph1;
 	struct ph2handle *iph2;
@@ -896,105 +895,49 @@ sadb_x_migrate_callback(struct rcpfk_msg *param)
 	ike_sa = ikev2_find_sa_by_addr(param->sa_dst);
 	if (ike_sa == NULL)
 		goto v1;
-	plog(PLOG_INFO, PLOGLOC, 0, "move ikev2_sa(%p): from %s -> %s\n",
-	     ike_sa, rcs_sa2str(ike_sa->local), rcs_sa2str(ike_sa->remote));
+	{
+		/*
+		 * The kernel already moved the SAs.  Follow in memory the way
+		 * a MOBIKE update does (ikev2_kernel_migrated: every Child
+		 * SA, armed retransmits, NAT-D pins), keeping the IKE ports;
+		 * an XFRMA_ENCAP in the event supplies the new peer port.
+		 * (This used to patch sin_addr in place, and the AF_INET case
+		 * fell through into a 16-byte sin6_addr copy that overran the
+		 * 16-byte sockaddr_in.)
+		 */
+		struct sockaddr *nl, *nr;
+		in_port_t *lp, *rp;
+		int moved;
 
-	switch (ike_sa->remote->sa_family) {
-	case AF_INET:
-		((struct sockaddr_in *)ike_sa->local)->sin_addr =
-			((struct sockaddr_in *)param->sa2_src)->sin_addr;
-		((struct sockaddr_in *)ike_sa->remote)->sin_addr =
-			((struct sockaddr_in *)param->sa2_dst)->sin_addr;
-	case AF_INET6:
-		memcpy(&((struct sockaddr_in6 *)ike_sa->local)->sin6_addr,
-		       &((struct sockaddr_in6 *)param->sa2_src)->sin6_addr,
-		       sizeof(struct in6_addr));
-		memcpy(&((struct sockaddr_in6 *)ike_sa->remote)->sin6_addr,
-		       &((struct sockaddr_in6 *)param->sa2_dst)->sin6_addr,
-		       sizeof(struct in6_addr));
-		break;
-	default:
-		return -1;
-	}
-	plog(PLOG_INFO, PLOGLOC, 0, "move ikev2_sa(%p): to %s -> %s\n",
-	     ike_sa, rcs_sa2str(ike_sa->local), rcs_sa2str(ike_sa->remote));
-
-	/* migrate children */
-
-	for (child_sa = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
-	     !IKEV2_CHILD_LIST_END(child_sa);
-	     child_sa = IKEV2_CHILD_LIST_NEXT(child_sa)) {
-		if (!child_sa->selector)
-			continue;
-		if (param->reqid != child_sa->selector->reqid)
-			continue;
-		switch (ike_sa->remote->sa_family) {
-		case AF_INET:
-		  if (child_sa->local)
-		    ((struct sockaddr_in *)child_sa->local)->sin_addr =
-		      ((struct sockaddr_in *)ike_sa->local)->sin_addr;
-		  if (child_sa->remote)
-		    ((struct sockaddr_in *)child_sa->remote)->sin_addr =
-		      ((struct sockaddr_in *)ike_sa->remote)->sin_addr;
-
-		  for (selector = child_sa->selector;
-		       selector != 0;
-		       selector = selector->next) {
-		    policy = selector->pl;
-		    if (policy->my_sa_ipaddr) {
-			  if (policy->my_sa_ipaddr->type != RCT_ADDR_INET) {
-			    TRACE((PLOGLOC, "unexpected type\n"));
-			    continue;
-			  }
-			  ((struct sockaddr_in *)policy->my_sa_ipaddr->a.ipaddr)->sin_addr =
-			    ((struct sockaddr_in *)ike_sa->local)->sin_addr;
-		    }
-		    if (policy->peers_sa_ipaddr) {
-			  if (policy->peers_sa_ipaddr->type != RCT_ADDR_INET) {
-			    TRACE((PLOGLOC, "unexpected type\n"));
-			    continue;
-			  }
-			  ((struct sockaddr_in *)policy->peers_sa_ipaddr->a.ipaddr)->sin_addr =
-			    ((struct sockaddr_in *)ike_sa->local)->sin_addr;
-		    }
-		  }
-		break;
-		case AF_INET6:
-		  if (child_sa->local)
-		    memcpy(&((struct sockaddr_in6 *)child_sa->local)->sin6_addr,
-			   &((struct sockaddr_in6 *)ike_sa->local)->sin6_addr,
-			   sizeof(struct in6_addr));
-		  if (child_sa->remote)
-		    memcpy(&((struct sockaddr_in6 *)child_sa->remote)->sin6_addr,
-			   &((struct sockaddr_in6 *)ike_sa->remote)->sin6_addr,
-			   sizeof(struct in6_addr));
-
-		  for (selector = child_sa->selector;
-		       selector != 0;
-		       selector = selector->next) {
-		    policy = selector->pl;
-		    if (policy->my_sa_ipaddr) {
-		      if (policy->my_sa_ipaddr->type != RCT_ADDR_INET) {
-		        TRACE((PLOGLOC, "unexpected type\n"));
-		        continue;
-		      }
-		      memcpy(&((struct sockaddr_in6 *)policy->my_sa_ipaddr->a.ipaddr)->sin6_addr,
-			     &((struct sockaddr_in6 *)ike_sa->local)->sin6_addr,
-			     sizeof(struct in6_addr));
-		    }
-		    if (policy->peers_sa_ipaddr) {
-		      if (policy->peers_sa_ipaddr->type != RCT_ADDR_INET) {
-		        TRACE((PLOGLOC, "unexpected type\n"));
-		        continue;
-		      }
-		      memcpy(&((struct sockaddr_in6 *)policy->peers_sa_ipaddr->a.ipaddr)->sin6_addr,
-			     &((struct sockaddr_in6 *)ike_sa->remote)->sin6_addr,
-			     sizeof(struct in6_addr));
-		    }
-		  }
-		break;
+		if (param->sa2_src == NULL || param->sa2_dst == NULL ||
+		    param->sa2_src->sa_family != ike_sa->local->sa_family ||
+		    param->sa2_dst->sa_family != ike_sa->remote->sa_family)
+			goto v1;
+		nl = rcs_sadup(param->sa2_src);
+		nr = rcs_sadup(param->sa2_dst);
+		if (nl == NULL || nr == NULL) {
+			if (nl)
+				rc_free(nl);
+			if (nr)
+				rc_free(nr);
+			return -1;
 		}
-		plog(PLOG_INFO, PLOGLOC, 0, "move child_sa(%p)\n", child_sa);
+		lp = rcs_getsaport(nl);
+		rp = rcs_getsaport(nr);
+		if (lp && rcs_getsaport(ike_sa->local))
+			*lp = *rcs_getsaport(ike_sa->local);
+		if (rp && rcs_getsaport(ike_sa->remote))
+			*rp = param->natt_dport ? param->natt_dport :
+			    *rcs_getsaport(ike_sa->remote);
+		plog(PLOG_INFO, PLOGLOC, 0, "move ikev2_sa(%p): from %s -> %s\n",
+		     ike_sa, rcs_sa2str(ike_sa->local), rcs_sa2str(ike_sa->remote));
+		moved = ikev2_kernel_migrated(ike_sa, nr, nl);
+		rc_free(nl);
+		rc_free(nr);
+		if (moved != 0)
+			goto v1;
+		plog(PLOG_INFO, PLOGLOC, 0, "move ikev2_sa(%p): to %s -> %s\n",
+		     ike_sa, rcs_sa2str(ike_sa->local), rcs_sa2str(ike_sa->remote));
 	}
 
 	ikev2_migrate_script_hook(ike_sa, param->sa_src, param->sa_dst,
@@ -1016,6 +959,7 @@ sadb_x_migrate_callback(struct rcpfk_msg *param)
 			((struct sockaddr_in *)param->sa2_src)->sin_addr;
 		((struct sockaddr_in *)iph1->remote)->sin_addr =
 			((struct sockaddr_in *)param->sa2_dst)->sin_addr;
+		break;
 	case AF_INET6:
 		memcpy(&((struct sockaddr_in6 *)iph1->local)->sin6_addr,
 		       &((struct sockaddr_in6 *)param->sa2_src)->sin6_addr,
