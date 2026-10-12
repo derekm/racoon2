@@ -541,9 +541,12 @@ struct ikev2payl_notify {
 #define	IKEV2_UNEXPECTED_NAT_DETECTED	41	/* (RFC4555) */
 #define	IKEV2_USE_ASSIGNED_HoA		42	/* (RFC5026) */
 #define	IKEV2_TEMPORARY_FAILURE		43	/* (RFC7296); also rfc9370
-						 * s2.2.4 rekey-collision
-						 * MUST reply */
-/*	RESERVED TO IANA - Error types         44 - 8191 */
+					 * s2.2.4 rekey-collision
+					 * MUST reply */
+#define	IKEV2_CHILD_SA_NOT_FOUND	44	/* (RFC7296 s1.4, s3.10.1):
+					 * CREATE_CHILD_SA referenced a
+					 * child we no longer hold */
+/*	RESERVED TO IANA - Error types         45 - 8191 */
 /*	Private Use - Errors                8192 - 16383 */
 #define	IKEV2_NOTIFYTYPE_ERROR_MAX	16383
 #define	IKEV2_INITIAL_CONTACT		16384
