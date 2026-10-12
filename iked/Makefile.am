@@ -108,6 +108,18 @@ TESTS += cfgwalktest
 check_PROGRAMS += cfgwalktest
 cfgwalktest_SOURCES = cfgwalktest.c ikev2cfg_walk.c
 
+# RFC 7296 §2.7 receive classification of the core error/status notify
+# types (INVALID_SPI, INVALID_MESSAGE_ID, INVALID_SELECTORS,
+# TEMPORARY_FAILURE, SINGLE_PAIR_REQUIRED, SET_WINDOW_SIZE, ...).  Drives
+# the real ikev2_process_notify()/ikev2_notify_type_str() into the full iked
+# object set (ikev2_notify.o + ikev2_child.o + ...), exactly like the other
+# full-link tests.  Always built: the notify classifier has no optional-
+# feature dependency.
+TESTS += notifytest
+check_PROGRAMS += notifytest
+notifytest_SOURCES = notifytest.c
+notifytest_LDADD = $(addtest_ikedsrc) $(LDADD)
+
 # RFC 9370 ADDKE ML-KEM-768 crypto (configure --enable-addke auto):
 # exercised only on OpenSSL >= 3.5 builds that actually have the code.
 if ADDKE
