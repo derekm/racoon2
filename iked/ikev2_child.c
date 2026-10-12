@@ -1085,9 +1085,15 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	 * (regression vs pre-efaf7a1 no-PFS interop).  The
 	 * need_pfs config gate remains in security contexts.
 	 */
+	/*
+	 * need_pfs only applies to CREATE_CHILD_SA: the IKE_AUTH child has no
+	 * KE at all (RFC 7296 s1.2, its keys come from SKEYSEED), so demanding
+	 * a DH transform there refused EVERY peer's IKE_AUTH child once
+	 * need_pfs was on (charon strips DH from its IKE_AUTH SAi2).
+	 */
 	my_proposal = ikev2_ipsec_conf_to_proplist(child_sa,
-	    (is_createchild && g_i != NULL) ||
-	    ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON);
+	    is_createchild && (g_i != NULL ||
+	    ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON));
 	if (!my_proposal)
 		goto fail_create_proposal;
 
