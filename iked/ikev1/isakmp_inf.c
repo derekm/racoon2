@@ -86,6 +86,7 @@
 #include "isakmp.h"
 #include "isakmp_var.h"
 #include "isakmp_impl.h"
+#include "hashcmp.h"
 #include "ikev1_impl.h"
 #ifdef ENABLE_HYBRID
 #include "isakmp_xauth.h"
@@ -246,7 +247,7 @@ isakmp_info_recv(struct ph1handle *iph1, rc_vchar_t *msg0)
 			goto end;
 		}
 
-		if (memcmp(p, hash->v, hash->l) != 0) {
+		if (!ike_ct_equal(p, hash->v, hash->l)) {
 			plog(PLOG_PROTOERR, PLOGLOC, NULL,
 			    "ignore information due to hash mismatch\n");
 

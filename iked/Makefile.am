@@ -25,7 +25,7 @@ endif
 IKEV2_NATT_SRC = nattraversal.c
 
 IKEV2_SRC = ikev2.c ikev2_sa_auth.c ikev2_transmit.c ikev2_mobike.c ikev2_sa_init.c ikev2_informational.c ikev2_session_resume.c ikev2_intermediate.c ikev2_auth.c ikev2_child.c ikev2_cookie.c ikev2_notify.c ikev2_packet.c ikev2_payload.c ikev2_decrypt.c ikev2_proposal.c ikev2_rekey.c ikev2_config.c ikev2_frag.c ikev2_resume.c ikev2_resume_rec.c ikev2_resume_ticket.c ikev2_qcd.c ikev2_addke.c ikev2_addke_rounds.c ikev2_eap.c ikev2_radius.c ikev2_eap_relay.c ikev2_eap_round.c ikev2_eap_drive.c ikev2_eap_emit.c ikev2cfg_walk.c
-IKED_COMMON = main.c dh.c ike_sa.c ike_conf.c ike_deprecated.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC}
+IKED_COMMON = main.c dh.c hashcmp.c ike_sa.c ike_conf.c ike_deprecated.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC}
 
 if USE_EPOLL
 evlooptest_SOURCES = evlooptest.c evloop_epoll.c
@@ -130,8 +130,13 @@ endif
 # exists only under ENABLE_NATT (see configure.ac NATT conditional), so
 # a --disable-natt build must not try to build these.
 if NATT
-TESTS += test_ts_substitute test_natoa test_ip_any eaproundtest eaplocal eapdrivetest eapemittest eapmethodtest
-check_PROGRAMS += test_ts_substitute test_natoa test_ip_any eaproundtest eaplocal eapdrivetest eapemittest eapmethodtest
+TESTS += test_ts_substitute test_natoa test_ip_any eaproundtest eaplocal eapdrivetest eapemittest eapmethodtest test_ikev1_hardening
+check_PROGRAMS += test_ts_substitute test_natoa test_ip_any eaproundtest eaplocal eapdrivetest eapemittest eapmethodtest test_ikev1_hardening
+# IKEv1 peer-input hardening (hashcmp.c length-checked constant-time
+# compares, short Vendor ID, draft NAT-T 00/01 dropped); ideas from
+# rdratlos/racoon-ipsec-tools, see the test's header.
+test_ikev1_hardening_SOURCES = test_ikev1_hardening.c
+test_ikev1_hardening_LDADD = $(addtest_ikedsrc) $(LDADD)
 test_ts_substitute_SOURCES = test_ts_substitute.c
 test_ts_substitute_LDADD = $(addtest_ikedsrc) $(LDADD)
 test_natoa_SOURCES = test_natoa.c
@@ -166,7 +171,7 @@ addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	ike_deprecated.$(OBJEXT) \
 	isakmp.$(OBJEXT) authenticator.$(OBJEXT) encryptor.$(OBJEXT) \
 	crypto_openssl.$(OBJEXT) crypto_workers.$(OBJEXT) str2val.$(OBJEXT) \
-	keyed_hash.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
+	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
 	ike_spmif.$(OBJEXT) schedule.$(OBJEXT) ratelimit.$(OBJEXT) \
 	script.$(OBJEXT) rtsock.$(OBJEXT) \
 	$(addtest_ikev1) $(addtest_ikev2) evloop_epoll.$(OBJEXT) \
@@ -176,7 +181,7 @@ addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	ike_deprecated.$(OBJEXT) \
 	isakmp.$(OBJEXT) authenticator.$(OBJEXT) encryptor.$(OBJEXT) \
 	crypto_openssl.$(OBJEXT) crypto_workers.$(OBJEXT) str2val.$(OBJEXT) \
-	keyed_hash.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
+	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
 	ike_spmif.$(OBJEXT) schedule.$(OBJEXT) ratelimit.$(OBJEXT) \
 	script.$(OBJEXT) rtsock.$(OBJEXT) \
 	$(addtest_ikev1) $(addtest_ikev2) evloop_select.$(OBJEXT) \

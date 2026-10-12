@@ -81,6 +81,7 @@
 #include "isakmp.h"
 #include "isakmp_var.h"
 #include "isakmp_impl.h"
+#include "hashcmp.h"
 #include "ikev1_impl.h"
 #include "isakmp_inf.h"
 #include "isakmp_quick.h"
@@ -546,7 +547,11 @@ quick_i2recv(struct ph2handle *iph2, rc_vchar_t *msg0)
 				vp = iph2->id_p;
 			}
 
-			if (memcmp(vp->v, (caddr_t)pa->ptr + sizeof(struct isakmp_gen), vp->l)) {
+			/* the echoed ID must be exactly ours: check its
+			 * length before comparing (a short payload used to
+			 * be over-read by up to vp->l bytes) */
+			if (ike_payload_body_cmp(vp->v, vp->l,
+			    (struct isakmp_gen *)pa->ptr) != 0) {
 
 				plog(PLOG_PROTOERR, PLOGLOC, NULL,
 					"mismatched ID was returned.\n");
@@ -628,7 +633,12 @@ quick_i2recv(struct ph2handle *iph2, rc_vchar_t *msg0)
 	if (my_hash == NULL)
 		goto end;
 
-	result = memcmp(my_hash->v, r_hash, my_hash->l);
+	/* length-checked, constant-time (B3/B4, see hashcmp.c) */
+	result = ike_payload_body_cmp(my_hash->v, my_hash->l, &hash->h);
+	if (result < 0)
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "HASH payload length %u does not match the %zu-byte PRF output\n",
+		    (unsigned)get_uint16(&hash->h.len), my_hash->l);
 	rc_vfree(my_hash);
 
 	if (result) {
@@ -921,7 +931,12 @@ quick_i3recv(struct ph2handle *iph2, rc_vchar_t *msg0)
 	if (my_hash == NULL)
 		goto end;
 
-	result = memcmp(my_hash->v, r_hash, my_hash->l);
+	/* length-checked, constant-time (B3/B4, see hashcmp.c) */
+	result = ike_payload_body_cmp(my_hash->v, my_hash->l, &hash->h);
+	if (result < 0)
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "HASH payload length %u does not match the %zu-byte PRF output\n",
+		    (unsigned)get_uint16(&hash->h.len), my_hash->l);
 	rc_vfree(my_hash);
 
 	if (result) {
@@ -1220,7 +1235,12 @@ quick_r1recv(struct ph2handle *iph2, rc_vchar_t *msg0)
 	if (my_hash == NULL)
 		goto end;
 
-	result = memcmp(my_hash->v, r_hash, my_hash->l);
+	/* length-checked, constant-time (B3/B4, see hashcmp.c) */
+	result = ike_payload_body_cmp(my_hash->v, my_hash->l, &hash->h);
+	if (result < 0)
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "HASH payload length %u does not match the %zu-byte PRF output\n",
+		    (unsigned)get_uint16(&hash->h.len), my_hash->l);
 	rc_vfree(my_hash);
 
 	if (result) {
@@ -1709,7 +1729,12 @@ quick_r3recv(struct ph2handle *iph2, rc_vchar_t *msg0)
 	if (my_hash == NULL)
 		goto end;
 
-	result = memcmp(my_hash->v, r_hash, my_hash->l);
+	/* length-checked, constant-time (B3/B4, see hashcmp.c) */
+	result = ike_payload_body_cmp(my_hash->v, my_hash->l, &hash->h);
+	if (result < 0)
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		    "HASH payload length %u does not match the %zu-byte PRF output\n",
+		    (unsigned)get_uint16(&hash->h.len), my_hash->l);
 	rc_vfree(my_hash);
 
 	if (result) {

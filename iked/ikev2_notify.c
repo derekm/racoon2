@@ -896,7 +896,7 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 		data = get_notify_data(n);
 		if (ike_sa->cookie2_sent) {
 			if (ike_sa->cookie2_sent->l == dlen &&
-			    memcmp(ike_sa->cookie2_sent->v, data, dlen) == 0) {
+			    CRYPTO_memcmp(ike_sa->cookie2_sent->v, data, dlen) == 0) {
 				ike_sa->cookie2_matched = 1;
 				return 0;
 			}
