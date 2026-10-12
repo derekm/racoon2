@@ -1,0 +1,6 @@
+# Expected skips on the Ubuntu 24.04 lane (OpenSSL 3.0, no ADDKE).  With
+# R2_REQUIRE_LIVE=1 any other skip fails the run.
+#   row <name> <why>   |   gate <gate> <why>
+gate addke RFC 9370 ADDKE needs OpenSSL 3.5 (Fedora lane runs these rows)
+gate dpd   11-timer DPD ladder (~16 min) is box-only
+gate box   new rows are box-verified before CI admits them

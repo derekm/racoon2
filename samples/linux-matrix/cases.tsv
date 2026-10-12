@@ -1,5 +1,13 @@
-# name	kind	expect	workers	note	gate
-# expect: pass | skip
+# name	kind	expect	workers	note	gate	defect
+# expect: pass | skip | xfail
+#   xfail: a KNOWN defect, excused only at its exact wrong value: column 7
+#   is an ERE that must match the row's output (e.g. 'hmac\(sha256\) 96
+#   \(want 128\)').  If the row passes it is XPASS and FAILS, so a fix
+#   forces the row back to "pass" (run.sh usage).  No waivers: rows are
+#   pass, xfail-at-exact-value, or a gate listed in the lane manifest
+#   (an xfail row with no gate writes "-" in the gate column: empty tab
+#   fields collapse when run.sh reads the row)
+#   (lanes/*.skip, enforced by R2_REQUIRE_LIVE=1 in CI).
 # workers: - = live systemd iked; 0 = inline; N = pool
 # gate: (empty) | addke  — gate=addke rows run only when the build supports
 #   RFC 9370 ADDKE (R2_ADDKE=yes, i.e. the xfrm-addke build / OpenSSL 3.5 /
