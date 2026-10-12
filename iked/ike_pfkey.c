@@ -137,6 +137,7 @@ static int sadb_get_callback(struct rcpfk_msg *param);
 static int sadb_expire_callback(struct rcpfk_msg *param);
 static int sadb_acquire_callback(struct rcpfk_msg *param);
 static int sadb_delete_callback(struct rcpfk_msg *param);
+static int sadb_mapping_callback(struct rcpfk_msg *param);
 static int sadb_sadump_callback(struct rcpfk_msg *param);
 static int sadb_resync_callback(struct rcpfk_msg *param);
 #ifdef SADB_X_MIGRATE
@@ -174,6 +175,7 @@ sadb_init(void)
 
 	param.flags = 0;
 	/* optional members after the #ifdef'd cb_migrate: assign by name */
+	ike_rcpfk_callback.cb_mapping = sadb_mapping_callback;
 	ike_rcpfk_callback.cb_sadump = sadb_sadump_callback;
 	ike_rcpfk_callback.cb_resync = sadb_resync_callback;
 
@@ -679,6 +681,50 @@ sadb_delete_callback(struct rcpfk_msg *param)
 	plog(PLOG_INFO, PLOGLOC, 0,
 	     "received PFKEY_DELETE seq=%d satype=%s spi=0x%08x\n",
 	     param->seq, rct2str(param->satype), ntohl(param->spi));
+	return 0;
+}
+
+/*
+ * XFRM_MSG_MAPPING: authenticated ESP-in-UDP for our inbound SA param->spi
+ * now arrives from param->sa2_src (was param->sa_src).  Hand it to the
+ * owning IKE SA; ikev2_natt_follow_mapping_event() applies the
+ * natt_follow_mapping policy.
+ */
+static int
+sadb_mapping_callback(struct rcpfk_msg *param)
+{
+	struct ikev2_child_sa *child_sa;
+	struct ikev2_sa *ike_sa;
+	struct sockaddr *nr;
+	in_port_t *np, *op;
+
+	plog(PLOG_INFO, PLOGLOC, 0,
+	     "received XFRM MAPPING spi=0x%08x %s -> %s\n",
+	     ntohl(param->spi), rcs_sa2str(param->sa_src),
+	     rcs_sa2str(param->sa2_src));
+	if (param->satype != RCT_SATYPE_ESP || param->sa2_src == NULL)
+		return 0;
+	child_sa = ikev2_find_child_by_inbound_spi(param->spi,
+	    IKEV2PROPOSAL_ESP);
+	if (child_sa == NULL || child_sa->parent == NULL ||
+	    child_sa->parent->remote == NULL) {
+		plog(PLOG_INFO, PLOGLOC, 0,
+		     "MAPPING for spi=0x%08x: no IKEv2 child SA owns it\n",
+		     ntohl(param->spi));
+		return 0;
+	}
+	ike_sa = child_sa->parent;
+	if (param->sa2_src->sa_family != ike_sa->remote->sa_family)
+		return 0;
+	nr = rcs_sadup(param->sa2_src);
+	if (nr == NULL)
+		return -1;
+	np = rcs_getsaport(nr);
+	op = rcs_getsaport(param->sa2_src);
+	if (np && op)
+		*np = *op;
+	(void)ikev2_natt_follow_mapping_event(ike_sa, nr);
+	rc_free(nr);
 	return 0;
 }
 
