@@ -12,7 +12,7 @@
 #
 # pfkeyicv-gcm: Linux af_key has no AEAD at all (no SADB_X_EALG_AES_GCM_*
 # in its SADB_REGISTER reply, and pfkey_msg2xfrm_state only looks up ealg/
-# aalg), so an ESP aes128gcm16 config is refused by the config check
+# aalg), so an ESP aes_gcm config is refused by the config check
 # ("enc_alg AES-GCM not supported by kernel").  This is the kernel, not
 # racoon2: the row proves the refusal is loud, which is why the pfkey lane
 # runs only CBC + SHA2-384/512 i2i rows.
@@ -20,10 +20,10 @@ kind_pfkeyicv() {
 	name=$1
 	case $name in
 	*-gcm)
-		_esp_enc=aes128gcm16; _esp_auth=
+		_esp_enc=aes_gcm; _esp_auth=
 		_want_refuse=
 		_want_check='enc_alg AES-GCM not supported by kernel'
-		_what="ESP aes128gcm16 (af_key has no AEAD)" ;;
+		_what="ESP aes_gcm (af_key has no AEAD)" ;;
 	*)
 		_esp_enc=aes128_cbc; _esp_auth=hmac_sha2_256
 		_want_refuse='hmac_sha2_256 refused on the Linux pfkey backend: af_key installs a 96-bit ICV'
