@@ -1317,6 +1317,15 @@ ikev2_set_negotiated_sa(struct ikev2_sa *ike_sa,
 			   "failed creating ike_sa encryptor\n");
 		goto fail;
 	}
+	{
+		struct encryptor_method *em =
+		    (struct encryptor_method *)encryptor;
+
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "IKE SA encryption %s (ENCR id %d, key %d octets, "
+			   "IV %d octets)\n", em->name, negotiated_sa->encr,
+			   em->key_len, em->iv_len);
+	}
 	authenticator = ikev2_authenticator_new(negotiated_sa->integr);
 	if (!authenticator) {
 		isakmp_log(ike_sa, 0, 0, 0,
