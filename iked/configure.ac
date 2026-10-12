@@ -319,6 +319,15 @@ if test x"$enable_admin" = xyes; then
 fi
 AM_CONDITIONAL([USE_ADMIN], [test x"$enable_admin" = xyes])
 
+dnl libFuzzer harnesses (iked/fuzz).  Needs clang and the whole tree built
+dnl with CFLAGS=-fsanitize=fuzzer-no-link,... (see .github/workflows/ubuntu.yml).
+AC_MSG_CHECKING(--enable-fuzz)
+AC_ARG_ENABLE(fuzz,
+	[  --enable-fuzz           build the libFuzzer harnesses in iked/fuzz (clang)],
+	[enable_fuzz=$enableval], [enable_fuzz=no])
+AC_MSG_RESULT($enable_fuzz)
+AM_CONDITIONAL([FUZZ], [test x"$enable_fuzz" = xyes])
+
 AC_MSG_CHECKING(--enable-epoll)
 AC_ARG_ENABLE(epoll,
 	[  --enable-epoll          use epoll for iked (linux default)],

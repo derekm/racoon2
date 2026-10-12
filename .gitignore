@@ -124,3 +124,5 @@ iked/test_ip_any
 iked/test_natoa
 iked/test_ts_substitute
 iked/ticketkat
+iked/fuzz_ikev2_payloads
+iked/fuzz_ikev1_parse
