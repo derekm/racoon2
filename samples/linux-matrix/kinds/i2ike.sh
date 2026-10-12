@@ -252,6 +252,7 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
+	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 
 	# INIT SA is up.  Now exercise the CREATE_CHILD child-SA rekey (ADDKE):
 	# the 60s ipsec lifetime soft boundary fires a child rekey shortly after

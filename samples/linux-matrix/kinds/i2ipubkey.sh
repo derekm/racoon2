@@ -244,6 +244,7 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
+	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 
 	# PK-auth evidence: the iked TRACE 'auth method %d' must appear on BOTH
 	# seats (it is the method actually used to verify the peer AUTH).  Child

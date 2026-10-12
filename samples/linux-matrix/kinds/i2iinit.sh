@@ -715,6 +715,10 @@ fi
 		fi
 		i=$((i+1)); sleep 1
 	done
+	# zero-child rows have no ESP child to carry traffic
+	if [ "$up" -eq 1 ] && [ "$I2I_RK" != zerochild ]; then
+		i2i_dataplane "$NSI" "$HR" "$name"
+	fi
 
 	# The initial IKE_SA ran an IKE_INTERMEDIATE ADDKE round (SAi1 type-6 +
 	# 16438 both sides).  Both SEATS must prove it: iked logs

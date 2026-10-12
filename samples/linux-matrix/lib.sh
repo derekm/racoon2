@@ -80,6 +80,22 @@ require_root() {
 	fi
 }
 
+# i2i_dataplane NSI DST [label]: once an i2i row's ESP child is up, prove it
+# carries traffic BOTH ways: ping DST (the responder's tunnel address) from
+# the initiator netns; the echo reply returns over the reverse SA.  The
+# data-plane audit (xfrm_audit.sh) then asserts that both SAs' packet
+# counters rose and that no integrity or xfrm_stat error appeared.  A row
+# whose child is up but carries nothing fails here (R2_CASE_FAIL=1).
+i2i_dataplane() {
+	if ip netns exec "$1" ping -c 3 -i 0.2 -W 2 "$2" >/dev/null 2>&1; then
+		log "data plane: ICMP echo ${3:+($3) }to $2 answered across the ESP child"
+		return 0
+	fi
+	log "FAIL: data plane: no ICMP echo reply from $2 across the ESP child${3:+ ($3)}"
+	R2_CASE_FAIL=1
+	return 1
+}
+
 detect_rip() {
 	if [ -n "$RIP" ]; then
 		return 0
