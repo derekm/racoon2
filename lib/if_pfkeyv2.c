@@ -3025,6 +3025,26 @@ rcpfk_supported_auth(int algtype)
 {
 	int type;
 
+#ifdef __linux__
+	/*
+	 * Linux af_key maps SADB_X_AALG_SHA2_256HMAC to hmac(sha256) with the
+	 * pre-RFC 4868 96-bit ICV (net/xfrm/xfrm_algo.c icv_truncbits = 96),
+	 * and PF_KEY has no field to ask for the 128-bit truncation.  Such an
+	 * SA fails integrity against every RFC 4868 peer while two racoon2
+	 * pfkey seats "work" with each other.  Refuse it loudly instead of
+	 * installing it; the xfrm backend (default on Linux) sets
+	 * XFRMA_ALG_AUTH_TRUNC 128.  SHA2-384/512 get their RFC 4868 lengths
+	 * (192/256) from af_key and stay allowed.  Found by
+	 * rdratlos/racoon-ipsec-tools (PR #147, issue #145).
+	 */
+	if (algtype == RCT_ALG_HMAC_SHA2_256) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "hmac_sha2_256 refused on the Linux pfkey backend: af_key "
+		    "installs a 96-bit ICV (RFC 4868 needs 128); use "
+		    "hmac_sha2_384/512 or the xfrm backend\n");
+		return 0;
+	}
+#endif
 	type = rct2pfk_authtype(algtype);
 	if (findsupportedalg(supported_map_auth, type) != NULL)
 		return 1;
