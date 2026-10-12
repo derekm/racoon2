@@ -576,6 +576,135 @@ kthr(void *arg)
 	return NULL;
 }
 
+/* "kernel" without CONFIG_XFRM_MIGRATE: MIGRATE -> ENOPROTOOPT, then
+ * serve the GETSA dump (one UDP-encapsulated SA) and check the UPDSA */
+static volatile int mthr_stop;
+static int mthr_migrate, mthr_dump, mthr_upd;
+static unsigned mthr_upd_sport, mthr_upd_dport;
+
+static void *
+mthr(void *arg)
+{
+	union { uint64_t a; char b[XFRM_BUFLEN]; } in, out;
+	struct nlmsghdr *n = (void *)in.b;
+	struct pollfd pfd;
+
+	(void)arg;
+	while (!mthr_stop) {
+		pfd.fd = k_req;
+		pfd.events = POLLIN;
+		if (poll(&pfd, 1, 50) <= 0)
+			continue;
+		if (recv(k_req, in.b, sizeof(in.b), 0) < (ssize_t)sizeof(*n))
+			continue;
+		if (n->nlmsg_type == XFRM_MSG_MIGRATE) {
+			mthr_migrate++;
+			kput(k_req, out.b, mk_err(out.b, n->nlmsg_seq, PORTID,
+			    ENOPROTOOPT, XFRM_MSG_MIGRATE));
+		} else if (n->nlmsg_type == XFRM_MSG_GETSA &&
+		    (n->nlmsg_flags & NLM_F_DUMP)) {
+			struct nlmsghdr *o = (void *)out.b;
+			struct rtattr *rta;
+			struct xfrm_encap_tmpl et;
+			size_t l;
+
+			mthr_dump++;
+			/* a non-matching SA, then ours with encap 4500/4500 */
+			l = mk_sa(out.b, XFRM_MSG_NEWSA, n->nlmsg_seq, PORTID,
+			    0xb0, NLM_F_MULTI);
+			((struct xfrm_usersa_info *)NLMSG_DATA(o))->id.daddr.a4 =
+			    htonl(0xc0000263);	/* 192.0.2.99 */
+			kput(k_req, out.b, l);
+			l = mk_sa(out.b, XFRM_MSG_NEWSA, n->nlmsg_seq, PORTID,
+			    0xb1, NLM_F_MULTI);
+			memset(&et, 0, sizeof(et));
+			et.encap_type = UDP_ENCAP_ESPINUDP;
+			et.encap_sport = htons(4500);
+			et.encap_dport = htons(4500);
+			rta = (struct rtattr *)(out.b + NLMSG_ALIGN(l));
+			rta->rta_type = XFRMA_ENCAP;
+			rta->rta_len = RTA_LENGTH(sizeof(et));
+			memcpy(RTA_DATA(rta), &et, sizeof(et));
+			o->nlmsg_len = NLMSG_ALIGN(l) + RTA_ALIGN(rta->rta_len);
+			kput(k_req, out.b, o->nlmsg_len);
+			kput(k_req, out.b, mk_done(out.b, n->nlmsg_seq, PORTID));
+		} else if (n->nlmsg_type == XFRM_MSG_UPDSA) {
+			struct rtattr *rta = (struct rtattr *)((char *)NLMSG_DATA(n)
+			    + NLMSG_ALIGN(sizeof(struct xfrm_usersa_info)));
+			int alen = (int)n->nlmsg_len -
+			    (int)NLMSG_LENGTH(sizeof(struct xfrm_usersa_info));
+
+			mthr_upd++;
+			for (; RTA_OK(rta, alen); rta = RTA_NEXT(rta, alen)) {
+				struct xfrm_encap_tmpl et;
+
+				if (rta->rta_type != XFRMA_ENCAP)
+					continue;
+				memcpy(&et, RTA_DATA(rta), sizeof(et));
+				mthr_upd_sport = ntohs(et.encap_sport);
+				mthr_upd_dport = ntohs(et.encap_dport);
+			}
+			kput(k_req, out.b, mk_err(out.b, n->nlmsg_seq, PORTID, 0,
+			    XFRM_MSG_UPDSA));
+		}
+	}
+	return NULL;
+}
+
+static void
+test_migrate_port_only_without_migrate(void)
+{
+	struct rcpfk_msg rc;
+	struct sockaddr_in s, d, s2, d2;
+	pthread_t th;
+	int r;
+
+	setup();
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	memset(&s, 0, sizeof(s));
+	s.sin_family = AF_INET;
+	inet_pton(AF_INET, "192.0.2.1", &s.sin_addr);
+	s.sin_port = htons(4500);
+	d = s;
+	inet_pton(AF_INET, "192.0.2.2", &d.sin_addr);
+	s2 = s;
+	d2 = d;
+	d2.sin_port = htons(40028);		/* the NAT re-mapped the port */
+	rc.sa_src = (void *)&s;
+	rc.sa_dst = (void *)&d;
+	rc.sa2_src = (void *)&s2;
+	rc.sa2_dst = (void *)&d2;
+	rc.sp_src = (void *)&s;
+	rc.sp_dst = (void *)&d;
+	rc.pref_src = rc.pref_dst = 32;
+	rc.satype = RCT_SATYPE_ESP;
+	rc.samode = RCT_IPSM_TRANSPORT;
+	rc.dir = RCT_DIR_OUTBOUND;
+	rc.natt_type = UDP_ENCAP_ESPINUDP;
+	rc.natt_sport = htons(4500);
+	rc.natt_dport = htons(40028);
+	mthr_stop = 0;
+	mthr_migrate = mthr_dump = mthr_upd = 0;
+	pthread_create(&th, NULL, mthr, NULL);
+	r = rcpfk_send_migrate(&rc);
+	CHECK(r == 0, "port-only move applied without MIGRATE: %s", rc.estr);
+	CHECK(mthr_migrate == 1 && mthr_dump == 1 && mthr_upd == 1,
+	    "MIGRATE tried, SA dumped, ONE UPDSA (m=%d d=%d u=%d)",
+	    mthr_migrate, mthr_dump, mthr_upd);
+	CHECK(mthr_upd_sport == 4500 && mthr_upd_dport == 40028,
+	    "UPDSA encap %u -> %u", mthr_upd_sport, mthr_upd_dport);
+	/* an ADDRESS change cannot be done without MIGRATE: error, no UPDSA */
+	inet_pton(AF_INET, "192.0.2.77", &d2.sin_addr);
+	mthr_migrate = mthr_dump = mthr_upd = 0;
+	r = rcpfk_send_migrate(&rc);
+	CHECK(r == -1 && rc.eno == ENOPROTOOPT,
+	    "address move fails loudly (r=%d eno=%d: %s)", r, rc.eno, rc.estr);
+	CHECK(mthr_upd == 0 && mthr_dump == 0, "no UPDSA for an address move");
+	mthr_stop = 1;
+	pthread_join(th, NULL);
+}
+
 static void
 test_enobufs_resync(void)
 {
@@ -798,6 +927,7 @@ main(void)
 	test_waitreply_error();
 	test_late_error_not_lost();
 	test_misaligned_batch();
+	test_migrate_port_only_without_migrate();
 	test_enobufs_resync();
 	test_mapping_migrate_fresh();
 	test_short_messages();
