@@ -1,0 +1,55 @@
+# Linux kernel-version lane: the netns matrix on kernels other than the
+# runner's, booted under QEMU/KVM from stock cloud images
+# (samples/linux-kernel-ci/kernel-lane.sh):
+#   jammy    Ubuntu 22.04, Linux 5.15 LTS
+#   bookworm Debian 12,    Linux 6.1 LTS
+#   sid      Debian unstable daily, newest stable kernel
+# Push / PR: one quick shard of XFRM-sensitive rows per kernel.
+# Nightly:   the full matrix, 3 shards per kernel.
+name: Linux kernel-version lane
+
+on:
+  push:
+    branches: [linux-km, int/gsoc2026]
+  pull_request:
+    branches: [linux-km, int/gsoc2026]
+  workflow_dispatch:
+  # nightly: 07:57 UTC = 02:57 CDT / 01:57 CST (America/Chicago)
+  schedule:
+    - cron: '57 7 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  kernel-matrix:
+    name: 'kernel ${{ matrix.image }} shard ${{ matrix.shard }}'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [jammy, bookworm, sid]
+        shard: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '[0,1,2]' || '[0]') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Boot ${{ matrix.image }} and run the matrix
+        run: |
+          if [ "${{ github.event_name }}" = schedule ] || [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            sh samples/linux-kernel-ci/kernel-lane.sh ${{ matrix.image }} --shard ${{ matrix.shard }} 3
+          else
+            # quick lane: data-plane audit self-test, NAT-T (MAPPING,
+            # ENOBUFS resync), classical IKE with SHA2 ICVs, IKEv1
+            sh samples/linux-kernel-ci/kernel-lane.sh ${{ matrix.image }} --shard 0 1 \
+              --cases '^(icvaudit-[a-z0-9]+|i2inatt-[a-z-]+|i2iinit-ike-cbc128(-esp-sha(384|512))?|ikev1-[a-z0-9-]+) '
+          fi
+
+      - name: Upload kernel lane log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.image }}-shard-${{ matrix.shard }}
+          path: kernel-*-matrix-shard-*.log
+          if-no-files-found: warn
