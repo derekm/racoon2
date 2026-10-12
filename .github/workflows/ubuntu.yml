@@ -2,9 +2,11 @@
 # Three build jobs share the same unit suite:
 #   - build-xfrm: NETLINK_XFRM (the Linux default). On success this
 #     triggers the live integration matrix (integration.yml).
-#   - build-pfkey: the Linux pfkey compat socket. Compile-sanity only —
+#   - build-pfkey: the Linux pfkey compat socket, build + unit suite.
 #     Linux pfkey is lossy (drops kernel->user datagrams on rcvbuf fill),
-#     so no live integration runs against this build.
+#     so the full matrix does not run against it; a small live subset
+#     does (integration.yml pfkey-live: the hmac_sha2_256 refusal and
+#     real af_key SAs with exact ICV lengths).
 #   - build-asan: NETLINK_XFRM under ASan+UBSan, plus one-datagram
 #     pre-auth negative tests against the sanitized iked.
 # Same unit suite as netbsd.yml on both backends.

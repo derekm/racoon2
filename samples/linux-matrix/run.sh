@@ -44,6 +44,7 @@ CASES_FILE=${R2_CASES:-$HERE/cases.tsv}
 . "$HERE/kinds/i2iresume.sh"
 . "$HERE/kinds/i2iinit_nointermediate.sh"
 . "$HERE/kinds/icvaudit.sh"
+. "$HERE/kinds/pfkeyicv.sh"
 for _xk in ${R2_EXTRA_KINDS:-}; do . "$_xk"; done
 
 FILTER=
@@ -225,6 +226,12 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 	# container run admits them (i2ike-drop576 rule).  The box sets
 	# R2_BOX=yes; CI does not, so unverified rows cannot leak into the
 	# Ubuntu/NetBSD full matrix or the Fedora container default.
+	# PFKEY gate: rows about the Linux pfkey backend itself run only in
+	# the pfkey lane (R2_KM=pfkey); xfrm lanes list the gate as expected.
+	if [ "$gate" = pfkey ] && [ "${R2_KM:-xfrm}" != pfkey ]; then
+		row_skip "$name" pfkey "PFKEY gate off: R2_KM=${R2_KM:-xfrm}"
+		continue
+	fi
 	if [ "$gate" = box ] && [ "${R2_BOX:-no}" != "yes" ]; then
 		row_skip "$name" box "BOX gate off: R2_BOX=${R2_BOX:-no}"
 		continue
