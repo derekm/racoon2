@@ -109,9 +109,14 @@ esac
 	*-esp-sha512*) I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="hmac_sha2_512" ;;
 	*-esp-xcbc*)   I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="aes_xcbc" ;;
 	*-esp-cmac*)   I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="aes_cmac" ;;
-	*-esp-ctr192*) I2I_ESP_ENC="aes_ctr, 192"; I2I_ESP_AUTH="non_auth" ;;
-	*-esp-ctr256*) I2I_ESP_ENC="aes_ctr, 256"; I2I_ESP_AUTH="non_auth" ;;
-	*-esp-ctr*)    I2I_ESP_ENC="aes_ctr";    I2I_ESP_AUTH="non_auth" ;;
+	# AES-CTR is not AEAD: ESP CTR with non_auth is RFC 8221 s6 MUST NOT
+	# (encryption without integrity), so these rows need the RFC class
+	*-esp-ctr192*) I2I_ESP_ENC="aes_ctr, 192"; I2I_ESP_AUTH="non_auth"
+		I2I_DEPR_SW="allow_rfc_deprecated on;" ;;
+	*-esp-ctr256*) I2I_ESP_ENC="aes_ctr, 256"; I2I_ESP_AUTH="non_auth"
+		I2I_DEPR_SW="allow_rfc_deprecated on;" ;;
+	*-esp-ctr*)    I2I_ESP_ENC="aes_ctr";    I2I_ESP_AUTH="non_auth"
+		I2I_DEPR_SW="allow_rfc_deprecated on;" ;;
 	*-esp-chacha*) I2I_ESP_ENC="chacha20_poly1305"; I2I_ESP_AUTH="non_auth" ;;
 esac
 	case "$name" in

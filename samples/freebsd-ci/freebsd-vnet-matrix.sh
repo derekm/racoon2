@@ -986,7 +986,9 @@ run_row() {
 	i2i-nsawarn-md5|i2i-nsawarn-modp768|i2i-nsawarn-modp1024|i2i-nsawarn-modp1536|\
 	i2i-nsawarn-esp3des|i2iinit-esp-3des|i2i-cipher-des|i2i-cipher-desiv64|i2i-cipher-desiv32)
 		FB_DEPR="allow_nsa_deprecated on; allow_rfc_deprecated on;" ;;
-	i2i-cipher-cast|i2i-cipher-blowfish|i2i-cipher-idea|i2i-cipher-rc5|i2i-cipher-3idea)
+	i2i-cipher-cast|i2i-cipher-blowfish|i2i-cipher-idea|i2i-cipher-rc5|i2i-cipher-3idea|\
+	i2iinit-esp-ctr|i2iinit-esp-ctr192|i2iinit-esp-ctr256)
+		# esp-ctr*: AES-CTR + non_auth is RFC 8221 s6 MUST NOT (no AEAD)
 		FB_DEPR="allow_rfc_deprecated on;" ;;
 	esac
 	if [ -n "$FB_DEPR" ]; then
