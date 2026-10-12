@@ -9,6 +9,7 @@
 set -u
 HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/lib.sh"
+. "$HERE/xfrm_audit.sh"
 . "$HERE/kinds/unit.sh"
 . "$HERE/kinds/admin.sh"
 . "$HERE/kinds/ikev2.sh"
@@ -39,6 +40,7 @@ HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$HERE/kinds/i2ilw.sh"
 . "$HERE/kinds/i2iresume.sh"
 . "$HERE/kinds/i2iinit_nointermediate.sh"
+. "$HERE/kinds/icvaudit.sh"
 
 FILTER=
 REBUILD=
@@ -196,10 +198,15 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate || [ -n "$n
 	export R2_WORKERS
 	log "=== $name ($kind) workers=${R2_WORKERS:-live} ==="
 	R2_CASE_FAIL=0
+	xa_start "$name"
 	if kind_$kind "$name"; then
 		st=0
 	else
 		st=$?
+	fi
+	if ! xa_check "$name"; then
+		log "XA $name: data-plane audit FAILED (see XA lines; xfrm_audit.sh)"
+		R2_CASE_FAIL=1
 	fi
 	if [ "$R2_CASE_FAIL" != 0 ] || [ "$st" -ne 0 ]; then
 		log "FAIL $name"

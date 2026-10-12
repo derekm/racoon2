@@ -5,7 +5,10 @@
 # Fires per-cell CPL evidence lines (A1..A14 FCS_IPSEC_EXT.1; B1..B6 crypto
 # support SFRs) from the row's OWN retained artifacts — nothing invented:
 #   * SPD/policy + SADB are read live from each test netns (ip xfrm ...).
-#   * XFRM drop counters come from /proc/net/xfrm_stat (countable A2).
+#   * A2 is an SPD-shape (no clear path) check only.  XFRM error counters
+#     from /proc/net/xfrm_stat, per-SA packet counters and exact ICV
+#     lengths are asserted for EVERY live row by xfrm_audit.sh (run.sh
+#     wraps each row), not by this report.
 #   * crypto/negotiation strings come from the iked/charon logs in $D.
 #   * source-level cells (nonce size, keygen/destruction) cite $R2_SRC
 #     headers when the source tree is present, else emit UNIT/INFO, never a
