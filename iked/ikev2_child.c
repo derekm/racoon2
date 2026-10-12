@@ -1136,6 +1136,25 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	} else {
 		matching_peer_proposal =
 			ikev2_find_match(my_proposal, parsed_sa, PEER);
+		/*
+		 * need_pfs and an IKE_AUTH child: the DH transform is only
+		 * a hint there (the child has no KE, RFC 7296 s1.2).  A peer
+		 * that sends it (iked) matches above and the group is kept
+		 * for the rekey; a peer that strips it (charon) must still
+		 * match, KE-less, or need_pfs refuses every such IKE_AUTH
+		 * child.  The PFS of later rekeys is enforced in
+		 * CREATE_CHILD_SA (ikev2_rekey_childsa / this function).
+		 */
+		if (!matching_peer_proposal && !is_createchild &&
+		    ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON) {
+			proplist_discard(my_proposal);
+			my_proposal = ikev2_ipsec_conf_to_proplist(child_sa,
+			    FALSE);
+			if (!my_proposal)
+				goto fail_create_proposal;
+			matching_peer_proposal =
+				ikev2_find_match(my_proposal, parsed_sa, PEER);
+		}
 		if (!matching_peer_proposal)
 			goto no_proposal_chosen;
 		/* make duplicate to allocate my SPI */

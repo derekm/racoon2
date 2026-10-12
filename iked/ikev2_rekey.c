@@ -346,9 +346,19 @@ ikev2_rekey_childsa(struct ikev2_child_sa *old_child_sa, rc_type satype,
 	 * ikev2_child_add_rekey_dh).  Without it every rekey of such a child
 	 * stayed classical for the life of the IKE_SA.
 	 */
+	/*
+	 * need_pfs on: a CREATE_CHILD_SA built from the config always carries
+	 * KE (ikev2_ipsec_conf_to_proplist), but the rekey of the IKE_AUTH
+	 * child (cloned from a proposal that had none, RFC 7296 s1.2) went
+	 * out DH-less, so a peer that requires PFS answered
+	 * NO_PROPOSAL_CHOSEN and the child died at its hard lifetime
+	 * (ikev2-netns-r2rekey vs charon 'aes128gcm16-ecp256!').
+	 */
 	ikev2_child_add_rekey_dh(new_child_sa,
-	    old_child_sa->in_ike_auth &&
-	    ikev2_initial_child_ke(old_child_sa) != RCT_ICKE_OFF);
+	    (old_child_sa->in_ike_auth &&
+	     ikev2_initial_child_ke(old_child_sa) != RCT_ICKE_OFF) ||
+	    (ike_sa->rmconf &&
+	     ikev2_need_pfs(ike_sa->rmconf) == RCT_BOOL_ON));
 	if (ikev2_child_dhdef(new_child_sa->my_proposal[1], NULL) != NULL) {
 		ikev2_child_maybe_reoffer_addke(new_child_sa);
 	} else {
