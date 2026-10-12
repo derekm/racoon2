@@ -52,6 +52,8 @@ endif
 
 TESTS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest radiustest relaytest authdertest ticketkat deprtest
 check_PROGRAMS = eaytest evlooptest workerstest resumetest fragtest ndcppkats eaptest radiustest relaytest authdertest ticketkat deprtest
+# iked -C on every shipped sample + the deprecation-switch semantics
+TESTS += samplecheck.sh
 # Deprecated-transform classification (ike_deprecated.c): every NSA and
 # RFC 8247 / RFC 8221 / RFC 9395 codepoint maps to the right class, level
 # and citation, per protocol context.  Pure table, links standalone.
@@ -205,4 +207,4 @@ LIBS = @LIBS@
 
 man_MANS = iked.8
 EXTRA_DIST = evloop.h evloop_select.c evloop_epoll.c crypto_workers.h \
-	ikedctl.c ikedctl.h ikedctl_unix.c admin.c admin.h
+	ikedctl.c ikedctl.h ikedctl_unix.c admin.c admin.h samplecheck.sh
