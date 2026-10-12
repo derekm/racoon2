@@ -68,6 +68,7 @@
 #include <varargs.h>
 #endif
 #include <errno.h>
+#include <poll.h>
 
 #include "racoon.h"
 #include "cfsetup.h"
@@ -208,8 +209,55 @@ rcpfk_samode(const void *v)
  *    0: success
  *   -1: fail
  */
+static int rcpfk_handler1(struct rcpfk_msg *);
+
+/*
+ * PFK_FLAG_WAITREPLY: a send-then-read caller wants the reply to its own
+ * request (pid == ours, seq == rc->seq).  Messages that arrive first
+ * (kernel events, other daemons' broadcasts) are processed with a
+ * scratch container so they can never be parsed into rc as the reply.
+ */
 int
 rcpfk_handler(struct rcpfk_msg *rc)
+{
+	struct sadb_msg base;
+	struct rcpfk_msg scratch;
+	struct pollfd pfd;
+	ssize_t len;
+	int n, r;
+
+	if ((rc->flags & PFK_FLAG_WAITREPLY) == 0)
+		return rcpfk_handler1(rc);
+	rc->flags &= ~PFK_FLAG_WAITREPLY;
+	for (n = 0; n < 256; n++) {
+		pfd.fd = rc->so;
+		pfd.events = POLLIN;
+		pfd.revents = 0;
+		do {
+			r = poll(&pfd, 1, 5000);
+		} while (r < 0 && errno == EINTR);
+		if (r <= 0) {
+			rcpfk_seterror(rc, r == 0 ? ETIMEDOUT : errno,
+			    "no PF_KEY reply to seq %u", rc->seq);
+			return -1;
+		}
+		len = recv(rc->so, &base, sizeof(base), MSG_PEEK);
+		if (len < (ssize_t)sizeof(base))
+			return rcpfk_handler1(rc);	/* reports the error */
+		if ((pid_t)base.sadb_msg_pid == pid &&
+		    base.sadb_msg_seq == rc->seq)
+			return rcpfk_handler1(rc);
+		memset(&scratch, 0, sizeof(scratch));
+		scratch.so = rc->so;
+		scratch.flags = rc->flags;
+		(void)rcpfk_handler1(&scratch);
+	}
+	rcpfk_seterror(rc, ETIMEDOUT, "no PF_KEY reply to seq %u", rc->seq);
+	return -1;
+}
+
+static int
+rcpfk_handler1(struct rcpfk_msg *rc)
 {
 	rc_vchar_t *msg;
 	struct sadb_msg *base;
