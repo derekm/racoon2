@@ -188,6 +188,7 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
+	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 
 	# INIT SA is up.  Now the IKE_SA rekey: kmp_sa_lifetime_time 30s fires
 	# ikev2_rekey_ikesa_initiate on the initiator, which offers type-6 ADDKE
