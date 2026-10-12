@@ -253,8 +253,14 @@ jobs:
       - name: 'Live rows against the ASan/UBSan daemons'
         run: |
           set -o pipefail
-          sudo apt-get install -y -qq strongswan iproute2 iputils-ping xxd iptables
+          sudo apt-get install -y -qq strongswan iproute2 iputils-ping xxd iptables conntrack
           sudo make install >/dev/null
+          # the rows' shared PSK / spmd password (no live daemon config)
+          E=/usr/local/racoon2/etc/racoon2
+          sudo mkdir -p "$E/psk"
+          printf 'racoon2-ci-psk-0123456789abcdef' | sudo tee "$E/psk/macos.psk" >/dev/null
+          printf 'racoon2-ci-pwd\n' | sudo tee "$E/spmd.pwd" >/dev/null
+          sudo chmod 600 "$E/psk/macos.psk" "$E/spmd.pwd"
           sudo rm -rf /tmp/r2-asan && sudo mkdir -p /tmp/r2-asan
           sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
             --cases '^(i2iinit-ike-cbc128|i2iinit-ike-cbc128-esp-sha384|i2inatt-rebind|i2inatt-xfrmflood|icvaudit-ok) ' \
