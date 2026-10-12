@@ -179,7 +179,7 @@ jobs:
         run: |
           set -o pipefail
           sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
-            --cases '^(pfkeyicv-sha256|i2iinit-ike-cbc128|i2iinit-ike-cbc128-esp-sha384|i2iinit-ike-cbc128-esp-sha512|icvaudit-ok) ' \
+            --cases '^(pfkeyicv-sha256|pfkeyicv-gcm|i2iinit-ike-cbc128-esp-sha384|i2iinit-ike-cbc128-esp-sha512|icvaudit-ok) ' \
             | tee /tmp/r2-pfkey.log
         env:
           R2_PREFIX: /usr/local/racoon2
