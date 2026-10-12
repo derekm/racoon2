@@ -658,6 +658,13 @@ restore_one(const char *path)
 	nsa->integr = rec.integr;
 	if (rec.dh_id)
 		nsa->dhdef = ikev2_dhinfo((unsigned int)rec.dh_id);
+	/* the config may have turned allow_*_deprecated off since the dump */
+	if (ikev2_isakmpsa_deprecated_refused(conf, nsa,
+	    "resume: restored IKE SA")) {
+		racoon_free(nsa);
+		nsa = NULL;
+		goto fail;
+	}
 	if (ikev2_set_negotiated_sa(sa, nsa) != 0) {
 		racoon_free(nsa);
 		nsa = NULL;
