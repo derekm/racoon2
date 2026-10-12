@@ -37,7 +37,7 @@
 .\" ----------------------------------------------------------------
 .Sh SYNOPSIS
 .Nm
-.Op Fl 46hvFV
+.Op Fl 46hvCFV
 .Op Fl f Ar configfile
 .Op Fl l Ar logfile
 .Op Fl p Ar port
@@ -63,6 +63,14 @@ The following options are available:
 Use IPv4 addresses only for local sockets.
 .It Fl 6
 Use IPv6 addresses only for local sockets.
+.It Fl C
+Read the configuration file, run the full configuration check
+(including the deprecated-algorithm switches), report the result on
+standard error and exit with status 0 if it passes.
+Neither
+.Xr spmd 8
+nor the kernel are contacted, so the check that the kernel supports
+each ESP/AH algorithm is skipped.
 .It Fl d
 Increase the debugging level.
 This flag may occur multiple times.

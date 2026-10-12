@@ -128,6 +128,7 @@ extern rc_type ikev1_support_proxy(struct rcf_remote *);
 extern rc_type ikev1_nat_traversal(struct rcf_remote *);
 extern rc_type ikev1_selector_check(struct rcf_remote *);
 extern rc_type ikev1_proposal_check(struct rcf_remote *);
+extern int ike_conf_check_skip_kernel;
 extern rc_type ikev1_allow_nsa_deprecated(struct rcf_remote *);
 extern rc_type ikev1_allow_rfc_deprecated(struct rcf_remote *);
 extern int ikev1_remote_speaks_ikev1(struct rcf_remote *);
