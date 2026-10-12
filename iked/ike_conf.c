@@ -4099,8 +4099,13 @@ ikev2_ipsec_conf_to_proplist(struct ikev2_child_sa *child_sa,
 		 * (ikev2_ipsec_sa_to_proplist); the negotiated value is
 		 * lifted into the kernel SA (SADB_X_SAFLAGS_ESN /
 		 * XFRM_STATE_ESN + XFRMA_REPLAY_ESN_VAL) at install. */
+		/* need_pfs adds DH to an IKE_AUTH child only on the
+		 * initiator's offer (a hint for later rekeys); the
+		 * responder matches the KE-less IKE_AUTH SAi2 without one
+		 * (RFC 7296 s1.2), or it refuses every IKE_AUTH child */
 		need_pfs = is_createchild ||
-		    (child_sa->parent && child_sa->parent->rmconf &&
+		    (child_sa->is_initiator &&
+		     child_sa->parent && child_sa->parent->rmconf &&
 		     ikev2_need_pfs(child_sa->parent->rmconf) == RCT_BOOL_ON);
 		if (conf->sa_ah) {
 			*prop_tail = ikev2_ipsec_sa_to_proplist(child_sa,
@@ -4290,7 +4295,8 @@ ikev2_child_add_rekey_dh(struct ikev2_child_sa *child_sa, int force)
 	isakmp_log(child_sa->parent, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
 		   "rekey-DH: %s; appended kmp_dh_group "
 		   "to the DH-less rekey proposal so KE+ADDKE can run\n",
-		   force ? "initial_child_ke" : "esp_addke_alg configured");
+		   force ? "initial_child_ke or need_pfs" :
+		   "esp_addke_alg configured");
 	return 1;
 }
 
