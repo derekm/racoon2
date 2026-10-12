@@ -82,6 +82,7 @@
 #include "remoteconf.h"
 /* #include "policy.h" */
 #include "isakmp_impl.h"
+#include "hashcmp.h"
 #include "ikev1_impl.h"
 #include "handler.h"
 #include "ipsec_doi.h"
@@ -1231,7 +1232,15 @@ oakley_validate_auth(struct ph1handle *iph1)
 		if (my_hash == NULL)
 			return ISAKMP_INTERNAL_ERROR;
 
-		result = memcmp(my_hash->v, r_hash, my_hash->l);
+		/* length-checked, constant-time (B3/B4, see hashcmp.c) */
+		result = ike_payload_body_cmp(my_hash->v, my_hash->l,
+		    &iph1->pl_hash->h);
+		if (result < 0)
+			plog(PLOG_PROTOERR, PLOGLOC, NULL,
+			    "HASH payload length %u does not match the "
+			    "%zu-byte PRF output\n",
+			    (unsigned)get_uint16(&iph1->pl_hash->h.len),
+			    my_hash->l);
 		rc_vfree(my_hash);
 
 		if (result) {
@@ -1514,7 +1523,8 @@ oakley_validate_auth(struct ph1handle *iph1)
 			return ISAKMP_NTYPE_INVALID_HASH_INFORMATION;
 		}
 
-		result = memcmp(my_hash->v, gsshash->v, my_hash->l);
+		result = !(gsshash->l == my_hash->l &&
+		    ike_ct_equal(my_hash->v, gsshash->v, my_hash->l));
 		rc_vfree(my_hash);
 		rc_vfree(gsshash);
 

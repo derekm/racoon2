@@ -33,6 +33,7 @@
 
 #include <assert.h>
 #include <string.h>
+#include <openssl/crypto.h>	/* CRYPTO_memcmp */
 #include <sys/types.h>
 #if TIME_WITH_SYS_TIME
 #  include <sys/time.h>
@@ -260,7 +261,7 @@ natt_process_natd(struct ikev2_sa *ike_sa, struct ikev2payl_notify *n,
 		}
 	}
 
-	ret = memcmp(n_data, hash->v, hash->l);
+	ret = CRYPTO_memcmp(n_data, hash->v, hash->l);
 
 	rc_vfree(hash);
 

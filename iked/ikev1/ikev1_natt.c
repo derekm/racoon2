@@ -60,6 +60,7 @@
 #include "isakmp.h"
 #include "isakmp_var.h"
 #include "isakmp_impl.h"
+#include "hashcmp.h"
 #include "ikev1_impl.h"
 #include "oakley.h"
 #include "ipsec_doi.h"
@@ -206,7 +207,7 @@ ikev1_natt_compare_addr_hash(struct ph1handle *iph1, rc_vchar_t *natd_received,
 	}
 
 	if (natd_received->l == natd_computed->l &&
-	    memcmp(natd_received->v, natd_computed->v, natd_received->l) == 0) {
+	    ike_ct_equal(natd_received->v, natd_computed->v, natd_received->l)) {
 		iph1->natt_flags &= ~flag;
 		verified = 1;
 	}

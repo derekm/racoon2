@@ -1202,7 +1202,7 @@ eay_rsa_verify(rc_vchar_t *src, rc_vchar_t *sig, rc_vchar_t *pubkey)
 		return -1;
 	}
 
-	error = memcmp(src->v, xbuf->v, src->l);
+	error = CRYPTO_memcmp(src->v, xbuf->v, src->l);
 	rc_vfree(xbuf);
 	if (error != 0)
 		return -1;
