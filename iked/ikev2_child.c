@@ -171,6 +171,25 @@ ikev2_child_state_set(struct ikev2_child_sa *child_sa,
 	if (state == IKEV2_CHILD_STATE_EXPIRED) {
 		if (child_sa->timer)
 			SCHED_KILL(child_sa->timer);
+		/*
+		 * An initiator child that dies after GETSPI but before
+		 * install (IKE_AUTH refused, CREATE_CHILD_SA error or
+		 * timeout) holds a reserved inbound SPI: a larval SA on PF_KEY
+		 * (FreeBSD/NetBSD), an ALLOCSPI acquire state on XFRM.  Nothing
+		 * else deletes it, so it stayed in the SAD until the kernel's
+		 * larval timeout (FreeBSD: the wrongpsk row's initiator jail
+		 * still had an 'esp mode=tunnel ... state=larval' entry after
+		 * the refusal).  Release it now.
+		 */
+		if (child_sa->is_initiator &&
+		    (old_state == IKEV2_CHILD_STATE_GETSPI_DONE ||
+		     old_state == IKEV2_CHILD_STATE_WAIT_RESPONSE) &&
+		    child_sa->parent && child_sa->selector &&
+		    child_sa->selector->pl && child_sa->my_proposal[1]) {
+			TRACE((PLOGLOC, "child_sa %p: releasing reserved "
+			       "inbound SPI(s)\n", child_sa));
+			ikev2_child_delete_inbound(child_sa);
+		}
 	}
 	state_info =
 		&ikev2_child_dispatch[child_sa->is_initiator ? 0 : 1][state];
