@@ -435,10 +435,81 @@ admin_dispatch(int so2, char *combuf)
 		break;
 	}
 
+	case ADMIN_DELETE_SA: {
+		/*
+		 * Silent local Child-SA delete for the peer named in the
+		 * admin_com_indexes dst.  Unlike ikev2_child_delete() this
+		 * sends NO DELETE payload to the peer and keeps the IKE_SA
+		 * up: it drops each MATURE Child SA's kernel SAs and marks
+		 * it EXPIRED, so a later peer rekey request for that child
+		 * (which ikev2_find_child_sa_by_spi() skips because it is
+		 * no longer MATURE) is answered CHILD_SA_NOT_FOUND.  This
+		 * is the deterministic seam the RFC 7296 s1.4/s3.10.1
+		 * rekey-collision test drives: orphan the responder's child,
+		 * then have the initiator rekey it.
+		 */
+		struct admin_com_indexes *ndx;
+		struct sockaddr *dst;
+#ifdef IKEV2
+		struct ikev2_sa *sa, *next_sa;
+		struct ikev2_child_sa *c, *next_c;
+		int n_deleted = 0;
+#endif
+
+		if (com->ac_len < sizeof(*com) + sizeof(*ndx)) {
+			l_ac_errno = EINVAL;
+			break;
+		}
+		if (com->ac_proto != ADMIN_PROTO_ESP &&
+		    com->ac_proto != ADMIN_PROTO_AH) {
+			/* only Child (ESP/AH) selectors are supported here;
+			 * IKE_SA delete is ADMIN_DELETE_ALL_SA_DST */
+			l_ac_errno = ENOTSUP;
+			break;
+		}
+		ndx = (struct admin_com_indexes *)(com + 1);
+		dst = (struct sockaddr *)&ndx->dst;
+#ifdef IKEV2
+		for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa;
+		     sa = next_sa) {
+			next_sa = IKEV2_SA_LIST_NEXT(sa);
+			if (!sa->remote ||
+			    rcs_cmpsa_wop(sa->remote, dst) != 0)
+				continue;
+			for (c = IKEV2_CHILD_LIST_FIRST(&sa->children);
+			     !IKEV2_CHILD_LIST_END(c); c = next_c) {
+				next_c = IKEV2_CHILD_LIST_NEXT(c);
+				if (c->state != IKEV2_CHILD_STATE_MATURE)
+					continue;
+				ikev2_child_delete_ipsecsa(c);
+				ikev2_child_state_set(c,
+					IKEV2_CHILD_STATE_EXPIRED);
+				++n_deleted;
+				plog(PLOG_DEBUG, PLOGLOC, NULL,
+				     "admin delete-sa: silently pruned "
+				     "child spi (local) for peer %s\n",
+				     rcs_sa2str(dst));
+			}
+		}
+		if (n_deleted == 0) {
+			plog(PLOG_INFO, PLOGLOC, NULL,
+			     "admin delete-sa: no MATURE Child SA for peer %s\n",
+			     rcs_sa2str(dst));
+			l_ac_errno = ENOENT;
+		} else {
+			plog(PLOG_INFO, PLOGLOC, NULL,
+			     "admin delete-sa: silently pruned %d Child SA(s) "
+			     "for peer %s\n", n_deleted, rcs_sa2str(dst));
+		}
+#else
+		l_ac_errno = ENOTSUP;
+#endif
+		break;
+	}
+
 	case ADMIN_SHOW_SCHED:
 	case ADMIN_SHOW_EVT:
 	case ADMIN_GET_SA_CERT:
-	case ADMIN_DELETE_SA:
 	default:
 		l_ac_errno = ENOTSUP;
 		break;
