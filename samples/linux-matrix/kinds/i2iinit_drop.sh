@@ -242,6 +242,17 @@ EOF
 		fi
 	done
 
+	# The injected loss is the row's IKE fixture, not part of the data
+	# path under test: lift it, then prove the child carries traffic both
+	# ways (the audit failed on a 5%-loss echo: inbound rose=0)
+	ip netns exec "$NSR" tc qdisc del dev "$VR" root 2>/dev/null || true
+	if [ "${up:-0}" -eq 1 ]; then
+		i2i_dataplane "$NSI" "$HR" "$name" || {
+			pkill -9 -f "$C/" 2>/dev/null || true
+			return 1
+		}
+	fi
+
 	pkill -9 -f "$C/" 2>/dev/null || true
 	sleep 1
 	ip netns del "$NSR" 2>/dev/null || true
