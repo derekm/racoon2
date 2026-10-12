@@ -502,6 +502,41 @@ test_late_error_not_lost(void)
 	    xfrm_stat_stale_reply);
 }
 
+/*
+ * Netlink aligns messages to 4 bytes only: in one datagram a 20-byte
+ * NLMSG_NOOP puts the following policy at 4 mod 8, where the __u64
+ * members of xfrm_userpolicy_info are misaligned (UBSan in the live ASan
+ * rows).  The library must handle it from an aligned copy.
+ */
+static void
+test_misaligned_batch(void)
+{
+	union { uint64_t a; char b[1024]; } dg, pol;
+	struct nlmsghdr *n = (void *)dg.b;
+	struct rcpfk_msg rc;
+	struct sockaddr_in *sp;
+	char a[INET_ADDRSTRLEN];
+	size_t pl;
+
+	setup();
+	memset(&dg, 0, sizeof(dg));
+	n->nlmsg_len = NLMSG_LENGTH(4);		/* 20: next message at 4 mod 8 */
+	n->nlmsg_type = NLMSG_NOOP;
+	pl = mk_policy(pol.b, XFRM_MSG_NEWPOLICY, 78, 999,
+	    "203.0.113.7", "203.0.113.0", 0);
+	memcpy(dg.b + NLMSG_ALIGN(n->nlmsg_len), pol.b, pl);
+	kput(k_ntf, dg.b, NLMSG_ALIGN(n->nlmsg_len) + pl);
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	CHECK(rcpfk_handler(&rc) == 0, "batch handled: %s", rc.estr);
+	CHECK(n_spdadd == 1, "misaligned NEWPOLICY delivered (%d)", n_spdadd);
+	/* last is a copy: read its storage, the pointer was the scratch's */
+	CHECK(last.sp_src != NULL, "sp_src filled");
+	sp = (void *)&last.sp_src_storage;
+	inet_ntop(AF_INET, &sp->sin_addr, a, sizeof(a));
+	CHECK(strcmp(a, "203.0.113.7") == 0, "policy src %s", a);
+}
+
 /* "kernel" thread answering dump requests on the request socket */
 static volatile int kthr_stop;
 static int kthr_spd, kthr_sa;
@@ -762,6 +797,7 @@ main(void)
 	test_interleaved_waitreply();
 	test_waitreply_error();
 	test_late_error_not_lost();
+	test_misaligned_batch();
 	test_enobufs_resync();
 	test_mapping_migrate_fresh();
 	test_short_messages();

@@ -150,6 +150,8 @@ static uint8_t pending_samode;
 static struct sockaddr_storage pending_src, pending_dst;
 static int pending_has_addrs;
 static char *xfrm_rcvbuf;
+/* 8-byte aligned copies of the messages of one recv (see xfrm_read_one) */
+static char *xfrm_alnbuf;
 static int xfrm_req_fd = -1;
 static int xfrm_ntf_fd = -1;
 static int xfrm_ep_fd = -1;
@@ -1147,6 +1149,8 @@ rcpfk_clean(struct rcpfk_msg *rc)
 	if (xfrm_rcvbuf) {
 		free(xfrm_rcvbuf);
 		xfrm_rcvbuf = NULL;
+		free(xfrm_alnbuf);
+		xfrm_alnbuf = NULL;
 	}
 	xfrm_close_all();
 	rc->so = -1;
@@ -2094,10 +2098,19 @@ xfrm_read_one(int fd, struct rcpfk_msg *rc, int flags, int fresh)
 
 	ssize_t len;
 	unsigned int ulen;
+	size_t alnoff;
 	struct nlmsghdr *nlh;
 	int ret = 1, from_req = (fd == xfrm_req_fd);
 	struct rcpfk_msg err;
 
+	if (xfrm_alnbuf == NULL) {
+		/* each copied message gains at most 4 bytes of padding */
+		xfrm_alnbuf = malloc(2 * XFRM_RCVBUFLEN);
+		if (xfrm_alnbuf == NULL) {
+			xfrm_seterror(rc, ENOMEM, "out of memory");
+			return -1;
+		}
+	}
 	if (xfrm_rcvbuf == NULL) {
 		xfrm_rcvbuf = malloc(XFRM_RCVBUFLEN);
 		if (xfrm_rcvbuf == NULL) {
@@ -2133,17 +2146,38 @@ xfrm_read_one(int fd, struct rcpfk_msg *rc, int flags, int fresh)
 	}
 	memset(&err, 0, sizeof(err));
 	ulen = (unsigned int)len;
+	alnoff = 0;
 	for (nlh = (struct nlmsghdr *)xfrm_rcvbuf;
 	     NLMSG_OK(nlh, ulen);
 	     nlh = NLMSG_NEXT(nlh, ulen)) {
 		struct rcpfk_msg *t = rc;
+		struct nlmsghdr *m = nlh;
+
+		/*
+		 * Netlink only aligns messages to 4 bytes (NLMSG_ALIGNTO), so
+		 * the 2nd, 4th ... message of a multipart batch can sit at
+		 * 4 mod 8, and xfrm_userpolicy_info / xfrm_usersa_info hold
+		 * __u64 lifetimes: every member access through them is then
+		 * misaligned (UBSan on the live ASan rows, a SIGBUS on strict
+		 * alignment CPUs).  Copy such a message to an 8-byte aligned
+		 * slot.  The slots of one recv stay valid together, like
+		 * xfrm_rcvbuf itself, so a reply's pointers survive the
+		 * messages that follow it.
+		 */
+		if (((uintptr_t)nlh & 7) != 0 &&
+		    alnoff + NLMSG_ALIGN(nlh->nlmsg_len) + 8 <=
+		    2 * XFRM_RCVBUFLEN) {
+			m = (struct nlmsghdr *)(xfrm_alnbuf + alnoff);
+			memcpy(m, nlh, nlh->nlmsg_len);
+			alnoff += (NLMSG_ALIGN(nlh->nlmsg_len) + 7) & ~(size_t)7;
+		}
 
 		if (fresh) {
 			memset(&scratch, 0, sizeof(scratch));
 			scratch.so = rc->so;
 			t = &scratch;
 		}
-		if (xfrm_dispatch(nlh, t, from_req) && ret == 1) {
+		if (xfrm_dispatch(m, t, from_req) && ret == 1) {
 			ret = -1;
 			err.eno = t->eno;
 			memcpy(err.estr, t->estr, sizeof(err.estr));
