@@ -75,6 +75,35 @@ jobs:
             if [ -f "$f" ]; then echo "== $f =="; cat "$f"; fi
           done
 
+  openssl-canary:
+    name: 'OpenSSL deprecation canary (distro + OpenSSL master headers)'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
+            libssl-dev libkrb5-dev libpcap-dev bison flex perl git
+
+      - name: Configure (config.h only)
+        run: autoreconf -fi && ./configure --prefix=/usr/local/racoon2 >/dev/null
+
+      - name: 'Canary vs distro OpenSSL (gating on the clean list)'
+        run: sh samples/ci/openssl-canary.sh .
+
+      - name: Generate OpenSSL master headers
+        run: |
+          git clone -q --depth 1 https://github.com/openssl/openssl.git /tmp/ossl
+          cd /tmp/ossl && ./Configure no-tests >/dev/null && make -s build_generated >/dev/null
+          echo "OpenSSL master: $(git -C /tmp/ossl log -1 --format='%h %cs')"
+
+      - name: 'Canary vs OpenSSL master (tracker, not gating)'
+        continue-on-error: true
+        run: OPENSSL_CFLAGS="-I/tmp/ossl/include" sh samples/ci/openssl-canary.sh .
+
   build-pfkey:
     name: 'Ubuntu pfkey compat build (sanity only)'
     runs-on: ubuntu-latest
