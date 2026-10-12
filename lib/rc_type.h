@@ -394,6 +394,14 @@ struct rcf_kmp {
 	 * never inferred from other settings. */
 	rc_type allow_nsa_deprecated;
 	rc_type allow_rfc_deprecated;
+	/* natt_follow_mapping (on|off, default off): when the peer is behind
+	 * a NAT and the kernel reports that authenticated ESP-in-UDP for one
+	 * of this IKE SA's Child SAs now arrives from a new address:port
+	 * (Linux XFRM_MSG_MAPPING), move the IKE SA and every Child SA to the
+	 * new mapping (RFC 7296 s2.23: send to the address and port of the
+	 * most recent authenticated packet).  Off = the event is logged and
+	 * ignored, so return traffic keeps going to the old mapping. */
+	rc_type natt_follow_mapping;
 };
 
 /* selector info */

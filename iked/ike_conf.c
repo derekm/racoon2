@@ -233,6 +233,7 @@ struct rcf_kmp ikev2_default_values = {
 	IKEV2_DEFAULT_SESSION_RESUME_LIFETIME, /* session_resume_ticket_lifetime */
 	RCT_BOOL_OFF,		/* allow_nsa_deprecated: refused unless on */
 	RCT_BOOL_OFF,		/* allow_rfc_deprecated: refused unless on */
+	RCT_BOOL_OFF,		/* natt_follow_mapping (XFRM_MSG_MAPPING) */
 };
 
 #ifdef IKEV1
@@ -483,6 +484,7 @@ IKEV2_CONF_ATTR(rc_type, offer_intermediate)
 IKEV2_CONF_ATTR(rc_type, offer_sig_hash_algorithms)
 IKEV2_CONF_ATTR(rc_type, use_ppk)
 IKEV2_CONF_ATTR(rc_type, childless)
+IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_type, require_config)
 IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
 IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)
