@@ -516,6 +516,15 @@ initiator_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		    "RFC 5723: cannot rebuild IKE SA from stored ticket SAr\n");
 		goto fail;
 	}
+	if (ikev2_isakmpsa_deprecated_refused(ike_sa->rmconf, nsa,
+	    "RFC 5723 resume (stored ticket SA)")) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
+		    "RFC 5723: resumed IKE SA uses a disallowed deprecated "
+		    "transform - not resuming\n");
+		racoon_free(nsa);
+		nsa = NULL;
+		goto fail;
+	}
 	if (ikev2_set_negotiated_sa(ike_sa, nsa) != 0)
 		goto fail;
 	nsa = NULL;		/* owned by ike_sa now */
@@ -782,6 +791,15 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR, PLOGLOC,
 		    "RFC 5723: cannot rebuild IKE SA from ticket SAr\n");
 		goto fail;
+	}
+	/* allow_*_deprecated off: a ticket minted for a now-disallowed suite
+	 * (config changed since) is rejected; TICKET_NACK makes the
+	 * initiator fall back to a full exchange (RFC 5723 s4.3.2). */
+	if (ikev2_isakmpsa_deprecated_refused(ike_sa->rmconf, nsa,
+	    "RFC 5723 resume (ticket SA)")) {
+		racoon_free(nsa);
+		nsa = NULL;
+		goto nack;
 	}
 
 	/* Resumed exchange: fresh Nr keeps the exchange fresh; the SPIs from

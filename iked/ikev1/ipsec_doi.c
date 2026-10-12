@@ -88,6 +88,7 @@
 #include "algorithm.h"
 /* #include "sainfo.h" */
 #include "proposal.h"
+#include "ike_deprecated.h"
 #include "crypto_impl.h"
 #include "strnames.h"
 #include "gcmalloc.h"
@@ -106,7 +107,7 @@ int verbose_proposal_check = 1;
 static rc_vchar_t *get_ph1approval (struct ph1handle *,
 					struct prop_pair **);
 static struct isakmpsa *get_ph1approvalx (struct prop_pair *,
-	struct isakmpsa *, struct isakmpsa *, rc_type);
+	struct isakmpsa *, struct isakmpsa *, rc_type, struct rcf_remote *);
 static void print_ph1mismatched (struct prop_pair *, struct isakmpsa *);
 static int t2isakmpsa (struct isakmp_pl_t *, struct isakmpsa *);
 static int cmp_aproppair_i (struct prop_pair *, struct prop_pair *);
@@ -226,6 +227,15 @@ get_ph1approval(struct ph1handle *iph1, struct prop_pair **pair)
 		iph1->approval = NULL;
 	}
 
+	/* RFC 9395 s3: IKEv1 itself is RFC-deprecated */
+	if (ikev1_depr_check(iph1->rmconf, IKE_DEPR_CTX_IKEV1,
+			     IKE_DEPR_T_V1_PROTO, 1, "IKEv1 phase 1")) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "IKEv1 refused for this remote (allow_rfc_deprecated is "
+		     "off in its ikev1 clause).\n");
+		return NULL;
+	}
+
 	for (i = 0; i < MAXPROPPAIRLEN; i++) {
 		if (pair[i] == NULL)
 			continue;
@@ -238,7 +248,8 @@ get_ph1approval(struct ph1handle *iph1, struct prop_pair **pair)
 			for (p = s; p; p = p->tnext) {
 				sa = get_ph1approvalx(p, iph1->proposal,
 						      &tsa,
-						      ikev1_proposal_check(iph1->rmconf));
+						      ikev1_proposal_check(iph1->rmconf),
+						      iph1->rmconf);
 				if (sa != NULL)
 					goto found;
 			}
@@ -338,9 +349,113 @@ saok:
  * p       : one of peer's proposal.
  * proposal: my proposals.
  */
+/*
+ * allow_nsa_deprecated / allow_rfc_deprecated (ikev1 clause) at
+ * negotiation time, mirroring IKEv2 (ike_conf.c ikev2_depr_refused): the
+ * config check keeps disallowed transforms out of our own proposals, and
+ * every received Phase 1 transform / Phase 2 bundle is screened here
+ * before matching, on both sides, so a peer can never make iked select
+ * one -- nor run IKEv1 at all (RFC 9395 s3) while allow_rfc_deprecated
+ * is off.
+ */
+static int
+ph1_depr_refused(struct rcf_remote *rm, const struct isakmpsa *t)
+{
+	int r = 0;
+
+	r |= ikev1_depr_check(rm, IKE_DEPR_CTX_IKEV1, IKE_DEPR_T_V1_ENC,
+			      (unsigned int)t->enctype, "IKEv1 phase 1 transform");
+	r |= ikev1_depr_check(rm, IKE_DEPR_CTX_IKEV1, IKE_DEPR_T_V1_HASH,
+			      (unsigned int)t->hashtype, "IKEv1 phase 1 transform");
+	r |= ikev1_depr_check(rm, IKE_DEPR_CTX_IKEV1, IKE_DEPR_T_V1_AUTH,
+			      (unsigned int)ikev1_depr_authmethod(t->authmethod),
+			      "IKEv1 phase 1 transform");
+	r |= ikev1_depr_check(rm, IKE_DEPR_CTX_IKEV1, IKE_DEPR_T_KE,
+			      (unsigned int)t->dh_group, "IKEv1 phase 1 transform");
+	return r;
+}
+
+static int
+esp_trns_is_aead(int t_id)
+{
+	switch (t_id) {
+	case IPSECDOI_ESP_AES_CCM_8:
+	case IPSECDOI_ESP_AES_CCM_12:
+	case IPSECDOI_ESP_AES_CCM_16:
+	case IPSECDOI_ESP_AES_GCM_8:
+	case IPSECDOI_ESP_AES_GCM_12:
+	case IPSECDOI_ESP_AES_GCM_16:
+	case IPSECDOI_ESP_NULL_AUTH_AES_GMAC:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+/* a peer Phase 2 bundle: every transform of every protocol + PFS group */
+static int
+ph2_depr_refused(struct rcf_remote *rm, const struct saprop *pp)
+{
+	const char *what = "IKEv1 phase 2 proposal";
+	struct saproto *pr;
+	struct satrns *tr;
+	int r = 0, auth;
+
+	if (pp->pfs_group)
+		r |= ikev1_depr_check(rm, IKE_DEPR_CTX_IKEV1, IKE_DEPR_T_KE,
+				      (unsigned int)pp->pfs_group, what);
+	for (pr = pp->head; pr; pr = pr->next) {
+		for (tr = pr->head; tr; tr = tr->next) {
+			switch (pr->proto_id) {
+			case IPSECDOI_PROTO_IPSEC_ESP:
+				/* RFC 2407 s4.4.4 == IKEv2 type-1 ids */
+				r |= ikev1_depr_check(rm, IKE_DEPR_CTX_ESP,
+				    IKE_DEPR_T_ENCR, (unsigned int)tr->trns_id,
+				    what);
+				if (tr->authtype == 0 ||
+				    tr->authtype == IPSECDOI_ATTR_AUTH_NONE) {
+					if (!esp_trns_is_aead(tr->trns_id))
+						r |= ikev1_depr_check(rm,
+						    IKE_DEPR_CTX_ESP,
+						    IKE_DEPR_T_COMBO, 1, what);
+				} else
+					r |= ikev1_depr_check(rm,
+					    IKE_DEPR_CTX_ESP,
+					    IKE_DEPR_T_V1_P2AUTH,
+					    (unsigned int)tr->authtype, what);
+				break;
+			case IPSECDOI_PROTO_IPSEC_AH:
+				switch (tr->trns_id) {
+				case IPSECDOI_AH_MD5:
+					auth = IPSECDOI_ATTR_AUTH_HMAC_MD5;
+					break;
+				case IPSECDOI_AH_SHA:
+					auth = IPSECDOI_ATTR_AUTH_HMAC_SHA1;
+					break;
+				case IPSECDOI_AH_DES:
+					auth = IPSECDOI_ATTR_AUTH_DES_MAC;
+					break;
+				default:
+					auth = tr->authtype;
+					break;
+				}
+				if (auth > 0 && auth != IPSECDOI_ATTR_AUTH_NONE)
+					r |= ikev1_depr_check(rm,
+					    IKE_DEPR_CTX_AH,
+					    IKE_DEPR_T_V1_P2AUTH,
+					    (unsigned int)auth, what);
+				break;
+			default:
+				break;
+			}
+		}
+	}
+	return r;
+}
+
 static struct isakmpsa *
 get_ph1approvalx(struct prop_pair *p, struct isakmpsa *proposal,
-    struct isakmpsa *sap, rc_type check_level)
+    struct isakmpsa *sap, rc_type check_level, struct rcf_remote *rmconf)
 {
 	struct isakmp_pl_p *prop = p->prop;
 	struct isakmp_pl_t *trns = p->trns;
@@ -361,6 +476,13 @@ get_ph1approvalx(struct prop_pair *p, struct isakmpsa *proposal,
 	memset(tsap, 0, sizeof(*tsap));
 	if (t2isakmpsa(trns, tsap) < 0)
 		return NULL;
+	if (ph1_depr_refused(rmconf, tsap)) {
+		if (tsap->dhgrp != NULL) {
+			oakley_dhgrp_free(tsap->dhgrp);
+			tsap->dhgrp = NULL;
+		}
+		return NULL;
+	}
 	for (s = proposal; s != NULL; s = s->next) {
 		int authmethod;
 
@@ -1089,6 +1211,8 @@ get_ph2approvalx(struct ph2handle *iph2, struct prop_pair *pp)
 		return NULL;
 
 	for (q1 = pr0; q1; q1 = q1->next) {
+		if (ph2_depr_refused(iph2->ph1 ? iph2->ph1->rmconf : NULL, q1))
+			continue;	/* logged; the peer's next bundle */
 		for (q2 = iph2->proposal; q2; q2 = q2->next) {
 			plog(PLOG_DEBUG, PLOGLOC, NULL,
 				"peer's single bundle:\n");
