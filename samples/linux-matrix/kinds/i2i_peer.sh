@@ -109,13 +109,48 @@ I2I_CHARON_INIT_IKE=${I2I_CHARON_INIT_IKE:-0}
 # truncated charon logs mid-IKE_AUTH (no 'CONNECTING => ESTABLISHED' line on
 # the initiator seat, no late 'using PPK for PPK_ID' line) even though the
 # exchange completed and the ESP SAs were installed.
+#
+# charon also gets a file logger of its own (flush_line): Debian sid's
+# strongSwan 6 charon wrote NOTHING to stdout/stderr (its packaged
+# charon-logging.conf configures no stderr logger, so --debug-* had no
+# sink), and the failed ikev1-strongswan rows on the sid kernel lane came
+# with an empty charon log.  The row's strongswan.conf includes the stock
+# one, so plugins and every other setting stay the distribution's.
 i2i_charon_run() {
 	_ns=$1 _log=$2
 	_sb=""
-	command -v stdbuf >/dev/null 2>&1 && _sb="stdbuf -oL -eL"
-	( ip netns exec "$_ns" $_sb env ${I2I_OPENSSL_ENV:-} \
+	# stdbuf only when it works (sid: libstdbuf.so not where stdbuf looks)
+	command -v stdbuf >/dev/null 2>&1 && [ -z "$(stdbuf -oL true 2>&1)" ] &&
+	    _sb="stdbuf -oL -eL"
+	_scf=${_log%.log}.strongswan.conf
+	_sys=/etc/strongswan.conf
+	[ -f "$_sys" ] || _sys=/etc/strongswan/strongswan.conf
+	{
+		[ -f "$_sys" ] && echo "include $_sys"
+		cat <<SCEOF
+charon {
+	filelog {
+		r2row {
+			path = $_log
+			time_format = %T
+			flush_line = yes
+			append = yes
+			default = 1
+			ike = 3
+			knl = 2
+			cfg = 2
+			chd = 2
+			net = 1
+		}
+	}
+}
+SCEOF
+	} >"$_scf"
+	: >"$_log"
+	( ip netns exec "$_ns" $_sb env STRONGSWAN_CONF="$_scf" ${I2I_OPENSSL_ENV:-} \
 	    "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
-	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) >"$_log" 2>&1 &
+	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) \
+	    >"${_log%.log}.stdout.log" 2>&1 &
 }
 
 # i2i_charon_list_sas <D> <NS> <tag> — snapshot charon's own view of its SAs
