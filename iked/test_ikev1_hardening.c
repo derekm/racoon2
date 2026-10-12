@@ -97,6 +97,39 @@ test_ct_equal(void)
 	TEST_CHECK(ike_ct_equal("x", "y", 0));
 }
 
+static void
+test_vendorid_short(void)
+{
+	rc_vchar_t *rfc = set_vendorid(VENDORID_NATT_RFC);
+	struct isakmp_gen *g;
+
+	TEST_CHECK(rfc != NULL && rfc->l == 16);
+	if (rfc == NULL)
+		return;
+
+	g = mkpl(rfc->v, rfc->l, 4 + rfc->l);
+	TEST_CHECK(check_vendorid(g) == VENDORID_NATT_RFC);
+	free(g);
+
+	/* B2: a VID payload carrying only the first 4 bytes of a known hash
+	 * at the very end of the datagram: must not match, must not over-read */
+	g = mkpl(rfc->v, 4, 4 + 4);
+	TEST_CHECK(check_vendorid(g) == VENDORID_UNKNOWN);
+	free(g);
+
+	/* empty body */
+	g = mkpl(NULL, 0, 4);
+	TEST_CHECK(check_vendorid(g) == VENDORID_UNKNOWN);
+	free(g);
+
+	/* length field below the header size (would underflow vidlen) */
+	g = mkpl(NULL, 0, 1);
+	TEST_CHECK(check_vendorid(g) == VENDORID_UNKNOWN);
+	free(g);
+
+	rc_vfree(rfc);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -104,9 +137,11 @@ main(int argc, char *argv[])
 
 	test_init(argv[0]);
 	eay_init();
+	compute_vendorids();
 
 	RUN_TEST(test_payload_body_cmp);
 	RUN_TEST(test_ct_equal);
+	RUN_TEST(test_vendorid_short);
 
 	plog_clean();
 	return test_exit_status();
