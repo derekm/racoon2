@@ -88,7 +88,7 @@ echo "guest up after ${W}s: $(G 15 'uname -r; . /etc/os-release; echo $PRETTY_NA
 
 G 1200 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq &&
 	apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
-	libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-swanctl iproute2 \
+	libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-charon strongswan-swanctl iproute2 \
 	libsystemd-dev iputils-ping xxd iptables conntrack nftables python3 procps \
 	netcat-openbsd psmisc kmod >/dev/null && echo deps ok'
 tar czf - --exclude="kl-*" --exclude='.git' . | G 300 'mkdir -p /root/rc2 && tar xzf - -C /root/rc2'
