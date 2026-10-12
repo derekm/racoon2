@@ -148,7 +148,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
             libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \
-            libsystemd-dev iputils-ping xxd iptables
+            libsystemd-dev iputils-ping xxd iptables conntrack
           sudo modprobe af_key || {
             sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" &&
             sudo modprobe af_key; }
@@ -163,7 +163,18 @@ jobs:
 
       # No ci-setup.sh: the shipped default.conf uses hmac_sha2_256, which
       # this backend refuses by design, and these rows start their own
-      # daemons in private netns anyway.
+      # daemons in private netns anyway.  They still read the shared PSK
+      # and spmd password (first run: "FAIL: no .../psk/macos.psk").
+      - name: Stage test secrets (no live daemon config)
+        run: |
+          E="$R2_PREFIX/etc/racoon2"
+          sudo mkdir -p "$E/psk"
+          printf 'racoon2-ci-psk-0123456789abcdef' | sudo tee "$E/psk/macos.psk" >/dev/null
+          printf 'racoon2-ci-pwd\n' | sudo tee "$E/spmd.pwd" >/dev/null
+          sudo chmod 600 "$E/psk/macos.psk" "$E/spmd.pwd"
+        env:
+          R2_PREFIX: /usr/local/racoon2
+
       - name: Run the pfkey rows
         run: |
           set -o pipefail
