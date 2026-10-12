@@ -439,6 +439,16 @@ struct ikev2_sa {
 	rc_vchar_t *eap_ts_r;
 
 	IKEV2_SA_LIST_ENTRY link;
+
+	/* RFC 7296 §2.3 INVALID_MESSAGE_ID: when we receive a request whose
+	 * Message ID is outside the (window-1) supported window we do NOT
+	 * acknowledge it — we initiate our own INFORMATIONAL carrying
+	 * N(INVALID_MESSAGE_ID, data=the 4-octet invalid id).  Sending is
+	 * optional and MUST be rate limited; these track the last time we
+	 * sent one so a storm of out-of-window requests cannot fan out an
+	 * unbounded reply stream. */
+	time_t invalid_msgid_last_sent;	/* time() of the last INVALID_MESSAGE_ID
+					   we sent on this SA (0 = never) */
 };
 
 enum request_callback {
@@ -696,6 +706,7 @@ extern void ikev2_info_init_notify_recv(struct ikev2_child_sa *, rc_vchar_t *);
 extern void ikev2_info_init_delete_recv(struct ikev2_child_sa *, rc_vchar_t *);
 extern void ikev2_informational_initiator_notify(struct ikev2_sa *,
 						 struct ikev2_payloads *);
+extern int ikev2_send_invalid_message_id(struct ikev2_sa *, uint32_t);
 extern void ikev2_informational_initiator_delete(struct ikev2_sa *,
 						 struct ikev2_payloads *);
 

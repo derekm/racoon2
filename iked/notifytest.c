@@ -201,9 +201,42 @@ main(int argc, char *argv[])
 		ck(found_invalid_spi,
 		   "ikev2_process_delete(unknown SPI) builds N(INVALID_SPI)");
 		ikev2_payloads_destroy(&resp);
-	}
 
-	if (fails) {
+		/*
+		 * RFC 7296 §2.3: an out-of-window request is answered by
+		 * initiating an INFORMATIONAL with N(INVALID_MESSAGE_ID) whose
+		 * Notification Data is the 4-octet invalid Message ID (type 0 /
+		 * no SPI / no protocol).  Assert the exact payload ikev2_
+		 * send_invalid_message_id() builds for a given id: notify type 9,
+		 * protocol 0, spi_size 0, data == the 4-octet id.  (The function
+		 * itself then hands it to the INFORMATIONAL initiator, which needs
+		 * a live child/kernel to transmit — not exercised here; the wire
+		 * payload the function constructs is the deterministic part.)
+		 */
+		{
+			rc_vchar_t *n;
+			struct ikev2payl_notify_h *nh;
+			uint8_t *data;
+			uint8_t idbuf[4] = { 0xde, 0xad, 0xbe, 0xef };
+
+			n = ikev2_notify_payload(0, 0, 0, IKEV2_INVALID_MESSAGE_ID,
+						 idbuf, 4);
+			ck(n != NULL, "INVALID_MESSAGE_ID payload alloc");
+			nh = (struct ikev2payl_notify_h *)n->v;
+			ck(nh->protocol_id == 0 && nh->spi_size == 0,
+			   "INVALID_MESSAGE_ID: protocol 0, no SPI");
+			ck(get_uint16(&nh->notify_message_type) ==
+			   IKEV2_INVALID_MESSAGE_ID,
+			   "INVALID_MESSAGE_ID: type 9");
+			data = n->v + sizeof(*nh);
+			ck(data[0] == idbuf[0] && data[1] == idbuf[1] &&
+			   data[2] == idbuf[2] && data[3] == idbuf[3],
+			   "INVALID_MESSAGE_ID: data == 4-octet invalid id");
+			rc_vfree(n);
+			}
+			}
+
+			if (fails) {
 		printf("notifytest: %d FAILURE(S)\n", fails);
 		return 1;
 	}
