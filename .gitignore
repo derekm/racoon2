@@ -93,10 +93,12 @@ lib/kmtest
 lib/sample
 lib/xfrmnatt
 lib/xfrmtmpl
+lib/xfrmnltest
 lib/kmtest.log
 lib/sample.log
 lib/xfrmnatt.log
 lib/xfrmtmpl.log
+lib/xfrmnltest.log
 lib/test-suite.log
 r2-*.t*gz
 
