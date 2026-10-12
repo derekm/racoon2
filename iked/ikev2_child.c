@@ -4442,6 +4442,8 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			ikev2_find_child_sa_by_spi(ike_sa, rekey_proto,
 						   rekey_spi, PEER);
 		if (!old_child_sa) {
+			uint8_t spi_buf[sizeof(uint32_t)];
+
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_PROTOWARN, PLOGLOC,
 				   "can't find corresponding child_sa for peer specified proto %d (%s) spi 0x%x\n",
@@ -4450,6 +4452,17 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				    rekey_proto == IKEV2_NOTIFY_PROTO_ESP ? "ESP" :
 				    "(unknown)"),
 				   rekey_spi);
+			/* RFC 7296 s1.4 / s3.10.1: a CREATE_CHILD_SA request that
+			 * rekeys a CHILD_SA we no longer hold MUST be answered
+			 * with CHILD_SA_NOT_FOUND, echoing the protocol and the
+			 * SPI the peer named.  Without it a stale or racing peer
+			 * keeps the old SA around and we gain a phantom SA. */
+			put_uint32(spi_buf, rekey_spi);
+			(void)ikev2_respond_error(ike_sa, msg, remote, local,
+						   rekey_proto, spi_buf,
+						   (int)sizeof(spi_buf),
+						   IKEV2_CHILD_SA_NOT_FOUND, 0, 0);
+			goto done;
 		} else {
 			/*
 			 * RFC 9370 s2.2.4: if WE already rekeyed this
