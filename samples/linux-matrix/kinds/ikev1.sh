@@ -219,7 +219,7 @@ EOF
 	# EMPTY on the sid kernel lane (stdio buffer lost to the SIGKILL), so a
 	# failed row carried no charon diagnostics at all
 	i2i_charon_run "$NSI" "$D/charon-init.log"
-	_CHARON_PID=$!
+	_CHARON_PID=$_I2I_CHARON_PID
 	sleep 2
 	( ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --load-all --debug 2 ) >"$D/swanctl-load.log" 2>&1
 	( ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --initiate --child ch --debug 2 >"$D/swanctl-init.log" 2>&1 ) || true
