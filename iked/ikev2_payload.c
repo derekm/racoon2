@@ -639,8 +639,13 @@ ikev2_notify_payload(int protocol_id, uint8_t *spi, int spi_size,
 	nh->protocol_id = protocol_id;
 	nh->spi_size = spi_size;
 	put_uint16(&nh->notify_message_type, message_type);
-	memcpy((uint8_t *)(nh + 1), spi, spi_size);
-	memcpy((uint8_t *)(nh + 1) + spi_size, data, data_len);
+	/* spi/data may be NULL with size 0 (N(NAT_DETECTION_*) has no
+	 * SPI): memcpy from NULL is undefined even for 0 bytes (UBSan
+	 * aborted the sanitized iked on every NAT-T row) */
+	if (spi_size > 0)
+		memcpy((uint8_t *)(nh + 1), spi, spi_size);
+	if (data_len > 0)
+		memcpy((uint8_t *)(nh + 1) + spi_size, data, data_len);
 
 	return buf;
 }
