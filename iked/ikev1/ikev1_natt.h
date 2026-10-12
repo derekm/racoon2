@@ -61,7 +61,7 @@ struct ph1natt_options {
 	uint16_t float_port;
 	uint16_t mode_udp_tunnel;
 	uint16_t mode_udp_transport;
-	uint16_t encaps_type;	/* ESPINUDP / ESPINUDP_NON_IKE */
+	uint16_t encaps_type;	/* UDP_ENCAP_ESPINUDP (draft-00/01 NON_IKE dropped) */
 	uint16_t mode_udp_diff;
 	uint16_t payload_nat_d;
 	uint16_t payload_nat_oa;

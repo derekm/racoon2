@@ -91,12 +91,6 @@ int
 natt_vendorid(int vid)
 {
 	return (
-#ifdef ENABLE_NATT_00
-		       vid == VENDORID_NATT_00 ||
-#endif
-#ifdef ENABLE_NATT_01
-		       vid == VENDORID_NATT_01 ||
-#endif
 #ifdef ENABLE_NATT_02
 		       vid == VENDORID_NATT_02 ||
 		       vid == VENDORID_NATT_02_N ||
@@ -237,16 +231,13 @@ natt_fill_options(struct ph1natt_options *opts, int version)
 	opts->version = version;
 
 	switch (version) {
-	case VENDORID_NATT_00:
-	case VENDORID_NATT_01:
-		opts->float_port = 0;	/* No port floating for those drafts */
-		opts->payload_nat_d = ISAKMP_NPTYPE_NATD_DRAFT;
-		opts->payload_nat_oa = ISAKMP_NPTYPE_NATOA_DRAFT;
-		opts->mode_udp_tunnel = IPSECDOI_ATTR_ENC_MODE_UDPTUNNEL_DRAFT;
-		opts->mode_udp_transport = IPSECDOI_ATTR_ENC_MODE_UDPTRNS_DRAFT;
-		opts->encaps_type = UDP_ENCAP_ESPINUDP_NON_IKE;
-		break;
-
+	/*
+	 * draft-ietf-ipsec-nat-t-ike-00/01 (no port floating, non-IKE-marker
+	 * UDP_ENCAP_ESPINUDP_NON_IKE) are not supported: Linux esp4/esp6 no
+	 * longer decapsulate NON_IKE, so such an SA would never carry
+	 * traffic.  They fall to the default (refused) branch.  Same call as
+	 * rdratlos/racoon-ipsec-tools c1f2dc8.
+	 */
 	case VENDORID_NATT_02:
 	case VENDORID_NATT_02_N:
 	case VENDORID_NATT_03:
@@ -938,14 +929,6 @@ isakmp_plist_append_natt_vids(struct payload_list *plist,
 	if ((vid_natt[vid_natt_i] = set_vendorid(VENDORID_NATT_02)) != NULL)
 		vid_natt_i++;
 	if ((vid_natt[vid_natt_i] = set_vendorid(VENDORID_NATT_02_N)) != NULL)
-		vid_natt_i++;
-#endif
-#ifdef ENABLE_NATT_01
-	if ((vid_natt[vid_natt_i] = set_vendorid(VENDORID_NATT_01)) != NULL)
-		vid_natt_i++;
-#endif
-#ifdef ENABLE_NATT_00
-	if ((vid_natt[vid_natt_i] = set_vendorid(VENDORID_NATT_00)) != NULL)
 		vid_natt_i++;
 #endif
 	/* set VID payload for NAT-T */
