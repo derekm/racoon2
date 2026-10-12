@@ -380,6 +380,20 @@ struct rcf_kmp {
 	rc_type use_session_resumption;
 	rc_vchar_t *session_resume_ticket_key;
 	int session_resume_ticket_lifetime;
+	/* Deprecated-transform switches (iked/ike_deprecated.c,
+	 * doc/nsa-ipsec-hardening.md s8), one per class:
+	 *   allow_nsa_deprecated  NSA/CNSSP-15 obsolete (DES/3DES, MD5,
+	 *                         SHA-1, MODP 768/1024/1536, SHA-1 sigs)
+	 *   allow_rfc_deprecated  RFC 8247 / RFC 8221 MUST NOT + SHOULD NOT
+	 *                         and RFC 9395 DEPRECATED
+	 * ON (default) = usable but warned at config load and proposal
+	 * build.  OFF = iked refuses a config that offers one, and a peer
+	 * can never select one (SA_INIT, IKE_AUTH child, CREATE_CHILD,
+	 * IKE/child rekey, ADDKE rounds, RFC 5723 resume, restart restore,
+	 * AUTH method / signature hash).  Unset (0) reads as the default;
+	 * never inferred from other settings. */
+	rc_type allow_nsa_deprecated;
+	rc_type allow_rfc_deprecated;
 };
 
 /* selector info */
