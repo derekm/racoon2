@@ -119,7 +119,7 @@ jobs:
           dnf install -y -q \
             autoconf automake libtool pkgconf-pkg-config gcc make \
             openssl openssl-devel libpcap-devel krb5-devel bison flex \
-            git libasan libubsan procps-ng
+            git libasan libubsan procps-ng iproute
 
       - name: Checkout repository
         uses: actions/checkout@v4
