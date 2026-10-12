@@ -64,6 +64,10 @@ jobs:
             libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \
             libsystemd-dev iputils-ping xxd iptables conntrack
 
+      - name: Matrix harness self-test (root-free)
+        if: matrix.shard == 0
+        run: sh samples/linux-matrix/tools/selftest.sh
+
       - name: Build + install (xfrm backend)
         run: |
           sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
@@ -85,6 +89,10 @@ jobs:
           sudo -E bash samples/linux-matrix/run.sh $ARGS | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
         env:
           R2_PREFIX: /usr/local/racoon2
+          # any skip not expected by lanes/ubuntu.skip fails; a shard with
+          # zero passing rows fails (empty-run guard)
+          R2_REQUIRE_LIVE: 1
+          R2_LANE: ubuntu
 
       - name: Upload shard matrix log
         if: always()
@@ -245,6 +253,8 @@ jobs:
           bash samples/linux-matrix/run.sh $ARGS | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
         env:
           R2_PREFIX: /usr/local/racoon2
+          R2_REQUIRE_LIVE: 1
+          R2_LANE: fedora
 
       - name: Upload shard matrix log
         if: always()
