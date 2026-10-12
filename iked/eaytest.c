@@ -1767,11 +1767,43 @@ legacyciphertest(ac, av)
 	return fails ? -1 : 0;
 }
 
+/*
+ * eay_init() must fail (and iked refuse to start) when the default
+ * provider cannot be loaded, then succeed again once it can.
+ */
+static int
+providertest(int ac, char **av)
+{
+#if defined(RACOON2) && OPENSSL_VERSION_NUMBER >= 0x30000000L
+	int rc;
+
+	(void)ac; (void)av;
+	printf("\n**Test for fatal default-provider load failure.**\n");
+	eay_cleanup();
+	eay_test_set_default_provider("r2-no-such-provider");
+	rc = eay_init();
+	eay_test_set_default_provider(NULL);
+	if (rc != -1) {
+		printf("eay_init() returned %d with a missing default provider\n", rc);
+		return -1;
+	}
+	if (eay_init() != 0) {
+		printf("eay_init() failed with the real default provider\n");
+		return -1;
+	}
+	printf("missing default provider is fatal: succeed.\n");
+#else
+	(void)ac; (void)av;
+#endif
+	return 0;
+}
+
 struct {
 	char *name;
 	int (*func) __P((int, char **));
 } func[] = {
 	{ "random", bntest, },
+	{ "provider", providertest, },
 	{ "dh", dhtest, },
 	{ "dhrange", dhrangetest, },
 	{ "xcurve", xcurvetest, },
@@ -1821,7 +1853,8 @@ main(ac, av)
 			eay_set_engine(EAY_OPENSSL_ENGINE);
 #endif
 	}
-	eay_init();
+	if (eay_init() != 0)
+		errx(1, "eay_init failed");
 	printf("Linked with %s\n", eay_version());
 #else
 	f_foreground = 1;
