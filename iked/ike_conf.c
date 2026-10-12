@@ -57,6 +57,7 @@
 #include "ikev2_impl.h"
 #include "encryptor.h"
 #include "dhgroup.h"
+#include <openssl/crypto.h>
 #include "ike_conf.h"
 #include "ike_deprecated.h"
 #ifdef IKEV1
@@ -3250,15 +3251,27 @@ ike_conf_find_selector_by_addr(struct sockaddr *local, struct sockaddr *remote)
 #define	ALG_ENC(rc, id, klen, noncelen, flags, def)	{ (rc), (id), (klen), (noncelen), (flags), 0, (def) }
 
 static struct algdef ikev2_transf_encr[] = {
-	/* ALG_ENC(RCT_ALG_DES_CBC_IV64,  IKEV2TRANSF_ENCR_DES_IV64,  8,      0 ), */
-	/* ALG_ENC(RCT_ALG_DES_CBC,       IKEV2TRANSF_ENCR_DES,       8,      0 ), */
+	/* Deprecated ciphers (RFC 8247 s2.1 / RFC 8221 s5 MUST NOT, RFC 9395
+	 * s5 DEPRECATED; DES-family also NSA): allow_*_deprecated gated by
+	 * ike_conf_check / ikev2_proplist_filter_deprecated, implemented over
+	 * the OpenSSL 3 legacy provider and probed at runtime (.available).
+	 * RFC 7296 s3.3.5: DES and IDEA are fixed-length (no KEY_LENGTH);
+	 * RC5, CAST and Blowfish are variable with a 128-bit default when the
+	 * attribute is absent -- iked offers 128 with the attribute and
+	 * accepts a peer's attribute-less offer as 128
+	 * (ikev2_compare_attributes). */
+	ALG_ENC(RCT_ALG_DES_CBC_IV64,	IKEV2TRANSF_ENCR_DES_IV64, 8, 0, 0, &encr_des_iv64),
+	ALG_ENC(RCT_ALG_DES_CBC,	IKEV2TRANSF_ENCR_DES,	8,  0, 0, &encr_des),
 	ALG_ENC(RCT_ALG_DES3_CBC,	IKEV2TRANSF_ENCR_3DES,  24, 0, 0, &encr_triple_des),
-	/* ALG_ENC(RCT_ALG_RC5_CBC,       IKEV2TRANSF_ENCR_RC5,       16,     0 ), */
-	/* ALG_ENC(RCT_ALG_IDEA_CBC,      IKEV2TRANSF_ENCR_IDEA,      16,     0 ), */
-	/* ALG_ENC(RCT_ALG_CAST128_CBC,   IKEV2TRANSF_ENCR_CAST,      16,     0 ), */
-	/* ALG_ENC(RCT_ALG_BLOWFISH_CBC,  IKEV2TRANSF_ENCR_BLOWFISH,  16,     0 ), */
-	/* ALG_ENC(RCT_ALG_IDEA3_CBC,     IKEV2TRANSF_ENCR_3IDEA, ....     ), */
-	/* ALG_ENC(RCT_ALG_DES_CBC_IV32,  IKEV2TRANSF_ENCR_DES_IV32,  8,      0 ), */
+	ALG_ENC(RCT_ALG_RC5_CBC,	IKEV2TRANSF_ENCR_RC5,	16, 0, PROTO_VARIABLE_KEYLEN, &encr_rc5_128),
+	ALG_ENC(RCT_ALG_IDEA_CBC,	IKEV2TRANSF_ENCR_IDEA,	16, 0, 0, &encr_idea),
+	ALG_ENC(RCT_ALG_CAST128_CBC,	IKEV2TRANSF_ENCR_CAST,	16, 0, PROTO_VARIABLE_KEYLEN, &encr_cast128),
+	ALG_ENC(RCT_ALG_BLOWFISH_CBC,	IKEV2TRANSF_ENCR_BLOWFISH, 16, 0, PROTO_VARIABLE_KEYLEN, &encr_blowfish128),
+	/* ENCR_3IDEA: IANA lists no specification (RFC 2451 does not define
+	 * a triple-IDEA construction), so there is nothing to implement; the
+	 * row exists only so config check can say so (no definition). */
+	ALG_ENC(RCT_ALG_IDEA3_CBC,	IKEV2TRANSF_ENCR_3IDEA,	0,  0, 0, 0),
+	ALG_ENC(RCT_ALG_DES_CBC_IV32,	IKEV2TRANSF_ENCR_DES_IV32, 8, 0, 0, &encr_des_iv32),
 	ALG_ENC(RCT_ALG_NULL_ENC,	IKEV2TRANSF_ENCR_NULL,	0,  0, 0, &encr_null),
 	ALG_ENC(RCT_ALG_RIJNDAEL_CBC,	IKEV2TRANSF_ENCR_AES_CBC, 16, 0, CONF_VARIABLE_KEYLEN | PROTO_VARIABLE_KEYLEN, &encr_aes128),
 	ALG_ENC(RCT_ALG_RIJNDAEL_CBC,	IKEV2TRANSF_ENCR_AES_CBC, 24, 0, CONF_VARIABLE_KEYLEN | PROTO_VARIABLE_KEYLEN, &encr_aes192),
@@ -3418,6 +3431,21 @@ is_alg_supported(rc_type alg, int keylen, struct algdef *def)
 		}
 	}
 	return FALSE;
+}
+
+/* the IKE encryptor a configured kmp_enc_alg resolves to (NULL: none) */
+static struct encryptor_method *
+ikev2_encr_method_of(rc_type alg, int keylen)
+{
+	struct algdef *def;
+	const int BITS = 8;
+
+	for (def = &ikev2_transf_encr[0]; def->racoon_code != 0; ++def) {
+		if (alg == def->racoon_code &&
+		    (keylen == 0 || KEYLEN(*def) * BITS == (size_t)keylen))
+			return (struct encryptor_method *)def->definition;
+	}
+	return NULL;
 }
 
 static int
@@ -4656,6 +4684,14 @@ ikev2_proposal_to_ipsec(struct ikev2_child_sa *child_sa,
 					   get_uint16(&trns->transform_id),
 					   alg->racoon_code, rct2str(alg->racoon_code),
 					   keylen);
+				/* RFC 7296 s3.3.5 / RFC 2451 s2.2: RC5, CAST,
+				 * Blowfish default to 128 bits when the
+				 * KEY_LENGTH attribute is omitted */
+				if (IS_PROTO_VARIABLE_KEYLEN(*alg) && keylen == 0 &&
+				    (alg->racoon_code == RCT_ALG_RC5_CBC ||
+				     alg->racoon_code == RCT_ALG_CAST128_CBC ||
+				     alg->racoon_code == RCT_ALG_BLOWFISH_CBC))
+					keylen = 128;
 				if (IS_PROTO_VARIABLE_KEYLEN(*alg)) {
 					if (keylen == 0)
 						isakmp_log(child_sa->parent, 0,
@@ -5781,6 +5817,28 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 	}
 
 	for (alg = kmp->kmp_enc_alg; alg; alg = alg->next) {
+		struct encryptor_method *em;
+
+		if (alg->algtype == RCT_ALG_IDEA3_CBC) {
+			++*err;
+			plog(PLOG_INTERR, PLOGLOC, 0,
+			     "remote %s ikev2 section, kmp_enc_alg %s unsupported: "
+			     "ENCR_3IDEA has no specification (IANA lists no "
+			     "reference; RFC 2451 does not define it)\n",
+			     rm_index, rct2str(alg->algtype));
+			continue;
+		}
+		em = ikev2_encr_method_of(alg->algtype, alg->keylen);
+		if (em && !ENCRYPTOR_METHOD_AVAILABLE(em)) {
+			++*err;
+			plog(PLOG_INTERR, PLOGLOC, 0,
+			     "remote %s ikev2 section, kmp_enc_alg %s unsupported "
+			     "by crypto library (%s: no %s cipher; OpenSSL legacy "
+			     "provider missing or cipher not built)\n",
+			     rm_index, rct2str(alg->algtype),
+			     OpenSSL_version(OPENSSL_VERSION), em->name);
+			continue;
+		}
 		if (!is_alg_supported(alg->algtype, alg->keylen, &ikev2_transf_encr[0])) {
 			++*err;
 			if (alg->keylen) {

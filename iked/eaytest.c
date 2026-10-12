@@ -66,6 +66,7 @@
 #endif
 #include "debug.h"
 #include "str2val.h"
+#include "encryptor.h"
 #include "plog.h"
 
 #include "oakley.h"
@@ -1653,6 +1654,117 @@ out:
 	return fails ? -1 : 0;
 }
 
+/* encryptor.c (linked for the legacy-cipher KAT) uses TRACE() */
+int debug_trace = 0;
+void trace_debug(const char *, const char *, ...);
+void
+trace_debug(const char *location, const char *fmt, ...)
+{
+	(void)location;
+	(void)fmt;
+}
+
+/*
+ * Known-answer tests for the deprecated IKEv2 ENCR transforms iked can now
+ * offer when allow_nsa_deprecated / allow_rfc_deprecated permit, driven
+ * through the exact encryptor_method iked uses (key/IV sizing included):
+ *   DES       FIPS PUB 81 CBC example (RFC 2405 cipher)
+ *   DES_IV64  same cipher and IV width (RFC 1827/1829 64-bit IV)
+ *   DES_IV32  RFC 1829 s2.1: IV32 expanded to IV32 || ~IV32; checked
+ *             against plain DES-CBC under the hand-expanded IV
+ *   CAST-128  RFC 2144 B.1 128-bit key (one block, zero IV = ECB)
+ *   Blowfish  Schneier/Eric Young reference CBC vector, 128-bit key
+ *   IDEA      Lai/Massey reference vector, 128-bit key (one block)
+ *   RC5       RFC 2040 s9.3 RC5-CBC R=16, 128-bit key (RFC 2451 params)
+ * A cipher the linked OpenSSL does not provide (legacy provider absent;
+ * IDEA/RC5 commonly not compiled) is reported UNAVAILABLE, matching what
+ * iked's config check refuses as "unsupported by crypto library".
+ */
+static int
+legacy_kat_1(const char *name, struct encryptor_method *m, const char *k,
+	     const char *iv, const char *pt, const char *ct)
+{
+	vchar_t key, ivv, ivv2, data, want, *enc = NULL, *dec = NULL;
+	int rc = -1;
+
+	if (!m->available || !m->available()) {
+		printf("%-9s UNAVAILABLE (unsupported by crypto library)\n",
+		       name);
+		return 0;
+	}
+	key.v = str2val(k, 16, &key.l);
+	ivv.v = str2val(iv, 16, &ivv.l);
+	ivv2.v = str2val(iv, 16, &ivv2.l);
+	data.v = str2val(pt, 16, &data.l);
+	want.v = str2val(ct, 16, &want.l);
+	if (key.l != (size_t)m->key_len || ivv.l != (size_t)m->iv_len) {
+		printf("%-9s FAIL: vector key/IV %zu/%zu != method %d/%d\n",
+		       name, key.l, ivv.l, m->key_len, m->iv_len);
+		goto out;
+	}
+	enc = m->encrypt(&data, &key, &ivv);
+	if (!enc || enc->l != want.l || memcmp(enc->v, want.v, want.l)) {
+		printf("%-9s FAIL: ciphertext mismatch\n", name);
+		goto out;
+	}
+	dec = m->decrypt(enc, &key, &ivv2);
+	if (!dec || dec->l != data.l || memcmp(dec->v, data.v, data.l)) {
+		printf("%-9s FAIL: decrypt mismatch\n", name);
+		goto out;
+	}
+	printf("%-9s ok (block %d, IV %d, key %d octets)\n", name,
+	       m->block_len, m->iv_len, m->key_len);
+	rc = 0;
+out:
+	if (enc) vfree(enc);
+	if (dec) vfree(dec);
+	free(key.v); free(ivv.v); free(ivv2.v); free(data.v); free(want.v);
+	return rc;
+}
+
+int
+legacyciphertest(ac, av)
+	int ac;
+	char **av;
+{
+	int fails = 0;
+	static const char now[] =
+	    "4e6f772069732074 68652074696d6520 666f7220616c6c20";
+
+	printf("\n**Testing deprecated ENCR transforms (KAT)**\n");
+	fails += legacy_kat_1("DES", &encr_des, "0123456789abcdef",
+	    "1234567890abcdef", now,
+	    "e5c7cdde872bf27c 43e934008c389c0f 683788499a7c05f6") < 0;
+	fails += legacy_kat_1("DES_IV64", &encr_des_iv64, "0123456789abcdef",
+	    "1234567890abcdef", now,
+	    "e5c7cdde872bf27c 43e934008c389c0f 683788499a7c05f6") < 0;
+	/* IV32 12345678 -> 64-bit IV 12345678 edcba987 (RFC 1829 s2.1) */
+	fails += legacy_kat_1("DES_IV32", &encr_des_iv32, "0123456789abcdef",
+	    "12345678", now,
+	    "d19a54d87e8f5eb4 46e184799c62c2cc a6e7460c569cd4a6") < 0;
+	if (encr_des.available && encr_des.available()) {
+		/* cross-check the expansion against plain DES-CBC */
+		fails += legacy_kat_1("DES/IV32x", &encr_des,
+		    "0123456789abcdef", "12345678edcba987", now,
+		    "d19a54d87e8f5eb4 46e184799c62c2cc a6e7460c569cd4a6") < 0;
+	}
+	fails += legacy_kat_1("CAST128", &encr_cast128,
+	    "0123456712345678234567893456789a", "0000000000000000",
+	    "0123456789abcdef", "238b4fe5847e44b2") < 0;
+	fails += legacy_kat_1("BLOWFISH", &encr_blowfish128,
+	    "0123456789abcdeff0e1d2c3b4a59687", "fedcba9876543210",
+	    "3736353433323120 4e6f772069732074 68652074696d6520 666f722000000000",
+	    "6b77b4d63006dee6 05b156e274039793 58deb9e7154616d9 59f1652bd5ff92cc")
+	    < 0;
+	fails += legacy_kat_1("IDEA", &encr_idea,
+	    "00010002000300040005000600070008", "0000000000000000",
+	    "0000000100020003", "11fbed2b01986de5") < 0;
+	fails += legacy_kat_1("RC5", &encr_rc5_128,
+	    "01020304050607081020304050607080", "0102030405060708",
+	    "1020304050607080", "dad6bda9dfe8f7e8") < 0;
+	return fails ? -1 : 0;
+}
+
 struct {
 	char *name;
 	int (*func) __P((int, char **));
@@ -1668,6 +1780,7 @@ struct {
 	{ "sha1", sha1test, },
 	{ "hmac", hmactest, },
 	{ "cipher", ciphertest, },
+	{ "legacycipher", legacyciphertest, },
 #ifndef RACOON2
 #ifndef CERTTEST_BROKEN
 	{ "cert", certtest, },
