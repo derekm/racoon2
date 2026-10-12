@@ -48,6 +48,9 @@ kind_i2iinit() {
 	I2I_PPK=0                       # RFC 8784 PPK on charon seat
 	I2I_OFFER_SIG_HASH="on"         # RFC 7427 16431 (see -rsa-sha1- arm)
 	I2I_OPENSSL_ENV=                # OPENSSL_CONF for -rsa-sha1- (SHA-1 policy)
+	# allow_*_deprecated (default off): set by the arms whose suite is
+	# NSA- or RFC-deprecated so the row keeps testing what it tested
+	I2I_DEPR_SW=
 	I2I_PERPETUAL=0
 	I2I_ESN=0
 	I2I_PFSREKEY=0
@@ -84,7 +87,8 @@ kind_i2iinit() {
 	*-ike-ccm8*)   I2I_IKE_ENC="aes_ccm8" ;;
 	*-ike-ccm16*)  I2I_IKE_ENC="aes_ccm16" ;;
 	*-ike-ccm*)    I2I_IKE_ENC="aes_ccm" ;;
-	*-ike-3des*)   I2I_IKE_ENC="3des_cbc" ;;
+	*-ike-3des*)   I2I_IKE_ENC="3des_cbc"
+		I2I_DEPR_SW="allow_nsa_deprecated on;" ;;
 esac
 	case "$name" in
 	*-prfsha384*) I2I_IKE_PRF="hmac_sha2_384" ;;
@@ -96,7 +100,8 @@ esac
 	*-esp-gcm256*) I2I_ESP_ENC="aes_gcm, 256" ;;
 	*-esp-gcm192*) I2I_ESP_ENC="aes_gcm, 192" ;;
 	*-esp-gcm128*) I2I_ESP_ENC="aes_gcm, 128" ;;
-	*-esp-3des*)   I2I_ESP_ENC="3des_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
+	*-esp-3des*)   I2I_ESP_ENC="3des_cbc"; I2I_ESP_AUTH="hmac_sha2_256"
+		I2I_DEPR_SW="allow_nsa_deprecated on; allow_rfc_deprecated on;" ;;
 	*-esp-cbc128*) I2I_ESP_ENC="aes128_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
 	*-esp-cbc192*) I2I_ESP_ENC="aes192_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
 	*-esp-cbc256*) I2I_ESP_ENC="aes256_cbc"; I2I_ESP_AUTH="hmac_sha2_256" ;;
@@ -356,6 +361,8 @@ esac
 	case "$name" in
 	*-rsa-sha1-*)
 		I2I_OFFER_SIG_HASH="off"
+		# method 1 SHA-1 DigestInfo is NSA-deprecated (SHA-1)
+		I2I_DEPR_SW="allow_nsa_deprecated on;"
 		# Fedora/RHEL OpenSSL crypto policy blocks SHA-1 signatures
 		# (rh-allow-sha1-signatures = no), which would make it IMPOSSIBLE
 		# for either charon or iked to emit the legacy method-1 SHA-1 AUTH
@@ -457,6 +464,7 @@ remote matrix_resp {
 		kmp_hash_alg { $I2I_IKE_PRF; };
 		kmp_dh_group { $I2I_DH_GROUP; };
 		offer_sig_hash_algorithms $I2I_OFFER_SIG_HASH;
+		$I2I_DEPR_SW
 $AUTH_TXT_R
 $PPK_TXT
 $CHILDLESS_TXT_R
@@ -525,6 +533,7 @@ remote matrix_init {
 		kmp_hash_alg { $I2I_IKE_PRF; };
 		kmp_dh_group { $I2I_DH_GROUP; };
 		offer_sig_hash_algorithms $I2I_OFFER_SIG_HASH;
+		$I2I_DEPR_SW
 $AUTH_TXT_I
 $PPK_TXT
 $CHILDLESS_TXT_I

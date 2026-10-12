@@ -551,6 +551,19 @@ o remote
 		ML-KEM バックエンド (--enable-addke) でビルドされた場合のみ利用可能。
 		デフォルトは off (ADDKE は任意。type-6 を持たないピアは通常の IKEv2 で交渉)。
 
+	allow_nsa_deprecated (on|off) ;
+		ikev1 and ikev2 directives.  NSA/CNSSP-15 obsolete transforms (DES family,
+		MD5, SHA-1, modp768/1024/1536, DSS, AUTH method 1 SHA-1).
+		off: refused at config load and never selectable.
+		default is off (behavior change).  See doc/nsa-ipsec-hardening.md s8.
+
+	allow_rfc_deprecated (on|off) ;
+		ikev1 and ikev2 directives.  RFC 8247 / RFC 8221 MUST NOT + SHOULD NOT
+		and RFC 9395 DEPRECATED transforms.  Same semantics.  IKEv1 itself is
+		RFC-deprecated (RFC 9395 s3): a remote that can negotiate IKEv1 needs
+		it on in its own ikev1 directive (per remote; no effect on others).
+		default is off (behavior change).
+
 	addke_unrequested (on|off) ;
 		これは ikev2 ディレクティブで有効です。
 		レスポンダ駆動の ADDKE (RFC 9370) を制御します。on の場合、

@@ -386,11 +386,11 @@ struct rcf_kmp {
 	 *                         SHA-1, MODP 768/1024/1536, SHA-1 sigs)
 	 *   allow_rfc_deprecated  RFC 8247 / RFC 8221 MUST NOT + SHOULD NOT
 	 *                         and RFC 9395 DEPRECATED
-	 * ON (default) = usable but warned at config load and proposal
-	 * build.  OFF = iked refuses a config that offers one, and a peer
+	 * OFF (default) = iked refuses a config that offers one, and a peer
 	 * can never select one (SA_INIT, IKE_AUTH child, CREATE_CHILD,
 	 * IKE/child rekey, ADDKE rounds, RFC 5723 resume, restart restore,
-	 * AUTH method / signature hash).  Unset (0) reads as the default;
+	 * AUTH method / signature hash).  ON = usable but warned at config
+	 * load and proposal build.  Unset (0) reads as the default (OFF);
 	 * never inferred from other settings. */
 	rc_type allow_nsa_deprecated;
 	rc_type allow_rfc_deprecated;

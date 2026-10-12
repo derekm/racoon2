@@ -25,6 +25,31 @@ kind_ikev2() {
 	# remote{}/selector/policy/sa block mirrors the i2i kinds; the esp
 	# algs cover every STRONG_ESP the rows select (gcm16/gcm8/gcm12/CBC +
 	# sha1/sha2 family), matching the coverage macos_ikev2.conf once gave.
+	# RFC 5114 MODP-with-subgroup groups 22/23/24 are RFC 8247 s2.4
+	# MUST NOT / SHOULD NOT, refused unless allow_rfc_deprecated is on
+	# (default off).  Only the -dh22/23/24 rows offer them, with the switch.
+	R2_DH_POS=
+	R2_DEPR_SW=
+	case "$name" in
+	*-dh22) R2_DH_POS=' modp1024_160;' ;;
+	*-dh23) R2_DH_POS=' modp2048_224;' ;;
+	*-dh24) R2_DH_POS=' modp2048_256;' ;;
+	esac
+	[ -z "$R2_DH_POS" ] || R2_DEPR_SW='allow_rfc_deprecated on;'
+	# Deprecated-cipher interop (RFC 9395 s5 / RFC 8247 s2.1): racoon2
+	# prepends the cipher to its IKE and ESP lists with the class switch(es)
+	# on; charon proposes ONLY that cipher (openssl plugin, legacy
+	# provider), so the IKE SA and the child must use it.
+	R2_ENC_PRE=
+	R2_CIPHER=
+	case "$name" in
+	*-des)      R2_ENC_PRE='des_cbc; ';      R2_CIPHER=des-cbc
+		R2_DEPR_SW='allow_nsa_deprecated on; allow_rfc_deprecated on;' ;;
+	*-cast)     R2_ENC_PRE='cast128_cbc; ';  R2_CIPHER=cast128-cbc
+		R2_DEPR_SW='allow_rfc_deprecated on;' ;;
+	*-blowfish) R2_ENC_PRE='blowfish_cbc; '; R2_CIPHER=blowfish-cbc
+		R2_DEPR_SW='allow_rfc_deprecated on;' ;;
+	esac
 	cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
@@ -39,10 +64,11 @@ remote matrix_resp {
 		my_id fqdn "racoon2-wsl";
 		peers_id fqdn "macos.client";
 		peers_ipaddr "$HI";
-		kmp_enc_alg { aes256_cbc; aes128_cbc; };
+		kmp_enc_alg { ${R2_ENC_PRE}aes256_cbc; aes128_cbc; };
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
-		kmp_dh_group { ecp256; curve25519; curve448; modp2048; modp2048_256; modp2048_224; modp1024_160; brainpool256; brainpool384; brainpool512; brainpool224; };
+		kmp_dh_group { ecp256; curve25519; curve448; modp2048;$R2_DH_POS brainpool256; brainpool384; brainpool512; brainpool224; };
+		$R2_DEPR_SW
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
@@ -101,7 +127,7 @@ sa esp_e_gcm8 {
 };
 sa esp_e_sha2 {
 	sa_protocol esp;
-	esp_enc_alg { aes256_cbc; aes128_cbc; };
+	esp_enc_alg { ${R2_ENC_PRE}aes256_cbc; aes128_cbc; };
 	esp_auth_alg { hmac_sha2_256; hmac_sha2_384; hmac_sha2_512; };
 };
 EOF
@@ -211,7 +237,16 @@ EOF
 	# modp2048s224 / modp2048s256 and Brainpool are ecp224bp/ecp256bp/
 	# ecp384bp/ecp512bp.  As with group 31/32, the DH token carries no
 	# trailing '!'.  The responder's kmp_dh_group (above) advertises all
-	# of them.
+	# of them (only the row's own POS group).
+	*-des)
+		IKE_PROP='des-sha256-modp2048'
+		STRONG_ESP='des-sha256!'; EXPECT_AUTH='enc cbc(des) ' ;;
+	*-cast)
+		IKE_PROP='cast128-sha256-modp2048'
+		STRONG_ESP='cast128-sha256!'; EXPECT_AUTH='enc cbc(cast5) ' ;;
+	*-blowfish)
+		IKE_PROP='blowfish128-sha256-modp2048'
+		STRONG_ESP='blowfish128-sha256!'; EXPECT_AUTH='enc cbc(blowfish) ' ;;
 	*-dh22) IKE_PROP='aes256-sha256-modp1024s160' ;;
 	*-dh23) IKE_PROP='aes256-sha256-modp2048s224' ;;
 	*-dh24) IKE_PROP='aes256-sha256-modp2048s256' ;;
@@ -326,6 +361,16 @@ EOF
 		fi
 		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
+	fi
+
+	if [ -n "$R2_CIPHER" ]; then
+		grep -q "IKE SA encryption $R2_CIPHER " "$D/resp-iked.log" || {
+			log "FAIL: NSR iked did not key the IKE SA with $R2_CIPHER"
+			grep -E 'IKE SA encryption|deprecated|unsupported' "$D/resp-iked.log" | tail -6
+			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
+			return 1
+		}
+		log "ikev2 $name: IKE SA encryption $R2_CIPHER + SAD '$EXPECT_AUTH' (charon interop)"
 	fi
 
 	show=$("$SBIN/ikedctl" -s "$SOCK_R" show-sa isakmp) || {

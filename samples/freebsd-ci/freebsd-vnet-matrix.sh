@@ -752,6 +752,24 @@ EOF
 #   NEG=r : refuse   (child must NOT come up)
 #   NEG=p : a12permit (stronger child with strength knob OFF -> must come up)
 # STRENGTH_LINE e.g. 'parent_child_strength on;' (a12strict) or '' (default).
+# fbsd_both STR: fixed string STR is in BOTH iked logs of the row
+fbsd_both() {
+	grep -qF "$1" /tmp/freeb/resp-iked.log 2>/dev/null &&
+	grep -qF "$1" /tmp/freeb/init-iked.log 2>/dev/null
+}
+
+# fbsd_legacy_neg EVPNAME: a (expect a working SA) when the linked OpenSSL
+# provides the cipher (default or legacy provider), else r (expect the
+# 'unsupported by crypto library' config-check refusal).
+fbsd_legacy_neg() {
+	if openssl list -cipher-algorithms -provider default -provider legacy 2>/dev/null |
+	    grep -qiE "(^|[[:space:],{])$1([[:space:],}]|$)"; then
+		echo a
+	else
+		echo r
+	fi
+}
+
 run_row() {
 	_name=$1 _fam=$2 _hi=$3 _hr=$4 _ienc=$5 _iprf=$6 _idh=$7 \
 	_eesp=$8 _eaut=$9 _lfti=${10} _lftr=${11} _rekey=${12} _neg=${13} _str=${14}
@@ -937,6 +955,25 @@ run_row() {
 	*-childless-init*)   FB_IKE_I="		childless on;"; FB_IKE_R="		childless on;"; FB_DBG3=1 ;;
 	*-ikerekey*)         FB_IKE_I="		kmp_sa_lifetime_time 30 sec;" ;;
 	esac
+	# allow_nsa_deprecated / allow_rfc_deprecated default OFF: rows whose
+	# suite carries an NSA- or RFC-deprecated transform enable exactly the
+	# class(es) they need on both seats (mirror linux kinds/i2i_nsawarn.sh
+	# DEPR_SW).  The -default-*, -des and *-default rows set none on
+	# purpose; -rfcoff-md5 sets only the NSA one.
+	FB_DEPR=""
+	case "$_name" in
+	i2i-nsawarn|i2i-nsawarn-sha1|i2i-nsawarn-espsha1|i2iinit-ike-3des|i2i-nsawarn-rfcoff-md5)
+		FB_DEPR="allow_nsa_deprecated on;" ;;
+	i2i-nsawarn-md5|i2i-nsawarn-modp768|i2i-nsawarn-modp1024|i2i-nsawarn-modp1536|\
+	i2i-nsawarn-esp3des|i2iinit-esp-3des|i2i-cipher-des|i2i-cipher-desiv64|i2i-cipher-desiv32)
+		FB_DEPR="allow_nsa_deprecated on; allow_rfc_deprecated on;" ;;
+	i2i-cipher-cast|i2i-cipher-blowfish|i2i-cipher-idea|i2i-cipher-rc5|i2i-cipher-3idea)
+		FB_DEPR="allow_rfc_deprecated on;" ;;
+	esac
+	if [ -n "$FB_DEPR" ]; then
+		FB_IKE_I="${FB_IKE_I:+$FB_IKE_I\n}		$FB_DEPR"
+		FB_IKE_R="${FB_IKE_R:+$FB_IKE_R\n}		$FB_DEPR"
+	fi
 	# charon seat knobs (Linux kinds/i2iinit.sh + i2i_peer.sh).  The iked
 	# seat keeps the row's own config; a rekey-family knob moves onto the
 	# iked seat (charon has no initial_child_ke).
@@ -1570,7 +1607,7 @@ fi
 case "$_name" in
 i2i-nsawarn|i2i-nsawarn-*)
 	case "$_name" in
-	*-des|*-esp3des) : ;; # fail-closed rows: NEG/x, latched in the refusal marker table
+	*-des|*-esp3des|*-default-*|*-rfcoff-*) : ;; # fail-closed rows: NEG r/x, latched in the refusal marker table
 	*)
 		_wns="configuring obsolete algorithm"
 		_wr=$(grep -c "$_wns" /tmp/freeb/resp-iked.log 2>/dev/null || true)
@@ -1585,6 +1622,32 @@ i2i-nsawarn|i2i-nsawarn-*)
 	esac
 	;;
 esac
+
+# --- deprecated ENCR transforms (i2i-cipher-<x>, NEG=a rows only) ----
+# kmp_enc_alg lists ONLY the cipher on both seats (switch on), so the IKE
+# SA must be keyed with it: iked logs "IKE SA encryption <name>" on BOTH
+# seats (ike_sa.c ikev2_set_negotiated_sa).  Child up is the usual gate.
+_fbc=""
+case "$_name" in
+i2i-cipher-des) _fbc=des-cbc ;;
+i2i-cipher-desiv64) _fbc=des-cbc-iv64 ;;
+i2i-cipher-desiv32) _fbc=des-cbc-iv32 ;;
+i2i-cipher-cast) _fbc=cast128-cbc ;;
+i2i-cipher-blowfish) _fbc=blowfish-cbc ;;
+i2i-cipher-idea) _fbc=idea-cbc ;;
+i2i-cipher-rc5) _fbc=rc5-cbc ;;
+esac
+if [ -n "$_fbc" ] && [ "$_neg" = a ]; then
+	_er=$(grep -c "IKE SA encryption $_fbc " /tmp/freeb/resp-iked.log 2>/dev/null || true)
+	_ei=$(grep -c "IKE SA encryption $_fbc " /tmp/freeb/init-iked.log 2>/dev/null || true)
+	if [ "${_er:-0}" -ge 1 ] && [ "${_ei:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
+		echo "row $_name: deprecated cipher OK - IKE SA encryption $_fbc on BOTH seats (resp=${_er} init=${_ei}), child up"
+	else
+		echo "FAIL row $_name: cipher gate (resp=${_er:-0} init=${_ei:-0} up=$up); need 'IKE SA encryption $_fbc' on both seats + child up"
+		gate_why="deprecated cipher gate (IKE SA not keyed with $_fbc on both seats)"
+		up=0
+	fi
+fi
 
 echo "=== SAD/SPD dump from INSIDE each vnet jail (retained for diagnosis) ==="
 	jexec $jr /usr/local/sbin/setkey -D > /tmp/freeb/resp-sadb.txt 2>&1 || true
@@ -1663,7 +1726,37 @@ echo "=== verdict (row $_name) ==="
 			*i2ineg-wrongpsk*)   grep -q "authentication failure" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
 			*i2ineg-idmismatch*) grep -q "does not match peers id" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
 			*i2ineg-a12strict*)  grep -q "parent_child_strength on" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
-			*i2i-nsawarn-des*)   grep -q "kmp_enc_alg DES-CBC unsupported" /tmp/freeb/resp-iked.log 2>/dev/null && refusal=1 || true ;;
+			# deprecated-transform refusals (default off): the marker
+			# must be in BOTH seats' logs (fbsd_both)
+			*i2i-nsawarn-des*|*i2i-cipher-des-default*)
+				fbsd_both "kmp_enc_alg DES-CBC is NSA-deprecated (CNSSP-15) and allow_nsa_deprecated is off" &&
+				fbsd_both "kmp_enc_alg DES-CBC is RFC-deprecated (IKE RFC 8247 s2.1 MUST NOT) and allow_rfc_deprecated is off" && refusal=1 || true ;;
+			*i2i-nsawarn-default-nsa*)
+				fbsd_both "kmp_enc_alg 3DES-CBC is NSA-deprecated (CNSSP-15) and allow_nsa_deprecated is off" && refusal=1 || true ;;
+			*i2i-nsawarn-default-rfc*)
+				fbsd_both "kmp_dh_group MODP2048-224POS is RFC-deprecated (IKE RFC 8247 s2.4 SHOULD NOT) and allow_rfc_deprecated is off" && refusal=1 || true ;;
+			*i2i-nsawarn-rfcoff-md5*)
+				fbsd_both "kmp_prf_alg HMAC-MD5 is RFC-deprecated (IKE RFC 8247 s2.2 MUST NOT) and allow_rfc_deprecated is off" && refusal=1 || true ;;
+			*i2i-cipher-desiv64-default*)
+				fbsd_both "kmp_enc_alg DES-CBC-IV64 is NSA-deprecated (CNSSP-15) and allow_nsa_deprecated is off" &&
+				fbsd_both "kmp_enc_alg DES-CBC-IV64 is RFC-deprecated (IKE RFC 9395 s5 DEPRECATED) and allow_rfc_deprecated is off" && refusal=1 || true ;;
+			*i2i-cipher-desiv32-default*)
+				fbsd_both "kmp_enc_alg DES-CBC-IV32 is NSA-deprecated (CNSSP-15) and allow_nsa_deprecated is off" &&
+				fbsd_both "kmp_enc_alg DES-CBC-IV32 is RFC-deprecated (IKE RFC 9395 s5 DEPRECATED) and allow_rfc_deprecated is off" && refusal=1 || true ;;
+			*i2i-cipher-cast-default*)
+				fbsd_both "kmp_enc_alg CAST-128-CBC is RFC-deprecated (IKE RFC 9395 s5 DEPRECATED) and allow_rfc_deprecated is off" && refusal=1 || true ;;
+			*i2i-cipher-blowfish-default*)
+				fbsd_both "kmp_enc_alg Blowfish-CBC is RFC-deprecated (IKE RFC 9395 s5 DEPRECATED) and allow_rfc_deprecated is off" && refusal=1 || true ;;
+			*i2i-cipher-idea-default*)
+				fbsd_both "kmp_enc_alg IDEA-CBC is RFC-deprecated (IKE RFC 9395 s5 DEPRECATED) and allow_rfc_deprecated is off" && refusal=1 || true ;;
+			*i2i-cipher-rc5-default*)
+				fbsd_both "kmp_enc_alg RC5-CBC is RFC-deprecated (IKE RFC 9395 s5 DEPRECATED) and allow_rfc_deprecated is off" && refusal=1 || true ;;
+			*i2i-cipher-3idea*)
+				fbsd_both "kmp_enc_alg IDEA3-CBC unsupported: ENCR_3IDEA has no specification" && refusal=1 || true ;;
+			*i2i-cipher-idea*)
+				fbsd_both "kmp_enc_alg IDEA-CBC unsupported by crypto library" && refusal=1 || true ;;
+			*i2i-cipher-rc5*)
+				fbsd_both "kmp_enc_alg RC5-CBC unsupported by crypto library" && refusal=1 || true ;;
 		esac
 		if [ "$up" -eq 1 ] && [ "$refusal" -eq 1 ]; then
 			echo "PASS freebsd-vnet $_name (NEG: refusal proven by responder log marker)"
@@ -2238,9 +2331,11 @@ case "$ROW" in
 	#     alg slot (gen_conf emits list tokens verbatim), so negotiation
 	#     lands compliant while iked must log 'configuring obsolete
 	#     algorithm <X>' at proposal-build on BOTH seats (advisory-only,
-	#     never fails closed).  i2i-nsawarn-des is fail-closed: DES-CBC is
-	#     commented out of the IKE transform table, so iked refuses the
-	#     config at conf-check on both seats and the child never establishes.
+	#     never fails closed).  Both deprecation switches default OFF, so
+	#     each advisory row's config enables the class(es) it needs
+	#     (FB_DEPR in run_row).  i2i-nsawarn-des is fail-closed: switches
+	#     left off, iked refuses the now-implemented DES-CBC at conf-check
+	#     on both seats and the child never establishes.
 	#     The verdict latch is the *i2i-nsawarn* case in run_row (warn in
 	#     both logs + child up), with -des expecting the conf-check reject.
 	run i2i-nsawarn        inet 192.0.5.2 192.0.5.1 "aes256_cbc; 3des_cbc" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
@@ -2252,6 +2347,29 @@ case "$ROW" in
 	run i2i-nsawarn-esp3des inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes256_cbc; 3des_cbc" hmac_sha2_256 300 300 0 x ""
 	run i2i-nsawarn-espsha1 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "hmac_sha2_256; hmac_sha1" 300 300 0 a ""
 	run i2i-nsawarn-des   inet 192.0.5.2 192.0.5.1 "aes256_cbc; des_cbc" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
+	# default-off refusal per class + class independence (NEG=r, both
+	# seats' markers in the refusal table)
+	run i2i-nsawarn-default-nsa inet 192.0.5.2 192.0.5.1 "aes256_cbc; 3des_cbc" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
+	run i2i-nsawarn-default-rfc inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 "ecp256; modp2048_224" aes128_cbc hmac_sha2_256 300 300 0 r ""
+	run i2i-nsawarn-rfcoff-md5  inet 192.0.5.2 192.0.5.1 aes128_cbc "hmac_sha2_256; hmac_md5" modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
+	# deprecated ENCR transforms, IKE only (FreeBSD key.c offers none of
+	# them for ESP: aes-cbc/ctr/gcm/gmac, null, chacha20-poly1305 only).
+	# Switch on: the cipher is the ONLY kmp_enc_alg, child on aes128_cbc.
+	run i2i-cipher-des      inet 192.0.5.2 192.0.5.1 des_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-cipher-desiv64  inet 192.0.5.2 192.0.5.1 des_cbc_iv64 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-cipher-desiv32  inet 192.0.5.2 192.0.5.1 des_cbc_iv32 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-cipher-cast     inet 192.0.5.2 192.0.5.1 cast128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-cipher-blowfish inet 192.0.5.2 192.0.5.1 blowfish_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	run i2i-cipher-idea     inet 192.0.5.2 192.0.5.1 idea_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 "$(fbsd_legacy_neg IDEA-CBC)" ""
+	run i2i-cipher-rc5      inet 192.0.5.2 192.0.5.1 rc5_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 "$(fbsd_legacy_neg RC5-CBC)" ""
+	run i2i-cipher-3idea    inet 192.0.5.2 192.0.5.1 3idea_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
+	run i2i-cipher-des-default      inet 192.0.5.2 192.0.5.1 des_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
+	run i2i-cipher-desiv64-default  inet 192.0.5.2 192.0.5.1 des_cbc_iv64 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
+	run i2i-cipher-desiv32-default  inet 192.0.5.2 192.0.5.1 des_cbc_iv32 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
+	run i2i-cipher-cast-default     inet 192.0.5.2 192.0.5.1 cast128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
+	run i2i-cipher-blowfish-default inet 192.0.5.2 192.0.5.1 blowfish_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
+	run i2i-cipher-idea-default     inet 192.0.5.2 192.0.5.1 idea_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
+	run i2i-cipher-rc5-default      inet 192.0.5.2 192.0.5.1 rc5_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r ""
 		run i2iinit-esp-sha384 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_384 300 300 0 a ""
 		run i2iinit-esp-sha512 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc hmac_sha2_512 300 300 0 a ""
 		# xcbc/cmac rows are EXPECTED-REJECT: FreeBSD 15.1 supported_aalgs[]
@@ -2468,6 +2586,24 @@ case "$ROW" in
 	i2i-nsawarn-esp3des) run_row i2i-nsawarn-esp3des inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes256_cbc; 3des_cbc" hmac_sha2_256 300 300 0 x "" ;;
 	i2i-nsawarn-espsha1) run_row i2i-nsawarn-espsha1 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes256_cbc "hmac_sha2_256; hmac_sha1" 300 300 0 a "" ;;
 	i2i-nsawarn-des) run_row i2i-nsawarn-des inet 192.0.5.2 192.0.5.1 "aes256_cbc; des_cbc" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-nsawarn-default-nsa) run_row i2i-nsawarn-default-nsa inet 192.0.5.2 192.0.5.1 "aes256_cbc; 3des_cbc" hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-nsawarn-default-rfc) run_row i2i-nsawarn-default-rfc inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 "ecp256; modp2048_224" aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-nsawarn-rfcoff-md5) run_row i2i-nsawarn-rfcoff-md5  inet 192.0.5.2 192.0.5.1 aes128_cbc "hmac_sha2_256; hmac_md5" modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-cipher-des) run_row i2i-cipher-des      inet 192.0.5.2 192.0.5.1 des_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-cipher-desiv64) run_row i2i-cipher-desiv64  inet 192.0.5.2 192.0.5.1 des_cbc_iv64 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-cipher-desiv32) run_row i2i-cipher-desiv32  inet 192.0.5.2 192.0.5.1 des_cbc_iv32 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-cipher-cast) run_row i2i-cipher-cast     inet 192.0.5.2 192.0.5.1 cast128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-cipher-blowfish) run_row i2i-cipher-blowfish inet 192.0.5.2 192.0.5.1 blowfish_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2i-cipher-idea) run_row i2i-cipher-idea     inet 192.0.5.2 192.0.5.1 idea_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 "$(fbsd_legacy_neg IDEA-CBC)" "" ;;
+	i2i-cipher-rc5) run_row i2i-cipher-rc5      inet 192.0.5.2 192.0.5.1 rc5_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 "$(fbsd_legacy_neg RC5-CBC)" "" ;;
+	i2i-cipher-3idea) run_row i2i-cipher-3idea    inet 192.0.5.2 192.0.5.1 3idea_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-cipher-des-default) run_row i2i-cipher-des-default      inet 192.0.5.2 192.0.5.1 des_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-cipher-desiv64-default) run_row i2i-cipher-desiv64-default  inet 192.0.5.2 192.0.5.1 des_cbc_iv64 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-cipher-desiv32-default) run_row i2i-cipher-desiv32-default  inet 192.0.5.2 192.0.5.1 des_cbc_iv32 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-cipher-cast-default) run_row i2i-cipher-cast-default     inet 192.0.5.2 192.0.5.1 cast128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-cipher-blowfish-default) run_row i2i-cipher-blowfish-default inet 192.0.5.2 192.0.5.1 blowfish_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-cipher-idea-default) run_row i2i-cipher-idea-default     inet 192.0.5.2 192.0.5.1 idea_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
+	i2i-cipher-rc5-default) run_row i2i-cipher-rc5-default      inet 192.0.5.2 192.0.5.1 rc5_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 r "" ;;
 	i2iinit-charon-g8) run_row i2iinit-charon-g8 inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm8 non_auth 300 300 0 x "" ;;
 	i2iinit-charon-g12) run_row i2iinit-charon-g12 inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes_gcm12 non_auth 300 300 0 x "" ;;
 	i2iinit-charon-s384) run_row i2iinit-charon-s384 inet 192.0.5.2 192.0.5.1 aes_gcm hmac_sha2_256 ecp256 aes256_cbc hmac_sha2_384 300 300 0 a "" ;;
