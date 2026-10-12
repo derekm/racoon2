@@ -5035,6 +5035,32 @@ ikev2_depr_log_refusal(int refused, const char *what,
 		     ike_depr_level_str(di->rfc_level));
 }
 
+#ifdef IKEV1
+static rc_type depr_switch_v1(struct rcf_remote *, int, int);
+
+/* IKEv1 negotiation-time check of one codepoint under the ikev1 clause's
+ * switches of rm (NULL: the default clause).  Returns the refused class
+ * mask and logs it; 0 = selectable. */
+int
+ikev1_depr_check(struct rcf_remote *rm, int ctx, unsigned int type,
+		 unsigned int id, const char *what)
+{
+	struct ike_depr_info di;
+	unsigned int cl = ike_depr_classify(ctx, type, id, &di);
+	int refused = 0;
+
+	if ((cl & IKE_DEPR_NSA) &&
+	    depr_switch_v1(rm, rm == NULL, 0) == RCT_BOOL_OFF)
+		refused |= IKE_DEPR_NSA;
+	if ((cl & IKE_DEPR_RFC) &&
+	    depr_switch_v1(rm, rm == NULL, 1) == RCT_BOOL_OFF)
+		refused |= IKE_DEPR_RFC;
+	if (refused)
+		ikev2_depr_log_refusal(refused, what, &di, ctx);
+	return refused;
+}
+#endif
+
 static int
 depr_proto_ctx(const struct prop_pair *proto)
 {
