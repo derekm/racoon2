@@ -1,0 +1,2 @@
+# Linux pfkey-backend lane (--with-km-backend=pfkey, af_key loaded).  It
+# runs an explicit --cases subset, so no skip is expected.

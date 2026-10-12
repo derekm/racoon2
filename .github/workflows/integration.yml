@@ -129,6 +129,64 @@ jobs:
             /tmp/r2_*.txt
           if-no-files-found: warn
 
+  # Linux PF_KEY backend, live.  --with-km-backend=pfkey used to be
+  # compile-only, so nobody saw that af_key installs hmac(sha256) with a
+  # 96-bit ICV (rdratlos/racoon-ipsec-tools #145/#147).  The backend now
+  # refuses hmac_sha2_256 (pfkeyicv-sha256 proves it is loud and fatal);
+  # the other rows bring real SAs up over af_key and xfrm_audit.sh asserts
+  # their exact ICV lengths (GCM 128, SHA2-384 192, SHA2-512 256).
+  pfkey-live:
+    name: 'Linux pfkey backend live rows (af_key)'
+    runs-on: ubuntu-latest
+    if: inputs.dist != 'fedora'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build + test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
+            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \
+            libsystemd-dev iputils-ping xxd iptables
+          sudo modprobe af_key || {
+            sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" &&
+            sudo modprobe af_key; }
+          lsmod | grep -w af_key
+
+      - name: Build + install (pfkey backend)
+        run: |
+          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            --rebuild pfkey --cases 'a^'
+        env:
+          R2_PREFIX: /usr/local/racoon2
+
+      # No ci-setup.sh: the shipped default.conf uses hmac_sha2_256, which
+      # this backend refuses by design, and these rows start their own
+      # daemons in private netns anyway.
+      - name: Run the pfkey rows
+        run: |
+          set -o pipefail
+          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            --cases '^(pfkeyicv-sha256|i2iinit-ike-cbc128|i2iinit-ike-cbc128-esp-sha384|i2iinit-ike-cbc128-esp-sha512|icvaudit-ok) ' \
+            | tee /tmp/r2-pfkey.log
+        env:
+          R2_PREFIX: /usr/local/racoon2
+          R2_KM: pfkey
+          R2_REQUIRE_LIVE: 1
+          R2_LANE: pfkey
+          R2_MIN_PASS: 5
+
+      - name: Upload pfkey log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pfkey-live
+          path: |
+            /tmp/r2-pfkey.log
+            /tmp/r2-*/*.log
+          if-no-files-found: warn
+
   linux-matrix-report:
     name: 'Linux compliance report (merged shards)'
     runs-on: ubuntu-latest
