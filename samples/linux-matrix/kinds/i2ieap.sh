@@ -244,6 +244,7 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
+	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 
 	fail=0
 	if [ "${up:-0}" -ne 1 ]; then

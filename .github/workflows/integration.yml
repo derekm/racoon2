@@ -177,7 +177,7 @@ jobs:
             autoconf automake libtool pkgconf-pkg-config gcc make \
             openssl openssl-devel libpcap-devel krb5-devel bison flex git \
             iproute iproute-tc strongswan procps-ng python3 \
-            libreswan nss-tools nftables iptables-nft nmap-ncat conntrack-tools
+            libreswan nss-tools nftables iptables-nft nmap-ncat conntrack-tools iputils
 
       - name: Checkout repository
         uses: actions/checkout@v4

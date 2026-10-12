@@ -327,18 +327,23 @@ secrets {
 EOF
 	chmod 600 "$CHARON_CONN"
 
+	if [ ! -x "$I2I_CHARON_BIN" ]; then
+		log "FAIL: charon not found ($I2I_CHARON_BIN; set I2I_CHARON_BIN)"
+		_ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
+		return 1
+	fi
 	( ip netns exec "$NSI" "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
 	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 ) >"$D/charon-init.log" 2>&1 &
 	_CHARON_PID=$!
 	sleep 2
 	( ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --load-all --debug 2 ) >"$D/swanctl-load.log" 2>&1
 	( ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --initiate --child ch --debug 2 >"$D/swanctl-init.log" 2>&1 ) || true
-	# NB: no inner-ping gate on the netns rows — charon-in-netns cannot
-	# install its side of the SAs on these kernels (mirrored WSL2 and
-	# GH-hosted; manual netns xfrm adds work, so it is charon's netlink
-	# path that fails, not the tree).  The netns rows prove negotiation +
-	# the responder SAD/SPD with exact auth/trunc content — read from the
-	# RESPONDER netns, which iked owns.
+	# Responder SAD/SPD with the exact auth/trunc content first (iked's
+	# netns).  The old note here said charon-in-netns could not install
+	# its SAs on GH-hosted kernels; the Ubuntu shards' data-plane audit
+	# (both responder counters rise, so echo replies came back) shows
+	# it does.  Each row now also waits for charon's SA pair and pings
+	# across the child below.
 	if [ -n "$EXPECT_AUTH" ]; then
 		_sadpat="$EXPECT_AUTH"
 	else
@@ -359,6 +364,12 @@ EOF
 		else
 			log "FAIL: no GCM SAD (NSR)"
 		fi
+		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
+		return 1
+	fi
+	# the child must carry traffic both ways: wait for the initiator's
+	# own SAs, then ICMP across it (the audit then checks both seats)
+	if ! i2i_wait_seat_sa "$NSI" 20 || ! i2i_dataplane "$NSI" "$HR" "$name"; then
 		charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 		return 1
 	fi

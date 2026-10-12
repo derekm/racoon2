@@ -260,6 +260,7 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
+	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 	[ "$up" -eq 1 ] || log "FAIL: no ESP child for DH group $G in 45s (resp=$re init=$ie)"
 
 	# charon (esp. the initiator seat) flushes its ESTABLISHED/auth line to
