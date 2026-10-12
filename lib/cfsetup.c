@@ -207,6 +207,8 @@ static int rcf_fix_cookie_required (struct cf_list *, void *);
 static int rcf_fix_addke_required (struct cf_list *, void *);
 static int rcf_fix_parent_child_strength (struct cf_list *, void *);
 static int rcf_fix_addke_unrequested (struct cf_list *, void *);
+static int rcf_fix_allow_nsa_deprecated (struct cf_list *, void *);
+static int rcf_fix_allow_rfc_deprecated (struct cf_list *, void *);
 static int rcf_fix_offer_intermediate (struct cf_list *, void *);
 static int rcf_fix_offer_sig_hash_algorithms (struct cf_list *, void *);
 static int rcf_fix_require_config (struct cf_list *, void *);
@@ -384,6 +386,8 @@ struct rcf_tdf_t {
 	{ CFD_ADDKE_REQUIRED,		rcf_fix_addke_required, },
 	{ CFD_PARENT_CHILD_STRENGTH,	rcf_fix_parent_child_strength, },
 	{ CFD_ADDKE_UNREQUESTED,	rcf_fix_addke_unrequested, },
+	{ CFD_ALLOW_NSA_DEPRECATED,	rcf_fix_allow_nsa_deprecated, },
+	{ CFD_ALLOW_RFC_DEPRECATED,	rcf_fix_allow_rfc_deprecated, },
 	{ CFD_OFFER_INTERMEDIATE,	rcf_fix_offer_intermediate, },
 	{ CFD_OFFER_SIG_HASH_ALGORITHMS, rcf_fix_offer_sig_hash_algorithms, },
 	{ CFD_USE_PPK,			rcf_fix_use_ppk, },
@@ -1601,6 +1605,33 @@ rcf_fix_addke_unrequested(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_ADDKE_UNREQUESTED))
 		return -1;
 	if (rcf_fix_boolean(head->nextp, &dst->addke_unrequested))
+		return -1;
+
+	return 0;
+}
+
+/* allow_nsa_deprecated / allow_rfc_deprecated (on|off): see rc_type.h */
+static int
+rcf_fix_allow_nsa_deprecated(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ALLOW_NSA_DEPRECATED))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->allow_nsa_deprecated))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_allow_rfc_deprecated(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ALLOW_RFC_DEPRECATED))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->allow_rfc_deprecated))
 		return -1;
 
 	return 0;
@@ -3497,6 +3528,8 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	new->addke_required = src->addke_required;
 	new->parent_child_strength = src->parent_child_strength;
 	new->addke_unrequested = src->addke_unrequested;
+	new->allow_nsa_deprecated = src->allow_nsa_deprecated;
+	new->allow_rfc_deprecated = src->allow_rfc_deprecated;
 	new->offer_intermediate = src->offer_intermediate;
 	new->offer_sig_hash_algorithms = src->offer_sig_hash_algorithms;
 	new->use_ppk = src->use_ppk;

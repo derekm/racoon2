@@ -190,6 +190,8 @@ extern rc_type ikev2_nat_traversal(struct rcf_remote *);
 extern rc_type ikev2_addke_required(struct rcf_remote *);
 extern rc_type ikev2_parent_child_strength(struct rcf_remote *);
 extern rc_type ikev2_addke_unrequested(struct rcf_remote *);
+extern rc_type ikev2_allow_nsa_deprecated(struct rcf_remote *);
+extern rc_type ikev2_allow_rfc_deprecated(struct rcf_remote *);
 extern rc_type ikev2_offer_intermediate(struct rcf_remote *);
 extern rc_type ikev2_offer_sig_hash_algorithms(struct rcf_remote *);
 extern rc_type ikev2_use_ppk(struct rcf_remote *);

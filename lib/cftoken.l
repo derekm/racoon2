@@ -366,6 +366,8 @@ cookie_required		{ DP; return(COOKIE_REQUIRED); }
 addke_required		{ DP; return(ADDKE_REQUIRED); }
 parent_child_strength	{ DP; return(PARENT_CHILD_STRENGTH); }
 addke_unrequested	{ DP; return(ADDKE_UNREQUESTED); }
+allow_nsa_deprecated	{ DP; return(ALLOW_NSA_DEPRECATED); }
+allow_rfc_deprecated	{ DP; return(ALLOW_RFC_DEPRECATED); }
 offer_intermediate	{ DP; return(OFFER_INTERMEDIATE); }
 offer_sig_hash_algorithms	{ DP; return(OFFER_SIG_HASH_ALGORITHMS); }
 	/* RFC 8784 PPK */
