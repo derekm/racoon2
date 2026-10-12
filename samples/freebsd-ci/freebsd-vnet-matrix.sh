@@ -262,9 +262,18 @@ fbsd_comply() {
 	fi
 
 	# ---- A5  IKEv2 ESTABLISHED + NAT-T encap socket (iked logs) ----------
+	# A charon seat (FB_CH=r: responder jail, FB_CH=i: initiator jail)
+	# has no iked log: its evidence is charon's own IKE_SA state change
+	# ('... => ESTABLISHED') in $FB_CL.  Reading the missing iked log
+	# failed A5 on every positive charon row.
 	_a5=1
-	for _lg in resp-iked.log init-iked.log; do
-		AF "/tmp/freeb/$_lg" | grep -qE -- '-> ESTABLISHED' || _a5=0
+	for _seat in resp init; do
+		if { [ "$_seat" = resp ] && [ "${FB_CH:-}" = r ]; } ||
+		   { [ "$_seat" = init ] && [ "${FB_CH:-}" = i ]; }; then
+			grep -aqE 'state change: [A-Z_]+ => ESTABLISHED' "${FB_CL:-/tmp/freeb/charon.log}" 2>/dev/null || _a5=0
+		else
+			AF "/tmp/freeb/$_seat-iked.log" | grep -qE -- '-> ESTABLISHED' || _a5=0
+		fi
 	done
 	_a5nat=0
 	for _lg in resp-iked.log init-iked.log; do
