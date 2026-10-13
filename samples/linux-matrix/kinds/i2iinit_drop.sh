@@ -192,30 +192,12 @@ EOF
 
 		sleep 2
 
-		# netem LOSS on responder->initiator (egress of responder veth): a
-		# high directed rate during the short intermediate-exchange window
-		# forces a fragment of the IKE INTERMEDIATE RESPONSE to be dropped,
-		# so the initiator must retransmit the gen-0 request and the
-		# responder must replay its cached response (H1 replay marker).
-		# After the window it eases to a nominal 5% so the IKE_AUTH / child
-		# completion (also responder->initiator) is not starved.  Loss is
-		# applied ONLY on the response direction, so the request side is clean.
-		if ! ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 80% 2>/dev/null; then
-			log "FAIL: cannot apply netem loss on $NSR/$VR (no tc?); abort"
-			return 1
-		fi
-		d0=$(tc_dropped "$NSR" "$VR" || true)
-		ndrop=0
-
-		"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
-
-		# keep the high-loss window over the fragmented intermediate exchange
-		# (SA_INIT reply + gen-0 intermediate response), then ease off.
-		sleep 5
-		d1=$(tc_dropped "$NSR" "$VR" || true)
-		ndrop=$(( ${d1:-0} - ${d0:-0} ))
-		log "drop-count window: netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0})"
-		ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 5% 2>/dev/null || true
+		# REPLAY kill-test: force the responder to replay its cached gen-0
+		# IKE_INTERMEDIATE response by dropping a fragment of the RESPONSE
+		# (shared, event-anchored netem window - see lib.sh).
+		ndrop=0; seen=0
+		i2i_replay_loss_window "$HI" "$HR" "$SBIN" "$SOCK_I" "$D/resp-iked.log" || return 1
+		ndrop=$I2I_NDROP; seen=$I2I_SEEN
 
 		up=0
 		i=0

@@ -101,6 +101,67 @@ i2i_wait_seat_sa() {
 	return 1
 }
 
+# i2i_replay_loss_window HI HR SBIN SOCK_I D  -- the REPLAY kill-test loss
+# window, shared by i2iinit-drop and i2iinit-drop576 (they were two copies
+# of the same netem timing dance; that is how one-off flakes breed).
+#
+# Goal: force the responder to REPLAY its cached gen-0 IKE_INTERMEDIATE
+# response.  We drop responder->initiator datagrams (egress of the responder
+# veth $VR) with netem 80% during the short IKE_INTERMEDIATE exchange, so a
+# fragment of the intermediate RESPONSE is lost, the initiator retransmits
+# the gen-0 request, and the responder detects it by the cleartext outer
+# msgid + replays (H1 replay marker logged in the responder log).
+# The loss is applied ONLY on the response direction, so the request side
+# is clean.  After the exchange it eases to a nominal 5% so the IKE_AUTH /
+# child completion (also responder->initiator) is not starved.
+#
+# The high-loss window is anchored to the INTERMEDIATE ROUND EVENT, not a
+# blind wall-clock sleep: under CI shared-runner load the round can start
+# late, and a fixed "5s from establish" window would end (ease to 5%)
+# before the intermediate response even goes out, so the response survives
+# intact and H1 replay never fires - a false FAIL.  We hold 80% and poll the
+# responder log for the round completion (or a replay), then ease, bounded
+# by a hard cap so a wedged SA cannot hang the row.
+#
+# Requires the caller to have already: row_ns'd (so $NSR/$VR/$D are set),
+# started the responder+initiator iked logs (resp log path = "$2"), and
+# flushed stale xfrm.  On return, $I2I_NDROP carries the measured drop
+# count and $I2I_SEEN is 1 if the intermediate round was observed while the
+# window was armed.  Vars read: NSR VR D.  Args: HI HR SBIN SOCK_I resp_log.
+i2i_replay_loss_window() {
+	_hi=$1 _hr=$2 _sbin=$3 _sock_i=$4 _resp=$5
+	I2I_NDROP=0
+	I2I_SEEN=0
+	if ! ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 80% 2>/dev/null; then
+		log "FAIL: cannot apply netem loss on $NSR/$VR (no tc?); abort"
+		return 1
+	fi
+	_d0=$(tc_dropped "$NSR" "$VR" || true)
+
+	"$_sbin/ikedctl" -s "$_sock_i" establish-sa isakmp inet "$_hi" "$_hr" sel_out >/dev/null 2>&1 || true
+
+	# keep the high-loss window over the intermediate exchange (IKE_SA_INIT
+	# reply + gen-0 IKE_INTERMEDIATE response), then ease off once the round
+	# is observed (or a bounded cap elapses).
+	_w=$(( ${I2I_DROP_WINDOW_CAP:-40} ))
+	while [ "$_w" -gt 0 ]; do
+		if grep -qE "IKE_INTERMEDIATE ADDKE round complete|H1 replay" "$_resp" 2>/dev/null; then
+			I2I_SEEN=1
+			break
+		fi
+		sleep 1; _w=$((_w-1))
+	done
+	# a small grace after the marker so a replay triggered by the loss is
+	# still observed under 80% before we ease (the initiator's retransmit
+	# and the responder's replay can straddle the marker).
+	[ "${I2I_SEEN:-0}" = 1 ] && sleep 3
+	_d1=$(tc_dropped "$NSR" "$VR" || true)
+	I2I_NDROP=$(( ${_d1:-0} - ${_d0:-0} ))
+	log "drop-count window: netem dropped $I2I_NDROP datagrams (intermediate_seen=$I2I_SEEN)"
+	ip netns exec "$NSR" tc qdisc replace dev "$VR" root netem loss 5% 2>/dev/null || true
+	return 0
+}
+
 i2i_dataplane() {
 	if ! command -v ping >/dev/null 2>&1; then
 		log "FAIL: data plane: ping(8) not installed, the row cannot prove its ESP child carries traffic"
