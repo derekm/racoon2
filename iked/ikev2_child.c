@@ -253,6 +253,8 @@ ikev2_child_param_init(struct ikev2_child_param *p)
 	p->cfg_ip4_dhcp = 0;
 	p->cfg_ip6_dhcp = 0;
 	p->cfg_supported_attributes = 0;
+	p->cfg_ip4_subnet = 0;
+	p->cfg_ip6_subnet = 0;
 }
 
 void

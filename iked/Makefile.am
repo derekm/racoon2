@@ -120,6 +120,14 @@ check_PROGRAMS += notifytest
 notifytest_SOURCES = notifytest.c
 notifytest_LDADD = $(addtest_ikedsrc) $(LDADD)
 
+# RFC 7296 §3.15.2 split-tunnel CP attributes (13/15): drives the real
+# ikev2_create_config_reply() with a fabricated split selector.
+# Full-link (addtest_ikedsrc): unconditional, no optional-feature dep.
+TESTS += splitcfgtest
+check_PROGRAMS += splitcfgtest
+splitcfgtest_SOURCES = splitcfgtest.c
+splitcfgtest_LDADD = $(addtest_ikedsrc) $(LDADD)
+
 # RFC 9370 ADDKE ML-KEM-768 crypto (configure --enable-addke auto):
 # exercised only on OpenSSL >= 3.5 builds that actually have the code.
 if ADDKE
