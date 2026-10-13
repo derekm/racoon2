@@ -85,6 +85,7 @@ struct isakmpstat {
 	int fail_recv;
 	int unsupported_peer_address;
 	int unordered;
+	int deferred_keymat;
 	int invalid_length;
 	int invalid_port;
 	int shortpacket;

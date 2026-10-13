@@ -514,6 +514,7 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	unsigned int pad_length;
 	size_t data_len = 0;
 	uint8_t sk_next_payload;
+	rc_vchar_t *auth_key = NULL, *enc_key = NULL;
 
 	TRACE((PLOGLOC, "ikev2_frag_recv(%p, %p, %p, %p)\n",
 	       ike_sa, packet, remote, local));
@@ -531,6 +532,29 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	if (!ike_sa->encryptor || !ike_sa->authenticator) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "ikev2_frag_recv: encryptor or authenticator not ready\n");
+		return NULL;
+	}
+	/*
+	 * Deferred-keymat guard (RACOON2_CRYPTO_WORKERS>0): same race the
+	 * SK-path guard in ikev2_input() covers.  The responder's keymat is
+	 * derived in a worker thread whose done() runs at the main loop's
+	 * next crypto_workers_drain(); a fragmented request (SKF, e.g.
+	 * RFC 7383 IKE_INTERMEDIATE) can arrive in that window with
+	 * sk_a and sk_e still NULL, and the auth_calculate /
+	 * encryptor_decrypt below would dereference them.  encryptor/
+	 * authenticator are set before keymat completes, so they are not a
+	 * sufficient readiness test.  Drop and rely on the peer
+	 * retransmitting (RFC 7296 s2.10).  AEAD (RFC 5282): the ICV is the
+	 * AEAD tag, so sk_a_* is legitimately never derived (NULL).
+	 */
+	auth_key = ike_sa->is_initiator ? ike_sa->sk_a_r : ike_sa->sk_a_i;
+	enc_key = ike_sa->is_initiator ? ike_sa->sk_e_r : ike_sa->sk_e_i;
+	if ((encryptor_icv_length(ike_sa->encryptor) == 0 &&
+	     auth_key == NULL) || enc_key == NULL) {
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		     "ikev2_frag_recv: deferring fragment, key material not yet "
+		     "derived (crypto worker pending)\n");
+		++isakmpstat.deferred_keymat;
 		return NULL;
 	}
 
