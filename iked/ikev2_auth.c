@@ -112,6 +112,23 @@ static const uint8_t rfc7427_pss_sha512_ai[] = {
 	0x05, 0x00, 0xa2, 0x03, 0x02, 0x01, 0x40,
 };
 
+/* RFC 7427 A.1.4: ecdsa-with-SHA2 AlgorithmIdentifiers (OID
+ * 1.2.840.10045.4.3.2/3/4, absent params), DER-encoded 12 bytes each.  Used
+ * to PUT an ECDSA method-14 (DS) signature on the wire — the sig is a DER
+ * Ecdsa-Sig-Value, distinct from the raw r||s of the RFC 4754 methods. */
+static const uint8_t rfc7427_ecdsa_sha256_ai[] = {
+	0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce,
+	0x3d, 0x04, 0x03, 0x02,
+};
+static const uint8_t rfc7427_ecdsa_sha384_ai[] = {
+	0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce,
+	0x3d, 0x04, 0x03, 0x03,
+};
+static const uint8_t rfc7427_ecdsa_sha512_ai[] = {
+	0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce,
+	0x3d, 0x04, 0x03, 0x04,
+};
+
 /* RFC 8420 Appendix A: Ed25519 / Ed448 AlgorithmIdentifiers (DER),
  * SEQUENCE{ OID 1.3.101.112 / 1.3.101.113 }, 7 bytes each, absent params. */
 static const uint8_t rfc7427_ed25519_ai[] = {
@@ -542,6 +559,35 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 					isakmp_log(sa, 0, 0, 0,
 						   PLOG_INTERR, PLOGLOC,
 						   "failed calculating EdDSA "
+						   "signature\n");
+					goto fail;
+				}
+			} else if (eay_ecdsa_curve_bits(privkey) > 0) {
+				/* ECDSA method-14 (DS): sign with the DER
+				 * Ecdsa-Sig-Value + ecdsa-with-SHA2
+				 * AlgorithmIdentifier, picked by the
+				 * strongest mutually-supported hash (matching
+				 * the RSA strongest-hash selection above). */
+				const char *hy = "SHA256";
+				const uint8_t *eai = rfc7427_ecdsa_sha256_ai;
+				size_t eai_len = sizeof(rfc7427_ecdsa_sha256_ai);
+
+				if (sa->peer_sig_hash_mask & (1 << 4)) {
+					hy = "SHA512";
+					eai = rfc7427_ecdsa_sha512_ai;
+					eai_len = sizeof(rfc7427_ecdsa_sha512_ai);
+				} else if (sa->peer_sig_hash_mask & (1 << 3)) {
+					hy = "SHA384";
+					eai = rfc7427_ecdsa_sha384_ai;
+					eai_len = sizeof(rfc7427_ecdsa_sha384_ai);
+				}
+				ai = eai;
+				_ai_len = eai_len;
+				ori = eay_ecdsa_ds_sign(hy, octets, privkey);
+				if (!ori) {
+					isakmp_log(sa, 0, 0, 0,
+						   PLOG_INTERR, PLOGLOC,
+						   "failed calculating ECDSA "
 						   "signature\n");
 					goto fail;
 				}
@@ -1084,7 +1130,14 @@ ikev2_auth_method(struct ikev2_sa *sa)
 		/* (RFC4754)
 		 * The method number reflects the curve of the private key:
 		 * P-256 -> 9, P-384 -> 10, P-521 -> 11.
-		 */
+		 *
+		 * RFC 7427 plan scope #4: when N(SIG_HASH_ALGORITHMS) was
+		 * exchanged (this seat offered + peer echoed 16431), use
+		 * method 14 (DS) with the ecdsa-with-SHA2 AlgorithmIdentifier
+		 * + DER Ecdsa-Sig-Value instead of the RFC 4754 methods —
+		 * ECDSA seats can then participate in method-14 negotiation. */
+		if (sa->sig_hash_algos_ds)
+			return IKEV2_AUTH_DS;
 		{
 			rc_vchar_t *privkey;
 			int bits;

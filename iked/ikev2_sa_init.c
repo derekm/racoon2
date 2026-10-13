@@ -345,6 +345,26 @@ initiator_start_after_gen(int rc, void *arg)
 							 (uint8_t *)sig_hash_id,
 							 sizeof(sig_hash_id)),
 					    TRUE);
+		} else if (_kmp && _kmp->algtype == RCT_ALG_ECDSA &&
+		    ikev2_offer_sig_hash_algorithms(ike_sa->rmconf) == RCT_BOOL_ON) {
+			/* RFC 7427 plan scope #4: an ECDSA seat also offers
+			 * the SIG_HASH_ALGORITHMS (16431) with the SHA-2 IDs
+			 * {2,3,4}, so a peer that supports method 14 can
+			 * negotiate ECDSA via DS instead of the RFC 4754
+			 * methods 9/10/11.  The DS signer emits the
+			 * ecdsa-with-SHA2 AlgorithmIdentifier + DER
+			 * Ecdsa-Sig-Value. */
+			static const uint8_t sig_hash_sha2[] = {
+				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
+			};
+			TRACE((PLOGLOC, "offering SIG_HASH_ALGORITHMS (16431, "
+				"ECDSA)\n"));
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_SIG_HASH_ALGORITHMS,
+							 (uint8_t *)sig_hash_sha2,
+							 sizeof(sig_hash_sha2)),
+					    TRUE);
 		}
 	}
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
@@ -877,11 +897,14 @@ responder_state0_after_gen(int rc, void *arg)
 		 * eap (RFC 7296 s2.16, kmp_auth_method { eap; rsasig; }). */
 		int _has_rsa = 0;
 		int _has_eddsa = 0;
+		int _has_ecdsa = 0;
 		for (; _kmp; _kmp = _kmp->next) {
 			if (_kmp->algtype == RCT_ALG_RSASIG)
 				_has_rsa = 1;
 			if (_kmp->algtype == RCT_ALG_EDDSA)
 				_has_eddsa = 1;
+			if (_kmp->algtype == RCT_ALG_ECDSA)
+				_has_ecdsa = 1;
 		}
 		if (_has_rsa) {
 			static const uint8_t sig_hash_sha2[] = {
@@ -909,6 +932,23 @@ responder_state0_after_gen(int rc, void *arg)
 							 IKEV2_SIG_HASH_ALGORITHMS,
 							 (uint8_t *)sig_hash_id,
 							 sizeof(sig_hash_id)),
+					    TRUE);
+		} else if (_has_ecdsa) {
+			/* RFC 7427 plan scope #4: an ECDSA responder echoes
+			 * the SHA-2 IDs {2,3,4}; with 16431 exchanged the
+			 * ECDSA seat uses method 14 (DS) + ecdsa-with-SHA2
+			 * instead of the RFC 4754 methods 9/10/11. */
+			static const uint8_t sig_hash_sha2[] = {
+				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
+			};
+			ike_sa->sig_hash_algos_ds = 1;
+			TRACE((PLOGLOC, "echoing SIG_HASH_ALGORITHMS (16431, "
+				"ECDSA)\n"));
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_SIG_HASH_ALGORITHMS,
+							 (uint8_t *)sig_hash_sha2,
+							 sizeof(sig_hash_sha2)),
 					    TRUE);
 		}
 	}
