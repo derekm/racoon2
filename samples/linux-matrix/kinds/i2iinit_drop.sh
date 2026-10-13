@@ -218,7 +218,7 @@ EOF
 		n_r=$(grep -c 'IKE_INTERMEDIATE ADDKE round complete' "$D/resp-iked.log" 2>/dev/null || true)
 		nreplay=$(grep -c 'H1 replay' "$D/resp-iked.log" 2>/dev/null || true)
 		[ "${n_i:-0}" -ge 1 ] && [ "${n_r:-0}" -ge 1 ] && nint=1
-		log "I2I-drop attempt $attempt: intermediate round(init=$n_i resp=$n_r) up=$up H1 replay=$nreplay drop=$ndrop"
+		log "I2I-drop attempt $attempt: intermediate round(init=$n_i resp=$n_r) up=$up H1 replay=$nreplay drop=$ndrop in_window=${seen:-0}"
 		if [ "$up" -eq 1 ] && [ "${nint:-0}" -eq 1 ] && [ "${nreplay:-0}" -ge 1 ] && [ "${ndrop:-0}" -ge 1 ]; then
 			break
 		fi
