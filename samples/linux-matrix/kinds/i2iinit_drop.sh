@@ -242,8 +242,8 @@ EOF
 	ip link del "$VR" 2>/dev/null || true
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
-	if [ "$up" -ne 1 ] || [ "${nint:-0}" -ne 1 ] || [ "${nreplay:-0}" -lt 1 ]; then
-		log "FAIL: H1 kill-test did not RECOVER via the response replay (up=${up:-0} nint=${nint:-0} nreplay=${nreplay:-0})"
+	if [ "$up" -ne 1 ] || [ "${nint:-0}" -ne 1 ] || [ "${nreplay:-0}" -lt 1 ] || [ "${ndrop:-0}" -lt 1 ]; then
+		log "FAIL: H1 kill-test did not RECOVER via the response replay (up=${up:-0} nint=${nint:-0} nreplay=${nreplay:-0} ndrop=${ndrop:-0})"
 		log "--- init-iked.log ---"
 		grep -E 'IKE_INTERMEDIATE|IKE_SA_INIT|IKE_AUTH|abort|err=|FAILURE|retransmit' \
 			"$D/init-iked.log" 2>/dev/null | tail -10
