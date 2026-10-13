@@ -68,6 +68,50 @@ static const uint8_t rfc7427_sha256_ai[] = {
 	0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
 };
 
+/* RFC 7427 A.1.2: sha384WithRSAEncryption (OID 1.2.840.113549.1.1.12, NULL)
+ * and sha512WithRSAEncryption (OID 1.2.840.113549.1.1.13, NULL) — the SHA-2
+ * chain we advertise/sign on method 14 for the signer-completeness item. */
+static const uint8_t rfc7427_sha384_ai[] = {
+	0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+	0xf7, 0x0d, 0x01, 0x01, 0x0c, 0x05, 0x00,
+};
+static const uint8_t rfc7427_sha512_ai[] = {
+	0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+	0xf7, 0x0d, 0x01, 0x01, 0x0d, 0x05, 0x00,
+};
+
+/* RFC 7427 A.2: id-RSASSA-PSS AlgorithmIdentifiers with SHA-2 hash +
+ * MGF1 = same SHA-2 and saltLength = hash length (256/384/512), DER-encoded.
+ * Used to PUT an RSASSA-PSS signature on the wire (peers that only accept
+ * PSS — PSS-only / HSM keys). */
+static const uint8_t rfc7427_pss_sha256_ai[] = {
+	0x30, 0x41, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
+	0x01, 0x01, 0x0a, 0x30, 0x34, 0xa0, 0x0f, 0x30, 0x0d, 0x06,
+	0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,
+	0x05, 0x00, 0xa1, 0x1c, 0x30, 0x1a, 0x06, 0x09, 0x2a, 0x86,
+	0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x08, 0x30, 0x0d, 0x06,
+	0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,
+	0x05, 0x00, 0xa2, 0x03, 0x02, 0x01, 0x20,
+};
+static const uint8_t rfc7427_pss_sha384_ai[] = {
+	0x30, 0x41, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
+	0x01, 0x01, 0x0a, 0x30, 0x34, 0xa0, 0x0f, 0x30, 0x0d, 0x06,
+	0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02,
+	0x05, 0x00, 0xa1, 0x1c, 0x30, 0x1a, 0x06, 0x09, 0x2a, 0x86,
+	0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x08, 0x30, 0x0d, 0x06,
+	0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02,
+	0x05, 0x00, 0xa2, 0x03, 0x02, 0x01, 0x30,
+};
+static const uint8_t rfc7427_pss_sha512_ai[] = {
+	0x30, 0x41, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
+	0x01, 0x01, 0x0a, 0x30, 0x34, 0xa0, 0x0f, 0x30, 0x0d, 0x06,
+	0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03,
+	0x05, 0x00, 0xa1, 0x1c, 0x30, 0x1a, 0x06, 0x09, 0x2a, 0x86,
+	0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x08, 0x30, 0x0d, 0x06,
+	0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03,
+	0x05, 0x00, 0xa2, 0x03, 0x02, 0x01, 0x40,
+};
+
 /* RFC 8420 Appendix A: Ed25519 / Ed448 AlgorithmIdentifiers (DER),
  * SEQUENCE{ OID 1.3.101.112 / 1.3.101.113 }, 7 bytes each, absent params. */
 static const uint8_t rfc7427_ed25519_ai[] = {
@@ -502,10 +546,49 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 					goto fail;
 				}
 			} else {
-				ai = rfc7427_sha256_ai;
-				_ai_len = sizeof(rfc7427_sha256_ai);
-				ori = eay_rsassa_pkcs1_v1_5_sign
-				    ("SHA256", octets, privkey);
+				/* RFC 7427 signer-completeness item: pick the
+				 * STRONGEST hash this side supports that the
+				 * peer also offered (512 > 384 > 256), instead
+				 * of the historical hardcoded SHA-256.  RSA is
+				 * RSA, so sign RSASSA-PKCS1-v1_5 by default and
+				 * RSASSA-PSS when this side is configured to
+				 * prefer PSS (peers with PSS-only / HSM keys). */
+				const char *hy = "SHA256";
+				const uint8_t *pss_ai = rfc7427_pss_sha256_ai;
+				int salt = 32;
+
+				/* Select by strongest-offered bit; the *pss_ai
+				 * tables and salt ride so an RSA-PSS choice can
+				 * pick the same hash as the PKCS1 one. */
+				if (sa->peer_sig_hash_mask & (1 << 4)) {
+					ai = rfc7427_sha512_ai;
+					_ai_len = sizeof(rfc7427_sha512_ai);
+					hy = "SHA512";
+					pss_ai = rfc7427_pss_sha512_ai;
+					salt = 64;
+				} else if (sa->peer_sig_hash_mask & (1 << 3)) {
+					ai = rfc7427_sha384_ai;
+					_ai_len = sizeof(rfc7427_sha384_ai);
+					hy = "SHA384";
+					pss_ai = rfc7427_pss_sha384_ai;
+					salt = 48;
+				} else {
+					ai = rfc7427_sha256_ai;
+					_ai_len = sizeof(rfc7427_sha256_ai);
+				}
+
+				if (sa->sig_hash_ds_pss) {
+					/* Prefer PSS: sign with id-RSASSA-PSS +
+					 * the same SHA-2, salt = hash length,
+					 * and swap the AI. */
+					ori = eay_rsassa_pss_sign(hy, octets,
+								  privkey, salt);
+					ai = pss_ai;
+					_ai_len = sizeof(rfc7427_pss_sha256_ai);
+				} else {
+					ori = eay_rsassa_pkcs1_v1_5_sign
+					    (hy, octets, privkey);
+				}
 				if (!ori) {
 					isakmp_log(sa, 0, 0, 0,
 						   PLOG_INTERR, PLOGLOC,
@@ -984,8 +1067,14 @@ ikev2_auth_method(struct ikev2_sa *sa)
 		 * with the historic SHA-1 DigestInfo (interop) -- unless
 		 * allow_nsa_deprecated is off, which fails AUTH closed rather
 		 * than sign with SHA-1. */
-		if (sa->sig_hash_algos_ds)
+		if (sa->sig_hash_algos_ds) {
+			/* RFC 7427 signer-completeness: remember whether this
+			 * seat prefers RSASSA-PSS for the RSA method-14 sign
+			 * (id-RSASSA-PSS + salt=hashlen). */
+			sa->sig_hash_ds_pss =
+			    (ikev2_sig_hash_rsa_pss(sa->rmconf) == RCT_BOOL_ON);
 			return IKEV2_AUTH_DS;
+		}
 		if (ikev2_auth_depr_refused(sa, IKE_DEPR_T_SIG_LEGACY, 1,
 		    "own AUTH (peer did not negotiate RFC 7427)"))
 			return 0;

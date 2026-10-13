@@ -346,6 +346,7 @@ struct rcf_kmp {
 	 * when 16431 is offered, to actually sign method 1 / SHA-1 so iked's
 	 * F6 DigestInfo verification is exercised for real. */
 	rc_type offer_sig_hash_algorithms;
+	rc_type sig_hash_rsa_pss;
 	/* RFC 8784: Post-quantum Preshared Key (PPK) mixing.  use_ppk gates the
 	 * USE_PPK / PPK_IDENTITY notifications and the SK_d/SK_pi/SK_pr
 	 * re-derivation (RFC 8784 s4.2); ppk_mandatory mirrors RFC 8784's

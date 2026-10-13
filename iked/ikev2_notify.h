@@ -55,7 +55,12 @@ int createchild_resp_recv_notify(struct ikev2_sa *, rc_vchar_t *,
 
 int ikev2_process_notify(struct ikev2_sa *, struct ikev2_payload_header *, int);
 int ikev2_process_child_notify(struct ikev2payl_notify *,
-			       struct ikev2_child_param *);
+		       struct ikev2_child_param *);
+
+/* RFC 7427 s3.2: parse a peer's 16431 hash-algorithm list into
+ * ike_sa->peer_sig_hash_mask (bit i => hash id i offered).  Called from the
+ * initiator- and responder-view 16431 notify handlers. */
+void ikev2_remember_sig_hashes(struct ikev2_sa *, struct ikev2payl_notify *);
 
 void ikev2_respond_with_notify(rc_vchar_t *, struct sockaddr *, struct sockaddr *,
 			       int, uint8_t *, int);
