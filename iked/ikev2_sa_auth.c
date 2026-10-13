@@ -2300,6 +2300,30 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CONFIG,
 				    child_sa->child_param.cfg_payload, FALSE);
 
+	/* RFC 8983 s4: IP4_ALLOWED / IP6_ALLOWED status notifies (no data).
+	 * After assigning internal addresses, tell a dual-stack initiator which
+	 * address family the responder actually assigned/supports (Table 1).
+	 * Emit one notify per AF that carries a lease in this reply. */
+	if (child_sa->child_param.cfg_payload) {
+		struct rcf_address *a;
+		int has4 = 0, has6 = 0;
+		for (a = LIST_FIRST(&child_sa->lease_list); a;
+		     a = LIST_NEXT(a, link_sa)) {
+			if (a->af == AF_INET) has4 = 1;
+			else if (a->af == AF_INET6) has6 = 1;
+		}
+		if (has4)
+			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_IP4_ALLOWED,
+							 0, 0), TRUE);
+		if (has6)
+			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_IP6_ALLOWED,
+							 0, 0), TRUE);
+	}
+
 #ifdef notyet
 	/*
 	 * [N(IPCOMP_SUPPORTED)]
