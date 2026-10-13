@@ -211,6 +211,7 @@ static int rcf_fix_allow_nsa_deprecated (struct cf_list *, void *);
 static int rcf_fix_allow_rfc_deprecated (struct cf_list *, void *);
 static int rcf_fix_offer_intermediate (struct cf_list *, void *);
 static int rcf_fix_offer_sig_hash_algorithms (struct cf_list *, void *);
+static int rcf_fix_sig_hash_rsa_pss (struct cf_list *, void *);
 static int rcf_fix_require_config (struct cf_list *, void *);
 static int rcf_fix_use_ppk (struct cf_list *, void *);
 static int rcf_fix_ppk_mandatory (struct cf_list *, void *);
@@ -392,6 +393,7 @@ struct rcf_tdf_t {
 	{ CFD_ALLOW_RFC_DEPRECATED,	rcf_fix_allow_rfc_deprecated, },
 	{ CFD_OFFER_INTERMEDIATE,	rcf_fix_offer_intermediate, },
 	{ CFD_OFFER_SIG_HASH_ALGORITHMS, rcf_fix_offer_sig_hash_algorithms, },
+	{ CFD_SIG_HASH_RSA_PSS, rcf_fix_sig_hash_rsa_pss, },
 	{ CFD_USE_PPK,			rcf_fix_use_ppk, },
 	{ CFD_CHILDLESS,			rcf_fix_childless, },
 	{ CFD_NATT_FOLLOW_MAPPING,		rcf_fix_natt_follow_mapping, },
@@ -1662,6 +1664,19 @@ rcf_fix_offer_sig_hash_algorithms(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_OFFER_SIG_HASH_ALGORITHMS))
 		return -1;
 	if (rcf_fix_boolean(head->nextp, &dst->offer_sig_hash_algorithms))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_sig_hash_rsa_pss(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_SIG_HASH_RSA_PSS))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->sig_hash_rsa_pss))
 		return -1;
 
 	return 0;
@@ -3563,6 +3578,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	new->natt_follow_mapping = src->natt_follow_mapping;
 	new->offer_intermediate = src->offer_intermediate;
 	new->offer_sig_hash_algorithms = src->offer_sig_hash_algorithms;
+	new->sig_hash_rsa_pss = src->sig_hash_rsa_pss;
 	new->use_ppk = src->use_ppk;
 	new->childless = src->childless;
 	new->require_config = src->require_config;
