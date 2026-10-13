@@ -18,9 +18,12 @@
  *   and SET_WINDOW_SIZE (16385) — status-type, must be ignored (0).
  *
  * The classifier is ikev2_process_notify(); a NULL ike_sa is tolerated by
- * isakmp_log (it guards `if (ike_sa)`).  Send-side emission of 11/39/9/34
- * is deliberately NOT asserted here: those paths are not implemented yet,
- * and asserting an absence of behaviour is a non-test.
+ * isakmp_log (it guards `if (ike_sa)`).  Send-side emission is asserted
+ * where a real send path can be driven deterministically: INVALID_SPI (11)
+ * via the exported ikev2_process_delete and INVALID_MESSAGE_ID (9) via
+ * ikev2_send_invalid_message_id()'s rate-limiter branch; the full initiate
+ * path of 9 needs a live child/kernel and is out of the unit harness'
+ * reach (covered by live matrix rows instead).
  *
  * Linked with the full iked object set (addtest_ikedsrc) so the real
  * classifier + notify_type_str are exercised, exactly as the other
@@ -239,19 +242,25 @@ main(int argc, char *argv[])
 		/*
 		 * Drive ikev2_send_invalid_message_id() ITSELF on the only
 		 * branch runnable without a live child/kernel: the
-		 * rate-limiter.  With invalid_msgid_last_sent set to 'now',
-		 * RFC 7296 §2.3's one-per-second cap must make the function
-		 * return 0 (rate-limited) and must NOT reach the INFORMATIONAL
-		 * initiator.  Deterministic, side-effect-free part of the real
-		 * function (the payload it would build is asserted above);
-		 * the initiate path needs a running child and is out of the
-		 * unit harness's reach.
+		 * rate-limiter.  With invalid_msgid_last_sent set ahead of
+		 * now, RFC 7296 §2.3's one-per-second cap must make the
+		 * function return 0 (rate-limited) and must NOT reach the
+		 * INFORMATIONAL initiator.  Deterministic, side-effect-free
+		 * part of the real function (the payload it would build is
+		 * asserted above); the initiate path needs a running child
+		 * and is out of the unit harness's reach.
 		 */
 		{
 			struct ikev2_sa sa;
 			memset(&sa, 0, sizeof(sa));
 			TAILQ_INIT(&sa.children);
-			sa.invalid_msgid_last_sent = time(NULL);
+			/* rate-limiter: set last_sent far in the FUTURE so
+			 * time(NULL) - last < 1 regardless of when the
+			 * second boundary ticks between the reference and
+			 * the check inside the function (a wall-clock race
+			 * that would otherwise let it through to the
+			 * initiate path -> crash on the stack-faked SA). */
+			sa.invalid_msgid_last_sent = time(NULL) + 1000;
 			ck(ikev2_send_invalid_message_id(&sa, 0xdeadbeef) == 0,
 			   "ikev2_send_invalid_message_id: rate-limited -> 0, no initiate");
 		}
