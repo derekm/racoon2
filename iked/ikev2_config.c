@@ -471,6 +471,12 @@ ikev2_process_cfg_request_attribs(struct ikev2_sa *ike_sa,
 		case IKEV2_CFG_SUPPORTED_ATTRIBUTES:
 			++param->cfg_supported_attributes;
 			break;
+		case IKEV2_CFG_INTERNAL_IP4_SUBNET:
+			++param->cfg_ip4_subnet;
+			break;
+		case IKEV2_CFG_INTERNAL_IP6_SUBNET:
+			++param->cfg_ip6_subnet;
+			break;
 		case IKEV2_CFG_MIP6_HOME_PREFIX:
 			++param->cfg_mip6_home_prefix;
 			break;
@@ -656,6 +662,75 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 		rcs_free_addrlist(dhcplist);
 	}
 
+	/*
+	 * Split-tunnel subnets (RFC 7296 §3.15.2 / §6.3): when the peer asked
+	 * for INTERNAL_IP4/6_SUBNET, emit the child's remote-side subnets (the
+	 * responder networks the initiator may reach through the tunnel) as
+	 * 13 (addr + netmask) / 15 (addr + prefixlen).  The source is the
+	 * negotiated selector's dst list — the same set that builds ts_r.
+	 * De-facto interop behavior: strongSwan/iOS send and honour these even
+	 * though §6.3 says the responder "should not" send them; follow the
+	 * deployed convention (noted in the IANA-gaps plan).
+	 */
+	if (child_sa && child_sa->selector &&
+	    (param->cfg_ip4_subnet || param->cfg_ip6_subnet)) {
+		struct rcf_selector *sel;
+		for (sel = child_sa->selector; sel; sel = sel->next) {
+			struct rc_addrlist *al;
+			for (al = sel->dst; al; al = al->next) {
+				struct ikev2cfg_attrib hdr;
+				struct sockaddr *sa;
+
+				if (al->type != RCT_ADDR_INET)
+					continue;
+				sa = al->a.ipaddr;
+				if (sa == NULL)
+					continue;
+				if (sa->sa_family == AF_INET &&
+				    param->cfg_ip4_subnet) {
+					struct in_addr addr, mask;
+					uint32_t pm = al->prefixlen > 32 ? 32 :
+					    (al->prefixlen <= 0 ? 32 : al->prefixlen);
+					addr = ((struct sockaddr_in *)sa)->sin_addr;
+					/* netmask = high pm bits set */
+					mask.s_addr = pm == 0 ? 0 :
+					    htonl(pm == 32 ? 0xffffffffU :
+					    (0xffffffffU << (32 - pm)));
+					TRACE((PLOGLOC, "INTERNAL_IP4_SUBNET: %s/%u\n",
+					    inet_ntoa(addr), pm));
+					cfg_attrib_set(&hdr,
+					    IKEV2_CFG_INTERNAL_IP4_SUBNET,
+					    2 * sizeof(struct in_addr));
+					if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
+					    ! rc_vconcat(cfg_payload, &addr, sizeof(addr)) ||
+					    ! rc_vconcat(cfg_payload, &mask, sizeof(mask)))
+						goto err;
+				} else if (sa->sa_family == AF_INET6 &&
+				    param->cfg_ip6_subnet) {
+					struct ikev2cfg_ip6addr d;
+					memset(&d, 0, sizeof(d));
+					if (al->prefixlen > 0 &&
+					    al->prefixlen <= 128)
+						d.prefixlen = al->prefixlen;
+					else
+						d.prefixlen = 128;
+					memcpy(d.addr,
+					    &((struct sockaddr_in6 *)sa)->sin6_addr,
+					    sizeof(d.addr));
+					TRACE((PLOGLOC, "INTERNAL_IP6_SUBNET: %s/%u\n",
+					    inet_ntop(AF_INET6, d.addr, addrstr,
+					    sizeof(addrstr)), d.prefixlen));
+					cfg_attrib_set(&hdr,
+					    IKEV2_CFG_INTERNAL_IP6_SUBNET,
+					    sizeof(d));
+					if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
+					    ! rc_vconcat(cfg_payload, &d, sizeof(d)))
+						goto err;
+				}
+			}
+		}
+	}
+
 	if (param->cfg_mip6_home_prefix &&
 	    ikev2_mip6_home_prefix(ike_sa->rmconf)) {
 		struct ikev2cfg_attrib	hdr;
@@ -722,9 +797,9 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 			const_HTONS(IKEV2_CFG_INTERNAL_IP6_ADDRESS),
 			const_HTONS(IKEV2_CFG_INTERNAL_IP6_DNS),
 			const_HTONS(IKEV2_CFG_INTERNAL_IP6_DHCP),
-			/* const_HTONS(IKEV2_CFG_INTERNAL_IP4_SUBNET), */
+			const_HTONS(IKEV2_CFG_INTERNAL_IP4_SUBNET),
 			const_HTONS(IKEV2_CFG_SUPPORTED_ATTRIBUTES),
-			/* const_HTONS(IKEV2_CFG_INTERNAL_IP6_SUBNET), */
+			const_HTONS(IKEV2_CFG_INTERNAL_IP6_SUBNET),
 		};
 
 		IF_TRACE({
