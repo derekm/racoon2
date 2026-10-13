@@ -692,6 +692,38 @@ test_bad_icv(void)
 	sa_teardown(&sa);
 }
 
+/*
+ * Deferred-keymat guard (RACOON2_CRYPTO_WORKERS>0): a fragment arriving
+ * before the worker-derived receive keys are set must be dropped silently
+ * (RFC 7296 §2.10 retransmit) and counted in isakmpstat.deferred_keymat,
+ * NOT crash on a NULL key.  Clear the receive ENC key the guard checks
+ * (is_initiator==0 => sk_e_i) and assert the drop + counter.
+ */
+static void
+test_deferred_keymat(void)
+{
+	struct ikev2_sa sa;
+	uint8_t inner[8];
+	rc_vchar_t *p;
+	int before;
+
+	sa_setup(&sa, MODE_CBC);
+	inner_payload(inner, sizeof(inner), IKEV2_PAYLOAD_NOTIFY);
+	p = build_frag(&sa, MODE_CBC, 0x88888888, IKEV2_PAYLOAD_NOTIFY,
+		       1, 3, inner, 8, 0, 0);
+	/* clear the receive ENC key AFTER building (build_frag encrypts
+	 * with sk_e_i) to simulate the not-yet-derived keymat window */
+	rc_vfree(sa.sk_e_i);
+	sa.sk_e_i = NULL;
+	before = isakmpstat.deferred_keymat;
+	CHECK(ikev2_frag_recv(&sa, p, NULL, NULL) == NULL,
+	      "NULL receive key -> silent drop (deferred keymat)");
+	CHECK(isakmpstat.deferred_keymat == before + 1,
+	      "deferred-keymat drop counted in isakmpstat");
+	rc_vfree(p);
+	sa_teardown(&sa);
+}
+
 /* corrupt AEAD tag on the GCM path */
 static void
 test_bad_gcm_tag(void)
@@ -1063,6 +1095,7 @@ main(void)
 	test_duplicate();
 	test_metadata();
 	test_bad_icv();
+	test_deferred_keymat();
 	test_bad_gcm_tag();
 	test_bad_padding();
 	test_pmtu_reset();
