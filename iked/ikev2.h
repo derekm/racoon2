@@ -599,6 +599,11 @@ struct ikev2payl_notify {
 /* RFC 9370: links IKE_FOLLOWUP_KE exchanges to the CREATE_CHILD_SA
  * that started the additional key exchanges (status type). */
 #define	IKEV2_ADDITIONAL_KEY_EXCHANGE	16441
+/* RFC 8983: status notifies telling the initiator which address family the
+ * responder assigns/supports.  Sent by the responder in the IKE_AUTH
+ * response / address reply; no data. */
+#define	IKEV2_IP4_ALLOWED		16439
+#define	IKEV2_IP6_ALLOWED		16440
 /* RFC 9370 s2.2.4: error notification, not fatal to the IKE SA.
  * Sent in response to an IKE_FOLLOWUP_KE message for which the
  * responder has no key exchange state. */
