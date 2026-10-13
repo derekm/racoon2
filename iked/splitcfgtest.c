@@ -208,6 +208,109 @@ main(void)
 
 	if (child.child_param.cfg_payload)
 		rc_vfree(child.child_param.cfg_payload);
+
+	/* ================= B.2 mirror: INITIATOR parsing =================
+	 * Drive the real ikev2_process_config_reply() with a fabricated
+	 * CFG_REPLY carrying INTERNAL_IP4_SUBNET(13) + INTERNAL_IP6_SUBNET(15)
+	 * and assert the subnets are COMMITTED to the child (addr + prefixlen)
+	 * in internal_ip4_subnet / internal_ip6_subnet. */
+	{
+		/* build a synthetic CFG_REPLY: payload header + cfgh + attrs */
+		uint8_t buf[1 + sizeof(struct ikev2payl_config) +
+			    2 * sizeof(struct in_addr) +
+			    sizeof(struct ikev2cfg_ip6addr) + 32];
+		int off = 0;
+		struct ikev2payl_config *cfg;
+		struct ikev2_child_sa c;
+		struct ikev2_sa isa;
+		struct rcf_address *ra;
+
+		memset(buf, 0, sizeof(buf));
+		cfg = (struct ikev2payl_config *)buf;
+		cfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+		off += sizeof(struct ikev2payl_config);
+
+		/* 13: addr (10.20.0.0) + netmask (/24) */
+		{
+			struct ikev2cfg_attrib *a =
+			    (struct ikev2cfg_attrib *)(buf + off);
+			struct in_addr addr, mask;
+			put_uint16(&a->type, IKEV2_CFG_INTERNAL_IP4_SUBNET);
+			put_uint16(&a->length, 2 * sizeof(struct in_addr));
+			inet_pton(AF_INET, "10.20.0.0", &addr);
+			inet_pton(AF_INET, "255.255.255.0", &mask);
+			memcpy(IKEV2CFG_ATTR_VALUE(a), &addr, sizeof(addr));
+			memcpy(IKEV2CFG_ATTR_VALUE(a) + sizeof(addr),
+			       &mask, sizeof(mask));
+			off += sizeof(*a) + 2 * sizeof(struct in_addr);
+		}
+		/* 15: prefixlen(32) + addr (2001:db8:cafe::) */
+		{
+			struct ikev2cfg_attrib *a =
+			    (struct ikev2cfg_attrib *)(buf + off);
+			struct ikev2cfg_ip6addr d;
+			memset(&d, 0, sizeof(d));
+			d.prefixlen = 32;
+			uint8_t expect[16] = { 0 };
+			expect[0] = 0x20; expect[1] = 0x01;
+			expect[2] = 0x0d; expect[3] = 0xb8;
+			expect[4] = 0xca; expect[5] = 0xfe;
+			memcpy(d.addr, expect, 16);
+			put_uint16(&a->type, IKEV2_CFG_INTERNAL_IP6_SUBNET);
+			put_uint16(&a->length, sizeof(struct ikev2cfg_ip6addr));
+			memcpy(IKEV2CFG_ATTR_VALUE(a), &d, sizeof(d));
+			off += sizeof(*a) + sizeof(struct ikev2cfg_ip6addr);
+		}
+		/* set the 2-byte payload_length (big-endian) = total cfg body */
+		{
+			uint8_t pl[2];
+			pl[0] = (uint8_t)((off >> 8) & 0xff);
+			pl[1] = (uint8_t)(off & 0xff);
+			memcpy((uint8_t *)&cfg->header.payload_length, pl, 2);
+		}
+		cfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+
+		/* fresh child_sa to receive into */
+		memset(&c, 0, sizeof(c));
+		memset(&isa, 0, sizeof(isa));
+		ikev2_child_param_init(&c.child_param);
+
+		CK(ikev2_process_config_reply(&isa, &c, &cfg->header) == 0,
+		   "ikev2_process_config_reply(13/15) rc==0");
+
+		ra = LIST_FIRST(&c.internal_ip4_subnet);
+		CK(ra != NULL, "ip4 subnet committed to internal_ip4_subnet");
+		if (ra) {
+			struct in_addr got;
+			memcpy(&got, ra->address, sizeof(got));
+			CK(got.s_addr == htonl(0x0a140000),
+			   "ip4 subnet addr == 10.20.0.0");
+			CK(ra->prefixlen == 24,
+			   "ip4 subnet prefixlen == /24");
+		}
+
+		ra = LIST_FIRST(&c.internal_ip6_subnet);
+		CK(ra != NULL, "ip6 subnet committed to internal_ip6_subnet");
+		if (ra) {
+			uint8_t expect[16] = { 0 };
+			expect[0] = 0x20; expect[1] = 0x01;
+			expect[2] = 0x0d; expect[3] = 0xb8;
+			expect[4] = 0xca; expect[5] = 0xfe;
+			CK(memcmp(ra->address, expect, 16) == 0,
+			   "ip6 subnet addr == 2001:db8:cafe::");
+			CK(ra->prefixlen == 32,
+			   "ip6 subnet prefixlen == /32");
+		}
+
+		/* teardown the receive-side child (release committed subnets) */
+		while (!LIST_EMPTY(&c.internal_ip4_subnet))
+			rc_addrpool_release_addr(
+			    LIST_FIRST(&c.internal_ip4_subnet));
+		while (!LIST_EMPTY(&c.internal_ip6_subnet))
+			rc_addrpool_release_addr(
+			    LIST_FIRST(&c.internal_ip6_subnet));
+	}
+
 	rcs_free_addrlist(sel4.dst);
 	rcs_free_addrlist(sel6.dst);
 
