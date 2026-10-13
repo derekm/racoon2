@@ -74,6 +74,8 @@ static int env_add_addr(struct sockaddr *, const char *, const char *,
 			char ***, size_t *);
 static int env_add_addresses(struct rcf_address_list_head *, const char *,
 			     char ***, size_t *);
+static int env_add_subnet(struct rcf_address_list_head *, const char *,
+			  char ***, size_t *);
 static int env_add_addrlist(struct rc_addrlist *, const char *, const char *,
 			    const char *, char ***, size_t *);
 
@@ -554,6 +556,15 @@ ikev2_child_script_hook(struct ikev2_child_sa *child_sa, int script)
 		return;
 
 	/*
+	 * INTERNAL_SUBNET4 / INTERNAL_SUBNET6 (RFC 7296 §3.15.2)
+	 */
+	if (env_add_subnet(&child_sa->internal_ip4_subnet,
+			   "INTERNAL_SUBNET4", &envp, &envc) ||
+	    env_add_subnet(&child_sa->internal_ip6_subnet,
+			   "INTERNAL_SUBNET6", &envp, &envc))
+		return;
+
+	/*
 	 * APPLICATION_VERSION
 	 */
 	if (script_env_append(&envp, &envc, "APPLICATION_VERSION",
@@ -687,6 +698,65 @@ env_add_addresses(struct rcf_address_list_head *list, const char *envname,
  nomem:
 	plog(PLOG_INTERR, PLOGLOC, 0, "Memory allocation failed\n");
 	goto done;
+}
+
+/* Encode an rcf_address list of split-tunnel subnets (each carries a
+ * prefixlen) as "addr/prefix [addr/prefix ...]" into one env var, e.g.
+ * INTERNAL_SUBNET4="10.20.0.0/24", INTERNAL_SUBNET6="2001:db8::/32".
+ * Same shape as env_add_addresses but appends "/<prefix>". */
+static int
+env_add_subnet(struct rcf_address_list_head *list, const char *envname,
+	       char ***envp, size_t *envc)
+{
+	char	*buf;
+	struct rcf_address	*a;
+	size_t	buflen;
+	/* room for whole addr + "/" + 3-digit prefix + NUL */
+	char	item[IP_MAX + 1 + 4];
+
+	buflen = 1;
+	buf = racoon_malloc(buflen);
+	if (!buf) {
+		TRACE((PLOGLOC, "memory allocation failure\n"));
+		return -1;
+	}
+	buf[0] = '\0';
+
+	for (a = LIST_FIRST(list); a; a = LIST_NEXT(a, link_pool)) {
+		size_t len;
+
+		if (inet_ntop(a->af, a->address, item, IP_MAX) == NULL) {
+			plog(PLOG_INTERR, PLOGLOC, 0,
+			     "inet_ntop: %s\n", strerror(errno));
+			racoon_free(buf);
+			return -1;
+		}
+		snprintf(item, sizeof(item), "%s/%d", item, a->prefixlen);
+
+		len = strlen(item) + 1;
+		buf = racoon_realloc(buf, buflen + (buflen > 1 ? 1 : 0) + len);
+		if (!buf) {
+			racoon_free(buf);
+			plog(PLOG_INTERR, PLOGLOC, 0,
+			     "Memory allocation failed\n");
+			return -1;
+		}
+		if (buflen > 1)
+			strcat(buf, " ");
+		strcat(buf, item);
+
+		buflen += len;
+	}
+
+	if (script_env_append(envp, envc, envname, buf)) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "Can't set environment variable\n");
+		racoon_free(buf);
+		return -1;
+	}
+
+	racoon_free(buf);
+	return 0;
 }
 
 

@@ -582,9 +582,11 @@ struct ikev2_child_sa {
 	struct rcf_address_list_head	internal_ip4_dns;
 	struct rcf_address_list_head	internal_ip4_nbns;
 	struct rcf_address_list_head	internal_ip4_dhcp;
+	struct rcf_address_list_head	internal_ip4_subnet;
 	struct rcf_address_list_head	internal_ip6_addr;
 	struct rcf_address_list_head	internal_ip6_dns;
 	struct rcf_address_list_head	internal_ip6_dhcp;
+	struct rcf_address_list_head	internal_ip6_subnet;
 	rc_vchar_t	*peer_application_version;
 };
 
