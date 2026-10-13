@@ -205,7 +205,7 @@ EOF
 
 		# REPLAY kill-test: force the responder to replay its cached gen-0
 		# IKE_INTERMEDIATE fragment datagrams by dropping a FRAGMENT of the
-		# RESPONSE (shared, event-anchored netem window - see lib.sh).
+		# RESPONSE (shared, deterministic nft single-drop - see lib.sh).
 		ndrop=0; seen=0
 		i2i_replay_loss_window "$HI" "$HR" "$SBIN" "$SOCK_I" "$D/resp-iked.log" || return 1
 		ndrop=$I2I_NDROP; seen=$I2I_SEEN
