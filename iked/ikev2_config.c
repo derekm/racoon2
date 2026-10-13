@@ -705,6 +705,20 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 					    ! rc_vconcat(cfg_payload, &addr, sizeof(addr)) ||
 					    ! rc_vconcat(cfg_payload, &mask, sizeof(mask)))
 						goto err;
+					/* Legacy Windows clients (and some L2TP
+					 * gateways) do not understand RFC 7296
+					 * INTERNAL_IP4_SUBNET (13); they still take
+					 * the older INTERNAL_IP4_NETMASK (2) and
+					 * apply it to their assigned internal
+					 * address.  Emit the SAME mask as attr 2 so
+					 * those clients route the split subnet too.
+					 * §3.15.1: netmask is a plain IPv4 address. */
+					cfg_attrib_set(&hdr,
+					    IKEV2_CFG_INTERNAL_IP4_NETMASK,
+					    sizeof(struct in_addr));
+					if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
+					    ! rc_vconcat(cfg_payload, &mask, sizeof(mask)))
+						goto err;
 				} else if (sa->sa_family == AF_INET6 &&
 				    param->cfg_ip6_subnet) {
 					struct ikev2cfg_ip6addr d;
@@ -789,6 +803,7 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 		struct ikev2cfg_attrib	hdr;
 		static uint16_t	attribs[] = {
 			const_HTONS(IKEV2_CFG_INTERNAL_IP4_ADDRESS),
+			const_HTONS(IKEV2_CFG_INTERNAL_IP4_NETMASK),
 			const_HTONS(IKEV2_CFG_INTERNAL_IP4_DNS),
 			/* const_HTONS(IKEV2_CFG_INTERNAL_IP4_NBNS), */
 			const_HTONS(IKEV2_CFG_INTERNAL_ADDRESS_EXPIRY),

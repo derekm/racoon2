@@ -116,7 +116,7 @@ main(void)
 		    (struct ikev2payl_config_h *)p;
 		uint8_t *body = p + sizeof(*cfgh);
 		size_t blen = plen - sizeof(*cfgh);
-		int found13 = 0, found15 = 0;
+		int found13 = 0, found15 = 0, found2 = 0;
 
 		CK(cfgh->cfg_type == IKEV2_CFG_REPLY,
 		   "reply config payload type == CFG_REPLY");
@@ -146,6 +146,15 @@ main(void)
 				CK(mask.s_addr == htonl(0xffffff00),
 				   "13 INTERNAL_IP4_SUBNET mask == /24");
 				found13 = 1;
+			} else if (t == IKEV2_CFG_INTERNAL_IP4_NETMASK) {
+				/* B.3: legacy-Windows NETMASK(2) rides beside 13,
+				 * same /24 mask as a plain address. */
+				uint8_t *v = IKEV2CFG_ATTR_VALUE(a);
+				struct in_addr m2;
+				memcpy(&m2, v, sizeof(m2));
+				CK(m2.s_addr == htonl(0xffffff00),
+				   "2 INTERNAL_IP4_NETMASK == /24 (legacy Windows)");
+				found2 = 1;
 			} else if (t == IKEV2_CFG_INTERNAL_IP6_SUBNET) {
 				uint8_t *v = IKEV2CFG_ATTR_VALUE(a);
 				struct ikev2cfg_ip6addr *d =
@@ -166,6 +175,7 @@ main(void)
 		}
 		CK(found13, "reply contains INTERNAL_IP4_SUBNET (13)");
 		CK(found15, "reply contains INTERNAL_IP6_SUBNET (15)");
+		CK(found2, "reply contains INTERNAL_IP4_NETMASK (2) beside 13");
 
 		/* negative: with NO subnet request, neither attribute appears */
 		{
@@ -180,7 +190,7 @@ main(void)
 				    sizeof(struct ikev2payl_config_h);
 				size_t bb = p2.cfg_payload->l -
 				    sizeof(struct ikev2payl_config_h);
-				int n13 = 0, n15 = 0;
+				int n13 = 0, n15 = 0, n2 = 0;
 				for (; bb > 0; ) {
 					struct ikev2cfg_attrib *a =
 					    (struct ikev2cfg_attrib *)bp;
@@ -193,11 +203,12 @@ main(void)
 						break;
 					if (t == IKEV2_CFG_INTERNAL_IP4_SUBNET) n13++;
 					if (t == IKEV2_CFG_INTERNAL_IP6_SUBNET) n15++;
+					if (t == IKEV2_CFG_INTERNAL_IP4_NETMASK) n2++;
 					bp += sizeof(*a) + l;
 					bb -= sizeof(*a) + l;
 				}
-				CK(n13 == 0 && n15 == 0,
-				   "no 13/15 emitted without a subnet request");
+				CK(n13 == 0 && n15 == 0 && n2 == 0,
+				   "no 2/13/15 emitted without a subnet request");
 			} else {
 				CK(1, "no-request reply has no subnet attrs (empty)");
 			}
