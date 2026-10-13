@@ -371,6 +371,7 @@ allow_nsa_deprecated	{ DP; return(ALLOW_NSA_DEPRECATED); }
 allow_rfc_deprecated	{ DP; return(ALLOW_RFC_DEPRECATED); }
 offer_intermediate	{ DP; return(OFFER_INTERMEDIATE); }
 offer_sig_hash_algorithms	{ DP; return(OFFER_SIG_HASH_ALGORITHMS); }
+sig_hash_rsa_pss		{ DP; return(SIG_HASH_RSA_PSS); }
 	/* RFC 8784 PPK */
 use_ppk			{ DP; return(USE_PPK); }
 ppk_mandatory		{ DP; return(PPK_MANDATORY); }

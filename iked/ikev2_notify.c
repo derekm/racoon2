@@ -130,8 +130,10 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		/* RFC 7427 s4: the PEER advertises its signature-hash support and
 		 * thereby the Digital Signature AUTH method (14).  This side echoes
 		 * 16431 (committing to method 14 AUTH) when its own seat is RSASIG
-		 * -- see responder_state0_after_gen. */
+		 * -- see responder_state0_after_gen.  Remember the offered hash
+		 * set so our method-14 signer can pick the strongest mutual hash. */
 		ike_sa->peer_sent_sig_hash_algos = 1;
+		ikev2_remember_sig_hashes(ike_sa, notify);
 		TRACE((PLOGLOC, "peer offers SIG_HASH_ALGORITHMS (16431)\n"));
 		break;
 	case IKEV2_USE_PPK:
@@ -303,6 +305,7 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		 * keys off sig_hash_algos_ds. */
 		ike_sa->peer_sent_sig_hash_algos = 1;
 		ike_sa->sig_hash_algos_ds = 1;
+		ikev2_remember_sig_hashes(ike_sa, notify);
 		TRACE((PLOGLOC, "peer echoes SIG_HASH_ALGORITHMS (16431)\n"));
 		break;
 	case IKEV2_USE_PPK:
@@ -800,6 +803,44 @@ createchild_resp_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	}
 
 	return 0;
+}
+
+/*
+ * RFC 7427 s3.2: remember the hash-algorithm set a peer offered in its
+ * SIG_HASH_ALGORITHMS (16431) notification.  The data is a list of 2-byte
+ * big-endian hash IDs (1=SHA1, 2=SHA2-256, 3=SHA2-384, 4=SHA2-512,
+ * 5=Identity/EdDSA).  Our method-14 signer (DS) later picks the strongest
+ * hash this side also supports from the resulting mask.  A malformed or
+ * empty list leaves the mask 0 (the historical hardcoded SHA-256 is used).
+ */
+void
+ikev2_remember_sig_hashes(struct ikev2_sa *ike_sa, struct ikev2payl_notify *notify)
+{
+	const uint8_t *d;
+	size_t dlen;
+	int mask = 0;
+
+	if (!ike_sa || !notify)
+		return;
+
+	if (get_payload_length(&notify->header) <=
+	    sizeof(struct ikev2payl_notify)) {
+		ike_sa->peer_sig_hash_mask = 0;
+		return;
+	}
+	d = (const uint8_t *)(notify + 1);
+	dlen = get_payload_length(&notify->header) -
+	    sizeof(struct ikev2payl_notify);
+
+	while (dlen >= 2) {
+		unsigned int id = (d[0] << 8) | d[1];
+		if (id >= 1 && id <= 5 && id < (unsigned int)(sizeof(int) * 8))
+			mask |= (1 << id);
+		d += 2;
+		dlen -= 2;
+	}
+	ike_sa->peer_sig_hash_mask = mask;
+	TRACE((PLOGLOC, "RFC7427: peer sig-hash mask 0x%x\n", mask));
 }
 
 /*

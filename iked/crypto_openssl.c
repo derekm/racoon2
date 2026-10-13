@@ -1315,6 +1315,94 @@ eay_rsassa_pkcs1_v1_5_sign(const char *hash_type, rc_vchar_t *octets, rc_vchar_t
 	return 0;
 }
 
+/* RFC 7427 sign (method 14): RSASSA-PSS signature over Hash(octets).
+ *
+ * hash_type: name string of the digest (sha256/sha384/sha512)
+ * octets:    message to sign
+ * privkey:   vmbuf of private key in PKCS#1 format
+ * saltlen:   PSS salt length in octets (normally == hash length)
+ *
+ * Returns the raw PSS signature (RSA_size octets) or NULL on error.  Used
+ * to emit an id-RSASSA-PSS signature for peers that only accept PSS
+ * (PSS-only / HSM keys), the signer-completeness half of RFC 7427. */
+rc_vchar_t *
+eay_rsassa_pss_sign(const char *hash_type, rc_vchar_t *octets,
+		    rc_vchar_t *privkey, int saltlen)
+{
+	EVP_PKEY *pkey = NULL;
+	BPP_const unsigned char *bp;
+	size_t siglen = 0;
+	rc_vchar_t *sig = 0;
+	const EVP_MD *md;
+	EVP_MD_CTX *ctx = NULL;
+	EVP_PKEY_CTX *pctx = NULL;
+	RSA *rsa;
+	int len;
+
+	bp = (unsigned char *)privkey->v;
+	pkey = d2i_PrivateKey(EVP_PKEY_RSA, NULL, &bp, privkey->l);
+	if (pkey == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed obtaining private key: %s\n", eay_strerror());
+		goto fail;
+	}
+	rsa = EVP_PKEY_get0_RSA(pkey);
+	len = RSA_size(rsa);
+	sig = rc_vmalloc(len);
+	if (sig == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "failed allocating memory\n");
+		goto fail;
+	}
+	md = EVP_get_digestbyname(hash_type);
+	if (!md) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed to find digest algorithm %s\n", hash_type);
+		goto fail;
+	}
+	ctx = EVP_MD_CTX_new();
+	if (!ctx) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed to allocate context\n");
+		goto fail;
+	}
+	if (EVP_DigestSignInit(ctx, &pctx, md, NULL, pkey) <= 0)
+		goto sslerr;
+	if (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING) <= 0 ||
+	    EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, md) <= 0 ||
+	    EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, saltlen) <= 0)
+		goto sslerr;
+	/* One-shot EVP_DigestSign writes at most *siglen bytes; the buffer must
+	 * be pre-sized (RSA_size) and siglen set to it, else OpenSSL 3.x
+	 * reports "invalid signature size". */
+	siglen = (size_t)len;
+	if (EVP_DigestSign(ctx, (unsigned char *)sig->v, &siglen,
+	    octets->v, octets->l) <= 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "RSA-PSS sign failed: %s\n", eay_strerror());
+		goto fail;
+	}
+	if (sig->l != (int)siglen) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "unexpected signature length %u\n", siglen);
+		goto fail;
+	}
+	EVP_MD_CTX_free(ctx);
+	EVP_PKEY_free(pkey);
+	return sig;
+
+      sslerr:
+	plog(PLOG_INTERR, PLOGLOC, NULL, "RSA-PSS sign setup failed: %s\n",
+	     eay_strerror());
+      fail:
+	if (sig)
+		rc_vfree(sig);
+	if (ctx)
+		EVP_MD_CTX_free(ctx);
+	if (pkey)
+		EVP_PKEY_free(pkey);
+	return 0;
+}
+
 /*
  * hash_type:	name string of Hash function
  * octets:	message octets
@@ -2040,7 +2128,10 @@ rfc7427_sha2(const ASN1_OBJECT *obj)
 	return NULL;
 }
 
-/* the hash of an AlgorithmIdentifier whose parameters must be NULL/absent */
+/* the hash of an AlgorithmIdentifier whose parameters must be NULL/absent
+ * (RFC 7427 A.2 PSS params carry the hash with absent OR NULL params;
+ * OpenSSL and strongSwan emit id-sha2* with NULL in the PSS AlgorithmIdentifier)
+ */
 static const EVP_MD *
 rfc7427_sha2_algor(const X509_ALGOR *a)
 {

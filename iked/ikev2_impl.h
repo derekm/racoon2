@@ -324,6 +324,21 @@ struct ikev2_sa {
 	int peer_sent_sig_hash_algos;
 	int sig_hash_algos_ds;
 
+	/* RFC 7427 s3.2: prefer RSASSA-PSS (id-RSASSA-PSS AlgorithmIdentifier,
+	 * salt = hash length) over RSASSA-PKCS1-v1_5 when signing AUTH method
+	 * 14 as RSA, for peers that only accept PSS (PSS-only / HSM keys).
+	 * Set from the remote's 'sig_hash_rsa_pss' config (default off ->
+	 * PKCS1-v1_5, the historical behaviour). */
+	int sig_hash_ds_pss;
+
+	/* RFC 7427 s3.2: the hash-algorithm set the PEER offered in its 16431
+	 * notification (bit i set => hash id i offered: 2=SHA2-256, 3=SHA2-384,
+	 * 4=SHA2-512, 5=Identity/EdDSA).  Our AUTH method-14 signer (DS) picks
+	 * the STRONGEST hash this side also supports from this mask (SHA-512 >
+	 * 384 > 256), per the plan's signer-completeness item.  Privileged over
+	 * the historical hardcoded SHA-256. */
+	int peer_sig_hash_mask;
+
 	int behind_nat;
 	int peer_behind_nat;
 	int crypto_pending;
