@@ -133,6 +133,16 @@ i2i_replay_loss_window() {
 	_hi=$1 _hr=$2 _sbin=$3 _sock_i=$4 _resp=$5
 	I2I_NDROP=0
 	I2I_SEEN=0
+	# The row retry loop re-invokes this helper in the same netns, so the
+	# table may already exist from an earlier attempt.  `nft -f -` on an
+	# existing table ADDS a second identical rule rather than replacing (so
+	# the counter read below would hit the stale first rule's counter), and
+	# the rule must be re-armed fresh for THIS attempt.  Delete first when
+	# already present (i2ike-drop576.sh does the same between attempts), then
+	# install fresh so every attempt drops exactly the one gen-0 response.
+	if ip netns exec "$NSR" nft list table inet r2drop >/dev/null 2>&1; then
+		ip netns exec "$NSR" nft delete table inet r2drop 2>/dev/null || true
+	fi
 	ip netns exec "$NSR" nft -f - 2>/dev/null <<'NFT' || \
 		{ log "FAIL: cannot install the nft drop rule in $NSR (no nft?); abort"; return 1; }
 table inet r2drop {
@@ -157,9 +167,11 @@ NFT
 		fi
 		sleep 1; _w=$((_w-1))
 	done
-	# read the rule's own drop counter (exactly one drop, per the quota)
+	# read the rule's own drop counter: SUM every rule's counter so a retry
+	# attempt (where each fresh install is the only rule present) counts
+	# correctly rather than only seeing one rule.
 	I2I_NDROP=$(ip netns exec "$NSR" nft list table inet r2drop 2>/dev/null \
-		| grep -oE 'counter packets [0-9]+' | head -1 | awk '{print $3}')
+		| grep -oE 'counter packets [0-9]+' | awk '{s+=$3} END{print s+0}')
 	[ -n "${I2I_NDROP:-}" ] || I2I_NDROP=0
 	log "drop-count window: nft dropped ${I2I_NDROP:-0} datagram (intermediate_seen=$I2I_SEEN)"
 	return 0

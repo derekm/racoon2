@@ -194,7 +194,7 @@ EOF
 
 		# REPLAY kill-test: force the responder to replay its cached gen-0
 		# IKE_INTERMEDIATE response by dropping a fragment of the RESPONSE
-		# (shared, event-anchored netem window - see lib.sh).
+		# (shared, deterministic nft single-drop - see lib.sh).
 		ndrop=0; seen=0
 		i2i_replay_loss_window "$HI" "$HR" "$SBIN" "$SOCK_I" "$D/resp-iked.log" || return 1
 		ndrop=$I2I_NDROP; seen=$I2I_SEEN
@@ -225,9 +225,10 @@ EOF
 	done
 
 	# The injected loss is the row's IKE fixture, not part of the data
-	# path under test: lift it, then prove the child carries traffic both
-	# ways (the audit failed on a 5%-loss echo: inbound rose=0)
-	ip netns exec "$NSR" tc qdisc del dev "$VR" root 2>/dev/null || true
+	# path under test: delete the nft drop rule (it self-limits to one drop
+	# but is no longer needed), then prove the child carries traffic both
+	# ways.
+	ip netns exec "$NSR" nft delete table inet r2drop 2>/dev/null || true
 	if [ "${up:-0}" -eq 1 ]; then
 		i2i_dataplane "$NSI" "$HR" "$name" || {
 			pkill -9 -f "$C/" 2>/dev/null || true
