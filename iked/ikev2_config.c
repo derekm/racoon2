@@ -996,11 +996,39 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				TRACE((PLOGLOC, "failed processing INTERNAL_IP6_DHCP\n"));
 			}
 			break;
-		case IKEV2_CFG_INTERNAL_IP4_SUBNET:
-			isakmp_log(ike_sa, 0, 0, 0,
-				   PLOG_INTWARN, PLOGLOC,
-				   "INTERNAL_IP4_SUBNET received, ignored\n");
+		case IKEV2_CFG_INTERNAL_IP4_SUBNET: {
+			/* RFC 7296 §3.15.2: value = IPv4 address (4) +
+			 * IPv4 netmask (4).  The responder advertises the
+			 * subnets the initiator may reach through this SA;
+			 * commit them to the child's remote-side subnets so
+			 * the updown script routes them into the tunnel. */
+			struct in_addr saddr, smask;
+			uint32_t m;
+			int plen;
+			if (len < 2 * sizeof(struct in_addr)) {
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
+					   PLOGLOC,
+					   "INTERNAL_IP4_SUBNET too short (%zu), ignored\n",
+					   len);
+				break;
+			}
+			memcpy(&saddr, value, sizeof(saddr));
+			memcpy(&smask, value + sizeof(saddr), sizeof(smask));
+			m = ntohl(smask.s_addr);
+			/* netmask -> prefixlen (count leading set bits) */
+			for (plen = 0; plen < 32 && (m & (0x80000000U >> plen)); plen++)
+				;
+			TRACE((PLOGLOC, "INTERNAL_IP4_SUBNET: %s/%d\n",
+			       inet_ntop(AF_INET, &saddr, addrstr,
+					 sizeof(addrstr)), plen));
+			if (!rc_address_new(AF_INET, (uint8_t *)&saddr, plen,
+					    0, &child_sa->internal_ip4_subnet)) {
+				TRACE((PLOGLOC,
+				       "failed processing INTERNAL_IP4_SUBNET\n"));
+				return -1;
+			}
 			break;
+		}
 		case IKEV2_CFG_SUPPORTED_ATTRIBUTES:
 			{
 				int i;
@@ -1024,11 +1052,32 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				}
 			}
 			break;
-		case IKEV2_CFG_INTERNAL_IP6_SUBNET:
-			isakmp_log(ike_sa, 0, 0, 0,
-				   PLOG_PROTOWARN, PLOGLOC,
-				   "received INTERNAL_IP6_SUBNET, ignored\n");
+		case IKEV2_CFG_INTERNAL_IP6_SUBNET: {
+			/* RFC 7296 §3.15.2 / RFC 8598: value =
+			 * struct ikev2cfg_ip6addr = prefixlen (1) + addr (16).
+			 * Commit to the child's remote-side subnets like 13. */
+			struct ikev2cfg_ip6addr *sd;
+			int plen;
+			if (len < sizeof(struct ikev2cfg_ip6addr)) {
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
+					   PLOGLOC,
+					   "INTERNAL_IP6_SUBNET too short (%zu), ignored\n",
+					   len);
+				break;
+			}
+			sd = (struct ikev2cfg_ip6addr *)value;
+			plen = sd->prefixlen;
+			TRACE((PLOGLOC, "INTERNAL_IP6_SUBNET: %s/%d\n",
+			       inet_ntop(AF_INET6, sd->addr, addrstr,
+					 sizeof(addrstr)), plen));
+			if (!rc_address_new(AF_INET6, sd->addr, plen,
+					    0, &child_sa->internal_ip6_subnet)) {
+				TRACE((PLOGLOC,
+				       "failed processing INTERNAL_IP6_SUBNET\n"));
+				return -1;
+			}
 			break;
+		}
 		case IKEV2_CFG_MIP6_HOME_PREFIX:
 			{
 				struct ikev2cfg_mip6prefix	*p;

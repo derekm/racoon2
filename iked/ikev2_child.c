@@ -285,9 +285,11 @@ ikev2_create_child_sa(struct ikev2_sa *ike_sa, int not_informational)
 	LIST_INIT(&child_sa->internal_ip4_dns);
 	LIST_INIT(&child_sa->internal_ip4_nbns);
 	LIST_INIT(&child_sa->internal_ip4_dhcp);
+	LIST_INIT(&child_sa->internal_ip4_subnet);
 	LIST_INIT(&child_sa->internal_ip6_addr);
 	LIST_INIT(&child_sa->internal_ip6_dns);
 	LIST_INIT(&child_sa->internal_ip6_dhcp);
+	LIST_INIT(&child_sa->internal_ip6_subnet);
 
 	ikev2_insert_child(ike_sa, child_sa);
 	++ike_sa->child_created;
@@ -515,9 +517,11 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 	RELEASE_LIST(internal_ip4_dns);
 	RELEASE_LIST(internal_ip4_nbns);
 	RELEASE_LIST(internal_ip4_dhcp);
+	RELEASE_LIST(internal_ip4_subnet);
 	RELEASE_LIST(internal_ip6_addr);
 	RELEASE_LIST(internal_ip6_dns);
 	RELEASE_LIST(internal_ip6_dhcp);
+	RELEASE_LIST(internal_ip6_subnet);
 
 #undef RELEASE_LIST
 
