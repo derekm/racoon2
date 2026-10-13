@@ -128,6 +128,15 @@ check_PROGRAMS += splitcfgtest
 splitcfgtest_SOURCES = splitcfgtest.c
 splitcfgtest_LDADD = $(addtest_ikedsrc) $(LDADD)
 
+# RFC 7427 signer-completeness (Item C): sign/verify round-trips for the
+# algorithms iked can now PUT on AUTH method 14 — RSA-PKCS1 SHA-256/384/512
+# and RSASSA-PSS (salt=hashlen) SHA-256/384/512 — using the production
+# eay_rsassa_*_sign() helpers.  Links the full object set (crypto_openssl).
+TESTS += signtest
+check_PROGRAMS += signtest
+signtest_SOURCES = signtest.c
+signtest_LDADD = $(addtest_ikedsrc) $(LDADD)
+
 # RFC 9370 ADDKE ML-KEM-768 crypto (configure --enable-addke auto):
 # exercised only on OpenSSL >= 3.5 builds that actually have the code.
 if ADDKE

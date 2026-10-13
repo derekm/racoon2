@@ -222,6 +222,7 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* addke_unrequested (responder-driven ADDKE) */
 	RCT_BOOL_ON,		/* offer_intermediate (RFC 9242 capability notify) */
 	RCT_BOOL_ON,		/* offer_sig_hash_algorithms (RFC 7427 16431) */
+	RCT_BOOL_OFF,		/* sig_hash_rsa_pss (prefer RSASSA-PSS sign) */
 	RCT_BOOL_OFF,		/* use_ppk (RFC 8784 PPK mixing) */
 	RCT_BOOL_OFF,		/* childless (RFC 6023 SA-less IKE_AUTH) */
 	RCT_BOOL_OFF,		/* require_config (RFC 6023 mandatory CP(CFG_REQUEST)) */
@@ -484,6 +485,7 @@ IKEV2_CONF_ATTR(rc_type, allow_nsa_deprecated)
 IKEV2_CONF_ATTR(rc_type, allow_rfc_deprecated)
 IKEV2_CONF_ATTR(rc_type, offer_intermediate)
 IKEV2_CONF_ATTR(rc_type, offer_sig_hash_algorithms)
+IKEV2_CONF_ATTR(rc_type, sig_hash_rsa_pss)
 IKEV2_CONF_ATTR(rc_type, use_ppk)
 IKEV2_CONF_ATTR(rc_type, childless)
 IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
