@@ -143,6 +143,7 @@ struct rcf_kmp ikev1_default_values = {
 	NULL,			/* cfg_dns */
 	NULL,			/* cfg_dhcp */
 	NULL,			/* application_version */
+	NULL,			/* dns_domain */
 	NULL,			/* mip6_home_prefix */
 	RCT_BOOL_ON,		/* dpd */
 	0,			/* dpd_interval */
@@ -208,6 +209,7 @@ struct rcf_kmp ikev2_default_values = {
 	NULL,			/* cfg_dns */
 	NULL,			/* cfg_dhcp */
 	NULL,			/* application_version */
+	NULL,			/* dns_domain */
 	NULL,			/* mip6_home_prefix */
 	RCT_BOOL_ON,		/* dpd */
 	IKEV2_DEFAULT_POLLING_INTERVAL,	/* dpd_interval */
@@ -497,6 +499,7 @@ IKEV2_CONF_ATTR(int, session_resume_ticket_lifetime)
 IKEV2_CONF_ATTR(struct rc_addrlist *, natd_public_address)
 IKEV2_CONF_ATTR(rc_type, need_pfs)
 IKEV2_CONF_ATTR(rc_vchar_t *, application_version)
+IKEV2_CONF_ATTR(rc_vchar_t *, dns_domain)
 IKEV2_CONF_ATTR(int, dpd_interval)
 
 rc_type ikev2_config_required(struct rcf_remote *conf)
@@ -614,6 +617,7 @@ fname(struct rcf_remote *conf)						\
 }
 
 IKEV2_CFG(ikev2_cfg_application_version, RCF_REQ_APPLICATION_VERSION)
+IKEV2_CFG(ikev2_cfg_dns_domain, RCF_REQ_DNS_DOMAIN)
 IKEV2_CFG(ikev2_cfg_ip4_dns, RCF_REQ_IP4_DNS)
 IKEV2_CFG(ikev2_cfg_ip6_dns, RCF_REQ_IP6_DNS)
 IKEV2_CFG(ikev2_cfg_ip4_dhcp, RCF_REQ_IP4_DHCP)
