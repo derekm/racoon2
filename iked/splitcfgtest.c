@@ -78,7 +78,6 @@ main(void)
 	struct ikev2_child_sa child;
 	struct rcf_selector sel4, sel6;
 	struct ikev2_sa ike_sa;
-	struct ikev2_payloads *resp = NULL;
 	int i;
 
 	memset(&child, 0, sizeof(child));
@@ -202,6 +201,8 @@ main(void)
 			} else {
 				CK(1, "no-request reply has no subnet attrs (empty)");
 			}
+			if (p2.cfg_payload)
+				rc_vfree(p2.cfg_payload);
 		}
 	}
 
