@@ -461,6 +461,38 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 				++isakmpstat.malformed_message;
 				goto end;
 			}
+			/*
+			 * Deferred-keymat guard (RACOON2_CRYPTO_WORKERS>0): the
+			 * responder derives SKEYSEED/keymat in the crypto-worker
+			 * thread, whose done() callback runs from the main loop's
+			 * crypto_workers_drain() at the NEXT iteration.  A request
+			 * the peer sends on the back of our IKE_SA_INIT response
+			 * (charon drives IKE_AUTH with msgid 1 immediately) can
+			 * therefore arrive before the receive keys are set.  We
+			 * cannot verify (or decrypt) a message we hold no key for,
+			 * so drop it and rely on the peer retransmitting (RFC 7296
+			 * §2.10) — by then the keys are in place and it verifies.
+			 * Previously the NULL key was dereferenced and iked crashed
+			 * (SIGSEGV in eay_hmac_init) — the ikev2-netns-w1 flake.
+			 * The AEAD case mirrors ikev2_check_icv: with RFC 5282 the
+			 * ICV is the AEAD tag so SK_a_* is never derived (NULL);
+			 * only the ENC key must be present.
+			 */
+			{
+				rc_vchar_t *auth_key = ike_sa->is_initiator ?
+				    ike_sa->sk_a_r : ike_sa->sk_a_i;
+				rc_vchar_t *enc_key = ike_sa->is_initiator ?
+				    ike_sa->sk_e_i : ike_sa->sk_e_r;
+				int ae = (ike_sa->encryptor &&
+				    encryptor_icv_length(ike_sa->encryptor) > 0);
+				if ((!ae && auth_key == NULL) || enc_key == NULL) {
+					isakmp_log(ike_sa, local, remote, packet,
+						   PLOG_DEBUG, PLOGLOC,
+						   "deferring SK-protected message: key material not "
+						   "yet derived (crypto worker pending)\n");
+					goto end;
+				}
+			}
 			if (ikev2_check_icv(ike_sa, packet) != 0) {
 				if (ikev2_check_icv_prev_gen(ike_sa, packet) == 0) {
 					/* H1: ICV validates against the PRE-update
