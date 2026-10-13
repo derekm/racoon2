@@ -476,6 +476,9 @@ struct ikev2_child_param {
 	int cfg_ip6_dhcp;
 	int cfg_mip6_home_prefix;
 	int cfg_supported_attributes;
+	/* split-tunnel / split-DNS: requested-by-peer + configured-eligible */
+	int cfg_ip4_subnet;		/* peer wants INTERNAL_IP4_SUBNET (13) */
+	int cfg_ip6_subnet;		/* peer wants INTERNAL_IP6_SUBNET (15) */
 };
 
 struct ikev2_child_sa {
