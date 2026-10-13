@@ -1,10 +1,12 @@
 #!/bin/sh
 # kinds/i2iinit_drop576.sh — H1 kill-test at REAL fragmentation: veth MTU 576
 # so the IKE_INTERMEDIATE response (ML-KEM KEi is 1184 bytes) is split into
-# RFC 7383 fragments, then netem LOSS drops a fragment of that response on
-# the responder->initiator path.  The initiator retransmits the gen-0
-# request and the responder must REPLAY its cached gen-0 fRAGMENT datagrams
-# (marker baked in per SKF) — the ONLY path that recovers a lost fragment.
+# RFC 7383 fragments, then a DETERMINISTIC nft single-drop (shared
+# i2i_replay_loss_window in lib.sh) drops the first large fragment datagram
+# of that response on the responder->initiator path.  The initiator
+# retransmits the gen-0 request and the responder must REPLAY its cached
+# gen-0 fRAGMENT datagrams (marker baked in per SKF) — the ONLY path that
+# recovers a lost fragment.
 # The 1500-MTU i2iinit-drop case cannot prove this (no fragmentation).
 #
 # The assertion is the replay count itself: nreplay>=1 (H1 replay), plus the
@@ -165,16 +167,14 @@ EOF
 		done
 	done
 
-	# Bounded retry loop: the netem loss is per-packet probabilistic, so a
-	# single attempt can by luck complete without ever dropping a response
-	# fragment (H1 replay marker = 0).  That is a "this attempt did not
-	# exercise the recovery path", not a recovery failure.  Restart the iked
-	# daemons (fresh IKE_SA) and retry until the replay is actually observed,
-	# so the test only fails on a genuine breakdown (response dropped but the
-	# responder never replays / the SA never recovers).  80% per-fragment
-	# loss during the intermediate window leaves ~4% per attempt that all
-	# fragments survive, so 4 attempts make an accidental pass-with-no-replay
-	# astronomically unlikely while still probing the real path.
+	# Bounded retry loop: the injection is a deterministic single-drop, so a
+	# pass normally exercises the replay on attempt 1.  Retries remain useful
+	# only for a daemon-start / ordering race (the nft rule armed before the
+	# emitter that logs the round marker, so the gate can't observe a drop it
+	# already consumed) — on such a miss we restart the iked daemons (fresh
+	# IKE_SA) and retry until the replay is actually observed.  A failure is
+	# therefore a genuine breakdown (response dropped but the responder never
+	# replays / the SA never recovers), not a lost probability draw.
 	attempts=4
 	up=0; nint=0; nreplay=0
 	attempt=0
