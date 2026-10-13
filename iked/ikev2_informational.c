@@ -1034,7 +1034,14 @@ ikev2_process_delete(struct ikev2_sa *ike_sa, struct ikev2_payload_header *p,
 				 * rather than a generic delete echo (which
 				 * would silently claim we deleted it) or a
 				 * silent drop.  Only on a request (we are the
-				 * responder to an INFORMATIONAL). */
+				 * responder to an INFORMATIONAL).  The SPI is
+				 * carried in the Notify payload's SPI field
+				 * (not, as RFC 7296 §1.5 sketches, in the
+				 * Notification Data) because on a delete the
+				 * SPI alone, with the protocol id, identifies
+				 * the SA — matching how strongSwan/Windows
+				 * emit it on this path (IKEv2 errata treat
+				 * both as valid). */
 				if (this_is_request &&
 				    (protocol_id == IKEV2_DELETE_PROTO_ESP ||
 				     protocol_id == IKEV2_DELETE_PROTO_AH)) {

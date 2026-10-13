@@ -233,10 +233,30 @@ main(int argc, char *argv[])
 			   data[2] == idbuf[2] && data[3] == idbuf[3],
 			   "INVALID_MESSAGE_ID: data == 4-octet invalid id");
 			rc_vfree(n);
-			}
-			}
+		}
+	}
 
-			if (fails) {
+		/*
+		 * Drive ikev2_send_invalid_message_id() ITSELF on the only
+		 * branch runnable without a live child/kernel: the
+		 * rate-limiter.  With invalid_msgid_last_sent set to 'now',
+		 * RFC 7296 §2.3's one-per-second cap must make the function
+		 * return 0 (rate-limited) and must NOT reach the INFORMATIONAL
+		 * initiator.  Deterministic, side-effect-free part of the real
+		 * function (the payload it would build is asserted above);
+		 * the initiate path needs a running child and is out of the
+		 * unit harness's reach.
+		 */
+		{
+			struct ikev2_sa sa;
+			memset(&sa, 0, sizeof(sa));
+			TAILQ_INIT(&sa.children);
+			sa.invalid_msgid_last_sent = time(NULL);
+			ck(ikev2_send_invalid_message_id(&sa, 0xdeadbeef) == 0,
+			   "ikev2_send_invalid_message_id: rate-limited -> 0, no initiate");
+		}
+
+		if (fails) {
 		printf("notifytest: %d FAILURE(S)\n", fails);
 		return 1;
 	}
