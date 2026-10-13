@@ -477,6 +477,9 @@ ikev2_process_cfg_request_attribs(struct ikev2_sa *ike_sa,
 		case IKEV2_CFG_INTERNAL_IP6_SUBNET:
 			++param->cfg_ip6_subnet;
 			break;
+		case IKEV2_CFG_INTERNAL_DNS_DOMAIN:
+			++param->cfg_dns_domain;
+			break;
 		case IKEV2_CFG_MIP6_HOME_PREFIX:
 			++param->cfg_mip6_home_prefix;
 			break;
@@ -743,6 +746,23 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 				}
 			}
 		}
+	}
+
+	/* Split-DNS (RFC 8598 §7.2): when the peer asked for
+	 * INTERNAL_DNS_DOMAIN (25) and the responder has a configured split-DNS
+	 * suffix, emit it (a bare domain string).  Legacy Windows and some
+	 * road-warrior clients use this to steer only matching queries through
+	 * the tunnel. */
+	if (param->cfg_dns_domain && ikev2_dns_domain(ike_sa->rmconf)) {
+		const char *dd = rc_vmem2str(ikev2_dns_domain(ike_sa->rmconf));
+		size_t ddlen = strlen(dd);
+		struct ikev2cfg_attrib hdr;
+
+		TRACE((PLOGLOC, "INTERNAL_DNS_DOMAIN: %s\n", dd));
+		cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_DNS_DOMAIN, ddlen);
+		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
+		    ! rc_vconcat(cfg_payload, dd, ddlen))
+			goto err;
 	}
 
 	if (param->cfg_mip6_home_prefix &&
@@ -1093,6 +1113,20 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			}
 			break;
 		}
+		case IKEV2_CFG_INTERNAL_DNS_DOMAIN:
+			/* RFC 8598 §7.2: a split-DNS suffix the initiator should
+			 * steer through this SA.  Commit to the child so the
+			 * updown script sees INTERNAL_DNS_DOMAIN. */
+			TRACE((PLOGLOC, "INTERNAL_DNS_DOMAIN: %.*s\n",
+			       (int)len, value));
+			rc_vfreez(child_sa->internal_dns_domain);
+			child_sa->internal_dns_domain = rc_vmalloc(len + 1);
+			if (!child_sa->internal_dns_domain)
+				return -1;
+			memcpy(child_sa->internal_dns_domain->v, value, len);
+			child_sa->internal_dns_domain->s[len] = '\0';
+			child_sa->internal_dns_domain->l = len + 1;
+			break;
 		case IKEV2_CFG_MIP6_HOME_PREFIX:
 			{
 				struct ikev2cfg_mip6prefix	*p;
