@@ -243,6 +243,7 @@ static int rcf_fix_request (struct cf_list *, void *);
 static int rcf_fix_dns (struct cf_list *, void *);
 static int rcf_fix_dhcp (struct cf_list *, void *);
 static int rcf_fix_application_version (struct cf_list *, void *);
+static int rcf_fix_dns_domain (struct cf_list *, void *);
 static int rcf_fix_mip6_home_prefix (struct cf_list *, void *);
 	/* selector */
 static int rcf_fix_selector (struct rcf_selector **);
@@ -423,6 +424,7 @@ struct rcf_tdf_t {
 	{ CFD_DNS,			rcf_fix_dns },
 	{ CFD_DHCP,			rcf_fix_dhcp },
 	{ CFD_APPLICATION_VERSION,	rcf_fix_application_version },
+	{ CFD_DNS_DOMAIN,		rcf_fix_dns_domain },
 	{ CFD_MIP6_HOME_PREFIX,		rcf_fix_mip6_home_prefix },
 	/* selector */
 	{ CFD_SELECTOR_ORDER,		rcf_fix_selector_order, },
@@ -2101,6 +2103,18 @@ rcf_fix_application_version(struct cf_list *head, void *dst0)
 }
 
 static int
+rcf_fix_dns_domain(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp	*dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_DNS_DOMAIN))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->dns_domain))
+		return -1;
+	return 0;
+}
+
+static int
 rcf_fix_mip6_home_prefix(struct cf_list *head, void *dst0)
 {
 	struct rcf_kmp	*dst = (struct rcf_kmp *)dst0;
@@ -3565,6 +3579,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_ADDRLIST(src->cfg_dns, new->cfg_dns);
 	DEEPCOPY_ADDRLIST(src->cfg_dhcp, new->cfg_dhcp);
 	DEEPCOPY_VDUP(src->application_version, new->application_version);
+	DEEPCOPY_VDUP(src->dns_domain, new->dns_domain);
 	new->dpd = src->dpd;
 	new->dpd_interval = src->dpd_interval;
 	new->dpd_retry = src->dpd_retry;

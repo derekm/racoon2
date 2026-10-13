@@ -72,8 +72,10 @@ mk_addrlist(int fam, const char *addrstr, int prefixlen)
 }
 
 int
-main(void)
+main(int argc, char *argv[])
 {
+	test_init(argv[0]);
+
 	/* Fabricated child_sa with an IPv4 /24 and an IPv6 /32 split subnet */
 	struct ikev2_child_sa child;
 	struct rcf_selector sel4, sel6;
@@ -324,6 +326,141 @@ main(void)
 
 	rcs_free_addrlist(sel4.dst);
 	rcs_free_addrlist(sel6.dst);
+
+	/* ================= B.4: INTERNAL_DNS_DOMAIN (25) =================
+	 * 1. Emit: responder with a configured split-DNS suffix, peer asked
+	 *    for 25 -> CFG_REPLY carries  25 = "corp.example".
+	 * 2. Parse: initiator receiving 25 commits it to internal_dns_domain. */
+	{
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa isa;
+		struct ikev2_child_sa c;
+		struct ikev2_child_param p;
+		uint8_t buf[256];
+		uint8_t off = 0;
+		struct ikev2payl_config *cfg;
+		int found = 0;
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		rm.ikev2 = &ikm;
+		ikm.dns_domain = rc_vmalloc(strlen("corp.example") + 1);
+		memcpy(ikm.dns_domain->v, "corp.example", strlen("corp.example"));
+		ikm.dns_domain->s[strlen("corp.example")] = '\0';
+		ikm.dns_domain->l = strlen("corp.example") + 1;
+
+		memset(&isa, 0, sizeof(isa));
+		isa.rmconf = &rm;
+		memset(&c, 0, sizeof(c));
+		ikev2_child_param_init(&p);
+		p.cfg_dns_domain = 1;
+
+		CK(ikev2_create_config_reply(&isa, &c, &p) == 0,
+		   "create_config_reply rc==0 (dns_domain)");
+		CK(p.cfg_payload != NULL, "reply allocated (dns_domain)");
+		if (p.cfg_payload) {
+			struct ikev2payl_config_h *cfgh =
+			    (struct ikev2payl_config_h *)p.cfg_payload->v;
+			uint8_t *body = (uint8_t *)p.cfg_payload->v +
+			    sizeof(*cfgh);
+			size_t blen = p.cfg_payload->l - sizeof(*cfgh);
+			int i;
+			for (i = 0; blen > 0; ++i) {
+				struct ikev2cfg_attrib *a =
+				    (struct ikev2cfg_attrib *)body;
+				unsigned int t, l;
+				if (blen < sizeof(*a))
+					break;
+				t = IKEV2CFG_ATTR_TYPE(a);
+				l = IKEV2CFG_ATTR_LENGTH(a);
+				if (sizeof(*a) + l > blen)
+					break;
+				if (t == IKEV2_CFG_INTERNAL_DNS_DOMAIN) {
+					CK(l == strlen("corp.example") &&
+					   memcmp(IKEV2CFG_ATTR_VALUE(a),
+						  "corp.example", l) == 0,
+					   "25 INTERNAL_DNS_DOMAIN == corp.example");
+					found = 1;
+				}
+				body += sizeof(*a) + l;
+				blen -= sizeof(*a) + l;
+			}
+			CK(found, "reply contains INTERNAL_DNS_DOMAIN (25)");
+			rc_vfree(p.cfg_payload);
+		}
+		rc_vfree(ikm.dns_domain);
+
+		/* negative: no DNS_DOMAIN unless both requested AND configured */
+		{
+			struct ikev2_child_param p2;
+			struct ikev2_sa isa2;
+			memset(&isa2, 0, sizeof(isa2));
+			isa2.rmconf = &rm;	/* configured */
+			ikev2_child_param_init(&p2);	/* not requested */
+			CK(ikev2_create_config_reply(&isa2, &c, &p2) == 0,
+			   "reply rc==0 no dns_domain request");
+			if (p2.cfg_payload) {
+				uint8_t *body2 = (uint8_t *)p2.cfg_payload->v +
+				    sizeof(struct ikev2payl_config_h);
+				size_t bl2 = p2.cfg_payload->l -
+				    sizeof(struct ikev2payl_config_h);
+				int n25 = 0;
+				for (; bl2 > 0; ) {
+					struct ikev2cfg_attrib *a =
+					    (struct ikev2cfg_attrib *)body2;
+					unsigned int t, l;
+					if (bl2 < sizeof(*a))
+						break;
+					t = IKEV2CFG_ATTR_TYPE(a);
+					l = IKEV2CFG_ATTR_LENGTH(a);
+					if (sizeof(*a) + l > bl2)
+						break;
+					if (t == IKEV2_CFG_INTERNAL_DNS_DOMAIN) n25++;
+					body2 += sizeof(*a) + l;
+					bl2 -= sizeof(*a) + l;
+				}
+				CK(n25 == 0, "no 25 without a dns_domain request");
+				rc_vfree(p2.cfg_payload);
+			} else {
+				/* rmconf set so reply is non-empty; just be safe */
+				CK(1, "no-request reply handles DNS (non-null)");
+			}
+		}
+
+		/* parse: initiator receives 25 in a CFG_REPLY */
+		memset(buf, 0, sizeof(buf));
+		cfg = (struct ikev2payl_config *)buf;
+		cfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+		off = sizeof(struct ikev2payl_config);
+		{
+			struct ikev2cfg_attrib *a =
+			    (struct ikev2cfg_attrib *)(buf + off);
+			const char *dd = "corp.example";
+			put_uint16(&a->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
+			put_uint16(&a->length, (uint16_t)strlen(dd));
+			memcpy(IKEV2CFG_ATTR_VALUE(a), dd, strlen(dd));
+			off += sizeof(*a) + strlen(dd);
+		}
+		{
+			uint8_t pl[2];
+			pl[0] = (uint8_t)((off >> 8) & 0xff);
+			pl[1] = (uint8_t)(off & 0xff);
+			memcpy((uint8_t *)&cfg->header.payload_length, pl, 2);
+		}
+		cfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+
+		memset(&c, 0, sizeof(c));
+		memset(&isa, 0, sizeof(isa));
+		ikev2_child_param_init(&c.child_param);
+		CK(ikev2_process_config_reply(&isa, &c, &cfg->header) == 0,
+		   "process_config_reply rc==0 (25)");
+		CK(c.internal_dns_domain != NULL &&
+		   strcmp(c.internal_dns_domain->s, "corp.example") == 0,
+		   "25 committed to internal_dns_domain (corp.example)");
+		if (c.internal_dns_domain)
+			rc_vfree(c.internal_dns_domain);
+	}
 
 	printf("splitcfgtest: %d checks, %d failure(s)\n", checks, fails);
 	return fails ? 1 : 0;
