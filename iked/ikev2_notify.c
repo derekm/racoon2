@@ -1222,6 +1222,8 @@ ikev2_notify_type_str(int type)
 		S(PPK_IDENTITY);
 		S(NO_PPK_AUTH);
 		S(CHILDLESS_IKEV2_SUPPORTED);
+		S(IP4_ALLOWED);
+		S(IP6_ALLOWED);
 
 	default:
 		{
