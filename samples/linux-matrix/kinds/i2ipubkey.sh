@@ -2,16 +2,24 @@
 # kinds/i2ipubkey.sh — X.509 public-key (cert) authentication, iked<->iked.
 #
 # Both seats configure kmp_auth_method { rsasig; } (RSA) or { ecdsa; }
-# (ECDSA, methods 9/10/11), a per-run self-signed test CA signs leaf certs
-# for BOTH seats, my_public_key/peers_public_key point at the leaf cert
-# files, and NO pre_shared_key is set anywhere => the IKE_AUTH step can only
-# succeed through the PK path.  The test CA is made visible to iked's
-# chain-verify (eay_check_x509cert -> X509_STORE_set_default_paths) via the
-# SSL_CERT_FILE env var set per-daemon (the system trust store is never
-# touched, so the host state is unchanged and the run stays self-contained).
+# (ECDSA, RFC 4754 methods 9/10/11).  Both seats OFFER+ECHO N(SIG_HASH_
+# ALGORITHMS) (16431, offer_sig_hash_algorithms default ON), so when the
+# notify is exchanged the seat authenticates via Digital Signature method
+# 14 (RFC 7427): RSA signs RSASSA-PKCS1-v1_5-SHA2, ECDSA signs the DER
+# Ecdsa-Sig-Value under ecdsa-with-SHA2, EdDSA pure.  The 9/10/11 path
+# remains for peers that never offer 16431.  A per-run self-signed test CA
+# signs leaf certs for BOTH seats, my_public_key/peers_public_key point at
+# the leaf cert files, and NO pre_shared_key is set anywhere => the IKE_AUTH
+# step can only succeed through the PK path.  The test CA is made visible
+# to iked's chain-verify (eay_check_x509cert -> X509_STORE_set_default_paths)
+# via the SSL_CERT_FILE env var set per-daemon (the system trust store is
+# never touched, so the host state is unchanged and the run stays
+# self-contained).
 #
 # Gate: ESP child UP on both seats (proves IKE_AUTH authenticated), the iked
-# TRACE 'auth method %d' (14 = Digital Signature (RFC 7427), 9/10/11 = ECDSA) on BOTH seats, and CPL.
+# TRACE 'auth method %d' (14 = Digital Signature RFC 7427 for both RSA and
+# ECDSA when 16431 was exchanged; 9/10/11 = ECDSA only when 16431 was NOT)
+# on BOTH seats, and CPL.
 # Row suffix selects the method: i2ipubkey-rsa | i2ipubkey-ecdsa.
 kind_i2ipubkey() {
 	name=$1
@@ -25,7 +33,7 @@ kind_i2ipubkey() {
 	EXP_METHOD='auth method 14'
 	CURVE=''
 	case "$name" in
-	*-ecdsa) AUTH_METHOD=ecdsa; AUTH_HEX=10; EXP_METHOD='auth method 10'; CURVE='P-384' ;;
+	*-ecdsa) AUTH_METHOD=ecdsa; AUTH_HEX=14; EXP_METHOD='auth method 14'; CURVE='P-384' ;;
 	esac
 
 	PEER=$(i2i_peer "$name")

@@ -90,7 +90,9 @@ extern int eay_dss_verify (rc_vchar_t *, rc_vchar_t *, rc_vchar_t *);
 
 /* ECDSA */
 extern rc_vchar_t *eay_ecdsa_sign (const char *, rc_vchar_t *,
-				    rc_vchar_t *);
+				   rc_vchar_t *);
+extern rc_vchar_t *eay_ecdsa_ds_sign (const char *, rc_vchar_t *,
+				      rc_vchar_t *);
 extern int eay_ecdsa_verify (const char *, rc_vchar_t *, rc_vchar_t *,
 			     rc_vchar_t *);
 extern int eay_ecdsa_curve_bits (rc_vchar_t *);

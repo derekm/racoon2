@@ -1845,6 +1845,95 @@ eay_ecdsa_sign(const char *hash_type, rc_vchar_t *octets,
 	return 0;
 }
 
+/* RFC 7427 method-14 (DS) ECDSA sign: hash octets, sign with EC privkey,
+ * and return the DER-encoded Ecdsa-Sig-Value (what eay_rfc7427_verify
+ * expects for ecdsa-with-SHA2).  This differs from eay_ecdsa_sign(), which
+ * returns the raw r||s octet string for the RFC 4754 methods 9/10/11.
+ *
+ * hash_type: name string of the digest (sha256/sha384/sha512)
+ * octets:    message to sign
+ * privkey:   vmbuf of private key
+ *
+ * Returns DER Ecdsa-Sig-Value, or NULL on error. */
+rc_vchar_t *
+eay_ecdsa_ds_sign(const char *hash_type, rc_vchar_t *octets,
+		  rc_vchar_t *privkey)
+{
+	EVP_PKEY *pkey = NULL;
+	BPP_const unsigned char *bp;
+	const EVP_MD *md;
+	EVP_MD_CTX *ctx = NULL;
+	unsigned char *der = NULL;
+	size_t derlen = 0;
+	rc_vchar_t *sig = NULL;
+
+	bp = (unsigned char *)privkey->v;
+	pkey = d2i_AutoPrivateKey(NULL, &bp, privkey->l);
+	if (pkey == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed obtaining private key: %s\n", eay_strerror());
+		goto fail;
+	}
+	if (EVP_PKEY_id(pkey) != EVP_PKEY_EC) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "private key is not an EC key\n");
+		goto fail;
+	}
+	md = EVP_get_digestbyname(hash_type);
+	if (!md) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed to find digest algorithm %s\n", hash_type);
+		goto fail;
+	}
+	ctx = EVP_MD_CTX_new();
+	if (!ctx) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed allocating context\n");
+		goto fail;
+	}
+	if (EVP_DigestSignInit(ctx, NULL, md, NULL, pkey) != 1 ||
+	    EVP_DigestSignUpdate(ctx, octets->v, octets->l) != 1 ||
+	    EVP_DigestSignFinal(ctx, NULL, &derlen) != 1) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "ECDSA sign failed: %s\n", eay_strerror());
+		goto fail;
+	}
+	der = malloc(derlen);
+	if (der == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed allocating memory\n");
+		goto fail;
+	}
+	if (EVP_DigestSignFinal(ctx, der, &derlen) != 1) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "ECDSA sign failed: %s\n", eay_strerror());
+		goto fail;
+	}
+	sig = rc_vmalloc(derlen);
+	if (sig == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "failed allocating memory\n");
+		goto fail;
+	}
+	memcpy(sig->v, der, derlen);
+	sig->l = derlen;
+	EVP_MD_CTX_free(ctx);
+	EVP_PKEY_free(pkey);
+	free(der);
+	return sig;
+
+      fail:
+	if (sig)
+		rc_vfree(sig);
+	if (ctx)
+		EVP_MD_CTX_free(ctx);
+	if (pkey)
+		EVP_PKEY_free(pkey);
+	if (der)
+		free(der);
+	return NULL;
+}
+
 /*
  * Determine the EdDSA curve of a private key: 25519 or 448.  Returns the
  * curve id, or 0 if the key is not an EdDSA key.
