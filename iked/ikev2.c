@@ -525,8 +525,14 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 				/* RFC 7296 §2.3: an out-of-window REQUEST
 				 * must not be acknowledged; initiate our own
 				 * INFORMATIONAL with N(INVALID_MESSAGE_ID,
-				 * data=the invalid id), rate-limited. */
-				if (!is_response)
+				 * data=the invalid id), rate-limited.  Only
+				 * when the id is AHEAD of the window (peer
+				 * skipped/advanced): a behind-window id is a
+				 * legitimate late retransmit of the armed
+				 * response slot and must be dropped silently
+				 * (§2.10), not answered with an error. */
+				if (!is_response &&
+				    message_id > ike_sa->recv_message_id)
 					(void)ikev2_send_invalid_message_id(
 					    ike_sa, message_id);
 				goto end;
@@ -573,8 +579,9 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 					   message_id);
 				++isakmpstat.unordered;
 				/* RFC 7296 §2.3: out-of-window REQUEST — see
-				 * the SK-path note above. */
-				if (!is_response)
+				 * the SK-path note above (future-id only). */
+				if (!is_response &&
+				    message_id > ike_sa->recv_message_id)
 					(void)ikev2_send_invalid_message_id(
 					    ike_sa, message_id);
 				goto end;
