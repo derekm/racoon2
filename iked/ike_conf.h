@@ -242,6 +242,8 @@ extern void ikev2_cfg_addr2sockaddr(struct sockaddr *, struct rcf_address *, int
 extern rc_type ikev2_config_required(struct rcf_remote *);
 extern struct rcf_addresspool *ikev2_addresspool(struct rcf_remote *);
 extern rc_type ikev2_cfg_application_version(struct rcf_remote *);
+extern rc_type ikev2_cfg_dns_domain(struct rcf_remote *);
+extern rc_vchar_t *ikev2_dns_domain(struct rcf_remote *);
 extern rc_type ikev2_cfg_ip4_address(struct rcf_remote *);
 extern rc_type ikev2_cfg_ip6_address(struct rcf_remote *);
 extern rc_type ikev2_cfg_ip4_dns(struct rcf_remote *);

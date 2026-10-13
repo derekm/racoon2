@@ -156,6 +156,7 @@ typedef enum {
 #define	RCF_REQ_MIP6_HOME_PREFIX	0x0020
 #define	RCF_REQ_IP4_ADDRESS	0x0040
 #define	RCF_REQ_IP6_ADDRESS	0x0080
+#define	RCF_REQ_DNS_DOMAIN	0x0100
 
 /*
  * structures for global use
@@ -304,6 +305,7 @@ struct rcf_kmp {
 	struct rc_addrlist	*cfg_dns;
 	struct rc_addrlist	*cfg_dhcp;
 	rc_vchar_t	*application_version;
+	rc_vchar_t	*dns_domain;
 	struct rc_addrlist	*cfg_mip6prefix;
 	rc_type dpd;		/* Negotiate DPD support ? */
 	int dpd_interval;	/* in seconds */
