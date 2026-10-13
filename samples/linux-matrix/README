@@ -27,10 +27,15 @@ drop/replay kill-tests `i2ike-drop` (R2 replay), `i2ike-drop576`
 (R2 replay of a fragmented FOLLOWUP at MTU 576; box-green once, not in
 the CI default — a container run held loss across the CREATE_CHILD
 response and the new Y keymat never landed), `i2iinit-drop` and
-`i2iinit-drop576` (H1 replay). The drop rows are counted-drop gates: PASS
-requires the netem dropped counter (read from `tc -s qdisc show`, helper
-`tc_dropped`) to agree with the replay marker — a marker with zero
-measured loss, or loss without a marker, both fail.
+`i2iinit-drop576` (H1 replay). The drop rows are counted-drop gates. For
+`i2ike-drop`/`i2ike-reqdrop` (still netem) PASS requires the netem dropped
+counter (read from `tc -s qdisc show`, helper `tc_dropped`) to agree with
+the replay marker — a marker with zero measured loss, or loss without a
+marker, both fail.  The `i2iinit-drop`/`i2iinit-drop576` rows are now
+DETERMINISTIC nft single-drop (no netem): PASS requires the nft rule's
+counter (`nft dropped N datagram` in the row log) to agree with the H1
+replay marker, so a marker with zero drops, or a drop with no marker, both
+fail.
 
 New-row staging: `gate=box` rows (`i2ike-dup`, `i2ike-reqdrop`,
 `i2iinit-charon`, `i2iinit-charonr`) run ONLY when
