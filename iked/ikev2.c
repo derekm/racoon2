@@ -482,7 +482,7 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 				rc_vchar_t *auth_key = ike_sa->is_initiator ?
 				    ike_sa->sk_a_r : ike_sa->sk_a_i;
 				rc_vchar_t *enc_key = ike_sa->is_initiator ?
-				    ike_sa->sk_e_i : ike_sa->sk_e_r;
+				    ike_sa->sk_e_r : ike_sa->sk_e_i;
 				int ae = (ike_sa->encryptor &&
 				    encryptor_icv_length(ike_sa->encryptor) > 0);
 				if ((!ae && auth_key == NULL) || enc_key == NULL) {
@@ -490,6 +490,7 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 						   PLOG_DEBUG, PLOGLOC,
 						   "deferring SK-protected message: key material not "
 						   "yet derived (crypto worker pending)\n");
+					++isakmpstat.deferred_keymat;
 					goto end;
 				}
 			}
