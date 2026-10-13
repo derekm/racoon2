@@ -124,7 +124,7 @@ i2i_wait_seat_sa() {
 # by a hard cap so a wedged SA cannot hang the row.
 #
 # Requires the caller to have already: row_ns'd (so $NSR/$VR/$D are set),
-# started the responder+initiator iked logs (resp log path = "$2"), and
+# started the responder+initiator iked logs (resp log path = "$5"), and
 # flushed stale xfrm.  On return, $I2I_NDROP carries the measured drop
 # count and $I2I_SEEN is 1 if the intermediate round was observed while the
 # window was armed.  Vars read: NSR VR D.  Args: HI HR SBIN SOCK_I resp_log.
