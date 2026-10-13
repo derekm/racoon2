@@ -724,6 +724,61 @@ test_deferred_keymat(void)
 	sa_teardown(&sa);
 }
 
+/* AEAD counterpart: with GCM (RFC 5282) the ICV is the AEAD tag, so the
+ * auth key (sk_a_*) is LEGITIMATELY never derived and stays NULL while the
+ * crypto worker is pending.  The guard must NOT defer an AEAD message just
+ * because sk_a_i is NULL -- that is the exact trap the frag-path fix guards
+ * against (requiring auth_key when icv_len > 0 would defer every AEAD IKE
+ * message).  Only a missing ENC key deserves the deferred-keymat drop.
+ * Build valid GCM fragments, then clear sk_a_i (simulating AEAD keymat that
+ * legitimately has no auth key) and assert the fragment reassembles on the
+ * first try: NOT deferred (counter unchanged, non-NULL reassembly). */
+static void
+test_deferred_keymat_aead_nondef(void)
+{
+	struct ikev2_sa sa;
+	uint8_t inner[40];
+	rc_vchar_t *pkt = NULL, *frags[3];
+	uint32_t msgid = 0x99aabbcc;
+	size_t chunk_len[3] = { 10, 20, 10 };
+	int i, ok;
+	int before;
+
+	sa_setup(&sa, MODE_GCM);
+	inner_payload(inner, sizeof(inner), IKEV2_PAYLOAD_NOTIFY);
+	for (i = 0; i < 3; i++)
+		frags[i] = build_frag(&sa, MODE_GCM, msgid,
+				      (i == 0) ? IKEV2_PAYLOAD_NOTIFY : 0,
+				      i + 1, 3, inner + (i == 0 ? 0 :
+				      (i == 1 ? 10 : 30)), chunk_len[i], 0, 0);
+	/* AEAD: no auth key is ever derived -- NULL it, readyness relies on
+	 * the ENC key alone.  sk_e_i stays set so reassembly must proceed. */
+	rc_vfree(sa.sk_a_i);
+	sa.sk_a_i = NULL;
+	before = isakmpstat.deferred_keymat;
+
+	ok = 1;
+	pkt = ikev2_frag_recv(&sa, frags[1], NULL, NULL);
+	if (pkt != NULL)
+		ok = 0;
+	pkt = ikev2_frag_recv(&sa, frags[2], NULL, NULL);
+	if (pkt != NULL)
+		ok = 0;
+	pkt = ikev2_frag_recv(&sa, frags[0], NULL, NULL);
+	if (pkt == NULL || pkt->l != sizeof(struct ikev2_header) + 40 ||
+	    memcmp(pkt->v + sizeof(struct ikev2_header), inner, 40) != 0)
+		ok = 0;
+	CHECK(ok, "AEAD: NULL auth key does not defer (reassembles normally)");
+	CHECK(isakmpstat.deferred_keymat == before,
+	      "AEAD: deferred-keymat counter unchanged (not wrongly deferred)");
+
+	if (pkt)
+		rc_vfree(pkt);
+	for (i = 0; i < 3; i++)
+		rc_vfree(frags[i]);
+	sa_teardown(&sa);
+}
+
 /* corrupt AEAD tag on the GCM path */
 static void
 test_bad_gcm_tag(void)
@@ -1096,6 +1151,7 @@ main(void)
 	test_metadata();
 	test_bad_icv();
 	test_deferred_keymat();
+	test_deferred_keymat_aead_nondef();
 	test_bad_gcm_tag();
 	test_bad_padding();
 	test_pmtu_reset();
