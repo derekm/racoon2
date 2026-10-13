@@ -2315,13 +2315,17 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 		if (has4)
 			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
 					    ikev2_notify_payload(0, 0, 0,
-							 IKEV2_IP4_ALLOWED,
-							 0, 0), TRUE);
+								 IKEV2_IP4_ALLOWED,
+								 0, 0), TRUE);
 		if (has6)
 			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
 					    ikev2_notify_payload(0, 0, 0,
-							 IKEV2_IP6_ALLOWED,
-							 0, 0), TRUE);
+								 IKEV2_IP6_ALLOWED,
+								 0, 0), TRUE);
+		TRACE((PLOGLOC, "RFC8983: responder emits IP%s_ALLOWED%s%s\\n",
+		       has4 ? "4" : (has6 ? "6" : ""),
+		       has4 && has6 ? " and IP6" : "",
+		       (has4 || has6) ? "" : " (none - no lease)"));
 	}
 
 #ifdef notyet
