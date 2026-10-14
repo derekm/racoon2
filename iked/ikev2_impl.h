@@ -347,6 +347,9 @@ struct ikev2_sa {
 	int frag_supported;		/* IKEv2 fragmentation (RFC7383) */
 	int mobike_supported;		/* RFC 4555 */
 	int mobike_update;		/* UPDATE_SA_ADDRESSES seen */
+	int peer_sent_redirect;		/* RFC 5685: initiator offered N(16406)
+					 * in IKE_SA_INIT; responder MAY answer
+					 * N(REDIRECT,<new gw>) instead of an SA */
 	int natd_report;			/* include NATD in next reply (RFC 4555 3.8) */
 	uint8_t natd_src_hash[20];	/* verbatim NAT_DETECTION_SOURCE_IP */
 	uint8_t natd_dst_hash[20];	/* verbatim NAT_DETECTION_DESTINATION_IP */

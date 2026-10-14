@@ -598,6 +598,32 @@ responder_state0_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		goto malformed_message;
 
 	conf = ike_sa->rmconf;
+
+	/* RFC 5685 s3: if this peer advertised REDIRECT_SUPPORTED (16406)
+	 * in its IKE_SA_INIT and the local policy has redirect_to set for
+	 * this peer, answer with N(REDIRECT, <new gw>, echoed Ni) and NO SA
+	 * (SPI_R=0) instead of negotiating — the client re-initiates
+	 * against the listed gateway.  The redirect must be decided BEFORE
+	 * SA/KE matching (the responder answers REDIRECT regardless of the
+	 * initiator's proposal) but AFTER the redirect-support notify is
+	 * parsed above.  The peer MUST have offered 16406 (RFC 5685 s3:
+	 * a responder MUST NOT send REDIRECT to a client that did not). */
+	if (ike_sa->peer_sent_redirect &&
+	    ikev2_redirect_to(conf) && ikev2_redirect_to(conf)->l) {
+		rc_vchar_t *gw = ikev2_redirect_to(conf);
+		rc_vchar_t *ni_p;
+		ni_p = (nonce) ? isakmp_p2v((struct isakmp_gen *)nonce) : NULL;
+		if (ni_p) {
+			TRACE((PLOGLOC, "RFC5685: redirecting this peer to "
+				"%s (offered REDIRECT_SUPPORTED)\n",
+				(char *)gw->v));
+			ikev2_respond_redirect(packet, remote, local, gw, ni_p);
+			rc_vfree(ni_p);
+			++isakmpstat.payload_ignored;   /* no SA consumed */
+			goto done;
+		}
+	}
+
 	if ((ike_acceptable_kmp(conf) & RCF_ALLOW_IKEV2) == 0) {
 		isakmp_log(ike_sa, local, remote, packet,
 			   PLOG_PROTOERR, PLOGLOC,

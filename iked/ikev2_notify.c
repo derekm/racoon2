@@ -48,6 +48,7 @@
 #include <sys/errno.h>
 
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 
 #include "racoon.h"
@@ -135,6 +136,15 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		ike_sa->peer_sent_sig_hash_algos = 1;
 		ikev2_remember_sig_hashes(ike_sa, notify);
 		TRACE((PLOGLOC, "peer offers SIG_HASH_ALGORITHMS (16431)\n"));
+		break;
+	case IKEV2_REDIRECT_SUPPORTED:
+		/* RFC 5685 s3: the INITIATOR indicates it is willing to be
+		 * redirected.  The responder MUST NOT answer REDIRECT to a peer
+		 * that did not offer 16406; record it here so the redirect
+		 * decision in responder_state0_send is gated on this. */
+		ike_sa->peer_sent_redirect = 1;
+		TRACE((PLOGLOC, "peer supports redirection (REDIRECT_SUPPORTED "
+			"16406)\n"));
 		break;
 	case IKEV2_USE_PPK:
 		/* RFC 8784 s2.2: the PEER (or, for the initiator view, the
@@ -1210,6 +1220,70 @@ ikev2_respond_with_notify_exch(rc_vchar_t *request, struct sockaddr *remote,
 	goto end;
 }
 
+/* RFC 5685 s3/s9.2: answer an IKE_SA_INIT whose initiator offered
+ * N(REDIRECT_SUPPORTED, 16406) with N(REDIRECT, <new gateway>, echoed Ni)
+ * and NO SA (SPI_R=0, message_id=0) so the client re-initiates against
+ * the listed gateway.  gw is the raw config string from redirect_to — its
+ * gateway-identity type (RFC 5685 s9.2) is derived here: a dotted-quad
+ * IPv4 (type 1), a colon IPv6 (type 2), else an FQDN (type 3).  ni is the
+ * byte-for-byte Nonce Data from the initiator's Ni payload, which the
+ * client MUST match to accept the redirect (RFC 5685 s3).  The NOTIFY
+ * data is: GW Ident Type (1) | GW Ident Len (2) | New Gateway Identity
+ * [(1+2)+id] | Nonce Data. */
+
+/* build_redirect_notify: construct the redirect Notify DATA bytes
+ * (rc_vchar_t, not including the notify header).  Exposed for the unit
+ * harness; ikev2_respond_redirect sends it.  Returns NULL on alloc
+ * failure. */
+rc_vchar_t *
+ikev2_build_redirect_notify_data(rc_vchar_t *gw, rc_vchar_t *ni)
+{
+	uint8_t idtype;
+	uint8_t idbuf[16];
+	size_t idlen = 0;
+	rc_vchar_t *data;
+
+	/* classify the configured gateway identity */
+	if (inet_pton(AF_INET, (const char *)gw->v, idbuf) == 1) {
+		idtype = 1;	/* IPv4 */
+		idlen = 4;
+	} else if (inet_pton(AF_INET6, (const char *)gw->v, idbuf) == 1) {
+		idtype = 2;	/* IPv6 */
+		idlen = 16;
+	} else {
+		idtype = 3;	/* FQDN */
+		idlen = gw->l;
+	}
+
+	data = rc_vmalloc(3 + idlen + ni->l);
+	if (!data)
+		return NULL;
+	data->u[0] = idtype;
+	put_uint16(data->u + 1, (uint16_t)idlen);
+	if (idtype == 3)
+		memcpy(data->u + 3, gw->v, idlen);
+	else
+		memcpy(data->u + 3, idbuf, idlen);
+	memcpy(data->u + 3 + idlen, ni->v, ni->l);
+	return data;
+}
+
+void
+ikev2_respond_redirect(rc_vchar_t *request, struct sockaddr *remote,
+		       struct sockaddr *local, rc_vchar_t *gw, rc_vchar_t *ni)
+{
+	rc_vchar_t *data;
+
+	data = ikev2_build_redirect_notify_data(gw, ni);
+	if (!data)
+		return;
+	TRACE((PLOGLOC, "RFC5685: responding REDIRECT to gw %s\n",
+	       (char *)gw->v));
+	ikev2_respond_with_notify(request, remote, local,
+				  IKEV2_REDIRECT, data->u, data->l);
+	rc_vfree(data);
+}
+
 /*
  * returns string representation of Notify type
  */
@@ -1265,6 +1339,9 @@ ikev2_notify_type_str(int type)
 		S(CHILDLESS_IKEV2_SUPPORTED);
 		S(IP4_ALLOWED);
 		S(IP6_ALLOWED);
+		S(REDIRECT_SUPPORTED);
+		S(REDIRECT);
+		S(REDIRECT_FROM);
 
 	default:
 		{
