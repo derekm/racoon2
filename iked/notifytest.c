@@ -240,10 +240,11 @@ main(int argc, char *argv[])
 
 		/*
 		 * RFC 5685 s9.2 redirect Notify Data: GW Ident Type (1) |
-		 * GW Ident Len (2) | Gateway Identity | Nonce Data.  IPv4
-		 * gateway -> type 1 / 4-octet addr; FQDN -> type 3 / the
-		 * raw hostname bytes.  ikev2_build_redirect_notify_data()
-		 * is what ikev2_respond_redirect() sends on the wire.
+		 * GW Ident Len (1) | Gateway Identity | Nonce Data.  IPv4
+		 * gateway -> type 1 / 4-octet addr; IPv6 -> type 2 /
+		 * 16-octet addr; FQDN -> type 3 / the raw hostname bytes.
+		 * ikev2_build_redirect_notify_data() is what
+		 * ikev2_respond_redirect() sends on the wire.
 		 */
 		{
 			rc_vchar_t *gw, *ni, *d;
@@ -286,6 +287,45 @@ main(int argc, char *argv[])
 				rc_vfree(d);
 			}
 			rc_vfree(gw);
+
+			/* IPv6 gateway "2001:db8::1" -> type 2 / 16-octet addr */
+			gw = rc_vnew((unsigned char *)"2001:db8::1", 11);
+			ck(gw != NULL, "redirect: gw6 alloc");
+			d = ikev2_build_redirect_notify_data(gw, ni);
+			ck(d != NULL, "redirect ipv6: data built");
+			if (d) {
+				ck(d->u[0] == 2, "redirect ipv6: GW type 2");
+				ck(d->u[1] == 16, "redirect ipv6: GW ident len 16");
+				/* 2001:0db8:0000:0000:0000:0000:0000:0001 —
+				 * address fills u[2..17]: head 20 01 0d b8,
+				 * all-zero middle, tail ...00 01 at u[16]/u[17] */
+				ck(d->u[2] == 0x20 && d->u[3] == 0x01 &&
+				   d->u[4] == 0x0d && d->u[5] == 0xb8 &&
+				   d->u[6] == 0x00 && d->u[15] == 0x00 &&
+				   d->u[16] == 0x00 && d->u[17] == 0x01,
+				   "redirect ipv6: gw == 2001:db8::1 at bytes 2..17");
+				rc_vfree(d);
+			}
+			rc_vfree(gw);
+
+			/* A >255-octet FQDN cannot be encoded in the 1-octet
+			 * GW Ident Len; the builder must refuse it (NULL). */
+			{
+				size_t bigl = 300;
+				unsigned char *big =
+					(unsigned char *)racoon_malloc(bigl);
+				ck(big != NULL, "redirect: big gw alloc");
+				if (big) {
+					memset(big, 0x61 /* 'a' */, bigl);
+					gw = rc_vnew(big, bigl);
+					ck(gw != NULL, "redirect: big gw vchar");
+					d = ikev2_build_redirect_notify_data(gw, ni);
+					ck(d == NULL,
+					   "redirect fqdn >255: refused (NULL)");
+					rc_vfree(gw);
+					racoon_free(big);
+				}
+			}
 			rc_vfree(ni);
 
 			/*
