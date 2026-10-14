@@ -1438,7 +1438,88 @@ ikev2_parse_redirect_notify_data(rc_vchar_t *data, uint8_t *gwt,
 }
 
 /*
- * returns string representation of Notify type
+ * RFC 5685 s9.3 build: given the recorded GW Ident Type + identity bytes
+ * from a received N(REDIRECT) (or a configured redirect_from target),
+ * emit the REDIRECTED_FROM (16408) Notify DATA: GW Ident Type (1) |
+ * GW Ident Len (1) | Original Responder GW Identity.  Identical framing
+ * to s9.2 except it carries the ORIGINAL (redirecting) gateway and NO
+ * Nonce Data (the initiator sends it in the IKE_SA_INIT it re-sends to
+ * the new gateway, so the new gateway knows it was redirected here).
+ * type 1=IPv4 (4 octets), 2=IPv6 (16), 3=FQDN; 3 is only for
+ * completeness — a redirect_to follow targets IPv4/IPv6 literals.
+ * Returns NULL on malformed/Len>255 input. */
+rc_vchar_t *
+ikev2_build_redirected_from_data(uint8_t type, rc_vchar_t *ident)
+{
+	rc_vchar_t *data;
+
+	if (!ident || ident->l == 0)
+		return NULL;
+	switch (type) {
+	case 1:
+		if (ident->l != 4)
+			return NULL;
+		break;
+	case 2:
+		if (ident->l != 16)
+			return NULL;
+		break;
+	case 3:
+		if (ident->l > 255)
+			return NULL;
+		break;
+	default:
+		return NULL;
+	}
+	data = rc_vmalloc(2 + ident->l);
+	if (!data)
+		return NULL;
+	data->u[0] = type;
+	data->u[1] = (uint8_t)ident->l;
+	memcpy(data->u + 2, ident->u, ident->l);
+	return data;
+}
+
+/*
+ * RFC 5685 redirect follow: turn a recorded redirect target (GW Ident
+ * Type + identity bytes from the responder's N(REDIRECT)) into a noun
+ * struct sockaddr suitable as ike_sa->remote for re-initiation.  Only
+ * IPv4 (type 1) and IPv6 (type 2) literal targets are resolvable here;
+ * an FQDN (type 3) has no resolver hook at this layer and returns NULL.
+ * Caller frees the result with racoon_free(). */
+struct sockaddr *
+ikev2_redirect_gw_sadup(uint8_t type, rc_vchar_t *ident)
+{
+	struct sockaddr_storage ss;
+
+	if (!ident)
+		return NULL;
+	memset(&ss, 0, sizeof(ss));
+	switch (type) {
+	case 1:
+		if (ident->l != 4)
+			return NULL;
+		ss.ss_family = AF_INET;
+		memcpy(&((struct sockaddr_in *)&ss)->sin_addr,
+		       ident->u, sizeof(struct in_addr));
+		((struct sockaddr_in *)&ss)->sin_port = htons(isakmp_port_dest);
+		break;
+	case 2:
+		if (ident->l != 16)
+			return NULL;
+		ss.ss_family = AF_INET6;
+		memcpy(&((struct sockaddr_in6 *)&ss)->sin6_addr,
+		       ident->u, sizeof(struct in6_addr));
+		((struct sockaddr_in6 *)&ss)->sin6_port =
+		    htons(isakmp_port_dest);
+		break;
+	default:
+		return NULL;
+	}
+	return rcs_sadup((struct sockaddr *)&ss);
+}
+
+/* returns string representation of Notify type
  */
 const char *
 ikev2_notify_type_str(int type)
