@@ -63,6 +63,31 @@
 #    include "parse_coa.h"
 #endif
 
+/* RFC 7427 s4 SIG_HASH_ALGORITHMS (16431) DATA: the 2-byte hash IDs we
+ * advertise for a method-14 (DS) seat.  RSASIG and ECDSA advertise the
+ * SHA-2 set {256,384,512}; EdDSA (RFC 8420) advertises only the "Identity"
+ * hash 0x0005.  Single shared tables + one push helper so the initiator
+ * offer (below) and the responder echo can never drift — dedup of the
+ * four identical copies that previously lived inline. */
+static const uint8_t sig_hash_sha2[] = {
+	0x00, 0x02, 0x00, 0x03, 0x00, 0x04,
+};
+static const uint8_t sig_hash_identity[] = {
+	0x00, 0x05,
+};
+
+static void
+ikev2_push_sig_hash(struct ikev2_payloads *payl, const uint8_t *data,
+		    size_t len, const char *what)
+{
+	TRACE((PLOGLOC, "SIG_HASH_ALGORITHMS (16431, %s)\n", what));
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0,
+						 IKEV2_SIG_HASH_ALGORITHMS,
+						 (uint8_t *)data, len),
+			    TRUE);
+}
+
 /* forward declarations (as in ikev2.c top; the DH/async callbacks are
  * referenced as function pointers before their bodies below). */
 static void initiator_start_after_gen(int rc, void *arg);
@@ -320,31 +345,18 @@ initiator_start_after_gen(int rc, void *arg)
 		struct rc_alglist *_kmp = ikev2_kmp_auth_method(ike_sa->rmconf);
 		if (_kmp && _kmp->algtype == RCT_ALG_RSASIG &&
 		    ikev2_offer_sig_hash_algorithms(ike_sa->rmconf) == RCT_BOOL_ON) {
-			static const uint8_t sig_hash_sha2[] = {
-				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
-			};
 			TRACE((PLOGLOC, "offering SIG_HASH_ALGORITHMS (16431)\n"));
-			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
-					    ikev2_notify_payload(0, 0, 0,
-							 IKEV2_SIG_HASH_ALGORITHMS,
-							 (uint8_t *)sig_hash_sha2,
-							 sizeof(sig_hash_sha2)),
-					    TRUE);
+			ikev2_push_sig_hash(&ctx->payl, sig_hash_sha2,
+					    sizeof(sig_hash_sha2), "RSASIG/SHA-2");
 		} else if (_kmp && _kmp->algtype == RCT_ALG_EDDSA &&
 		    ikev2_offer_sig_hash_algorithms(ike_sa->rmconf) == RCT_BOOL_ON) {
 			/* RFC 8420 s4: an EdDSA seat must advertise the
 			 * Identity hash (0x0005) in SIG_HASH_ALGORITHMS. */
-			static const uint8_t sig_hash_id[] = {
-				0x00, 0x05,
-			};
 			TRACE((PLOGLOC, "offering SIG_HASH_ALGORITHMS (16431, "
 				"Identity/EdDSA)\n"));
-			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
-					    ikev2_notify_payload(0, 0, 0,
-							 IKEV2_SIG_HASH_ALGORITHMS,
-							 (uint8_t *)sig_hash_id,
-							 sizeof(sig_hash_id)),
-					    TRUE);
+			ikev2_push_sig_hash(&ctx->payl, sig_hash_identity,
+					    sizeof(sig_hash_identity),
+					    "Identity/EdDSA");
 		} else if (_kmp && _kmp->algtype == RCT_ALG_ECDSA &&
 		    ikev2_offer_sig_hash_algorithms(ike_sa->rmconf) == RCT_BOOL_ON) {
 			/* RFC 7427 plan scope #4: an ECDSA seat also offers
@@ -354,17 +366,10 @@ initiator_start_after_gen(int rc, void *arg)
 			 * methods 9/10/11.  The DS signer emits the
 			 * ecdsa-with-SHA2 AlgorithmIdentifier + DER
 			 * Ecdsa-Sig-Value. */
-			static const uint8_t sig_hash_sha2[] = {
-				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
-			};
 			TRACE((PLOGLOC, "offering SIG_HASH_ALGORITHMS (16431, "
 				"ECDSA)\n"));
-			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
-					    ikev2_notify_payload(0, 0, 0,
-							 IKEV2_SIG_HASH_ALGORITHMS,
-							 (uint8_t *)sig_hash_sha2,
-							 sizeof(sig_hash_sha2)),
-					    TRUE);
+			ikev2_push_sig_hash(&ctx->payl, sig_hash_sha2,
+					    sizeof(sig_hash_sha2), "ECDSA/SHA-2");
 		}
 	}
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
@@ -878,11 +883,15 @@ responder_state0_after_gen(int rc, void *arg)
 
 
 	/* RFC 7427 s4: echo N(SIG_HASH_ALGORITHMS) only if the initiator
-	 * offered it AND this responder's seat is RSASIG (only then can we
-	 * honor the method-14 DS AUTH the notify commits both sides to).
+	 * offered it AND this responder's seat is a method-14 signer
+	 * (RSASIG / ECDSA / EdDSA — only then can we honor the DS AUTH the
+	 * notify commits both sides to).
 	 * Data = the hash-algorithm IDs (16-bit) we can verify (RFC 7427
 	 * s4): SHA2-256=2, SHA2-384=3, SHA2-512=4 (eay_rfc7427_verify);
-	 * never SHA1=1 (RFC 8247 s3.2).  Our own method-14 AUTH signs SHA2-256.
+	 * never SHA1=1 (RFC 8247 s3.2).  Our own method-14 AUTH signs the
+	 * strongest mutually-supported SHA-2 (RSASSA-PKCS1 v1.5 / PSS /
+	 * ECDSA-DER as configured); SHA-2 tables shared with the initiator
+	 * offer via ikev2_push_sig_hash().
 	 * Both initiator and responder offer/echo 16431 when RSASIG, so
 	 * iked<->iked RSA (i2ipubkey-rsa) negotiates method 14; method 1 /
 	 * SHA-1 remains the fallback when the peer does not echo.
@@ -907,49 +916,29 @@ responder_state0_after_gen(int rc, void *arg)
 				_has_ecdsa = 1;
 		}
 		if (_has_rsa) {
-			static const uint8_t sig_hash_sha2[] = {
-				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
-			};
 			ike_sa->sig_hash_algos_ds = 1;
 			TRACE((PLOGLOC, "echoing SIG_HASH_ALGORITHMS (16431)\n"));
-			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
-					    ikev2_notify_payload(0, 0, 0,
-							 IKEV2_SIG_HASH_ALGORITHMS,
-							 (uint8_t *)sig_hash_sha2,
-							 sizeof(sig_hash_sha2)),
-					    TRUE);
+			ikev2_push_sig_hash(&ctx->payl, sig_hash_sha2,
+					    sizeof(sig_hash_sha2), "RSASIG/SHA-2");
 		} else if (_has_eddsa) {
 			/* RFC 8420 s4: an EdDSA responder echoes the Identity
 			 * hash; method 14 is the only way EdDSA is carried. */
-			static const uint8_t sig_hash_id[] = {
-				0x00, 0x05,
-			};
 			ike_sa->sig_hash_algos_ds = 1;
 			TRACE((PLOGLOC, "echoing SIG_HASH_ALGORITHMS (16431, "
 				"Identity/EdDSA)\n"));
-			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
-					    ikev2_notify_payload(0, 0, 0,
-							 IKEV2_SIG_HASH_ALGORITHMS,
-							 (uint8_t *)sig_hash_id,
-							 sizeof(sig_hash_id)),
-					    TRUE);
+			ikev2_push_sig_hash(&ctx->payl, sig_hash_identity,
+					    sizeof(sig_hash_identity),
+					    "Identity/EdDSA");
 		} else if (_has_ecdsa) {
 			/* RFC 7427 plan scope #4: an ECDSA responder echoes
 			 * the SHA-2 IDs {2,3,4}; with 16431 exchanged the
 			 * ECDSA seat uses method 14 (DS) + ecdsa-with-SHA2
 			 * instead of the RFC 4754 methods 9/10/11. */
-			static const uint8_t sig_hash_sha2[] = {
-				0x00, 0x02, 0x00, 0x03, 0x00, 0x04
-			};
 			ike_sa->sig_hash_algos_ds = 1;
 			TRACE((PLOGLOC, "echoing SIG_HASH_ALGORITHMS (16431, "
 				"ECDSA)\n"));
-			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
-					    ikev2_notify_payload(0, 0, 0,
-							 IKEV2_SIG_HASH_ALGORITHMS,
-							 (uint8_t *)sig_hash_sha2,
-							 sizeof(sig_hash_sha2)),
-					    TRUE);
+			ikev2_push_sig_hash(&ctx->payl, sig_hash_sha2,
+					    sizeof(sig_hash_sha2), "ECDSA/SHA-2");
 		}
 	}
 	/* RFC 6023 s4: advertise childless IKE_SA support when configured for
