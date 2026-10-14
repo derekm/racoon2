@@ -352,12 +352,23 @@ esac
 	# system trust store, but cb_check_cert (crypto_openssl.c) accepts
 	# DEPTH_ZERO_SELF_SIGNED_CERT -> ok=1, so no CA-store setup is needed.
 	I2I_RSA=0
+	I2I_ECDSA=0
 	RSA_TXT_I=""
 	RSA_TXT_R=""
 	case "$name" in
 	*-rsa*)
 		I2I_RSA=1
 		;;
+	*-ecdsa*)
+		I2I_ECDSA=1
+		;;
+	esac
+	# Reverse-sign PKI rows need DEBUG_FLAG_TRACE (0x0002) so the iked
+	# method-14 sign TRACE ('RFC 7427: sign method 14 ...') is emitted and
+	# the reverse gate can assert iked actually SIGNED the scheme (mirrors
+	# the childless rows' TRACE-marker debug bump).
+	case "$name" in
+	*-rsa-pss-charonr|*-ecdsa-charonr) I2I_DBG=0x0003 ;;
 	esac
 	# F6 rsa-sha1 interop: pin offer_sig_hash_algorithms off BEFORE the
 	# iked confs are emitted (this case runs before conf gen) so a modern
@@ -434,11 +445,31 @@ EOC
 		AUTH_TXT_R='		kmp_auth_method { rsasig; };
 		my_public_key x509pem "'"$C"'/cert-r.pem" "'"$C"'/key-r.pem";
 		peers_public_key x509pem "'"$C"'/cert-i.pem";'
+		# Reverse sign: a -rsa-pss-charonr row drives the iked INITIATOR to
+		# sign method 14 RSASSA-PSS (sig_hash_rsa_pss on) so strongSwan
+		# charon RESPONDER must verify a real PSS AUTH (reverse of F7,
+		# which is charon-sign/iked-verify).
+		case "$name" in
+		*-rsa-pss-charonr) I2I_SIG_PSS_TXT_I='		sig_hash_rsa_pss on;' ;;
+		*)                 I2I_SIG_PSS_TXT_I="" ;;
+		esac
+	elif [ "$I2I_ECDSA" = 1 ]; then
+		# ECDSA reverse sign (-ecdsa-charonr): iked initiator signs
+		# method 14 DER Ecdsa-Sig-Value (P-384), charon responder
+		# verifies.  Same in-row self-signed PKI as -rsa.
+		AUTH_TXT_I='		kmp_auth_method { ecdsa; };
+		my_public_key x509pem "'"$C"'/cert-i.pem" "'"$C"'/key-i.pem";
+		peers_public_key x509pem "'"$C"'/cert-r.pem";'
+		AUTH_TXT_R='		kmp_auth_method { ecdsa; };
+		my_public_key x509pem "'"$C"'/cert-r.pem" "'"$C"'/key-r.pem";
+		peers_public_key x509pem "'"$C"'/cert-i.pem";'
+		I2I_SIG_PSS_TXT_I=""
 	else
 		AUTH_TXT_I='		kmp_auth_method { psk; };
 		pre_shared_key "'"$ETC"'/psk/macos.psk";'
 		AUTH_TXT_R='		kmp_auth_method { psk; };
 		pre_shared_key "'"$ETC"'/psk/macos.psk";'
+		I2I_SIG_PSS_TXT_I=""
 	fi
 	# peer identifiers stay the same under RSA (iked accepts any cert that
 	# verifies against peers_pubkey -- ikev2_public_key peer-ID check is
@@ -540,6 +571,7 @@ remote matrix_init {
 		offer_sig_hash_algorithms $I2I_OFFER_SIG_HASH;
 		$I2I_DEPR_SW
 $AUTH_TXT_I
+$I2I_SIG_PSS_TXT_I
 $PPK_TXT
 $CHILDLESS_TXT_I
 $IKE_TXT_I
@@ -585,22 +617,29 @@ fi
 	pkill -9 -f "$C/" 2>/dev/null || true
 	rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
 
-	# RSA rows: generate the two seat pairs of self-signed cert+key IN-ROW.
-	# CN = the seat's my_id; iked does not enforce id<->cert (peers_pubkey
-	# is the trust anchor), but charon derives its own identity from the
-	# cert subject, so the charon initiator seat must carry CN=charon-i2i.
-	# Self-signed is fine: eay_check_x509cert's cb_check_cert accepts
-	# DEPTH_ZERO_SELF_SIGNED_CERT (ok=1); no CA store on either box.
-	if [ "$I2I_RSA" = 1 ]; then
+	# PKI rows (-rsa / -ecdsa): generate the two seat pairs of self-signed
+	# cert+key IN-ROW.  CN = the seat's my_id; iked does not enforce
+	# id<->cert (peers_pubkey is the trust anchor), but charon derives its
+	# own identity from the cert subject, so a charon seat must carry
+	# CN=charon-i2i.  Self-signed is fine: eay_check_x509cert's
+	# cb_check_cert accepts DEPTH_ZERO_SELF_SIGNED_CERT (ok=1); no CA store
+	# on either box.  -rsa = RSA-2048; -ecdsa = EC P-384 (RFC 7427 method-14
+	# DER signs under ecdsa-with-SHA2).
+	if [ "$I2I_RSA" = 1 ] || [ "$I2I_ECDSA" = 1 ]; then
 		I_CN=${I2I_CHARON_ID}; [ "$PEER" = iked ] && I_CN=r2init-matrix
 		R_CN=${I2I_CHARON_ID}; [ "$PEER_R" = iked ] && R_CN=racoon2-matrix
 		if ! command -v openssl >/dev/null 2>&1; then
-			log "FAIL: no openssl for -rsa cert gen"; return 1
+			log "FAIL: no openssl for PKI cert gen"; return 1
 		fi
-		openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$I_CN" \
+		if [ "$I2I_ECDSA" = 1 ]; then
+			_keyalg="-newkey ec -pkeyopt ec_paramgen_curve:P-384"
+		else
+			_keyalg="-newkey rsa:2048"
+		fi
+		openssl req -x509 $_keyalg -nodes -days 2 -subj "/CN=$I_CN" \
 		    -addext "subjectAltName=DNS:$I_CN" \
 		    -keyout "$C/key-i.pem" -out "$C/cert-i.pem" >/dev/null 2>&1 || { log "FAIL: openssl cert-i"; return 1; }
-		openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$R_CN" \
+		openssl req -x509 $_keyalg -nodes -days 2 -subj "/CN=$R_CN" \
 		    -addext "subjectAltName=DNS:$R_CN" \
 		    -keyout "$C/key-r.pem" -out "$C/cert-r.pem" >/dev/null 2>&1 || { log "FAIL: openssl cert-r"; return 1; }
 		# strongSwan swanctl remote { pubkeys } takes a CERT_TRUSTED_PUBKEY
@@ -616,14 +655,20 @@ fi
 		# `secrets.private-*` block is only a passphrase lookup and never
 		# loads a key from an arbitrary path — without this install charon
 		# reaches IKE_AUTH with the cert but `no private key found for
-		# 'CN=charon-i2i'`.  Install the charon INITIATOR seat's key (PEER
-		# = charon) into private/.  Both seats are generated above, so this
-		# must come AFTER the openssl pairs.
+		# 'CN=charon-i2i'`.  Install the CHARON seat's key into private/:
+		# key-i when charon is the INITIATOR (PEER=charon), key-r when
+		# charon is the RESPONDER (PEER_R=charon, the -charonr reverse
+		# rows).  Both seats are generated above, so this must come AFTER
+		# the openssl pairs.
+		_privdir="${I2I_CHARON_KEYS_DIR:-${I2I_CHARON_VDIR%/conf.d}/private}"
+		mkdir -p "$_privdir" || { log "FAIL: no charon private key dir $_privdir"; return 1; }
 		if [ "$PEER" = charon ]; then
-			_privdir="${I2I_CHARON_KEYS_DIR:-${I2I_CHARON_VDIR%/conf.d}/private}"
-			mkdir -p "$_privdir" || { log "FAIL: no charon private key dir $_privdir"; return 1; }
 			cp "$C/key-i.pem" "$_privdir/r2-${name}-key-i.pem" || { log "FAIL: cp key-i->$_privdir"; return 1; }
 			chmod 644 "$_privdir/r2-${name}-key-i.pem" 2>/dev/null || true
+		fi
+		if [ "$PEER_R" = charon ]; then
+			cp "$C/key-r.pem" "$_privdir/r2-${name}-key-r.pem" || { log "FAIL: cp key-r->$_privdir"; return 1; }
+			chmod 644 "$_privdir/r2-${name}-key-r.pem" 2>/dev/null || true
 		fi
 	fi
 
@@ -1267,6 +1312,27 @@ fi
 	sig_ok=1
 	sig_want=""; sig_iked=""; sig_method=""
 	case "$name" in
+	*-rsa-pss-charonr|*-ecdsa-charonr)
+		# Reverse sign (iked INITIATES + SIGNS, charon RESPONDER
+		# VERIFIES): the iked initiator must really have signed the
+		# scheme the row names (TRACE added to the method-14 signer arm;
+		# -rsa-pss-charonr -> RSASSA-PSS, -ecdsa-charonr -> ECDSA) and
+		# the charon responder must have accepted that AUTH (charon's
+		# remote auth is pinned to the matching scheme in
+		# i2i_peer_r_conf, so a wrong-scheme sig fails CHARON, and the
+		# ESP child landing elsewhere is the up= gate that charon verified
+		# it).  Reverse of F6/F7 (which are charon-sign/iked-verify).
+		# iked signs its STRONGEST mutual SHA-2, so the PSS/ECDSA sign is
+		# SHA-512 (not the row-name's SHA-256/SHA-384 shorthand).
+		sig_rev=1
+		case "$name" in
+		*-rsa-pss-charonr)
+			sig_want='RFC 7427: sign method 14 RSASSA-PSS SHA512' ;&
+		*-ecdsa-charonr)
+			[ "$sig_want" ] || sig_want='RFC 7427: sign method 14 ECDSA SHA512'
+			;;
+		esac
+		;;
 	*-rsa-pss-*)
 		sig_want='RSA_EMSA_PSS_SHA2_256_SALT_32'
 		sig_iked='RFC 7427 signature verified: RSASSA-PSS SHA256 (MGF1 SHA256, salt 32)' ;;
@@ -1286,10 +1352,10 @@ fi
 		sig_iked='AUTH method 1 signature verified: RSASSA-PKCS1-v1_5 SHA1'
 		sig_method='auth method 1' ;;
 	esac
-	if [ -n "$sig_want" ]; then
+	if [ -n "$sig_want" ] && [ "${sig_rev:-0}" != 1 ]; then
 		sig_method=${sig_method:-auth method 14}
 		sig_charon=${sig_charon:-$sig_want}
-		if grep -qE "authentication of .* \\(myself\\) with $sig_charon successful" \
+		if grep -qE "authentication of .* \(myself\) with $sig_charon successful" \
 		       "$D/charon-init.log" 2>/dev/null &&
 		   grep -qF "$sig_method" "$D/resp-iked.log" 2>/dev/null &&
 		   grep -qF "$sig_iked" "$D/resp-iked.log" 2>/dev/null; then
@@ -1301,6 +1367,23 @@ fi
 			    "$D/charon-init.log" 2>/dev/null | tail -4
 			grep -iE 'auth method|RFC 7427|signature|verif' "$D/resp-iked.log" \
 			    2>/dev/null | tail -4
+		fi
+	elif [ "${sig_rev:-0}" = 1 ] && [ -n "$sig_want" ]; then
+		# Reverse sign: iked initiator must have SIGNED the scheme, and
+		# the charon responder must have accepted the AUTH (charon
+		# aborts if the sig doesn't match its remote auth pin, so
+		# charon-resp.log reaching the child negotiations AND the ESP
+		# child landing is charon's verify proof).
+		if grep -qF "$sig_want" "$D/init-iked.log" 2>/dev/null &&
+		   grep -qE "authentication of 'r2init-matrix' with .* successful" \
+		       "$D/charon-resp.log" 2>/dev/null; then
+			log "reverse sign OK: iked signed $sig_want, charon verified"
+		else
+			sig_ok=0
+			log "FAIL: reverse sign $sig_want not signed by iked / verified by charon"
+			grep -E 'RFC 7427: sign|abort|AUTH' "$D/init-iked.log" 2>/dev/null | tail -4
+			grep -iE 'authentication|AUTHENTICATION_FAILED|signature|abort' \
+			    "$D/charon-resp.log" 2>/dev/null | tail -4
 		fi
 	fi
 
