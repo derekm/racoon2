@@ -88,6 +88,15 @@ struct admin_com {
 
 #define ADMIN_GET_SA_CERT	0x0206
 
+#define ADMIN_REDIRECT_DRAIN	0x0207	/* set a drain-redirect target for a
+					 * peer (ikedctl drain-sa): the responder
+					 * redirects new IKE_SA_INITs from this
+					 * peer to <gw> instead of the config
+					 * redirect_to.  Payload: admin_com_indexes
+					 * selecting the peer, then an optional
+					 * NUL-terminated gateway string; an absent
+					 * or empty gateway clears the drain. */
+
 /*
  * The admin_com_indexes and admin_com_psk follow, see below.
  */

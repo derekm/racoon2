@@ -43,6 +43,7 @@
 #include "ikev2.h"
 #include "ikev2_impl.h"
 #include "ikev2_notify.h"
+#include "ikev2_drain.h"
 
 #include "test_util.h"
 
@@ -627,6 +628,65 @@ main(int argc, char *argv[])
 				}
 				(void)i;
 			}
+		}
+
+		/* RFC 5685 drain table (ikedctl drain-sa): set a drain
+		 * redirect target per peer, look it back up, and clear. */
+		{
+			struct sockaddr_in dp1, dp2;
+
+			memset(&dp1, 0, sizeof(dp1));
+			memset(&dp2, 0, sizeof(dp2));
+			dp1.sin_family = AF_INET;
+			dp2.sin_family = AF_INET;
+			dp1.sin_addr.s_addr = htonl(0x0a0100c8u); /* 10.1.0.200 */
+			dp2.sin_addr.s_addr = htonl(0x0a0100c9u); /* 10.1.0.201 */
+
+			ikev2_drain_clear_all();
+			ck(ikev2_drain_lookup((struct sockaddr *)&dp1) == NULL,
+			   "drain: empty table -> no target");
+
+			ck(ikev2_drain_set((struct sockaddr *)&dp1,
+			    "10.0.0.7") == 0,
+			   "drain: set target for peer1");
+			{
+				const char *t = ikev2_drain_lookup(
+				    (struct sockaddr *)&dp1);
+				ck(t && strcmp(t, "10.0.0.7") == 0,
+				   "drain: lookup returns the set target");
+			}
+			/* peer2 unaffected */
+			ck(ikev2_drain_lookup((struct sockaddr *)&dp2) == NULL,
+			   "drain: peer2 untouched");
+			/* overwrite in place */
+			ck(ikev2_drain_set((struct sockaddr *)&dp1,
+			    "10.0.0.8") == 0,
+			   "drain: overwrite peer1 target");
+			{
+				const char *t = ikev2_drain_lookup(
+				    (struct sockaddr *)&dp1);
+				ck(t && strcmp(t, "10.0.0.8") == 0,
+				   "drain: overwrite takes effect");
+			}
+			/* clear (NULL gw) removes */
+			ck(ikev2_drain_set((struct sockaddr *)&dp1, NULL) == 0,
+			   "drain: clear peer1");
+			ck(ikev2_drain_lookup((struct sockaddr *)&dp1) == NULL,
+			   "drain: cleared target gone");
+			/* NULL/invalid peer rejected */
+			ck(ikev2_drain_set(NULL, "10.0.0.7") == -1,
+			   "drain: NULL peer rejected");
+			{
+				struct sockaddr_in badp;
+				memset(&badp, 0, sizeof(badp));
+				badp.sin_family = AF_UNIX;
+				ck(ikev2_drain_set((struct sockaddr *)&badp,
+				    "10.0.0.7") == -1,
+				   "drain: unknown family rejected");
+			}
+			ikev2_drain_clear_all();
+			ck(ikev2_drain_lookup((struct sockaddr *)&dp1) == NULL,
+			   "drain: clear_all empties the table");
 		}
 	}
 

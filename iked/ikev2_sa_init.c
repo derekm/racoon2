@@ -50,6 +50,7 @@
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 #include "ikev2_notify.h"
+#include "ikev2_drain.h"
 #include "nattraversal.h"
 #include "var.h"
 #include "sockmisc.h"
@@ -633,16 +634,33 @@ responder_state0_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	 * initiator's proposal) but AFTER the redirect-support notify is
 	 * parsed above.  The peer MUST have offered 16406 (RFC 5685 s3:
 	 * a responder MUST NOT send REDIRECT to a client that did not). */
-	if (ike_sa->peer_sent_redirect && ikev2_redirect_to(conf)) {
-		rc_vchar_t *gw = ikev2_redirect_resolve(conf, remote);
+	if (ike_sa->peer_sent_redirect &&
+	    (ikev2_redirect_to(conf) || ikev2_drain_lookup(remote))) {
+		rc_vchar_t *gw;
+		const char *drain;
 		rc_vchar_t *ni_p;
-		if (!gw)
-			goto no_redirect;
+
+		/* A runtime drain target for this peer wins over the config
+		 * pool (ikedctl drain-sa): the operator has marked this
+		 * concentrator for drain, redirect this NEW IKE_SA_INIT to
+		 * the drain gateway.  Otherwise resolve the config target
+		 * (single identity or pool). */
+		drain = ikev2_drain_lookup(remote);
+		if (drain) {
+			gw = rc_vnew((unsigned char *)drain, (int)strlen(drain));
+			if (!gw)
+				goto no_redirect;
+		} else {
+			gw = ikev2_redirect_resolve(conf, remote);
+			if (!gw)
+				goto no_redirect;
+		}
 		ni_p = (nonce) ? isakmp_p2v((struct isakmp_gen *)nonce) : NULL;
 		if (ni_p) {
 			TRACE((PLOGLOC, "RFC5685: redirecting this peer to "
-				"%.*s (offered REDIRECT_SUPPORTED)\n",
-				(int)gw->l, (char *)gw->u));
+				"%.*s (offered REDIRECT_SUPPORTED)%s\n",
+				(int)gw->l, (char *)gw->u,
+				drain ? " [drain]" : ""));
 			ikev2_respond_redirect(packet, remote, local, gw, ni_p);
 			rc_vfree(gw);
 			rc_vfree(ni_p);
