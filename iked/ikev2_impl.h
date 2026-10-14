@@ -365,6 +365,20 @@ struct ikev2_sa {
 					 * responder's N(REDIRECT) */
 	rc_vchar_t *redirect_ni;	/* the echoed Ni verbatim from the
 					 * N(REDIRECT), matching ike_sa->n_i */
+	int redirect_count;		/* RFC 5685 s7: redirects followed in
+					 * the current loop-detect window */
+	time_t redirect_window;		/* start of that window */
+	int redirect_follow;		/* RFC 5685 initiator: a verified
+					 * redirect was received and the
+					 * IKE_SA_INIT is being re-run against
+					 * redirect_gw; the builder attaches
+					 * N(REDIRECTED_FROM) naming the
+					 * original (redirecting) gateway */
+	uint8_t redirected_from_type;	/* GW Ident Type of the redirecting
+					 * gateway (1=IPv4, 2=IPv6) */
+	rc_vchar_t *redirected_from;	/* identity bytes of the redirecting
+					 * gateway (the peer that sent
+					 * N(REDIRECT)), for REDIRECTED_FROM */
 	int natd_report;			/* include NATD in next reply (RFC 4555 3.8) */
 	uint8_t natd_src_hash[20];	/* verbatim NAT_DETECTION_SOURCE_IP */
 	uint8_t natd_dst_hash[20];	/* verbatim NAT_DETECTION_DESTINATION_IP */
@@ -1045,6 +1059,7 @@ int ikev2_push_natd_report(struct ikev2_sa *, struct ikev2_payloads *);
 
 /* IKE_SA_INIT exchange surface, defined in ikev2_sa_init.c. */
 void ikev2_initiator_start(struct ikev2_sa *);
+int ikev2_initiator_redirect_follow(struct ikev2_sa *, struct sockaddr *);
 int ikev2_check_new_request(rc_vchar_t *, struct sockaddr *, struct sockaddr *);
 void responder_state0_recv(struct ikev2_sa *, rc_vchar_t *,
     struct sockaddr *, struct sockaddr *);

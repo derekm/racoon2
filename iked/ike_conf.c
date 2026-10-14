@@ -238,6 +238,8 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* allow_rfc_deprecated: refused unless on */
 	RCT_BOOL_OFF,		/* natt_follow_mapping (XFRM_MSG_MAPPING) */
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
+	300,		/* redirect_period */
+	5,		/* redirect_max */
 };
 
 #ifdef IKEV1
@@ -491,6 +493,8 @@ IKEV2_CONF_ATTR(rc_type, use_ppk)
 IKEV2_CONF_ATTR(rc_type, childless)
 IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
+IKEV2_CONF_ATTR(int, redirect_period)
+IKEV2_CONF_ATTR(int, redirect_max)
 IKEV2_CONF_ATTR(rc_type, require_config)
 IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
 IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)

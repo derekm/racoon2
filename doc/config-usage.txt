@@ -783,6 +783,16 @@ remote
 		The daemon will send a KE payload in the phase 2 of IKEv1.
 		default is off.
 
+	redirect_max (number) ;
+	redirect_period (number) ;
+		It is valid for the ikev2 directive.
+		RFC 5685 s7 redirect-loop detection: an initiator follows at
+		most redirect_max redirects within redirect_period seconds;
+		a further N(REDIRECT) in that window is not followed and the
+		IKE_SA_INIT is aborted.
+		defaults are 5 and 300 (MAX_REDIRECTS and
+		REDIRECT_LOOP_DETECT_PERIOD).
+
 	my_public_key (x509pem|pkcs12|ascii) (pubkey) (privkey)
 		IT IS NOT FULLY IMPLEMENTED YET.
 		It is valid for both directives of the ikev1 and ikev2.
