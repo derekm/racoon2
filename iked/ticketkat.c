@@ -518,6 +518,94 @@ main(void)
 		free_state(&z);
 	}
 
+	/* ---- cluster shared-trust: a ticket minted under a key FILE
+	 * validates when a second "instance" loads the SAME key file
+	 * (RFC 5723 cross-node migration).  Simulates two pool nodes: node A
+	 * mints under tkey (as ikev2_ticket_lt_opaque would after
+	 * r2ticket_key_load), then node B loads the same 32 bytes from a
+	 * key file via r2ticket_key_load() and must parse the ticket back
+	 * to the identical state.  This is the "migratable SA state via
+	 * session tickets" property a shared-trust concentrator pool relies
+	 * on — no node identity is embedded, only the shared secret. */
+	{
+		const char *kpath = "/tmp/r2tkt-kat-key";
+		FILE *kf;
+		rc_vchar_t *kloaded = NULL, *ktick = NULL;
+		struct r2ticket_state kback;
+		int nok;
+
+		/* (re)write node A's key-file: exactly the 32 tkey bytes */
+		kf = fopen(kpath, "wb");
+		CHECK(kf != NULL, "cluster: open key file");
+		if (kf) {
+			size_t wrote = fwrite(tkey->v, 1, 32, kf);
+			CHECK(wrote == 32, "cluster: wrote 32-octet key file");
+			fclose(kf);
+		}
+		/* node B loads the shared key file -> must equal node A's key */
+		nok = (r2ticket_key_load(kpath, &kloaded) == 0 &&
+		       kloaded && kloaded->l == 32 &&
+		       memcmp(kloaded->v, tkey->v, 32) == 0);
+		CHECK(nok, "cluster: second instance loads identical key from file");
+
+		/* node A mints the ticket (opaque DATA, state st) */
+		ktick = r2ticket_lt_opaque(tkey, KID1, &st, st.expires_at);
+		CHECK(ktick != NULL, "cluster: node A mints opaque ticket");
+
+		/* node B parses node A's ticket under the key it loaded */
+		memset(&kback, 0, sizeof(kback));
+		if (ktick && kloaded) {
+			rc_vchar_t *opq;
+			int p;
+
+			opq = rc_vnew((uint8_t *)ktick->v + 4, ktick->l - 4);
+			p = (opq && r2ticket_parse(kloaded, opq, &kback) == 0);
+			CHECK(p, "cluster: node B validates node A's ticket (shared key)");
+			if (p) {
+				CHECK(kback.expires_at == st.expires_at &&
+				      kback.auth_method == st.auth_method &&
+				      kback.spi_i == st.spi_i &&
+				      kback.spi_r == st.spi_r &&
+				      kback.sk_d && kback.sk_d->l == 32 &&
+				      memcmp(kback.sk_d->v, st.sk_d->v, 32) == 0,
+				      "cluster: recovered state equals minted state on node B");
+			}
+			if (opq) rc_vfree(opq);
+			free_state(&kback);
+		}
+		/* a second instance with a DIFFERENT key file must NOT validate */
+		if (ktick) {
+			uint8_t other[32];
+			rc_vchar_t *ok2 = NULL, *opq2;
+			int p2;
+			for (i = 0; i < 32; i++)
+				other[i] = (uint8_t)(0xff - i);
+			/* load a wrong key file */
+			{
+				FILE *wf = fopen("/tmp/r2tkt-kat-key2", "wb");
+				if (wf) {
+					fwrite(other, 1, 32, wf);
+					fclose(wf);
+				}
+			}
+			nok = (r2ticket_key_load("/tmp/r2tkt-kat-key2",
+						 &ok2) == 0);
+			opq2 = rc_vnew((uint8_t *)ktick->v + 4, ktick->l - 4);
+			memset(&kback, 0, sizeof(kback));
+			p2 = (ok2 && opq2 &&
+			      r2ticket_parse(ok2, opq2, &kback) == 0);
+			CHECK(!p2, "cluster: wrong shared key rejected on node B");
+			if (p2)
+				free_state(&kback);
+			if (ok2) rc_vfree(ok2);
+			if (opq2) rc_vfree(opq2);
+		}
+		if (ktick) rc_vfree(ktick);
+		if (kloaded) rc_vfree(kloaded);
+		remove("/tmp/r2tkt-kat-key");
+		remove("/tmp/r2tkt-kat-key2");
+	}
+
 	rc_vfree(kdv);
 	rc_vfree(niv);
 	rc_vfree(nrv);
