@@ -601,22 +601,29 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 				 * prefer PSS (peers with PSS-only / HSM keys). */
 				const char *hy = "SHA256";
 				const uint8_t *pss_ai = rfc7427_pss_sha256_ai;
+				size_t pss_ai_len = sizeof(rfc7427_pss_sha256_ai);
 				int salt = 32;
 
 				/* Select by strongest-offered bit; the *pss_ai
-				 * tables and salt ride so an RSA-PSS choice can
-				 * pick the same hash as the PKCS1 one. */
+				 * tables/length and salt ride so an RSA-PSS
+				 * choice can pick the same hash as the PKCS1
+				 * one.  pss_ai_len is tracked alongside pss_ai
+				 * (they are separate arrays) so the PSS AI
+				 * length always matches the selected table rather
+				 * than relying on all three being equal. */
 				if (sa->peer_sig_hash_mask & (1 << 4)) {
 					ai = rfc7427_sha512_ai;
 					_ai_len = sizeof(rfc7427_sha512_ai);
 					hy = "SHA512";
 					pss_ai = rfc7427_pss_sha512_ai;
+					pss_ai_len = sizeof(rfc7427_pss_sha512_ai);
 					salt = 64;
 				} else if (sa->peer_sig_hash_mask & (1 << 3)) {
 					ai = rfc7427_sha384_ai;
 					_ai_len = sizeof(rfc7427_sha384_ai);
 					hy = "SHA384";
 					pss_ai = rfc7427_pss_sha384_ai;
+					pss_ai_len = sizeof(rfc7427_pss_sha384_ai);
 					salt = 48;
 				} else {
 					ai = rfc7427_sha256_ai;
@@ -630,7 +637,7 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 					ori = eay_rsassa_pss_sign(hy, octets,
 								  privkey, salt);
 					ai = pss_ai;
-					_ai_len = sizeof(rfc7427_pss_sha256_ai);
+					_ai_len = pss_ai_len;
 				} else {
 					ori = eay_rsassa_pkcs1_v1_5_sign
 					    (hy, octets, privkey);
