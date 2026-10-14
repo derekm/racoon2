@@ -349,6 +349,72 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		TRACE((PLOGLOC, "peer supports childless IKE_SA (16418)\n"));
 		break;
 
+	case IKEV2_REDIRECT:
+		/* RFC 5685 s3/s9: the responder answered our IKE_SA_INIT
+		 * with N(REDIRECT,<new gw>) instead of an SA — it is
+		 * overloaded, retiring, or dispatching us to a pool
+		 * member.  The initiator MUST verify the echoed Nonce
+		 * Data (s9.2: the Ni we sent rides in the redirect, so an
+		 * off-path attacker cannot forge a redirect carrying our
+		 * Ni), then abort this IKE_SA and re-run against the new
+		 * gateway.  The SA-less nature (SPI_R=0, msgid=0) is
+		 * checked in initiator_ike_sa_init_recv. */
+		{
+			rc_vchar_t *gw = 0, *ni = 0;
+			uint8_t gwt = 0;
+			uint8_t *nd;
+			int dl = get_payload_length(payload) -
+			    sizeof(struct ikev2payl_notify);
+
+			if (dl < 0) {
+				++isakmpstat.malformed_payload;
+				return -1;
+			}
+			nd = get_notify_data(notify);
+			{
+				rc_vchar_t tmp;
+
+				tmp.l = (size_t)dl;
+				tmp.u = nd;
+				if (ikev2_parse_redirect_notify_data(
+				    &tmp, &gwt, &gw, &ni) != 0) {
+					isakmp_log(ike_sa, local, remote,
+						   packet,
+						   PLOG_PROTOERR, PLOGLOC,
+						   "malformed REDIRECT notify, dropping\n");
+					++isakmpstat.malformed_payload;
+					return -1;
+				}
+			}
+			/* RFC 5685 s5.5: the echoed Ni MUST equal the Ni we
+			 * sent.  Reject a redirect whose nonce we did not
+			 * mint (off-path forgery / replay). */
+			if (!ike_sa->n_i ||
+			    ikev2_noncecmp(ni, ike_sa->n_i) != 0) {
+				isakmp_log(ike_sa, local, remote, packet,
+					   PLOG_PROTOWARN, PLOGLOC,
+					   "REDIRECT echoed Ni does not match our Ni; "
+					   "dropping\n");
+				rc_vfree(gw);
+				rc_vfree(ni);
+				++isakmpstat.malformed_payload;
+				return -1;
+			}
+			if (ike_sa->redirect_gw)
+				rc_vfree(ike_sa->redirect_gw);
+			if (ike_sa->redirect_ni)
+				rc_vfree(ike_sa->redirect_ni);
+			ike_sa->redirect_gw = gw;
+			ike_sa->redirect_ni = ni;
+			ike_sa->redirect_gw_type = gwt;
+			ike_sa->redirect_rx = 1;
+			TRACE((PLOGLOC,
+			       "RFC5685: redirected by peer to gw type %u "
+			       "(%.*s), echoed Ni verified\n",
+			       (unsigned)gwt, (int)gw->l, (char *)gw->u));
+		}
+		break;
+
 	default:
 		/* else, unexpected unauthenticated notify */
 
@@ -1322,6 +1388,65 @@ ikev2_respond_redirect(rc_vchar_t *request, struct sockaddr *remote,
 	ikev2_respond_with_notify(request, remote, local,
 				  IKEV2_REDIRECT, data->u, data->l);
 	rc_vfree(data);
+}
+
+/*
+ * RFC 5685 s9.2 parse: given the Notify DATA bytes of an N(REDIRECT)
+ * (excluding the notify header, protocol/spi, and the 2-octet type),
+ * extract the GW Ident Type (1 octet: 1=IPv4, 2=IPv6, 3=FQDN), GW
+ * Ident Len (1 octet), Gateway Identity, and the echoed Nonce Data.
+ * On success (*gwt != 0) *gw holds the identity bytes and *ni holds
+ * the echoed nonce; the caller must rc_vfree() both.  Returns 0 on
+ * success, -1 on a malformed/truncated/bounds-violating payload, or a
+ * 0-octet identity / type that does not match the RFC 5685 cardinality
+ * (IPv4 must be exactly 4 octets, IPv6 exactly 16).  Exposed for the
+ * unit harness. */
+int
+ikev2_parse_redirect_notify_data(rc_vchar_t *data, uint8_t *gwt,
+				 rc_vchar_t **gw, rc_vchar_t **ni)
+{
+	const uint8_t *p;
+	size_t len;
+	uint8_t type, idlen;
+
+	*gwt = 0;
+	*gw = 0;
+	*ni = 0;
+	if (!data || data->l < 2)
+		return -1;
+	p = data->u;
+	len = data->l;
+	type = p[0];
+	idlen = p[1];
+	/* RFC 5685 s9.2: at least Type + Len
+	 *  + (4|16|>=1) identity + the echoed Ni. */
+	if (idlen == 0 || len < (size_t)2 + idlen)
+		return -1;
+	switch (type) {
+	case 1:
+		if (idlen != 4)
+			return -1;
+		break;
+	case 2:
+		if (idlen != 16)
+			return -1;
+		break;
+	case 3:
+		break;	/* FQDN: any non-zero length */
+	default:
+		return -1;
+	}
+	*gw = rc_vnew(p + 2, idlen);
+	if (!*gw)
+		return -1;
+	*ni = rc_vnew(p + 2 + idlen, len - 2 - idlen);
+	if (!*ni) {
+		rc_vfree(*gw);
+		*gw = 0;
+		return -1;
+	}
+	*gwt = type;
+	return 0;
 }
 
 /*
