@@ -576,6 +576,22 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 				const uint8_t *eai = rfc7427_ecdsa_sha256_ai;
 				size_t eai_len = sizeof(rfc7427_ecdsa_sha256_ai);
 
+				/* RFC 7427 s3: the hash MUST be one the peer
+				 * offered.  A real 16431 (mask != 0) that
+				 * offers only SHA-1 (id 1) / Identity (id 5)
+				 * leaves no SHA-2 in common -> fail closed rather
+				 * than sign an unoffered hash.  mask==0 (empty /
+				 * malformed 16431) keeps the historical SHA-256
+				 * fallback. */
+				if (sa->peer_sig_hash_mask != 0 &&
+				    (sa->peer_sig_hash_mask & 0x1c) == 0) {
+					isakmp_log(sa, 0, 0, 0,
+						   PLOG_PROTOERR, PLOGLOC,
+						   "ECDSA method-14 AUTH: peer "
+						   "offered no SHA-2 hash in "
+						   "SIG_HASH_ALGORITHMS; failing closed\n");
+					goto fail;
+				}
 				if (sa->peer_sig_hash_mask & (1 << 4)) {
 					hy = "SHA512";
 					eai = rfc7427_ecdsa_sha512_ai;
@@ -607,6 +623,23 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 				const uint8_t *pss_ai = rfc7427_pss_sha256_ai;
 				size_t pss_ai_len = sizeof(rfc7427_pss_sha256_ai);
 				int salt = 32;
+
+				/* RFC 7427 s3: the hash MUST be one the peer
+				 * offered.  A real 16431 (mask != 0) that
+				 * offers only SHA-1 (id 1) / Identity (id 5)
+				 * leaves no SHA-2 in common -> fail closed
+				 * rather than sign an unoffered hash.
+				 * mask==0 (empty / malformed 16431) keeps the
+				 * historical SHA-256 fallback. */
+				if (sa->peer_sig_hash_mask != 0 &&
+				    (sa->peer_sig_hash_mask & 0x1c) == 0) {
+					isakmp_log(sa, 0, 0, 0,
+						   PLOG_PROTOERR, PLOGLOC,
+						   "RSA method-14 AUTH: peer "
+						   "offered no SHA-2 hash in "
+						   "SIG_HASH_ALGORITHMS; failing closed\n");
+					goto fail;
+				}
 
 				/* Select by strongest-offered bit; the *pss_ai
 				 * tables/length and salt ride so an RSA-PSS
