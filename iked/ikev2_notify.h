@@ -66,6 +66,10 @@ void ikev2_remember_sig_hashes(struct ikev2_sa *, struct ikev2payl_notify *);
  * CFG_REPLY (childful IKE_AUTH + CREATE_CHILD_SA responder). */
 void ikev2_push_ip_allowed(struct ikev2_sa *, struct ikev2_payloads *,
 			   struct ikev2_child_sa *);
+/* RFC 8983: emit the pool-supported IP*_ALLOWED notifies into an existing
+ * payload list (used on the internal_address_failure / family-mismatch
+ * path, where no CFG_REPLY is pushed). */
+void ikev2_build_ip_allowed(struct ikev2_payloads *, struct ikev2_sa *);
 
 void ikev2_respond_with_notify(rc_vchar_t *, struct sockaddr *, struct sockaddr *,
 			       int, uint8_t *, int);
