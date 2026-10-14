@@ -1289,14 +1289,24 @@ ikev2_notify_type_str(int type)
  * address families the responder SUPPORTS — one empty IP4_ALLOWED /
  * IP6_ALLOWED status notify per supported AF (Table 1).  The supported set
  * is read from the configured addresspool (ikev2_addresspool(rmconf) ->
- * pool_list item afs), so a dual-stack responder that assigned only v4 this
- * exchange still signals BOTH v4 and v6, and a family whose assignment
- * failed is still announced as supported (Table 1: "requested v4 / supported
- * v6 / assigned none -> IP6_ALLOWED").  If no named pool is configured, fall
- * back to the assigned lease AFs.  Shared by the childful IKE_AUTH responder
- * (ikev2_sa_auth.c state1_send) and the CREATE_CHILD_SA responder
- * (ikev2_child.c createchild_responder_send).  No-op when the reply carries
- * no config payload. */
+ * pool_list item afs).
+ *
+ * COVERED cells (a CFG_REPLY is pushed): a dual-stack responder that
+ * assigned only v4 this exchange signals BOTH v4 and v6; a family in the
+ * pool that was NOT assigned is still announced as supported, because the
+ * pool's supported set is what we advertise (rows "requested v4 /
+ * supported v4+v6 / assigned v4 -> IP4_ALLOWED, IP6_ALLOWED").
+ *
+ * NOT COVERED: the "assigned none" rows (requested v4 / supported v6 /
+ * assigned none -> IP6_ALLOWED) abort with INTERNAL_ADDRESS_FAILURE (error
+ * 36) in ikev2_process_config_request before any CFG_REPLY, so no IP_ALLOWED
+ * is emitted there — that family-mismatch cell is a separate follow-up, not
+ * implemented by this helper.
+ *
+ * If no named pool is configured, fall back to the assigned lease AFs.
+ * Shared by the childful IKE_AUTH responder (ikev2_sa_auth.c state1_send)
+ * and the CREATE_CHILD_SA responder (ikev2_child.c createchild_responder_
+ * send).  No-op when the reply carries no config payload. */
 void
 ikev2_push_ip_allowed(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 		      struct ikev2_child_sa *child_sa)
@@ -1338,5 +1348,5 @@ ikev2_push_ip_allowed(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 	TRACE((PLOGLOC, "RFC8983: responder emits IP%s_ALLOWED%s%s\n",
 	       has4 ? "4" : (has6 ? "6" : ""),
 	       has4 && has6 ? " and IP6_ALLOWED" : "",
-	       (has4 || has6) ? "" : " (none - no lease)"));
+	       (has4 || has6) ? "" : " (none - no supported family)"));
 }
