@@ -1618,8 +1618,17 @@ ikev2_initiator_redirect_follow(struct ikev2_sa *ike_sa, struct sockaddr *remote
 	memset(&ike_sa->index.r_ck, 0, sizeof(ike_sa->index.r_ck));
 
 	ike_sa->redirect_follow = 1;
-	TRACE((PLOGLOC,
-	       "RFC5685: following redirect to gw, re-driving IKE_SA_INIT\n"));
+	/* The initiator retargeted from the redirecting gateway (remote) to
+	 * a sibling in the shared-trust pool.  Its stored resume ticket was
+	 * persisted under the OLD gateway's address-key; migrate it to the
+	 * new gateway's key so the re-drive's resume consult
+	 * (ike_msg_session_resume_available -> exchange 38) finds it and the
+	 * sibling can HONOUR the ticket under the shared cluster key —
+	 * without this the retargeted SA would fall back to a full
+	 * IKE_SA_INIT on C, losing the cheap resume. */
+	if (ike_msg_resume_store_migrate(remote, ike_sa->remote))
+		TRACE((PLOGLOC, "RFC5685: carried resume ticket to "
+		       "redirected gw, resuming on sibling\n"));
 	ikev2_initiator_start(ike_sa);
 	return 0;
 }
