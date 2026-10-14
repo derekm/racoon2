@@ -1083,19 +1083,16 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 
 /*
  * convert internal code to the method ID of IKEv2 Authentication payload
+ *
+ * Shared single-method mapper used by both ikev2_auth_method() (the
+ * configured remote method) and ikev2_eap_responder_method() (the first
+ * non-EAP method of an EAP remote).  Inline in this TU; exposed as the
+ * public ikev2_auth_method_for_alg so the ike_conf.c EAP responder path
+ * stays in lock-step rather than duplicating the DS/PSS/deprecation logic.
  */
 int
-ikev2_auth_method(struct ikev2_sa *sa)
+ikev2_auth_method_for_alg(struct ikev2_sa *sa, struct rc_alglist *alg)
 {
-	struct rc_alglist *alg;
-
-	alg = ikev2_kmp_auth_method(sa->rmconf);
-	if (!alg) {
-		isakmp_log(sa, 0, 0, 0,
-			   PLOG_INTERR, PLOGLOC,
-			   "configuration does not specify kmp_auth_method\n");
-		return 0;
-	}
 	switch (alg->algtype) {
 	case RCT_ALG_PSK:
 		return IKEV2_AUTH_SHARED_KEY;
@@ -1143,10 +1140,11 @@ ikev2_auth_method(struct ikev2_sa *sa)
 		 * P-256 -> 9, P-384 -> 10, P-521 -> 11.
 		 *
 		 * RFC 7427 plan scope #4: when N(SIG_HASH_ALGORITHMS) was
-		 * exchanged (this seat offered + peer echoed 16431), use
-		 * method 14 (DS) with the ecdsa-with-SHA2 AlgorithmIdentifier
-		 * + DER Ecdsa-Sig-Value instead of the RFC 4754 methods —
-		 * ECDSA seats can then participate in method-14 negotiation. */
+		 * exchanged (this seat offered in IKE_SA_INIT + peer echoed
+		 * 16431), use method 14 (DS) with the ecdsa-with-SHA2
+		 * AlgorithmIdentifier + DER Ecdsa-Sig-Value instead of the
+		 * RFC 4754 methods — ECDSA seats can then participate in
+		 * method-14 negotiation. */
 		if (sa->sig_hash_algos_ds)
 			return IKEV2_AUTH_DS;
 		{
@@ -1193,6 +1191,21 @@ ikev2_auth_method(struct ikev2_sa *sa)
 			   rct2str(alg->algtype));
 		return 0;
 	}
+}
+
+int
+ikev2_auth_method(struct ikev2_sa *sa)
+{
+	struct rc_alglist *alg;
+
+	alg = ikev2_kmp_auth_method(sa->rmconf);
+	if (!alg) {
+		isakmp_log(sa, 0, 0, 0,
+			   PLOG_INTERR, PLOGLOC,
+			   "configuration does not specify kmp_auth_method\n");
+		return 0;
+	}
+	return ikev2_auth_method_for_alg(sa, alg);
 }
 
 /*
