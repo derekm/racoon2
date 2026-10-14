@@ -432,10 +432,49 @@ admin_dispatch(int so2, char *combuf)
 			}
 		}
 		peer = (struct sockaddr *)&ndx->dst;
-		if (ikev2_drain_set(peer, gw[0] ? gw : NULL) != 0)
+		if (ikev2_drain_set(peer, gw[0] ? gw : NULL) != 0) {
 			l_ac_errno = ENOMEM;
+			break;
+		}
+		/* RFC 5685 redirect only operates at IKE_SA_INIT, so a drain
+		 * cannot redirect an ALREADY-ESTABLISHED SA on the wire.  To
+		 * "drain" an existing session (plan step 4b): when a drain target
+		 * is SET for a peer that is mid-session with us, silently tear its
+		 * IKE_SA down locally (no DELETE payload — same quiet posture as
+		 * ADMIN_DELETE_ALL_SA_DST).  The client re-initiates, re-hits this
+		 * node's now-set peer-address drain, and is answered REDIRECT to
+		 * the sibling, where it resumes from its ticket (RFC 5723
+		 * exchange 38) or falls back to a full IKE_SA_INIT.  Clearing a
+		 * drain (no gw) only stops redirecting new sessions — it never
+		 * tears anything down. */
+		if (gw[0]) {
+		#ifdef IKEV2
+			struct ikev2_sa *sa, *next_sa;
+			int n_teardown = 0;
+
+			for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa;
+			     sa = next_sa) {
+				next_sa = IKEV2_SA_LIST_NEXT(sa);
+				if (!sa->remote)
+					continue;
+				/* address-only match, same semantics as the drain
+				 * key: the CLI's peer sockaddr has port 0 while the
+				 * live SA's remote has the real source port */
+				if (ikev2_drain_lookup(sa->remote) == NULL)
+					continue;
+				if (sa->state == IKEV2_STATE_DYING ||
+				    sa->state == IKEV2_STATE_DEAD)
+					continue;
+				n_teardown++;
+				ikev2_sa_delete(sa);
+			}
+			/* (n_teardown is informational; tearing down is best-effort
+			 * and we always answer the admin request OK) */
+			(void)n_teardown;
+		#endif
+		}
 		break;
-	}
+		}
 
 	case ADMIN_DELETE_ALL_SA_DST: {
 		struct admin_com_indexes *ndx;
