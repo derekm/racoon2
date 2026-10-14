@@ -359,6 +359,19 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		 * Ni), then abort this IKE_SA and re-run against the new
 		 * gateway.  The SA-less nature (SPI_R=0, msgid=0) is
 		 * checked in initiator_ike_sa_init_recv. */
+		/* A REDIRECT is only honoured when
+		 * this side opted in (accept_redirect on) and therefore
+		 * advertised REDIRECT_SUPPORTED; otherwise an unsolicited
+		 * redirect is ignored and the exchange is dropped. */
+		if (!ike_sa->rmconf ||
+		    ikev2_accept_redirect(ike_sa->rmconf) != RCT_BOOL_ON) {
+			isakmp_log(ike_sa, local, remote, packet,
+				   PLOG_PROTOWARN, PLOGLOC,
+				   "N(REDIRECT) refused (accept_redirect off); "
+				   "dropping\n");
+			++isakmpstat.payload_ignored;
+			return -1;
+		}
 		{
 			rc_vchar_t *gw = 0, *ni = 0;
 			uint8_t gwt = 0;
@@ -408,10 +421,24 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			ike_sa->redirect_ni = ni;
 			ike_sa->redirect_gw_type = gwt;
 			ike_sa->redirect_rx = 1;
-			TRACE((PLOGLOC,
-			       "RFC5685: redirected by peer to gw type %u "
-			       "(%.*s), echoed Ni verified\n",
-			       (unsigned)gwt, (int)gw->l, (char *)gw->u));
+			{
+				/* L6: render the gateway, never print raw
+				 * address octets as a string. */
+				char gs[INET6_ADDRSTRLEN + 1];
+
+				gs[0] = '\0';
+				if (gwt == 1 && gw->l == 4)
+					inet_ntop(AF_INET, gw->u, gs, sizeof(gs));
+				else if (gwt == 2 && gw->l == 16)
+					inet_ntop(AF_INET6, gw->u, gs, sizeof(gs));
+				else
+					snprintf(gs, sizeof(gs), "<%zu-octet id>",
+						 gw->l);
+				TRACE((PLOGLOC,
+				       "RFC5685: redirected by peer to gw type %u "
+				       "(%s), echoed Ni verified\n",
+				       (unsigned)gwt, gs));
+			}
 		}
 		break;
 

@@ -416,6 +416,8 @@ struct rcf_kmp {
 	int redirect_period;
 	/* RFC 5685 s7 MAX_REDIRECTS */
 	int redirect_max;
+	/* accept_redirect (on|off, default off): RFC 5685 initiator. On = advertise REDIRECT_SUPPORTED (16406) in IKE_SA_INIT and follow a verified N(REDIRECT). Off = do not advertise; an N(REDIRECT) is refused. */
+	rc_type accept_redirect;
 };
 
 /* selector info */
