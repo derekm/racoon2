@@ -81,6 +81,14 @@ rc_vchar_t *ikev2_build_redirect_notify_data(rc_vchar_t *, rc_vchar_t *);
  * success (*gw / *ni caller-freed), -1 on a malformed payload. */
 int ikev2_parse_redirect_notify_data(rc_vchar_t *, uint8_t *, rc_vchar_t **,
 				     rc_vchar_t **);
+/* RFC 5685 s9.3: build the REDIRECTED_FROM (16408) Notify DATA the
+ * initiator sends in its re-sent IKE_SA_INIT to the new gateway,
+ * carrying the ORIGINAL (redirecting) gateway's identity. */
+rc_vchar_t *ikev2_build_redirected_from_data(uint8_t, rc_vchar_t *);
+/* RFC 5685 redirect follow: resolve a recorded redirect target into a
+ * struct sockaddr (IPv4/IPv6 literal) for re-initiation.  Returns NULL
+ * for FQDN (no resolver at this layer) or a malformed identity. */
+struct sockaddr *ikev2_redirect_gw_sadup(uint8_t, rc_vchar_t *);
 void ikev2_respond_with_notify_exch(rc_vchar_t *, struct sockaddr *,
 				    struct sockaddr *, int, int, uint8_t *,
 				    int);

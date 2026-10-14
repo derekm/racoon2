@@ -415,6 +415,65 @@ main(int argc, char *argv[])
 				   "redirect parse: truncated rejected");
 			}
 		}
+		/* RFC 5685 s9.3 REDIRECTED_FROM build + redirect_gw sadup */
+		{
+			rc_vchar_t *ident, *rfd;
+			struct sockaddr *sa;
+
+			/* IPv4 original gateway 10.99.0.20 */
+			ident = rc_vnew((unsigned char *)"\x0a\x63\x00\x14", 4);
+			rfd = ikev2_build_redirected_from_data(1, ident);
+			ck(rfd != NULL, "redirected_from: ipv4 built");
+			if (rfd) {
+				ck(rfd->u[0] == 1, "redirected_from: type 1");
+				ck(rfd->u[1] == 4,
+				   "redirected_from: len 4");
+				ck(rfd->l == 6 && rfd->u[2] == 0x0a &&
+				   rfd->u[5] == 0x14,
+				   "redirected_from: ipv4 gw bytes");
+				rc_vfree(rfd);
+			}
+			rc_vfree(ident);
+			/* IPv6 original gateway 2001:db8::1 (type 2 / 16) */
+			{
+				uint8_t v6[16];
+				memset(v6, 0, sizeof(v6));
+				v6[0] = 0x20; v6[1] = 0x01;
+				v6[2] = 0x0d; v6[3] = 0xb8;
+				v6[15] = 0x01;
+				ident = rc_vnew(v6, 16);
+				rfd = ikev2_build_redirected_from_data(2, ident);
+				ck(rfd != NULL, "redirected_from: ipv6 built");
+				if (rfd) {
+					ck(rfd->u[0] == 2,
+					   "redirected_from: type 2");
+					ck(rfd->u[1] == 16,
+					   "redirected_from: len 16");
+					ck(rfd->l == 18 &&
+					   rfd->u[2] == 0x20 && rfd->u[17] == 0x01,
+					   "redirected_from: ipv6 gw bytes");
+					rc_vfree(rfd);
+				}
+				/* sadup resolves to an IPv6 sockaddr */
+				sa = ikev2_redirect_gw_sadup(2, ident);
+				ck(sa != NULL,
+				   "redirect_gw_sadup: ipv6 resolved");
+				if (sa) {
+					ck(sa->sa_family == AF_INET6,
+					   "redirect_gw_sadup: ipv6 family");
+					racoon_free(sa);
+				}
+				rc_vfree(ident);
+			}
+			/* wrong type cardinality rejected */
+			ident = rc_vnew((unsigned char *)"\x0a\x63\x00", 3);
+			ck(ikev2_build_redirected_from_data(1, ident) == NULL,
+			   "redirected_from: ipv4 wrong len rejected");
+			/* sadup rejects it too */
+			ck(ikev2_redirect_gw_sadup(1, ident) == NULL,
+			   "redirect_gw_sadup: ipv4 wrong len rejected");
+			rc_vfree(ident);
+		}
 		rc_vfree(ni);
 
 			/*
