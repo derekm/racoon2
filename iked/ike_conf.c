@@ -240,6 +240,7 @@ struct rcf_kmp ikev2_default_values = {
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
 	300,		/* redirect_period */
 	5,		/* redirect_max */
+	RCT_BOOL_OFF,		/* accept_redirect */
 };
 
 #ifdef IKEV1
@@ -495,6 +496,7 @@ IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
 IKEV2_CONF_ATTR(int, redirect_period)
 IKEV2_CONF_ATTR(int, redirect_max)
+IKEV2_CONF_ATTR(rc_type, accept_redirect)
 IKEV2_CONF_ATTR(rc_type, require_config)
 IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
 IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)

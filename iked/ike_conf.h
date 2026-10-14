@@ -219,6 +219,7 @@ extern rc_type ikev2_childless(struct rcf_remote *);
 extern rc_vchar_t *ikev2_redirect_to(struct rcf_remote *);
 extern int ikev2_redirect_period(struct rcf_remote *);
 extern int ikev2_redirect_max(struct rcf_remote *);
+extern rc_type ikev2_accept_redirect(struct rcf_remote *);
 extern rc_type ikev2_natt_follow_mapping(struct rcf_remote *);
 extern rc_type ikev2_ppk_mandatory(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ppk_id(struct rcf_remote *);
