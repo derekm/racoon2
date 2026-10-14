@@ -1391,10 +1391,12 @@ ikev2_respond_redirect(rc_vchar_t *request, struct sockaddr *remote,
 rc_vchar_t *
 ikev2_redirect_pool_select(rc_vchar_t *pool, struct sockaddr *remote)
 {
+	struct sockaddr_storage ss;
 	const uint8_t *p;
 	size_t len;
+	size_t i;
 	unsigned long h = 1469598103934665603UL;	/* FNV-1a 64 */
-	size_t n = 0, i;
+	size_t n = 0;
 	size_t start;
 	size_t sel;
 
@@ -1407,9 +1409,30 @@ ikev2_redirect_pool_select(rc_vchar_t *pool, struct sockaddr *remote)
 	if (n == 1)
 		return rc_vdup(pool);
 
-	p = (const uint8_t *)remote;
-	len = remote->sa_family == AF_INET ? sizeof(struct sockaddr_in) :
-	    remote->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6) : 0;
+	/* FNV-1a over the peer ADDRESS bytes for stable per-address
+	 * affinity.  Hash only the IP address (family + addr), NOT the
+	 * source port: a client re-initiating from a changed ephemeral
+	 * source port must still land on the same pool member — the one
+	 * holding its resume ticket / crash-restart dump. */
+	memset(&ss, 0, sizeof(ss));
+	if (remote->sa_family == AF_INET) {
+		struct sockaddr_in *sin =
+		    (struct sockaddr_in *)&ss;
+		memcpy(sin, remote, sizeof(*sin));
+		sin->sin_port = 0;	/* drop source port */
+		p = (const uint8_t *)sin;
+		len = sizeof(*sin);
+	} else if (remote->sa_family == AF_INET6) {
+		struct sockaddr_in6 *sin6 =
+		    (struct sockaddr_in6 *)&ss;
+		memcpy(sin6, remote, sizeof(*sin6));
+		sin6->sin6_port = 0;	/* drop source port */
+		p = (const uint8_t *)sin6;
+		len = sizeof(*sin6);
+	} else {
+		p = (const uint8_t *)remote;
+		len = 0;
+	}
 	for (i = 0; i < len; i++) {
 		h ^= p[i];
 		h *= 1099511628211UL;

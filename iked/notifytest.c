@@ -566,6 +566,26 @@ main(int argc, char *argv[])
 					   memcmp(r1a->u, r1b->u, r1a->l) == 0,
 					   "redirect pool: same peer -> same member "
 					   "(stable affinity)");
+					/* port-independent affinity: the same
+					 * ADDRESS with a different source port
+					 * must still land on the same member (a
+					 * client re-initiating from a changed
+					 * ephemeral port must return to the
+					 * member holding its resume ticket /
+					 * dump) */
+					{
+						struct sockaddr_in p1b = p1;
+						rc_vchar_t *r1c;
+
+						p1b.sin_port = htons(54321);
+						r1c = ikev2_redirect_pool_select(
+						    pool, (struct sockaddr *)&p1b);
+						ck(r1a && r1c && r1a->l == r1c->l &&
+						   memcmp(r1a->u, r1c->u, r1a->l) == 0,
+						   "redirect pool: addr affinity "
+						   "ignores source port");
+						if (r1c) rc_vfree(r1c);
+					}
 					/* both selections are in-pool */
 					ck(r1a && r1a->l >= 8 &&
 					   (memcmp(r1a->u, "10.0.0.7", 8) == 0 ||
