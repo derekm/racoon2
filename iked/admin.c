@@ -32,6 +32,7 @@
 
 #include "racoon.h"
 #include "plog.h"
+#include "debug.h"
 #include "gcmalloc.h"
 #include "admin.h"
 #include "isakmp.h"
@@ -439,17 +440,26 @@ admin_dispatch(int so2, char *combuf)
 		/* RFC 5685 redirect only operates at IKE_SA_INIT, so a drain
 		 * cannot redirect an ALREADY-ESTABLISHED SA on the wire.  To
 		 * "drain" an existing session (plan step 4b): when a drain target
-		 * is SET for a peer that is mid-session with us, silently tear its
-		 * IKE_SA down locally (no DELETE payload — same quiet posture as
-		 * ADMIN_DELETE_ALL_SA_DST).  The client re-initiates, re-hits this
-		 * node's now-set peer-address drain, and is answered REDIRECT to
-		 * the sibling, where it resumes from its ticket (RFC 5723
-		 * exchange 38) or falls back to a full IKE_SA_INIT.  Clearing a
-		 * drain (no gw) only stops redirecting new sessions — it never
-		 * tears anything down. */
+		 * is SET for a peer that is mid-session with us, silently tear it
+		 * down locally — prune each MATURE Child SA's kernel SAs and mark
+		 * it EXPIRED (the same quiet, NO-DELETE-per-wire prune as
+		 * ADMIN_DELETE_SA, applied to every child of a drained peer).  The
+		 * session's data path drops immediately; once childless, the
+		 * periodic tick (ike_sa.c, ESTABLISHED && no children) closes the
+		 * IKE_SA.  The client re-initiates, re-hits this node's now-set
+		 * peer-address drain, and is answered REDIRECT to the sibling,
+		 * where it resumes from its ticket (RFC 5723 exchange 38) or falls
+		 * back to a full IKE_SA_INIT.  Clearing a drain (no gw) only stops
+		 * redirecting new sessions — it never tears anything down.
+		 *
+		 * NOTE we deliberately do NOT use ikev2_sa_delete() here: that
+		 * sends a wire DELETE to the peer and waits for its response to
+		 * mark the SA DEAD — the opposite of a silent drain, and it does
+		 * not prune the child kernel SAs. */
 		if (gw[0]) {
 		#ifdef IKEV2
 			struct ikev2_sa *sa, *next_sa;
+			struct ikev2_child_sa *c, *next_c;
 			int n_teardown = 0;
 
 			for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa;
@@ -465,11 +475,23 @@ admin_dispatch(int so2, char *combuf)
 				if (sa->state == IKEV2_STATE_DYING ||
 				    sa->state == IKEV2_STATE_DEAD)
 					continue;
-				n_teardown++;
-				ikev2_sa_delete(sa);
+				TRACE((PLOGLOC, "RFC5685 drain: pruning established "
+				       "SA for peer\n"));
+				for (c = IKEV2_CHILD_LIST_FIRST(&sa->children);
+				     !IKEV2_CHILD_LIST_END(c); c = next_c) {
+					next_c = IKEV2_CHILD_LIST_NEXT(c);
+					if (c->state != IKEV2_CHILD_STATE_MATURE)
+						continue;
+					ikev2_child_delete_ipsecsa(c);
+					ikev2_child_state_set(c,
+						IKEV2_CHILD_STATE_EXPIRED);
+					n_teardown++;
+				}
 			}
 			/* (n_teardown is informational; tearing down is best-effort
 			 * and we always answer the admin request OK) */
+			TRACE((PLOGLOC, "RFC5685 drain: pruned %d child SA(s) for "
+			       "drained peer\n", n_teardown));
 			(void)n_teardown;
 		#endif
 		}
