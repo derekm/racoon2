@@ -440,17 +440,21 @@ admin_dispatch(int so2, char *combuf)
 		/* RFC 5685 redirect only operates at IKE_SA_INIT, so a drain
 		 * cannot redirect an ALREADY-ESTABLISHED SA on the wire.  To
 		 * "drain" an existing session (plan step 4b): when a drain target
-		 * is SET for a peer that is mid-session with us, silently tear it
-		 * down locally — prune each MATURE Child SA's kernel SAs and mark
-		 * it EXPIRED (the same quiet, NO-DELETE-per-wire prune as
-		 * ADMIN_DELETE_SA, applied to every child of a drained peer).  The
-		 * session's data path drops immediately; once childless, the
-		 * periodic tick (ike_sa.c, ESTABLISHED && no children) closes the
-		 * IKE_SA.  The client re-initiates, re-hits this node's now-set
-		 * peer-address drain, and is answered REDIRECT to the sibling,
-		 * where it resumes from its ticket (RFC 5723 exchange 38) or falls
-		 * back to a full IKE_SA_INIT.  Clearing a drain (no gw) only stops
-		 * redirecting new sessions — it never tears anything down.
+		 * is SET for a peer that is mid-session with us, SILENTLY CLOSE
+		 * its IKE_SA via ikev2_abort (below) — kills every child (MATURE
+		 * kernel-SAD prune + EXPIRED), sets the SA DYING->DEAD, sends NO
+		 * wire DELETE, and the main-loop reaper frees it.  The session's
+		 * data path drops immediately.  (A bare child prune is NOT enough:
+		 * an ESTABLISHED childless SA is never closed by the tick — the
+		 * default grace period is 0/infinite and ikev2_sa_expire REKEYS
+		 * rather than silently closing, so a surviving DPD/rekey would
+		 * re-home traffic back onto the draining node.)  The client
+		 * re-initiates, re-hits this node's now-set peer-address drain,
+		 * and is answered REDIRECT to the sibling, where it resumes from
+		 * its ticket (RFC 5723 exchange 38, when a drain-time ferry
+		 * carries it) or falls back to a full IKE_SA_INIT.  Clearing a
+		 * drain (no gw) only stops redirecting new sessions — it never
+		 * tears anything down.
 		 *
 		 * NOTE we deliberately do NOT use ikev2_sa_delete() here: that
 		 * sends a wire DELETE to the peer and waits for its response to
