@@ -1618,17 +1618,33 @@ ikev2_initiator_redirect_follow(struct ikev2_sa *ike_sa, struct sockaddr *remote
 	memset(&ike_sa->index.r_ck, 0, sizeof(ike_sa->index.r_ck));
 
 	ike_sa->redirect_follow = 1;
-	/* The initiator retargeted from the redirecting gateway (remote) to
-	 * a sibling in the shared-trust pool.  Its stored resume ticket was
-	 * persisted under the OLD gateway's address-key; migrate it to the
-	 * new gateway's key so the re-drive's resume consult
-	 * (ike_msg_session_resume_available -> exchange 38) finds it and the
-	 * sibling can HONOUR the ticket under the shared cluster key —
-	 * without this the retargeted SA would fall back to a full
-	 * IKE_SA_INIT on C, losing the cheap resume. */
+	/* RFC 5723 + RFC 5685 interplay, carried-ticket intent.
+	 *
+	 * The resume ticket store is keyed by PEER IP
+	 * (ike_msg_resume_store_key), so if a redirect-follow retargets us
+	 * from A to a sibling C, a ticket stored under A's key would not be
+	 * found by C's resume consult (ike_msg_session_resume_available),
+	 * forcing a full IKE_SA_INIT on C.  As a defensive hook, migrate any
+	 * stored ticket from the redirecting gateway (remote) to the new
+	 * sibling (ike_sa->remote) so a carried ticket COULD be honoured at C
+	 * under the shared cluster key.
+	 *
+	 * NOTE this cannot fire today: RFC 5685 N(REDIRECT) only appears in an
+	 * IKE_SA_INIT response, and ikev2_initiator_start diverts to exchange
+	 * 38 before ever sending IKE_SA_INIT whenever a live unexpired ticket
+	 * exists for the peer.  So a live ticket for A sends a RESUME to A (no
+	 * IKE_SA_INIT, no redirect, migrate never runs), and reaching
+	 * IKE_SA_INIT requires an empty/expired store (migrate no-ops) or
+	 * resume_declined (still blocks at C).  The migrate call is therefore
+	 * a correct no-op on every reachable path today; making resume-on-
+	 * sibling actually reachable needs a mechanism that keeps the A ticket
+	 * live while STILL forcing the client through a fresh IKE_SA_INIT to A
+	 * (e.g. a drain-time ferry that issues a C-portable ticket instead of
+	 * NACKing, and clearing resume_declined on a redirect retarget). */
 	if (ike_msg_resume_store_migrate(remote, ike_sa->remote))
 		TRACE((PLOGLOC, "RFC5685: carried resume ticket to "
-		       "redirected gw, resuming on sibling\n"));
+		       "redirected gw (defensive; resume-on-sibling needs the "
+		       "live two-gateway flow)\n"));
 	ikev2_initiator_start(ike_sa);
 	return 0;
 }
