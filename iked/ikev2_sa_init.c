@@ -633,21 +633,25 @@ responder_state0_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	 * initiator's proposal) but AFTER the redirect-support notify is
 	 * parsed above.  The peer MUST have offered 16406 (RFC 5685 s3:
 	 * a responder MUST NOT send REDIRECT to a client that did not). */
-	if (ike_sa->peer_sent_redirect &&
-	    ikev2_redirect_to(conf) && ikev2_redirect_to(conf)->l) {
-		rc_vchar_t *gw = ikev2_redirect_to(conf);
+	if (ike_sa->peer_sent_redirect && ikev2_redirect_to(conf)) {
+		rc_vchar_t *gw = ikev2_redirect_resolve(conf, remote);
 		rc_vchar_t *ni_p;
+		if (!gw)
+			goto no_redirect;
 		ni_p = (nonce) ? isakmp_p2v((struct isakmp_gen *)nonce) : NULL;
 		if (ni_p) {
 			TRACE((PLOGLOC, "RFC5685: redirecting this peer to "
-				"%s (offered REDIRECT_SUPPORTED)\n",
-				(char *)gw->v));
+				"%.*s (offered REDIRECT_SUPPORTED)\n",
+				(int)gw->l, (char *)gw->u));
 			ikev2_respond_redirect(packet, remote, local, gw, ni_p);
+			rc_vfree(gw);
 			rc_vfree(ni_p);
 			++isakmpstat.payload_ignored;   /* no SA consumed */
 			goto done;
 		}
+		rc_vfree(gw);
 	}
+	no_redirect:
 
 	if ((ike_acceptable_kmp(conf) & RCF_ALLOW_IKEV2) == 0) {
 		isakmp_log(ike_sa, local, remote, packet,
