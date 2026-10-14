@@ -594,8 +594,15 @@ main(void)
 			nok = (r2ticket_key_load("/tmp/r2tkt-kat-key2",
 						 &ok2) == 0);
 			opq2 = rc_vnew((uint8_t *)ktick->v + 4, ktick->l - 4);
+			/* The contrast is only real if the wrong-key file
+			 * ACTUALLY LOADED (a 32-octet key, different from
+			 * the fixture) and the ticket body was prepared; a
+			 * silent load/alloc failure must not let the
+			 * rejection check pass vacuously. */
+			CHECK(nok && ok2 && ok2->l == 32 && opq2 != NULL,
+			      "cluster: wrong key loaded, ticket prepared");
 			memset(&kback, 0, sizeof(kback));
-			p2 = (ok2 && opq2 &&
+			p2 = (nok && ok2 && opq2 &&
 			      r2ticket_parse(ok2, opq2, &kback) == 0);
 			CHECK(!p2, "cluster: wrong shared key rejected on node B");
 			if (p2)
