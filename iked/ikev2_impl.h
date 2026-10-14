@@ -1071,6 +1071,8 @@ int ikev2_spi_is_zero(isakmp_cookie_t *);
 /* RFC 5723 session-resumption surface, defined in ikev2_session_resume.c. */
 void ike_msg_resume_store_save_from_sa(struct ikev2_sa *);
 int ike_msg_session_resume_available(struct ikev2_sa *);
+int ike_msg_resume_store_migrate(const struct sockaddr *oldgw,
+				 const struct sockaddr *newgw);
 void ike_msg_session_resume_fallback(struct ikev2_sa *, const char *);
 void initiator_ike_session_resume_recv(struct ikev2_sa *, rc_vchar_t *,
     struct sockaddr *, struct sockaddr *);
