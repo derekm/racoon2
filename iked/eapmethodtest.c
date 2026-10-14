@@ -359,6 +359,36 @@ main(void)
 		}
 	}
 
+	/* ---- 7c. RSA + SIG_HASH + sig_hash_rsa_pss on -> DS + PSS flag ----
+	 * ikev2_eap_responder_method() must mirror ikev2_auth_method(): on the
+	 * RSASIG->DS transition it sets sa->sig_hash_ds_pss from the config so
+	 * the method-14 signer actually signs RSASSA-PSS (not a silent
+	 * PKCS1-v1_5).  Assert both the method and the flag propagation. */
+	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+	if (!sa) return 2;
+	rm = mkrmconf();
+	alg = mkalg(RCT_ALG_RSASIG);
+	if (!rm || !alg) return 2;
+	rm->ikev2->kmp_auth_method = alg;
+	rm->ikev2->sig_hash_rsa_pss = RCT_BOOL_ON;
+	sa->rmconf = rm;
+	sa->sig_hash_algos_ds = 1;
+	got = ikev2_eap_responder_method(sa);
+	if (got == IKEV2_AUTH_DS && sa->sig_hash_ds_pss == 1)
+		printf("eapmethodtest: PASS 7c RSA+DS+PSS -> ds=%d pss=%d\n",
+		       got, sa->sig_hash_ds_pss);
+	else {
+		printf("eapmethodtest: FAIL 7c RSA+DS+PSS -> %d (want %d) "
+		       "pss=%d (want 1)\n", got, IKEV2_AUTH_DS,
+		       sa->sig_hash_ds_pss);
+		fails++;
+	}
+	sa->rmconf = NULL;
+	ikev2_dispose_sa(sa);
+	racoon_free(alg);
+	racoon_free(rm->ikev2);
+	racoon_free(rm);
+
 	/* ---- 8. NULL sa -> 0 (no crash) ---- */
 	got = ikev2_eap_responder_method(NULL);
 	if (got != 0) {
