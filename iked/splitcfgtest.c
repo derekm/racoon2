@@ -466,23 +466,30 @@ main(int argc, char *argv[])
 	/* ================= B.5 shared emit: ikev2_push_ip_allowed =============
 	 * The RFC 8983 IP4_ALLOWED/IP6_ALLOWED status notify is emitted by a
 	 * SHARED helper (ikev2_notify.c) so the childful IKE_AUTH responder and
-	 * the CREATE_CHILD_SA responder stay in sync.  Drive it directly: a
-	 * payloads struct + a fabricated child_sa carrying a v4 lease and a
-	 * non-NULL cfg_payload; assert the serialized blob contains notify
-	 * 16439 (IP4_ALLOWED) and NOT 16440 (IP6_ALLOWED, no v6 lease). */
+	 * the CREATE_CHILD_SA responder stay in sync — and it advertises the
+	 * responder's SUPPORTED families (RFC 8983 Table 1), read from the
+	 * configured addresspool, not merely the family assigned this exchange.
+	 *
+	 * (a) No named pool (ikev2_addresspool -> NULL): fall back to the
+	 *     assigned lease AFs — a v4 lease yields exactly IP4_ALLOWED.
+	 * (b) A pool advertising v4+v6: BOTH IP4_ALLOWED and IP6_ALLOWED are
+	 *     emitted even when only the v4 lease was assigned this exchange
+	 *     (dual-stack responder signaling its full supported set). */
 	{
-		struct ikev2_payloads p;
-		struct ikev2_child_sa c;
-		struct rcf_address_list_head leases;
+		struct ikev2_sa iksa;
+		struct ikev2_payloads p, p2;
+		struct ikev2_child_sa c, c2;
+		struct rcf_address_list_head leases, leases2;
 		struct rcf_address *ra;
 		struct in_addr v4;
 		rc_vchar_t *blob;
 		int has4 = 0, has6 = 0, off;
 		struct ikev2payl_notify *n;
 
+		/* ---- (a) fallback: no pool, v4 lease -> IP4_ALLOWED only ---- */
+		memset(&iksa, 0, sizeof(iksa));
 		memset(&c, 0, sizeof(c));
 		ikev2_child_param_init(&c.child_param);
-		/* a dummy CFG_REPLY so the helper emits the notifies */
 		c.child_param.cfg_payload = rc_vmalloc(1);
 		if (c.child_param.cfg_payload)
 			c.child_param.cfg_payload->l = 1;
@@ -494,7 +501,7 @@ main(int argc, char *argv[])
 			LIST_INSERT_HEAD(&c.lease_list, ra, link_sa);
 
 		ikev2_payloads_init(&p);
-		ikev2_push_ip_allowed(&p, &c);
+		ikev2_push_ip_allowed(&iksa, &p, &c);
 		blob = ikev2_payloads_to_blob(&p, NULL);
 		CK(blob != NULL, "ikev2_push_ip_allowed produced a payload blob");
 		if (blob) {
@@ -528,6 +535,84 @@ main(int argc, char *argv[])
 		if (ra)
 			rc_addrpool_release_addr(ra);	/* frees the rcf_address */
 		ikev2_payloads_destroy(&p);
+
+		/* ---- (b) configured pool advertises v4+v6: BOTH notifies ---- */
+		{
+			struct rcf_addresspool pool;
+			struct rcf_address_pool_item iv4, iv6;
+			struct rcf_remote rm;
+			struct rcf_kmp ikm;
+			rc_vchar_t *pname;
+			struct rcf_addresspool *old_head = rcf_addresspool_head;
+			struct in_addr a4; struct in6_addr a6;
+
+			memset(&pool, 0, sizeof(pool));
+			memset(&iv4, 0, sizeof(iv4));
+			memset(&iv6, 0, sizeof(iv6));
+			LIST_INIT(&pool.pool_list);
+			iv4.af = AF_INET;  iv6.af = AF_INET6;
+			LIST_INSERT_HEAD(&pool.pool_list, &iv4, link);
+			LIST_INSERT_HEAD(&pool.pool_list, &iv6, link);
+			pname = rc_vmalloc(3);
+			if (pname) {
+				memcpy(pname->v, "tst", 3); pname->l = 3;
+			}
+			pool.index = pname;
+			pool.next = old_head;		/* chain into global head */
+			rcf_addresspool_head = &pool;
+
+			/* remote: ikev2->addresspool = "tst" */
+			memset(&rm, 0, sizeof(rm));
+			memset(&ikm, 0, sizeof(ikm));
+			rm.ikev2 = &ikm;
+			ikm.addresspool = pname;
+
+			memset(&c2, 0, sizeof(c2));
+			ikev2_child_param_init(&c2.child_param);
+			c2.child_param.cfg_payload = rc_vmalloc(1);
+			if (c2.child_param.cfg_payload)
+				c2.child_param.cfg_payload->l = 1;
+			/* only a v4 lease this exchange */
+			LIST_INIT(&leases2);
+			inet_pton(AF_INET, "10.99.0.11", &a4);
+			ra = rc_address_new(AF_INET, (uint8_t *)&a4, 24, NULL, &leases2);
+			if (ra)
+				LIST_INSERT_HEAD(&c2.lease_list, ra, link_sa);
+
+			memset(&iksa, 0, sizeof(iksa));
+			iksa.rmconf = &rm;
+			ikev2_payloads_init(&p2);
+			ikev2_push_ip_allowed(&iksa, &p2, &c2);
+			blob = ikev2_payloads_to_blob(&p2, NULL);
+			has4 = 0; has6 = 0;
+			if (blob) {
+				off = 0;
+				while (off + (int)sizeof(struct ikev2payl_notify_h) <= (int)blob->l) {
+					n = (struct ikev2payl_notify *)(blob->v + off);
+					if (get_uint16((uint8_t *)&n->nh.notify_message_type) == IKEV2_IP4_ALLOWED)
+						has4 = 1;
+					if (get_uint16((uint8_t *)&n->nh.notify_message_type) == IKEV2_IP6_ALLOWED)
+						has6 = 1;
+					{
+						int plen = get_payload_length(&n->header);
+						if (plen == 0)
+							break;
+						off += plen;
+					}
+				}
+				CK(has4 == 1, "dual-stack pool: IP4_ALLOWED emitted");
+				CK(has6 == 1, "dual-stack pool: IP6_ALLOWED emitted (supported, not just assigned)");
+				rc_vfree(blob);
+			}
+			if (c2.child_param.cfg_payload)
+				rc_vfree(c2.child_param.cfg_payload);
+			if (ra)
+				rc_addrpool_release_addr(ra);
+			ikev2_payloads_destroy(&p2);
+			rcf_addresspool_head = old_head;	/* restore global */
+			if (pname)
+				rc_vfree(pname);
+		}
 	}
 
 	printf("splitcfgtest: %d checks, %d failure(s)\n", checks, fails);
