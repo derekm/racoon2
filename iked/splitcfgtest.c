@@ -584,6 +584,7 @@ main(int argc, char *argv[])
 			ikev2_payloads_init(&p2);
 			ikev2_push_ip_allowed(&iksa, &p2, &c2);
 			blob = ikev2_payloads_to_blob(&p2, NULL);
+			CK(blob != NULL, "dual-stack pool: produced a payload blob");
 			has4 = 0; has6 = 0;
 			if (blob) {
 				off = 0;
