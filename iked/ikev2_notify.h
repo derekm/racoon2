@@ -75,6 +75,13 @@ void ikev2_respond_with_notify(rc_vchar_t *, struct sockaddr *, struct sockaddr 
 			       int, uint8_t *, int);
 void ikev2_respond_redirect(rc_vchar_t *, struct sockaddr *, struct sockaddr *,
 			    rc_vchar_t *, rc_vchar_t *);
+/* RFC 5685 redirect pool resolver: pick the redirect target for this
+ * peer from redirect_to (single identity or comma-separated pool) with
+ * stable per-peer affinity.  Returns caller-freed vchar or NULL. */
+rc_vchar_t *ikev2_redirect_resolve(struct rcf_remote *, struct sockaddr *);
+/* RFC 5685 redirect pool select (pure, testable): pick the member of a
+ * comma-separated pool for `remote`.  Returns caller-freed vchar. */
+rc_vchar_t *ikev2_redirect_pool_select(rc_vchar_t *, struct sockaddr *);
 rc_vchar_t *ikev2_build_redirect_notify_data(rc_vchar_t *, rc_vchar_t *);
 /* RFC 5685 s9.2: parse an N(REDIRECT)'s Notify DATA into the GW Ident
  * Type, gateway identity bytes, and the echoed Ni.  Returns 0 on

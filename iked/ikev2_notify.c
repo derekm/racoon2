@@ -1379,6 +1379,81 @@ ikev2_respond_redirect(rc_vchar_t *request, struct sockaddr *remote,
 }
 
 /*
+ * RFC 5685 redirect pool resolver core (pure): pick the member of a
+ * comma-separated pool to redirect `remote` to.  Pools by a stable
+ * per-peer hash (FNV-1a over the peer address bytes mod member count) so
+ * a given client re-initiates to the SAME member every time — the member
+ * that holds its resume ticket / crash-restart dump — while spreading
+ * different clients across the pool (load balancing).  A single entry
+ * (no comma) resolves to itself.  Returns a caller-freed rc_vchar_t of
+ * the chosen identity, or NULL for an empty pool.  Exposed for the unit
+ * harness. */
+rc_vchar_t *
+ikev2_redirect_pool_select(rc_vchar_t *pool, struct sockaddr *remote)
+{
+	const uint8_t *p;
+	size_t len;
+	unsigned long h = 1469598103934665603UL;	/* FNV-1a 64 */
+	size_t n = 0, i;
+	size_t start;
+	size_t sel;
+
+	if (!pool || pool->l == 0)
+		return NULL;
+	for (i = 0; i < pool->l; i++)
+		if (pool->u[i] == ',')
+			n++;
+	n++;
+	if (n == 1)
+		return rc_vdup(pool);
+
+	p = (const uint8_t *)remote;
+	len = remote->sa_family == AF_INET ? sizeof(struct sockaddr_in) :
+	    remote->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6) : 0;
+	for (i = 0; i < len; i++) {
+		h ^= p[i];
+		h *= 1099511628211UL;
+	}
+	sel = (size_t)(h % n);
+
+	/* return the sel-th member (trimmed) */
+	for (i = 0, start = 0; i <= sel; i++) {
+		size_t end = start;
+		size_t cs, ce;
+		while (end < pool->l && pool->u[end] != ',')
+			end++;
+		if (i != sel) {
+			start = end + 1;
+			continue;
+		}
+		cs = start;
+		while (cs < end && (pool->u[cs] == ' ' ||
+				     pool->u[cs] == '	'))
+			cs++;
+		ce = end;
+		while (ce > cs && (pool->u[ce-1] == ' ' ||
+				   pool->u[ce-1] == '	'))
+			ce--;
+		if (ce == cs)
+			return NULL;
+		return rc_vnew(pool->u + cs, ce - cs);
+	}
+	return NULL;
+}
+
+/*
+ * RFC 5685 redirect pool resolver (config view).  redirect_to config
+ * holds a single gateway identity OR a comma-separated pool
+ * ("10.0.0.7,10.0.0.8"); ikev2_redirect_pool_select() picks the member.
+ * Returns a caller-freed rc_vchar_t of the chosen identity, or NULL if
+ * redirect_to is unset/empty. */
+rc_vchar_t *
+ikev2_redirect_resolve(struct rcf_remote *conf, struct sockaddr *remote)
+{
+	return ikev2_redirect_pool_select(ikev2_redirect_to(conf), remote);
+}
+
+/*
  * RFC 5685 s9.2 parse: given the Notify DATA bytes of an N(REDIRECT)
  * (excluding the notify header, protocol/spi, and the 2-octet type),
  * extract the GW Ident Type (1 octet: 1=IPv4, 2=IPv6, 3=FQDN), GW
