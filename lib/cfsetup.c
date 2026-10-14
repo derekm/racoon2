@@ -230,6 +230,7 @@ static int rcf_fix_need_pfs (struct cf_list *, void *);
 static int rcf_fix_my_public_key (struct cf_list *, void *);
 static int rcf_fix_peers_public_key (struct cf_list *, void *);
 static int rcf_fix_pre_shared_key (struct cf_list *, void *);
+static int rcf_fix_redirect_to (struct cf_list *, void *);
 static int rcf_fix_radius_server (struct cf_list *, void *);
 static int rcf_fix_radius_port (struct cf_list *, void *);
 static int rcf_fix_radius_secret_file (struct cf_list *, void *);
@@ -409,6 +410,7 @@ struct rcf_tdf_t {
 	{ CFD_MY_PUBLIC_KEY,		rcf_fix_my_public_key, },
 	{ CFD_PEERS_PUBLIC_KEY,		rcf_fix_peers_public_key, },
 	{ CFD_PRE_SHARED_KEY,		rcf_fix_pre_shared_key, },
+	{ CFD_REDIRECT_TO,		rcf_fix_redirect_to, },
 	{ CFD_RADIUS_SERVER,		rcf_fix_radius_server, },
 	{ CFD_RADIUS_PORT,		rcf_fix_radius_port, },
 	{ CFD_RADIUS_SECRET_FILE,	rcf_fix_radius_secret_file, },
@@ -1887,6 +1889,19 @@ rcf_fix_pre_shared_key(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_PRE_SHARED_KEY))
 		return -1;
 	if (rcf_fix_string(head->nextp, &dst->pre_shared_key))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_redirect_to(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_REDIRECT_TO))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->redirect_to))
 		return -1;
 
 	return 0;
@@ -3503,6 +3518,7 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rcf_clean_pklist(n->my_pubkey);
 	rcf_clean_pklist(n->peers_pubkey);
 	rc_vfree(n->pre_shared_key);
+	rc_vfree(n->redirect_to);
 	rc_vfree(n->my_principal);
 	rc_vfree(n->peers_principal);
 	rc_vfree(n->addresspool);
@@ -3559,6 +3575,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_VDUP(src->my_principal, new->my_principal);
 	DEEPCOPY_VDUP(src->peers_principal, new->peers_principal);
 	DEEPCOPY_VDUP(src->pre_shared_key, new->pre_shared_key);
+	DEEPCOPY_VDUP(src->redirect_to, new->redirect_to);
 	DEEPCOPY_PKLIST(src->my_pubkey, new->my_pubkey);
 	DEEPCOPY_PKLIST(src->peers_pubkey, new->peers_pubkey);
 	DEEPCOPY_ADDRLIST(src->peers_ipaddr, new->peers_ipaddr);
