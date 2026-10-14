@@ -51,7 +51,7 @@ usage(const char *p)
 "  %s [-s socket] vpn-connect <gateway>\n"
 "  %s [-s socket] vpn-disconnect <gateway>\n"
 "  %s [-s socket] delete-sa <peer> [esp|ah]\n"
-"  %s [-s socket] drain-sa <peer> [-to gw]\n"
+"  %s [-s socket] drain-sa <peer> [gw]\n"
 "\n"
 "esp/ah SAD: ip xfrm state / ip xfrm policy\n",
 		p, p, p, p, p, p, p, p);
@@ -399,21 +399,26 @@ main(int ac, char **av)
 		transact(req, reqlen);
 	} else if (strcmp(cmd, "drain-sa") == 0 ||
 		   strcmp(cmd, "drain") == 0) {
-		/* drain-sa <peer> [-to gw] : set (or clear without -to) the
+		/* drain-sa <peer> [gw] : set (or clear without gw) the
 		 * runtime drain-redirect target for <peer>.  The responder
 		 * then redirects NEW IKE_SA_INITs from this peer to gw
-		 * (graceful maintenance drain) until cleared. */
+		 * (graceful maintenance drain) until cleared.  gw is a
+		 * POSITIONAL argument, NOT a dash flag: ikedctl's top-level
+		 * getopt(ac,av,"s:") permutes argv, so a "-to gw" flag would
+		 * be consumed as an unknown option and exit before this
+		 * branch — keep the gateway positional like delete-sa's
+		 * [esp|ah] selector.  With no gw the drain is cleared and no
+		 * established SA is touched. */
 		struct admin_com_indexes *ndx;
 		const char *src, *gw = NULL;
 		int af;
 
-		if (ac < 1 || ac > 4)
+		if (ac < 1 || ac > 2)
 			usage(pname);
 		(void)local_for(av[0], &af);
 		src = (af == AF_INET6) ? "::" : "0.0.0.0";
-		for (int i = 1; i + 1 <= ac; i++)
-			if (strcmp(av[i], "-to") == 0)
-				gw = av[i + 1];
+		if (ac == 2)
+			gw = av[1];
 		if (gw) {
 			req = make_req(ADMIN_REDIRECT_DRAIN, ADMIN_PROTO_ISAKMP,
 				       sizeof(*ndx) + strlen(gw) + 1, &reqlen);
