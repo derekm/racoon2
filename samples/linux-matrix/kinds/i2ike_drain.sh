@@ -5,16 +5,25 @@
 # then the responder's `ikedctl drain-sa <peer> <gw>` (gw positional, no
 # '-to' flag — ikedctl's getopt would eat it):
 #
-#   4b) SET a drain also silently tears down the peer's ESTABLISHED
-#       IKE_SA locally (no DELETE on the wire), so the established child's
-#       responder-side ESP SAs drop (R esp 2 -> 0).  Gate: R esp == 0.
+#   4b) SET a drain also SILENTLY CLOSES the peer's ESTABLISHED IKE_SA via
+#       ikev2_abort (state -> DYING -> DEAD, no wire DELETE, reaper frees it),
+#       which prunes the established child's responder-side kernel SAs
+#       (R esp 2 -> 0).  Gate: responder log shows 'aborting ike_sa'
+#       (PLOG_INFO, before any harness flush) AND R esp == 0.  A bare child
+#       prune that leaves the IKE_SA ESTABLISHED is NOT enough — a surviving
+#       DPD/rekey would re-home traffic back onto the draining node.
 #
 #   4a) A NEW IKE_SA_INIT from the drained peer (which now advertises
 #       REDIRECT_SUPPORTED/16406 per 8175b5a) IS answered N(REDIRECT, gw)
-#       with the drain target — the responder log shows the
-#       'RFC5685: redirecting this peer to ... [drain]' TRACE and NO child
-#       re-establishes against the draining node.  Gate: responder TRACE
-#       + R esp stays 0 after the re-drive (client steered away).
+#       with the drain target and does NOT re-establish against the draining
+#       node.  Gate on the WIRE: the initiator's state retarget re-runs
+#       IKE_SA_INIT against the drain gateway 192.0.99.7
+#       ('192.0.99.7[500]… INI_IKE_SA_INIT_SENT' in init-iked.log) — an
+#       address absent from every config, reachable only via the
+#       N(REDIRECT)+Ni-verify+retarget follow path — AND R esp stays 0.
+#       (The responder TRACE 'RFC5685: redirecting this peer to…[drain]' is
+#       not emitted at the row's -D 0x0001 stream, so the initiator's wire
+#       re-target is the authoritative gate, not that TRACE.)
 #
 # Classical ESP (no ADDKE).  gate=box: box-verified before a container/CI
 # admission.
@@ -133,18 +142,35 @@ EOF
 	"$SBIN/ikedctl" -s "$SOCK_R" drain-sa "$HI" "$DGW" \
 	    >"$D/drain-sa.out" 2>&1
 	log "drain-sa exit=$? (out: $(cat "$D/drain-sa.out" 2>/dev/null | tr '\n' ' '))"
-	sleep 3
+	# 4b gate (the REAL one): the drain must SILENTLY CLOSE the established
+	# IKE_SA too, not just prune its children.  ikev2_abort logs
+	# 'aborting ike_sa' at PLOG_INFO (visible at -D 0x0001) and sets the
+	# SA DYING->DEAD with NO wire DELETE; the reaper frees it.  If the SA
+	# were left ESTABLISHED (the bug), a surviving DPD/rekey would re-home
+	# traffic back onto the draining node and never hit the IKE_SA_INIT
+	# redirect.
+	i=0; closed=0
+	[ -f "$D/resp-iked.log" ] || touch "$D/resp-iked.log"
+	while [ "$i" -lt 15 ]; do
+		if grep -q "aborting ike_sa" "$D/resp-iked.log" 2>/dev/null; then
+			closed=1
+			break
+		fi
+		i=$((i+1)); sleep 1
+	done
+	sleep 2
 	R_AFTER=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 	[ "$R_BEFORE" -ge 2 ] || { log "FAIL: unexpected pre-drain R esp=$R_BEFORE"; return 1; }
 	[ "$R_AFTER" -eq 0 ] || { log "FAIL: drain-sa did not tear down established SA (R esp $R_BEFORE -> $R_AFTER)"; return 1; }
-	log "drain-sa SET: established IKE_SA torn down (R esp $R_BEFORE -> $R_AFTER)"
+	[ "$closed" -eq 1 ] || { log "FAIL: drain-sa did NOT silently close the established IKE_SA (no 'aborting ike_sa') — a surviving DPD/rekey would re-home traffic onto the draining node"; return 1; }
+	log "drain-sa SET: established IKE_SA silently closed (abort) + R esp $R_BEFORE -> $R_AFTER"
 
 	# 4a: a NEW IKE_SA_INIT from the drained peer is answered REDIRECT and
-	# does NOT re-establish against the draining node.  The responder's
-	# drain only pruned its OWN side (no wire DELETE), so the initiator
-	# still considers its session live and would no-op a bare
-	# establish-sa.  Force a genuine re-initiate by flushing the
-	# initiator's SA (tears its IKE_SA down locally) and re-establishing.
+	# does NOT re-establish against the draining node.  The drain closed
+	# its OWN side silently (no wire DELETE), so the initiator still
+	# considers its session live and would no-op a bare establish-sa.
+	# Force a genuine re-initiate by flushing the initiator's SA (its own
+	# local teardown) and re-establishing.
 	"$SBIN/ikedctl" -s "$SOCK_I" flush-sa isakmp >/dev/null 2>&1 || true
 	sleep 1
 	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
@@ -159,7 +185,14 @@ EOF
 	i=0; followed=0
 	[ -f "$D/init-iked.log" ] || touch "$D/init-iked.log"
 	while [ "$i" -lt 20 ]; do
-		if grep -q "$DGW" "$D/init-iked.log" 2>/dev/null; then
+		# Anchor on the specific wire evidence: the initiator state
+		# retarget "… - <DGW>[500]… INI_IKE_SA_INIT_SENT" — the remote
+		# field moves to the drain gateway and the state machine re-runs
+		# IKE_SA_INIT against it (a bare $DGW match anywhere would be
+		# loose).  Only the redirect-follow path re-drives against an
+		# address absent from every config.
+		if grep -E "${DGW}\[500\].*INI_IKE_SA_INIT_SENT" \
+		    "$D/init-iked.log" 2>/dev/null; then
 			followed=1
 			break
 		fi
