@@ -2302,10 +2302,10 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 
 	/* RFC 8983 s4: IP4_ALLOWED / IP6_ALLOWED status notifies (no data).
 	 * After assigning internal addresses, tell a dual-stack initiator which
-	 * address family the responder actually assigned/supports (Table 1).
-	 * Shared helper (ikev2_notify.c) also used by the CREATE_CHILD_SA
-	 * responder so the two lease-assigning response builders stay in sync. */
-	ikev2_push_ip_allowed(&payl, child_sa);
+	 * address family the responder SUPPORTS (Table 1).  Shared helper
+	 * (ikev2_notify.c) also used by the CREATE_CHILD_SA responder so the
+	 * two lease-assigning response builders stay in sync. */
+	ikev2_push_ip_allowed(ike_sa, &payl, child_sa);
 
 #ifdef notyet
 	/*
