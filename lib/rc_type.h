@@ -412,6 +412,10 @@ struct rcf_kmp {
 	 * client re-initiates against the listed gateway (load-balance /
 	 * maintenance / closure).  NULL = never redirect (RFC 5685 s3). */
 	rc_vchar_t *redirect_to;
+	/* RFC 5685 s7 REDIRECT_LOOP_DETECT_PERIOD (s) */
+	int redirect_period;
+	/* RFC 5685 s7 MAX_REDIRECTS */
+	int redirect_max;
 };
 
 /* selector info */

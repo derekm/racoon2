@@ -415,6 +415,31 @@ main(int argc, char *argv[])
 				   "redirect parse: truncated rejected");
 			}
 		}
+		/* RFC 5685 s7 redirect-loop limit */
+		{
+			int cnt = 0, k, okc = 0;
+			time_t win = 0, t0 = 1000000;
+
+			for (k = 0; k < 5; ++k)
+				if (ikev2_redirect_loop_check(&cnt, &win,
+				    t0 + k, 5, 300) == 0)
+					++okc;
+			ck(okc == 5, "redirect loop: first 5 followed");
+			ck(ikev2_redirect_loop_check(&cnt, &win, t0 + 10,
+			    5, 300) == -1, "redirect loop: 6th within 300s refused");
+			ck(ikev2_redirect_loop_check(&cnt, &win, t0 + 299,
+			    5, 300) == -1, "redirect loop: still refused at 299s");
+			ck(ikev2_redirect_loop_check(&cnt, &win, t0 + 300,
+			    5, 300) == 0, "redirect loop: window expires at 300s");
+			ck(cnt == 1, "redirect loop: count restarts in new window");
+			cnt = 0; win = 0;
+			ck(ikev2_redirect_loop_check(&cnt, &win, t0, 1, 300) == 0
+			    && ikev2_redirect_loop_check(&cnt, &win, t0, 1, 300)
+			    == -1, "redirect loop: redirect_max 1 honoured");
+			cnt = 3; win = t0 + 50;	/* clock stepped back */
+			ck(ikev2_redirect_loop_check(&cnt, &win, t0, 5, 300) == 0
+			    && cnt == 1, "redirect loop: clock step back resets");
+		}
 		/* RFC 5685 s9.3 REDIRECTED_FROM build + redirect_gw sadup */
 		{
 			rc_vchar_t *ident, *rfd;

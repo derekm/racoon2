@@ -372,6 +372,31 @@ initiator_start_after_gen(int rc, void *arg)
 					    sizeof(sig_hash_sha2), "ECDSA/SHA-2");
 		}
 	}
+	/* RFC 5685 s9.3: when re-running IKE_SA_INIT after a verified
+	 * redirect, advertise REDIRECTED_FROM (16408) naming the gateway
+	 * that redirected us (the peer that answered our original
+	 * IKE_SA_INIT with N(REDIRECT)).  This both carries the original
+	 * gateway's identity and signals redirect support to the new
+	 * gateway (RFC 5685 s9.3).  ike_sa->redirected_from is a raw
+	 * identity (IPv4/IPv6 literal) captured when the redirect was
+	 * received. */
+	if (ike_sa->redirect_follow && ike_sa->redirected_from) {
+		rc_vchar_t *rfd;
+
+		rfd = ikev2_build_redirected_from_data(
+		    ike_sa->redirected_from_type, ike_sa->redirected_from);
+		if (rfd) {
+			TRACE((PLOGLOC,
+			       "RFC5685: re-initiating against redirected gw, "
+			       "advertising REDIRECTED_FROM\n"));
+			ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(
+					    0, 0, 0, IKEV2_REDIRECT_FROM,
+					    rfd->u, rfd->l),
+					    TRUE);
+			rc_vfree(rfd);
+		}
+	}
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_INITIATOR,
 				     0, ike_sa, &ctx->payl);
 	if (!pkt)
@@ -1112,6 +1137,7 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	struct ikev2_header *ikehdr;
 	struct ikev2_payload_header *payload;
 	int type;
+	int rc2;	/* redirect-follow retarget result */
 	struct ikev2_payload_header *sa = 0;
 	struct ikev2payl_ke *ke = 0;
 	struct ikev2_payload_header *nonce = 0;
@@ -1215,16 +1241,20 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	}
 	if (ike_sa->redirect_rx) {
 		/* RFC 5685 s5.5: the responder redirected this IKE_SA_INIT
-		 * and we verified the echoed Ni.  The response carries no
-		 * SA/KE/Nr (SPI_R=0, msgid=0, one N(REDIRECT)); per s5.5 we
-		 * MUST NOT continue to a key exchange with this gateway.
-		 * Abort and let the caller re-initate against the recorded
-		 * new gateway.  The re-initiation (a fresh IKE_SA_INIT
-		 * carrying N(REDIRECTED_FROM) toward redirect_gw) is the
-		 * structural follow-on to this receive-side handling. */
+		 * and the echoed Ni was verified in the notify handler.  The
+		 * response carries no SA/KE/Nr (SPI_R=0, msgid=0, one
+		 * N(REDIRECT)); per s5.5 we MUST NOT run a key exchange with
+		 * this gateway.  Follow the redirect: retarget this IKE_SA
+		 * toward the new gateway and re-drive IKE_SA_INIT carrying
+		 * N(REDIRECTED_FROM).  If the target is not resolvable (e.g.
+		 * an FQDN, which this layer does not resolve), fall back to
+		 * abort so we don't hang against an overloaded node. */
+		rc2 = ikev2_initiator_redirect_follow(ike_sa, remote);
+		if (rc2 == 0)
+			goto done;
 		isakmp_log(ike_sa, local, remote, packet, PLOG_INFO, PLOGLOC,
-			   "received verified REDIRECT, aborting IKE_SA_INIT "
-			   "(re-initiate against redirected gateway)\n");
+			   "redirect target not resolvable, aborting "
+			   "IKE_SA_INIT\n");
 		goto abort;
 	}
 	if (!(sa && ke && nonce)) {
@@ -1419,4 +1449,115 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	ikev2_abort(ike_sa, ECONNREFUSED);	/* ??? */
 	/* should send notify? */
 	goto done;
+}
+
+/*
+ * RFC 5685 initiator redirect follow.  Called from initiator_ike_sa_init_recv
+ * after a verified N(REDIRECT): the responder the client first tried is
+ * overloaded/retiring and pointed us at redirect_gw (recorded in
+ * ike_sa->redirect_gw / redirect_gw_type).  Rather than abort-and-lose the
+ * acquire/child intent, we keep this ike_sa, retarget its remote to the new
+ * gateway, reset the in-flight IKE_SA_INIT state, and re-drive
+ * ikev2_initiator_start() so the client re-sends IKE_SA_INIT to the new
+ * gateway carrying N(REDIRECTED_FROM) with the original gateway's identity.
+ *
+ * Only IPv4/IPv6 literal redirect targets are supported here (FQDN has no
+ * resolver at this layer): on an unresolvable target return non-zero so the
+ * caller aborts instead of hanging.
+ *
+ * Returns 0 on success (re-initiation under way), non-zero if the target is
+ * not resolvable or a transient failure before re-drive.
+ */
+int
+ikev2_initiator_redirect_follow(struct ikev2_sa *ike_sa, struct sockaddr *remote)
+{
+	struct sockaddr *newpeer;
+	uint8_t rfrom_type;
+	rc_vchar_t *rfrom = 0;
+	uint8_t *ap;
+	size_t alen;
+
+	assert(ike_sa != 0);
+	assert(ike_sa->redirect_rx != 0);
+
+	/* RFC 5685 s7: bound redirect loops. */
+	if (ikev2_redirect_loop_check(&ike_sa->redirect_count,
+	    &ike_sa->redirect_window, time(NULL),
+	    ike_sa->rmconf ? ikev2_redirect_max(ike_sa->rmconf) : 5,
+	    ike_sa->rmconf ? ikev2_redirect_period(ike_sa->rmconf) : 300)
+	    != 0) {
+		isakmp_log(ike_sa, 0, remote, 0, PLOG_PROTOWARN, PLOGLOC,
+			   "RFC5685 s7: redirect loop limit exceeded "
+			   "(%d redirects within %d s), not following\n",
+			   ike_sa->redirect_count, ike_sa->rmconf ?
+			   ikev2_redirect_period(ike_sa->rmconf) : 300);
+		return -1;
+	}
+
+	/* Capture the ORIGINAL (redirecting) gateway identity from the peer
+	 * we first tried (`remote`) for the REDIRECTED_FROM notify. */
+	switch (remote->sa_family) {
+	case AF_INET:
+		rfrom_type = 1;
+		ap = (uint8_t *)&((struct sockaddr_in *)remote)->sin_addr;
+		alen = sizeof(struct in_addr);
+		break;
+	case AF_INET6:
+		rfrom_type = 2;
+		ap = (uint8_t *)&((struct sockaddr_in6 *)remote)->sin6_addr;
+		alen = sizeof(struct in6_addr);
+		break;
+	default:
+		return -1;
+	}
+	rfrom = rc_vnew(ap, alen);
+	if (!rfrom)
+		return -1;
+
+	/* Resolve the redirect target to a fresh sockaddr. */
+	newpeer = ikev2_redirect_gw_sadup(ike_sa->redirect_gw_type,
+					   ike_sa->redirect_gw);
+	if (!newpeer) {
+		rc_vfree(rfrom);
+		return -1;
+	}
+
+	/* Retarget this SA toward the new gateway. */
+	if (ike_sa->remote)
+		racoon_free(ike_sa->remote);
+	ike_sa->remote = newpeer;
+
+	/* Stash the redirecting gateway for the REDIRECTED_FROM emit. */
+	if (ike_sa->redirected_from)
+		rc_vfree(ike_sa->redirected_from);
+	ike_sa->redirected_from = rfrom;
+	ike_sa->redirected_from_type = rfrom_type;
+
+	/* Free the first IKE_SA_INIT attempt's key/nonce material; both are
+	 * re-minted by ikev2_initiator_start() for the new gateway. */
+	if (ike_sa->n_i)
+		rc_vfree(ike_sa->n_i);
+	ike_sa->n_i = 0;
+	if (ike_sa->n_r)
+		rc_vfree(ike_sa->n_r);
+	ike_sa->n_r = 0;
+	if (ike_sa->dhpriv)
+		rc_vfreez(ike_sa->dhpriv);
+	ike_sa->dhpriv = 0;
+	if (ike_sa->dhpub)
+		rc_vfree(ike_sa->dhpub);
+	ike_sa->dhpub = 0;
+
+	/* Fresh IKE_SA_INIT to a fresh responder: reset the message-id
+	 * window and zero the (redirect) responder's SPI.  The initiator
+	 * cookie stays (it keys the acquire intent). */
+	ike_sa->send_message_id = 0;
+	ike_sa->recv_message_id = 0;
+	memset(&ike_sa->index.r_ck, 0, sizeof(ike_sa->index.r_ck));
+
+	ike_sa->redirect_follow = 1;
+	TRACE((PLOGLOC,
+	       "RFC5685: following redirect to gw, re-driving IKE_SA_INIT\n"));
+	ikev2_initiator_start(ike_sa);
+	return 0;
 }

@@ -1694,3 +1694,22 @@ ikev2_push_ip_allowed(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 	}
 	drop_ip_allowed(payl, has4, has6);
 }
+
+/*
+ * RFC 5685 s7: "the client SHOULD NOT accept more than MAX_REDIRECTS
+ * (5) redirects within REDIRECT_LOOP_DETECT_PERIOD (300 s)".  Pure
+ * helper (unit-tested in notifytest).
+ */
+int
+ikev2_redirect_loop_check(int *count, time_t *window, time_t now,
+			  int max, int period)
+{
+	if (*count == 0 || now < *window || now - *window >= period) {
+		*window = now;
+		*count = 0;
+	}
+	if (*count >= max)
+		return -1;
+	++*count;
+	return 0;
+}
