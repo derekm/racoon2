@@ -483,7 +483,39 @@ i2i_peer_r_conf() {
 	[ "$_peer" = charon ] || return 0
 	I2I_CHARON_R_CONF="$I2I_CHARON_VDIR/r2-${_name}.conf"
 	mkdir -p "$I2I_CHARON_VDIR" || return 1
-	_pskhex=$(psk_file_hex "$ETC/psk/macos.psk") || { log "FAIL: charon psk hex"; return 1; }
+	# PKI reverse seats (-rsa* or -ecdsa* rows where charon is the
+	# RESPONDER and iked the INITIATOR signs): charon answers with a
+	# pubkey/RFC-7427 AUTH (RFC 4754 for ecdsa) and must VERIFY the iked
+	# initiator's signature against its bare public key.  Mirror the
+	# initiator seat's auth construction (i2i_peer_i_conf) for the
+	# responder: charon's own cert+key is cert-r.pem (its private key is
+	# installed into swanctl private/ by i2iinit.sh, like the initiator
+	# seat), and the remote pubkey it trusts is pub-i.pem (iked's key).
+	# -rsa-pss-charonr : iked signs RSASSA-PSS with its STRONGEST
+	#                     mutual SHA-2 (SHA-512 when charon offers it;
+	#                     strongest-hash selection, RFC 7427 s3), so
+	#                     charon's remote must expect PSS-SHA-512, not
+	#                     the SHA-256 the name shorthand implies.
+	# -rsa-*     : iked signs PKCS#1 v1.5/SHA-256 (method 14 DS).
+	# -ecdsa-*   : iked signs ECDSA P-384 DER (method 14 DS) with its
+	#              STRONGEST mutual SHA-2 (SHA-512 when charon offers
+	#              it), so charon's remote must expect ecdsa-sha512.
+	if [ "${I2I_RSA:-0}" = 1 ] || [ "${I2I_ECDSA:-0}" = 1 ]; then
+		case "$_name" in
+		*-rsa-pss-charonr) _rauth='ike:rsa/pss-sha512' ;;
+		*-rsa-*)     _rauth='ike:pubkey-sha256-sha384-sha512' ;;
+		*-ecdsa-*)   _rauth='ike:ecdsa-sha512-ecp384' ;;
+		*)           _rauth='ike:pubkey-sha256-sha384-sha512' ;;
+		esac
+		# charon signs its OWN AUTH with PKCS#1 v1.5/SHA-256 (the iked
+		# initiator verifies any method-14 SHA-2 sig; strongest-hash).
+		_lauth='ike:pubkey-sha256-sha384-sha512'
+		_auth_local="		local {\n			id = racoon2-matrix\n			auth = $_lauth\n			certs = \"$_C/cert-r.pem\"\n		}\n		remote {\n			id = r2init-matrix\n			auth = $_rauth\n			pubkeys = \"$_C/pub-i.pem\"\n		}"
+		_pskhex=""
+	else
+		_pskhex=$(psk_file_hex "$ETC/psk/macos.psk") || { log "FAIL: charon psk hex"; return 1; }
+		_auth_local="		local {\n			id = racoon2-matrix\n			auth = psk\n		}\n		remote {\n			id = r2init-matrix\n			auth = psk\n		}"
+	fi
 	cat > "$I2I_CHARON_R_CONF" <<EOF
 connections {
 	$_name {
@@ -493,14 +525,7 @@ $(childless_conn_lines_r)
 		proposals = ${I2I_PROPOSAL}
 		local_addrs = $_HR
 		remote_addrs = $_HI
-		local {
-			id = racoon2-matrix
-			auth = psk
-		}
-		remote {
-			id = r2init-matrix
-			auth = psk
-		}
+$(printf "$_auth_local")
 $(ppk_conn_lines)
 		children {
 			ch {
@@ -513,9 +538,15 @@ $(ppk_conn_lines)
 	}
 }
 secrets {
+EOF
+	if [ -n "$_pskhex" ]; then
+		cat >> "$I2I_CHARON_R_CONF" <<EOF
 	ike-$_name {
 		secret = "0x$_pskhex"
 	}
+EOF
+	fi
+	cat >> "$I2I_CHARON_R_CONF" <<EOF
 $(ppk_secret_block "$_name")
 }
 EOF
@@ -553,7 +584,8 @@ i2i_peer_r_evidence() {
 	_D=$1 _peer=$2
 	if [ "$_peer" = charon ]; then
 		grep -q 'selected proposal: IKE:.*KE1_ML_KEM_768' "$_D/charon-resp.log" 2>/dev/null &&
-		grep -q "authentication of 'r2init-matrix' with pre-shared key successful" "$_D/charon-resp.log" 2>/dev/null
+		{ grep -q "authentication of 'r2init-matrix' with pre-shared key successful" "$_D/charon-resp.log" 2>/dev/null ||
+		  grep -qE "authentication of 'r2init-matrix' with (RSA_EMSA|ECDSA_|pubkey)" "$_D/charon-resp.log" 2>/dev/null; }
 		return $?
 	fi
 	grep -q 'IKE_INTERMEDIATE ADDKE round complete' "$_D/resp-iked.log" 2>/dev/null

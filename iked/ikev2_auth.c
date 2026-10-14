@@ -611,6 +611,9 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 						   "signature\n");
 					goto fail;
 				}
+				TRACE((PLOGLOC,
+				       "RFC 7427: sign method 14 ECDSA %s\n",
+				       hy));
 			} else {
 				/* RFC 7427 signer-completeness item: pick the
 				 * STRONGEST hash this side supports that the
@@ -686,6 +689,11 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 						   "signature\n");
 					goto fail;
 				}
+				TRACE((PLOGLOC,
+				       "RFC 7427: sign method 14 %s %s\n",
+				       sa->sig_hash_ds_pss
+				       ? "RSASSA-PSS" : "RSASSA-PKCS1-v1_5",
+				       hy));
 			}
 			authdata = rc_vmalloc(1 + _ai_len + ori->l);
 			if (!authdata) {
