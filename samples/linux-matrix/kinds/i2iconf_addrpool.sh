@@ -214,12 +214,14 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
+	dp=0
 	if [ "$up" -eq 1 ]; then
 		# charon narrowed the installed TSi to the CFG-assigned VIP
 		# (10.99.0.10/32 -> 192.0.5.1/32), so the dataplane ping must
 		# source from the VIP, not the veth address (192.0.5.2).
 		if ip netns exec "$NSI" ping -c 3 -i 0.2 -W 2 -I "$POOL_START" "$HR" >/dev/null 2>&1; then
 			log "data plane: ICMP echo to $HR from VIP $POOL_START answered across the ESP child"
+			dp=1
 		else
 			log "FAIL: data plane: no ICMP echo reply to $HR from VIP $POOL_START"
 		fi
@@ -252,6 +254,7 @@ EOF
 	[ "$lease" -eq 1 ] || { log "FAIL: no pool lease allocated (lease=$lease)"; return 1; }
 	[ "$emit" -eq 1 ]  || { log "FAIL: responder did not emit RFC8983 IP4/IP6_ALLOWED (emit=$emit)"; return 1; }
 	[ "$est" -eq 1 ]   || { log "FAIL: charon initiator did not reach ESTABLISHED (est=$est)"; return 1; }
-	log "RFC 8983 PROVEN: lease allocated + responder emits IP4/IP6_ALLOWED + childful SA UP + charon ESTABLISHED (lease=$lease emit=$emit up=$up est=$est)"
+	[ "$dp" -eq 1 ]    || { log "FAIL: data plane did not carry ICMP from the CFG VIP (dp=$dp)"; return 1; }
+	log "RFC 8983 PROVEN: lease allocated + responder emits IP4_ALLOWED + childful SA UP + VIP dataplane + charon ESTABLISHED (lease=$lease emit=$emit up=$up dp=$dp est=$est)"
 	return 0
 }
