@@ -26,6 +26,7 @@
 #include "ike_conf.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "ikev2_notify.h"
 #include "vmbuf.h"
 #include "test_util.h"
 
@@ -460,6 +461,65 @@ main(int argc, char *argv[])
 		   "25 committed to internal_dns_domain (corp.example)");
 		if (c.internal_dns_domain)
 			rc_vfree(c.internal_dns_domain);
+	}
+
+	/* ================= B.5 shared emit: ikev2_push_ip_allowed =============
+	 * The RFC 8983 IP4_ALLOWED/IP6_ALLOWED status notify is emitted by a
+	 * SHARED helper (ikev2_notify.c) so the childful IKE_AUTH responder and
+	 * the CREATE_CHILD_SA responder stay in sync.  Drive it directly: a
+	 * payloads struct + a fabricated child_sa carrying a v4 lease and a
+	 * non-NULL cfg_payload; assert the serialized blob contains notify
+	 * 16439 (IP4_ALLOWED) and NOT 16440 (IP6_ALLOWED, no v6 lease). */
+	{
+		struct ikev2_payloads p;
+		struct ikev2_child_sa c;
+		struct rcf_address_list_head leases;
+		struct rcf_address *ra;
+		struct in_addr v4;
+		rc_vchar_t *blob;
+		int has4 = 0, has6 = 0, off;
+		struct ikev2payl_notify *n;
+
+		memset(&c, 0, sizeof(c));
+		ikev2_child_param_init(&c.child_param);
+		/* a dummy CFG_REPLY so the helper emits the notifies */
+		c.child_param.cfg_payload = rc_vmalloc(1);
+		if (c.child_param.cfg_payload)
+			c.child_param.cfg_payload->l = 1;
+
+		LIST_INIT(&leases);
+		inet_pton(AF_INET, "10.99.0.10", &v4);
+		ra = rc_address_new(AF_INET, (uint8_t *)&v4, 24, NULL, &leases);
+		if (ra)
+			LIST_INSERT_HEAD(&c.lease_list, ra, link_sa);
+
+		ikev2_payloads_init(&p);
+		ikev2_push_ip_allowed(&p, &c);
+		blob = ikev2_payloads_to_blob(&p, NULL);
+		CK(blob != NULL, "ikev2_push_ip_allowed produced a payload blob");
+		if (blob) {
+			/* scan the notify payloads for 16439 / 16440 */
+			off = 0;
+			while (off + (int)sizeof(struct ikev2payl_notify_h) <= (int)blob->l) {
+				n = (struct ikev2payl_notify *)(blob->v + off);
+				if (get_uint16((uint8_t *)&n->nh.notify_message_type) == IKEV2_IP4_ALLOWED)
+					has4 = 1;
+				if (get_uint16((uint8_t *)&n->nh.notify_message_type) == IKEV2_IP6_ALLOWED)
+					has6 = 1;
+				off += n->header.payload_length;
+				if (n->header.payload_length == 0)
+					break;
+			}
+			CK(has4 == 1, "IP4_ALLOWED (16439) emitted for the v4 lease");
+			CK(has6 == 0, "IP6_ALLOWED (16440) NOT emitted (no v6 lease)");
+			rc_vfree(blob);
+		}
+		if (c.child_param.cfg_payload)
+			rc_vfree(c.child_param.cfg_payload);
+		/* the helper does not own the lease; release what we linked in */
+		if (ra)
+			rc_addrpool_release_addr(ra);	/* frees the rcf_address */
+		ikev2_payloads_destroy(&p);
 	}
 
 	printf("splitcfgtest: %d checks, %d failure(s)\n", checks, fails);
