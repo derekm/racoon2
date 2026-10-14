@@ -405,6 +405,13 @@ struct rcf_kmp {
 	 * most recent authenticated packet).  Off = the event is logged and
 	 * ignored, so return traffic keeps going to the old mapping. */
 	rc_type natt_follow_mapping;
+	/* RFC 5685 redirect: when redirect_to is set (a new-gateway identity:
+	 * an IPv4/IPv6 address or a hostname as configured), the responder
+	 * answers an IKE_SA_INIT whose initiator offered N(REDIRECT_SUPPORTED)
+	 * with N(REDIRECT, redirect_to, echoed Ni) and NO SA (SPI_R=0), so the
+	 * client re-initiates against the listed gateway (load-balance /
+	 * maintenance / closure).  NULL = never redirect (RFC 5685 s3). */
+	rc_vchar_t *redirect_to;
 };
 
 /* selector info */

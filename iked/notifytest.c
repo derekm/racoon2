@@ -237,6 +237,99 @@ main(int argc, char *argv[])
 			   "INVALID_MESSAGE_ID: data == 4-octet invalid id");
 			rc_vfree(n);
 		}
+
+		/*
+		 * RFC 5685 s9.2 redirect Notify Data: GW Ident Type (1) |
+		 * GW Ident Len (2) | Gateway Identity | Nonce Data.  IPv4
+		 * gateway -> type 1 / 4-octet addr; FQDN -> type 3 / the
+		 * raw hostname bytes.  ikev2_build_redirect_notify_data()
+		 * is what ikev2_respond_redirect() sends on the wire.
+		 */
+		{
+			rc_vchar_t *gw, *ni, *d;
+			unsigned char nib[6] = { 0xa, 0xb, 0xc, 0xd, 0xe, 0xf };
+
+			ni = rc_vnew(nib, 6);
+			ck(ni != NULL, "redirect: ni alloc");
+
+			/* IPv4 gateway "10.99.0.20" */
+			gw = rc_vnew((unsigned char *)"10.99.0.20", 10);
+			ck(gw != NULL, "redirect: gw alloc");
+			d = ikev2_build_redirect_notify_data(gw, ni);
+			ck(d != NULL, "redirect ipv4: data built");
+			if (d) {
+				ck(d->u[0] == 1, "redirect ipv4: GW type 1");
+				ck(get_uint16(d->u + 1) == 4,
+				   "redirect ipv4: GW ident len 4");
+				ck(d->u[3] == 10 && d->u[4] == 99 &&
+				   d->u[5] == 0 && d->u[6] == 20,
+				   "redirect ipv4: gw == 10.99.0.20");
+				/* ni rides after (3+4) id bytes */
+				ck(d->l == 3 + 4 + 6, "redirect ipv4: total len");
+				ck(d->u[7] == 0xa && d->u[10] == 0xd,
+				   "redirect ipv4: ni echoed after gw");
+				rc_vfree(d);
+			}
+			rc_vfree(gw);
+
+			/* FQDN gateway "gw2.example.net" -> type 3 */
+			gw = rc_vnew((unsigned char *)"gw2.example.net", 15);
+			ck(gw != NULL, "redirect: gw2 alloc");
+			d = ikev2_build_redirect_notify_data(gw, ni);
+			ck(d != NULL, "redirect fqdn: data built");
+			if (d) {
+				ck(d->u[0] == 3, "redirect fqdn: GW type 3");
+				ck(get_uint16(d->u + 1) == 15,
+				   "redirect fqdn: GW ident len 15");
+				ck(memcmp(d->u + 3, "gw2.example.net", 15) == 0,
+				   "redirect fqdn: gw bytes");
+				rc_vfree(d);
+			}
+			rc_vfree(gw);
+			rc_vfree(ni);
+
+			/*
+			 * Receive side: a responder that sees the initiator's
+			 * N(REDIRECT_SUPPORTED) (16406) in IKE_SA_INIT must
+			 * record peer_sent_redirect so responder_state0_send
+			 * knows it MAY answer REDIRECT (RFC 5685 s3: never
+			 * to a peer that did not offer 16406).  Drive the
+			 * real resp_state0_recv_notify() with a 16406 notify.
+			 */
+			{
+				struct ikev2_sa sa;
+				struct ikev2payl_notify *np;
+				struct ikev2_payload_header *ph;
+				unsigned char nb[sizeof(*np) + 4];
+				struct sockaddr_in local, remote;
+
+				memset(&sa, 0, sizeof(sa));
+				memset(nb, 0, sizeof(nb));
+				np = (struct ikev2payl_notify *)nb;
+				/* empty notify: REDIRECT_SUPPORTED carries no
+				 * data */
+				set_payload_header(&np->header,
+					IKEV2_NO_NEXT_PAYLOAD, sizeof(*np));
+				np->nh.protocol_id = 0;
+				np->nh.spi_size = 0;
+				put_uint16(&np->nh.notify_message_type,
+					   IKEV2_REDIRECT_SUPPORTED);
+				ph = (struct ikev2_payload_header *)np;
+				memset(&local, 0, sizeof(local));
+				memset(&remote, 0, sizeof(remote));
+				local.sin_family = AF_INET;
+				remote.sin_family = AF_INET;
+				/* packet arg is not dereferenced on a bare
+				 * 16406 (no data, spi_size 0): the record-flag
+				 * path below never logs the packet. */
+				ck(resp_state0_recv_notify(&sa,
+					(rc_vchar_t *)0, (struct sockaddr *)&remote,
+					(struct sockaddr *)&local, ph) == 0,
+				   "resp_state0_recv: REDIRECT_SUPPORTED accepted");
+				ck(sa.peer_sent_redirect == 1,
+				   "resp_state0_recv: peer_sent_redirect set by 16406");
+			}
+		}
 	}
 
 		/*
