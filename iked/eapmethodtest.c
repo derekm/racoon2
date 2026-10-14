@@ -316,6 +316,49 @@ main(void)
 	racoon_free(rm->ikev2);
 	racoon_free(rm);
 
+	/* ---- 7b. ECDSA + N(SIG_HASH_ALGORITHMS) exchanged -> DS (method 14) ----
+	 * The ikev2_auth_method() / ikev2_eap_responder_method() mirror: an
+	 * ECDSA responder that echoed 16431 must authenticate via method 14
+	 * (RFC 7427), not the RFC 4754 curve method. */
+	{
+		char base[512], kpath[512], cpath[512];
+		snprintf(base, sizeof(base), "%s/cds", tdir);
+		if (gen_ec_pair(base, NID_secp384r1)) {
+			printf("eapmethodtest: FAIL 7b cannot gen P-384 key"
+			       " (DS mapping untested)\n");
+			fails++;
+		} else {
+			snprintf(cpath, sizeof(cpath), "%s-cert.pem", base);
+			snprintf(kpath, sizeof(kpath), "%s-key.pem", base);
+			sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+			if (!sa) return 2;
+			rm = mkrmconf();
+			alg = mkalg(RCT_ALG_ECDSA);
+			if (!rm || !alg) return 2;
+			rm->ikev2->kmp_auth_method = alg;
+			if (mk_pubkey(rm->ikev2, cpath, kpath)) return 2;
+			sa->rmconf = rm;
+			sa->sig_hash_algos_ds = 1;
+			got = ikev2_eap_responder_method(sa);
+			if (got == IKEV2_AUTH_DS)
+				printf("eapmethodtest: PASS 7b ECDSA+SIGHASH -> "
+				       "DS (method %d)\n", got);
+			else {
+				printf("eapmethodtest: FAIL 7b ECDSA+DS -> %d "
+				       "(want %d)\n", got, IKEV2_AUTH_DS);
+				fails++;
+			}
+			sa->rmconf = NULL;
+			ikev2_dispose_sa(sa);
+			racoon_free(alg);
+			rc_vfree(rm->ikev2->my_pubkey->pubkey);
+			rc_vfree(rm->ikev2->my_pubkey->privkey);
+			racoon_free(rm->ikev2->my_pubkey);
+			racoon_free(rm->ikev2);
+			racoon_free(rm);
+		}
+	}
+
 	/* ---- 8. NULL sa -> 0 (no crash) ---- */
 	got = ikev2_eap_responder_method(NULL);
 	if (got != 0) {

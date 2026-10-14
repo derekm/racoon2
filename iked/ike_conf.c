@@ -6489,6 +6489,14 @@ ikev2_eap_responder_method(struct ikev2_sa *sa)
 				return IKEV2_AUTH_DS;
 			return IKEV2_AUTH_RSASIG;
 		case RCT_ALG_ECDSA:
+			/* RFC 7427 (mirror ikev2_auth_method()): when
+			 * N(SIG_HASH_ALGORITHMS) was exchanged, the ECDSA seat
+			 * authenticates via Digital Signature method 14 (DER
+			 * Ecdsa-Sig-Value under ecdsa-with-SHA2); else fall back
+			 * to the RFC 4754 method by curve (P-256 -> 9, P-384 ->
+			 * 10, P-521 -> 11). */
+			if (sa->sig_hash_algos_ds)
+				return IKEV2_AUTH_DS;
 			/* RFC 4754: the method number reflects the curve of the
 			 * responder private key (P-256 -> 9, P-384 -> 10, P-521 -> 11),
 			 * mirroring ikev2_auth_method().  Do NOT hardcode P-256: a
