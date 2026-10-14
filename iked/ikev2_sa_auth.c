@@ -2303,30 +2303,9 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 	/* RFC 8983 s4: IP4_ALLOWED / IP6_ALLOWED status notifies (no data).
 	 * After assigning internal addresses, tell a dual-stack initiator which
 	 * address family the responder actually assigned/supports (Table 1).
-	 * Emit one notify per AF that carries a lease in this reply. */
-	if (child_sa->child_param.cfg_payload) {
-		struct rcf_address *a;
-		int has4 = 0, has6 = 0;
-		for (a = LIST_FIRST(&child_sa->lease_list); a;
-		     a = LIST_NEXT(a, link_sa)) {
-			if (a->af == AF_INET) has4 = 1;
-			else if (a->af == AF_INET6) has6 = 1;
-		}
-		if (has4)
-			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
-					    ikev2_notify_payload(0, 0, 0,
-								 IKEV2_IP4_ALLOWED,
-								 0, 0), TRUE);
-		if (has6)
-			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
-					    ikev2_notify_payload(0, 0, 0,
-								 IKEV2_IP6_ALLOWED,
-								 0, 0), TRUE);
-		TRACE((PLOGLOC, "RFC8983: responder emits IP%s_ALLOWED%s%s\n",
-		       has4 ? "4" : (has6 ? "6" : ""),
-		       has4 && has6 ? " and IP6_ALLOWED" : "",
-		       (has4 || has6) ? "" : " (none - no lease)"));
-	}
+	 * Shared helper (ikev2_notify.c) also used by the CREATE_CHILD_SA
+	 * responder so the two lease-assigning response builders stay in sync. */
+	ikev2_push_ip_allowed(&payl, child_sa);
 
 #ifdef notyet
 	/*

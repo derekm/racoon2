@@ -62,6 +62,10 @@ int ikev2_process_child_notify(struct ikev2payl_notify *,
  * initiator- and responder-view 16431 notify handlers. */
 void ikev2_remember_sig_hashes(struct ikev2_sa *, struct ikev2payl_notify *);
 
+/* RFC 8983: shared IP4_ALLOWED/IP6_ALLOWED emit after a lease-assigning
+ * CFG_REPLY (childful IKE_AUTH + CREATE_CHILD_SA responder). */
+void ikev2_push_ip_allowed(struct ikev2_payloads *, struct ikev2_child_sa *);
+
 void ikev2_respond_with_notify(rc_vchar_t *, struct sockaddr *, struct sockaddr *,
 			       int, uint8_t *, int);
 void ikev2_respond_with_notify_exch(rc_vchar_t *, struct sockaddr *,
