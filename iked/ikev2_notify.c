@@ -1252,31 +1252,49 @@ ikev2_build_redirect_notify_data(rc_vchar_t *gw, rc_vchar_t *ni)
 {
 	uint8_t idtype;
 	uint8_t idbuf[16];
+	char *gwc = 0;		/* NUL-terminated copy for inet_pton */
 	size_t idlen = 0;
 	rc_vchar_t *data;
 
-	/* classify the configured gateway identity */
-	if (inet_pton(AF_INET, (const char *)gw->v, idbuf) == 1) {
+	/* inet_pton() needs a NUL-terminated C string, but the config path
+	 * (rcf_fix_string -> rc_str2vmem) holds the gateway identity without
+	 * a trailing NUL (exactly gw->l bytes).  Copy + terminate so the
+	 * IPv4/IPv6/FQDN classification never strlen()s past the buffer.
+	 * The identity is re-read from gw->v afterward, so the copy is only
+	 * for classification. */
+	if (gw->l == 0 || gw->l > 4096)
+		return NULL;
+	gwc = racoon_malloc(gw->l + 1);
+	if (!gwc)
+		return NULL;
+	memcpy(gwc, gw->v, gw->l);
+	gwc[gw->l] = '\0';
+
+	if (inet_pton(AF_INET, gwc, idbuf) == 1) {
 		idtype = 1;	/* IPv4 */
 		idlen = 4;
-	} else if (inet_pton(AF_INET6, (const char *)gw->v, idbuf) == 1) {
+	} else if (inet_pton(AF_INET6, gwc, idbuf) == 1) {
 		idtype = 2;	/* IPv6 */
 		idlen = 16;
 	} else {
 		idtype = 3;	/* FQDN */
 		idlen = gw->l;
 	}
+	racoon_free(gwc);
 
-	data = rc_vmalloc(3 + idlen + ni->l);
+	/* RFC 5685 s9.2: GW Ident Type (1 octet) | GW Ident Len (1 octet)
+	 * | New Responder Gateway Identity | Nonce Data.  Len is ONE octet
+	 * (strongSwan's redirect_data_create writes it with write_data8). */
+	data = rc_vmalloc(2 + idlen + ni->l);
 	if (!data)
 		return NULL;
 	data->u[0] = idtype;
-	put_uint16(data->u + 1, (uint16_t)idlen);
+	data->u[1] = (uint8_t)idlen;
 	if (idtype == 3)
-		memcpy(data->u + 3, gw->v, idlen);
+		memcpy(data->u + 2, gw->v, idlen);
 	else
-		memcpy(data->u + 3, idbuf, idlen);
-	memcpy(data->u + 3 + idlen, ni->v, ni->l);
+		memcpy(data->u + 2, idbuf, idlen);
+	memcpy(data->u + 2 + idlen, ni->v, ni->l);
 	return data;
 }
 
