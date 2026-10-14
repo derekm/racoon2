@@ -389,6 +389,36 @@ main(void)
 	racoon_free(rm->ikev2);
 	racoon_free(rm);
 
+	/* ---- 7d. RSA + SIG_HASH + PSS OFF -> DS + PSS flag 0 ----
+	 * Mirror the negative direction: with sig_hash_rsa_pss off (the
+	 * default) the EAP responder must clear sa->sig_hash_ds_pss so the
+	 * method-14 signer uses PKCS1-v1_5.  Pins both directions of the
+	 * flag drift this review chain keeps catching. */
+	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+	if (!sa) return 2;
+	rm = mkrmconf();
+	alg = mkalg(RCT_ALG_RSASIG);
+	if (!rm || !alg) return 2;
+	rm->ikev2->kmp_auth_method = alg;
+	rm->ikev2->sig_hash_rsa_pss = RCT_BOOL_OFF;
+	sa->rmconf = rm;
+	sa->sig_hash_algos_ds = 1;
+	got = ikev2_eap_responder_method(sa);
+	if (got == IKEV2_AUTH_DS && sa->sig_hash_ds_pss == 0)
+		printf("eapmethodtest: PASS 7d RSA+DS+PSS-off -> ds=%d "
+		       "pss=%d\n", got, sa->sig_hash_ds_pss);
+	else {
+		printf("eapmethodtest: FAIL 7d RSA+DS+PSS-off -> %d "
+		       "(want %d) pss=%d (want 0)\n", got, IKEV2_AUTH_DS,
+		       sa->sig_hash_ds_pss);
+		fails++;
+	}
+	sa->rmconf = NULL;
+	ikev2_dispose_sa(sa);
+	racoon_free(alg);
+	racoon_free(rm->ikev2);
+	racoon_free(rm);
+
 	/* ---- 8. NULL sa -> 0 (no crash) ---- */
 	got = ikev2_eap_responder_method(NULL);
 	if (got != 0) {
