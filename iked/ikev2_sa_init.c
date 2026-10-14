@@ -305,6 +305,20 @@ initiator_start_after_gen(int rc, void *arg)
 						 IKEV2_FRAGMENTATION_SUPPORTED,
 						 0, 0),
 			    TRUE);
+	/* RFC 5685 s3: an initiator willing to be redirected advertises
+	 * REDIRECT_SUPPORTED (16406) in its IKE_SA_INIT.  Without it a
+	 * responder that is draining/overloaded MUST NOT redirect us (the
+	 * redirect decision is gated on this offer), so offering 16406 is
+	 * REQUIRED for the initiator redirect-follow path (RFC 5685 s5.5)
+	 * to ever be reachable.  This is a pure capability advertisement
+	 * (same class as FRAGMENTATION_SUPPORTED above): it changes nothing
+	 * for a normal negotiation — the responder only answers REDIRECT
+	 * when ITS local policy (redirect_to / drain) says to. */
+	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0,
+						 IKEV2_REDIRECT_SUPPORTED,
+						 0, 0),
+			    TRUE);
 #ifdef WITH_INTERMEDIATE
 	/* RFC 9242: offer the IKE_INTERMEDIATE exchange capability (the 16438
 	 * notify).  Gated by the remote's 'offer_intermediate' config (default
