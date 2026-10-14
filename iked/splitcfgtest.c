@@ -616,6 +616,128 @@ main(int argc, char *argv[])
 		}
 	}
 
+	/* ---- (c) family-mismatch / "assigned none" cell: ikev2_build_ip_allowed() ----
+	 * Exercise the RFC 8983 s5.5 failure-path emit directly: a v6-only pool
+	 * (no lease) must still announce IP6_ALLOWED (the supported family) so a
+	 * dual-stack initiator that requested v4 can retry v6.  This is the cell
+	 * the CFG_REPLY path cannot reach (it aborts at INTERNAL_ADDRESS_FAILURE
+	 * first); ikev2_build_ip_allowed() is what the failure-response builder
+	 * appends beside the error. */
+	{
+		struct ikev2_sa iksc;
+		struct ikev2_payloads p3;
+		struct rcf_addresspool poolv6;
+		struct rcf_address_pool_item iv6;
+		struct rcf_remote rm;
+		struct rcf_kmp ikm;
+		rc_vchar_t *pname;
+		rc_vchar_t *blob2;
+		int has4c = 0, has6c = 0, off2;
+		struct ikev2payl_notify *n2;
+		struct rcf_addresspool *old_head = rcf_addresspool_head;
+
+		memset(&poolv6, 0, sizeof(poolv6));
+		memset(&iv6, 0, sizeof(iv6));
+		LIST_INIT(&poolv6.pool_list);
+		iv6.af = AF_INET6;
+		LIST_INSERT_HEAD(&poolv6.pool_list, &iv6, link);
+		pname = rc_vmalloc(3);
+		if (pname) { memcpy(pname->v, "v6t", 3); pname->l = 3; }
+		poolv6.index = pname;
+		poolv6.next = old_head;
+		rcf_addresspool_head = &poolv6;
+
+		memset(&rm, 0, sizeof(rm)); memset(&ikm, 0, sizeof(ikm));
+		rm.ikev2 = &ikm; ikm.addresspool = pname;
+		memset(&iksc, 0, sizeof(iksc)); iksc.rmconf = &rm;
+
+		ikev2_payloads_init(&p3);
+		ikev2_build_ip_allowed(&p3, &iksc);
+		blob2 = ikev2_payloads_to_blob(&p3, NULL);
+		CK(blob2 != NULL, "family-mismatch: produced a payload blob");
+		if (blob2) {
+			off2 = 0;
+			while (off2 + (int)sizeof(struct ikev2payl_notify_h) <= (int)blob2->l) {
+				n2 = (struct ikev2payl_notify *)(blob2->v + off2);
+				if (get_uint16((uint8_t *)&n2->nh.notify_message_type) == IKEV2_IP4_ALLOWED)
+					has4c = 1;
+				if (get_uint16((uint8_t *)&n2->nh.notify_message_type) == IKEV2_IP6_ALLOWED)
+					has6c = 1;
+				{
+					int plen = get_payload_length(&n2->header);
+					if (plen == 0) break;
+					off2 += plen;
+				}
+			}
+			CK(has6c == 1, "family-mismatch v6-only pool: IP6_ALLOWED emitted (assigned none)");
+			CK(has4c == 0, "family-mismatch v6-only pool: NO IP4_ALLOWED");
+			rc_vfree(blob2);
+		}
+		ikev2_payloads_destroy(&p3);
+		rcf_addresspool_head = old_head;
+		if (pname) rc_vfree(pname);
+	}
+
+	/* ---- (d) mirror of case (c): v4-only pool, assigned none -> IP4_ALLOWED only.
+	 * Symmetric Table 1 row coverage (requested v6 / supported v4 /
+	 * assigned none -> IP4_ALLOWED). */
+	{
+		struct ikev2_sa iksd;
+		struct ikev2_payloads p4;
+		struct rcf_addresspool poolv4;
+		struct rcf_address_pool_item iv4d;
+		struct rcf_remote rmd;
+		struct rcf_kmp ikmd;
+		rc_vchar_t *pname;
+		rc_vchar_t *blob3;
+		int has4d = 0, has6d = 0, off3;
+		struct ikev2payl_notify *n3;
+		struct rcf_addresspool *old_head = rcf_addresspool_head;
+
+		memset(&poolv4, 0, sizeof(poolv4));
+		memset(&iv4d, 0, sizeof(iv4d));
+		LIST_INIT(&poolv4.pool_list);
+		iv4d.af = AF_INET;
+		LIST_INSERT_HEAD(&poolv4.pool_list, &iv4d, link);
+		pname = rc_vmalloc(3);
+		if (pname) { memcpy(pname->v, "v4t", 3); pname->l = 3; }
+		poolv4.index = pname;
+		poolv4.next = old_head;
+		rcf_addresspool_head = &poolv4;
+
+		memset(&rmd, 0, sizeof(rmd)); memset(&ikmd, 0, sizeof(ikmd));
+		rmd.ikev2 = &ikmd; ikmd.addresspool = pname;
+		memset(&iksd, 0, sizeof(iksd)); iksd.rmconf = &rmd;
+
+		ikev2_payloads_init(&p4);
+		ikev2_build_ip_allowed(&p4, &iksd);
+		blob3 = ikev2_payloads_to_blob(&p4, NULL);
+		CK(blob3 != NULL, "mirror v4-only: produced a payload blob");
+		if (blob3) {
+			off3 = 0;
+			while (off3 + (int)sizeof(struct ikev2payl_notify_h) <= (int)blob3->l) {
+				n3 = (struct ikev2payl_notify *)(blob3->v + off3);
+				if (get_uint16((uint8_t *)&n3->nh.notify_message_type) == IKEV2_IP4_ALLOWED)
+					has4d = 1;
+				if (get_uint16((uint8_t *)&n3->nh.notify_message_type) == IKEV2_IP6_ALLOWED)
+					has6d = 1;
+				{
+					int plen = get_payload_length(&n3->header);
+					if (plen == 0) break;
+					off3 += plen;
+				}
+			}
+			CK(has4d == 1, "mirror v4-only pool: IP4_ALLOWED emitted (assigned none)");
+			CK(has6d == 0, "mirror v4-only pool: NO IP6_ALLOWED");
+			rc_vfree(blob3);
+		}
+		ikev2_payloads_destroy(&p4);
+		rcf_addresspool_head = old_head;
+		if (pname) rc_vfree(pname);
+	}
+
 	printf("splitcfgtest: %d checks, %d failure(s)\n", checks, fails);
 	return fails ? 1 : 0;
 }
+
+
