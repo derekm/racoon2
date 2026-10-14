@@ -1285,25 +1285,45 @@ ikev2_notify_type_str(int type)
 #undef S
 }
 
-/* RFC 8983 s4: after pushing a CFG_REPLY that assigned internal addresses,
- * tell a dual-stack initiator which address family the responder actually
- * assigned (Table 1) — one empty IP4_ALLOWED / IP6_ALLOWED status notify per
- * AF that carries a lease in THIS reply.  Shared by the childful IKE_AUTH
- * responder (ikev2_sa_auth.c state1_send) and the CREATE_CHILD_SA responder
+/* RFC 8983 s4: after pushing a CFG_REPLY, tell a dual-stack initiator which
+ * address families the responder SUPPORTS — one empty IP4_ALLOWED /
+ * IP6_ALLOWED status notify per supported AF (Table 1).  The supported set
+ * is read from the configured addresspool (ikev2_addresspool(rmconf) ->
+ * pool_list item afs), so a dual-stack responder that assigned only v4 this
+ * exchange still signals BOTH v4 and v6, and a family whose assignment
+ * failed is still announced as supported (Table 1: "requested v4 / supported
+ * v6 / assigned none -> IP6_ALLOWED").  If no named pool is configured, fall
+ * back to the assigned lease AFs.  Shared by the childful IKE_AUTH responder
+ * (ikev2_sa_auth.c state1_send) and the CREATE_CHILD_SA responder
  * (ikev2_child.c createchild_responder_send).  No-op when the reply carries
  * no config payload. */
 void
-ikev2_push_ip_allowed(struct ikev2_payloads *payl, struct ikev2_child_sa *child_sa)
+ikev2_push_ip_allowed(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
+		      struct ikev2_child_sa *child_sa)
 {
-	struct rcf_address *a;
 	int has4 = 0, has6 = 0;
+	struct rcf_addresspool *pool;
 
 	if (child_sa == NULL || child_sa->child_param.cfg_payload == NULL)
 		return;
-	for (a = LIST_FIRST(&child_sa->lease_list); a;
-	     a = LIST_NEXT(a, link_sa)) {
-		if (a->af == AF_INET) has4 = 1;
-		else if (a->af == AF_INET6) has6 = 1;
+
+	pool = ikev2_addresspool(ike_sa->rmconf);
+	if (pool) {
+		/* supported families = the configured pool's AFs */
+		struct rcf_address_pool_item *pi;
+		for (pi = LIST_FIRST(&pool->pool_list); pi;
+		     pi = LIST_NEXT(pi, link)) {
+			if (pi->af == AF_INET) has4 = 1;
+			else if (pi->af == AF_INET6) has6 = 1;
+		}
+	} else {
+		/* no named pool: fall back to whatever was actually assigned */
+		struct rcf_address *a;
+		for (a = LIST_FIRST(&child_sa->lease_list); a;
+		     a = LIST_NEXT(a, link_sa)) {
+			if (a->af == AF_INET) has4 = 1;
+			else if (a->af == AF_INET6) has6 = 1;
+		}
 	}
 	if (has4)
 		ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
