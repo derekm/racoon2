@@ -1383,8 +1383,8 @@ ikev2_respond_redirect(rc_vchar_t *request, struct sockaddr *remote,
 	data = ikev2_build_redirect_notify_data(gw, ni);
 	if (!data)
 		return;
-	TRACE((PLOGLOC, "RFC5685: responding REDIRECT to gw %s\n",
-	       (char *)gw->v));
+	TRACE((PLOGLOC, "RFC5685: responding REDIRECT to gw %.*s\n",
+	       (int)gw->l, (char *)gw->v));
 	ikev2_respond_with_notify(request, remote, local,
 				  IKEV2_REDIRECT, data->u, data->l);
 	rc_vfree(data);
@@ -1403,11 +1403,10 @@ ikev2_respond_redirect(rc_vchar_t *request, struct sockaddr *remote,
 rc_vchar_t *
 ikev2_redirect_pool_select(rc_vchar_t *pool, struct sockaddr *remote)
 {
-	struct sockaddr_storage ss;
 	const uint8_t *p;
 	size_t len;
 	size_t i;
-	unsigned long h = 1469598103934665603UL;	/* FNV-1a 64 */
+	uint64_t h = UINT64_C(1469598103934665603);	/* FNV-1a 64 */
 	size_t n = 0;
 	size_t start;
 	size_t sel;
@@ -1418,44 +1417,59 @@ ikev2_redirect_pool_select(rc_vchar_t *pool, struct sockaddr *remote)
 		if (pool->u[i] == ',')
 			n++;
 	n++;
-	if (n == 1)
-		return rc_vdup(pool);
+	if (n == 1) {
+		/* single entry: return it, trimmed (a lone " 10.0.0.7 "
+		 * would otherwise reach inet_pton with the spaces and be
+		 * misclassified as an FQDN) */
+		size_t cs = 0, ce = pool->l;
+		while (cs < ce && (pool->u[cs] == ' ' || pool->u[cs] == '	'))
+			cs++;
+		while (ce > cs && (pool->u[ce-1] == ' ' ||
+				    pool->u[ce-1] == '	'))
+			ce--;
+		if (ce == cs)
+			return NULL;
+		return rc_vnew(pool->u + cs, ce - cs);
+	}
+	if (!remote)
+		return NULL;
 
-	/* FNV-1a over the peer ADDRESS bytes for stable per-address
-	 * affinity.  Hash only the IP address (family + addr), NOT the
-	 * source port: a client re-initiating from a changed ephemeral
-	 * source port must still land on the same pool member — the one
-	 * holding its resume ticket / crash-restart dump. */
-	memset(&ss, 0, sizeof(ss));
+	/* FNV-1a over the peer's IP ADDRESS bytes only (family + addr),
+	 * NOT the port, NOT sin_zero/flowinfo/scope padding: a client
+	 * re-initiating from a changed ephemeral port, or with different
+	 * uninitialized padding, must still land on the SAME pool member
+	 * — the one holding its resume ticket / crash-restart dump. */
+	h ^= (uint8_t)remote->sa_family;
+	h *= UINT64_C(1099511628211);
 	if (remote->sa_family == AF_INET) {
-		struct sockaddr_in *sin =
-		    (struct sockaddr_in *)&ss;
-		memcpy(sin, remote, sizeof(*sin));
-		sin->sin_port = 0;	/* drop source port */
-		p = (const uint8_t *)sin;
-		len = sizeof(*sin);
+		const struct in_addr *a =
+		    &((struct sockaddr_in *)remote)->sin_addr;
+		p = (const uint8_t *)a;
+		len = sizeof(*a);
 	} else if (remote->sa_family == AF_INET6) {
-		struct sockaddr_in6 *sin6 =
-		    (struct sockaddr_in6 *)&ss;
-		memcpy(sin6, remote, sizeof(*sin6));
-		sin6->sin6_port = 0;	/* drop source port */
-		p = (const uint8_t *)sin6;
-		len = sizeof(*sin6);
+		const struct in6_addr *a =
+		    &((struct sockaddr_in6 *)remote)->sin6_addr;
+		p = (const uint8_t *)a;
+		len = sizeof(*a);
 	} else {
-		p = (const uint8_t *)remote;
+		p = NULL;
 		len = 0;
 	}
 	for (i = 0; i < len; i++) {
 		h ^= p[i];
-		h *= 1099511628211UL;
+		h *= UINT64_C(1099511628211);
 	}
 	sel = (size_t)(h % n);
 
-	/* return the sel-th member (trimmed) */
+	/* return the sel-th member (trimmed).  A NUL byte is treated as
+	 * end-of-member too: rc_vnew from a config string copies the
+	 * terminating NUL into the pool buffer, so a trailing "sp NUL"
+	 * (where NUL is not whitespace) must still trim to the member. */
 	for (i = 0, start = 0; i <= sel; i++) {
 		size_t end = start;
 		size_t cs, ce;
-		while (end < pool->l && pool->u[end] != ',')
+		while (end < pool->l && pool->u[end] != ',' &&
+		       pool->u[end] != '\0')
 			end++;
 		if (i != sel) {
 			start = end + 1;

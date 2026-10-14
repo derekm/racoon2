@@ -623,7 +623,11 @@ main(int argc, char *argv[])
 					    memcmp(r2->u, "10.0.0.8", 8) == 0 ||
 					    memcmp(r2->u, "10.0.0.9", 8) == 0),
 					   "redirect pool: p2 maps into the pool");
-					/* whitespace trimming */
+					/* whitespace trimming: exact bytes, no
+					 * trailing padding.  rc_vnew() with an
+					 * explicit length that includes a NUL (as a
+					 * config string might) must still trim to
+					 * exactly the member bytes. */
 					rc_vfree(pool);
 					pool = rc_vnew((unsigned char *)
 					    " 10.0.0.7 , 10.0.0.8 ", 22);
@@ -631,17 +635,18 @@ main(int argc, char *argv[])
 						rc_vchar_t *rt =
 						    ikev2_redirect_pool_select(
 						    pool, (struct sockaddr *)&p1);
-						ck(rt && rt->l >= 8 &&
+						ck(rt && rt->l == 8 &&
 						   (memcmp(rt->u, "10.0.0.7", 8) == 0 ||
 						    memcmp(rt->u, "10.0.0.8", 8) == 0),
-						   "redirect pool: members trimmed");
+						   "redirect pool: members trimmed to "
+						   "exact bytes");
 						if (rt) rc_vfree(rt);
 					}
 					rc_vfree(pool);
 					if (r1a) rc_vfree(r1a);
 					if (r1b) rc_vfree(r1b);
 					if (r2) rc_vfree(r2);
-				}
+					}
 				/* empty pool -> NULL */
 				{
 					rc_vchar_t *e =
@@ -650,6 +655,75 @@ main(int argc, char *argv[])
 					    (struct sockaddr *)&p1) == NULL,
 					   "redirect pool: empty pool -> NULL");
 					rc_vfree(e);
+				}
+				/* IPv6 + padding: the resolver must hash
+				 * ONLY the address bytes (family + addr), so a
+				 * changed source port, sin6_flowinfo, or
+				 * scope id must NOT move the member (a
+				 * returning client must land on the member
+				 * holding its resume ticket/dump). */
+				{
+					rc_vchar_t *pool, *r6a, *r6b, *r6c;
+					struct sockaddr_in6 v6a, v6b, v6c;
+
+					memset(&v6a, 0, sizeof(v6a));
+					memset(&v6b, 0, sizeof(v6b));
+					memset(&v6c, 0, sizeof(v6c));
+					v6a.sin6_family = AF_INET6;
+					v6a.sin6_addr.s6_addr[15] = 1;
+					v6b = v6a;
+					v6b.sin6_port = htons(54321);
+					v6c = v6a;
+					v6c.sin6_flowinfo = 0x80001;
+					v6c.sin6_scope_id = 42;
+
+					pool = rc_vnew((unsigned char *)
+					    "2001:db8::7,2001:db8::8", 23);
+					r6a = ikev2_redirect_pool_select(pool,
+					    (struct sockaddr *)&v6a);
+					r6b = ikev2_redirect_pool_select(pool,
+					    (struct sockaddr *)&v6b);
+					r6c = ikev2_redirect_pool_select(pool,
+					    (struct sockaddr *)&v6c);
+					ck(r6a && r6b && r6c &&
+					   r6a->l == r6b->l &&
+					   r6a->l == r6c->l &&
+					   memcmp(r6a->u, r6b->u, r6a->l) == 0 &&
+					   memcmp(r6a->u, r6c->u, r6a->l) == 0,
+					   "redirect pool: IPv6 addr affinity "
+					   "ignores port/flowinfo/scope");
+					if (r6a) rc_vfree(r6a);
+					if (r6b) rc_vfree(r6b);
+					if (r6c) rc_vfree(r6c);
+					rc_vfree(pool);
+				}
+				/* port sweep: several distinct source ports
+				 * on the same address must all map to the same
+				 * member (the reviewer's multi-port concern). */
+				{
+					rc_vchar_t *pool, *ref, *pn;
+					struct sockaddr_in pp;
+					int port;
+
+					pool = rc_vnew((unsigned char *)
+					    "10.0.0.7,10.0.0.8,10.0.0.9", 27);
+					pp = p1;
+					ref = ikev2_redirect_pool_select(pool,
+					    (struct sockaddr *)&pp);
+					for (port = 0; port < 8; port++) {
+						pp.sin_port = htons(
+						    (unsigned short)(10000 +
+						    port));
+						pn = ikev2_redirect_pool_select(
+						    pool, (struct sockaddr *)&pp);
+						ck(ref && pn && ref->l == pn->l &&
+						   memcmp(ref->u, pn->u, ref->l) == 0,
+						   "redirect pool: port sweep "
+						   "stays on same member");
+						if (pn) rc_vfree(pn);
+					}
+					if (ref) rc_vfree(ref);
+					rc_vfree(pool);
 				}
 				(void)i;
 			}
