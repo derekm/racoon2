@@ -534,9 +534,13 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 		 * [1-octet length][AlgorithmIdentifier][signature].  The
 		 * signature algorithm is chosen by the seat key type: an
 		 * Ed25519/Ed448 key yields a pure EdDSA signature with the
-		 * RFC 8420 AlgorithmIdentifier (no pre-hash); anything else
-		 * (RSA) yields the SHA-256 RSASSA-PKCS1-v1_5 signature with
-		 * the sha256WithRSAEncryption AlgorithmIdentifier. */
+		 * RFC 8420 AlgorithmIdentifier (no pre-hash); an EC key yields
+		 * a DER Ecdsa-Sig-Value under an ecdsa-with-SHA2
+		 * AlgorithmIdentifier; an RSA key yields an RSASSA-PKCS1-v1_5
+		 * (or, when sig_hash_rsa_pss is configured, an RSASSA-PSS)
+		 * signature under the matching sha2*WithRSAEncryption /
+		 * id-RSASSA-PSS AlgorithmIdentifier, hashed with the strongest
+		 * mutually-supported SHA-2. */
 		privkey = ikev2_private_key(sa, id);
 		if (!privkey) {
 			isakmp_log(sa, 0, 0, 0,
