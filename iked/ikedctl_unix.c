@@ -51,9 +51,10 @@ usage(const char *p)
 "  %s [-s socket] vpn-connect <gateway>\n"
 "  %s [-s socket] vpn-disconnect <gateway>\n"
 "  %s [-s socket] delete-sa <peer> [esp|ah]\n"
+"  %s [-s socket] drain-sa <peer> [-to gw]\n"
 "\n"
 "esp/ah SAD: ip xfrm state / ip xfrm policy\n",
-		p, p, p, p, p, p, p);
+		p, p, p, p, p, p, p, p);
 	exit(EXIT_FAILURE);
 }
 
@@ -395,6 +396,38 @@ main(int ac, char **av)
 		ndx = (struct admin_com_indexes *)
 			((char *)req + sizeof(struct admin_com));
 		fill_index(ndx, af, src, av[0]);
+		transact(req, reqlen);
+	} else if (strcmp(cmd, "drain-sa") == 0 ||
+		   strcmp(cmd, "drain") == 0) {
+		/* drain-sa <peer> [-to gw] : set (or clear without -to) the
+		 * runtime drain-redirect target for <peer>.  The responder
+		 * then redirects NEW IKE_SA_INITs from this peer to gw
+		 * (graceful maintenance drain) until cleared. */
+		struct admin_com_indexes *ndx;
+		const char *src, *gw = NULL;
+		int af;
+
+		if (ac < 1 || ac > 4)
+			usage(pname);
+		(void)local_for(av[0], &af);
+		src = (af == AF_INET6) ? "::" : "0.0.0.0";
+		for (int i = 1; i + 1 <= ac; i++)
+			if (strcmp(av[i], "-to") == 0)
+				gw = av[i + 1];
+		if (gw) {
+			req = make_req(ADMIN_REDIRECT_DRAIN, ADMIN_PROTO_ISAKMP,
+				       sizeof(*ndx) + strlen(gw) + 1, &reqlen);
+			ndx = (struct admin_com_indexes *)
+				((char *)req + sizeof(struct admin_com));
+			fill_index(ndx, af, src, av[0]);
+			memcpy((char *)(ndx + 1), gw, strlen(gw) + 1);
+		} else {
+			req = make_req(ADMIN_REDIRECT_DRAIN, ADMIN_PROTO_ISAKMP,
+				       sizeof(*ndx), &reqlen);
+			ndx = (struct admin_com_indexes *)
+				((char *)req + sizeof(struct admin_com));
+			fill_index(ndx, af, src, av[0]);
+		}
 		transact(req, reqlen);
 	} else if (strcmp(cmd, "delete-sa") == 0 ||
 		   strcmp(cmd, "ds") == 0) {
