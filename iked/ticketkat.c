@@ -583,10 +583,13 @@ main(void)
 			/* load a wrong key file */
 			{
 				FILE *wf = fopen("/tmp/r2tkt-kat-key2", "wb");
+				size_t w2 = 0;
 				if (wf) {
-					fwrite(other, 1, 32, wf);
+					w2 = fwrite(other, 1, 32, wf);
 					fclose(wf);
 				}
+				CHECK(w2 == 32,
+				      "cluster: wrote wrong-key file (negative control)");
 			}
 			nok = (r2ticket_key_load("/tmp/r2tkt-kat-key2",
 						 &ok2) == 0);
