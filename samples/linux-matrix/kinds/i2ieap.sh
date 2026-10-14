@@ -225,7 +225,7 @@ EOF
 	# stale global charon pidfile (from a prior run) blocks the in-netns
 	# charon: 'charon already running (...pid exists)' then it exits and the
 	# later swanctl --initiate gets 'Connection refused'.  Clear it first.
-	rm -f /run/strongswan/charon.pid /var/run/charon.pid 2>/dev/null || true
+	i2i_charon_kill
 	i2i_charon_run "$NSI" "$D/charon-init.log"
 	sleep 2
 	ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --load-all --debug 2 >"$D/swanctl-load.log" 2>&1

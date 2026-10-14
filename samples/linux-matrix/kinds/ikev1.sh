@@ -316,7 +316,7 @@ EOF
 _ikev1_clean() {
 	_NSR=$1; _NSI=$2; _C=$3; _PRR=$4
 	pkill -9 -f "$_C/" 2>/dev/null || true
-	killall -9 charon 2>/dev/null || true
+	i2i_charon_kill
 	rm -f "$I2I_CHARON_VDIR/r2-ikev1.conf" 2>/dev/null || true
 	sleep 1
 	ip netns del "$_NSR" 2>/dev/null || true
