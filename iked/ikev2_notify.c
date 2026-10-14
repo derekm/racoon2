@@ -1284,3 +1284,39 @@ ikev2_notify_type_str(int type)
 	}
 #undef S
 }
+
+/* RFC 8983 s4: after pushing a CFG_REPLY that assigned internal addresses,
+ * tell a dual-stack initiator which address family the responder actually
+ * assigned (Table 1) — one empty IP4_ALLOWED / IP6_ALLOWED status notify per
+ * AF that carries a lease in THIS reply.  Shared by the childful IKE_AUTH
+ * responder (ikev2_sa_auth.c state1_send) and the CREATE_CHILD_SA responder
+ * (ikev2_child.c createchild_responder_send).  No-op when the reply carries
+ * no config payload. */
+void
+ikev2_push_ip_allowed(struct ikev2_payloads *payl, struct ikev2_child_sa *child_sa)
+{
+	struct rcf_address *a;
+	int has4 = 0, has6 = 0;
+
+	if (child_sa == NULL || child_sa->child_param.cfg_payload == NULL)
+		return;
+	for (a = LIST_FIRST(&child_sa->lease_list); a;
+	     a = LIST_NEXT(a, link_sa)) {
+		if (a->af == AF_INET) has4 = 1;
+		else if (a->af == AF_INET6) has6 = 1;
+	}
+	if (has4)
+		ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_IP4_ALLOWED,
+							 0, 0), TRUE);
+	if (has6)
+		ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_IP6_ALLOWED,
+							 0, 0), TRUE);
+	TRACE((PLOGLOC, "RFC8983: responder emits IP%s_ALLOWED%s%s\n",
+	       has4 ? "4" : (has6 ? "6" : ""),
+	       has4 && has6 ? " and IP6_ALLOWED" : "",
+	       (has4 || has6) ? "" : " (none - no lease)"));
+}
