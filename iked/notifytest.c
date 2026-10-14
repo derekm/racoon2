@@ -326,7 +326,96 @@ main(int argc, char *argv[])
 					racoon_free(big);
 				}
 			}
-			rc_vfree(ni);
+			/* Round-trip the parser against fresh owned buffers.
+		 * parse() must return the SAME gw identity + echoed ni
+		 * that build() emitted, for an IPv4 and an FQDN target. */
+		{
+			rc_vchar_t *pgw = 0, *pni = 0;
+			uint8_t pt = 0;
+
+			/* IPv4: build "10.99.0.20" + ni, then parse it back */
+			gw = rc_vnew((unsigned char *)"10.99.0.20", 10);
+			d = ikev2_build_redirect_notify_data(gw, ni);
+			ck(d != NULL, "redirect parse: ipv4 built");
+			if (d) {
+				ck(ikev2_parse_redirect_notify_data(
+				    d, &pt, &pgw, &pni) == 0,
+				   "redirect parse: ipv4 ok");
+				ck(pt == 1, "redirect parse: ipv4 type 1");
+				ck(pgw && pgw->l == 4 && pgw->u[0] == 10 &&
+				   pgw->u[3] == 20,
+				   "redirect parse: ipv4 gw bytes");
+				ck(pni && pni->l == 6 && pni->u[0] == 0xa &&
+				   pni->u[5] == 0xf,
+				   "redirect parse: ipv4 echoes ni");
+				rc_vfree(d);
+			}
+			rc_vfree(gw);
+			if (pgw) rc_vfree(pgw);
+			if (pni) rc_vfree(pni);
+			pgw = pni = 0;
+
+			/* FQDN: build "gw2.example.net", parse back type 3 */
+			gw = rc_vnew((unsigned char *)"gw2.example.net", 15);
+			d = ikev2_build_redirect_notify_data(gw, ni);
+			ck(d != NULL, "redirect parse: fqdn built");
+			if (d) {
+				ck(ikev2_parse_redirect_notify_data(
+				    d, &pt, &pgw, &pni) == 0,
+				   "redirect parse: fqdn ok");
+				ck(pt == 3, "redirect parse: fqdn type 3");
+				ck(pgw && pgw->l == 15 &&
+				   memcmp(pgw->u, "gw2.example.net", 15) == 0,
+				   "redirect parse: fqdn gw bytes");
+				rc_vfree(d);
+			}
+			rc_vfree(gw);
+			if (pgw) rc_vfree(pgw);
+			if (pni) rc_vfree(pni);
+			pgw = pni = 0;
+
+			/* malformed / wrong-cardinality must be rejected:
+			 * ipv4 type but len != 4  */
+			{
+				unsigned char bad[8];
+				rc_vchar_t bd;
+
+				memset(bad, 0, sizeof(bad));
+				bad[0] = 1; bad[1] = 3;	/* type ipv4, len 3 */
+				bd.l = sizeof(bad);
+				bd.u = bad;
+				ck(ikev2_parse_redirect_notify_data(
+				    &bd, &pt, &pgw, &pni) != 0,
+				   "redirect parse: ipv4 wrong len rejected");
+			}
+			/* bogus type */
+			{
+				unsigned char bad[8];
+				rc_vchar_t bd;
+
+				memset(bad, 0, sizeof(bad));
+				bad[0] = 9; bad[1] = 4;	/* unknown type 9 */
+				bd.l = sizeof(bad);
+				bd.u = bad;
+				ck(ikev2_parse_redirect_notify_data(
+				    &bd, &pt, &pgw, &pni) != 0,
+				   "redirect parse: bogus type rejected");
+			}
+			/* truncated (no identity / no ni) */
+			{
+				unsigned char bad[4];
+				rc_vchar_t bd;
+
+				memset(bad, 0, sizeof(bad));
+				bad[0] = 1; bad[1] = 4;	/* len 4 but only 2 left */
+				bd.l = 2;
+				bd.u = bad;
+				ck(ikev2_parse_redirect_notify_data(
+				    &bd, &pt, &pgw, &pni) != 0,
+				   "redirect parse: truncated rejected");
+			}
+		}
+		rc_vfree(ni);
 
 			/*
 			 * Receive side: a responder that sees the initiator's

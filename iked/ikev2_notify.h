@@ -76,6 +76,11 @@ void ikev2_respond_with_notify(rc_vchar_t *, struct sockaddr *, struct sockaddr 
 void ikev2_respond_redirect(rc_vchar_t *, struct sockaddr *, struct sockaddr *,
 			    rc_vchar_t *, rc_vchar_t *);
 rc_vchar_t *ikev2_build_redirect_notify_data(rc_vchar_t *, rc_vchar_t *);
+/* RFC 5685 s9.2: parse an N(REDIRECT)'s Notify DATA into the GW Ident
+ * Type, gateway identity bytes, and the echoed Ni.  Returns 0 on
+ * success (*gw / *ni caller-freed), -1 on a malformed payload. */
+int ikev2_parse_redirect_notify_data(rc_vchar_t *, uint8_t *, rc_vchar_t **,
+				     rc_vchar_t **);
 void ikev2_respond_with_notify_exch(rc_vchar_t *, struct sockaddr *,
 				    struct sockaddr *, int, int, uint8_t *,
 				    int);

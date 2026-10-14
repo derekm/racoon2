@@ -1174,6 +1174,10 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		rc_vfree(sa->n_i);
 	if (sa->n_r)
 		rc_vfree(sa->n_r);
+	if (sa->redirect_gw)
+		rc_vfree(sa->redirect_gw);
+	if (sa->redirect_ni)
+		rc_vfree(sa->redirect_ni);
 	if (sa->dhpriv)
 		rc_vfreez(sa->dhpriv);
 	if (sa->dhpub)
