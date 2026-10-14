@@ -1480,6 +1480,15 @@ ikev2_initiator_redirect_follow(struct ikev2_sa *ike_sa, struct sockaddr *remote
 	assert(ike_sa != 0);
 	assert(ike_sa->redirect_rx != 0);
 
+	/* We are about to act on this verified redirect (re-drive against the
+	 * new gateway).  Clear redirect_rx NOW so that the NEW gateway's
+	 * normal IKE_SA_INIT response (a valid SAr1/KEr/Nr, not another
+	 * REDIRECT) does not re-trigger this branch and loop IKE_SA_INIT
+	 * forever.  If the new gateway also redirects us, its N(REDIRECT)
+	 * re-arms redirect_rx via the notify handler (as does any fresh
+	 * verified redirect). */
+	ike_sa->redirect_rx = 0;
+
 	/* Capture the ORIGINAL (redirecting) gateway identity from the peer
 	 * we first tried (`remote`) for the REDIRECTED_FROM notify. */
 	switch (remote->sa_family) {
