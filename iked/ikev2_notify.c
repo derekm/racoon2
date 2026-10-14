@@ -1281,56 +1281,28 @@ ikev2_notify_type_str(int type)
 #undef S
 }
 
-/* RFC 8983 s4: after pushing a CFG_REPLY, tell a dual-stack initiator which
- * address families the responder SUPPORTS — one empty IP4_ALLOWED /
- * IP6_ALLOWED status notify per supported AF (Table 1).  The supported set
- * is read from the configured addresspool (ikev2_addresspool(rmconf) ->
- * pool_list item afs).
+/* RFC 8983 s4 helpers.  IP4_ALLOWED / IP6_ALLOWED are empty status notifies
+ * that tell a dual-stack initiator which address family the responder
+ * SUPPORTS (Table 1), read from the configured addresspool
+ * (ikev2_addresspool(rmconf) -> pool_list item afs).
  *
- * COVERED cells (a CFG_REPLY is pushed): a dual-stack responder that
- * assigned only v4 this exchange signals BOTH v4 and v6; a family in the
- * pool that was NOT assigned is still announced as supported, because the
- * pool's supported set is what we advertise (rows "requested v4 /
- * supported v4+v6 / assigned v4 -> IP4_ALLOWED, IP6_ALLOWED").
+ * ikev2_build_ip_allowed(): emit the pool's supported-family notifies into
+ *   an existing payload list, regardless of whether a CFG_REPLY was pushed.
+ *   Used on the "assigned none" / family-mismatch failure path, where
+ *   ikev2_process_config_request returns INTERNAL_ADDRESS_FAILURE: per RFC
+ *   8983 s5.5 the responder still tells a dual-stack initiator which family
+ *   IS supported so it can retry the other AF (the rows "requested v4 /
+ *   supported v6 / assigned none -> IP6_ALLOWED").  No-op when no named
+ *   pool is configured.
  *
- * NOT COVERED: the "assigned none" rows (requested v4 / supported v6 /
- * assigned none -> IP6_ALLOWED) abort with INTERNAL_ADDRESS_FAILURE (error
- * 36) in ikev2_process_config_request before any CFG_REPLY, so no IP_ALLOWED
- * is emitted there — that family-mismatch cell is a separate follow-up, not
- * implemented by this helper.
- *
- * If no named pool is configured, fall back to the assigned lease AFs.
- * Shared by the childful IKE_AUTH responder (ikev2_sa_auth.c state1_send)
- * and the CREATE_CHILD_SA responder (ikev2_child.c createchild_responder_
- * send).  No-op when the reply carries no config payload. */
-void
-ikev2_push_ip_allowed(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
-		      struct ikev2_child_sa *child_sa)
+ * ikev2_push_ip_allowed(): CFG_REPLY variant used by the childful IKE_AUTH
+ *   responder and CREATE_CHILD_SA responder.  Prefers the pool-supported
+ *   set; falls back to the assigned-lease AFs when no named pool resolves.
+ *   No-op when the reply carries no config payload. */
+
+static void
+drop_ip_allowed(struct ikev2_payloads *payl, int has4, int has6)
 {
-	int has4 = 0, has6 = 0;
-	struct rcf_addresspool *pool;
-
-	if (child_sa == NULL || child_sa->child_param.cfg_payload == NULL)
-		return;
-
-	pool = ikev2_addresspool(ike_sa->rmconf);
-	if (pool) {
-		/* supported families = the configured pool's AFs */
-		struct rcf_address_pool_item *pi;
-		for (pi = LIST_FIRST(&pool->pool_list); pi;
-		     pi = LIST_NEXT(pi, link)) {
-			if (pi->af == AF_INET) has4 = 1;
-			else if (pi->af == AF_INET6) has6 = 1;
-		}
-	} else {
-		/* no named pool: fall back to whatever was actually assigned */
-		struct rcf_address *a;
-		for (a = LIST_FIRST(&child_sa->lease_list); a;
-		     a = LIST_NEXT(a, link_sa)) {
-			if (a->af == AF_INET) has4 = 1;
-			else if (a->af == AF_INET6) has6 = 1;
-		}
-	}
 	if (has4)
 		ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(0, 0, 0,
@@ -1345,4 +1317,57 @@ ikev2_push_ip_allowed(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 	       has4 ? "4" : (has6 ? "6" : ""),
 	       has4 && has6 ? " and IP6_ALLOWED" : "",
 	       (has4 || has6) ? "" : " (none - no supported family)"));
+}
+
+void
+ikev2_build_ip_allowed(struct ikev2_payloads *payl, struct ikev2_sa *ike_sa)
+{
+	int has4 = 0, has6 = 0;
+	struct rcf_addresspool *pool;
+	struct rcf_address_pool_item *pi;
+
+	if (ike_sa == NULL || ike_sa->rmconf == NULL)
+		return;
+	pool = ikev2_addresspool(ike_sa->rmconf);
+	if (pool == NULL)
+		return;
+	for (pi = LIST_FIRST(&pool->pool_list); pi;
+	     pi = LIST_NEXT(pi, link)) {
+		if (pi->af == AF_INET) has4 = 1;
+		else if (pi->af == AF_INET6) has6 = 1;
+	}
+	drop_ip_allowed(payl, has4, has6);
+}
+
+void
+ikev2_push_ip_allowed(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
+		      struct ikev2_child_sa *child_sa)
+{
+	struct rcf_address *a;
+	int has4 = 0, has6 = 0;
+	struct rcf_addresspool *pool;
+	struct rcf_address_pool_item *pi;
+
+	if (ike_sa == NULL || child_sa == NULL ||
+	    child_sa->child_param.cfg_payload == NULL)
+		return;
+
+	/* preferred: the configured pool's supported families */
+	pool = ikev2_addresspool(ike_sa->rmconf);
+	if (pool) {
+		for (pi = LIST_FIRST(&pool->pool_list); pi;
+		     pi = LIST_NEXT(pi, link)) {
+			if (pi->af == AF_INET) has4 = 1;
+			else if (pi->af == AF_INET6) has6 = 1;
+		}
+	}
+	if (pool == NULL) {
+		/* no named pool: whatever was actually assigned */
+		for (a = LIST_FIRST(&child_sa->lease_list); a;
+		     a = LIST_NEXT(a, link_sa)) {
+			if (a->af == AF_INET) has4 = 1;
+			else if (a->af == AF_INET6) has6 = 1;
+		}
+	}
+	drop_ip_allowed(payl, has4, has6);
 }

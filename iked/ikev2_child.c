@@ -4737,6 +4737,12 @@ ikev2_createchild_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		uint16_t code = htons((uint16_t)child_param.notify_code);
 		(void)ikev2_respond_error(ike_sa, msg, remote, local,
 					  0, 0, 0, err, &code, sizeof(code));
+	} else if (err == IKEV2_INTERNAL_ADDRESS_FAILURE) {
+		/* RFC 8983 s5.5: on an address-assignment failure, still tell
+		 * a dual-stack initiator which family IS supported (IP_ALLOWED)
+		 * so it can retry the other AF, alongside the error. */
+		(void)ikev2_respond_error_ip_allowed(ike_sa, msg, remote,
+						      local, err);
 	} else
 		(void)ikev2_respond_error(ike_sa, msg, remote, local,
 					  0, 0, 0, err, 0, 0);

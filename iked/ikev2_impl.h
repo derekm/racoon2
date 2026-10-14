@@ -647,6 +647,9 @@ extern int ikev2_respond_null(struct ikev2_sa *, rc_vchar_t *,
 extern int ikev2_respond_error(struct ikev2_sa *, rc_vchar_t *,
 			       struct sockaddr *, struct sockaddr *, unsigned int,
 			       uint8_t *, int, unsigned int, void *, size_t);
+extern int ikev2_respond_error_ip_allowed(struct ikev2_sa *, rc_vchar_t *,
+					  struct sockaddr *, struct sockaddr *,
+					  unsigned int);
 
 extern void ikev2_poll(struct ikev2_sa *);
 extern void ikev2_sa_start_polling_timer(struct ikev2_sa *);
