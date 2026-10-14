@@ -2,7 +2,8 @@
 # kinds/i2ike_drain.sh — RFC 5685 drain live proof (steps 4a+4b).
 #
 # Two-seat iked<->iked (initiator=iked too).  Establishes a plain child,
-# then the responder's `ikedctl drain-sa <peer> -to <gw>`:
+# then the responder's `ikedctl drain-sa <peer> <gw>` (gw positional, no
+# '-to' flag — ikedctl's getopt would eat it):
 #
 #   4b) SET a drain also silently tears down the peer's ESTABLISHED
 #       IKE_SA locally (no DELETE on the wire), so the established child's
