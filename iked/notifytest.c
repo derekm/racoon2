@@ -761,6 +761,47 @@ main(int argc, char *argv[])
 			ikev2_drain_clear_all();
 			ck(ikev2_drain_lookup((struct sockaddr *)&dp1) == NULL,
 			   "drain: clear_all empties the table");
+			/* REVIEWER BLOCKER: the drain key is per-ADDRESS
+			 * (family + IP), NOT port.  ikedctl drain-sa builds
+			 * the peer via fill_index with source PORT 0, but the
+			 * responder looks up the packet's real source sockaddr
+			 * (port 500/4500/ephemeral, never 0).  A full-sockaddr
+			 * match would make every CLI-set drain inert.  So a
+			 * port-0-set drain MUST be found by a real-port lookup,
+			 * IPv4 and IPv6. */
+			{
+				struct sockaddr_in realp;
+				struct sockaddr_in6 d6, real6;
+
+				memset(&realp, 0, sizeof(realp));
+				realp.sin_family = AF_INET;
+				realp.sin_addr.s_addr = dp1.sin_addr.s_addr;
+				realp.sin_port = htons(4500); /* real src */
+				ikev2_drain_set((struct sockaddr *)&dp1,
+				    "10.0.0.7"); /* CLI: port 0 */
+				ck(ikev2_drain_lookup((struct sockaddr *)&realp)
+				    != NULL,
+				   "drain: port-0 set matches real-port lookup (IPv4)");
+
+				memset(&d6, 0, sizeof(d6));
+				d6.sin6_family = AF_INET6;
+				d6.sin6_addr.s6_addr[15] = 7;
+				ikev2_drain_set((struct sockaddr *)&d6,
+				    "2001:db8::9"); /* CLI: port 0 */
+				memset(&real6, 0, sizeof(real6));
+				real6.sin6_family = AF_INET6;
+				real6.sin6_addr.s6_addr[15] = 7;
+				real6.sin6_port = htons(500); /* real src */
+				ck(ikev2_drain_lookup((struct sockaddr *)&real6)
+				    != NULL,
+				   "drain: port-0 set matches real-port lookup (IPv6)");
+				/* different addr, real port: NOT a match */
+				realp.sin_addr.s_addr = htonl(0x0a0100c9u);
+				ck(ikev2_drain_lookup((struct sockaddr *)&realp)
+				    == NULL,
+				   "drain: different addr does not match");
+			}
+			ikev2_drain_clear_all();
 		}
 	}
 

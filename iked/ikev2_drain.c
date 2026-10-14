@@ -33,30 +33,34 @@ struct ikev2_drain_entry {
 
 static struct ikev2_drain_entry ikev2_drain_tbl[IKEV2_DRAIN_MAX];
 
-/* Address equality on the significant bytes (family + addr + port as
- * stored); the responder passes the peer sockaddr from the packet, the
- * admin CLI passes a matching peer from `ikedctl drain-sa`, so matching
- * on the full sockaddr incl. port is what makes a drain peer-specific to
- * the exact socket the client used. */
+/* Peer-key equality on the significant bytes.  The key is per-ADDRESS
+ * (family + IP address), deliberately EXCLUDING the source port: the
+ * admin CLI (ikedctl drain-sa) builds the peer via fill_index with
+ * port 0, while the responder's ikev2_drain_lookup(remote) passes the
+ * packet's real source sockaddr (port 500/4500/ephemeral, never 0).
+ * Matching on the full sockaddr incl. port would make every CLI-set
+ * drain impossible to hit in live IKE_SA_INIT (reviewer-verified
+ * blocker).  This mirrors ikev2_redirect_pool_select, which also keys
+ * on the address only. */
 static int
 entry_matches(const struct ikev2_drain_entry *e, const struct sockaddr *p)
 {
 	const struct sockaddr *sp = (const struct sockaddr *)&e->peer;
-	size_t l;
 
 	if (sp->sa_family != p->sa_family)
 		return 0;
 	switch (p->sa_family) {
 	case AF_INET:
-		l = sizeof(struct sockaddr_in);
-		break;
+		return memcmp(&((const struct sockaddr_in *)sp)->sin_addr,
+			      &((const struct sockaddr_in *)p)->sin_addr,
+			      sizeof(struct in_addr)) == 0;
 	case AF_INET6:
-		l = sizeof(struct sockaddr_in6);
-		break;
+		return memcmp(&((const struct sockaddr_in6 *)sp)->sin6_addr,
+			      &((const struct sockaddr_in6 *)p)->sin6_addr,
+			      sizeof(struct in6_addr)) == 0;
 	default:
 		return 0;
 	}
-	return memcmp(&e->peer, p, l) == 0;
 }
 
 int
