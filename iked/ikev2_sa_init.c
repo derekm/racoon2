@@ -651,9 +651,21 @@ responder_state0_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			if (!gw)
 				goto no_redirect;
 		} else {
+			/* Config redirect intended (the gate above ensures
+			 * redirect_to is set) but the selected pool slot is
+			 * empty/malformed: fail CLOSED — do not silently
+			 * negotiate a full SA against an overloaded/retiring
+			 * node.  This is an operator config error (an empty
+			 * slot in redirect_to); drop the IKE_SA_INIT. */
 			gw = ikev2_redirect_resolve(conf, remote);
-			if (!gw)
-				goto no_redirect;
+			if (!gw) {
+				isakmp_log(ike_sa, local, remote, packet,
+				    PLOG_PROTOERR, PLOGLOC,
+				    "RFC5685: redirect_to set but empty "
+				    "selected pool slot; refusing IKE_SA_INIT "
+				    "(fail-closed)\n");
+				goto drop;
+			}
 		}
 		ni_p = (nonce) ? isakmp_p2v((struct isakmp_gen *)nonce) : NULL;
 		if (ni_p) {
