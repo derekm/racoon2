@@ -610,6 +610,14 @@ i2i_peer_r_cleanup() {
 	killall -9 charon 2>/dev/null || true
 	rm -f /var/run/charon.pid /var/run/charon.ctl
 	rm -f "${I2I_CHARON_R_CONF:-/nonexistent}"
+	# remove any key file the PKI reverse-sign (-rsa*-charonr / -ecdsa-
+	# charonr) arm installed into swanctl private/ so a stale peer key
+	# cannot linger for the next case's auto-discovery (mirrors the
+	# initiator seat's cleanup).
+	_bname="${I2I_CHARON_R_CONF##*/}"      # r2-<name>.conf
+	_bname="${_bname%.conf}"               # r2-<name>
+	rm -f "/etc/strongswan/swanctl/private/${_bname}-key-r.pem" 2>/dev/null || true
+	rm -f "/etc/swanctl/private/${_bname}-key-r.pem" 2>/dev/null || true
 	return 0
 }
 
