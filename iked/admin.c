@@ -459,7 +459,6 @@ admin_dispatch(int so2, char *combuf)
 		if (gw[0]) {
 		#ifdef IKEV2
 			struct ikev2_sa *sa, *next_sa;
-			struct ikev2_child_sa *c, *next_c;
 			int n_teardown = 0;
 
 			for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa;
@@ -475,23 +474,28 @@ admin_dispatch(int so2, char *combuf)
 				if (sa->state == IKEV2_STATE_DYING ||
 				    sa->state == IKEV2_STATE_DEAD)
 					continue;
-				TRACE((PLOGLOC, "RFC5685 drain: pruning established "
-				       "SA for peer\n"));
-				for (c = IKEV2_CHILD_LIST_FIRST(&sa->children);
-				     !IKEV2_CHILD_LIST_END(c); c = next_c) {
-					next_c = IKEV2_CHILD_LIST_NEXT(c);
-					if (c->state != IKEV2_CHILD_STATE_MATURE)
-						continue;
-					ikev2_child_delete_ipsecsa(c);
-					ikev2_child_state_set(c,
-						IKEV2_CHILD_STATE_EXPIRED);
-					n_teardown++;
-				}
+				TRACE((PLOGLOC, "RFC5685 drain: closing established "
+				       "SA for drained peer\n"));
+				/* ikev2_abort SILENTLY closes the IKE_SA: kills the
+				 * children (prunes MATURE kernel SAs + EXPIRED), sets
+				 * state DYING then DEAD, sends NO wire DELETE, and the
+				 * main-loop reaper frees it once the children are gone
+				 * (same silent-close primitive
+				 * ikev2_silently_delete_old_resumed_sa uses).  NOT
+				 * ikev2_sa_delete (wire DELETE, marks DEAD only on the
+				 * peer's reply) and NOT a bare child prune, which would
+				 * leave the IKE_SA ESTABLISHED and let a surviving
+				 * DPD/rekey re-home traffic back onto this draining
+				 * node. */
+				ikev2_abort(sa, ECONNREFUSED);
+				/* (the reaper frees it asynchronously once its
+				 * children are gone; count is informational) */
+				n_teardown++;
 			}
 			/* (n_teardown is informational; tearing down is best-effort
 			 * and we always answer the admin request OK) */
-			TRACE((PLOGLOC, "RFC5685 drain: pruned %d child SA(s) for "
-			       "drained peer\n", n_teardown));
+			TRACE((PLOGLOC, "RFC5685 drain: closed %d established SA(s) "
+			       "for drained peer\n", n_teardown));
 			(void)n_teardown;
 		#endif
 		}
