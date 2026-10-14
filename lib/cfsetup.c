@@ -231,6 +231,8 @@ static int rcf_fix_my_public_key (struct cf_list *, void *);
 static int rcf_fix_peers_public_key (struct cf_list *, void *);
 static int rcf_fix_pre_shared_key (struct cf_list *, void *);
 static int rcf_fix_redirect_to (struct cf_list *, void *);
+static int rcf_fix_redirect_period (struct cf_list *, void *);
+static int rcf_fix_redirect_max (struct cf_list *, void *);
 static int rcf_fix_radius_server (struct cf_list *, void *);
 static int rcf_fix_radius_port (struct cf_list *, void *);
 static int rcf_fix_radius_secret_file (struct cf_list *, void *);
@@ -358,6 +360,8 @@ struct rcf_tdf_t {
 	{ CFD_PEERS_IPADDR,		rcf_fix_peers_ipaddr, },
 	{ CFD_PEERS_KMP_PORT,		rcf_fix_peers_kmp_port, },
 	{ CFD_VERIFY_ID,		rcf_fix_verify_id, },
+	{ CFD_REDIRECT_PERIOD,		rcf_fix_redirect_period, },
+	{ CFD_REDIRECT_MAX,		rcf_fix_redirect_max, },
 	{ CFD_VERIFY_PUBKEY,		rcf_fix_verify_pubkey, },
 	{ CFD_SEND_CERT,		rcf_fix_send_cert, },
 	{ CFD_SEND_CERT_REQ,		rcf_fix_send_cert_req, },
@@ -1902,6 +1906,32 @@ rcf_fix_redirect_to(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_REDIRECT_TO))
 		return -1;
 	if (rcf_fix_string(head->nextp, &dst->redirect_to))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_redirect_max(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_REDIRECT_MAX))
+		return -1;
+	if (rcf_fix_number(head->nextp, &dst->redirect_max))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_redirect_period(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_REDIRECT_PERIOD))
+		return -1;
+	if (rcf_fix_number(head->nextp, &dst->redirect_period))
 		return -1;
 
 	return 0;
@@ -3576,6 +3606,8 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_VDUP(src->peers_principal, new->peers_principal);
 	DEEPCOPY_VDUP(src->pre_shared_key, new->pre_shared_key);
 	DEEPCOPY_VDUP(src->redirect_to, new->redirect_to);
+	new->redirect_period = src->redirect_period;
+	new->redirect_max = src->redirect_max;
 	DEEPCOPY_PKLIST(src->my_pubkey, new->my_pubkey);
 	DEEPCOPY_PKLIST(src->peers_pubkey, new->peers_pubkey);
 	DEEPCOPY_ADDRLIST(src->peers_ipaddr, new->peers_ipaddr);

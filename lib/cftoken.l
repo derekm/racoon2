@@ -391,6 +391,8 @@ pkcs12			{ DP; return(PKCS12); }
 ascii			{ DP; return(ASCII); }
 pre_shared_key		{ DP; return(PRE_SHARED_KEY); }
 redirect_to		{ DP; return(REDIRECT_TO); }
+redirect_period		{ DP; return(REDIRECT_PERIOD); }
+redirect_max		{ DP; return(REDIRECT_MAX); }
 radius_server		{ DP; return(RADIUS_SERVER); }
 radius_port		{ DP; return(RADIUS_PORT); }
 radius_secret_file	{ DP; return(RADIUS_SECRET_FILE); }
