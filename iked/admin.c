@@ -37,6 +37,7 @@
 #include "isakmp.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "ikev2_drain.h"
 #include "oakley.h"
 #include "ikev1/handler.h"
 #include "ikev1/isakmp_inf.h"
@@ -395,6 +396,44 @@ admin_dispatch(int so2, char *combuf)
 		     "admin establish-sa %s%s%s\n", host,
 		     name ? " selector " : "", name ? name : "");
 		l_ac_errno = isakmp_force_initiate(name, host);
+		break;
+	}
+
+	case ADMIN_REDIRECT_DRAIN: {
+		struct admin_com_indexes *ndx;
+		struct sockaddr *peer;
+		char gw[256];
+		size_t glen;
+
+		if (com->ac_len < sizeof(*com) + sizeof(*ndx)) {
+			l_ac_errno = EINVAL;
+			break;
+		}
+		ndx = (struct admin_com_indexes *)(com + 1);
+		gw[0] = '\0';
+		glen = com->ac_len - sizeof(*com) - sizeof(*ndx);
+		if (glen > 0) {
+			/* optional NUL-terminated gateway string follows */
+			char *p = (char *)(ndx + 1);
+			const char *beg = p;
+			size_t i;
+			for (i = 0; i < glen && p[i] != '\0'; i++)
+				;
+			/* trim trailing whitespace; a blank -> clear */
+			while (glen > 0 &&
+			    (beg[glen-1] == ' ' || beg[glen-1] == '\n' ||
+			     beg[glen-1] == '	'))
+				glen--;
+			if (glen >= sizeof(gw))
+				glen = sizeof(gw) - 1;
+			if (i > 0) {
+				memcpy(gw, beg, glen);
+				gw[glen] = '\0';
+			}
+		}
+		peer = (struct sockaddr *)&ndx->dst;
+		if (ikev2_drain_set(peer, gw[0] ? gw : NULL) != 0)
+			l_ac_errno = ENOMEM;
 		break;
 	}
 
