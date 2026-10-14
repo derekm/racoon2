@@ -627,7 +627,12 @@ fi
 	# DER signs under ecdsa-with-SHA2).
 	if [ "$I2I_RSA" = 1 ] || [ "$I2I_ECDSA" = 1 ]; then
 		I_CN=${I2I_CHARON_ID}; [ "$PEER" = iked ] && I_CN=r2init-matrix
-		R_CN=${I2I_CHARON_ID}; [ "$PEER_R" = iked ] && R_CN=racoon2-matrix
+		# Responder seat: id is racoon2-matrix whether the responder is
+		# iked (my_id racoon2-matrix) or a charon RESPONDER (its local id
+		# is racoon2-matrix, i2i_peer_r_conf).  strongSwan requires a
+		# cert to carry its IKE id in CN/SAN; a CN=charon-i2i would
+		# mismatch the responder's racoon2-matrix id.
+		R_CN=racoon2-matrix
 		if ! command -v openssl >/dev/null 2>&1; then
 			log "FAIL: no openssl for PKI cert gen"; return 1
 		fi
@@ -1327,9 +1332,10 @@ fi
 		sig_rev=1
 		case "$name" in
 		*-rsa-pss-charonr)
-			sig_want='RFC 7427: sign method 14 RSASSA-PSS SHA512' ;&
+			sig_want='RFC 7427: sign method 14 RSASSA-PSS SHA512'
+			;;
 		*-ecdsa-charonr)
-			[ "$sig_want" ] || sig_want='RFC 7427: sign method 14 ECDSA SHA512'
+			sig_want='RFC 7427: sign method 14 ECDSA SHA512'
 			;;
 		esac
 		;;
@@ -1370,14 +1376,26 @@ fi
 		fi
 	elif [ "${sig_rev:-0}" = 1 ] && [ -n "$sig_want" ]; then
 		# Reverse sign: iked initiator must have SIGNED the scheme, and
-		# the charon responder must have accepted the AUTH (charon
-		# aborts if the sig doesn't match its remote auth pin, so
-		# charon-resp.log reaching the child negotiations AND the ESP
-		# child landing is charon's verify proof).
+		# the charon responder must have accepted the AUTH under the
+		# EXACT scheme (charon logs the algorithm it verified, e.g.
+		# 'RSA_EMSA_PSS_SHA2_512_SALT_64' / 'ECDSA_WITH_SHA512_DER'; the
+		# remote auth pin makes a wrong-scheme sig fail CHARON).  Assert
+		# the scheme string, not a loose 'with ... successful' (which
+		# would also match a PSK auth).
+		_scheme=''
+		case "$name" in
+		*-rsa-pss-charonr)
+			_scheme='RSA_EMSA_PSS_SHA2_512_SALT_64' ;;
+		*-ecdsa-charonr)
+			_scheme='ECDSA_WITH_SHA512_DER' ;;
+		esac
 		if grep -qF "$sig_want" "$D/init-iked.log" 2>/dev/null &&
 		   grep -qE "authentication of 'r2init-matrix' with .* successful" \
+		       "$D/charon-resp.log" 2>/dev/null &&
+		   [ -n "$_scheme" ] &&
+		   grep -qE "authentication of 'r2init-matrix' with $_scheme successful" \
 		       "$D/charon-resp.log" 2>/dev/null; then
-			log "reverse sign OK: iked signed $sig_want, charon verified"
+			log "reverse sign OK: iked signed $sig_want, charon verified ($_scheme)"
 		else
 			sig_ok=0
 			log "FAIL: reverse sign $sig_want not signed by iked / verified by charon"

@@ -37,18 +37,48 @@ fi
 I2I_LW_PLUTO=${I2I_LW_PLUTO:-/usr/libexec/ipsec/pluto}
 I2I_LW_WHACK=${I2I_LW_WHACK:-/usr/libexec/ipsec/whack}
 I2I_LW_PSK=${I2I_LW_PSK:-racoon2-libreswan-resume-0123456789abcdef}
-# swanctl's conf dir: /etc/strongswan/swanctl (Fedora, Ubuntu <= 24.04
-# strongswan 5.x) or /etc/swanctl (Debian strongswan 6.x, kernel lane on
-# sid: rows wrote to the missing old dir and charon loaded nothing).
-if [ -z "${I2I_CHARON_VDIR:-}" ]; then
-	if [ -d /etc/strongswan/swanctl ]; then
-		I2I_CHARON_VDIR=/etc/strongswan/swanctl/conf.d
-	elif [ -d /etc/swanctl ]; then
-		I2I_CHARON_VDIR=/etc/swanctl/conf.d
-	else
-		I2I_CHARON_VDIR=/etc/strongswan/swanctl/conf.d
+# Private strongSwan root (review M6): rows never read or write the host's
+# /etc/{strongswan/,}swanctl or /var/run/charon.*.  Every run gets its own
+# swanctl dir, vici socket and /run (bind-mounted inside a private mount
+# namespace when charon starts), so a host charon/strongswan.service is
+# neither stopped nor disturbed and the two can never cross-load configs.
+I2I_SW_ROOT=${I2I_SW_ROOT:-${TMPDIR:-/tmp}/r2-strongswan-$$}
+case $I2I_SW_ROOT in /etc/*|/var/run|/var/run/*|/run|/run/*)
+	echo "FATAL: I2I_SW_ROOT=$I2I_SW_ROOT is a host strongSwan path" >&2; exit 2;; esac
+for _d in swanctl/conf.d swanctl/private swanctl/x509 swanctl/x509ca \
+	  swanctl/pubkey swanctl/rsa swanctl/ecdsa swanctl/pkcs8 run; do
+	mkdir -p "$I2I_SW_ROOT/$_d"
+done
+chmod 700 "$I2I_SW_ROOT/swanctl/private"
+[ -f "$I2I_SW_ROOT/swanctl/swanctl.conf" ] ||
+	printf 'include conf.d/*.conf\n' >"$I2I_SW_ROOT/swanctl/swanctl.conf"
+I2I_CHARON_VDIR=$I2I_SW_ROOT/swanctl/conf.d
+I2I_CHARON_KEYDIR=$I2I_SW_ROOT/swanctl/private
+I2I_VICI_URI=unix://$I2I_SW_ROOT/charon.vici
+I2I_SWANCTL_REAL=$I2I_SWANCTL_BIN
+I2I_SWANCTL_BIN=$I2I_SW_ROOT/swanctl-wrap
+cat >"$I2I_SWANCTL_BIN" <<EOW
+#!/bin/sh
+# private swanctl: own conf dir + own vici socket (never the host's)
+case "\$*" in *--help*) exec env SWANCTL_DIR="$I2I_SW_ROOT/swanctl" "$I2I_SWANCTL_REAL" "\$@";; esac
+exec env SWANCTL_DIR="$I2I_SW_ROOT/swanctl" "$I2I_SWANCTL_REAL" "\$@" --uri "$I2I_VICI_URI"
+EOW
+chmod 755 "$I2I_SWANCTL_BIN"
+
+# i2i_charon_kill — kill only charons this harness started (pidfile) or
+# that run inside a matrix netns; a host charon is never signalled.
+i2i_charon_kill() {
+	if [ -f "$I2I_SW_ROOT/charon.pids" ]; then
+		while read -r _p; do kill -9 "$_p" 2>/dev/null || true; done <"$I2I_SW_ROOT/charon.pids"
+		: >"$I2I_SW_ROOT/charon.pids"
 	fi
-fi
+	for _p in $(pgrep -x charon 2>/dev/null); do
+		_ns=$(ip netns identify "$_p" 2>/dev/null)
+		[ -n "$_ns" ] && kill -9 "$_p" 2>/dev/null || true
+	done
+	rm -f "$I2I_SW_ROOT/run/charon.pid" "$I2I_SW_ROOT/run/charon.ctl" \
+	      "$I2I_SW_ROOT/run/strongswan/charon.pid" "$I2I_SW_ROOT/charon.vici"
+}
 I2I_DH_GROUP=${I2I_DH_GROUP:-ecp256}	# charon IKE proposal DH group
 I2I_PROPOSAL=${I2I_PROPOSAL:-aes256gcm16-prfsha256-${I2I_DH_GROUP}-ke1_mlkem768}	# full charon IKE proposal string
 # Child (ESP) proposal: ${I2I_ESP:-aes128gcm16} default.  PFS-child rows
@@ -129,6 +159,11 @@ i2i_charon_run() {
 		[ -f "$_sys" ] && echo "include $_sys"
 		cat <<SCEOF
 charon {
+	plugins {
+		vici {
+			socket = $I2I_VICI_URI
+		}
+	}
 	filelog {
 		r2row {
 			path = $_log
@@ -147,22 +182,27 @@ charon {
 SCEOF
 	} >"$_scf"
 	: >"$_log"
-	( ip netns exec "$_ns" $_sb env STRONGSWAN_CONF="$_scf" ${I2I_OPENSSL_ENV:-} \
+	# private /run (pid/ctl files) inside ip-netns-exec's own mount ns
+	_pr='mount --bind "$1" /run && mkdir -p /run/strongswan && shift && exec "$@"'
+	( ip netns exec "$_ns" sh -c "$_pr" sh "$I2I_SW_ROOT/run" $_sb env STRONGSWAN_CONF="$_scf" ${I2I_OPENSSL_ENV:-} \
 	    "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
 	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) \
 	    >"${_log%.log}.stdout.log" 2>&1 &
 	_I2I_CHARON_PID=$!
+	echo "$_I2I_CHARON_PID" >>"$I2I_SW_ROOT/charon.pids"
 	# strongSwan 6.1 (sid) aborted on the row conf ("abort initialization
 	# due to invalid configuration"): say so, and fall back to the stock
 	# config so the row is decided by the protocol, not the logger
 	sleep 1
 	if grep -q 'invalid configuration' "${_log%.log}.stdout.log" 2>/dev/null; then
 		echo "i2i_charon_run: charon rejected $_scf; stock config, stdout log only" >>"$_log"
-		( ip netns exec "$_ns" $_sb env ${I2I_OPENSSL_ENV:-} \
+		printf 'charon { plugins { vici { socket = %s } } }\n' "$I2I_VICI_URI" >"$_scf.min"
+		( ip netns exec "$_ns" sh -c "$_pr" sh "$I2I_SW_ROOT/run" $_sb env STRONGSWAN_CONF="$_scf.min" ${I2I_OPENSSL_ENV:-} \
 		    "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
 		    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) \
 		    >>"$_log" 2>&1 &
 		_I2I_CHARON_PID=$!
+		echo "$_I2I_CHARON_PID" >>"$I2I_SW_ROOT/charon.pids"
 	fi
 }
 
@@ -462,16 +502,14 @@ i2i_peer_i_cleanup() {
 	[ "$_peer" = charon ] || return 0
 	# fail loudly, never a silent no-op: a missing killall/procps here would
 	# leak charon into the next case (skill: cleanup gates must not no-op).
-	command -v killall >/dev/null 2>&1 || { log "FAIL: no killall (psmisc) — charon cleanup would no-op"; return 1; }
 	require_procps || return 1
-	killall -9 charon 2>/dev/null || true
-	rm -f /var/run/charon.pid /var/run/charon.ctl
+	i2i_charon_kill
 	rm -f "${I2I_CHARON_CONF:-/nonexistent}"
 	# remove any key file the RSA arm installed into swanctl private/ so a
 	# stale peer key cannot linger for the next case's auto-discovery.
 	_bname="${I2I_CHARON_CONF##*/}"      # r2-<name>.conf
 	_bname="${_bname%.conf}"             # r2-<name>
-	rm -f "/etc/strongswan/swanctl/private/${_bname}-key-i.pem" 2>/dev/null || true
+	rm -f "$I2I_CHARON_KEYDIR/${_bname}-key-i.pem" 2>/dev/null || true
 	return 0
 }
 # ==== responder seat: charon answers, racoon2 iked initiates ============
@@ -605,11 +643,16 @@ i2i_peer_r_cleanup() {
 	_peer=$1 _name=$2
 	[ "$_peer" = charon ] || return 0
 	# same no-silent-no-op guard as the initiator-seat cleanup.
-	command -v killall >/dev/null 2>&1 || { log "FAIL: no killall (psmisc) — charon cleanup would no-op"; return 1; }
 	require_procps || return 1
-	killall -9 charon 2>/dev/null || true
-	rm -f /var/run/charon.pid /var/run/charon.ctl
+	i2i_charon_kill
 	rm -f "${I2I_CHARON_R_CONF:-/nonexistent}"
+	# remove any key file the PKI reverse-sign (-rsa*-charonr / -ecdsa-
+	# charonr) arm installed into swanctl private/ so a stale peer key
+	# cannot linger for the next case's auto-discovery (mirrors the
+	# initiator seat's cleanup).
+	_bname="${I2I_CHARON_R_CONF##*/}"      # r2-<name>.conf
+	_bname="${_bname%.conf}"               # r2-<name>
+	rm -f "$I2I_CHARON_KEYDIR/${_bname}-key-r.pem" 2>/dev/null || true
 	return 0
 }
 

@@ -99,7 +99,7 @@ i2i_compliance() {
 			_checked=1
 			grep -q "pre_shared_key\|my_public_key\|my_pubkey" "$_cc" || a13_ok=0
 		done
-		for _cc in "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf"; do
+		for _cc in "${I2I_CHARON_VDIR:?}/r2-$_name.conf"; do
 			[ -f "$_cc" ] || continue
 			_checked=1
 			grep -qE "auth = (psk|pubkey)" "$_cc" || a13_ok=0
@@ -464,7 +464,7 @@ i2i_compliance() {
 		done
 	fi
 	if [ "$_childsz" -eq 0 ]; then
-		_n=$(grep -hoE "esp_proposals = aes[0-9]+gcm" "$_D/swanctl-load-resp.log" "$_D/swanctl-load.log" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null | grep -oE "[0-9]+" | head -1)
+		_n=$(grep -hoE "esp_proposals = aes[0-9]+gcm" "$_D/swanctl-load-resp.log" "$_D/swanctl-load.log" "${I2I_CHARON_VDIR:?}/r2-$_name.conf" 2>/dev/null | grep -oE "[0-9]+" | head -1)
 		[ -n "$_n" ] && _childsz=$_n
 	fi
 	# fallbacks must never fabricate a pass/fail: if we truly could not
@@ -507,11 +507,11 @@ i2i_compliance() {
 		   ! grep -q "my_public_key"  "$_C/responder.conf" 2>/dev/null; then a13_ok=0; fi
 	fi
 	if [ "$_pei" = charon ] && \
-	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|rsa|ike:pubkey)" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null && \
-	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|rsa|ike:pubkey)" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
+	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|rsa|ike:pubkey)" "${I2I_CHARON_VDIR:?}/r2-$_name.conf" 2>/dev/null && \
+	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|rsa|ike:pubkey)" "${I2I_CHARON_VDIR:?}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
 	if [ "$_per" = charon ] && \
-	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|rsa|ike:pubkey)" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null && \
-	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|rsa|ike:pubkey)" "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
+	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|rsa|ike:pubkey)" "${I2I_CHARON_VDIR:?}/r2-$_name.conf" 2>/dev/null && \
+	   ! grep -qE "auth[[:space:]]*=[[:space:]]*(psk|pubkey|rsa|ike:pubkey)" "${I2I_CHARON_VDIR:?}/r2-$_name.conf" 2>/dev/null; then a13_ok=0; fi
 	if [ "$a13_ok" -eq 1 ]; then
 		PLOG A13 PASS "peer auth (PSK or public key) declared on both seats (conf invariant; A5 proves it ran)"
 	else
@@ -530,7 +530,7 @@ i2i_compliance() {
 	# carry both the 16431 echo and 'auth method 14' or this cell FAILs.
 	a13b_pin=0
 	if grep -qE "auth[[:space:]]*=[[:space:]]*ike:(pubkey|rsa/pss)" \
-	    "${I2I_CHARON_VDIR:-/etc/strongswan/swanctl/conf.d}/r2-$_name.conf" 2>/dev/null; then
+	    "${I2I_CHARON_VDIR:?}/r2-$_name.conf" 2>/dev/null; then
 		a13b_pin=1
 	fi
 	if [ "$a13b_pin" -eq 1 ] && [ "$_per" = iked ]; then
