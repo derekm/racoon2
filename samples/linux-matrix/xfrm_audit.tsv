@@ -7,3 +7,4 @@
 # row-regex (full match)	check	value	why
 #   check: icv | traffic | safail  (value: 1)
 #          stat  (value: Counter=N[,Counter=N]  -- may rise by at most N)
+i2ike-drain	traffic	1	RFC 5685 drain row: drain-sa SET deliberately tears down the established Child SA (R esp 2 to 0) and REDIRECTs the peer to a sibling, so NO live traffic remains at row end by design.  The flat post-drain counters are the PASS condition, not a defect; the row gate asserts teardown + redirect on the wire.
