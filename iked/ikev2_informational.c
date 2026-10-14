@@ -925,6 +925,62 @@ ikev2_respond_error(struct ikev2_sa *ike_sa,
 	goto done;
 }
 
+/* Like ikev2_respond_error(), but additionally carries the RFC 8983
+ * IP4_ALLOWED / IP6_ALLOWED status notifies for the configured addresspool's
+ * SUPPORTED families.  Used on the INTERNAL_ADDRESS_FAILURE path so a
+ * dual-stack initiator that requested a family the responder cannot assign
+ * still learns which family IS supported and can retry it (RFC 8983 s5.5;
+ * Table 1 rows "requested v4 / supported v6 / assigned none -> IP6_ALLOWED").
+ * The error notify is still sent; the allowed notifies are added alongside
+ * it in the same response. */
+int
+ikev2_respond_error_ip_allowed(struct ikev2_sa *ike_sa, rc_vchar_t *request,
+			       struct sockaddr *remote, struct sockaddr *local,
+			       unsigned int notify_type)
+{
+	struct ikev2_payloads payl;
+	struct ikev2_header *ikehdr;
+	uint32_t message_id;
+	rc_vchar_t *pkt = 0;
+	int retval;
+
+	ikev2_payloads_init(&payl);
+
+	ikehdr = (struct ikev2_header *)request->v;
+	message_id = get_uint32(&ikehdr->message_id);
+
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0, notify_type, 0, 0),
+			    TRUE);
+	/* supported-family notifies (empty data), RFC 8983 */
+	ikev2_build_ip_allowed(&payl, ike_sa);
+
+	pkt = ikev2_packet_construct(ikehdr->exchange_type,
+				     IKEV2FLAG_RESPONSE | (ike_sa->is_initiator
+							   ? IKEV2FLAG_INITIATOR
+							   : 0),
+				     message_id, ike_sa, &payl);
+	if (!pkt)
+		goto fail;
+
+	if (ikev2_transmit_response(ike_sa, pkt, local, remote) != 0)
+		goto fail;
+	pkt = 0;
+	retval = 0;
+
+      done:
+	if (pkt)
+		rc_vfree(pkt);
+	ikev2_payloads_destroy(&payl);
+	return retval;
+
+      fail:
+	isakmp_log(ike_sa, local, remote, request,
+		   PLOG_INTERR, PLOGLOC, "failed sending response\n");
+	retval = -1;
+	goto done;
+}
+
 /*
  * process a DELETE payload
  *

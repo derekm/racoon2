@@ -1741,8 +1741,17 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	goto done;
 
       notify:
-	if (ikev2_respond_error(ike_sa, msg, remote, local,
-				0, 0, 0, error, 0, 0) == 0) {
+	if (error == IKEV2_INTERNAL_ADDRESS_FAILURE) {
+		/* RFC 8983 s5.5: alongside the error, tell a dual-stack
+		 * initiator which family IS supported (IP_ALLOWED) so it can
+		 * retry the other AF. */
+		if (ikev2_respond_error_ip_allowed(ike_sa, msg, remote,
+						   local, error) == 0) {
+			ikev2_update_message_id(ike_sa, message_id, FALSE);
+			ikev2_abort(ike_sa, ECONNREFUSED);
+		}
+	} else if (ikev2_respond_error(ike_sa, msg, remote, local,
+				     0, 0, 0, error, 0, 0) == 0) {
 		ikev2_update_message_id(ike_sa, message_id, FALSE);
 		ikev2_abort(ike_sa, ECONNREFUSED);
 	}
