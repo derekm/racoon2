@@ -889,6 +889,7 @@ extern rc_vchar_t *ikev2_auth_calculate_method(struct ikev2_sa *, int, int);
 extern void ikev2_verify(struct verified_info *);
 extern int ikev2_auth_verify(struct ikev2_sa *, int, struct ikev2payl_auth *);
 extern int ikev2_auth_method(struct ikev2_sa *);
+extern int ikev2_auth_method_for_alg(struct ikev2_sa *, struct rc_alglist *);
 
 rc_vchar_t *ikev2_notify_payload(int, uint8_t *, int, int, uint8_t *, size_t);
 rc_vchar_t *ikev2_delete_payload(unsigned int, unsigned int, unsigned int, uint8_t *);
