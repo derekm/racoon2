@@ -41,7 +41,15 @@ static struct ikev2_drain_entry ikev2_drain_tbl[IKEV2_DRAIN_MAX];
  * Matching on the full sockaddr incl. port would make every CLI-set
  * drain impossible to hit in live IKE_SA_INIT (reviewer-verified
  * blocker).  This mirrors ikev2_redirect_pool_select, which also keys
- * on the address only. */
+ * on the address only.
+ *
+ * Scope id is deliberately ignored along with the port: ikedctl's peer
+ * comes from inet_pton (scope 0), while a live link-local peer carries a
+ * non-zero sin6_scope_id — a full match would again make the CLI inert.
+ * Consequence: IPv6 link-local peers on two interfaces collapse onto one
+ * drain slot; global-unicast peers are unaffected.  This matches
+ * rcs_cmpsa_wop()'s "address is the identity" rule (port intentionally
+ * omitted by name) and how the resolver keys the redirect pool. */
 static int
 entry_matches(const struct ikev2_drain_entry *e, const struct sockaddr *p)
 {
