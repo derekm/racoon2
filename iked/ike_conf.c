@@ -6478,71 +6478,13 @@ ikev2_eap_responder_method(struct ikev2_sa *sa)
 			continue;
 		/* only a signature method is valid beside eap (checked in
 		 * ike_conf_check_ikev2); map it to an IKEv2 AUTH method.
-		 * Mirror ikev2_auth_method(): under an RSA config the
-		 * responder signs with method 14 (RFC 7427 DS, SHA-256)
-		 * when SIG_HASH_ALGORITHMS was exchanged, else method 1
-		 * (historic SHA-1 DigestInfo) - so SHA-1-disabled
-		 * OpenSSL 3.x builds still work. */
-		switch (alg->algtype) {
-		case RCT_ALG_RSASIG:
-			if (sa->sig_hash_algos_ds) {
-				/* mirror ikev2_auth_method(): remember whether
-				 * this seat prefers RSASSA-PSS for the RSA
-				 * method-14 sign (the signer at ikev2_auth.c
-				 * reads sa->sig_hash_ds_pss).  Without this the
-				 * EAP responder silently signs PKCS1-v1_5
-				 * even when config prefers PSS. */
-				sa->sig_hash_ds_pss =
-				    (ikev2_sig_hash_rsa_pss(sa->rmconf)
-				     == RCT_BOOL_ON);
-				return IKEV2_AUTH_DS;
-			}
-			return IKEV2_AUTH_RSASIG;
-		case RCT_ALG_ECDSA:
-			/* RFC 7427 (mirror ikev2_auth_method()): when
-			 * N(SIG_HASH_ALGORITHMS) was exchanged, the ECDSA seat
-			 * authenticates via Digital Signature method 14 (DER
-			 * Ecdsa-Sig-Value under ecdsa-with-SHA2); else fall back
-			 * to the RFC 4754 method by curve (P-256 -> 9, P-384 ->
-			 * 10, P-521 -> 11). */
-			if (sa->sig_hash_algos_ds)
-				return IKEV2_AUTH_DS;
-			/* RFC 4754: the method number reflects the curve of the
-			 * responder private key (P-256 -> 9, P-384 -> 10, P-521 -> 11),
-			 * mirroring ikev2_auth_method().  Do NOT hardcode P-256: a
-			 * configured P-384/P-521 responder cert must sign the matching
-			 * method. */
-			{
-				rc_vchar_t *privkey = ikev2_private_key(sa, sa->id_i);
-				int bits;
-				if (!privkey) {
-					isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-					   "failed to get private key\n");
-					return 0;
-				}
-				bits = eay_ecdsa_curve_bits(privkey);
-				rc_vfreez(privkey);
-				switch (bits) {
-				case 256:
-					return IKEV2_AUTH_ECDSA_SHA256_P256;
-				case 384:
-					return IKEV2_AUTH_ECDSA_SHA384_P384;
-				case 521:
-					return IKEV2_AUTH_ECDSA_SHA512_P521;
-				default:
-					isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-					   "unsupported ECDSA curve (%d bits)\n", bits);
-					return 0;
-				}
-			}
-		case RCT_ALG_DSS:
-			return IKEV2_AUTH_DSS;
-		case RCT_ALG_EDDSA:
-			return IKEV2_AUTH_DS;	/* RFC 8420: EdDSA via method 14 */
-		default:
-			return 0;
-		}
-
+		 * Delegate to the SAME mapper as ikev2_auth_method() so the
+		 * EAP responder path cannot drift: method 14 (RFC 7427 DS, eg
+		 * RSASSA-PSS or ecdsa-with-SHA2, strongest hash) when
+		 * SIG_HASH_ALGORITHMS was exchanged, else method 1 / 9/10/11,
+		 * AND the allow_nsa_deprecated / allow_rfc_deprecated closure
+		 * (via ikev2_auth_depr_refused inside) applies identically. */
+		return ikev2_auth_method_for_alg(sa, alg);
 	}
 	return 0;
 }

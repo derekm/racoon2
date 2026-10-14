@@ -272,21 +272,56 @@ main(void)
 	racoon_free(rm->ikev2);
 	racoon_free(rm);
 
-	/* ---- 6. RSA, no SIG_HASH exchanged -> RSASIG ---- */
+	/* ---- 6. RSA, no SIG_HASH exchanged -> RSASIG (method 1) ----
+	 * Method 1 / SHA-1 DigestInfo is NSA-deprecated (ike_deprecated.c:
+	 * SIG_LEGACY is class N), so it only resolves when
+	 * allow_nsa_deprecated is on; otherwise the shared mapper
+	 * (ikev2_auth_method_for_alg) refuses it — the same closure
+	 * ikev2_auth_method() applies.  Assert the deprecation gate too:
+	 * without the knob it must return 0. */
 	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
 	if (!sa) return 2;
 	rm = mkrmconf();
 	alg = mkalg(RCT_ALG_RSASIG);
 	if (!rm || !alg) return 2;
 	rm->ikev2->kmp_auth_method = alg;
+	rm->ikev2->allow_nsa_deprecated = RCT_BOOL_ON;
 	sa->rmconf = rm;
 	sa->sig_hash_algos_ds = 0;
 	got = ikev2_eap_responder_method(sa);
 	if (got == IKEV2_AUTH_RSASIG)
-		printf("eapmethodtest: PASS 6 RSA (no SIGHASH) -> RSASIG (method %d)\n", got);
+		printf("eapmethodtest: PASS 6 RSA (no SIGHASH, allow_nsa_deprecated) -> RSASIG (method %d)\n", got);
 	else {
 		printf("eapmethodtest: FAIL 6 RSA -> %d (want %d)\n",
 		       got, IKEV2_AUTH_RSASIG);
+		fails++;
+	}
+	sa->rmconf = NULL;
+	ikev2_dispose_sa(sa);
+	racoon_free(alg);
+	racoon_free(rm->ikev2);
+	racoon_free(rm);
+
+	/* ---- 6b. RSA, no SIG_HASH, deprecated OFF -> 0 (refused) ----
+	 * The EAP responder path must apply the same deprecation closure as
+	 * ikev2_auth_method(): with allow_nsa_deprecated off, method 1 is
+	 * refused, so the mapper returns 0 (the caller aborts rather than
+	 * silently signing SHA-1).  Before the mirror collapse, the EAP
+	 * responder returned method 1 unconditionally. */
+	sa = ikev2_allocate_sa(NULL, NULL, NULL, NULL);
+	if (!sa) return 2;
+	rm = mkrmconf();
+	alg = mkalg(RCT_ALG_RSASIG);
+	if (!rm || !alg) return 2;
+	rm->ikev2->kmp_auth_method = alg;
+	rm->ikev2->allow_nsa_deprecated = RCT_BOOL_OFF;
+	sa->rmconf = rm;
+	sa->sig_hash_algos_ds = 0;
+	got = ikev2_eap_responder_method(sa);
+	if (got == 0)
+		printf("eapmethodtest: PASS 6b RSA (no SIGHASH, NSA deprecated off) -> refused (0)\n");
+	else {
+		printf("eapmethodtest: FAIL 6b RSA -> %d (want 0; should refuse deprecated SHA-1)\n", got);
 		fails++;
 	}
 	sa->rmconf = NULL;
