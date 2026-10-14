@@ -498,7 +498,12 @@ main(int argc, char *argv[])
 		blob = ikev2_payloads_to_blob(&p, NULL);
 		CK(blob != NULL, "ikev2_push_ip_allowed produced a payload blob");
 		if (blob) {
-			/* scan the notify payloads for 16439 / 16440 */
+			/* scan the notify payloads for 16439 / 16440.  The blob's
+			 * payload_length is big-endian on the wire, so use
+			 * get_payload_length() (network-order aware) to walk the
+			 * payload chain — reading header.payload_length directly
+			 * would be endian-wrong and only 'works' for a single
+			 * payload. */
 			off = 0;
 			while (off + (int)sizeof(struct ikev2payl_notify_h) <= (int)blob->l) {
 				n = (struct ikev2payl_notify *)(blob->v + off);
@@ -506,9 +511,12 @@ main(int argc, char *argv[])
 					has4 = 1;
 				if (get_uint16((uint8_t *)&n->nh.notify_message_type) == IKEV2_IP6_ALLOWED)
 					has6 = 1;
-				off += n->header.payload_length;
-				if (n->header.payload_length == 0)
-					break;
+				{
+					int plen = get_payload_length(&n->header);
+					if (plen == 0)
+						break;
+					off += plen;
+				}
 			}
 			CK(has4 == 1, "IP4_ALLOWED (16439) emitted for the v4 lease");
 			CK(has6 == 0, "IP6_ALLOWED (16440) NOT emitted (no v6 lease)");

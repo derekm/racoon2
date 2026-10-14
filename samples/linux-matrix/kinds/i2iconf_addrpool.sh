@@ -32,6 +32,11 @@ kind_i2iconf_addrpool() {
 
 	row_ns "$name"
 	HR=192.0.5.1; HI=192.0.5.2
+	# This is a childful IKE_AUTH row: never leave I2I_CHARON_INIT_IKE set to 1
+	# from a prior *-zerochild* row (i2iinit.sh:340 sets it; i2i_peer.sh:429
+	# would then initiate the IKE_SA alone with no child).  A child must be
+	# driven via CREATE_CHILD_SA so the CP lease + IP4_ALLOWED emit happen.
+	I2I_CHARON_INIT_IKE=0
 	# RFC 8983 addresspool (v4) + the allowed-route subnet the responder's
 	# TS selector mirrors the pool against.
 	POOL_START="10.99.0.10"; POOL_END="10.99.0.20"; POOL_SUB="10.99.0.0/24"
@@ -230,7 +235,9 @@ EOF
 
 	# Evidence markers.
 	emit=0; lease=0; est=0
-	grep -Eq 'RFC8983: responder emits IP[46]_ALLOWED' "$D/resp-iked.log" && emit=1
+	# This is a v4 pool: only IP4_ALLOWED is expected.  grep the exact v4
+	# string (IP[46] would also match in a hypothetical dual-stack log).
+	grep -Eq 'RFC8983: responder emits IP4_ALLOWED' "$D/resp-iked.log" && emit=1
 	grep -Eq "allocated $POOL_START" "$D/resp-iked.log" && lease=1
 	grep -q 'state change: CONNECTING => ESTABLISHED' "$D/charon-init.log" && est=1
 
