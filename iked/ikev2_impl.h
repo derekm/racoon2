@@ -350,6 +350,21 @@ struct ikev2_sa {
 	int peer_sent_redirect;		/* RFC 5685: initiator offered N(16406)
 					 * in IKE_SA_INIT; responder MAY answer
 					 * N(REDIRECT,<new gw>) instead of an SA */
+	int redirect_rx;		/* RFC 5685 initiator: responder
+					 * answered our IKE_SA_INIT with
+					 * N(REDIRECT,<new gw>) instead of an
+					 * SA; the echoed Ni was verified
+					 * against ike_sa->n_i.  The intended
+					 * IKE_SA must be aborted and re-run
+					 * against the new gateway. */
+	uint8_t redirect_gw_type;	/* RFC 5685 s9.2 GW Ident Type of the
+					 * redirect target: 1=IPv4, 2=IPv6,
+					 * 3=FQDN */
+	rc_vchar_t *redirect_gw;	/* redirect target identity bytes
+					 * (4/16 octets, or FQDN) from the
+					 * responder's N(REDIRECT) */
+	rc_vchar_t *redirect_ni;	/* the echoed Ni verbatim from the
+					 * N(REDIRECT), matching ike_sa->n_i */
 	int natd_report;			/* include NATD in next reply (RFC 4555 3.8) */
 	uint8_t natd_src_hash[20];	/* verbatim NAT_DETECTION_SOURCE_IP */
 	uint8_t natd_dst_hash[20];	/* verbatim NAT_DETECTION_DESTINATION_IP */

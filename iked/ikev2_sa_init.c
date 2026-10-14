@@ -1213,6 +1213,20 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			break;
 		}
 	}
+	if (ike_sa->redirect_rx) {
+		/* RFC 5685 s5.5: the responder redirected this IKE_SA_INIT
+		 * and we verified the echoed Ni.  The response carries no
+		 * SA/KE/Nr (SPI_R=0, msgid=0, one N(REDIRECT)); per s5.5 we
+		 * MUST NOT continue to a key exchange with this gateway.
+		 * Abort and let the caller re-initate against the recorded
+		 * new gateway.  The re-initiation (a fresh IKE_SA_INIT
+		 * carrying N(REDIRECTED_FROM) toward redirect_gw) is the
+		 * structural follow-on to this receive-side handling. */
+		isakmp_log(ike_sa, local, remote, packet, PLOG_INFO, PLOGLOC,
+			   "received verified REDIRECT, aborting IKE_SA_INIT "
+			   "(re-initiate against redirected gateway)\n");
+		goto abort;
+	}
 	if (!(sa && ke && nonce)) {
 		isakmp_log(ike_sa, local, remote, packet,
 			   PLOG_PROTOERR, PLOGLOC,
