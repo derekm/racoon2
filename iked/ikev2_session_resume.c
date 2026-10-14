@@ -133,6 +133,54 @@ ike_msg_resume_store_dir(void)
 	return (e && *e) ? e : "/var/lib/racoon2/resume-tickets";
 }
 
+/* Carry a stored session-resumption ticket from one gateway to another.
+ * RFC 5685 redirect-follow: the initiator is retargeted from the
+ * redirecting gateway (A) to a sibling (C) in the same shared-trust pool
+ * — the ticket was persisted under A's address-key, but after the retarget
+ * ike_msg_session_resume_available() will look it up under C's address-key
+ * and miss, forcing a full IKE_SA_INIT on C.  Migrating the stored ticket
+ * (load under old, re-save under new, clear the old) lets the initiator
+ * present exchange 38 at C, which validates it under the shared cluster
+ * session_resume_ticket_key — the "resume on the sibling" leg of the
+ * redirect + ticket + resume failover story.  A no-op (returns 0) when
+ * there is no stored ticket or either address is unusable. */
+int
+ike_msg_resume_store_migrate(const struct sockaddr *oldgw,
+			     const struct sockaddr *newgw)
+{
+	struct r2ticket_state st;
+	rc_vchar_t *ticket_lt = NULL;
+	char *oldkey, *newkey;
+	int rc = 0;
+
+	if (!oldgw || !newgw)
+		return 0;
+	oldkey = ike_msg_resume_store_key(oldgw);
+	newkey = ike_msg_resume_store_key(newgw);
+	if (!oldkey || !newkey) {
+		if (oldkey) racoon_free(oldkey);
+		if (newkey) racoon_free(newkey);
+		return 0;
+	}
+	if (strcmp(oldkey, newkey) != 0 &&
+	    r2ticket_store_load(ike_msg_resume_store_dir(), oldkey,
+				&ticket_lt, &st) == 0) {
+		if (ticket_lt && ticket_lt->l > 4 &&
+		    r2ticket_store_save(ike_msg_resume_store_dir(), newkey,
+					ticket_lt, &st) == 0) {
+			r2ticket_store_clear(ike_msg_resume_store_dir(),
+					     oldkey);
+			rc = 1;
+		}
+		if (ticket_lt)
+			rc_vfree(ticket_lt);
+		r2ticket_state_free(&st);
+	}
+	racoon_free(oldkey);
+	racoon_free(newkey);
+	return rc;
+}
+
 /* Read the 8-octet IKE SA SPI (a cookie) as a big-endian u64, matching the
  * r2tick_pack() layout (spi >> 56 .. spi). */
 static uint64_t
