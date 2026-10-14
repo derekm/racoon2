@@ -6485,8 +6485,18 @@ ikev2_eap_responder_method(struct ikev2_sa *sa)
 		 * OpenSSL 3.x builds still work. */
 		switch (alg->algtype) {
 		case RCT_ALG_RSASIG:
-			if (sa->sig_hash_algos_ds)
+			if (sa->sig_hash_algos_ds) {
+				/* mirror ikev2_auth_method(): remember whether
+				 * this seat prefers RSASSA-PSS for the RSA
+				 * method-14 sign (the signer at ikev2_auth.c
+				 * reads sa->sig_hash_ds_pss).  Without this the
+				 * EAP responder silently signs PKCS1-v1_5
+				 * even when config prefers PSS. */
+				sa->sig_hash_ds_pss =
+				    (ikev2_sig_hash_rsa_pss(sa->rmconf)
+				     == RCT_BOOL_ON);
 				return IKEV2_AUTH_DS;
+			}
 			return IKEV2_AUTH_RSASIG;
 		case RCT_ALG_ECDSA:
 			/* RFC 7427 (mirror ikev2_auth_method()): when
