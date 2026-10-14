@@ -1166,7 +1166,7 @@ run_row() {
 	sleep 1
 	# Debug level: 0x0001 = DEBUG (A4/A5/A8 cells, ADDKE g_ir_present) for
 	# every row; 0x0003 adds DEBUG_FLAG_TRACE=0x0002 so the pubkey rows can
-	# prove the peer-auth METHOD ('auth method 14/10' is a TRACE line), same
+	# prove the peer-auth METHOD ('auth method 14' is a TRACE line), same
 	# as linux i2ipubkey's I2I_DBG override.
 	_dbg=0x0001
 	[ "$AUTH" = psk ] || _dbg=0x0003
@@ -1320,12 +1320,16 @@ run_row() {
 	# --- X.509 PK-auth gate (i2ipubkey-* rows only) ---
 # Child-up + tunnel ping prove AUTH succeeded (there is NO PSK anywhere in
 # these confs), but the NDcPP evidence cell needs the METHOD: the iked TRACE
-# 'auth method N' line on BOTH seats (1 = RSASIG, 10 = ECDSA).  Same latch
-# string as linux i2ipubkey.sh.
+# 'auth method N' line on BOTH seats (14 = Digital Signature RFC 7427 for
+# RSA and ECDSA when 16431 exchanged).  Same latch string as linux
+# i2ipubkey.sh.
 case "$_name" in
 i2ipubkey-*)
+	# Both seats offer/echo 16431 (offer_sig_hash_algorithms default ON)
+	# so RSA and ECDSA alike authenticate via Digital Signature method 14
+	# (RFC 7427); method 9/10/11 (RFC 4754) is the fallback only when the
+	# peer never offered 16431.  Same latch as linux i2ipubkey.sh.
 	_exp="auth method 14"
-	case "$_name" in *-ecdsa*) _exp="auth method 10" ;; esac
 	ai=$(grep -cE "$_exp" /tmp/freeb/init-iked.log 2>/dev/null || true)
 	ar=$(grep -cE "$_exp" /tmp/freeb/resp-iked.log 2>/dev/null || true)
 	if [ "$ai" -ge 1 ] && [ "$ar" -ge 1 ]; then
