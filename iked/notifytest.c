@@ -252,21 +252,22 @@ main(int argc, char *argv[])
 			ni = rc_vnew(nib, 6);
 			ck(ni != NULL, "redirect: ni alloc");
 
-			/* IPv4 gateway "10.99.0.20" */
+			/* IPv4 gateway "10.99.0.20" (rc_vnew carries no NUL — the
+			 * NUL-termination inside the builder is what this exercises) */
 			gw = rc_vnew((unsigned char *)"10.99.0.20", 10);
 			ck(gw != NULL, "redirect: gw alloc");
 			d = ikev2_build_redirect_notify_data(gw, ni);
 			ck(d != NULL, "redirect ipv4: data built");
 			if (d) {
 				ck(d->u[0] == 1, "redirect ipv4: GW type 1");
-				ck(get_uint16(d->u + 1) == 4,
-				   "redirect ipv4: GW ident len 4");
-				ck(d->u[3] == 10 && d->u[4] == 99 &&
-				   d->u[5] == 0 && d->u[6] == 20,
+				ck(d->u[1] == 4, "redirect ipv4: GW ident len 4 (1 octet)");
+				ck(d->u[2] == 10 && d->u[3] == 99 &&
+				   d->u[4] == 0 && d->u[5] == 20,
 				   "redirect ipv4: gw == 10.99.0.20");
-				/* ni rides after (3+4) id bytes */
-				ck(d->l == 3 + 4 + 6, "redirect ipv4: total len");
-				ck(d->u[7] == 0xa && d->u[10] == 0xd,
+				/* RFC 5685 s9.2: [Type:1][Len:1][Ident][Ni]; ni after
+				 * (1+1+4)=6 id bytes */
+				ck(d->l == 2 + 4 + 6, "redirect ipv4: total len");
+				ck(d->u[6] == 0xa && d->u[9] == 0xd,
 				   "redirect ipv4: ni echoed after gw");
 				rc_vfree(d);
 			}
@@ -279,9 +280,8 @@ main(int argc, char *argv[])
 			ck(d != NULL, "redirect fqdn: data built");
 			if (d) {
 				ck(d->u[0] == 3, "redirect fqdn: GW type 3");
-				ck(get_uint16(d->u + 1) == 15,
-				   "redirect fqdn: GW ident len 15");
-				ck(memcmp(d->u + 3, "gw2.example.net", 15) == 0,
+				ck(d->u[1] == 15, "redirect fqdn: GW ident len 15 (1 octet)");
+				ck(memcmp(d->u + 2, "gw2.example.net", 15) == 0,
 				   "redirect fqdn: gw bytes");
 				rc_vfree(d);
 			}
