@@ -542,6 +542,96 @@ main(int argc, char *argv[])
 				ck(sa.peer_sent_redirect == 1,
 				   "resp_state0_recv: peer_sent_redirect set by 16406");
 			}
+			/* RFC 5685 redirect pool resolver:
+			 * ikev2_redirect_pool_select() must (a) resolve a single
+			 * entry to itself, (b) spread different peers across a
+			 * pool deterministically (the same peer always maps to
+			 * the same member — stable affinity so a re-initiating
+			 * client returns to the member holding its resume
+			 * ticket/dump), and (c) trim whitespace around
+			 * members. */
+			{
+				struct sockaddr_in p1, p2;
+				int i;
+
+				memset(&p1, 0, sizeof(p1));
+				memset(&p2, 0, sizeof(p2));
+				p1.sin_family = AF_INET;
+				p2.sin_family = AF_INET;
+				p1.sin_addr.s_addr = htonl(0x0a010001u);
+				p2.sin_addr.s_addr = htonl(0x0a010002u);
+
+				/* single entry -> identical to input */
+				gw = rc_vnew((unsigned char *)"10.9.9.9", 9);
+				d = ikev2_redirect_pool_select(gw,
+				    (struct sockaddr *)&p1);
+				ck(d != NULL && d->l == 9 &&
+				   memcmp(d->u, "10.9.9.9", 9) == 0,
+				   "redirect pool: single entry resolves to itself");
+				if (d) rc_vfree(d);
+				rc_vfree(gw);
+
+				/* pool: two peers map deterministically;
+				 * assert the selection only ever yields an
+				 * in-pool member and is stable across repeated
+				 * calls for the same peer */
+				{
+					rc_vchar_t *pool, *r1a, *r1b, *r2;
+
+					pool = rc_vnew((unsigned char *)
+					    "10.0.0.7,10.0.0.8,10.0.0.9", 27);
+					r1a = ikev2_redirect_pool_select(pool,
+					    (struct sockaddr *)&p1);
+					r1b = ikev2_redirect_pool_select(pool,
+					    (struct sockaddr *)&p1);
+					r2 = ikev2_redirect_pool_select(pool,
+					    (struct sockaddr *)&p2);
+					/* deterministic for the same peer */
+					ck(r1a && r1b && r1a->l == r1b->l &&
+					   memcmp(r1a->u, r1b->u, r1a->l) == 0,
+					   "redirect pool: same peer -> same member "
+					   "(stable affinity)");
+					/* both selections are in-pool */
+					ck(r1a && r1a->l >= 8 &&
+					   (memcmp(r1a->u, "10.0.0.7", 8) == 0 ||
+					    memcmp(r1a->u, "10.0.0.8", 8) == 0 ||
+					    memcmp(r1a->u, "10.0.0.9", 8) == 0),
+					   "redirect pool: p1 maps into the pool");
+					ck(r2 && r2->l >= 8 &&
+					   (memcmp(r2->u, "10.0.0.7", 8) == 0 ||
+					    memcmp(r2->u, "10.0.0.8", 8) == 0 ||
+					    memcmp(r2->u, "10.0.0.9", 8) == 0),
+					   "redirect pool: p2 maps into the pool");
+					/* whitespace trimming */
+					rc_vfree(pool);
+					pool = rc_vnew((unsigned char *)
+					    " 10.0.0.7 , 10.0.0.8 ", 22);
+					{
+						rc_vchar_t *rt =
+						    ikev2_redirect_pool_select(
+						    pool, (struct sockaddr *)&p1);
+						ck(rt && rt->l >= 8 &&
+						   (memcmp(rt->u, "10.0.0.7", 8) == 0 ||
+						    memcmp(rt->u, "10.0.0.8", 8) == 0),
+						   "redirect pool: members trimmed");
+						if (rt) rc_vfree(rt);
+					}
+					rc_vfree(pool);
+					if (r1a) rc_vfree(r1a);
+					if (r1b) rc_vfree(r1b);
+					if (r2) rc_vfree(r2);
+				}
+				/* empty pool -> NULL */
+				{
+					rc_vchar_t *e =
+					    rc_vnew((unsigned char *)"", 0);
+					ck(ikev2_redirect_pool_select(e,
+					    (struct sockaddr *)&p1) == NULL,
+					   "redirect pool: empty pool -> NULL");
+					rc_vfree(e);
+				}
+				(void)i;
+			}
 		}
 	}
 
