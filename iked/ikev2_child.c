@@ -4935,6 +4935,11 @@ ikev2_createchild_responder_send(struct ikev2_sa *ike_sa,
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CONFIG,
 				    child_sa->child_param.cfg_payload, FALSE);
 
+	/* RFC 8983 s4: shared IP4_ALLOWED/IP6_ALLOWED emit beside a
+	 * lease-assigning CFG_REPLY (same helper as the childful IKE_AUTH
+	 * responder, so both builders announce the assigned family). */
+	ikev2_push_ip_allowed(&payl, child_sa);
+
 #ifdef notyet
 	/*
 	 * [N(IPCOMP_SUPPORTED)]
