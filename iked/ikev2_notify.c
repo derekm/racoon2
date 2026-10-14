@@ -1228,8 +1228,10 @@ ikev2_respond_with_notify_exch(rc_vchar_t *request, struct sockaddr *remote,
  * IPv4 (type 1), a colon IPv6 (type 2), else an FQDN (type 3).  ni is the
  * byte-for-byte Nonce Data from the initiator's Ni payload, which the
  * client MUST match to accept the redirect (RFC 5685 s3).  The NOTIFY
- * data is: GW Ident Type (1) | GW Ident Len (2) | New Gateway Identity
- * [(1+2)+id] | Nonce Data. */
+ * data is: GW Ident Type (1) | GW Ident Len (1) | New Gateway Identity
+ * [(1+1)+id] | Nonce Data.  GW Ident Len is a single octet (RFC 5685
+ * s9.2; the diagram's '| GW Ident Type | GW Ident Len |' is one octet
+ * each). */
 
 /* build_redirect_notify: construct the redirect Notify DATA bytes
  * (rc_vchar_t, not including the notify header).  Exposed for the unit
@@ -1267,6 +1269,14 @@ ikev2_build_redirect_notify_data(rc_vchar_t *gw, rc_vchar_t *ni)
 	} else {
 		idtype = 3;	/* FQDN */
 		idlen = gw->l;
+		/* GW Ident Len is a single octet (max 255); a longer FQDN
+		 * could not be encoded without truncating the wire length,
+		 * so refuse it rather than emit a Len that disagrees with
+		 * the identity we copy. */
+		if (idlen > 255) {
+			racoon_free(gwc);
+			return NULL;
+		}
 	}
 	racoon_free(gwc);
 
