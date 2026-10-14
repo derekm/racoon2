@@ -73,6 +73,9 @@ void ikev2_build_ip_allowed(struct ikev2_payloads *, struct ikev2_sa *);
 
 void ikev2_respond_with_notify(rc_vchar_t *, struct sockaddr *, struct sockaddr *,
 			       int, uint8_t *, int);
+void ikev2_respond_redirect(rc_vchar_t *, struct sockaddr *, struct sockaddr *,
+			    rc_vchar_t *, rc_vchar_t *);
+rc_vchar_t *ikev2_build_redirect_notify_data(rc_vchar_t *, rc_vchar_t *);
 void ikev2_respond_with_notify_exch(rc_vchar_t *, struct sockaddr *,
 				    struct sockaddr *, int, int, uint8_t *,
 				    int);
