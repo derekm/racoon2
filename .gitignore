@@ -126,3 +126,8 @@ iked/test_ts_substitute
 iked/ticketkat
 iked/fuzz_ikev2_payloads
 iked/fuzz_ikev1_parse
+
+# Hermes agent working artifacts — not racoon2 source
+/.hermes/
+racoon2-gitlog.txt
+racoon2.gitlog
