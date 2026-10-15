@@ -53,6 +53,7 @@
 #include "ikev2_impl.h"
 #include "ikev2_resume_ticket.h"
 #include "ikev2_notify.h"
+#include "ikev2_drain.h"
 #include "nattraversal.h"
 
 #include "var.h"
@@ -685,6 +686,23 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 
 	ikehdr = (struct ikev2_header *)packet->v;
 	memset(&st, 0, sizeof(st));
+
+	/* RFC 5685 + RFC 5723 interplay (failover drain): restoring a
+	 * ticketed session onto the node being drained would re-home the
+	 * client BACK to the retiring gateway — defeating the drain.  When
+	 * this peer is in the drain table, REFUSE the resume (N(TICKET_NACK))
+	 * so the client falls back to a normal IKE_SA_INIT, which then hits
+	 * the drain gate (ikev2_sa_init.c) and is REDIRECTed to the live
+	 * sibling.  The ticket itself is unaffected (the sibling validates
+	 * it under the shared session_resume_ticket_key); we simply decline
+	 * to consume it here.  This is the honest drain semantics: a drained
+	 * node never re-establishes a session, resumed or fresh. */
+	if (ikev2_drain_lookup(remote)) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_INFO, PLOGLOC,
+		    "RFC 5685: IKE_SESSION_RESUME from drained peer; "
+		    "refusing (TICKET_NACK) so it redirects to a sibling\n");
+		goto nack;
+	}
 
 	/* RFC 5723 s8: session_resumption must be enabled to accept tickets. */
 	if (ikev2_use_session_resumption(ike_sa->rmconf) != RCT_BOOL_ON) {
