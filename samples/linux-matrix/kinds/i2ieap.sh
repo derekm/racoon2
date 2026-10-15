@@ -105,7 +105,9 @@ kind_i2ieap() {
 		# require the client cert (mutual TLS).
 		sed -i 's|^[[:space:]]*private_key_password = .*|private_key_password = ""|' "$RADD/mods-enabled/eap" 2>/dev/null
 		sed -i 's|^[[:space:]]*private_key_file = .*|private_key_file = ${certdir}/server.key|' "$RADD/mods-enabled/eap" 2>/dev/null
-		sed -i 's|^[[:space:]]*certificate_file = ${certdir}/server.pem|certificate_file = ${certdir}/server.pem|' "$RADD/mods-enabled/eap" 2>/dev/null
+		# certificate_file already defaults to ${certdir}/server.pem,
+		# which is where we placed our server.pem — leave it as-is;
+		# ca_file + verify_client enforce mutual TLS.
 		sed -i 's|^[[:space:]]*#\?[[:space:]]*ca_file = .*|ca_file = ${certdir}/ca.pem|' "$RADD/mods-enabled/eap" 2>/dev/null
 		sed -i 's|^[[:space:]]*#\?[[:space:]]*verify_client = .*|verify_client = yes|' "$RADD/mods-enabled/eap" 2>/dev/null
 		echo "EAP-TLS: FreeRADIUS default_eap_type=tls, plain key + cert, ca_file + verify_client=yes (mods-enabled/eap)"
