@@ -64,7 +64,8 @@ kind_i2iresume() {
 	# the -drain variant follows the responder's N(REDIRECT): explicit
 	# opt-in on the initiator (accept_redirect, default off)
 	I_REDIR=
-	case "$name" in *-drain) I_REDIR='accept_redirect on;' ;; esac
+	R_DBG=0x0001
+	case "$name" in *-drain) I_REDIR='accept_redirect on;'; R_DBG=0x0003 ;; esac
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 	# ticket store dirs (initiator store + responder legacy crash dir)
 	TKSTORE="$C/tickets"; mkdir -p "$TKSTORE"
@@ -208,7 +209,7 @@ EOF
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
-	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
+	    "$SBIN/iked" -F -f "$C/responder.conf" -D ${R_DBG:-0x0001} -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 
 	# start initiator (pass 1: fresh establish + capture the ticket)
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
@@ -256,13 +257,29 @@ EOF
 		chmod 600 "$TKKEY.new"; mv -f "$TKKEY.new" "$TKKEY"
 		log "i2iresume: rotated responder ticket key before pass 2"
 		;;
+	*-drain)
+		# RFC 5685 failover drain vs RFC 5723 resume: the responder is
+		# DRAINING this peer (ikedctl drain-sa).  A ticketed reconnect
+		# must be REFUSED at the responder resume handler — never resume
+		# a session back onto the node being drained (that would defeat
+		# the drain).  The refusal (NACK) forces the initiator to fall
+		# back to a fresh IKE_SA_INIT, which the draining node then
+		# answers N(REDIRECT) to a sibling.  Here (2-seat, no sibling)
+		# we gate on: the drain-NACK was SENT, the resume was NOT
+		# accepted, and the initiator dropped the ticket + began the
+		# full-exchange fallback.  The drain-sa goes to a non-reachable
+		# gw (no sibling in this 2-seat row); the point is the refusal,
+		# not landing the redirected re-init.
+		"$SBIN/ikedctl" -s "$SOCK_R" drain-sa "$HI" 192.0.99.7 >/dev/null 2>&1 || true
+		log "i2iresume-drain: set drain-sa $HI -> 192.0.99.7 on responder before pass 2"
+		;;
 	esac
 	sleep 2
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init2-spmd.log" 2>&1 &
 	i=0; until [ -S "$SPMIF_I" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK="$SOCK_I" \
 	    RACOON2_RESUME_DIR="$PRIVRES_I" RACOON2_RESUME_TICKET_DIR="$TKSTORE" \
-	    "$SBIN/iked" -F -f "$C/initiator.conf" -D 0x0001 -l "$D/init2-iked.log" ) >"$D/init2-iked.out" 2>&1 &
+	    "$SBIN/iked" -F -f "$C/initiator.conf" -D ${R_DBG:-0x0001} -l "$D/init2-iked.log" ) >"$D/init2-iked.out" 2>&1 &
 	sleep 2
 
 	# Drain: the pass-1 ESP SAs survive both the initiator's pkill -9
@@ -353,6 +370,43 @@ EOF
 		   && [ "${minted:-0}" -ge 2 ] && [ "$replaced" -eq 1 ]; then
 			ok=1
 			log "i2iresume-nack: rotated key -> TICKET_NACK (38) -> full IKE_SA_INIT fallback ESTABLISHED, new ticket stored"
+		fi
+		;; 
+	*-drain)
+		drain_nack=$(grep -c 'IKE_SESSION_RESUME from drained peer.*refusing (TICKET_NACK)' \
+			"$D/resp-iked.log" 2>/dev/null || true)
+		nack_rcvd=$(grep -c 'received N(TICKET_NACK) in IKE_SESSION_RESUME response' \
+			"$D/init2-iked.log" 2>/dev/null || true)
+		fellback=$(grep -c 'ticket refused (TICKET_NACK); dropped stored ticket, falling back to a full IKE_SA_INIT' \
+			"$D/init2-iked.log" 2>/dev/null || true)
+		full=$(grep -c 'INI_IKE_SA_INIT_SENT -> ' "$D/init2-iked.log" 2>/dev/null || true)
+		# Assert the redirect itself, not just
+		# the NACK.  The drained responder answers the fallback
+		# IKE_SA_INIT with N(REDIRECT, 192.0.99.7) [drain] (-D 0x0003
+		# TRACE), the initiator follows: it ferries the kept ticket to
+		# 192.0.99.7 and presents IKE_SESSION_RESUME (38) there (a live
+		# ticket diverts the re-drive to exchange 38; 192.0.99.7 is
+		# unreachable in this 2-seat row, so nothing completes).
+		redir_tx=$(grep -c 'RFC5685: redirecting this peer to 192.0.99.7 (offered REDIRECT_SUPPORTED) \[drain\]' \
+			"$D/resp-iked.log" 2>/dev/null || true)
+		retarget=$(grep -cE '192\.0\.99\.7\[500\].*RFC 5723: resuming via IKE_SESSION_RESUME' \
+			"$D/init2-iked.log" 2>/dev/null || true)
+		carried=$(grep -c 'RFC5685: carried resume ticket to redirected gw' \
+			"$D/init2-iked.log" 2>/dev/null || true)
+		log "i2iresume-drain gates: up1=$up1 minted=$minted drain_nack=$drain_nack nack_rcvd=$nack_rcvd fellback=$fellback full=$full accepted=$accepted presented=$presented redir_tx=$redir_tx retarget=$retarget carried=$carried"
+		# The drained responder MUST refuse the ticketed resume (drain_nack)
+		# and NOT accept it; the initiator must receive the NACK, drop the
+		# stored ticket and begin the full-exchange fallback.  (up2 is not
+		# required: the drain redirects the fallback IKE_SA_INIT to a
+		# sibling that this 2-seat row does not provide.)
+		if [ "$up1" -eq 1 ] && [ "${minted:-0}" -ge 1 ] \
+		   && [ "${drain_nack:-0}" -ge 1 ] && [ "${nack_rcvd:-0}" -ge 1 ] \
+		   && [ "${fellback:-0}" -ge 1 ] && [ "${full:-0}" -ge 1 ] \
+		   && [ "${accepted:-0}" -eq 0 ] && [ "${presented:-0}" -ge 1 ] \
+		   && [ "${redir_tx:-0}" -ge 1 ] && [ "${retarget:-0}" -ge 1 ] \
+		   && [ "${carried:-0}" -ge 1 ]; then
+			ok=1
+			log "i2iresume-drain: drained responder refused the ticketed resume (NACK), resume NOT accepted, initiator fell back to full IKE_SA_INIT, was REDIRECTed to 192.0.99.7 and presented the carried ticket there"
 		fi
 		;;
 	*-reuse)
