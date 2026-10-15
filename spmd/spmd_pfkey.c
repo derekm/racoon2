@@ -455,6 +455,21 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 		return -1;
 	}
 
+	if (rc->samode == RCT_IPSM_TUNNEL &&
+	    (!pl->my_sa_ipaddr || !pl->peers_sa_ipaddr)) {
+		/* An UNPINNED tunnel (no my_sa_ipaddr
+		 * and/or peers_sa_ipaddr) has no static endpoints to put in
+		 * the SPD template: its endpoints are the IKE_SA's, which
+		 * may move (RFC 5685 redirect).  iked installs the policy
+		 * pair with the negotiated endpoints via spmif POLICY ADD
+		 * when the child matures (and removes it with the child),
+		 * exactly as for peers_sa_ipaddr IP_RW. */
+		SPMD_PLOG(SPMD_L_INFO, "tunnel endpoints unpinned; policy is "
+			"installed by iked per child SA (policy=%.*s)",
+			(int)pl->pl_index->l, pl->pl_index->s);
+		spmd_rcpfk_cont_sock_free(rc);
+		return 0;
+	}
 	if (rc->samode == RCT_IPSM_TUNNEL ||
 	    rc->samode == RCT_IPSM_TRANSPORT) {
 		if (!pl->my_sa_ipaddr) {
@@ -1914,17 +1929,15 @@ sl_to_rc_wo_addr(struct rcf_selector *sl, struct rcpfk_msg *rc)
 	/*** set rc->sa_src, rc->sa_dst ***/
 	if (rc->samode == RCT_IPSM_TUNNEL ||
 	    rc->samode == RCT_IPSM_TRANSPORT) {
-		if (!pl->my_sa_ipaddr) {
-			SPMD_PLOG(SPMD_L_INTERR,
-				  "No my_sa_ipaddr, check your configuration file (policy=%.*s)",
-				  (int)pl->pl_index->l, pl->pl_index->s);
-			goto err;
-		}
-		if (!pl->peers_sa_ipaddr) {
-			SPMD_PLOG(SPMD_L_INTERR,
-				  "No peers_sa_ipaddr, check your configuration file (policy=%.*s)",
-				  (int)pl->pl_index->l, pl->pl_index->s);
-			goto err;
+		/* An unpinned endpoint is supplied by
+		 * the caller (spmif POLICY ADD carries the SA endpoints), the
+		 * same as a non-INET (macro) one below.  Erroring out here
+		 * also freed rc under the shell.c caller, which ignores the
+		 * return value. */
+		if (!pl->my_sa_ipaddr || !pl->peers_sa_ipaddr) {
+			rc->sa_src = NULL;
+			rc->sa_dst = NULL;
+			return 0;
 		}
 		al = pl->my_sa_ipaddr; /* always single entry */
 		if (al->type == RCT_ADDR_INET) {
