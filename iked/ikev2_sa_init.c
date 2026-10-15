@@ -1588,6 +1588,24 @@ ikev2_initiator_redirect_follow(struct ikev2_sa *ike_sa, struct sockaddr *remote
 	if (ike_sa->remote)
 		racoon_free(ike_sa->remote);
 	ike_sa->remote = newpeer;
+	/* REVIEW_2026-10-18 M5: pending children follow the IKE_SA, so
+	 * their (unpinned) endpoints and the per-child SPD posted for
+	 * them name the new gateway, not the redirecting one. */
+	{
+		struct ikev2_child_sa *c;
+
+		for (c = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+		     !IKEV2_CHILD_LIST_END(c);
+		     c = IKEV2_CHILD_LIST_NEXT(c)) {
+			struct sockaddr *r = rcs_sadup(newpeer);
+
+			if (!r)
+				continue;
+			if (c->remote)
+				rc_free(c->remote);
+			c->remote = r;
+		}
+	}
 
 	/* Stash the redirecting gateway for the REDIRECTED_FROM emit. */
 	if (ike_sa->redirected_from)

@@ -154,6 +154,26 @@ struct sadb_response_method ikev2_sadb_callback = {
 	NULL,
 };
 
+
+/*
+ * A policy whose SPD rows cannot be installed statically by spmd and are
+ * instead posted by iked per child SA (spmif POLICY ADD/DELETE) with the
+ * negotiated endpoints: peers_sa_ipaddr IP_RW, or (REVIEW_2026-10-18 M5)
+ * an UNPINNED tunnel (no my_sa_ipaddr and/or peers_sa_ipaddr), whose
+ * endpoints follow the IKE_SA — e.g. to a sibling after an RFC 5685
+ * redirect.  spmd skips such a policy at startup.
+ */
+static int
+ikev2_child_policy_is_dynamic(struct rcf_policy *pol)
+{
+	if (!pol)
+		return 0;
+	if (pol->peers_sa_ipaddr && rcs_is_addr_wildcard(pol->peers_sa_ipaddr))
+		return 1;
+	return ike_ipsec_mode(pol) == RCT_IPSM_TUNNEL &&
+	    (!pol->peers_sa_ipaddr || !pol->my_sa_ipaddr);
+}
+
 void
 ikev2_child_state_set(struct ikev2_child_sa *child_sa,
 		      enum ikev2_child_state state)
@@ -201,6 +221,54 @@ ikev2_child_state_set(struct ikev2_child_sa *child_sa,
 
 	if (old_state != IKEV2_CHILD_STATE_MATURE &&
 	    state == IKEV2_CHILD_STATE_MATURE) {
+		/* REVIEW_2026-10-18 M5: the initiator of a dynamic (unpinned
+		 * tunnel) policy posts its SPD pair once the child is keyed;
+		 * the responder does so in its IKE_AUTH/CREATE_CHILD path. */
+		if (child_sa->is_initiator && child_sa->preceding_satype == 0 &&
+		    LIST_EMPTY(&child_sa->lease_list) && child_sa->selector &&
+		    child_sa->parent &&
+		    child_sa->selector->pl &&
+		    ike_ipsec_mode(child_sa->selector->pl) == RCT_IPSM_TUNNEL &&
+		    ikev2_child_policy_is_dynamic(child_sa->selector->pl)) {
+			int lifetime;
+			struct sockaddr_storage lss, rss;
+			struct sockaddr *la, *ra, *nl, *nr;
+
+			/* The SA endpoints, exactly as the SAD install picks
+			 * them (the initiator child's own local/remote can
+			 * predate an RFC 5685 redirect or be unset), and
+			 * remember them for the POLICY DELETE at teardown. */
+			la = ike_determine_sa_endpoint(&lss,
+			    child_sa->selector->pl->my_sa_ipaddr,
+			    child_sa->parent->local);
+			ra = ike_determine_sa_endpoint(&rss,
+			    child_sa->selector->pl->peers_sa_ipaddr,
+			    child_sa->parent->remote);
+			nl = la ? rcs_sadup(la) : 0;
+			nr = ra ? rcs_sadup(ra) : 0;
+			if (nl && nr) {
+				if (child_sa->local)
+					rc_free(child_sa->local);
+				if (child_sa->remote)
+					rc_free(child_sa->remote);
+				child_sa->local = nl;
+				child_sa->remote = nr;
+			} else {
+				if (nl)
+					rc_free(nl);
+				if (nr)
+					rc_free(nr);
+			}
+			IPSEC_CONF(lifetime, child_sa->selector->pl->ips,
+			    ipsec_sa_lifetime_time, 0);
+			if (!(la && ra) ||
+			    ike_spmif_post_policy_add(child_sa->selector,
+			    RCT_IPSM_TUNNEL, lifetime, child_sa->local,
+			    child_sa->remote, child_sa->parent->rmconf) < 0)
+				plog(PLOG_INTERR, PLOGLOC, 0,
+				    "failed to post dynamic tunnel policy "
+				    "to spmd\n");
+		}
 		ikev2_child_script_hook(child_sa,
 					(child_sa->preceding_satype != 0 ?
 					 SCRIPT_PHASE2_REKEY :
@@ -399,8 +467,7 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 					}
 				}
 			}
-		} else if (policy && policy->peers_sa_ipaddr &&
-			   rcs_is_addr_wildcard(policy->peers_sa_ipaddr)) {
+		} else if (ikev2_child_policy_is_dynamic(policy)) {
 			if (selector && spmif_post_policy_delete(ike_spmif_socket(),
 						     NULL, NULL,
 						     selector->sl_index,
@@ -693,8 +760,7 @@ ikev2_child_responder_after_dh(struct ikev2_child_responder_ctx *ctx)
 			}
 		}
 	} else if (!ctx->old_child_sa &&
-		   pol->peers_sa_ipaddr &&
-		   rcs_is_addr_wildcard(pol->peers_sa_ipaddr)) {
+		   ikev2_child_policy_is_dynamic(pol)) {
 		IPSEC_CONF(lifetime, pol->ips, ipsec_sa_lifetime_time, 0);
 		if (ike_spmif_post_policy_add(child_sa->selector,
 		    ike_ipsec_mode(pol), lifetime,
@@ -1403,8 +1469,7 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 			}
 		}
 	} else if (!old_child_sa &&
-		   pol->peers_sa_ipaddr &&
-		   rcs_is_addr_wildcard(pol->peers_sa_ipaddr)) {
+		   ikev2_child_policy_is_dynamic(pol)) {
 		IPSEC_CONF(lifetime, pol->ips, ipsec_sa_lifetime_time, 0);
 		if (ike_spmif_post_policy_add(child_sa->selector,
 					      ike_ipsec_mode(pol), lifetime,

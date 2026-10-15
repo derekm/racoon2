@@ -27,6 +27,7 @@ CASES_FILE=${R2_CASES:-$HERE/cases.tsv}
 . "$HERE/kinds/i2ike_silence.sh"
 . "$HERE/kinds/i2ike_collide.sh"
 . "$HERE/kinds/i2ike_drain.sh"
+. "$HERE/kinds/i2ike_redirect2.sh"
 . "$HERE/kinds/i2ikesa.sh"
 . "$HERE/kinds/i2i_rekey.sh"
 . "$HERE/kinds/i2iinit.sh"
