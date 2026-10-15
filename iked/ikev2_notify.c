@@ -716,6 +716,29 @@ createchild_init_recv_notify(struct ikev2_sa *ike_sa,
 		case IKEV2_NO_PROPOSAL_CHOSEN:
 		case IKEV2_FAILED_CP_REQUIRED:
 		case IKEV2_TS_UNACCEPTABLE:
+		default:
+		child_create_sa_fail:
+			/*
+			 * Ordinary CREATE_CHILD_SA request failures (NO_PROPOSAL_CHOSEN,
+			 * FAILED_CP_REQUIRED, TS_UNACCEPTABLE, unrecognized error types)
+			 * and TEMPORARY_FAILURE all land here: report non-zero so the
+			 * exchange is treated as failed, and ikev2_child_abort() runs
+			 * the abort-with-rekey-rescue (clears a stuck rekey_inprogress
+			 * on the OLD child + re-arms a 30 s backoff).  For ordinary
+			 * failures that rescue is just cleanup; for TEMPORARY_FAILURE it
+			 * is the required RFC 7296 §2.25 retry-later semantics.  The
+			 * TEMPORARY_FAILURE case jumps here directly (it heeds its own
+			 * distinct log above before this shared handler).
+			 */
+			if (ikev2_process_notify(ike_sa, payload, TRUE)) {
+				if (child_sa) {
+					/* ??? */
+					ikev2_child_abort(child_sa, ECONNREFUSED);
+				}
+				return -1;
+			}
+			break;
+
 		case IKEV2_TEMPORARY_FAILURE:
 			/*
 			 * RFC 7296 §2.25 (Exchange Collisions): a TEMPORARY_FAILURE
@@ -731,22 +754,16 @@ createchild_init_recv_notify(struct ikev2_sa *ike_sa,
 			 * rekeys it — the old SA survives the transient responder
 			 * condition.  Aborting the in-flight NEW child (and telling the
 			 * SPD its acquire errored) is exactly right: there is nothing
-			 * installed for it yet.  We only need a distinct, diagnosable
-			 * log line here, because the generic path below would misreport
-			 * it as an "unrecognized error type".
+			 * installed for it yet.  We log it distinctly (instead of the
+			 * generic "unrecognized error type") to make the retry-later
+			 * intent auditable, then enter the same abort-with-rekey-rescue
+			 * handler the ordinary failures use.
 			 */
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
 				   "RFC 7296 §2.25: peer answered TEMPORARY_FAILURE; "
 				   "will retry the rekey later (backoff re-armed)\n");
-		default:
-			if (ikev2_process_notify(ike_sa, payload, TRUE)) {
-				if (child_sa) {
-					/* ??? */
-					ikev2_child_abort(child_sa, ECONNREFUSED);
-				}
-				return -1;
-			}
-			break;
+			/* FALLTHROUGH (via shared handler label above) */
+			goto child_create_sa_fail;
 	}
 
 	return 0;
