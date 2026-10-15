@@ -5,19 +5,21 @@
 # THREE seats (three netns) on ONE bridge hub /24, so the initiator has a
 # SINGLE interface and reaches both gateways:
 #
-#          bridge hub (192.0.11.0/24 + protected 192.0.30.0/24)
+#          bridge hub (192.0.11.0/24)
 #        /      |        \
 #   A (192.0.11.1)     C (192.0.11.3)
-#          \     I (192.0.11.2)   /     protected net 192.0.30.0/24 served by BOTH A and C
+#          \     I (192.0.11.2)   /     protected address 192.0.30.0 served by BOTH A and C
 #
 # Concentrator model (the key fix, ICS research finding):
-#   - The CHILD's TRAFFIC SELECTOR targets the PROTECTED SUBNET 192.0.30.0/24,
-#     which every pool gateway serves identically.  ikev2_construct_ts_i/r
-#     build TSi/TSr from selector->src/dst (NOT the SA remote), so a client
-#     whose sel_out dst is the protected subnet presents the SAME TSr to A and
-#     to C — a redirected child's TS matches on the sibling with no code change.
-#     Responder outbound selector mirrors the mapping the TS matcher enforces:
-#     responder sel_out src = initiator's TSr (protected subnet),
+#   - The CHILD's TRAFFIC SELECTOR targets the protected ADDRESS 192.0.30.0
+#     (its name $PTC32, a BARE address — rcs_getaddrlist parses a bare IPv4
+#     with no "/N" as /32, NOT /24), which every pool gateway serves
+#     identically.  ikev2_construct_ts_i/r build TSi/TSr from selector->src/dst
+#     (NOT the SA remote), so a client whose sel_out dst is the protected
+#     address presents the SAME TSr to A and to C — a redirected child's TS
+#     matches on the sibling with no code change.  Responder outbound selector
+#     mirrors the mapping the TS matcher enforces:
+#     responder sel_out src = initiator's TSr (protected addr),
 #                      dst = initiator's TSi (the client $HI).
 #   - The tunnel ENDPOINT is NOT pinned by peers_sa_ipaddr: ike_determine_sa_endpoint
 #     returns the IKE_SA's (redirected) remote when peers_sa_ipaddr is absent, so
@@ -25,8 +27,16 @@
 #   (The earlier failed attempts either pinned each gateway's OWN address as the
 #    child dst — C rejected TSr==A — or used the wrong responder src/dst sense.)
 #
+# DATA PLANE / xfrm audit note: the child has SAs keyed to C but NO SPD policy
+# row — spmd_pfkey.c refuses a tunnel-policy install when my_sa_ipaddr is absent
+# ("No my_sa_ipaddr"), and that same unpin is what lets ike_determine_sa_endpoint
+# follow the redirect.  So no data-plane traffic is moved and the harness's
+# xa_probe never fires; xfrm_audit.tsv declares the traffic check for exactly
+# this reason.  The row's proof is the failover LANDING (wire re-target + keyed
+# child on the sibling), not data-plane traversal.
+#
 # Flow:
-#   1. I establishes a child to A (TS: I <-> 192.0.30.0/24 protected net).
+#   1. I establishes a child to A (TS: I <-> 192.0.30.0 protected addr).
 #   2. 'drain-sa <I-peer> <C>' on A: A SILENTLY closes the peer's established
 #      IKE_SA (ikev2_abort, 'aborting ike_sa', A esp 2->0).
 #   3. I re-initiates; A answers N(REDIRECT, C=192.0.11.3); I verifies Ni and
@@ -50,8 +60,7 @@ kind_i2ike_redirect2() {
 	[ -f "$ETC/psk/macos.psk" ] || { log "FAIL: no $ETC/psk/macos.psk"; return 1; }
 
 	HR=192.0.11.1; HI=192.0.11.2; CID=192.0.11.3
-	PTC=192.0.30.0/24          # protected subnet served by BOTH A and C
-	PTC32=192.0.30.0           # TS entry start
+	PTC32=192.0.30.0           # protected ADDRESS served by BOTH A and C (bare -> /32)
 	NSR="n${name}-a"; NSI="n${name}-i"; NSC="n${name}-c"
 	NBH="n${name}-hub"
 	rst_long_tag=$(printf '%s' "$name" | cksum | awk '{printf "%06x", $1}')
@@ -141,14 +150,8 @@ EOF
 		ip netns exec "$_NS" ip link set "$_SEAT" up
 		ip netns exec "$_NS" ip addr add "$_ADDR/24" dev "$_SEAT"
 	done
-	# Protected net: an address each responder front (data-plane probe target).
-	ip netns exec "$NSR" ip addr add 192.0.30.10/24 dev lo 2>/dev/null || true
-	ip netns exec "$NSC" ip addr add 192.0.30.10/24 dev lo 2>/dev/null || true
-	# Route the protected subnet from every seat so the data-plane ping can
-	# be emitted (the child's outbound SPD picks it up and tunnels it).
-	ip netns exec "$NSI" ip route add 192.0.30.0/24 dev "$VLI" 2>/dev/null || true
-	ip netns exec "$NSR" ip route add 192.0.30.0/24 dev "$VLA" 2>/dev/null || true
-	ip netns exec "$NSC" ip route add 192.0.30.0/24 dev "$VLC" 2>/dev/null || true
+	# (No protected-net lo/route scaffolding: the /32 child selector below
+	# needs no backing interface, and this row does not move data.)
 
 	# IKE/UDP-XFRM allow per seat (each seat reaches every other on /24).
 	for ns in "$NSR:$HR" "$NSI:$HI" "$NSC:$CID"; do
@@ -226,8 +229,16 @@ EOF
 	while [ "$i" -lt 45 ]; do
 		ce=$(ip netns exec "$NSC" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
-		if [ "${ce:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ]; then
-			log "redirect2 child UP on sibling C: C esp=$ce I esp=$ie after ${i}s"
+		# the initiator's child SA must point at the LIVE sibling (dst C),
+		# not back at the draining A — esp-count alone would pass a stale
+		# initiator SAD if a flush-sa had failed to prune it.  `ip xfrm
+		# state` is one line per direction: outbound `src $HI dst $CID`
+		# proves the child lands on C; assert that AND that no `dst $HR`
+		# (A) pair remains.
+		idstC=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c "dst $CID")
+		idstA=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c "dst $HR")
+		if [ "${ce:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ] && [ "${idstC:-0}" -ge 1 ] && [ "${idstA:-0}" -eq 0 ]; then
+			log "redirect2 child UP on sibling C: C esp=$ce I esp=$ie (I child dst=$CID, no dst=$HR) after ${i}s"
 			cup=1; break
 		fi
 		i=$((i+1)); sleep 1
@@ -239,12 +250,13 @@ EOF
 	[ "$A_FINAL" -eq 0 ] || { log "FAIL: client re-established against the draining A (A esp=$A_FINAL)"; return 1; }
 
 	# Data plane: the child SAs are keyed (C esp>=2, I esp>=2) and the
-	# initiator's wire re-target to C is asserted above.  Traversing this
-	# /24-subnet child with a data-plane ping would additionally require an
-	# outbound SPD policy row for the subnet (only the SAs are installed by
-	# the redirect flow), which is out of scope for this failover-landing
-	# proof — the xfrm audit's traffic check is XFAIL-declared for this row
-	# for exactly that reason.  Landing + wire re-target are the gates.
+	# initiator's wire re-target to C is asserted above.  There is NO SPD
+	# policy row for this child (spmd_pfkey refuses a tunnel install without
+	# my_sa_ipaddr — the same unpin that follows the redirect), so no
+	# data-plane traversal is possible, which is out of scope for this
+	# failover-landing proof — the xfrm audit's traffic check is
+	# XFAIL-declared for this row for exactly that reason.  Landing + wire
+	# re-target are the gates.
 
 	log "redirect2 live proof OK: A drained+closed, I's new IKE_SA_INIT redirected to LIVE sibling C, C completed full IKE_AUTH + child up, A stayed at 0"
 	echo ok > "$D/redirect2.gate"
