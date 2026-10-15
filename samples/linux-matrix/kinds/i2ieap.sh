@@ -44,6 +44,29 @@ kind_i2ieap() {
 	chmod 644 "$C/certs/server.pem" "$C/certs/server.key"
 	SSLENV="SSL_CERT_FILE=$C/certs/ca.pem"
 
+	# EAP-TLS variant (row name *-tls): a client cert is needed for the
+	# charon EAP-TLS initiator AND a server cert for FreeRADIUS's TLS EAP
+	# module (which uses certdir/server.pem).  Both signed by the same CA.
+	I2IEAP_TLS=0
+	case $name in *-tls) I2IEAP_TLS=1 ;; esac
+	if [ "$I2IEAP_TLS" -eq 1 ]; then
+		# client cert for charon (EAP-TLS client auth).  The EAP identity
+		# is the bare FQDN 'eaptest', so the cert must carry a
+		# subjectAltName DNS:eaptest — otherwise charon (which matches
+		# certs to the requested EAP identity by type: SAN-DNS vs
+		# subject-DN) reports "no usable TLS client certificate".
+		openssl genrsa -out "$C/certs/client.key" 2048 2>/dev/null || { log "FAIL: genrsa client"; return 1; }
+		printf "subjectAltName=DNS:eaptest\n" > "$C/certs/client-san.cnf"
+		openssl req -new -key "$C/certs/client.key" -out "$C/certs/client.csr" \
+			-subj "/CN=eaptest" 2>/dev/null || { log "FAIL: req client"; return 1; }
+		openssl x509 -req -in "$C/certs/client.csr" -CA "$C/certs/ca.pem" -CAkey "$C/certs/ca.key" \
+			-CAcreateserial -out "$C/certs/client-cert.pem" -days 3650 -sha256 \
+			-extfile "$C/certs/client-san.cnf" 2>/dev/null \
+			|| { log "FAIL: x509 client"; return 1; }
+		chmod 600 "$C/certs/client.key"
+		echo "I2IEAP_TLS=1 (row $name): client (DNS:eaptest SAN) + server cert generated"
+	fi
+
 	# --- FreeRADIUS clone (MSCHAPv2) + test account, netns-local ---
 	RADCMD=/usr/sbin/radiusd
 	RADD=/tmp/raddb-eap-$name
@@ -58,6 +81,35 @@ kind_i2ieap() {
 	sed -i 's|ntlm_auth.*|# ntlm_auth disabled (test local account)|' "$RADD/mods-available/mschap" "$RADD/mods-enabled/mschap" 2>/dev/null
 	# ensure a local user
 	printf 'eaptest        Cleartext-Password := "eaptest-pass"\n' > "$RADD/users"
+	# --- EAP-TLS variant: FreeRADIUS terminates TLS, mutual-auth with the
+	# client cert, trusting the shared CA.  The module's tls-common reads
+	# ${certdir}/server.pem (certdir = ${confdir}/certs where confdir =
+	# $RADD => $RADD/certs); place a server cert+key there, use the same
+	# PEM file for cert+key so private_key_file=server.pem without a
+	# separate cipher password works, require client cert (ca_file), and
+	# switch default_eap_type to tls.
+	if [ "$I2IEAP_TLS" -eq 1 ]; then
+		mkdir -p "$RADD/certs"
+		cp "$C/certs/server.pem" "$RADD/certs/server.pem"
+		cp "$C/certs/server.key"  "$RADD/certs/server.key"
+		cp "$C/certs/ca.pem"      "$RADD/certs/ca.pem"
+		# radiusd drops privileges after bind, so the certs must be
+		# world-readable (both for the FreeRADIUS TLS half and the
+		# via-loopback RADIUS client).  'cp -r /etc/raddb' de-referenced
+		# mods-enabled/eap into a regular FILE, so edit THAT (not
+		# mods-available) — radiusd reads mods-enabled/eap.
+		chmod 644 "$RADD/certs/server.pem" "$RADD/certs/server.key" "$RADD/certs/ca.pem"
+		sed -i 's/^[[:space:]]*default_eap_type[[:space:]]*=.*/	default_eap_type = tls/' "$RADD/mods-enabled/eap" 2>/dev/null
+		# tls-common (within mods-enabled/eap): plain key (empty
+		# password), certificate = server.pem, trust the shared CA and
+		# require the client cert (mutual TLS).
+		sed -i 's|^[[:space:]]*private_key_password = .*|private_key_password = ""|' "$RADD/mods-enabled/eap" 2>/dev/null
+		sed -i 's|^[[:space:]]*private_key_file = .*|private_key_file = ${certdir}/server.key|' "$RADD/mods-enabled/eap" 2>/dev/null
+		sed -i 's|^[[:space:]]*certificate_file = ${certdir}/server.pem|certificate_file = ${certdir}/server.pem|' "$RADD/mods-enabled/eap" 2>/dev/null
+		sed -i 's|^[[:space:]]*#\?[[:space:]]*ca_file = .*|ca_file = ${certdir}/ca.pem|' "$RADD/mods-enabled/eap" 2>/dev/null
+		sed -i 's|^[[:space:]]*#\?[[:space:]]*verify_client = .*|verify_client = yes|' "$RADD/mods-enabled/eap" 2>/dev/null
+		echo "EAP-TLS: FreeRADIUS default_eap_type=tls, plain key + cert, ca_file + verify_client=yes (mods-enabled/eap)"
+	fi
 	# RADIUS shared secret: r2-eap-test-secret
 	printf 'racoon2-eap-test-secret-0123456789abcdef\n' > "$C/radius-secret"
 	cp "$C/radius-secret" /tmp/eap-${name}-rsec
@@ -144,6 +196,38 @@ EOF
 	rm -f "$I2I_CHARON_VDIR"/*.conf 2>/dev/null || true
 	cp "$C/certs/ca.pem" "${I2I_CHARON_VDIR%/conf.d}"/x509ca/r2-${name}-ca.pem
 	chmod 644 "${I2I_CHARON_VDIR%/conf.d}"/x509ca/r2-${name}-ca.pem
+	# EAP-TLS initiator credential: install the client cert (x509/,
+	# auto-loaded) and its matching PRIVATE KEY (private/, auto-loaded) —
+	# charon needs both to present the cert as its EAP-TLS identity.
+	# Drop STALE client creds for this row first (a leftover mismatched
+	# cert/key pair makes charon report "no usable TLS client cert").
+	if [ "$I2IEAP_TLS" -eq 1 ]; then
+		mkdir -p "${I2I_CHARON_VDIR%/conf.d}"/private
+		rm -f "${I2I_CHARON_VDIR%/conf.d}"/x509/r2-${name}-client*.pem \
+		      "${I2I_CHARON_VDIR%/conf.d}"/private/r2-${name}-client*.pem 2>/dev/null || true
+		cp "$C/certs/client-cert.pem" "${I2I_CHARON_VDIR%/conf.d}"/x509/r2-${name}-client-cert.pem
+		cp "$C/certs/client.key" "${I2I_CHARON_VDIR%/conf.d}"/private/r2-${name}-client-key.pem
+		chmod 644 "${I2I_CHARON_VDIR%/conf.d}"/x509/r2-${name}-client-cert.pem
+		chmod 600 "${I2I_CHARON_VDIR%/conf.d}"/private/r2-${name}-client-key.pem
+	fi
+	# EAP-TLS variant uses directly the eap-tls auth with a client cert;
+	# `certs=` pins the cert (charon auto-pairs the matching private key
+	# from the loaded key store for EAP-TLS mutual auth).  There is NO
+	# `key=` option in a swanctl local{} block (invalid -> config
+	# discarded).
+	if [ "$I2IEAP_TLS" -eq 1 ]; then
+		I2IEAP_LOCALAUTH='auth = eap-tls
+		certs = r2-'"$name"'-client-cert.pem'
+	else
+		I2IEAP_LOCALAUTH='auth = eap
+		eap_id = eaptest
+		# present an IKEv2 IDi that matches the responder's
+		# peers_id (fqdn "eaptest"); otherwise charon sends its IP
+		# (IDT_IPADDR) and the responder's peers_id check (RFC
+		# 7296 s2.16 enforcement) correctly refuses it.  A bare
+		# 'eaptest' (no '@') is inferred as an FQDN-type identity
+		# by strongSwan, matching peers_id fqdn.'
+	fi
 	cat > "$C/eap-conn.conf" <<EOF
 connections {
 	r2eap {
@@ -152,14 +236,7 @@ connections {
 		local_addrs = $HI
 		remote_addrs = $HR
 		local {
-			auth = eap
-			eap_id = eaptest
-			# present an IKEv2 IDi that matches the responder's
-			# peers_id (fqdn "eaptest"); otherwise charon sends its IP
-			# (IDT_IPADDR) and the responder's peers_id check (RFC
-			# 7296 s2.16 enforcement) correctly refuses it.  A bare
-			# 'eaptest' (no '@') is inferred as an FQDN-type identity
-			# by strongSwan, matching peers_id fqdn.
+			$I2IEAP_LOCALAUTH
 			id = eaptest
 		}
 		remote {
@@ -251,9 +328,11 @@ EOF
 		log "FAIL: not ESTABLISHED (charon=${ce:-0} iked=${se:-0})"
 		fail=1
 	fi
-	# MSK + EAP-Success on the responder (the milestone-1 core)
+	# MSK + EAP-Success on the responder (the milestone-1 core).  charon
+	# logs the EAP success with the method name (MSCHAPv2 vs TLS), so
+	# match either "with EAP successful" or the EAP-TLS form.
 	msk=$(grep -c "MSK stored (l=64)" "$D/resp-iked.log" 2>/dev/null)
-	auth=$(grep -c "authentication of 'racoon2-eap' with EAP successful" "$D/charon-init.log" 2>/dev/null)
+	auth=$(grep -cE "with (EAP|EAP-TLS) successful" "$D/charon-init.log" 2>/dev/null)
 	[ "${msk:-0}" -ge 1 ] && [ "${auth:-0}" -ge 1 ] || {
 		log "FAIL: MSK/AUTH evidence missing (msk=${msk:-0} auth=${auth:-0})"
 		fail=1
@@ -265,6 +344,7 @@ EOF
 		fail=1
 	fi
 
-	[ "$fail" -eq 0 ] && log "PASS $name (EAP-MSCHAPv2 + responder cert -> ESTABLISHED, ESP up)"
+	method=MSCHAPv2; [ "$I2IEAP_TLS" -eq 1 ] && method=EAP-TLS
+	[ "$fail" -eq 0 ] && log "PASS $name (EAP-$method + responder cert -> ESTABLISHED, ESP up)"
 	return "$fail"
 }
