@@ -152,6 +152,10 @@ dnssec_ta_decode(const char *hex, size_t *len)
 	if (hex == NULL)
 		return NULL;
 	n = strlen(hex) / 2;
+	/* Reject non-even-length hex: a trailing nibble on a typo'd anchor
+	 * would otherwise be silently dropped and wrong wire bytes emitted. */
+	if (strlen(hex) % 2 != 0 || n == 0)
+		return NULL;
 	out = racoon_malloc(n);
 	if (!out)
 		return NULL;
@@ -799,10 +803,15 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 	/* Split-DNS DNSSEC trust anchor (RFC 8598 §8).  The responder cannot
 	 * source a trust anchor from DNS, so the operator configures it as a
 	 * hex `dnssec_ta` (DS-style Key Tag|Alg|Digest Type|Digest Data); when
-	 * the peer asked for INTERNAL_DNSSEC_TA (26) and one is configured,
-	 * emit it IMMEDIATELY AFTER the INTERNAL_DNS_DOMAIN (25) it belongs
-	 * to (RFC 8598 §4.2: a 26 not preceded by a 25 is ignored). */
-	if (param->cfg_dnssec_ta && ikev2_dnssec_ta(ike_sa->rmconf)) {
+	 * the peer asked for INTERNAL_DNSSEC_TA (26) AND a 25 will actually be
+	 * emitted (domain requested + configured), emit 26 IMMEDIATELY AFTER
+	 * that INTERNAL_DNS_DOMAIN (25) it belongs to (RFC 8598 §3.1/§4.2: 26
+	 * carries no domain name and relies on the preceding 25, so it must
+	 * never be emitted as a stray / unpaired attribute — a receiver MUST
+	 * ignore an un-paired 26). */
+	if (param->cfg_dnssec_ta && param->cfg_dns_domain &&
+	    ikev2_dnssec_ta(ike_sa->rmconf) &&
+	    ikev2_dns_domain(ike_sa->rmconf)) {
 		const char *ta = rc_vmem2str(ikev2_dnssec_ta(ike_sa->rmconf));
 		uint8_t *ta_raw;
 		size_t ta_len = 0;
@@ -810,6 +819,8 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 
 		ta_raw = dnssec_ta_decode(ta, &ta_len);
 		if (ta_raw == NULL || ta_len == 0) {
+			if (ta_raw)
+				racoon_free(ta_raw);
 			plog(PLOG_INTWARN, PLOGLOC, NULL,
 			     "dnssec_ta: cannot decode configured trust anchor\n");
 			goto err;

@@ -556,14 +556,16 @@ main(int argc, char *argv[])
 		rc_vfree(ikm.dns_domain);
 		rc_vfree(ikm.dnssec_ta);
 
-		/* negative: 26 NOT emitted when the peer did not ask for it */
+		/* negative: 26 NOT emitted when the peer did not ask for it,
+		 * nor when it asked for 26 but NOT 25 (RFC 8598 §3.1/§4.2:
+		 * 26 relies on the preceding 25 and must not float alone) */
 		{
 			struct ikev2_child_param p2;
 			struct ikev2_sa isa2;
 			uint8_t *body2;
 			size_t blen2;
 			struct ikev2payl_config_h *cfgh2;
-			int n26b = 0;
+			int n26b = 0, i2;
 
 			memset(&isa2, 0, sizeof(isa2));
 			isa2.rmconf = &rm;   /* configured */
@@ -577,7 +579,7 @@ main(int argc, char *argv[])
 				body2 = (uint8_t *)p2.cfg_payload->v +
 				    sizeof(*cfgh2);
 				blen2 = p2.cfg_payload->l - sizeof(*cfgh2);
-				for (i = 0; blen2 > 0; ++i) {
+				for (i2 = 0; blen2 > 0; ++i2) {
 					struct ikev2cfg_attrib *a =
 					    (struct ikev2cfg_attrib *)body2;
 					unsigned int t, l;
@@ -595,6 +597,48 @@ main(int argc, char *argv[])
 				CK(n26b == 0,
 				   "no 26 emitted without a 26 request");
 				rc_vfree(p2.cfg_payload);
+			}
+
+			/* requests 26 but NOT 25 -> still no 26 (unpaired) */
+			{
+				struct ikev2_child_param p3;
+				struct ikev2_sa isa3;
+				uint8_t *body3;
+				size_t blen3;
+				struct ikev2payl_config_h *cfgh3;
+				int n26c = 0, i3;
+
+				memset(&isa3, 0, sizeof(isa3));
+				isa3.rmconf = &rm;
+				ikev2_child_param_init(&p3);
+				p3.cfg_dnssec_ta = 1;   /* 26 yes, 25 no */
+				CK(ikev2_create_config_reply(&isa3, &c, &p3) == 0,
+				   "reply rc==0 (26 w/o 25)");
+				if (p3.cfg_payload) {
+					cfgh3 = (struct ikev2payl_config_h *)
+					    p3.cfg_payload->v;
+					body3 = (uint8_t *)p3.cfg_payload->v +
+					    sizeof(*cfgh3);
+					blen3 = p3.cfg_payload->l - sizeof(*cfgh3);
+					for (i3 = 0; blen3 > 0; ++i3) {
+						struct ikev2cfg_attrib *a =
+						    (struct ikev2cfg_attrib *)body3;
+						unsigned int t, l;
+						if (blen3 < sizeof(*a))
+							break;
+						t = IKEV2CFG_ATTR_TYPE(a);
+						l = IKEV2CFG_ATTR_LENGTH(a);
+						if (sizeof(*a) + l > blen3)
+							break;
+						if (t == IKEV2_CFG_INTERNAL_DNSSEC_TA)
+							n26c++;
+						body3 += sizeof(*a) + l;
+						blen3 -= sizeof(*a) + l;
+					}
+					CK(n26c == 0,
+					   "no 26 without a 25 (unpaired, RFC 8598 §3.1)");
+					rc_vfree(p3.cfg_payload);
+				}
 			}
 		}
 
