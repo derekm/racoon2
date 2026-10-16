@@ -729,6 +729,88 @@ main(int argc, char *argv[])
 			if (c.internal_dns_domain)
 				rc_vfree(c.internal_dns_domain);
 		}
+
+		/* receive-side negative (RFC 8598 §4.2 MUST): a 26 not
+		 * immediately preceded by its 25 (or another 26) is ignored,
+		 * not committed.  Two cases: a lone 26, and a 26 after an
+		 * unrelated attribute (which breaks adjacency). */
+		{
+			uint8_t buf2[256];
+			uint8_t off2 = 0;
+			struct ikev2payl_config *cfg2;
+			struct ikev2_sa isa2;
+			struct ikev2_child_sa c2;
+			struct ikev2cfg_attrib *a2;
+
+			/* lone 26: no preceding 25/26 */
+			memset(buf2, 0, sizeof(buf2));
+			cfg2 = (struct ikev2payl_config *)buf2;
+			cfg2->cfgh.cfg_type = IKEV2_CFG_REPLY;
+			off2 = sizeof(struct ikev2payl_config);
+			a2 = (struct ikev2cfg_attrib *)(buf2 + off2);
+			put_uint16(&a2->type, IKEV2_CFG_INTERNAL_DNSSEC_TA);
+			put_uint16(&a2->length, (uint16_t)tara_len);
+			memcpy(IKEV2CFG_ATTR_VALUE(a2), tara, tara_len);
+			off2 += sizeof(*a2) + tara_len;
+			{
+				uint8_t pl[2];
+				pl[0] = (uint8_t)((off2 >> 8) & 0xff);
+				pl[1] = (uint8_t)(off2 & 0xff);
+				memcpy((uint8_t *)&cfg2->header.payload_length, pl, 2);
+			}
+			cfg2->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+
+			memset(&c2, 0, sizeof(c2));
+			memset(&isa2, 0, sizeof(isa2));
+			ikev2_child_param_init(&c2.child_param);
+			CK(ikev2_process_config_reply(&isa2, &c2,
+			     &cfg2->header) == 0,
+			   "process_config_reply rc==0 (lone 26)");
+			CK(c2.internal_dnssec_ta == NULL,
+			   "lone 26 (no preceding 25) is IGNORED, not committed");
+			if (c2.internal_dnssec_ta)
+				rc_vfree(c2.internal_dnssec_ta);
+			if (c2.internal_dns_domain)
+				rc_vfree(c2.internal_dns_domain);
+
+			/* 26 after a non-25/non-26 attribute: adjacency broken.
+			 * SUPPORTED_ATTRIBUTES (14) is read-only (no allocation),
+			 * so this leaves nothing to free in the child. */
+			memset(buf2, 0, sizeof(buf2));
+			cfg2 = (struct ikev2payl_config *)buf2;
+			cfg2->cfgh.cfg_type = IKEV2_CFG_REPLY;
+			off2 = sizeof(struct ikev2payl_config);
+			a2 = (struct ikev2cfg_attrib *)(buf2 + off2);
+			put_uint16(&a2->type, IKEV2_CFG_SUPPORTED_ATTRIBUTES);
+			put_uint16(&a2->length, 4);
+			memcpy(IKEV2CFG_ATTR_VALUE(a2), "\x00\x19\x00\x1a", 4);
+			off2 += sizeof(*a2) + 4;
+			a2 = (struct ikev2cfg_attrib *)(buf2 + off2);
+			put_uint16(&a2->type, IKEV2_CFG_INTERNAL_DNSSEC_TA);
+			put_uint16(&a2->length, (uint16_t)tara_len);
+			memcpy(IKEV2CFG_ATTR_VALUE(a2), tara, tara_len);
+			off2 += sizeof(*a2) + tara_len;
+			{
+				uint8_t pl[2];
+				pl[0] = (uint8_t)((off2 >> 8) & 0xff);
+				pl[1] = (uint8_t)(off2 & 0xff);
+				memcpy((uint8_t *)&cfg2->header.payload_length, pl, 2);
+			}
+			cfg2->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+
+			memset(&c2, 0, sizeof(c2));
+			memset(&isa2, 0, sizeof(isa2));
+			ikev2_child_param_init(&c2.child_param);
+			CK(ikev2_process_config_reply(&isa2, &c2,
+			     &cfg2->header) == 0,
+			   "process_config_reply rc==0 (26 after SUPPORTED_ATTRIBUTES)");
+			CK(c2.internal_dnssec_ta == NULL,
+			   "26 after a non-25/26 attribute is IGNORED (adjacency broken)");
+			if (c2.internal_dnssec_ta)
+				rc_vfree(c2.internal_dnssec_ta);
+			if (c2.internal_dns_domain)
+				rc_vfree(c2.internal_dns_domain);
+		}
 	}
 
 	/* ================= B.5 shared emit: ikev2_push_ip_allowed =============
