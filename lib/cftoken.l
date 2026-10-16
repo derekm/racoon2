@@ -286,6 +286,7 @@ natd_public_address		{ DP; return(NATD_PUBLIC_ADDRESS); }
 require_config_payload	{ DP; return(REQUIRE_CONFIG); }
 application_version	{ DP; return(APPLICATION_VERSION); }
 dns_domain		{ DP; return(DNS_DOMAIN); }
+dnssec_ta		{ DP; return(DNSSEC_TA); }
 request			{ DP; return(REQUEST); }
 provide			{ DP; return(PROVIDE); }
 ip4			{ DP; return(IP4); }
@@ -391,6 +392,7 @@ pkcs12			{ DP; return(PKCS12); }
 ascii			{ DP; return(ASCII); }
 pre_shared_key		{ DP; return(PRE_SHARED_KEY); }
 redirect_to		{ DP; return(REDIRECT_TO); }
+accept_dns_domain		{ DP; return(ACCEPT_DNS_DOMAIN); }
 redirect_period		{ DP; return(REDIRECT_PERIOD); }
 redirect_max		{ DP; return(REDIRECT_MAX); }
 accept_redirect		{ DP; return(ACCEPT_REDIRECT); }
