@@ -32,10 +32,12 @@ kind_i2inatt() {
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
+	command -v tcpdump >/dev/null 2>&1 || { log "FAIL: no tcpdump"; return 1; }
 
-	_wild=0 _rebind=0 _follow=off _flood=0
+	_wild=0 _rebind=0 _follow=off _flood=0 _natk=0
 	case "$name" in
 	*-wild) _wild=1 ;;
+	*-keepalive) _natk=1 ;;
 	*-rebind-off) _rebind=1 _follow=off ;;
 	*-rebind) _rebind=1 _follow=on ;;
 	*-xfrmflood) _flood=1 ;;
@@ -160,8 +162,8 @@ EOF
 	}
 	_extra=
 	_nat_conf init 10.9.0.2 192.0.5.1 r2init-matrix racoon2-matrix off 0
-	[ "$_rebind" = 1 ] && _extra="
-		natt_follow_mapping $_follow;"
+	if [ "$_rebind" = 1 ] && [ -z "$_natk" ]; then _extra="
+		natt_follow_mapping $_follow;"; fi
 	_nat_conf resp 192.0.5.1 192.0.5.254 racoon2-matrix r2init-matrix on $_wild
 
 	ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$D/resp-ctl" RACOON2_RESUME_DIR="$PRIVRES_R" \
@@ -202,6 +204,38 @@ EOF
 		done
 		grep -q "racoon2-natt-tcp-$$" "$D/tcp-recv.txt" 2>/dev/null || \
 			_bad="${_bad:+$_bad; }TCP payload did not cross NAT-T transport"
+	fi
+
+	if [ "$_natk" = 1 ] && [ -z "$_bad" ]; then
+		# RFC 3948 §2.2 / RFC 7296 §3.23.5 NAT-T Keepalive, LIVE proof of
+		# natt_natk_callback (armed by natt_start_natk once a seat sees
+		# itself behind a NAT or its peer behind a NAT).  In this SNAT
+		# topology BOTH iked seats arm it (initiator behind_nat=Y,
+		# responder peer_behind_nat=Y) and each sends a 1-byte 0xff
+		# keepalive to the floated UDP:4500; the responder's own keepalive
+		# (192.0.5.1 -> 192.0.5.254) is outbound on its veth, the
+		# initiator's is inbound, so capture ANY 1-byte UDP:4500 frame on
+		# the responder's veth (tcpdump prints 1-byte payloads as "UDP,
+		# length 1" / names them isakmp-nat-keep-alive).  tcpdump's
+		# greater/less are WIRE bytes incl. the 14-byte Ethernet header:
+		# a 1-byte keepalive = 14+20(IP)+8(UDP)+1 = 43, so 'less 50'
+		# catches it; ESP-in-UDP frames are far larger.
+		ip netns exec "$NSR" tcpdump -nni "$VR2" -c 1 \
+			'udp port 4500 and less 50' \
+			> "$D/natk.txt" 2>"$D/natk-err.txt" &
+		_tp=$!
+		_w=0
+		while [ "$_w" -lt 32 ] && \
+		      ! grep -qE 'isakmp-nat-keep-alive|length 1' "$D/natk.txt" 2>/dev/null; do
+			_w=$((_w+1)); sleep 1
+		done
+		kill "$_tp" 2>/dev/null || true
+		if grep -qE 'isakmp-nat-keep-alive|length 1' "$D/natk.txt" 2>/dev/null; then
+			log "RFC 3948 NAT Keepalive (1-byte 0xff on UDP:4500) observed"
+		else
+			_bad="${_bad:+$_bad; }no 1-byte NAT Keepalive (0xff) on UDP:4500"
+			cat "$D/natk-err.txt" "$D/natk.txt" 2>/dev/null | tail -5
+		fi
 	fi
 
 	if [ "$_wild" = 1 ] && [ -z "$_bad" ]; then
@@ -364,6 +398,8 @@ EOF
 			log "PASS $name (NAT rebinding, natt_follow_mapping $_follow)"
 		elif [ "$_flood" = 1 ]; then
 			log "PASS $name (ENOBUFS overflow resynced, child rekeyed, SPD intact)"
+		elif [ "$_natk" = 1 ]; then
+			log "PASS $name (NAT-T across SNAT + RFC 3948 NAT Keepalive 0xff on UDP:4500)"
 		else
 			log "PASS $name (NAT-T transport across SNAT: esp SAs, ICMP+TCP, N4 NAT-OA)"
 		fi
