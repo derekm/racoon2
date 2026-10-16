@@ -565,12 +565,39 @@ ikev2_child_script_hook(struct ikev2_child_sa *child_sa, int script)
 		return;
 
 	/*
-	 * INTERNAL_DNS_DOMAIN (RFC 8598 §7.2 split-DNS suffix)
+	 * INTERNAL_DNS_DOMAIN (RFC 8598 §7.2 split-DNS suffixes): space-
+	 * separated list of the validated, accept_dns_domain-allowed domains
 	 */
 	if (script_env_append(&envp, &envc, "INTERNAL_DNS_DOMAIN",
 			      (child_sa->internal_dns_domain ?
 			       rc_vmem2str(child_sa->internal_dns_domain) : "")))
 		return;
+
+	/*
+	 * INTERNAL_DNSSEC_TA (RFC 8598 §8 trust anchor, hex-encoded raw
+	 * Key Tag|Alg|Digest Type|Digest Data)
+	 */
+	if (child_sa->internal_dnssec_ta) {
+		static const char hexdig[] = "0123456789abcdef";
+		const uint8_t *ta = child_sa->internal_dnssec_ta->v;
+		size_t i, tl = child_sa->internal_dnssec_ta->l;
+		char *hex = racoon_malloc(tl * 2 + 1);
+
+		if (hex) {
+			for (i = 0; i < tl; i++) {
+				unsigned char c = ta[i];
+				hex[i * 2]     = hexdig[c >> 4];
+				hex[i * 2 + 1] = hexdig[c & 0xf];
+			}
+			hex[tl * 2] = '\0';
+			if (script_env_append(&envp, &envc,
+					      "INTERNAL_DNSSEC_TA", hex)) {
+				racoon_free(hex);
+				return;
+			}
+			racoon_free(hex);
+		}
+	}
 
 	/*
 	 * APPLICATION_VERSION

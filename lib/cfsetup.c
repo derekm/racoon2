@@ -231,6 +231,7 @@ static int rcf_fix_my_public_key (struct cf_list *, void *);
 static int rcf_fix_peers_public_key (struct cf_list *, void *);
 static int rcf_fix_pre_shared_key (struct cf_list *, void *);
 static int rcf_fix_redirect_to (struct cf_list *, void *);
+static int rcf_fix_accept_dns_domain (struct cf_list *, void *);
 static int rcf_fix_redirect_period (struct cf_list *, void *);
 static int rcf_fix_redirect_max (struct cf_list *, void *);
 static int rcf_fix_accept_redirect (struct cf_list *, void *);
@@ -249,6 +250,7 @@ static int rcf_fix_dns (struct cf_list *, void *);
 static int rcf_fix_dhcp (struct cf_list *, void *);
 static int rcf_fix_application_version (struct cf_list *, void *);
 static int rcf_fix_dns_domain (struct cf_list *, void *);
+static int rcf_fix_dnssec_ta (struct cf_list *, void *);
 static int rcf_fix_mip6_home_prefix (struct cf_list *, void *);
 	/* selector */
 static int rcf_fix_selector (struct rcf_selector **);
@@ -361,6 +363,7 @@ struct rcf_tdf_t {
 	{ CFD_PEERS_IPADDR,		rcf_fix_peers_ipaddr, },
 	{ CFD_PEERS_KMP_PORT,		rcf_fix_peers_kmp_port, },
 	{ CFD_VERIFY_ID,		rcf_fix_verify_id, },
+	{ CFD_ACCEPT_DNS_DOMAIN,		rcf_fix_accept_dns_domain, },
 	{ CFD_REDIRECT_PERIOD,		rcf_fix_redirect_period, },
 	{ CFD_REDIRECT_MAX,		rcf_fix_redirect_max, },
 	{ CFD_ACCEPT_REDIRECT,		rcf_fix_accept_redirect, },
@@ -435,6 +438,7 @@ struct rcf_tdf_t {
 	{ CFD_DHCP,			rcf_fix_dhcp },
 	{ CFD_APPLICATION_VERSION,	rcf_fix_application_version },
 	{ CFD_DNS_DOMAIN,		rcf_fix_dns_domain },
+	{ CFD_DNSSEC_TA,		rcf_fix_dnssec_ta },
 	{ CFD_MIP6_HOME_PREFIX,		rcf_fix_mip6_home_prefix },
 	/* selector */
 	{ CFD_SELECTOR_ORDER,		rcf_fix_selector_order, },
@@ -1953,6 +1957,19 @@ rcf_fix_redirect_period(struct cf_list *head, void *dst0)
 }
 
 static int
+rcf_fix_accept_dns_domain(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ACCEPT_DNS_DOMAIN))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->accept_dns_domain))
+		return -1;
+
+	return 0;
+}
+
+static int
 rcf_fix_radius_server(struct cf_list *head, void *dst0)
 {
 	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
@@ -2185,6 +2202,18 @@ rcf_fix_dns_domain(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_DNS_DOMAIN))
 		return -1;
 	if (rcf_fix_string(head->nextp, &dst->dns_domain))
+		return -1;
+	return 0;
+}
+
+static int
+rcf_fix_dnssec_ta(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp	*dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_DNSSEC_TA))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->dnssec_ta))
 		return -1;
 	return 0;
 }
@@ -3564,6 +3593,7 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rcf_clean_pklist(n->peers_pubkey);
 	rc_vfree(n->pre_shared_key);
 	rc_vfree(n->redirect_to);
+	rc_vfree(n->accept_dns_domain);
 	rc_vfree(n->my_principal);
 	rc_vfree(n->peers_principal);
 	rc_vfree(n->addresspool);
@@ -3571,6 +3601,8 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rc_vfree(n->radius_server);
 	rc_vfree(n->radius_secret_file);
 	rc_vfree(n->session_resume_ticket_key);
+	rc_vfree(n->dns_domain);
+	rc_vfree(n->dnssec_ta);
 	rc_free(n);
 }
 
@@ -3621,6 +3653,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_VDUP(src->peers_principal, new->peers_principal);
 	DEEPCOPY_VDUP(src->pre_shared_key, new->pre_shared_key);
 	DEEPCOPY_VDUP(src->redirect_to, new->redirect_to);
+	DEEPCOPY_VDUP(src->accept_dns_domain, new->accept_dns_domain);
 	new->redirect_period = src->redirect_period;
 	new->redirect_max = src->redirect_max;
 	new->accept_redirect = src->accept_redirect;
@@ -3661,6 +3694,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_ADDRLIST(src->cfg_dhcp, new->cfg_dhcp);
 	DEEPCOPY_VDUP(src->application_version, new->application_version);
 	DEEPCOPY_VDUP(src->dns_domain, new->dns_domain);
+	DEEPCOPY_VDUP(src->dnssec_ta, new->dnssec_ta);
 	new->dpd = src->dpd;
 	new->dpd_interval = src->dpd_interval;
 	new->dpd_retry = src->dpd_retry;
