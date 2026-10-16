@@ -32,6 +32,9 @@
 #include <config.h>
 
 #include <assert.h>
+#include <ctype.h>
+#include <string.h>
+#include <strings.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -139,6 +142,46 @@ cfg_attrib_set(struct ikev2cfg_attrib *a, unsigned int type, unsigned int length
 	put_uint16(&a->length, length);
 }
 
+/* RFC 8598 §4.2 INTERNAL_DNSSEC_TA (26) payload: the configured value is a
+ * hex string (DS-style DNSKEY Key Tag|Algorithm|Digest Type|Digest Data).
+ * Decode it strictly to the raw wire bytes: every byte must be exactly two
+ * hex digits, the total length must be even, and an anchor is at least
+ * 5 bytes (2+1+1 Key Tag+Alg+Digest Type plus a non-empty Digest Data).
+ * A lenient sscanf("%2x") would accept a partial pair like "0g" as "0" and
+ * silently emit wrong bytes.  Returns a malloc'd buffer or NULL. */
+static uint8_t *
+dnssec_ta_decode(const char *hex, size_t *len)
+{
+	size_t n, i;
+	uint8_t *out;
+	const char *h = hex;
+
+	if (h == NULL)
+		return NULL;
+	n = strlen(h);
+	/* even length, at least 5 bytes (10 hex digits), all hex */
+	if (n < 10 || (n % 2) != 0)
+		return NULL;
+	for (i = 0; i < n; i++) {
+		if (!isxdigit((unsigned char)h[i]))
+			return NULL;
+	}
+	n /= 2;
+	out = racoon_malloc(n);
+	if (!out)
+		return NULL;
+	for (i = 0; i < n; i++) {
+		unsigned v;
+		if (sscanf(h + 2 * i, "%2x", &v) != 1) {
+			racoon_free(out);
+			return NULL;
+		}
+		out[i] = (uint8_t)v;
+	}
+	*len = n;
+	return out;
+}
+
 
 /*
  * create CFG_REQUEST Config payload for Initiator (client)
@@ -216,6 +259,25 @@ ikev2_create_config_request(struct ikev2_child_sa *child_sa)
 		cfg_attrib_set(&hdr, IKEV2_CFG_MIP6_HOME_PREFIX, 0);
 		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)))
 			goto err;
+	}
+
+	if (ikev2_cfg_dns_domain(ike_sa->rmconf) == RCT_BOOL_ON) {
+		/* RFC 8598 §3.1: an initiator indicates split-DNS support by
+		 * requesting INTERNAL_DNS_DOMAIN (25); request it (zero-length)
+		 * so the responder knows to offer 25, and 26 when it asks for a
+		 * DNSSEC trust anchor too. */
+		TRACE((PLOGLOC, "INTERNAL_DNS_DOMAIN\n"));
+		need_cfg = TRUE;
+		cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_DNS_DOMAIN, 0);
+		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)))
+			goto err;
+		if (ikev2_cfg_dnssec_ta(ike_sa->rmconf) == RCT_BOOL_ON) {
+			/* RFC 8598 §3.1: 26 is only meaningful alongside 25. */
+			TRACE((PLOGLOC, "INTERNAL_DNSSEC_TA\n"));
+			cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_DNSSEC_TA, 0);
+			if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)))
+				goto err;
+		}
 	}
 
 #ifdef notyet
@@ -479,6 +541,9 @@ ikev2_process_cfg_request_attribs(struct ikev2_sa *ike_sa,
 			break;
 		case IKEV2_CFG_INTERNAL_DNS_DOMAIN:
 			++param->cfg_dns_domain;
+			break;
+		case IKEV2_CFG_INTERNAL_DNSSEC_TA:
+			++param->cfg_dnssec_ta;
 			break;
 		case IKEV2_CFG_MIP6_HOME_PREFIX:
 			++param->cfg_mip6_home_prefix;
@@ -765,6 +830,43 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 			goto err;
 	}
 
+	/* Split-DNS DNSSEC trust anchor (RFC 8598 §8).  The responder cannot
+	 * source a trust anchor from DNS, so the operator configures it as a
+	 * hex `dnssec_ta` (DS-style Key Tag|Alg|Digest Type|Digest Data); when
+	 * the peer asked for INTERNAL_DNSSEC_TA (26) AND a 25 will actually be
+	 * emitted (domain requested + configured), emit 26 IMMEDIATELY AFTER
+	 * that INTERNAL_DNS_DOMAIN (25) it belongs to (RFC 8598 §3.1/§4.2: 26
+	 * carries no domain name and relies on the preceding 25, so it must
+	 * never be emitted as a stray / unpaired attribute — a receiver MUST
+	 * ignore an un-paired 26). */
+	if (param->cfg_dnssec_ta && param->cfg_dns_domain &&
+	    ikev2_dnssec_ta(ike_sa->rmconf) &&
+	    ikev2_dns_domain(ike_sa->rmconf)) {
+		const char *ta = rc_vmem2str(ikev2_dnssec_ta(ike_sa->rmconf));
+		uint8_t *ta_raw;
+		size_t ta_len = 0;
+		struct ikev2cfg_attrib hdr;
+
+		ta_raw = dnssec_ta_decode(ta, &ta_len);
+		if (ta_raw == NULL || ta_len == 0) {
+			/* A typo'd/odd-length dnssec_ta must not fail the whole
+			 * CFG_REPLY (childful code would report INVALID_SYNTAX
+			 * and drop address assignment).  Omit 26 and warn; the
+			 * operator's config error is visible but harmless. */
+			plog(PLOG_INTWARN, PLOGLOC, NULL,
+			     "dnssec_ta: cannot decode configured trust anchor; omitting INTERNAL_DNSSEC_TA (26)\n");
+		} else {
+			TRACE((PLOGLOC, "INTERNAL_DNSSEC_TA: %zu bytes\n", ta_len));
+			cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_DNSSEC_TA, ta_len);
+			if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
+			    ! rc_vconcat(cfg_payload, ta_raw, ta_len)) {
+				racoon_free(ta_raw);
+				goto err;
+			}
+			racoon_free(ta_raw);
+		}
+	}
+
 	if (param->cfg_mip6_home_prefix &&
 	    ikev2_mip6_home_prefix(ike_sa->rmconf)) {
 		struct ikev2cfg_attrib	hdr;
@@ -913,6 +1015,86 @@ ikev2_process_mip6_home_prefix(struct ikev2_child_sa *child_sa, uint8_t *addr,
 }
 
 
+
+/*
+ * REVIEW_2026-10-18 M4 (RFC 8598 §5/§9): validate a peer-supplied
+ * INTERNAL_DNS_DOMAIN.  Accepts only an LDH domain name (RFC 1123
+ * labels of 1..63 letters/digits/hyphens, no leading/trailing hyphen),
+ * total <= 253 octets, an optional single trailing dot; no NUL, control
+ * characters, spaces or shell metacharacters.  On success writes the
+ * lower-cased name without the trailing dot to out and returns 0.
+ */
+int
+ikev2_dns_domain_normalize(const uint8_t *v, size_t len, char *out,
+			   size_t outlen)
+{
+	size_t i, lab = 0, labels = 0;
+
+	if (len > 0 && v[len - 1] == '.')
+		--len;
+	if (len == 0 || len > 253 || len + 1 > outlen)
+		return -1;
+	for (i = 0; i < len; ++i) {
+		uint8_t c = v[i];
+
+		if (c == '.') {
+			if (lab == 0 || v[i - 1] == '-')
+				return -1;
+			lab = 0;
+			out[i] = '.';
+			continue;
+		}
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		      (c >= '0' && c <= '9') || c == '-'))
+			return -1;
+		if (c == '-' && lab == 0)
+			return -1;
+		if (lab == 0)
+			++labels;
+		if (++lab > 63)
+			return -1;
+		out[i] = (char)tolower(c);
+	}
+	if (lab == 0 || v[len - 1] == '-')
+		return -1;
+	out[len] = '\0';
+	return labels > 0 ? 0 : -1;
+}
+
+/*
+ * Is the (normalized) domain inside the accept_dns_domain allowlist?  The
+ * list is comma/space separated; an entry matches the domain itself and
+ * any subdomain ("corp.example" allows "eng.corp.example", not
+ * "evilcorp.example").  NULL/empty list accepts nothing.
+ */
+int
+ikev2_dns_domain_allowed(const char *dom, const char *list)
+{
+	size_t dl;
+
+	if (!dom || !list)
+		return 0;
+	dl = strlen(dom);
+	while (*list) {
+		const char *e;
+		size_t el;
+
+		while (*list == ',' || *list == ' ' || *list == '\t')
+			++list;
+		for (e = list; *e && *e != ',' && *e != ' ' && *e != '\t'; ++e)
+			;
+		el = (size_t)(e - list);
+		if (el > 0 && list[el - 1] == '.')
+			--el;
+		if (el > 0 && el <= dl &&
+		    strncasecmp(dom + dl - el, list, el) == 0 &&
+		    (el == dl || dom[dl - el - 1] == '.'))
+			return 1;
+		list = e;
+	}
+	return 0;
+}
+
 static int
 ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				struct ikev2_child_sa *child_sa,
@@ -920,7 +1102,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 {
 	struct ikev2cfg_attrib	*attr;
 	size_t	bytes;
-	unsigned int type;
+	unsigned int type, prev_type = 0;
 	size_t	len;
 	uint8_t	*value;
 	char	addrstr[INET6_ADDRSTRLEN];
@@ -1113,19 +1295,79 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			}
 			break;
 		}
-		case IKEV2_CFG_INTERNAL_DNS_DOMAIN:
+		case IKEV2_CFG_INTERNAL_DNS_DOMAIN: {
 			/* RFC 8598 §7.2: a split-DNS suffix the initiator should
-			 * steer through this SA.  Commit to the child so the
-			 * updown script sees INTERNAL_DNS_DOMAIN. */
-			TRACE((PLOGLOC, "INTERNAL_DNS_DOMAIN: %.*s\n",
-			       (int)len, value));
-			rc_vfreez(child_sa->internal_dns_domain);
-			child_sa->internal_dns_domain = rc_vmalloc(len + 1);
-			if (!child_sa->internal_dns_domain)
+			 * steer through this SA.  REVIEW_2026-10-18 M4: it is
+			 * peer-controlled and lands in the updown environment,
+			 * so it must be a syntactically valid LDH name AND
+			 * inside the local accept_dns_domain allowlist (RFC
+			 * 8598 §5/§9; default: accept none).  Accepted
+			 * domains accumulate (several 25s are legal) as a
+			 * space-separated list. */
+			char dom[256];
+			size_t ol;
+			rc_vchar_t *nv;
+
+			prev_type = 0;	/* a 26 may only follow an ACCEPTED 25 */
+			if (ikev2_dns_domain_normalize(value, len, dom,
+			    sizeof(dom)) != 0) {
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
+				    PLOGLOC, "INTERNAL_DNS_DOMAIN is not a valid "
+				    "LDH domain name (%zu octets), ignored\n", len);
+				break;
+			}
+			if (!ikev2_dns_domain_allowed(dom,
+			    ikev2_accept_dns_domain(ike_sa->rmconf) ?
+			    rc_vmem2str(ikev2_accept_dns_domain(ike_sa->rmconf))
+			    : NULL)) {
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
+				    PLOGLOC, "INTERNAL_DNS_DOMAIN %s not in "
+				    "accept_dns_domain, ignored\n", dom);
+				break;
+			}
+			TRACE((PLOGLOC, "INTERNAL_DNS_DOMAIN: %s\n", dom));
+			ol = child_sa->internal_dns_domain ?
+			    strlen(child_sa->internal_dns_domain->s) : 0;
+			nv = rc_vmalloc(ol + (ol ? 1 : 0) + strlen(dom) + 1);
+			if (!nv)
 				return -1;
-			memcpy(child_sa->internal_dns_domain->v, value, len);
-			child_sa->internal_dns_domain->s[len] = '\0';
-			child_sa->internal_dns_domain->l = len + 1;
+			if (ol) {
+				memcpy(nv->v, child_sa->internal_dns_domain->v, ol);
+				nv->s[ol++] = ' ';
+			}
+			memcpy(nv->s + ol, dom, strlen(dom) + 1);
+			rc_vfreez(child_sa->internal_dns_domain);
+			child_sa->internal_dns_domain = nv;
+			/* RFC 8598 §4.2: a 26 trust anchor may only follow a 25
+			 * (or another 26) for the same domain. */
+			prev_type = IKEV2_CFG_INTERNAL_DNS_DOMAIN;
+			break;
+		}
+		case IKEV2_CFG_INTERNAL_DNSSEC_TA:
+			/* RFC 8598 §4.2: a 26 not immediately preceded by a 25
+			 * (or another 26 for the same domain) MUST be ignored —
+			 * it carries no domain name of its own and would be
+			 * ambiguous.  Drop it silently rather than commit it. */
+			if (prev_type != IKEV2_CFG_INTERNAL_DNS_DOMAIN &&
+			    prev_type != IKEV2_CFG_INTERNAL_DNSSEC_TA) {
+				TRACE((PLOGLOC,
+				       "INTERNAL_DNSSEC_TA without preceding domain, ignored\n"));
+				prev_type = 0;
+				break;
+			}
+			/* RFC 8598 §8: a DNSSEC trust anchor (Key Tag|Alg|
+			 * Digest Type|Digest Data) for the domain in the
+			 * immediately preceding INTERNAL_DNS_DOMAIN (25).
+			 * Commit the raw bytes so the updown script receives
+			 * INTERNAL_DNSSEC_TA (hex-encoded). */
+			TRACE((PLOGLOC, "INTERNAL_DNSSEC_TA: %zu bytes\n", len));
+			rc_vfreez(child_sa->internal_dnssec_ta);
+			child_sa->internal_dnssec_ta = rc_vmalloc(len);
+			if (!child_sa->internal_dnssec_ta)
+				return -1;
+			memcpy(child_sa->internal_dnssec_ta->v, value, len);
+			child_sa->internal_dnssec_ta->l = len;
+			prev_type = IKEV2_CFG_INTERNAL_DNSSEC_TA;
 			break;
 		case IKEV2_CFG_MIP6_HOME_PREFIX:
 			{
@@ -1145,6 +1387,13 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				   type, len);
 			break;
 		}
+		/* RFC 8598 §4.2 adjacency: a 26 may only follow a 25 (or another
+		 * 26) for the same domain.  Only a 25/26 leaves prev_type set;
+		 * any other attribute in between resets it so a later dangling
+		 * 26 is seen as unpaired and ignored. */
+		if (type != IKEV2_CFG_INTERNAL_DNS_DOMAIN &&
+		    type != IKEV2_CFG_INTERNAL_DNSSEC_TA)
+			prev_type = 0;
 	}
 
 	return 0;

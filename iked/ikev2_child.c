@@ -323,6 +323,7 @@ ikev2_child_param_init(struct ikev2_child_param *p)
 	p->cfg_supported_attributes = 0;
 	p->cfg_ip4_subnet = 0;
 	p->cfg_dns_domain = 0;
+	p->cfg_dnssec_ta = 0;
 	p->cfg_ip6_subnet = 0;
 }
 
@@ -597,6 +598,8 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 		rc_vfree(sa->peer_application_version);
 	if (sa->internal_dns_domain)
 		rc_vfree(sa->internal_dns_domain);
+	if (sa->internal_dnssec_ta)
+		rc_vfree(sa->internal_dnssec_ta);
 
 	racoon_free(sa);
 }

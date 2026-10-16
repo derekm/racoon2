@@ -157,6 +157,7 @@ typedef enum {
 #define	RCF_REQ_IP4_ADDRESS	0x0040
 #define	RCF_REQ_IP6_ADDRESS	0x0080
 #define	RCF_REQ_DNS_DOMAIN	0x0100
+#define	RCF_REQ_DNSSEC_TA	0x0200
 
 /*
  * structures for global use
@@ -306,6 +307,7 @@ struct rcf_kmp {
 	struct rc_addrlist	*cfg_dhcp;
 	rc_vchar_t	*application_version;
 	rc_vchar_t	*dns_domain;
+	rc_vchar_t	*dnssec_ta;
 	struct rc_addrlist	*cfg_mip6prefix;
 	rc_type dpd;		/* Negotiate DPD support ? */
 	int dpd_interval;	/* in seconds */
@@ -412,6 +414,8 @@ struct rcf_kmp {
 	 * client re-initiates against the listed gateway (load-balance /
 	 * maintenance / closure).  NULL = never redirect (RFC 5685 s3). */
 	rc_vchar_t *redirect_to;
+	/* RFC 8598 split-DNS allowlist (comma list) */
+	rc_vchar_t *accept_dns_domain;
 	/* RFC 5685 s7 REDIRECT_LOOP_DETECT_PERIOD (s) */
 	int redirect_period;
 	/* RFC 5685 s7 MAX_REDIRECTS */

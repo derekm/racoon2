@@ -144,6 +144,7 @@ struct rcf_kmp ikev1_default_values = {
 	NULL,			/* cfg_dhcp */
 	NULL,			/* application_version */
 	NULL,			/* dns_domain */
+	NULL,			/* dnssec_ta */
 	NULL,			/* mip6_home_prefix */
 	RCT_BOOL_ON,		/* dpd */
 	0,			/* dpd_interval */
@@ -210,6 +211,7 @@ struct rcf_kmp ikev2_default_values = {
 	NULL,			/* cfg_dhcp */
 	NULL,			/* application_version */
 	NULL,			/* dns_domain */
+	NULL,			/* dnssec_ta */
 	NULL,			/* mip6_home_prefix */
 	RCT_BOOL_ON,		/* dpd */
 	IKEV2_DEFAULT_POLLING_INTERVAL,	/* dpd_interval */
@@ -238,6 +240,7 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* allow_rfc_deprecated: refused unless on */
 	RCT_BOOL_OFF,		/* natt_follow_mapping (XFRM_MSG_MAPPING) */
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
+	NULL,		/* accept_dns_domain */
 	300,		/* redirect_period */
 	5,		/* redirect_max */
 	RCT_BOOL_OFF,		/* accept_redirect */
@@ -494,6 +497,7 @@ IKEV2_CONF_ATTR(rc_type, use_ppk)
 IKEV2_CONF_ATTR(rc_type, childless)
 IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
+IKEV2_CONF_ATTR(rc_vchar_t *, accept_dns_domain)
 IKEV2_CONF_ATTR(int, redirect_period)
 IKEV2_CONF_ATTR(int, redirect_max)
 IKEV2_CONF_ATTR(rc_type, accept_redirect)
@@ -510,6 +514,7 @@ IKEV2_CONF_ATTR(struct rc_addrlist *, natd_public_address)
 IKEV2_CONF_ATTR(rc_type, need_pfs)
 IKEV2_CONF_ATTR(rc_vchar_t *, application_version)
 IKEV2_CONF_ATTR(rc_vchar_t *, dns_domain)
+IKEV2_CONF_ATTR(rc_vchar_t *, dnssec_ta)
 IKEV2_CONF_ATTR(int, dpd_interval)
 
 rc_type ikev2_config_required(struct rcf_remote *conf)
@@ -628,6 +633,7 @@ fname(struct rcf_remote *conf)						\
 
 IKEV2_CFG(ikev2_cfg_application_version, RCF_REQ_APPLICATION_VERSION)
 IKEV2_CFG(ikev2_cfg_dns_domain, RCF_REQ_DNS_DOMAIN)
+IKEV2_CFG(ikev2_cfg_dnssec_ta, RCF_REQ_DNSSEC_TA)
 IKEV2_CFG(ikev2_cfg_ip4_dns, RCF_REQ_IP4_DNS)
 IKEV2_CFG(ikev2_cfg_ip6_dns, RCF_REQ_IP6_DNS)
 IKEV2_CFG(ikev2_cfg_ip4_dhcp, RCF_REQ_IP4_DHCP)
@@ -5672,6 +5678,37 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 			++*err;
 			plog(PLOG_INTERR, PLOGLOC, 0,
 			     "remote %s ikev2 section lacks my_id\n", rm_index);
+		}
+
+		/* REVIEW_2026-10-18 M4: every accept_dns_domain entry must
+		 * itself be a valid LDH domain (no wildcards, no "."). */
+		if (ikev2_accept_dns_domain(rmconf)) {
+			const char *l = rc_vmem2str(
+			    ikev2_accept_dns_domain(rmconf));
+			char ent[256], nb[256];
+
+			while (l && *l) {
+				size_t el = 0;
+
+				while (*l == ',' || *l == ' ' || *l == '\t')
+					++l;
+				while (l[el] && l[el] != ',' && l[el] != ' ' &&
+				    l[el] != '\t')
+					++el;
+				if (el == 0)
+					break;
+				if (el >= sizeof(ent) ||
+				    (memcpy(ent, l, el), ent[el] = '\0',
+				     ikev2_dns_domain_normalize((uint8_t *)ent,
+				     el, nb, sizeof(nb)) != 0)) {
+					++*err;
+					plog(PLOG_INTERR, PLOGLOC, 0,
+					     "remote %s ikev2: accept_dns_domain entry "
+					     "\"%.*s\" is not a valid domain name\n",
+					     rm_index, (int)el, l);
+				}
+				l += el;
+			}
 		}
 
 		IKEV2_CONF(kmp_auth_method, rmconf, kmp_auth_method, 0);
