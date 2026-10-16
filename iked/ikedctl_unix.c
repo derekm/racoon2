@@ -53,6 +53,7 @@ usage(const char *p)
 "  %s [-s socket] delete-sa <peer> [esp|ah]\n"
 "  %s [-s socket] drain-sa <peer> [gw]\n"
 "\n"
+"  -j		JSON output (show-sa isakmp: IKE SA status as light metrics)\n"
 "esp/ah SAD: ip xfrm state / ip xfrm policy\n",
 		p, p, p, p, p, p, p, p);
 	exit(EXIT_FAILURE);
@@ -186,6 +187,8 @@ fill_index(struct admin_com_indexes *ndx, int family,
 	}
 }
 
+static int jsondump = 0;
+
 static void
 print_sa(const char *payload, size_t len)
 {
@@ -219,6 +222,50 @@ print_sa(const char *payload, size_t len)
 	}
 }
 
+/* Light status JSON (09-05 plan: "JSON/metrics. SNMP non-goal.").  Renders
+ * the same wire_ph1dump[] as print_sa() as a JSON array — consumed by
+ * monitoring/scripts.  No daemon-side change: show-sa isakmp already carries
+ * everything we serialize below. */
+static void
+print_sa_json(const char *payload, size_t len)
+{
+	const struct wire_ph1dump *pd;
+	char host[NI_MAXHOST];
+	int first = 1;
+	unsigned i;
+
+	if (len % sizeof(*pd)) {
+		printf("{\"error\":\"show-sa payload not a multiple of %zu\"}\n",
+		       sizeof(*pd));
+		return;
+	}
+	printf("{\"type\":\"IKE_SA_LIST\",\"count\":%d,\"sas\":[",
+	       (int)(len / sizeof(*pd)));
+	pd = (const struct wire_ph1dump *)payload;
+	while (len >= sizeof(*pd)) {
+		if (getnameinfo((struct sockaddr *)&pd->remote,
+				sizeof(pd->remote), host, sizeof(host),
+				NULL, 0, NI_NUMERICHOST) != 0)
+			snprintf(host, sizeof(host), "?");
+		if (!first)
+			printf(",");
+		first = 0;
+		printf("{\"remote\":\"%s\",\"initiator_cookie\":\"", host);
+		for (i = 0; i < 8; i++)
+			printf("%02x", pd->i_ck[i]);
+		printf("\",\"responder_cookie\":\"");
+		for (i = 0; i < 8; i++)
+			printf("%02x", pd->r_ck[i]);
+		printf("\",\"version\":%u,\"side\":\"%s\",\"status\":%d,"
+		       "\"phase2\":%d}",
+		       pd->version, pd->side == 0 ? "initiator" : "responder",
+		       pd->status, pd->ph2cnt);
+		pd++;
+		len -= sizeof(*pd);
+	}
+	printf("]}\n");
+}
+
 static void
 transact(void *req, size_t reqlen)
 {
@@ -237,9 +284,14 @@ transact(void *req, size_t reqlen)
 			     strerror(errn));
 		errx(EXIT_FAILURE, "%s", strerror(errn));
 	}
-	if ((rep->ac_cmd & ~ADMIN_FLAG_LONG_REPLY) == ADMIN_SHOW_SA)
-		print_sa((char *)(rep + 1),
-			 replen > sizeof(*rep) ? replen - sizeof(*rep) : 0);
+	if ((rep->ac_cmd & ~ADMIN_FLAG_LONG_REPLY) == ADMIN_SHOW_SA) {
+		if (jsondump)
+			print_sa_json((char *)(rep + 1),
+				      replen > sizeof(*rep) ? replen - sizeof(*rep) : 0);
+		else
+			print_sa((char *)(rep + 1),
+				 replen > sizeof(*rep) ? replen - sizeof(*rep) : 0);
+	}
 	free(rep);
 	free(req);
 }
@@ -282,10 +334,13 @@ main(int ac, char **av)
 	int c;
 	const char *pname = av[0];
 
-	while ((c = getopt(ac, av, "s:")) != -1) {
+	while ((c = getopt(ac, av, "s:j")) != -1) {
 		switch (c) {
 		case 's':
 			adminsock_path = optarg;
+			break;
+		case 'j':
+			jsondump = 1;
 			break;
 		default:
 			usage(pname);
