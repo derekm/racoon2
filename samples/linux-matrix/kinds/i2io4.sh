@@ -219,7 +219,12 @@ EOF
 	for _ns in "$NSR" "$NSI"; do
 		_xfrm=$(ip netns exec "$_ns" ip xfrm state 2>/dev/null)
 		esp=$(printf '%s\n' "$_xfrm" | grep -c 'proto esp'); esp=${esp:-0}
-		v6sels=$(printf '%s\n' "$_xfrm" | grep -cE 'sel src ::/0 dst ::/0'); v6sels=${v6sels:-0}
+		# sel v6-family with prefix /0 (the ::/0 class).  iproute2 prints
+		# an all-zero ::/0 for a bare class or the concrete /128 address
+		# with /0; either is the v6 selector over the v4 SA.  Require hex-or-
+		# colon before /0 (v6) in both src and dst — 0.0.0.0/0 has no colon
+		# and must not match.
+		v6sels=$(printf '%s\n' "$_xfrm" | grep -cE 'sel src [0-9a-f:]+/0 dst [0-9a-f:]+/0'); v6sels=${v6sels:-0}
 		[ "$esp" -ge 2 ] && [ "$v6sels" -eq "$esp" ] || v6sel=0
 	done
 	if [ "$v6sel" -eq 1 ]; then
