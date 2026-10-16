@@ -32,7 +32,6 @@ kind_i2inatt() {
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
-	command -v tcpdump >/dev/null 2>&1 || { log "FAIL: no tcpdump"; return 1; }
 
 	_wild=0 _rebind=0 _follow=off _flood=0 _natk=0
 	case "$name" in
@@ -206,6 +205,10 @@ EOF
 			_bad="${_bad:+$_bad; }TCP payload did not cross NAT-T transport"
 	fi
 
+	if [ "$_natk" = 1 ] && [ -z "$_bad" ]; then
+		command -v tcpdump >/dev/null 2>&1 || \
+			_bad="keepalive: no tcpdump (needed to capture the 1-byte 0xff frame)"
+	fi
 	if [ "$_natk" = 1 ] && [ -z "$_bad" ]; then
 		# RFC 3948 §2.2 / RFC 7296 §3.23.5 NAT-T Keepalive, LIVE proof of
 		# natt_natk_callback (armed by natt_start_natk once a seat sees
