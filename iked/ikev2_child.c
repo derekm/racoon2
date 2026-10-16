@@ -2502,6 +2502,27 @@ ikev2_sadb_outbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 	param->sa_src = my_addr;
 	param->sa_dst = peer_addr;
 
+	/* Linux XFRM: carry the inner traffic-selector family on the tunnel SA
+	 * so the v6 SPD policy can bind it.  fill_usersa() only stamps a
+	 * non-empty sel when sp_src/sp_dst are present, and otherwise falls
+	 * back to the SA-endpoint family (0.0.0.0/0 for a v4 SA pair) — that
+	 * drops the v6 selector in IPv6-over-IPv4 (FreeBSD's PF_KEY carries it
+	 * from the acquire, Linux does not).  Only set it when the selector
+	 * family differs from the SA endpoints: the v4-in-v4 path keeps its
+	 * template+reqid 0/0 binding (Cilium/kernel practice; an inner /32
+	 * would over-constrain).  fill_selector() derives the family from
+	 * sp_src/sp_dst and leaves prefix at 0 when pref_* is 0, producing
+	 * the canonical xfrm tunnel sel ::/0 that the CPL X6 gate checks. */
+	if (child_sa->selector && child_sa->selector->src &&
+	    child_sa->selector->dst &&
+	    child_sa->selector->src->a.ipaddr &&
+	    child_sa->selector->dst->a.ipaddr &&
+	    child_sa->selector->src->a.ipaddr->sa_family !=
+	    my_addr->sa_family) {
+		param->sp_src = child_sa->selector->src->a.ipaddr;
+		param->sp_dst = child_sa->selector->dst->a.ipaddr;
+	}
+
 	/* KAME/USAGI PF_KEY checks prefixes eventhough it does not use
 	 * them for SADB_ADD/UPDATE.  we need to fill with some sane value
 	 * here
@@ -2549,6 +2570,19 @@ ikev2_sadb_inbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 	param->sa_dst = my_addr;
 	param->pref_src = 0;
 	param->pref_dst = 0;
+
+	/* Inbound counterpart of the outbound SA: carry the v6 inner
+	 * selector on the tunnel SA when it differs from the v4 SA
+	 * endpoints (see ikev2_sadb_outbound for the rationale). */
+	if (child_sa->selector && child_sa->selector->src &&
+	    child_sa->selector->dst &&
+	    child_sa->selector->src->a.ipaddr &&
+	    child_sa->selector->dst->a.ipaddr &&
+	    child_sa->selector->src->a.ipaddr->sa_family !=
+	    my_addr->sa_family) {
+		param->sp_src = child_sa->selector->src->a.ipaddr;
+		param->sp_dst = child_sa->selector->dst->a.ipaddr;
+	}
 
 	param->seq = child_sa->sadb_request.seqno;
 

@@ -233,7 +233,7 @@ i2i_compliance() {
 		# ChaCha20-Poly1305 (RFC 7634): racoon2 logs enctype=CHACHA20-POLY1305
 		# (enct=116); the kernel SAD AEAD is rfc7539esp(chacha20,poly1305).
 		_aa4="CHACHA20-POLY1305|rfc7539esp"; _a4c='ChaCha20-Poly1305 (RFC 7634)' ;;
-	*-esp-cbc128|*-esp-cbc192|*-esp-cbc256|*-esp-sha384|*-esp-sha512|*-esp-xcbc|*-esp-cmac)
+	*-esp-cbc128|*-esp-cbc192|*-esp-cbc256|*-esp-sha384|*-esp-sha512|*-esp-xcbc|*-esp-cmac|*i2io4-cbc*)
 		_aa4="enctype=AES(128|192|256)?-CBC|enc cbc\(aes\)"; _a4c='AES-CBC (RFC 4868)' ;;
 	*-esp-ctr|*-esp-ctr128|*-esp-ctr192|*-esp-ctr256)
 		_aa4="enctype=AES-CTR"; _a4c='AES-CTR (RFC 5930)' ;;
