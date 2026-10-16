@@ -524,6 +524,7 @@ struct ikev2_child_param {
 	int cfg_ip4_subnet;		/* peer wants INTERNAL_IP4_SUBNET (13) */
 	int cfg_ip6_subnet;		/* peer wants INTERNAL_IP6_SUBNET (15) */
 	int cfg_dns_domain;		/* peer wants INTERNAL_DNS_DOMAIN (25) */
+	int cfg_dnssec_ta;		/* peer wants INTERNAL_DNSSEC_TA (26) */
 };
 
 struct ikev2_child_sa {
@@ -634,6 +635,7 @@ struct ikev2_child_sa {
 	struct rcf_address_list_head	internal_ip6_subnet;
 	rc_vchar_t	*peer_application_version;
 	rc_vchar_t	*internal_dns_domain;
+	rc_vchar_t	*internal_dnssec_ta;
 };
 
 

@@ -286,6 +286,7 @@ natd_public_address		{ DP; return(NATD_PUBLIC_ADDRESS); }
 require_config_payload	{ DP; return(REQUIRE_CONFIG); }
 application_version	{ DP; return(APPLICATION_VERSION); }
 dns_domain		{ DP; return(DNS_DOMAIN); }
+dnssec_ta		{ DP; return(DNSSEC_TA); }
 request			{ DP; return(REQUEST); }
 provide			{ DP; return(PROVIDE); }
 ip4			{ DP; return(IP4); }

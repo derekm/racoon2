@@ -139,6 +139,34 @@ cfg_attrib_set(struct ikev2cfg_attrib *a, unsigned int type, unsigned int length
 	put_uint16(&a->length, length);
 }
 
+/* RFC 8598 §4.2 INTERNAL_DNSSEC_TA (26) payload: the configured value is a
+ * hex string (DS-style DNSKEY Key Tag|Algorithm|Digest Type|Digest Data).
+ * Decode it to the raw wire bytes (used in the CFG_REPLY and re-encoded by
+ * the initiator's updown hook).  Returns a malloc'd buffer or NULL. */
+static uint8_t *
+dnssec_ta_decode(const char *hex, size_t *len)
+{
+	size_t n, i;
+	uint8_t *out;
+
+	if (hex == NULL)
+		return NULL;
+	n = strlen(hex) / 2;
+	out = racoon_malloc(n);
+	if (!out)
+		return NULL;
+	for (i = 0; i < n; i++) {
+		unsigned v;
+		if (sscanf(hex + 2 * i, "%2x", &v) != 1) {
+			racoon_free(out);
+			return NULL;
+		}
+		out[i] = (uint8_t)v;
+	}
+	*len = n;
+	return out;
+}
+
 
 /*
  * create CFG_REQUEST Config payload for Initiator (client)
@@ -480,6 +508,9 @@ ikev2_process_cfg_request_attribs(struct ikev2_sa *ike_sa,
 		case IKEV2_CFG_INTERNAL_DNS_DOMAIN:
 			++param->cfg_dns_domain;
 			break;
+		case IKEV2_CFG_INTERNAL_DNSSEC_TA:
+			++param->cfg_dnssec_ta;
+			break;
 		case IKEV2_CFG_MIP6_HOME_PREFIX:
 			++param->cfg_mip6_home_prefix;
 			break;
@@ -763,6 +794,34 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
 		    ! rc_vconcat(cfg_payload, dd, ddlen))
 			goto err;
+	}
+
+	/* Split-DNS DNSSEC trust anchor (RFC 8598 §8).  The responder cannot
+	 * source a trust anchor from DNS, so the operator configures it as a
+	 * hex `dnssec_ta` (DS-style Key Tag|Alg|Digest Type|Digest Data); when
+	 * the peer asked for INTERNAL_DNSSEC_TA (26) and one is configured,
+	 * emit it IMMEDIATELY AFTER the INTERNAL_DNS_DOMAIN (25) it belongs
+	 * to (RFC 8598 §4.2: a 26 not preceded by a 25 is ignored). */
+	if (param->cfg_dnssec_ta && ikev2_dnssec_ta(ike_sa->rmconf)) {
+		const char *ta = rc_vmem2str(ikev2_dnssec_ta(ike_sa->rmconf));
+		uint8_t *ta_raw;
+		size_t ta_len = 0;
+		struct ikev2cfg_attrib hdr;
+
+		ta_raw = dnssec_ta_decode(ta, &ta_len);
+		if (ta_raw == NULL || ta_len == 0) {
+			plog(PLOG_INTWARN, PLOGLOC, NULL,
+			     "dnssec_ta: cannot decode configured trust anchor\n");
+			goto err;
+		}
+		TRACE((PLOGLOC, "INTERNAL_DNSSEC_TA: %zu bytes\n", ta_len));
+		cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_DNSSEC_TA, ta_len);
+		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
+		    ! rc_vconcat(cfg_payload, ta_raw, ta_len)) {
+			racoon_free(ta_raw);
+			goto err;
+		}
+		racoon_free(ta_raw);
 	}
 
 	if (param->cfg_mip6_home_prefix &&
@@ -1126,6 +1185,20 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			memcpy(child_sa->internal_dns_domain->v, value, len);
 			child_sa->internal_dns_domain->s[len] = '\0';
 			child_sa->internal_dns_domain->l = len + 1;
+			break;
+		case IKEV2_CFG_INTERNAL_DNSSEC_TA:
+			/* RFC 8598 §8: a DNSSEC trust anchor (Key Tag|Alg|
+			 * Digest Type|Digest Data) for the domain in the
+			 * immediately preceding INTERNAL_DNS_DOMAIN (25).
+			 * Commit the raw bytes so the updown script receives
+			 * INTERNAL_DNSSEC_TA (hex-encoded). */
+			TRACE((PLOGLOC, "INTERNAL_DNSSEC_TA: %zu bytes\n", len));
+			rc_vfreez(child_sa->internal_dnssec_ta);
+			child_sa->internal_dnssec_ta = rc_vmalloc(len);
+			if (!child_sa->internal_dnssec_ta)
+				return -1;
+			memcpy(child_sa->internal_dnssec_ta->v, value, len);
+			child_sa->internal_dnssec_ta->l = len;
 			break;
 		case IKEV2_CFG_MIP6_HOME_PREFIX:
 			{

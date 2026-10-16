@@ -463,6 +463,190 @@ main(int argc, char *argv[])
 			rc_vfree(c.internal_dns_domain);
 	}
 
+	/* ============ B.6: INTERNAL_DNSSEC_TA (26, RFC 8598 §8) ==========
+	 * 1. Emit: responder with a configured hex `dnssec_ta` trust anchor
+	 *    and a peer that asked for 26 -> CFG_REPLY carries 26 = the
+	 *    decoded bytes (Key Tag|Alg|Digest Type|Digest Data), placed
+	 *    after 25; because RFC 8598 §4.2 says a 26 not preceded by a 25
+	 *    is ignored, the responder only emits 26 alongside a 25.
+	 * 2. Parse: initiator receiving 26 commits the raw bytes to
+	 *    internal_dnssec_ta. */
+	{
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa isa;
+		struct ikev2_child_sa c;
+		struct ikev2_child_param p;
+		static const char taha[] =
+		    "aabb04b6225ab2cc613e0dca7962bdc2342ea4"; /* keytag/alg/dt/digest */
+		uint8_t tara[64];   /* decoded above */
+		size_t tara_len = strlen(taha) / 2;
+		int i;
+
+		/* decode expected bytes */
+		for (i = 0; i < (int)tara_len; i++) {
+			unsigned v;
+			sscanf(taha + 2 * i, "%2x", &v);
+			tara[i] = (uint8_t)v;
+		}
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		rm.ikev2 = &ikm;
+		ikm.dns_domain = rc_vmalloc(strlen("corp.example") + 1);
+		memcpy(ikm.dns_domain->v, "corp.example", strlen("corp.example"));
+		ikm.dns_domain->s[strlen("corp.example")] = '\0';
+		ikm.dns_domain->l = strlen("corp.example") + 1;
+		ikm.dnssec_ta = rc_vmalloc(strlen(taha) + 1);
+		memcpy(ikm.dnssec_ta->v, taha, strlen(taha));
+		ikm.dnssec_ta->s[strlen(taha)] = '\0';
+		ikm.dnssec_ta->l = strlen(taha) + 1;
+
+		memset(&isa, 0, sizeof(isa));
+		isa.rmconf = &rm;
+		memset(&c, 0, sizeof(c));
+		ikev2_child_param_init(&p);
+		p.cfg_dns_domain = 1;
+		p.cfg_dnssec_ta = 1;
+
+		CK(ikev2_create_config_reply(&isa, &c, &p) == 0,
+		   "create_config_reply rc==0 (dnssec_ta)");
+		CK(p.cfg_payload != NULL, "reply allocated (dnssec_ta)");
+		if (p.cfg_payload) {
+			struct ikev2payl_config_h *cfgh =
+			    (struct ikev2payl_config_h *)p.cfg_payload->v;
+			uint8_t *body = (uint8_t *)p.cfg_payload->v +
+			    sizeof(*cfgh);
+			size_t blen = p.cfg_payload->l - sizeof(*cfgh);
+			int n25 = 0, n26 = 0, ta_ok = 0, ordered = 0;
+			int saw25 = 0;
+
+			for (i = 0; blen > 0; ++i) {
+				struct ikev2cfg_attrib *a =
+				    (struct ikev2cfg_attrib *)body;
+				unsigned int t, l;
+				if (blen < sizeof(*a))
+					break;
+				t = IKEV2CFG_ATTR_TYPE(a);
+				l = IKEV2CFG_ATTR_LENGTH(a);
+				if (sizeof(*a) + l > blen)
+					break;
+				if (t == IKEV2_CFG_INTERNAL_DNS_DOMAIN) {
+					n25++;
+					saw25 = 1;
+				} else if (t == IKEV2_CFG_INTERNAL_DNSSEC_TA &&
+					   saw25) {
+					n26++;
+					/* 26 must immediately follow 25 */
+					ordered |= (n25 >= 1);
+					if (l == tara_len &&
+					    memcmp(IKEV2CFG_ATTR_VALUE(a),
+						   tara, tara_len) == 0)
+						ta_ok = 1;
+				}
+				body += sizeof(*a) + l;
+				blen -= sizeof(*a) + l;
+			}
+			CK(n25 == 1, "reply contains INTERNAL_DNS_DOMAIN (25)");
+			CK(n26 == 1 && ta_ok,
+			   "26 INTERNAL_DNSSEC_TA follows 25 with exact bytes");
+			CK(ordered, "26 IMMEDIATELY follows 25 (RFC 8598 §4.2)");
+			rc_vfree(p.cfg_payload);
+		}
+		rc_vfree(ikm.dns_domain);
+		rc_vfree(ikm.dnssec_ta);
+
+		/* negative: 26 NOT emitted when the peer did not ask for it */
+		{
+			struct ikev2_child_param p2;
+			struct ikev2_sa isa2;
+			uint8_t *body2;
+			size_t blen2;
+			struct ikev2payl_config_h *cfgh2;
+			int n26b = 0;
+
+			memset(&isa2, 0, sizeof(isa2));
+			isa2.rmconf = &rm;   /* configured */
+			ikev2_child_param_init(&p2);
+                        /* note: p2.cfg_dnssec_ta = 0 (not requested) */
+			CK(ikev2_create_config_reply(&isa2, &c, &p2) == 0,
+			   "reply rc==0 no dnssec_ta request");
+			if (p2.cfg_payload) {
+				cfgh2 = (struct ikev2payl_config_h *)
+				    p2.cfg_payload->v;
+				body2 = (uint8_t *)p2.cfg_payload->v +
+				    sizeof(*cfgh2);
+				blen2 = p2.cfg_payload->l - sizeof(*cfgh2);
+				for (i = 0; blen2 > 0; ++i) {
+					struct ikev2cfg_attrib *a =
+					    (struct ikev2cfg_attrib *)body2;
+					unsigned int t, l;
+					if (blen2 < sizeof(*a))
+						break;
+					t = IKEV2CFG_ATTR_TYPE(a);
+					l = IKEV2CFG_ATTR_LENGTH(a);
+					if (sizeof(*a) + l > blen2)
+						break;
+					if (t == IKEV2_CFG_INTERNAL_DNSSEC_TA)
+						n26b++;
+					body2 += sizeof(*a) + l;
+					blen2 -= sizeof(*a) + l;
+				}
+				CK(n26b == 0,
+				   "no 26 emitted without a 26 request");
+				rc_vfree(p2.cfg_payload);
+			}
+		}
+
+		/* parse: initiator receives 25+26 -> internal_dnssec_ta set */
+		{
+			uint8_t buf[256];
+			uint8_t off = 0;
+			struct ikev2payl_config *cfg;
+			const char *dd = "corp.example";
+			struct ikev2cfg_attrib *a;
+
+			memset(buf, 0, sizeof(buf));
+			cfg = (struct ikev2payl_config *)buf;
+			cfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+			off = sizeof(struct ikev2payl_config);
+			a = (struct ikev2cfg_attrib *)(buf + off);
+			put_uint16(&a->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
+			put_uint16(&a->length, (uint16_t)strlen(dd));
+			memcpy(IKEV2CFG_ATTR_VALUE(a), dd, strlen(dd));
+			off += sizeof(*a) + strlen(dd);
+			a = (struct ikev2cfg_attrib *)(buf + off);
+			put_uint16(&a->type, IKEV2_CFG_INTERNAL_DNSSEC_TA);
+			put_uint16(&a->length, (uint16_t)tara_len);
+			memcpy(IKEV2CFG_ATTR_VALUE(a), tara, tara_len);
+			off += sizeof(*a) + tara_len;
+			{
+				uint8_t pl[2];
+				pl[0] = (uint8_t)((off >> 8) & 0xff);
+				pl[1] = (uint8_t)(off & 0xff);
+				memcpy((uint8_t *)&cfg->header.payload_length,
+				       pl, 2);
+			}
+			cfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			ikev2_child_param_init(&c.child_param);
+			CK(ikev2_process_config_reply(&isa, &c,
+			     &cfg->header) == 0,
+			   "process_config_reply rc==0 (26)");
+			CK(c.internal_dnssec_ta != NULL &&
+			   c.internal_dnssec_ta->l == tara_len &&
+			   memcmp(c.internal_dnssec_ta->v, tara,
+				  tara_len) == 0,
+			   "26 committed to internal_dnssec_ta (exact bytes)");
+			if (c.internal_dnssec_ta)
+				rc_vfree(c.internal_dnssec_ta);
+			if (c.internal_dns_domain)
+				rc_vfree(c.internal_dns_domain);
+		}
+	}
+
 	/* ================= B.5 shared emit: ikev2_push_ip_allowed =============
 	 * The RFC 8983 IP4_ALLOWED/IP6_ALLOWED status notify is emitted by a
 	 * SHARED helper (ikev2_notify.c) so the childful IKE_AUTH responder and

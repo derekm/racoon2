@@ -246,6 +246,7 @@ static int rcf_fix_dns (struct cf_list *, void *);
 static int rcf_fix_dhcp (struct cf_list *, void *);
 static int rcf_fix_application_version (struct cf_list *, void *);
 static int rcf_fix_dns_domain (struct cf_list *, void *);
+static int rcf_fix_dnssec_ta (struct cf_list *, void *);
 static int rcf_fix_mip6_home_prefix (struct cf_list *, void *);
 	/* selector */
 static int rcf_fix_selector (struct rcf_selector **);
@@ -429,6 +430,7 @@ struct rcf_tdf_t {
 	{ CFD_DHCP,			rcf_fix_dhcp },
 	{ CFD_APPLICATION_VERSION,	rcf_fix_application_version },
 	{ CFD_DNS_DOMAIN,		rcf_fix_dns_domain },
+	{ CFD_DNSSEC_TA,		rcf_fix_dnssec_ta },
 	{ CFD_MIP6_HOME_PREFIX,		rcf_fix_mip6_home_prefix },
 	/* selector */
 	{ CFD_SELECTOR_ORDER,		rcf_fix_selector_order, },
@@ -2140,6 +2142,18 @@ rcf_fix_dns_domain(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_DNS_DOMAIN))
 		return -1;
 	if (rcf_fix_string(head->nextp, &dst->dns_domain))
+		return -1;
+	return 0;
+}
+
+static int
+rcf_fix_dnssec_ta(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp	*dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_DNSSEC_TA))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->dnssec_ta))
 		return -1;
 	return 0;
 }

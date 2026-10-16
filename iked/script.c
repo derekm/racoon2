@@ -573,6 +573,32 @@ ikev2_child_script_hook(struct ikev2_child_sa *child_sa, int script)
 		return;
 
 	/*
+	 * INTERNAL_DNSSEC_TA (RFC 8598 §8 trust anchor, hex-encoded raw
+	 * Key Tag|Alg|Digest Type|Digest Data)
+	 */
+	if (child_sa->internal_dnssec_ta) {
+		static const char hexdig[] = "0123456789abcdef";
+		const uint8_t *ta = child_sa->internal_dnssec_ta->v;
+		size_t i, tl = child_sa->internal_dnssec_ta->l;
+		char *hex = racoon_malloc(tl * 2 + 1);
+
+		if (hex) {
+			for (i = 0; i < tl; i++) {
+				unsigned char c = ta[i];
+				hex[i * 2]     = hexdig[c >> 4];
+				hex[i * 2 + 1] = hexdig[c & 0xf];
+			}
+			hex[tl * 2] = '\0';
+			if (script_env_append(&envp, &envc,
+					      "INTERNAL_DNSSEC_TA", hex)) {
+				racoon_free(hex);
+				return;
+			}
+			racoon_free(hex);
+		}
+	}
+
+	/*
 	 * APPLICATION_VERSION
 	 */
 	if (script_env_append(&envp, &envc, "APPLICATION_VERSION",
