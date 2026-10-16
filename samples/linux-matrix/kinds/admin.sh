@@ -105,6 +105,14 @@ kind_admin() {
 			die "show-sa isakmp rc=$?"; _rc=1
 		elif ! echo "$out" | grep -q Destination; then
 			die "no show-sa header"; _rc=1
+		elif ! jout=$($ctl -j show-sa isakmp); then
+			die "show-sa isakmp -j rc=$?"; _rc=1
+		elif ! echo "$jout" | grep -q '"type":"IKE_SA_LIST"'; then
+			die "admin-empty: -j not a JSON IKE_SA_LIST: $jout"; _rc=1
+		elif ! echo "$jout" | grep -q '"count":0'; then
+			die "admin-empty: -j empty count != 0: $jout"; _rc=1
+		elif $ctl -j flush-sa isakmp 2>/dev/null; then
+			die "-j on a non-show-sa command should be refused"; _rc=1
 		elif $ctl show-sa esp; then
 			die "show-sa esp should be ENOTSUP"; _rc=1
 		elif $ctl vpn-connect 10.99.99.99; then

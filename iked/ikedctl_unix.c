@@ -53,6 +53,7 @@ usage(const char *p)
 "  %s [-s socket] delete-sa <peer> [esp|ah]\n"
 "  %s [-s socket] drain-sa <peer> [gw]\n"
 "\n"
+"  -j		JSON output (show-sa isakmp: IKE SA status as light metrics)\n"
 "esp/ah SAD: ip xfrm state / ip xfrm policy\n",
 		p, p, p, p, p, p, p, p);
 	exit(EXIT_FAILURE);
@@ -186,6 +187,9 @@ fill_index(struct admin_com_indexes *ndx, int family,
 	}
 }
 
+static int jsondump = 0;
+static int trans_rc = EXIT_SUCCESS;	/* last transact() error code */
+
 static void
 print_sa(const char *payload, size_t len)
 {
@@ -219,6 +223,77 @@ print_sa(const char *payload, size_t len)
 	}
 }
 
+/* Light status JSON (09-05 plan: "JSON/metrics. SNMP non-goal.").  Renders
+ * the same wire_ph1dump[] as print_sa() as a JSON object with an `sas`
+ * array — consumed by monitoring/scripts.  No daemon-side change: show-sa
+ * isakmp already carries everything we serialize below.  Returns non-zero
+ * on a malformed payload so callers do not ingest a broken run as healthy. */
+static int
+print_sa_json(const char *payload, size_t len)
+{
+	const struct wire_ph1dump *pd;
+	char host[NI_MAXHOST];
+	char esc[NI_MAXHOST * 2 + 1];
+	int first = 1;
+	unsigned i;
+	int rc = 0;
+
+	if (len % sizeof(*pd)) {
+		printf("{\"error\":\"show-sa payload %zu not a multiple of %zu\"}\n",
+		       len, sizeof(*pd));
+		return 1;
+	}
+	printf("{\"type\":\"IKE_SA_LIST\",\"count\":%d,\"sas\":[",
+	       (int)(len / sizeof(*pd)));
+	pd = (const struct wire_ph1dump *)payload;
+	while (len >= sizeof(*pd)) {
+		if (getnameinfo((struct sockaddr *)&pd->remote,
+				sizeof(pd->remote), host, sizeof(host),
+				NULL, 0, NI_NUMERICHOST) != 0)
+			snprintf(host, sizeof(host), "?");
+		/* NI_NUMERICHOST can append "%ifname" for a v6 scope and
+		 * Linux ifnames may contain '"' and '\' — escape before
+		 * embedding in a JSON string. */
+		for (i = 0, esc[0] = '\0'; host[i] && i < sizeof(host); i++) {
+			size_t o = strlen(esc);
+			if (o + 3 >= sizeof(esc))
+				break;
+			switch (host[i]) {
+			case '"':  esc[o++] = '\\'; esc[o++] = '"';  break;
+			case '\\': esc[o++] = '\\'; esc[o++] = '\\'; break;
+			default:   esc[o++] = host[i]; break;
+			}
+			esc[o] = '\0';
+		}
+		/* ISAKMP version octet: high nibble = major, low = minor
+		 * (0x20 = IKEv2.0); emit as a string, not a bare decimal, so
+		 * scrapers read the same 2.0 the columnar dump prints as V 20. */
+		if (!first)
+			printf(",");
+		first = 0;
+		printf("{\"remote\":\"%s\",\"initiator_cookie\":\"", esc);
+		for (i = 0; i < 8; i++)
+			printf("%02x", pd->i_ck[i]);
+		printf("\",\"responder_cookie\":\"");
+		for (i = 0; i < 8; i++)
+			printf("%02x", pd->r_ck[i]);
+		/* version is the ISAKMP major.minor octet; child_created is a
+		 * monotone counter of children ever minted on this IKE_SA
+		 * (incremented, never decremented — sums across rekey), NOT the
+		 * number of live Child SAs.  Documented so a metrics consumer
+		 * does not read it as a current Child-SA count. */
+		printf("\",\"version\":\"%u.%u\",\"side\":\"%s\",\"status\":%d,"
+		       "\"child_created\":%d}",
+		       pd->version >> 4, pd->version & 0x0f,
+		       pd->side == 0 ? "initiator" : "responder",
+		       pd->status, pd->ph2cnt);
+		pd++;
+		len -= sizeof(*pd);
+	}
+	printf("]}\n");
+	return rc;
+}
+
 static void
 transact(void *req, size_t reqlen)
 {
@@ -237,9 +312,14 @@ transact(void *req, size_t reqlen)
 			     strerror(errn));
 		errx(EXIT_FAILURE, "%s", strerror(errn));
 	}
-	if ((rep->ac_cmd & ~ADMIN_FLAG_LONG_REPLY) == ADMIN_SHOW_SA)
-		print_sa((char *)(rep + 1),
-			 replen > sizeof(*rep) ? replen - sizeof(*rep) : 0);
+	if ((rep->ac_cmd & ~ADMIN_FLAG_LONG_REPLY) == ADMIN_SHOW_SA) {
+		if (jsondump)
+			trans_rc = print_sa_json((char *)(rep + 1),
+					      replen > sizeof(*rep) ? replen - sizeof(*rep) : 0);
+		else
+			print_sa((char *)(rep + 1),
+				 replen > sizeof(*rep) ? replen - sizeof(*rep) : 0);
+	}
 	free(rep);
 	free(req);
 }
@@ -282,10 +362,13 @@ main(int ac, char **av)
 	int c;
 	const char *pname = av[0];
 
-	while ((c = getopt(ac, av, "s:")) != -1) {
+	while ((c = getopt(ac, av, "s:j")) != -1) {
 		switch (c) {
 		case 's':
 			adminsock_path = optarg;
+			break;
+		case 'j':
+			jsondump = 1;
 			break;
 		default:
 			usage(pname);
@@ -298,6 +381,13 @@ main(int ac, char **av)
 	cmd = av[0];
 	ac--;
 	av++;
+
+	/* -j only means anything for show-sa.  Refuse it on any other command
+	 * rather than silently ignoring it (a user asking for JSON and getting
+	 * columns could feed the wrong shape into a scraper). */
+	if (jsondump &&
+	    !(strcmp(cmd, "show-sa") == 0 || strcmp(cmd, "ss") == 0))
+		errx(EXIT_FAILURE, "-j is only valid with show-sa");
 
 	if ((strcmp(cmd, "show-sa") == 0 || strcmp(cmd, "ss") == 0) &&
 	    ac == 1 && (strcmp(av[0], "esp") == 0 ||
@@ -470,5 +560,5 @@ main(int ac, char **av)
 		usage(pname);
 	}
 	close(so);
-	return EXIT_SUCCESS;
+	return trans_rc;
 }
