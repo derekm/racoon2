@@ -3540,6 +3540,8 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rc_vfree(n->radius_server);
 	rc_vfree(n->radius_secret_file);
 	rc_vfree(n->session_resume_ticket_key);
+	rc_vfree(n->dns_domain);
+	rc_vfree(n->dnssec_ta);
 	rc_free(n);
 }
 
@@ -3627,6 +3629,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_ADDRLIST(src->cfg_dhcp, new->cfg_dhcp);
 	DEEPCOPY_VDUP(src->application_version, new->application_version);
 	DEEPCOPY_VDUP(src->dns_domain, new->dns_domain);
+	DEEPCOPY_VDUP(src->dnssec_ta, new->dnssec_ta);
 	new->dpd = src->dpd;
 	new->dpd_interval = src->dpd_interval;
 	new->dpd_retry = src->dpd_retry;

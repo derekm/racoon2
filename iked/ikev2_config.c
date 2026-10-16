@@ -32,6 +32,7 @@
 #include <config.h>
 
 #include <assert.h>
+#include <ctype.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -141,27 +142,35 @@ cfg_attrib_set(struct ikev2cfg_attrib *a, unsigned int type, unsigned int length
 
 /* RFC 8598 §4.2 INTERNAL_DNSSEC_TA (26) payload: the configured value is a
  * hex string (DS-style DNSKEY Key Tag|Algorithm|Digest Type|Digest Data).
- * Decode it to the raw wire bytes (used in the CFG_REPLY and re-encoded by
- * the initiator's updown hook).  Returns a malloc'd buffer or NULL. */
+ * Decode it strictly to the raw wire bytes: every byte must be exactly two
+ * hex digits, the total length must be even, and an anchor is at least
+ * 5 bytes (2+1+1 Key Tag+Alg+Digest Type plus a non-empty Digest Data).
+ * A lenient sscanf("%2x") would accept a partial pair like "0g" as "0" and
+ * silently emit wrong bytes.  Returns a malloc'd buffer or NULL. */
 static uint8_t *
 dnssec_ta_decode(const char *hex, size_t *len)
 {
 	size_t n, i;
 	uint8_t *out;
+	const char *h = hex;
 
-	if (hex == NULL)
+	if (h == NULL)
 		return NULL;
-	n = strlen(hex) / 2;
-	/* Reject non-even-length hex: a trailing nibble on a typo'd anchor
-	 * would otherwise be silently dropped and wrong wire bytes emitted. */
-	if (strlen(hex) % 2 != 0 || n == 0)
+	n = strlen(h);
+	/* even length, at least 5 bytes (10 hex digits), all hex */
+	if (n < 10 || (n % 2) != 0)
 		return NULL;
+	for (i = 0; i < n; i++) {
+		if (!isxdigit((unsigned char)h[i]))
+			return NULL;
+	}
+	n /= 2;
 	out = racoon_malloc(n);
 	if (!out)
 		return NULL;
 	for (i = 0; i < n; i++) {
 		unsigned v;
-		if (sscanf(hex + 2 * i, "%2x", &v) != 1) {
+		if (sscanf(h + 2 * i, "%2x", &v) != 1) {
 			racoon_free(out);
 			return NULL;
 		}
@@ -248,6 +257,25 @@ ikev2_create_config_request(struct ikev2_child_sa *child_sa)
 		cfg_attrib_set(&hdr, IKEV2_CFG_MIP6_HOME_PREFIX, 0);
 		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)))
 			goto err;
+	}
+
+	if (ikev2_cfg_dns_domain(ike_sa->rmconf) == RCT_BOOL_ON) {
+		/* RFC 8598 §3.1: an initiator indicates split-DNS support by
+		 * requesting INTERNAL_DNS_DOMAIN (25); request it (zero-length)
+		 * so the responder knows to offer 25, and 26 when it asks for a
+		 * DNSSEC trust anchor too. */
+		TRACE((PLOGLOC, "INTERNAL_DNS_DOMAIN\n"));
+		need_cfg = TRUE;
+		cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_DNS_DOMAIN, 0);
+		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)))
+			goto err;
+		if (ikev2_cfg_dnssec_ta(ike_sa->rmconf) == RCT_BOOL_ON) {
+			/* RFC 8598 §3.1: 26 is only meaningful alongside 25. */
+			TRACE((PLOGLOC, "INTERNAL_DNSSEC_TA\n"));
+			cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_DNSSEC_TA, 0);
+			if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)))
+				goto err;
+		}
 	}
 
 #ifdef notyet
@@ -819,20 +847,22 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 
 		ta_raw = dnssec_ta_decode(ta, &ta_len);
 		if (ta_raw == NULL || ta_len == 0) {
-			if (ta_raw)
-				racoon_free(ta_raw);
+			/* A typo'd/odd-length dnssec_ta must not fail the whole
+			 * CFG_REPLY (childful code would report INVALID_SYNTAX
+			 * and drop address assignment).  Omit 26 and warn; the
+			 * operator's config error is visible but harmless. */
 			plog(PLOG_INTWARN, PLOGLOC, NULL,
-			     "dnssec_ta: cannot decode configured trust anchor\n");
-			goto err;
-		}
-		TRACE((PLOGLOC, "INTERNAL_DNSSEC_TA: %zu bytes\n", ta_len));
-		cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_DNSSEC_TA, ta_len);
-		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
-		    ! rc_vconcat(cfg_payload, ta_raw, ta_len)) {
+			     "dnssec_ta: cannot decode configured trust anchor; omitting INTERNAL_DNSSEC_TA (26)\n");
+		} else {
+			TRACE((PLOGLOC, "INTERNAL_DNSSEC_TA: %zu bytes\n", ta_len));
+			cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_DNSSEC_TA, ta_len);
+			if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
+			    ! rc_vconcat(cfg_payload, ta_raw, ta_len)) {
+				racoon_free(ta_raw);
+				goto err;
+			}
 			racoon_free(ta_raw);
-			goto err;
 		}
-		racoon_free(ta_raw);
 	}
 
 	if (param->cfg_mip6_home_prefix &&
@@ -990,7 +1020,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 {
 	struct ikev2cfg_attrib	*attr;
 	size_t	bytes;
-	unsigned int type;
+	unsigned int type, prev_type = 0;
 	size_t	len;
 	uint8_t	*value;
 	char	addrstr[INET6_ADDRSTRLEN];
@@ -1196,8 +1226,22 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			memcpy(child_sa->internal_dns_domain->v, value, len);
 			child_sa->internal_dns_domain->s[len] = '\0';
 			child_sa->internal_dns_domain->l = len + 1;
+			/* RFC 8598 §4.2: a 26 trust anchor may only follow a 25
+			 * (or another 26) for the same domain. */
+			prev_type = IKEV2_CFG_INTERNAL_DNS_DOMAIN;
 			break;
 		case IKEV2_CFG_INTERNAL_DNSSEC_TA:
+			/* RFC 8598 §4.2: a 26 not immediately preceded by a 25
+			 * (or another 26 for the same domain) MUST be ignored —
+			 * it carries no domain name of its own and would be
+			 * ambiguous.  Drop it silently rather than commit it. */
+			if (prev_type != IKEV2_CFG_INTERNAL_DNS_DOMAIN &&
+			    prev_type != IKEV2_CFG_INTERNAL_DNSSEC_TA) {
+				TRACE((PLOGLOC,
+				       "INTERNAL_DNSSEC_TA without preceding domain, ignored\n"));
+				prev_type = 0;
+				break;
+			}
 			/* RFC 8598 §8: a DNSSEC trust anchor (Key Tag|Alg|
 			 * Digest Type|Digest Data) for the domain in the
 			 * immediately preceding INTERNAL_DNS_DOMAIN (25).
@@ -1210,6 +1254,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				return -1;
 			memcpy(child_sa->internal_dnssec_ta->v, value, len);
 			child_sa->internal_dnssec_ta->l = len;
+			prev_type = IKEV2_CFG_INTERNAL_DNSSEC_TA;
 			break;
 		case IKEV2_CFG_MIP6_HOME_PREFIX:
 			{
@@ -1229,6 +1274,13 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				   type, len);
 			break;
 		}
+		/* RFC 8598 §4.2 adjacency: a 26 may only follow a 25 (or another
+		 * 26) for the same domain.  Only a 25/26 leaves prev_type set;
+		 * any other attribute in between resets it so a later dangling
+		 * 26 is seen as unpaired and ignored. */
+		if (type != IKEV2_CFG_INTERNAL_DNS_DOMAIN &&
+		    type != IKEV2_CFG_INTERNAL_DNSSEC_TA)
+			prev_type = 0;
 	}
 
 	return 0;

@@ -556,6 +556,46 @@ main(int argc, char *argv[])
 		rc_vfree(ikm.dns_domain);
 		rc_vfree(ikm.dnssec_ta);
 
+		/* deepcopy regression: the DAEMON config path hands iked
+		 * rcf_deepcopy_remote() (rcf_get_remotebyindex/byaddr), and
+		 * that copy MUST carry dnssec_ta — otherwise a config-file
+		 * `provide { dnssec_ta ...; }` never reaches the live
+		 * responder despite this test (which stuffs a stack rcf_kmp
+		 * directly) passing.  Original bug: rcf_deepcopy_kmp
+		 * DEEPCOPY_VDUP'd dns_domain but not dnssec_ta. */
+		{
+			struct rcf_remote src_remote, *cp;
+			struct rcf_kmp src_kmp;
+			static const char ta2[] =
+			    "cafe08b6225ab2cc613e0dca7962bdc2342ea4";
+
+			memset(&src_remote, 0, sizeof(src_remote));
+			memset(&src_kmp, 0, sizeof(src_kmp));
+			src_remote.ikev2 = &src_kmp;
+			src_kmp.dnssec_ta = rc_vmalloc(strlen(ta2) + 1);
+			memcpy(src_kmp.dnssec_ta->v, ta2, strlen(ta2));
+			src_kmp.dnssec_ta->s[strlen(ta2)] = '\0';
+			src_kmp.dnssec_ta->l = strlen(ta2) + 1;
+
+			cp = rcf_deepcopy_remote(&src_remote);
+			CK(cp != NULL && cp->ikev2 != NULL,
+			   "deepcopy remote produced a copy");
+			if (cp && cp->ikev2) {
+				CK(cp->ikev2->dnssec_ta != NULL &&
+				   cp->ikev2->dnssec_ta->l == (int)strlen(ta2) + 1 &&
+				   memcmp(cp->ikev2->dnssec_ta->v, ta2,
+					  strlen(ta2)) == 0,
+				   "deepcopy carries dnssec_ta (config path)");
+				/* rcf_clean_remote is static (not reusable from a
+				 * test); the source remote only ever set dnssec_ta,
+				 * so the copy owns exactly these three allocs. */
+				rc_vfree(cp->ikev2->dnssec_ta);
+				rc_free(cp->ikev2);
+				rc_free(cp);
+			}
+			rc_vfree(src_kmp.dnssec_ta);
+		}
+
 		/* negative: 26 NOT emitted when the peer did not ask for it,
 		 * nor when it asked for 26 but NOT 25 (RFC 8598 §3.1/§4.2:
 		 * 26 relies on the preceding 25 and must not float alone) */
