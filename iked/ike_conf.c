@@ -1072,7 +1072,7 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
  * labels (so "*.example.com" does NOT match "a.b.example.com").
  * pid is the NUL-free rc_vchar_t content of length pid_len.
  */
-static int
+int
 fqdn_id_match(const char *alt, const char *pid, size_t pid_len)
 {
 	const char *star;
@@ -1082,17 +1082,20 @@ fqdn_id_match(const char *alt, const char *pid, size_t pid_len)
 		const char *suffix = pid + 2;
 		size_t suffix_len = pid_len - 2;
 		const char *dot;
-		/* alt must have >= 2 labels: leftmost label + suffix */
+		/* alt must have a leftmost label + '.' + the full suffix. */
 		if (alt_len < suffix_len + 2)
 			return 0;
 		dot = strchr(alt, '.');
-		if (dot == NULL)
-			return 0;	/* no leftmost-label split */
-		/* exactly one leftmost label: no further dot after it */
-		if (strchr(dot + 1, '.') != NULL)
-			return 0;	/* more than two labels */
-		/* suffix must match alt[dot-index+2..) */
-		if ((size_t)(dot - alt) != alt_len - suffix_len)
+		if (dot == NULL || dot == alt)
+			return 0;	/* no / empty leftmost label */
+		/* RFC 6125 s6.4.3: '*' matches EXACTLY ONE leftmost label, so
+		 * the remainder after the first dot must equal the suffix
+		 * label-for-label (same length AND content).  Because the
+		 * suffix itself may contain dots, we require the remainder
+		 * length to equal suffix_len and then compare byte-for-byte
+		 * — a name with extra leftmost labels ("a.b.example.com" vs
+		 * "*.example.com") fails the length check, which is correct. */
+		if (alt_len - (size_t)(dot - alt) - 1 != suffix_len)
 			return 0;
 		return strncasecmp(dot + 1, suffix, suffix_len) == 0;
 	}

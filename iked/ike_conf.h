@@ -280,6 +280,7 @@ extern rc_vchar_t *ikev2_public_key(struct ikev2_sa *, rc_vchar_t *,
 				 struct timeval *);
 extern rc_vchar_t *ikev2_public_key_from_wire(struct ikev2_sa *);
 extern int ikev2_wire_cert_id_ok(struct ikev2_sa *);
+extern int fqdn_id_match(const char *, const char *, size_t);
 extern rc_vchar_t *ikev2_private_key(struct ikev2_sa *, rc_vchar_t *);
 extern rc_vchar_t *ikev2_pre_shared_key(struct ikev2_sa *);
 

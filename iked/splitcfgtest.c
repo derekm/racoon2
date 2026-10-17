@@ -390,6 +390,33 @@ main(int argc, char *argv[])
 	rcs_free_addrlist(sel4.dst);
 	rcs_free_addrlist(sel6.dst);
 
+	/* ================= B.2c: RFC 4945 FQDN identity matching =========
+	 * fqdn_id_match: exact FQDN, wildcard-FQDN (single leftmost label),
+	 * case-insensitive; must reject multi-label wildcard over-match and
+	 * a literal '*' in a non-wildcard. */
+	CK(fqdn_id_match("gw.example.com", "gw.example.com", 14) == 1,
+	   "exact FQDN matches");
+	CK(fqdn_id_match("GW.EXAMPLE.COM", "gw.example.com", 14) == 1,
+	   "exact FQDN is case-insensitive");
+	CK(fqdn_id_match("a.example.com", "*.example.com", 13) == 1,
+	   "wildcard matches single leftmost label");
+	CK(fqdn_id_match("A.Example.COM", "*.example.com", 13) == 1,
+	   "wildcard is case-insensitive");
+	CK(fqdn_id_match("a.b.example.com", "*.example.com", 13) == 0,
+	   "wildcard does NOT match extra leftmost label (RFC 6125 s6.4.3)");
+	CK(fqdn_id_match("example.com", "*.example.com", 13) == 0,
+	   "wildcard does not match bare domain");
+	CK(fqdn_id_match("x.gw.example.com", "*.gw.example.com", 16) == 1,
+	   "wildcard with a multi-label suffix matches one leftmost label");
+	CK(fqdn_id_match("a.b.gw.example.com", "*.gw.example.com", 16) == 0,
+	   "wildcard with a multi-label suffix rejects two extra labels");
+	CK(fqdn_id_match("gw.example.com", "*.gw.example.com", 16) == 0,
+	   "wildcard needs a distinct leftmost label (suffix too long)");
+	CK(fqdn_id_match("gw.example.com", "gw.*.com", 8) == 0,
+	   "literal '*' in non-wildcard does not match");
+	CK(fqdn_id_match("gw.example.com", "gw.example.com", 5) == 0,
+	   "length mismatch does not match");
+
 	/* ================= B.4: INTERNAL_DNS_DOMAIN (25) =================
 	 * 1. Emit: responder with a configured split-DNS suffix, peer asked
 	 *    for 25 -> CFG_REPLY carries  25 = "corp.example".
