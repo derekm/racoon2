@@ -653,12 +653,21 @@ responder_state0_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	 * a responder MUST NOT send REDIRECT to a client that did not). */
 	drain = ikev2_drain_lookup(remote);
 	/* A runtime drain for this peer wins over the config pool.  Decide
-	 * the retirement path regardless of whether the peer offered 16406:
-	 * RFC 5685 s3 forbids SENDING REDIRECT to a client that did not
-	 * offer REDIRECT_SUPPORTED, but it does not require ACCEPTING the
-	 * SA — a drained node should NOT take a fresh IKE_SA_INIT at all.
-	 * So: peer offered 16406 -> redirect it; otherwise drop it. */
+	 * the retirement path: RFC 5685 s3 forbids SENDING REDIRECT to a
+	 * client that did not offer REDIRECT_SUPPORTED, but it does NOT
+	 * require ACCEPTING the SA — a drained node must not take a fresh
+	 * IKE_SA_INIT at all.  So: peer offered 16406 -> redirect it;
+	 * otherwise drop it (fail closed, no SILENT negotiation and no
+	 * forbidden REDIRECT). */
 	if (drain) {
+		if (!ike_sa->peer_sent_redirect) {
+			isakmp_log(ike_sa, local, remote, packet,
+			    PLOG_PROTOERR, PLOGLOC,
+			    "RFC5685: drained peer did not offer "
+			    "REDIRECT_SUPPORTED (16406); refusing IKE_SA_INIT "
+			    "(drop, no REDIRECT)\n");
+			goto drop;
+		}
 		gw = rc_vnew((unsigned char *)drain, (int)strlen(drain));
 		if (!gw)
 			goto drop;	/* OOM: fail closed */

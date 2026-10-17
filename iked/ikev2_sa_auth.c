@@ -918,6 +918,14 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		rc_vfree(ike_sa->id_i);
 	ike_sa->id_i =
 	    rc_vnew((uint8_t *)(id_i + 1), get_payload_data_length(id_i));
+	/* record the ASSERTED IDi type so the RFC 4945 cert binding can verify
+	 * the leaf against the exact identity this peer asserted (IDi), not
+	 * merely against any configured peers_id entry. */
+	{
+		rc_vchar_t *t = ikev2_id2rct_id(id_i, &ike_sa->id_i_type);
+		if (t)
+			rc_vfree(t);
+	}
 
 	IF_TRACE(ikev2_id_dump("ID_i", id_i));
 
@@ -2871,6 +2879,13 @@ initiator_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		rc_vnew((uint8_t *)(id_r + 1), get_payload_data_length(id_r));;
 	if (!ike_sa->id_r)
 		goto fail_nomem;
+	/* record the ASSERTED IDr type so the RFC 4945 cert binding can verify
+	 * the leaf against the exact identity this peer asserted (IDr). */
+	{
+		rc_vchar_t *t = ikev2_id2rct_id(id_r, &ike_sa->id_r_type);
+		if (t)
+			rc_vfree(t);
+	}
 
 	ike_sa->verified_info.packet = rc_vdup(msg);
 	if (!ike_sa->verified_info.packet)

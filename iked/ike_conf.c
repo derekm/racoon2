@@ -1107,95 +1107,135 @@ fqdn_id_match(const char *alt, const char *pid, size_t pid_len)
 		return 0;	/* a literal '*' in a non-wildcard is a match fail */
 	return strncasecmp(alt, pid, pid_len) == 0;
 }
+/*
+ * RFC 4945 identity binding: when cert_validate is on and the peer's AUTH
+ * was verified against a chain-validated wire certificate, the certificate
+ * identity must correspond to the identity the peer ASSERTED in its ID
+ * payload (IDi when i_to_r, IDr otherwise) — otherwise a peer could assert
+ * one allowed identity while presenting a cert for a DIFFERENT allowed
+ * identity (the cert-SAN vs asserted-ID confusion).  The peers_id allowlist
+ * constraint is enforced separately by ikev2_peer_id_ok; this function binds
+ * the cert to the exact asserted identity.  Returns 0 on a match, non-zero
+ * on a mismatch.  (RFC 7296 §2.16 AUTH proves possession of the private key;
+ * this binds that identity to the IKE-level peer policy.)
+ */
 int
-ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
+ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa, int i_to_r)
 {
-	struct rcf_remote *conf;
-	struct rc_idlist *pid;
 	rc_vchar_t *cert;
+	rc_vchar_t *asserted = NULL;
+	rc_type asserted_type;
+	const char *asserted_data = NULL;
+	size_t asserted_len = 0;
 	char *alt;
-	int type, pos, seen_bindable = 0;
+	int type, pos;
 
 	if (!ike_sa || !ike_sa->rmconf || !ike_sa->rmconf->ikev2 ||
 	    ikev2_cert_validate(ike_sa->rmconf) != RCT_BOOL_ON)
 		return 0;	/* not enforced: cert_validate off */
 	if (!ike_sa->peer_cert)
 		return 0;	/* no wire cert to bind (PKCS7/other auth) */
-	conf = ike_sa->rmconf;
-	cert = ike_sa->peer_cert;
 
-	for (pid = ikev2_peers_id(conf); pid; pid = pid->next) {
-		if (!pid->id || !pid->id->v || pid->id->l == 0)
-			continue;
-		if (pid->idtype == RCT_IDT_FQDN) {
-			/* match SAN-DNS (RFC 4945 §5.2a / RFC 6125), then
-			 * subject CN as fallback when the cert has no SAN.
-			 * Length-bound: pid->id is an NUL-free rc_vchar_t. */
-			seen_bindable = 1;
-			{
-				int saw_san = 0;
-				for (pos = 1;; pos++) {
-					alt = NULL; type = GENT_OTHERNAME;
-					if (eay_get_x509subjectaltname(cert, &alt,
-								       &type,
-								       pos) != 0)
-						break;
-					saw_san = 1;
-					if (type == GENT_DNS && alt &&
-					    fqdn_id_match(alt,
-							  (char *)pid->id->v,
-							  pid->id->l)) {
-						TRACE((PLOGLOC,
-						    "X.509-from-wire: cert SAN-DNS %s matches peers_id\n",
-						    alt));
-						racoon_free(alt);
-						return 0;
-					}
-					if (alt)
-						racoon_free(alt);
-				}
-				/* only use subject CN when no SAN at all */
-				if (saw_san)
-					continue;
-				alt = eay_get_x509subject_cn(cert);
-				if (alt &&
-				    fqdn_id_match(alt, (char *)pid->id->v,
-						  pid->id->l)) {
-					TRACE((PLOGLOC,
-					    "X.509-from-wire: cert subject CN %s matches peers_id\n",
-					    alt));
-					free(alt);
-					return 0;
-				}
-				free(alt);
-			}
-		} else if (pid->idtype == RCT_IDT_IPADDR) {
-			/* bind an IP peers_id to a SAN-iPAddress entry.
-			 * pid->id is the configured address in presentation
-			 * form (e.g. "192.0.2.10" or "2001:db8::1"). */
-			seen_bindable = 1;
-			for (pos = 1;; pos++) {
-				alt = eay_get_x509subjectipaddr(cert, pos);
-				if (!alt)
-					break;
-				if (strlen(alt) == pid->id->l &&
-				    strncasecmp(alt, (char *)pid->id->v,
-						pid->id->l) == 0) {
-					TRACE((PLOGLOC,
-					    "X.509-from-wire: cert SAN-iPAddress %s matches peers_id\n",
-					    alt));
-					racoon_free(alt);
-					return 0;
-				}
-				racoon_free(alt);
-			}
-		}
+	cert = ike_sa->peer_cert;
+	/* The asserted peer identity is IDi when verifying the initiator
+	 * (i_to_r) and IDr otherwise.  When the peer's AUTH was verified
+	 * against a config key (no wire cert / PSK) this is a no-op above. */
+	if (i_to_r) {
+		asserted = ike_sa->id_i;
+		asserted_type = ike_sa->id_i_type;
+	} else {
+		asserted = ike_sa->id_r;
+		asserted_type = ike_sa->id_r_type;
 	}
-	if (!seen_bindable)
-		return 0;	/* no FQDN/IP peers_id configured: pure
-				 * CA-trust hub, nothing to bind */
+	if (!asserted || !asserted->v || asserted->l == 0)
+		return 0;	/* no asserted identity (resume/other) */
+	/* The stored asserted ID (sa->id_i/id_r) is the ID payload after the
+	 * IKE header — which still carries the id_type + reserved fields that
+	 * form the AUTH input and the peers_id compare.  The actual identity
+	 * value (FQDN bytes / IP octets) is past the ikev2payl_ident_h. */
+	if (asserted->l <= (size_t)sizeof(struct ikev2payl_ident_h))
+		return 0;	/* no identity data (unsupported type) */
+	asserted_data = (const char *)asserted->v +
+	    sizeof(struct ikev2payl_ident_h);
+	asserted_len = asserted->l - sizeof(struct ikev2payl_ident_h);
+
+	if (asserted_type == RCT_IDT_FQDN) {
+		/* match against SAN-DNS (RFC 4945 §5.2a / RFC 6125), then the
+		 * subject CN as a fallback for certs identified only by CN.
+		 * Length-bound the compare against the asserted ID value. */
+		int saw_san = 0;
+		for (pos = 1;; pos++) {
+			alt = NULL; type = GENT_OTHERNAME;
+			if (eay_get_x509subjectaltname(cert, &alt, &type,
+						       pos) != 0)
+				break;
+			saw_san = 1;
+			if (type == GENT_DNS && alt &&
+			    fqdn_id_match(alt, asserted_data,
+					  asserted_len)) {
+				TRACE((PLOGLOC,
+				    "X.509-from-wire: cert SAN-DNS %s matches asserted IDi/IDr\n",
+				    alt));
+				racoon_free(alt);
+				return 0;
+			}
+			if (alt)
+				racoon_free(alt);
+		}
+		/* only use subject CN when no SAN at all */
+		if (saw_san)
+			goto mismatch;
+		alt = eay_get_x509subject_cn(cert);
+		if (alt &&
+		    fqdn_id_match(alt, asserted_data, asserted_len)) {
+			TRACE((PLOGLOC,
+			    "X.509-from-wire: cert subject CN %s matches asserted IDi/IDr\n",
+			    alt));
+			free(alt);
+			return 0;
+		}
+		free(alt);
+		goto mismatch;
+	} else if (asserted_type == RCT_IDT_IPADDR) {
+		/* The asserted ID payload carries the address as RAW octets
+		 * (4 for IPv4, 16 for IPv6).  The SAN-iPAddress is compared as
+		 * a presentation string, so format the asserted octets to a
+		 * presentation string first, then length-bound compare against
+		 * each SAN-iPAddress. */
+		char ipbuf[INET6_ADDRSTRLEN];
+		int fam = asserted_len == 4 ? AF_INET :
+		    (asserted_len == 16 ? AF_INET6 : AF_UNSPEC);
+		if (fam == AF_UNSPEC ||
+		    inet_ntop(fam, asserted_data, ipbuf,
+			      sizeof(ipbuf)) == NULL) {
+			/* malformed asserted IP identity; cannot bind */
+			return 0;
+		}
+		for (pos = 1;; pos++) {
+			alt = eay_get_x509subjectipaddr(cert, pos);
+			if (!alt)
+				break;
+			if (strcmp(alt, ipbuf) == 0) {
+				TRACE((PLOGLOC,
+				    "X.509-from-wire: cert SAN-iPAddress %s matches asserted IDi/IDr\n",
+				    alt));
+				racoon_free(alt);
+				return 0;
+			}
+			racoon_free(alt);
+		}
+		goto mismatch;
+	}
+	/* Non-FQDN / non-IP asserted identity: nothing to bind the cert
+	 * SAN/CN against (e.g. KEY_ID).  Fall back to no-op — the peers_id
+	 * allowlist and verify_id checks still apply at their own sites. */
+	return 0;
+mismatch:
 	plog(PLOG_PROTOERR, PLOGLOC, 0,
-	     "X.509-from-wire: peer cert identity does not match configured peers_id (RFC 4945)\n");
+	     "X.509-from-wire: peer cert identity does not match asserted ID "
+	     "(RFC 4945; asserted %s \"%.*s\" type %d)\n",
+	     i_to_r ? "IDi" : "IDr", (int)(asserted ? asserted->l : 0),
+	     asserted ? (char *)asserted->v : "", (int)asserted_type);
 	return -1;
 }
 rc_vchar_t *

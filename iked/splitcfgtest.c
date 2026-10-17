@@ -522,24 +522,40 @@ main(int argc, char *argv[])
 			   "eay_get_x509subjectipaddr(2)==NULL (one IP SAN)");
 		}
 
-		/* ikev2_wire_cert_id_ok: peers_id ip 192.0.2.77 must bind */
+		/* ikev2_wire_cert_id_ok: asserted IDi ip 192.0.2.77 must bind */
 		ikm.cert_validate = RCT_BOOL_ON;
 		rm.ikev2 = &ikm;
-		id.idtype = RCT_IDT_IPADDR;
-		id.id = rc_str2vmem("192.0.2.77");
-		CK(id.id != NULL, "ip-bind: peers_id alloc");
-		ikm.peers_id = &id;
 		isa.rmconf = &rm;
 		isa.peer_cert = cert;
-		CK(ikev2_wire_cert_id_ok(&isa) == 0,
-		   "ikev2_wire_cert_id_ok: IP peers_id matches cert SAN-iPAddress");
+		/* the peer asserted IDi as an IPv4 address matching the SAN.
+		 * sa->id_i stores the ID payload after the IKE header, i.e.
+		 * id_type + reserved[] + data (the AUTH-input form); replicate
+		 * that layout so the binding's id_h offset matches real life. */
+		isa.id_i = rc_vmalloc(sizeof(struct ikev2payl_ident_h) + 4);
+		CK(isa.id_i != NULL, "ip-bind: asserted IDi alloc");
+		isa.id_i_type = RCT_IDT_IPADDR;
+		isa.id_i->l = sizeof(struct ikev2payl_ident_h) + 4;
+		{
+			uint8_t *iv = (uint8_t *)isa.id_i->v;
+			iv[0] = 1;	/* IKEV2_ID_IPV4_ADDR */
+			iv[4] = 192; iv[5] = 0; iv[6] = 2; iv[7] = 77;
+		}
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) == 0,
+		   "ikev2_wire_cert_id_ok: asserted IP IDi matches cert SAN-iPAddress");
 
-		/* wrong IP in peers_id must fail (identity mismatch) */
-		rc_vfree(id.id);
-		id.id = rc_str2vmem("198.51.100.9");
-		CK(id.id != NULL, "ip-bind: wrong peers_id alloc");
-		CK(ikev2_wire_cert_id_ok(&isa) != 0,
-		   "ikev2_wire_cert_id_ok: WRONG IP peers_id rejected");
+		/* asserted IDi != cert SAN must FAIL (identity substitution) */
+		rc_vfree(isa.id_i);
+		isa.id_i = rc_vmalloc(sizeof(struct ikev2payl_ident_h) + 4);
+		CK(isa.id_i != NULL, "ip-bind: wrong asserted IDi alloc");
+		isa.id_i->l = sizeof(struct ikev2payl_ident_h) + 4;
+		{
+			uint8_t *iv = (uint8_t *)isa.id_i->v;
+			iv[0] = 1;	/* IKEV2_ID_IPV4_ADDR */
+			iv[4] = 198; iv[5] = 51; iv[6] = 100; iv[7] = 9;
+		}
+
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "ikev2_wire_cert_id_ok: asserted IDi != cert SAN rejected");
 
 		CK(1, "ip-bind block");
 	b2d_err:
@@ -549,6 +565,7 @@ main(int argc, char *argv[])
 		if (pk) EVP_PKEY_free(pk);
 		if (der) rc_vfree(der);
 		if (id.id) rc_vfree(id.id);
+		if (isa.id_i) rc_vfree(isa.id_i);
 	}
 
 	/* ================= B.4: INTERNAL_DNS_DOMAIN (25) =================

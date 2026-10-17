@@ -231,6 +231,8 @@ struct ikev2_sa {
 
 	rc_vchar_t *id_i;	/* IDi' */
 	rc_vchar_t *id_r;	/* IDr' */
+	rc_type	id_i_type;	/* RCT_IDT_* of the asserted IDi */
+	rc_type	id_r_type;	/* RCT_IDT_* of the asserted IDr */
 
 	rc_vchar_t *my_first_message;	/* for AUTH calculation */
 	rc_vchar_t *peer_first_message;
