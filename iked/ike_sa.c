@@ -1206,6 +1206,8 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		rc_vfree(sa->id_i);
 	if (sa->id_r)
 		rc_vfree(sa->id_r);
+	if (sa->peer_cert)
+		rc_vfree(sa->peer_cert);
 	/* RFC 9370 ADDKE rekey state (deferred IKE-SA rekey): zeroized */
 	if (sa->addke_rekey_link)
 		rc_vfreez(sa->addke_rekey_link);

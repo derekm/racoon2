@@ -865,6 +865,28 @@ ikev2_auth_calculate_method(struct ikev2_sa *sa, int i_to_r, int method)
 }
 
 /*
+ * Resolve the peer's public key for AUTH verification.
+ *
+ * When cert_validate is on (X.509-from-wire), the ONLY accepted key source
+ * is the certificate received in the CERT payload: the chain is validated
+ * against ca_file and AUTH must verify against that leaf pubkey.  A missing
+ * or chain-invalid peer cert returns NULL -> AUTH fails (no silent fallback
+ * to a config pin, which would defeat chain validation).
+ *
+ * When cert_validate is off, the historical config-file pubkey/cert pin is
+ * used unchanged (ikd<->ikd PSK / pubkey rows, and strongSwan interop that
+ * pins peers_pubkey).
+ */
+static rc_vchar_t *
+ikev2_peer_public_key(struct ikev2_sa *sa, rc_vchar_t *id)
+{
+	if (sa->rmconf && sa->rmconf->ikev2 &&
+	    ikev2_cert_validate(sa->rmconf) == RCT_BOOL_ON)
+		return ikev2_public_key_from_wire(sa);
+	return ikev2_public_key(sa, id, &sa->due_time);
+}
+
+/*
  * returns:
  *  VERIFIED_SUCCESS (1) if verified successfully
  *  VERIFIED_FAILURE (-1) if doesn't match or on error
@@ -913,7 +935,7 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 		 * negotiated.  Recover DigestInfo; accept SHA-1 (interop with
 		 * strongSwan auth=rsa / Windows / iOS) or SHA-256 (iked<->iked).
 		 */
-		pubkey = ikev2_public_key(sa, id, &sa->due_time);
+		pubkey = ikev2_peer_public_key(sa, id);
 		if (!pubkey) {
 			isakmp_log(sa, 0, 0, 0,
 				   PLOG_INTERR, PLOGLOC,
@@ -946,7 +968,7 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 		 * The AlgorithmIdentifier names the scheme and hash; any SHA-2
 		 * RSASSA-PKCS1-v1_5, RSASSA-PSS or ECDSA identifier is accepted
 		 * (eay_rfc7427_verify), SHA-1 is not (RFC 8247 s3.2). */
-		pubkey = ikev2_public_key(sa, id, &sa->due_time);
+		pubkey = ikev2_peer_public_key(sa, id);
 		if (!pubkey) {
 			isakmp_log(sa, 0, 0, 0,
 				   PLOG_INTERR, PLOGLOC,
@@ -985,7 +1007,7 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 			result = VERIFIED_FAILURE;
 			break;
 		}
-		pubkey = ikev2_public_key(sa, id, &sa->due_time);
+		pubkey = ikev2_peer_public_key(sa, id);
 		if (!pubkey) {
 			isakmp_log(sa, 0, 0, 0,
 				   PLOG_INTERR, PLOGLOC,
@@ -1000,7 +1022,7 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
 	case IKEV2_AUTH_ECDSA_SHA256_P256:
 	case IKEV2_AUTH_ECDSA_SHA384_P384:
 	case IKEV2_AUTH_ECDSA_SHA512_P521:
-		pubkey = ikev2_public_key(sa, id, &sa->due_time);
+		pubkey = ikev2_peer_public_key(sa, id);
 		if (!pubkey) {
 			isakmp_log(sa, 0, 0, 0,
 				   PLOG_INTERR, PLOGLOC,

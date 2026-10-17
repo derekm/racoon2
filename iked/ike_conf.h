@@ -217,6 +217,8 @@ extern rc_type ikev2_sig_hash_rsa_pss(struct rcf_remote *);
 extern rc_type ikev2_use_ppk(struct rcf_remote *);
 extern rc_type ikev2_childless(struct rcf_remote *);
 extern rc_vchar_t *ikev2_redirect_to(struct rcf_remote *);
+extern rc_type ikev2_cert_validate(struct rcf_remote *);
+extern rc_vchar_t *ikev2_ca_file(struct rcf_remote *);
 extern rc_type ikev2_natt_follow_mapping(struct rcf_remote *);
 extern rc_type ikev2_ppk_mandatory(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ppk_id(struct rcf_remote *);
@@ -276,6 +278,7 @@ struct ikev2_payload_header;
 
 extern rc_vchar_t *ikev2_public_key(struct ikev2_sa *, rc_vchar_t *,
 				 struct timeval *);
+extern rc_vchar_t *ikev2_public_key_from_wire(struct ikev2_sa *);
 extern rc_vchar_t *ikev2_private_key(struct ikev2_sa *, rc_vchar_t *);
 extern rc_vchar_t *ikev2_pre_shared_key(struct ikev2_sa *);
 

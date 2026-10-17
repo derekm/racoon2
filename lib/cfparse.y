@@ -130,6 +130,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %token REMOTE ACCEPTABLE_KMP IKEV1 IKEV2
 %token LOGMODE LOGMODE_DEBUG LOGMODE_NORMAL RCLOGFILE SELECTOR_INDEX
 %token PASSIVE USE_COA PEERS_IPADDR PEERS_KMP_PORT VERIFY_ID VERIFY_PUBKEY SEND_CERT
+%token CERT_VALIDATE CA_FILE
 %token SEND_CERT_REQ NONCE_SIZE INITIAL_CONTACT SUPPORT_PROXY
 %token MY_ID PEERS_ID IPADDR USER_FQDN FQDN KEYID X509_SUBJECT
 %token QFILE QTAG
@@ -850,10 +851,20 @@ kmp_common_spec
 			$$->nextp = $2;
 		}
 	|	VERIFY_ID boolean
-		{
-			MKRCFDIR($$, CFD_VERIFY_ID);
-			$$->nextp = $2;
-		}
+	{
+	MKRCFDIR($$, CFD_VERIFY_ID);
+	$$->nextp = $2;
+	}
+	|	CERT_VALIDATE boolean
+	{
+	MKRCFDIR($$, CFD_CERT_VALIDATE);
+	$$->nextp = $2;
+	}
+	|	CA_FILE string
+	{
+	MKRCFDIR($$, CFD_CA_FILE);
+	$$->nextp = $2;
+	}
 	|	PARENT_CHILD_STRENGTH boolean
 		{
 			MKRCFDIR($$, CFD_PARENT_CHILD_STRENGTH);

@@ -414,6 +414,14 @@ struct rcf_kmp {
 	 * client re-initiates against the listed gateway (load-balance /
 	 * maintenance / closure).  NULL = never redirect (RFC 5685 s3). */
 	rc_vchar_t *redirect_to;
+	/* X.509-from-wire (feature-gap P1): when cert_validate is RCT_BOOL_ON,
+	 * the responder validates the peer's chain presented in CERT payloads
+	 * against ca_file (a PEM trust anchor / CA chain or hash-dir) via
+	 * eay_check_x509cert() and verifies AUTH against the leaf pubkey,
+	 * then binds the cert identity to the configured peers_id.  Off
+	 * (default) keeps the historical config-file pubkey pin unchanged. */
+	rc_type cert_validate;
+	rc_vchar_t *ca_file;
 };
 
 /* selector info */

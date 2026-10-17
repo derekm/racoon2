@@ -235,6 +235,14 @@ struct ikev2_sa {
 	rc_vchar_t *my_first_message;	/* for AUTH calculation */
 	rc_vchar_t *peer_first_message;
 
+	/* X.509-from-wire (feature-gap P1): raw CERT payload bytes of the
+	 * peer's leaf certificate received in IKE_AUTH (RFC 7296 s3.6),
+	 * captured from the first CERT payload.  Used (when the remote is
+	 * configured cert_validate on) to build/validate the chain against
+	 * ca_file and verify AUTH against the leaf pubkey, instead of the
+	 * config-file pubkey pin.  NULL when no CERT payload was received. */
+	rc_vchar_t *peer_cert;
+
 	struct encryptor *encryptor;
 	struct authenticator *authenticator;
 

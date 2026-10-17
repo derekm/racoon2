@@ -240,6 +240,8 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* allow_rfc_deprecated: refused unless on */
 	RCT_BOOL_OFF,		/* natt_follow_mapping (XFRM_MSG_MAPPING) */
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
+	RCT_BOOL_OFF,		/* cert_validate (X.509-from-wire off by default) */
+	NULL,			/* ca_file (trust anchor; NULL = default paths) */
 };
 
 #ifdef IKEV1
@@ -493,6 +495,8 @@ IKEV2_CONF_ATTR(rc_type, use_ppk)
 IKEV2_CONF_ATTR(rc_type, childless)
 IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
+IKEV2_CONF_ATTR(rc_type, cert_validate)
+IKEV2_CONF_ATTR(rc_vchar_t *, ca_file)
 IKEV2_CONF_ATTR(rc_type, require_config)
 IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
 IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)
@@ -982,6 +986,57 @@ ikev2_private_key(struct ikev2_sa *ike_sa, rc_vchar_t *id_data)
 	return privkey;
 }
 #endif
+
+/*
+ * X.509-from-wire (feature-gap P1): resolve the peer's public key from the
+ * certificate actually received in the IKE_AUTH CERT payload, instead of a
+ * config-file pin.  When the remote has cert_validate on and a peer cert was
+ * captured, build/validate the chain against ca_file and return the leaf
+ * pubkey (RSA/ECDSA ASN.1 as i2v_PUBKEY).  On any failure return NULL so the
+ * caller falls back to the configured pubkey.
+ */
+rc_vchar_t *
+ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
+{
+	struct rcf_remote *conf;
+	rc_vchar_t *cert, *pubkey;
+	char *capath;
+	int err;
+
+	if (!ike_sa || !ike_sa->rmconf || !ike_sa->rmconf->ikev2)
+		return NULL;
+	conf = ike_sa->rmconf;
+	if (ikev2_cert_validate(conf) != RCT_BOOL_ON)
+		return NULL;
+	if (!ike_sa->peer_cert)
+		return NULL;
+
+	cert = ike_sa->peer_cert;
+
+	/* Chain-build + trust validation against the configured CA.
+	 * eay_check_x509cert(cert, NULL) uses the OpenSSL default store; a
+	 * configured ca_file is handed as the CA look-up path. */
+	capath = ikev2_ca_file(conf) ?
+	    rc_vmem2str(ikev2_ca_file(conf)) : NULL;
+	err = eay_check_x509cert(cert, capath);
+	if (err) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "X.509-from-wire: peer cert failed chain validation (%s)\n",
+		     capath ? capath : "default CA paths");
+		return NULL;
+	}
+	TRACE((PLOGLOC,
+	    "X.509-from-wire: peer cert validated against %s\n",
+	    capath ? capath : "default CA paths"));
+
+	pubkey = eay_get_x509_pubkey(cert, &ike_sa->due_time);
+	if (!pubkey) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "X.509-from-wire: failed extracting peer pubkey from wire cert\n");
+		return NULL;
+	}
+	return pubkey;
+}
 
 /*
  * reads pre_shared_key from file
