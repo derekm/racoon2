@@ -112,8 +112,10 @@ ikev2_drain_set(const struct sockaddr *peer, const char *gw)
 			break;
 		}
 	}
-	if (!free_e)
+	if (!free_e) {
+		free(dup);	/* avoid leaking the strdup on table-full */
 		return -1;	/* table full */
+	}
 	memset(free_e, 0, sizeof(*free_e));
 	memcpy(&free_e->peer, peer, peer->sa_family == AF_INET ?
 	       sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6));
