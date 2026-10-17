@@ -5889,8 +5889,25 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 				 * caller pin a key even when chain validation
 				 * is the intended trust model). */
 				if (ikev2_cert_validate(rmconf) ==
-				    RCT_BOOL_ON)
+				    RCT_BOOL_ON) {
+					/* Loud, at config load, if the trust
+					 * anchor is not pinned: a cert_validate-on
+					 * remote with NO ca_file validates the
+					 * peer chain against the OS default CA
+					 * store — a broad implicit trust that an
+					 * operator usually did not intend for a
+					 * VPN peer trust decision (the identity
+					 * binding to peers_id still constrains
+					 * it when an FQDN peers_id exists). */
+					if (ikev2_ca_file(rmconf) == NULL)
+						plog(PLOG_INTWARN, PLOGLOC, 0,
+						     "remote %s ikev2: cert_validate on but NO ca_file "
+						     "— peer certificate chain will be validated "
+						     "against the system default CA store; set "
+						     "ca_file to pin a specific trust anchor\n",
+						     rm_index);
 					break;
+				}
 				if (!peers_pubkey) {
 					++*err;
 					plog(PLOG_INTERR, PLOGLOC, 0,
