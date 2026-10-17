@@ -545,6 +545,9 @@ responder_state0_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	rc_vchar_t *n_i = 0;
 	rc_vchar_t *n_r = 0;
 	rc_vchar_t *message = 0;
+	rc_vchar_t *gw = 0;
+	rc_vchar_t *ni_p = 0;
+	const char *drain = 0;
 	int nonce_size;
 
 	ikehdr = (struct ikev2_header *)packet->v;
@@ -653,54 +656,74 @@ responder_state0_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	 * initiator's proposal) but AFTER the redirect-support notify is
 	 * parsed above.  The peer MUST have offered 16406 (RFC 5685 s3:
 	 * a responder MUST NOT send REDIRECT to a client that did not). */
-	if (ike_sa->peer_sent_redirect &&
-	    (ikev2_redirect_to(conf) || ikev2_drain_lookup(remote))) {
-		rc_vchar_t *gw;
-		const char *drain;
-		rc_vchar_t *ni_p;
+	drain = ikev2_drain_lookup(remote);
+	/* A runtime drain for this peer wins over the config pool.  Decide
+	 * the retirement path: RFC 5685 s3 forbids SENDING REDIRECT to a
+	 * client that did not offer REDIRECT_SUPPORTED, but it does NOT
+	 * require ACCEPTING the SA — a drained node must not take a fresh
+	 * IKE_SA_INIT at all.  So: peer offered 16406 -> redirect it;
+	 * otherwise drop it (fail closed, no SILENT negotiation and no
+	 * forbidden REDIRECT). */
+	if (drain) {
+		if (!ike_sa->peer_sent_redirect) {
+			isakmp_log(ike_sa, local, remote, packet,
+			    PLOG_PROTOERR, PLOGLOC,
+			    "RFC5685: drained peer did not offer "
+			    "REDIRECT_SUPPORTED (16406); refusing IKE_SA_INIT "
+			    "(drop, no REDIRECT)\n");
+			goto drop;
+		}
+		gw = rc_vnew((unsigned char *)drain, (int)strlen(drain));
+		if (!gw)
+			goto drop;	/* OOM: fail closed */
+		ni_p = (nonce) ? isakmp_p2v((struct isakmp_gen *)nonce) : NULL;
+		/* isakmp_p2v can fail (bad nonce payload); redirect would
+		 * echo a wrong Ni — fail closed instead of negotiating. */
+		if (!ni_p) {
+			rc_vfree(gw);
+			goto drop;
+		}
+		TRACE((PLOGLOC, "RFC5685: redirecting this peer to "
+			"%.*s (offered REDIRECT_SUPPORTED) [drain]\n",
+			(int)gw->l, (char *)gw->u));
+		ikev2_respond_redirect(packet, remote, local, gw, ni_p);
+		rc_vfree(gw);
+		rc_vfree(ni_p);
+		++isakmpstat.payload_ignored;   /* no SA consumed */
+		goto done;
+	}
 
-		/* A runtime drain target for this peer wins over the config
-		 * pool (ikedctl drain-sa): the operator has marked this
-		 * concentrator for drain, redirect this NEW IKE_SA_INIT to
-		 * the drain gateway.  Otherwise resolve the config target
-		 * (single identity or pool). */
-		drain = ikev2_drain_lookup(remote);
-		if (drain) {
-			gw = rc_vnew((unsigned char *)drain, (int)strlen(drain));
-			if (!gw)
-				goto no_redirect;
-		} else {
-			/* Config redirect intended (the gate above ensures
-			 * redirect_to is set) but the selected pool slot is
-			 * empty/malformed: fail CLOSED — do not silently
-			 * negotiate a full SA against an overloaded/retiring
-			 * node.  This is an operator config error (an empty
-			 * slot in redirect_to); drop the IKE_SA_INIT. */
-			gw = ikev2_redirect_resolve(conf, remote);
-			if (!gw) {
-				isakmp_log(ike_sa, local, remote, packet,
-				    PLOG_PROTOERR, PLOGLOC,
-				    "RFC5685: redirect_to set but empty "
-				    "selected pool slot; refusing IKE_SA_INIT "
-				    "(fail-closed)\n");
-				goto drop;
-			}
+	if (ike_sa->peer_sent_redirect &&
+	    ikev2_redirect_to(conf)) {
+		/* Config redirect intended (the gate above ensures
+		 * redirect_to is set).  If the selected pool slot is
+		 * empty/malformed: fail CLOSED — do not silently
+		 * negotiate a full SA against an overloaded/retiring
+		 * node.  This is an operator config error (an empty
+		 * slot in redirect_to); drop the IKE_SA_INIT. */
+		gw = ikev2_redirect_resolve(conf, remote);
+		if (!gw) {
+			isakmp_log(ike_sa, local, remote, packet,
+			    PLOG_PROTOERR, PLOGLOC,
+			    "RFC5685: redirect_to set but empty "
+			    "selected pool slot; refusing IKE_SA_INIT "
+			    "(fail-closed)\n");
+			goto drop;
 		}
 		ni_p = (nonce) ? isakmp_p2v((struct isakmp_gen *)nonce) : NULL;
-		if (ni_p) {
-			TRACE((PLOGLOC, "RFC5685: redirecting this peer to "
-				"%.*s (offered REDIRECT_SUPPORTED)%s\n",
-				(int)gw->l, (char *)gw->u,
-				drain ? " [drain]" : ""));
-			ikev2_respond_redirect(packet, remote, local, gw, ni_p);
+		if (!ni_p) {
 			rc_vfree(gw);
-			rc_vfree(ni_p);
-			++isakmpstat.payload_ignored;   /* no SA consumed */
-			goto done;
+			goto drop;
 		}
+		TRACE((PLOGLOC, "RFC5685: redirecting this peer to "
+			"%.*s (offered REDIRECT_SUPPORTED)\n",
+			(int)gw->l, (char *)gw->u));
+		ikev2_respond_redirect(packet, remote, local, gw, ni_p);
 		rc_vfree(gw);
+		rc_vfree(ni_p);
+		++isakmpstat.payload_ignored;   /* no SA consumed */
+		goto done;
 	}
-	no_redirect:
 
 	if ((ike_acceptable_kmp(conf) & RCF_ALLOW_IKEV2) == 0) {
 		isakmp_log(ike_sa, local, remote, packet,
