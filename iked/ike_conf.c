@@ -1055,12 +1055,55 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
  * was verified against a chain-validated wire certificate, the certificate
  * identity must also match the configured peers_id — otherwise a peer with a
  * valid chain for a DIFFERENT identity could authenticate.  Checks the leaf's
- * SAN-DNS, then the subject CN, against each configured peers_id FQDN.
- * Returns 0 on a match, or when NO FQDN peers_id is configured (pure
- * CA-trust hub: nothing to bind against); non-zero on a mismatch against a
- * configured peers_id.  (RFC 7296 §2.16 AUTH proves possession of the
- * private key; this binds that identity to the IKE-level peer policy.)
+ * SAN-DNS (with wildcard-FQDN support), then the subject CN, against each
+ * configured peers_id FQDN.  Returns 0 on a match, or when NO FQDN peers_id
+ * is configured (pure CA-trust hub: nothing to bind against); non-zero on a
+ * mismatch against a configured peers_id.  (RFC 7296 §2.16 AUTH proves
+ * possession of the private key; this binds that identity to the IKE-level
+ * peer policy.)
  */
+
+/*
+ * Wildcard FQDN match per RFC 6125 §6.4.3: a configured peers_id FQDN
+ * beginning with a leftmost "*." label matches the cert name iff the cert
+ * name has that many labels and the suffix (after the first label) equals
+ * the peers_id minus its "*." prefix, case-insensitively, exactly one
+ * leftmost label.  Non-wildcard: exact case-insensitive equality on all
+ * labels (so "*.example.com" does NOT match "a.b.example.com").
+ * pid is the NUL-free rc_vchar_t content of length pid_len.
+ */
+static int
+fqdn_id_match(const char *alt, const char *pid, size_t pid_len)
+{
+	const char *star;
+	size_t alt_len = strlen(alt);
+
+	if (pid_len >= 2 && pid[0] == '*' && pid[1] == '.') {
+		const char *suffix = pid + 2;
+		size_t suffix_len = pid_len - 2;
+		const char *dot;
+		/* alt must have >= 2 labels: leftmost label + suffix */
+		if (alt_len < suffix_len + 2)
+			return 0;
+		dot = strchr(alt, '.');
+		if (dot == NULL)
+			return 0;	/* no leftmost-label split */
+		/* exactly one leftmost label: no further dot after it */
+		if (strchr(dot + 1, '.') != NULL)
+			return 0;	/* more than two labels */
+		/* suffix must match alt[dot-index+2..) */
+		if ((size_t)(dot - alt) != alt_len - suffix_len)
+			return 0;
+		return strncasecmp(dot + 1, suffix, suffix_len) == 0;
+	}
+	/* exact match on all labels */
+	if (alt_len != pid_len)
+		return 0;
+	star = memchr(pid, '*', pid_len);
+	if (star != NULL)
+		return 0;	/* a literal '*' in a non-wildcard is a match fail */
+	return strncasecmp(alt, pid, pid_len) == 0;
+}
 int
 ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
 {
@@ -1088,35 +1131,45 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
 		 * Length-bound the compare: pid->id is an arbitrary-length
 		 * rc_vchar_t (not guaranteed NUL-terminated), so compare
 		 * exactly l bytes, never via a raw strcasecmp. */
-		for (pos = 1;; pos++) {
-			alt = NULL; type = GENT_OTHERNAME;
-			if (eay_get_x509subjectaltname(cert, &alt, &type,
-						       pos) != 0)
-				break;
-			if (type == GENT_DNS && alt &&
-			    strlen(alt) == pid->id->l &&
-			    strncasecmp(alt, (char *)pid->id->v,
-					pid->id->l) == 0) {
+		{
+			int saw_san = 0;
+			for (pos = 1;; pos++) {
+				alt = NULL; type = GENT_OTHERNAME;
+				if (eay_get_x509subjectaltname(cert, &alt,
+							       &type,
+							       pos) != 0)
+					break;
+				/* an entry of ANY type at this pos means the
+				 * cert HAS a SAN extension; RFC 6125 says an
+				 * authoritative SAN suppresses subject CN. */
+				saw_san = 1;
+				if (type == GENT_DNS && alt &&
+				    fqdn_id_match(alt, (char *)pid->id->v,
+						  pid->id->l)) {
+					TRACE((PLOGLOC,
+					    "X.509-from-wire: cert SAN-DNS %s matches peers_id\n",
+					    alt));
+					racoon_free(alt);
+					return 0;
+				}
+				if (alt)
+					racoon_free(alt);
+			}
+			/* Only use subject CN when the cert has NO SAN at all */
+			if (saw_san)
+				continue;
+			alt = eay_get_x509subject_cn(cert);
+			if (alt &&
+			    fqdn_id_match(alt, (char *)pid->id->v,
+					  pid->id->l)) {
 				TRACE((PLOGLOC,
-				    "X.509-from-wire: cert SAN-DNS %s matches peers_id\n",
+				    "X.509-from-wire: cert subject CN %s matches peers_id\n",
 				    alt));
-				racoon_free(alt);
+				free(alt);
 				return 0;
 			}
-			if (alt)
-				racoon_free(alt);
-		}
-		/* SAN-DNS loop exhausted without a match: try the subject CN */
-		alt = eay_get_x509subject_cn(cert);
-		if (alt && strlen(alt) == pid->id->l &&
-		    strncasecmp(alt, (char *)pid->id->v, pid->id->l) == 0) {
-			TRACE((PLOGLOC,
-			    "X.509-from-wire: cert subject CN %s matches peers_id\n",
-			    alt));
 			free(alt);
-			return 0;
 		}
-		free(alt);
 	}
 	if (!seen_fqdn)
 		return 0;	/* no FQDN peers_id configured: pure

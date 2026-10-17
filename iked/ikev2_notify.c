@@ -943,9 +943,19 @@ ikev2_remember_sig_hashes(struct ikev2_sa *ike_sa, struct ikev2payl_notify *noti
 		ike_sa->peer_sig_hash_mask = 0;
 		return;
 	}
-	d = (const uint8_t *)(notify + 1);
-	dlen = get_payload_length(&notify->header) -
-	    sizeof(struct ikev2payl_notify);
+	/* Data follows the SPI (if any).  RFC 7427 notifies have spi_size 0,
+	 * but parse through get_notify_data so a non-zero spi_size is not
+	 * misread as hash IDs. */
+	{
+		size_t plen = get_payload_length(&notify->header) -
+		    sizeof(struct ikev2payl_notify);
+		if (plen <= notify->nh.spi_size) {
+			ike_sa->peer_sig_hash_mask = 0;
+			return;
+		}
+		d = get_notify_data(notify);
+		dlen = plen - notify->nh.spi_size;
+	}
 
 	while (dlen >= 2) {
 		unsigned int id = (d[0] << 8) | d[1];

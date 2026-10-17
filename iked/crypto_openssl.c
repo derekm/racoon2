@@ -910,28 +910,27 @@ eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 		goto end;
 	}
 
-	/* make sure if the data is terminated by '\0'. */
-	if (gen->d.ia5->data[gen->d.ia5->length] != '\0') {
-#ifndef EAYDEBUG
-		plog(PLOG_PROTOERR, PLOGLOC, NULL,
-		     "data is not terminated by '\\0'.\n");
-		plogdump(PLOG_PROTOERR, PLOGLOC, 0,
-			 gen->d.ia5->data, gen->d.ia5->length + 1);
-#else
-		hexdump(gen->d.ia5->data, gen->d.ia5->length + 1);
-#endif
-		goto end;
+	/* Return an allocated, NUL-terminated copy of the IA5STRING data.
+	 * Copy exactly length bytes and NUL-terminate ourselves — never probe
+	 * data[length] for a terminator (a one-past read; ASN1_STRING is not
+	 * guaranteed NUL-padded).  ASN1_STRING defines data to be length
+	 * bytes, so copying by length from get0_data is safe and bounded. */
+	{
+		const unsigned char *ia5 = ASN1_STRING_get0_data(gen->d.ia5);
+		int	ia5_len;
+		ia5_len = ASN1_STRING_length(gen->d.ia5);
+		if (ia5_len < 0)
+			goto end;
+		len = (size_t)ia5_len + 1;
+		*altname = racoon_malloc(len);
+		if (!*altname)
+			goto end;
+		memcpy(*altname, ia5, (size_t)ia5_len);
+		(*altname)[ia5_len] = '\0';
+		*type = gen->type;
+
+		error = 0;
 	}
-
-	len = gen->d.ia5->length + 1;
-	*altname = racoon_malloc(len);
-	if (!*altname)
-		goto end;
-
-	strlcpy(*altname, (char *)gen->d.ia5->data, len);
-	*type = gen->type;
-
-	error = 0;
 
       end:
 	if (error) {

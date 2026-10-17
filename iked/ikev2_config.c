@@ -1194,8 +1194,8 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			}
 			break;
 		case IKEV2_CFG_INTERNAL_IP6_SUBNET: {
-			/* RFC 7296 §3.15.2 / RFC 8598: value =
-			 * struct ikev2cfg_ip6addr = prefixlen (1) + addr (16).
+			/* RFC 7296 §3.15.2: value =
+			 * struct ikev2cfg_ip6addr = addr (16) + prefixlen (1).
 			 * Commit to the child's remote-side subnets like 13. */
 			struct ikev2cfg_ip6addr *sd;
 			int plen;

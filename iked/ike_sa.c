@@ -619,6 +619,12 @@ ikev2_sa_copy_negotiated_state(struct ikev2_sa *to, struct ikev2_sa *from)
 	if (from->n_extra_addr6 > 0)
 		memcpy(to->extra_addr6, from->extra_addr6,
 		       (size_t)from->n_extra_addr6 * 16);
+	/* An IKE SA rekey (CREATE_CHILD_SA NULL-encryption) does NOT
+	 * re-authenticate, so the certificate-expiry cap must carry over to
+	 * the new SA — otherwise the rekeyed SA's lifetime timer
+	 * (ikev2_sa_start_lifetime_timer) would not stop at notAfter and
+	 * could outlive the peer's certificate. */
+	to->due_time = from->due_time;
 }
 
 /* Re-pin the RFC 4555 §3.8 NATD binding-report digests.  They are a
