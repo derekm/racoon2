@@ -3623,6 +3623,10 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_VDUP(src->peers_principal, new->peers_principal);
 	DEEPCOPY_VDUP(src->pre_shared_key, new->pre_shared_key);
 	DEEPCOPY_VDUP(src->redirect_to, new->redirect_to);
+	/* scalar cfg flags: cert_validate (X.509-from-wire) must survive
+	 * rcf_deepcopy_remote -> rcf_deepcopy_kmp or it silently reverts to
+	 * the default OFF and the wire chain is never validated. */
+	new->cert_validate = src->cert_validate;
 	DEEPCOPY_VDUP(src->ca_file, new->ca_file);
 	DEEPCOPY_PKLIST(src->my_pubkey, new->my_pubkey);
 	DEEPCOPY_PKLIST(src->peers_pubkey, new->peers_pubkey);

@@ -572,6 +572,12 @@ main(int argc, char *argv[])
 			memset(&src_remote, 0, sizeof(src_remote));
 			memset(&src_kmp, 0, sizeof(src_kmp));
 			src_remote.ikev2 = &src_kmp;
+			/* X.509-from-wire: cert_validate is a SCALAR rc_type — a
+			 * plain DEEPCOPY_VDUP can't carry it and rcf_deepcopy_kmp
+			 * must assign it explicitly or the runtime remote silently
+			 * reverts to OFF (the same dropped-field class as
+			 * dnssec_ta, caught live by i2icert-wire). */
+			src_kmp.cert_validate = RCT_BOOL_ON;
 			src_kmp.dnssec_ta = rc_vmalloc(strlen(ta2) + 1);
 			memcpy(src_kmp.dnssec_ta->v, ta2, strlen(ta2));
 			src_kmp.dnssec_ta->s[strlen(ta2)] = '\0';
@@ -586,6 +592,8 @@ main(int argc, char *argv[])
 				   memcmp(cp->ikev2->dnssec_ta->v, ta2,
 					  strlen(ta2)) == 0,
 				   "deepcopy carries dnssec_ta (config path)");
+				CK(cp->ikev2->cert_validate == RCT_BOOL_ON,
+				   "deepcopy carries cert_validate (X.509-from-wire)");
 				/* rcf_clean_remote is static (not reusable from a
 				 * test); the source remote only ever set dnssec_ta,
 				 * so the copy owns exactly these three allocs. */

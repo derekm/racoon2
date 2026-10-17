@@ -1006,10 +1006,18 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
 	if (!ike_sa || !ike_sa->rmconf || !ike_sa->rmconf->ikev2)
 		return NULL;
 	conf = ike_sa->rmconf;
-	if (ikev2_cert_validate(conf) != RCT_BOOL_ON)
+	if (ikev2_cert_validate(conf) != RCT_BOOL_ON) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "X.509-from-wire: cert_validate not enabled "
+		     "(value %d), skipping wire pubkey\n",
+		     ikev2_cert_validate(conf));
 		return NULL;
-	if (!ike_sa->peer_cert)
+	}
+	if (!ike_sa->peer_cert) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "X.509-from-wire: no peer cert captured from wire\n");
 		return NULL;
+	}
 
 	cert = ike_sa->peer_cert;
 
@@ -5796,6 +5804,16 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 				 * AUTH is verified through the EAP MSK instead. */
 				if (kmp_auth_method &&
 				    kmp_auth_method->algtype == RCT_ALG_EAP)
+					break;
+				/* X.509-from-wire: cert_validate on means the
+				 * peer's key comes from the certificate in the
+				 * CERT payload (chain-validated against
+				 * ca_file), so a config peers_public_key is not
+				 * required — and must not be (it would let the
+				 * caller pin a key even when chain validation
+				 * is the intended trust model). */
+				if (ikev2_cert_validate(rmconf) ==
+				    RCT_BOOL_ON)
 					break;
 				if (!peers_pubkey) {
 					++*err;

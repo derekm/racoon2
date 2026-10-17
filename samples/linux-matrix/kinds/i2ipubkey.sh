@@ -36,6 +36,17 @@ kind_i2ipubkey() {
 	*-ecdsa) AUTH_METHOD=ecdsa; AUTH_HEX=14; EXP_METHOD='auth method 14'; CURVE='P-384' ;;
 	esac
 
+	# i2icert-wire variant: the RESPONDER does NOT config-pin the initiator's
+	# certificate (peers_public_key absent) — it trusts the certificate chain
+	# the initiator presents in the wire CERT payload, validated against the
+	# local CA via cert_validate on + ca_file (X.509-from-wire feature-gap P1).
+	# AUTH must then verify against the wire leaf pubkey, and the responder
+	# must log the wire-validation TRACE.
+	WIRE=0
+	case "$name" in
+	*-wire) WIRE=1 ;;
+	esac
+
 	PEER=$(i2i_peer "$name")
 	PEER_R=$(i2i_peer_r "$name")
 	PEER_ID=$(i2i_peer_resp_id "$PEER")
@@ -90,6 +101,16 @@ kind_i2ipubkey() {
 	# accept it).  The system anchors are never modified.
 	SSLENV="SSL_CERT_FILE=$C/certs/ca.crt"
 
+# responder peer-key config: wire variant trusts the on-the-wire CERT chain
+# (cert_validate on + ca_file) and does NOT pin a config-file peer cert; the
+# normal variant pins peers_public_key as before.
+if [ "$WIRE" = 1 ]; then
+	WIRE_CONF='cert_validate on;
+		ca_file "'$C'/certs/ca.crt";'
+else
+	WIRE_CONF='peers_public_key x509pem "'$C'/certs/init.crt";'
+fi
+
 cat > "$C/responder.conf" <<EOF
 interface {
 	ike { "$HR"; };
@@ -110,7 +131,7 @@ remote matrix_resp {
 		kmp_dh_group { ecp256; };
 		kmp_auth_method { $AUTH_METHOD; };
 		my_public_key x509pem "$C/certs/resp.crt" "$C/certs/resp.key";
-		peers_public_key x509pem "$C/certs/init.crt";
+$WIRE_CONF
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -277,6 +298,24 @@ EOF
 	# netnss + SADB are still live and before config files are removed.
 	i2i_compliance "$D" "$C" "$NSR" "$NSI" "$HR" "$HI" "$name"; cpl=$?
 
+	# X.509-from-wire gate (i2icert-wire variant): the responder must have
+	# (a) captured the initiator's CERT payload and (b) chain-validated it
+	# against ca_file (TRACE 'X.509-from-wire: peer cert validated').  AUTH
+	# verification against the wire leaf is implied by child-up (the config
+	# carries NO peers_public_key for the wire variant, so the only key that
+	# could verify AUTH is the validated wire cert).
+	if [ "$WIRE" = 1 ]; then
+		wr=0
+		if grep -q "captured peer X.509 cert" "$D/resp-iked.log" 2>/dev/null && \
+		   grep -q "X.509-from-wire: peer cert validated" "$D/resp-iked.log" 2>/dev/null; then
+			log "X.509-from-wire: responder captured + chain-validated peer cert from the wire"
+			wr=1
+		else
+			log "FAIL: X.509-from-wire: missing captured-cert or chain-validated TRACE"
+		fi
+		[ "$wr" -ne 1 ] && cpl=1
+	fi
+
 	# kill daemons + teardown netns
 	pkill -9 -f "$C/" 2>/dev/null || true
 	sleep 1
@@ -288,7 +327,7 @@ EOF
 	if [ "$up" -ne 1 ] || [ "${pkm:-0}" -ne 1 ] || [ "$cpl" -ne 0 ]; then
 		log "FAIL: X.509 PK auth incomplete (up=${up:-0} pkm=${pkm:-0} cpl=$cpl method=$AUTH_METHOD)"
 		log "--- resp-iked.log ---"
-		grep -E "${EXP_METHOD}|IKE_AUTH|AUTH|abort|err=|FOLLOWUP|certificate|verify" "$D/resp-iked.log" 2>/dev/null | tail -8
+		grep -E "${EXP_METHOD}|IKE_AUTH|AUTH|abort|err=|FOLLOWUP|certificate|verify|X.509-from-wire|captured peer" "$D/resp-iked.log" 2>/dev/null | tail -10
 		log "--- init-iked.log ---"
 		grep -E "${EXP_METHOD}|IKE_AUTH|AUTH|abort|err=|FOLLOWUP|certificate|verify" "$D/init-iked.log" 2>/dev/null | tail -8
 		return 1

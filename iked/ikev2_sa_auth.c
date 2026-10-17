@@ -210,8 +210,44 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_I, id_i, FALSE);
 
 	/*
-	 * [CERT+]
+	 * [CERT+] — send our X.509 leaf under RSA-signature AUTH so the
+	 * responder can validate the on-the-wire chain (X.509-from-wire).
+	 * Mirrors the childful responder's CERT+ block.  `my_cert` is
+	 * prepended with the X.509_SIGN encoding octet (RFC 7296 s3.6).
 	 */
+	if (!my_cert && ike_sa && ike_sa->rmconf && ike_sa->rmconf->ikev2) {
+		struct rc_alglist *kma = ike_sa->rmconf->ikev2->kmp_auth_method;
+		while (kma) {
+			if (kma->algtype == RCT_ALG_RSASIG) {
+				const char *filename = 0;
+				int err;
+				struct rc_pklist *pk =
+				    ike_sa->rmconf->ikev2->my_pubkey;
+				while (pk) {
+					if (pk->ftype == RCT_FTYPE_X509PEM)
+						filename = rc_vmem2str(pk->pubkey);
+					pk = pk->next;
+				}
+				if (filename && (err = rc_safefile(filename, FALSE)) == 0) {
+					rc_vchar_t *md =
+					    eay_get_x509cert(filename);
+					if (md) {
+						uint8_t v = IKEV2_CERT_X509_SIGN;
+						my_cert = rc_vprepend(md, &v, sizeof(v));
+						if (!my_cert)
+							rc_vfree(md);
+						else {
+							TRACE((PLOGLOC,
+							    "initiator sends X.509 leaf (%s) in CERT payload\n",
+							    filename));
+						}
+					}
+				}
+				break;
+			}
+			kma = kma->next;
+		}
+	}
 	if (my_cert)
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CERT, my_cert, FALSE);
 

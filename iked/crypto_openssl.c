@@ -416,6 +416,11 @@ eay_check_x509cert(rc_vchar_t *cert, char *CApath)
 	if (!CApath)
 		error = X509_STORE_set_default_paths(cert_ctx);
 	else {
+		/* CApath may be a single PEM trust-anchor file (the racoon2
+		 * ca_file keyword) OR a hashed-cert directory.  Load both
+		 * interpretations so either works: file -> X509_STORE file
+		 * source, dir -> hash-dir lookup below. */
+		X509_STORE_load_locations(cert_ctx, CApath, NULL);
 		X509_STORE_load_locations(cert_ctx, NULL, CApath);
 
 		lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_file());
