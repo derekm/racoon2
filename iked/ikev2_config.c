@@ -756,9 +756,11 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 				    param->cfg_ip4_subnet) {
 					struct in_addr addr, mask;
 					uint32_t pm = al->prefixlen > 32 ? 32 :
-					    (al->prefixlen <= 0 ? 32 : al->prefixlen);
+					    (al->prefixlen < 0 ? 0 : al->prefixlen);
 					addr = ((struct sockaddr_in *)sa)->sin_addr;
-					/* netmask = high pm bits set */
+					/* netmask = high pm bits set; pm==0 (an
+					 * explicit 0.0.0.0/0 "send-all" split) is
+					 * match-any, so mask stays 0 — NOT a /32. */
 					mask.s_addr = pm == 0 ? 0 :
 					    htonl(pm == 32 ? 0xffffffffU :
 					    (0xffffffffU << (32 - pm)));
@@ -789,11 +791,15 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 				    param->cfg_ip6_subnet) {
 					struct ikev2cfg_ip6addr d;
 					memset(&d, 0, sizeof(d));
-					if (al->prefixlen > 0 &&
-					    al->prefixlen <= 128)
-						d.prefixlen = al->prefixlen;
-					else
+					/* prefixlen==0 is match-any (0.0.0.0/0 or
+					 * ::/0 "send all" split); pass it through,
+					 * clamp only over-limit, negative => 0. */
+					if (al->prefixlen < 0)
+						d.prefixlen = 0;
+					else if (al->prefixlen > 128)
 						d.prefixlen = 128;
+					else
+						d.prefixlen = al->prefixlen;
 					memcpy(d.addr,
 					    &((struct sockaddr_in6 *)sa)->sin6_addr,
 					    sizeof(d.addr));
