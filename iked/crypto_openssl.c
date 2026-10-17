@@ -890,6 +890,14 @@ eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 
 	gen = sk_GENERAL_NAME_value(gens, i);
 
+	/* Only IA5STRING octet-string SAN types (DNS / email / URI) carry a
+	 * dereferenceable d.ia5.  Do not cast a different GENERAL_NAME union
+	 * member (iPAddress / otherName / directoryName) to ASN1_IA5STRING —
+	 * that would read wrong memory.  Harden: bail unless IA5STRING. */
+	if (!(gen->type == GEN_DNS || gen->type == GEN_EMAIL ||
+	      gen->type == GEN_URI))
+		goto end;
+
 	/* make sure if the data is terminated by '\0'. */
 	if (gen->d.ia5->data[gen->d.ia5->length] != '\0') {
 #ifndef EAYDEBUG
@@ -929,6 +937,45 @@ eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 		X509_free(x509);
 
 	return error;
+}
+
+/*
+ * get the subject commonName (CN) from an X509 certificate, as a NUL-
+ * terminated malloc'd string (NULL if absent/unparseable).  Used as the
+ * RFC 4945 identity-binding fallback when a cert has no usable SAN-DNS.
+ */
+char *
+eay_get_x509subject_cn(rc_vchar_t *cert)
+{
+	X509 *x509 = NULL;
+	X509_NAME *subj;
+	char *buf;
+	int len;
+
+	x509 = mem2x509(cert);
+	if (x509 == NULL)
+		goto end;
+	subj = X509_get_subject_name(x509);
+	if (subj == NULL)
+		goto end;
+	len = X509_NAME_get_text_by_NID(subj, NID_commonName, NULL, 0);
+	if (len <= 0)
+		goto end;
+	buf = malloc(len + 1);
+	if (buf == NULL)
+		goto end;
+	if (X509_NAME_get_text_by_NID(subj, NID_commonName, buf, len + 1)
+	    <= 0) {
+		free(buf);
+		goto end;
+	}
+	if (x509)
+		X509_free(x509);
+	return buf;	/* NUL-terminated by libcrypto */
+      end:
+	if (x509)
+		X509_free(x509);
+	return NULL;
 }
 
 /*

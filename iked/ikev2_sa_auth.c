@@ -629,6 +629,8 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				    (struct ikev2payl_cert *)p;
 				size_t dlen;
 				uint8_t *cv;
+				uint32_t plen;
+				size_t rem;
 
 				/* RFC 7296 s3.6: capture the peer's leaf
 				 * certificate so AUTH can be validated
@@ -638,18 +640,33 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				 * verify AUTH against it when cert_validate
 				 * is on.  Only the first delivered raw
 				 * X.509_SIGN (encoding 4) leaf is kept. */
-				dlen = get_payload_length(p) -
+				/* Bound dlen against the bytes actually
+				 * remaining in the received message, so a peer
+				 * (still unauthenticated at this point) cannot
+				 * forge a huge CERT payload length and trigger a
+				 * heap over-read in rc_vnew below. */
+				plen =
+				    get_payload_length(p);
+				rem =
+				    msg->l -
+				    ((uint8_t *)p -
+				     (uint8_t *)msg->v);
+				if (plen > rem)
+					plen = 0;
+				dlen = plen -
 				    sizeof(struct ikev2payl_cert);
 				cv = (uint8_t *)(pc + 1);
-				if (get_payload_length(p) >=
-				    sizeof(struct ikev2payl_cert) &&
-				    pc->encoding == IKEV2_CERT_X509_SIGN &&
-				    !ike_sa->peer_cert && dlen > 0) {
-					ike_sa->peer_cert =
-					    rc_vnew(cv, dlen);
-					TRACE((PLOGLOC,
-					    "responder captured peer X.509 cert (%zu bytes) from CERT payload\n",
-					    dlen));
+				if (plen >=
+					    sizeof(struct ikev2payl_cert) &&
+					    pc->encoding ==
+						IKEV2_CERT_X509_SIGN &&
+					    !ike_sa->peer_cert &&
+					    dlen > 0) {
+						ike_sa->peer_cert =
+						    rc_vnew(cv, dlen);
+						TRACE((PLOGLOC,
+						    "responder captured peer X.509 cert (%zu bytes) from CERT payload\n",
+						    dlen));
 				}
 			}
 			break;
@@ -2743,6 +2760,8 @@ initiator_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				    (struct ikev2payl_cert *)p;
 				size_t dlen;
 				uint8_t *cv;
+				uint32_t plen;
+				size_t rem;
 
 				/* RFC 7296 s3.6: capture the peer's leaf
 				 * certificate so AUTH can be validated
@@ -2752,18 +2771,33 @@ initiator_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				 * carries the AUTH key.  Other encoding
 				 * types (PKCS7 bundle etc.) are ignored
 				 * here (a future chain keep could add them). */
-				dlen = get_payload_length(p) -
+				/* Bound dlen against the bytes actually
+				 * remaining in the received message, so a peer
+				 * (still unauthenticated at this point) cannot
+				 * forge a huge CERT payload length and trigger a
+				 * heap over-read in rc_vnew below. */
+				plen =
+				    get_payload_length(p);
+				rem =
+				    msg->l -
+				    ((uint8_t *)p -
+				     (uint8_t *)msg->v);
+				if (plen > rem)
+					plen = 0;
+				dlen = plen -
 				    sizeof(struct ikev2payl_cert);
 				cv = (uint8_t *)(pc + 1);
-				if (get_payload_length(p) >=
-				    sizeof(struct ikev2payl_cert) &&
-				    pc->encoding == IKEV2_CERT_X509_SIGN &&
-				    !ike_sa->peer_cert && dlen > 0) {
-					ike_sa->peer_cert =
-					    rc_vnew(cv, dlen);
-					TRACE((PLOGLOC,
-					    "captured peer X.509 cert (%zu bytes) from CERT payload\n",
-					    dlen));
+				if (plen >=
+					    sizeof(struct ikev2payl_cert) &&
+					    pc->encoding ==
+						IKEV2_CERT_X509_SIGN &&
+					    !ike_sa->peer_cert &&
+					    dlen > 0) {
+						ike_sa->peer_cert =
+						    rc_vnew(cv, dlen);
+						TRACE((PLOGLOC,
+						    "captured peer X.509 cert (%zu bytes) from CERT payload\n",
+						    dlen));
 				}
 			}
 			break;

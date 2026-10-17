@@ -1056,9 +1056,10 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
  * identity must also match the configured peers_id — otherwise a peer with a
  * valid chain for a DIFFERENT identity could authenticate.  Checks the leaf's
  * SAN-DNS, then the subject CN, against each configured peers_id FQDN.
- * Returns 0 on a match, non-zero on mismatch/missing.  (RFC 7296 §2.16 AUTH
- * proves possession of the private key; this binds that identity to the
- * IKE-level peer policy.)
+ * Returns 0 on a match, or when NO FQDN peers_id is configured (pure
+ * CA-trust hub: nothing to bind against); non-zero on a mismatch against a
+ * configured peers_id.  (RFC 7296 §2.16 AUTH proves possession of the
+ * private key; this binds that identity to the IKE-level peer policy.)
  */
 int
 ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
@@ -1067,7 +1068,7 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
 	struct rc_idlist *pid;
 	rc_vchar_t *cert;
 	char *alt;
-	int type, pos;
+	int type, pos, seen_fqdn = 0;
 
 	if (!ike_sa || !ike_sa->rmconf || !ike_sa->rmconf->ikev2 ||
 	    ikev2_cert_validate(ike_sa->rmconf) != RCT_BOOL_ON)
@@ -1080,7 +1081,9 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
 	for (pid = ikev2_peers_id(conf); pid; pid = pid->next) {
 		if (pid->idtype != RCT_IDT_FQDN || !pid->id || !pid->id->v)
 			continue;
-		/* match against SAN-DNS entries (RFC 4945 §5.2a) */
+		seen_fqdn = 1;
+		/* match against SAN-DNS entries (RFC 4945 §5.2a), then the
+		 * subject CN as a fallback for certs identified only by CN */
 		for (pos = 1;; pos++) {
 			alt = NULL; type = GENT_OTHERNAME;
 			if (eay_get_x509subjectaltname(cert, &alt, &type,
@@ -1091,10 +1094,26 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
 				TRACE((PLOGLOC,
 				    "X.509-from-wire: cert SAN-DNS %s matches peers_id\n",
 				    alt));
+				racoon_free(alt);
 				return 0;
 			}
+			if (alt)
+				racoon_free(alt);
 		}
+		/* SAN-DNS loop exhausted without a match: try the subject CN */
+		alt = eay_get_x509subject_cn(cert);
+		if (alt && strcasecmp(alt, (char *)pid->id->v) == 0) {
+			TRACE((PLOGLOC,
+			    "X.509-from-wire: cert subject CN %s matches peers_id\n",
+			    alt));
+			free(alt);
+			return 0;
+		}
+		free(alt);
 	}
+	if (!seen_fqdn)
+		return 0;	/* no FQDN peers_id configured: pure
+				 * CA-trust hub, nothing to bind */
 	plog(PLOG_PROTOERR, PLOGLOC, 0,
 	     "X.509-from-wire: peer cert identity does not match configured peers_id (RFC 4945)\n");
 	return -1;
