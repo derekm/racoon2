@@ -52,6 +52,7 @@
 #include <limits.h>
 #include <string.h>
 #include <netinet/in.h>		/* for htonl() */
+#include <arpa/inet.h>		/* for inet_ntop() (SAN-iPAddress) */
 
 #include "racoon.h"
 
@@ -950,6 +951,62 @@ eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 		GENERAL_NAMES_free(gens);
 
 	return error;
+}
+
+/*
+ * get the pos-th iPAddress subjectAltName from an X509 certificate as a
+ * NUL-terminated malloc'd presentation string ("A.B.C.D" or IPv6),
+ * NULL if there is no iPAddress entry at that ordinal position.  Skips
+ * non-iPAddress SAN entries (the ordinal positions count only GENT_IPADD
+ * entries, matching the SAN-DNS ordinal semantics in eay_get_x509subjectaltname
+ * but filtered to addresses).  Used for RFC 4945 identity binding of an IP
+ * peers_id to a cert whose identity is an IP SAN.  Caller racoon_free()s.
+ */
+char *
+eay_get_x509subjectipaddr(rc_vchar_t *cert, int pos)
+{
+	X509 *x509 = NULL;
+	GENERAL_NAMES *gens = NULL;
+	char *out = NULL;
+	int i, ipcount = 0;
+
+	if (pos < 1)
+		return NULL;
+
+	x509 = mem2x509(cert);
+	if (x509 == NULL)
+		goto end;
+	gens = X509_get_ext_d2i(x509, NID_subject_alt_name, NULL, NULL);
+	if (gens == NULL)
+		goto end;
+
+	for (i = 0; i < sk_GENERAL_NAME_num(gens); i++) {
+		GENERAL_NAME *gen = sk_GENERAL_NAME_value(gens, i);
+		int fam;
+		char buf[INET6_ADDRSTRLEN] = { 0 };
+
+		if (gen->type != GEN_IPADD)
+			continue;
+		ipcount++;
+		if (ipcount != pos)
+			continue;
+		fam = (gen->d.ip->length == 4) ? AF_INET :
+		    ((gen->d.ip->length == 16) ? AF_INET6 : AF_UNSPEC);
+		if (fam == AF_UNSPEC ||
+		    inet_ntop(fam, gen->d.ip->data, buf,
+			      sizeof(buf)) == NULL)
+			break;	/* malformed IP SAN; stop */
+		out = racoon_malloc(strlen(buf) + 1);
+		if (out)
+			strcpy(out, buf);
+		break;
+	}
+      end:
+	if (x509)
+		X509_free(x509);
+	if (gens)
+		GENERAL_NAMES_free(gens);
+	return out;
 }
 
 /*

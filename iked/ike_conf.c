@@ -1114,7 +1114,7 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
 	struct rc_idlist *pid;
 	rc_vchar_t *cert;
 	char *alt;
-	int type, pos, seen_fqdn = 0;
+	int type, pos, seen_bindable = 0;
 
 	if (!ike_sa || !ike_sa->rmconf || !ike_sa->rmconf->ikev2 ||
 	    ikev2_cert_validate(ike_sa->rmconf) != RCT_BOOL_ON)
@@ -1125,57 +1125,74 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
 	cert = ike_sa->peer_cert;
 
 	for (pid = ikev2_peers_id(conf); pid; pid = pid->next) {
-		if (pid->idtype != RCT_IDT_FQDN || !pid->id || !pid->id->v ||
-		    pid->id->l == 0)
+		if (!pid->id || !pid->id->v || pid->id->l == 0)
 			continue;
-		seen_fqdn = 1;
-		/* match against SAN-DNS entries (RFC 4945 §5.2a), then the
-		 * subject CN as a fallback for certs identified only by CN.
-		 * Length-bound the compare: pid->id is an arbitrary-length
-		 * rc_vchar_t (not guaranteed NUL-terminated), so compare
-		 * exactly l bytes, never via a raw strcasecmp. */
-		{
-			int saw_san = 0;
-			for (pos = 1;; pos++) {
-				alt = NULL; type = GENT_OTHERNAME;
-				if (eay_get_x509subjectaltname(cert, &alt,
-							       &type,
-							       pos) != 0)
-					break;
-				/* an entry of ANY type at this pos means the
-				 * cert HAS a SAN extension; RFC 6125 says an
-				 * authoritative SAN suppresses subject CN. */
-				saw_san = 1;
-				if (type == GENT_DNS && alt &&
+		if (pid->idtype == RCT_IDT_FQDN) {
+			/* match SAN-DNS (RFC 4945 §5.2a / RFC 6125), then
+			 * subject CN as fallback when the cert has no SAN.
+			 * Length-bound: pid->id is an NUL-free rc_vchar_t. */
+			seen_bindable = 1;
+			{
+				int saw_san = 0;
+				for (pos = 1;; pos++) {
+					alt = NULL; type = GENT_OTHERNAME;
+					if (eay_get_x509subjectaltname(cert, &alt,
+								       &type,
+								       pos) != 0)
+						break;
+					saw_san = 1;
+					if (type == GENT_DNS && alt &&
+					    fqdn_id_match(alt,
+							  (char *)pid->id->v,
+							  pid->id->l)) {
+						TRACE((PLOGLOC,
+						    "X.509-from-wire: cert SAN-DNS %s matches peers_id\n",
+						    alt));
+						racoon_free(alt);
+						return 0;
+					}
+					if (alt)
+						racoon_free(alt);
+				}
+				/* only use subject CN when no SAN at all */
+				if (saw_san)
+					continue;
+				alt = eay_get_x509subject_cn(cert);
+				if (alt &&
 				    fqdn_id_match(alt, (char *)pid->id->v,
 						  pid->id->l)) {
 					TRACE((PLOGLOC,
-					    "X.509-from-wire: cert SAN-DNS %s matches peers_id\n",
+					    "X.509-from-wire: cert subject CN %s matches peers_id\n",
+					    alt));
+					free(alt);
+					return 0;
+				}
+				free(alt);
+			}
+		} else if (pid->idtype == RCT_IDT_IPADDR) {
+			/* bind an IP peers_id to a SAN-iPAddress entry.
+			 * pid->id is the configured address in presentation
+			 * form (e.g. "192.0.2.10" or "2001:db8::1"). */
+			seen_bindable = 1;
+			for (pos = 1;; pos++) {
+				alt = eay_get_x509subjectipaddr(cert, pos);
+				if (!alt)
+					break;
+				if (strlen(alt) == pid->id->l &&
+				    strncasecmp(alt, (char *)pid->id->v,
+						pid->id->l) == 0) {
+					TRACE((PLOGLOC,
+					    "X.509-from-wire: cert SAN-iPAddress %s matches peers_id\n",
 					    alt));
 					racoon_free(alt);
 					return 0;
 				}
-				if (alt)
-					racoon_free(alt);
+				racoon_free(alt);
 			}
-			/* Only use subject CN when the cert has NO SAN at all */
-			if (saw_san)
-				continue;
-			alt = eay_get_x509subject_cn(cert);
-			if (alt &&
-			    fqdn_id_match(alt, (char *)pid->id->v,
-					  pid->id->l)) {
-				TRACE((PLOGLOC,
-				    "X.509-from-wire: cert subject CN %s matches peers_id\n",
-				    alt));
-				free(alt);
-				return 0;
-			}
-			free(alt);
 		}
 	}
-	if (!seen_fqdn)
-		return 0;	/* no FQDN peers_id configured: pure
+	if (!seen_bindable)
+		return 0;	/* no FQDN/IP peers_id configured: pure
 				 * CA-trust hub, nothing to bind */
 	plog(PLOG_PROTOERR, PLOGLOC, 0,
 	     "X.509-from-wire: peer cert identity does not match configured peers_id (RFC 4945)\n");

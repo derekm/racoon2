@@ -27,8 +27,14 @@
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 #include "ikev2_notify.h"
+#include "crypto_impl.h"
 #include "vmbuf.h"
 #include "test_util.h"
+
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 
 TEST_MAIN_STUBS();
 
@@ -416,6 +422,134 @@ main(int argc, char *argv[])
 	   "literal '*' in non-wildcard does not match");
 	CK(fqdn_id_match("gw.example.com", "gw.example.com", 5) == 0,
 	   "length mismatch does not match");
+
+	/* ================= B.2d: SAN-iPAddress <-> IP peers_id binding ======
+	 * Build a minimal X.509 with an iPAddress SAN (192.0.2.77), DER-encode
+	 * it, and drive both eay_get_x509subjectipaddr() and
+	 * ikev2_wire_cert_id_ok() with a peers_id of type RCT_IDT_IPADDR —
+	 * the cert must bind to the IP identity (and a wrong IP must fail). */
+	{
+		EVP_PKEY *pk = NULL;
+		X509 *x = NULL;
+		X509_NAME *nm = NULL;
+		X509_EXTENSION *ext = NULL;
+		GENERAL_NAMES *sans = NULL;
+		GENERAL_NAME *gn = NULL;
+		rc_vchar_t *der = NULL;
+		rc_vchar_t *cert;
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa isa;
+		struct rc_idlist id;
+		unsigned char *p = NULL;
+		int len;
+		unsigned char ip4[4] = { 192, 0, 2, 77 };
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		memset(&isa, 0, sizeof(isa));
+		memset(&id, 0, sizeof(id));
+
+		/* simple self-signed RSA key + cert with an IP SAN */
+		{
+			EVP_PKEY_CTX *kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+			CK(kctx != NULL, "ip-bind: rsa pkey ctx");
+			if (!kctx) goto b2d_err;
+			CK(EVP_PKEY_keygen_init(kctx) > 0 &&
+			   EVP_PKEY_CTX_set_rsa_keygen_bits(kctx, 1024) > 0 &&
+			   EVP_PKEY_keygen(kctx, &pk) > 0,
+			   "ip-bind: rsa keygen");
+			EVP_PKEY_CTX_free(kctx);
+			if (!pk) goto b2d_err;
+		}
+		x = X509_new();
+		CK(x != NULL, "ip-bind: X509_new");
+		if (!x) goto b2d_err;
+		X509_set_version(x, 2);
+		ASN1_INTEGER_set(X509_get_serialNumber(x), 0x1234);
+		X509_gmtime_adj(X509_get_notBefore(x), 0);
+		X509_gmtime_adj(X509_get_notAfter(x), 3600L * 24 * 30);
+		nm = X509_get_subject_name(x);
+		X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
+					   (unsigned char *)"192.0.2.77",
+					   -1, -1, 0);
+		X509_set_issuer_name(x, nm);
+		X509_set_pubkey(x, pk);
+
+		/* SAN: iPAddress 192.0.2.77 */
+		sans = sk_GENERAL_NAME_new_null();
+		CK(sans != NULL, "ip-bind: SAN stack");
+		gn = GENERAL_NAME_new();
+		CK(gn != NULL, "ip-bind: GENERAL_NAME");
+		if (!gn) goto b2d_err;
+		gn->type = GEN_IPADD;
+		gn->d.ip = ASN1_OCTET_STRING_new();
+		ASN1_OCTET_STRING_set(gn->d.ip, ip4, 4);
+		sk_GENERAL_NAME_push(sans, gn);
+		ext = X509V3_EXT_i2d(NID_subject_alt_name, 0, sans);
+		CK(ext != NULL, "ip-bind: SAN extension");
+		X509_add_ext(x, ext, -1);
+		X509_EXTENSION_free(ext);
+		ext = NULL;	/* X509_add_ext copies; don't free again in b2d_err */
+		GENERAL_NAMES_free(sans);
+		sans = NULL;
+
+		X509_sign(x, pk, EVP_sha256());
+
+		/* DER-encode into a wire-capture-shaped rc_vchar_t */
+		len = i2d_X509(x, NULL);
+		CK(len > 0, "ip-bind: i2d size");
+		p = malloc((size_t)len);
+		CK(p != NULL, "ip-bind: der buf");
+		{
+			unsigned char *q = p;
+			i2d_X509(x, &q);
+		}
+		der = rc_vmalloc((size_t)len);
+		CK(der != NULL, "ip-bind: rc_vmalloc");
+		memcpy(der->v, p, (size_t)len);
+		der->l = (size_t)len;
+		free(p); p = NULL;
+		cert = der;
+
+		/* eay_get_x509subjectipaddr: pos 1 -> "192.0.2.77" */
+		{
+			char *s = eay_get_x509subjectipaddr(cert, 1);
+			CK(s != NULL && strcmp(s, "192.0.2.77") == 0,
+			   "eay_get_x509subjectipaddr(1)==192.0.2.77");
+			if (s) { printf("  (ipbind SAN %s)\n", s); racoon_free(s); }
+			CK(eay_get_x509subjectipaddr(cert, 2) == NULL,
+			   "eay_get_x509subjectipaddr(2)==NULL (one IP SAN)");
+		}
+
+		/* ikev2_wire_cert_id_ok: peers_id ip 192.0.2.77 must bind */
+		ikm.cert_validate = RCT_BOOL_ON;
+		rm.ikev2 = &ikm;
+		id.idtype = RCT_IDT_IPADDR;
+		id.id = rc_str2vmem("192.0.2.77");
+		CK(id.id != NULL, "ip-bind: peers_id alloc");
+		ikm.peers_id = &id;
+		isa.rmconf = &rm;
+		isa.peer_cert = cert;
+		CK(ikev2_wire_cert_id_ok(&isa) == 0,
+		   "ikev2_wire_cert_id_ok: IP peers_id matches cert SAN-iPAddress");
+
+		/* wrong IP in peers_id must fail (identity mismatch) */
+		rc_vfree(id.id);
+		id.id = rc_str2vmem("198.51.100.9");
+		CK(id.id != NULL, "ip-bind: wrong peers_id alloc");
+		CK(ikev2_wire_cert_id_ok(&isa) != 0,
+		   "ikev2_wire_cert_id_ok: WRONG IP peers_id rejected");
+
+		CK(1, "ip-bind block");
+	b2d_err:
+		if (sans) GENERAL_NAMES_free(sans);
+		if (ext) X509_EXTENSION_free(ext);
+		if (x) X509_free(x);
+		if (pk) EVP_PKEY_free(pk);
+		if (der) rc_vfree(der);
+		if (id.id) rc_vfree(id.id);
+	}
 
 	/* ================= B.4: INTERNAL_DNS_DOMAIN (25) =================
 	 * 1. Emit: responder with a configured split-DNS suffix, peer asked
