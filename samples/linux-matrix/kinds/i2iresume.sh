@@ -426,13 +426,20 @@ EOF
 		fi
 		;;
 	*)
-		log "i2iresume gates: up1=$up1 up2=$up2 minted=$minted stored=$stored accepted=$accepted presented=$presented fresh_auth=$fresh_auth nack_sent=$nack_sent"
+		silent_del=$(grep -c 'silently deleting the old IKE SA' \
+			"$D/resp-iked.log" 2>/dev/null || true)
+		log "i2iresume gates: up1=$up1 up2=$up2 minted=$minted stored=$stored accepted=$accepted presented=$presented fresh_auth=$fresh_auth nack_sent=$nack_sent silent_del=$silent_del"
+		# up2/replacement requires RFC 5723 s4.3.4: on resume the old
+		# ESTABLISHED IKE SA is silently deleted (gated by the responder's
+		# silent-delete log).  This catches the display-order SPI
+		# endianness bug that silently skipped the delete on LE hosts.
 		if [ "$up1" -eq 1 ] && [ "$up2" -eq 1 ] \
 		   && [ "${minted:-0}" -ge 1 ] && [ "${stored:-0}" -ge 1 ] \
 		   && [ "${accepted:-0}" -ge 1 ] && [ "${presented:-0}" -ge 1 ] \
-		   && [ "${fresh_auth:-0}" -eq 0 ] && [ "${nack_sent:-0}" -eq 0 ]; then
+		   && [ "${fresh_auth:-0}" -eq 0 ] && [ "${nack_sent:-0}" -eq 0 ] \
+		   && [ "${silent_del:-0}" -ge 1 ]; then
 			ok=1
-			log "i2iresume: RFC 5723 session resumption ESTABLISHED racoon2<->racoon2 (full resumed IKE_AUTH)"
+			log "i2iresume: RFC 5723 session resumption ESTABLISHED racoon2<->racoon2 (full resumed IKE_AUTH), old SA silently deleted"
 		fi
 		;;
 	esac
