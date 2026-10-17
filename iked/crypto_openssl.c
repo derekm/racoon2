@@ -923,6 +923,13 @@ eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 		if (ia5_len < 0)
 			goto end;
 		len = (size_t)ia5_len + 1;
+		/* Reject an EMBEDDED NUL inside the SAN (name is not a plain string):
+		 * callers compare with strlen()/strcasecmp() which stop at the first
+		 * NUL, so "gw.example.com\0.evil.test" would otherwise match peers_id
+		 * "gw.example.com".  A NUL inside a DNS/email/URI SAN is malformed —
+		 * skip the entry (caller keeps scanning later positions). */
+		if (ia5_len > 0 && memchr(ia5, '\0', (size_t)ia5_len) != NULL)
+			goto end;
 		*altname = racoon_malloc(len);
 		if (!*altname)
 			goto end;
