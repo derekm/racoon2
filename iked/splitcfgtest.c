@@ -442,7 +442,69 @@ main(int argc, char *argv[])
 		while (!LIST_EMPTY(&c.internal_ip6_subnet))
 			rc_addrpool_release_addr(
 			    LIST_FIRST(&c.internal_ip6_subnet));
-	}
+		}
+
+		/* ================= B.2b: INTERNAL_IP4_SUBNET /0 (match-any) =====
+		 * A 0.0.0.0/0 (mask 0.0.0.0) 'send-all' split must be committed as
+		 * prefixlen 0, NOT coerced to a /32 host route — this is the
+		 * receive-side symmetry of the emit fix (mask 0 -> prefixlen 0). */
+		{
+			uint8_t buf[1 + sizeof(struct ikev2payl_config) +
+				    2 * sizeof(struct in_addr) + 8];
+			int off = 0;
+			struct ikev2payl_config *cfg;
+			struct ikev2_child_sa c;
+			struct ikev2_sa isa;
+			struct rcf_address *ra;
+
+			memset(buf, 0, sizeof(buf));
+			cfg = (struct ikev2payl_config *)buf;
+			cfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+			off += sizeof(struct ikev2payl_config);
+
+			{
+				struct ikev2cfg_attrib *a =
+				    (struct ikev2cfg_attrib *)(buf + off);
+				struct in_addr addr, mask;
+				put_uint16(&a->type, IKEV2_CFG_INTERNAL_IP4_SUBNET);
+				put_uint16(&a->length, 2 * sizeof(struct in_addr));
+				addr.s_addr = htonl(0);		/* 0.0.0.0 */
+				mask.s_addr = htonl(0);		/* /0 */
+				memcpy(IKEV2CFG_ATTR_VALUE(a), &addr, sizeof(addr));
+				memcpy(IKEV2CFG_ATTR_VALUE(a) + sizeof(addr),
+				       &mask, sizeof(mask));
+				off += sizeof(*a) + 2 * sizeof(struct in_addr);
+			}
+			{
+				uint8_t pl[2];
+				pl[0] = (uint8_t)((off >> 8) & 0xff);
+				pl[1] = (uint8_t)(off & 0xff);
+				memcpy((uint8_t *)&cfg->header.payload_length, pl, 2);
+			}
+			cfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			ikev2_child_param_init(&c.child_param);
+
+			CK(ikev2_process_config_reply(&isa, &c, &cfg->header) == 0,
+			   "ikev2_process_config_reply(13 /0) rc==0");
+
+			ra = LIST_FIRST(&c.internal_ip4_subnet);
+			CK(ra != NULL, "ip4 /0 subnet committed");
+			if (ra) {
+				struct in_addr got;
+				memcpy(&got, ra->address, sizeof(got));
+				CK(got.s_addr == htonl(0),
+				   "ip4 /0 subnet addr == 0.0.0.0");
+				CK(ra->prefixlen == 0,
+				   "ip4 /0 subnet prefixlen == 0 (match-any, NOT /32)");
+			}
+
+			while (!LIST_EMPTY(&c.internal_ip4_subnet))
+				rc_addrpool_release_addr(
+				    LIST_FIRST(&c.internal_ip4_subnet));
+		}
 
 	rcs_free_addrlist(sel4.dst);
 	rcs_free_addrlist(sel6.dst);
