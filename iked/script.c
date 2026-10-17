@@ -746,8 +746,7 @@ env_add_subnet(struct rcf_address_list_head *list, const char *envname,
 	char	*buf;
 	struct rcf_address	*a;
 	size_t	buflen;
-	/* room for whole addr + "/" + 3-digit prefix + NUL */
-	char	item[IP_MAX + 1 + 4];
+	int	retval = -1;
 
 	buflen = 1;
 	buf = racoon_malloc(buflen);
@@ -758,24 +757,26 @@ env_add_subnet(struct rcf_address_list_head *list, const char *envname,
 	buf[0] = '\0';
 
 	for (a = LIST_FIRST(list); a; a = LIST_NEXT(a, link_pool)) {
-		size_t len;
+		char	addrstr[IP_MAX];
+		char	item[IP_MAX + 1 + 4];
+		char	*nb;
+		size_t	len;
 
-		if (inet_ntop(a->af, a->address, item, IP_MAX) == NULL) {
+		if (inet_ntop(a->af, a->address, addrstr,
+			      sizeof(addrstr)) == NULL) {
 			plog(PLOG_INTERR, PLOGLOC, 0,
 			     "inet_ntop: %s\n", strerror(errno));
-			racoon_free(buf);
-			return -1;
+			goto done;
 		}
-		snprintf(item, sizeof(item), "%s/%d", item, a->prefixlen);
+		/* snprintf into a SEPARATE buffer so the source (addrstr)
+		 * does not overlap the destination. */
+		snprintf(item, sizeof(item), "%s/%d", addrstr, a->prefixlen);
 
 		len = strlen(item) + 1;
-		buf = racoon_realloc(buf, buflen + (buflen > 1 ? 1 : 0) + len);
-		if (!buf) {
-			racoon_free(buf);
-			plog(PLOG_INTERR, PLOGLOC, 0,
-			     "Memory allocation failed\n");
-			return -1;
-		}
+		nb = racoon_realloc(buf, buflen + (buflen > 1 ? 1 : 0) + len);
+		if (!nb)
+			goto nomem;
+		buf = nb;
 		if (buflen > 1)
 			strcat(buf, " ");
 		strcat(buf, item);
@@ -786,12 +787,17 @@ env_add_subnet(struct rcf_address_list_head *list, const char *envname,
 	if (script_env_append(envp, envc, envname, buf)) {
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "Can't set environment variable\n");
-		racoon_free(buf);
-		return -1;
+		goto done;
 	}
 
+	retval = 0;
+ done:
 	racoon_free(buf);
-	return 0;
+	return retval;
+
+ nomem:
+	plog(PLOG_INTERR, PLOGLOC, 0, "Memory allocation failed\n");
+	goto done;
 }
 
 
