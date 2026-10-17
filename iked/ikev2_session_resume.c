@@ -1066,8 +1066,13 @@ ikev2_ticket_lt_opaque(struct ikev2_sa *ike_sa)
 
 	st.expires_at = (uint32_t)time(NULL) +
 	    (uint32_t)ikev2_session_resume_ticket_lifetime(rmconf);
-	memcpy(&st.spi_i, &ike_sa->index.i_ck, 8);
-	memcpy(&st.spi_r, &ike_sa->index.r_ck, 8);
+	/* Store the SPIs in the same big-endian u64 form the codec packs and
+	 * ikev2_silently_delete_old_resumed_sa() matches — NOT via a raw
+	 * memcpy into the uint64, which on a little-endian host reverses the
+	 * cookie byte order so the silent-delete never finds the old SA.
+	 * (Same form ike_msg_resume_store_save_from_sa uses below.) */
+	st.spi_i = ike_msg_cookie_to_u64(ike_sa->index.i_ck);
+	st.spi_r = ike_msg_cookie_to_u64(ike_sa->index.r_ck);
 
 	/* SAr: serialize the negotiated IKE SA proposal. */
 	sarl = ikev2_ikesa_to_proposal(ike_sa->negotiated_sa, 0);
