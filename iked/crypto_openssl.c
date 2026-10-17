@@ -895,12 +895,20 @@ eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 	gen = sk_GENERAL_NAME_value(gens, i);
 
 	/* Only IA5STRING octet-string SAN types (DNS / email / URI) carry a
-	 * dereferenceable d.ia5.  Do not cast a different GENERAL_NAME union
-	 * member (iPAddress / otherName / directoryName) to ASN1_IA5STRING —
-	 * that would read wrong memory.  Harden: bail unless IA5STRING. */
+	 * dereferenceable d.ia5.  A different GENERAL_NAME union member
+	 * (iPAddress / otherName / directoryName) MUST NOT be cast to
+	 * ASN1_IA5STRING — that would read wrong memory.  Bail out SAFELY:
+	 * report the entry EXISTS (return 0) with a NULL altname and the raw
+	 * type set, so the caller skips this SAN and keeps scanning later
+	 * positions — NOT as end-of-list (which would wrongly fail a cert
+	 * whose first SAN is iPAddress but which also carries a DNS
+	 * entry).  The real end-of-list keeps returning non-zero. */
+	*type = gen->type;
 	if (!(gen->type == GEN_DNS || gen->type == GEN_EMAIL ||
-	      gen->type == GEN_URI))
+	      gen->type == GEN_URI)) {
+		error = 0;
 		goto end;
+	}
 
 	/* make sure if the data is terminated by '\0'. */
 	if (gen->d.ia5->data[gen->d.ia5->length] != '\0') {

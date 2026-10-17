@@ -1079,18 +1079,24 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
 	cert = ike_sa->peer_cert;
 
 	for (pid = ikev2_peers_id(conf); pid; pid = pid->next) {
-		if (pid->idtype != RCT_IDT_FQDN || !pid->id || !pid->id->v)
+		if (pid->idtype != RCT_IDT_FQDN || !pid->id || !pid->id->v ||
+		    pid->id->l == 0)
 			continue;
 		seen_fqdn = 1;
 		/* match against SAN-DNS entries (RFC 4945 §5.2a), then the
-		 * subject CN as a fallback for certs identified only by CN */
+		 * subject CN as a fallback for certs identified only by CN.
+		 * Length-bound the compare: pid->id is an arbitrary-length
+		 * rc_vchar_t (not guaranteed NUL-terminated), so compare
+		 * exactly l bytes, never via a raw strcasecmp. */
 		for (pos = 1;; pos++) {
 			alt = NULL; type = GENT_OTHERNAME;
 			if (eay_get_x509subjectaltname(cert, &alt, &type,
 						       pos) != 0)
 				break;
 			if (type == GENT_DNS && alt &&
-			    strcasecmp(alt, (char *)pid->id->v) == 0) {
+			    strlen(alt) == pid->id->l &&
+			    strncasecmp(alt, (char *)pid->id->v,
+					pid->id->l) == 0) {
 				TRACE((PLOGLOC,
 				    "X.509-from-wire: cert SAN-DNS %s matches peers_id\n",
 				    alt));
@@ -1102,7 +1108,8 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
 		}
 		/* SAN-DNS loop exhausted without a match: try the subject CN */
 		alt = eay_get_x509subject_cn(cert);
-		if (alt && strcasecmp(alt, (char *)pid->id->v) == 0) {
+		if (alt && strlen(alt) == pid->id->l &&
+		    strncasecmp(alt, (char *)pid->id->v, pid->id->l) == 0) {
 			TRACE((PLOGLOC,
 			    "X.509-from-wire: cert subject CN %s matches peers_id\n",
 			    alt));

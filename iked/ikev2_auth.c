@@ -1114,9 +1114,12 @@ ikev2_auth_verify(struct ikev2_sa *sa, int i_to_r,
       end:
 	/* RFC 4945 identity binding: when AUTH verified against a wire cert
 	 * and cert_validate is on, the cert identity must also match the
-	 * configured peers_id.  Applied on any VERIFIED_SUCCESS (RSASIG/DS/
-	 * ECDSA) — over a PSK or config-pin it is a no-op (no wire cert). */
-	if (result == VERIFIED_SUCCESS && i_to_r &&
+	 * configured peers_id.  Applied on any VERIFIED_SUCCESS in BOTH
+	 * directions — i_to_r must NOT gate it (on the initiator i_to_r is
+	 * FALSE while verifying the responder's cert, which is exactly when
+	 * the responder's wire cert must be bound to peers_id too).  Over a
+	 * PSK or config-pin it is a no-op (no wire cert). */
+	if (result == VERIFIED_SUCCESS &&
 	    ikev2_wire_cert_id_ok(sa) != 0)
 		result = VERIFIED_FAILURE;
       fail:
