@@ -89,8 +89,19 @@ kind_i2ipubkey() {
 		openssl req -new -key "$C/certs/$seat.key" -out "$C/certs/$seat.csr" \
 			-subj "/CN=r2-matrix-$seat" 2>/dev/null \
 			|| { log "FAIL: req $seat"; return 1; }
+		if [ "$seat" = init ]; then
+			# The initiator's cert must carry a SAN-DNS equal to the
+			# peer identity r2init-matrix it presents, for the RFC 4945
+			# identity binding (X.509-from-wire: cert identity vs
+			# peers_id).  The box's OpenSSL 3.5.8 x509 -req has no
+			# -addext, so write a -extfile SAN config (as i2ieap does).
+			printf "subjectAltName=DNS:r2init-matrix\n" > "$C/certs/init-san.cnf"
+			_ext="-extfile $C/certs/init-san.cnf"
+		else
+			_ext=
+		fi
 		openssl x509 -req -in "$C/certs/$seat.csr" -CA "$C/certs/ca.crt" \
-			-CAkey "$C/certs/ca.key" -CAcreateserial -out "$C/certs/$seat.crt" -days 3650 2>/dev/null \
+			-CAkey "$C/certs/ca.key" -CAcreateserial -out "$C/certs/$seat.crt" -days 3650 $_ext 2>/dev/null \
 			|| { log "FAIL: x509 $seat"; return 1; }
 	done
 	openssl x509 -in "$C/certs/ca.crt" -noout 2>/dev/null || { log "FAIL: ca.crt unreadable"; return 1; }

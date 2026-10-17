@@ -1047,8 +1047,54 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
 }
 
 /*
- * reads pre_shared_key from file
+ * RFC 4945 identity binding: when cert_validate is on and the peer's AUTH
+ * was verified against a chain-validated wire certificate, the certificate
+ * identity must also match the configured peers_id — otherwise a peer with a
+ * valid chain for a DIFFERENT identity could authenticate.  Checks the leaf's
+ * SAN-DNS, then the subject CN, against each configured peers_id FQDN.
+ * Returns 0 on a match, non-zero on mismatch/missing.  (RFC 7296 §2.16 AUTH
+ * proves possession of the private key; this binds that identity to the
+ * IKE-level peer policy.)
  */
+int
+ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa)
+{
+	struct rcf_remote *conf;
+	struct rc_idlist *pid;
+	rc_vchar_t *cert;
+	char *alt;
+	int type, pos;
+
+	if (!ike_sa || !ike_sa->rmconf || !ike_sa->rmconf->ikev2 ||
+	    ikev2_cert_validate(ike_sa->rmconf) != RCT_BOOL_ON)
+		return 0;	/* not enforced: cert_validate off */
+	if (!ike_sa->peer_cert)
+		return 0;	/* no wire cert to bind (PKCS7/other auth) */
+	conf = ike_sa->rmconf;
+	cert = ike_sa->peer_cert;
+
+	for (pid = ikev2_peers_id(conf); pid; pid = pid->next) {
+		if (pid->idtype != RCT_IDT_FQDN || !pid->id || !pid->id->v)
+			continue;
+		/* match against SAN-DNS entries (RFC 4945 §5.2a) */
+		for (pos = 1;; pos++) {
+			alt = NULL; type = GENT_OTHERNAME;
+			if (eay_get_x509subjectaltname(cert, &alt, &type,
+						       pos) != 0)
+				break;
+			if (type == GENT_DNS && alt &&
+			    strcasecmp(alt, (char *)pid->id->v) == 0) {
+				TRACE((PLOGLOC,
+				    "X.509-from-wire: cert SAN-DNS %s matches peers_id\n",
+				    alt));
+				return 0;
+			}
+		}
+	}
+	plog(PLOG_PROTOERR, PLOGLOC, 0,
+	     "X.509-from-wire: peer cert identity does not match configured peers_id (RFC 4945)\n");
+	return -1;
+}
 rc_vchar_t *
 ikev2_pre_shared_key(struct ikev2_sa *ike_sa)
 {
