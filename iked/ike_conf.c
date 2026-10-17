@@ -1007,15 +1007,16 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
 		return NULL;
 	conf = ike_sa->rmconf;
 	if (ikev2_cert_validate(conf) != RCT_BOOL_ON) {
-		plog(PLOG_INTERR, PLOGLOC, 0,
-		     "X.509-from-wire: cert_validate not enabled "
-		     "(value %d), skipping wire pubkey\n",
-		     ikev2_cert_validate(conf));
+		/* cert_validate off is the normal default: not an error, just
+		 * means this remote is on the historical config-pin path. */
 		return NULL;
 	}
 	if (!ike_sa->peer_cert) {
-		plog(PLOG_INTERR, PLOGLOC, 0,
-		     "X.509-from-wire: no peer cert captured from wire\n");
+		/* A cert_validate-on peer that sent no CERT cannot authenticate
+		 * via the wire; AUTH fails in ikev2_auth_verify.  DEBUG, not
+		 * INTERR — a peer cert is optional on some auth methods. */
+		TRACE((PLOGLOC,
+		    "X.509-from-wire: no peer cert captured from wire\n"));
 		return NULL;
 	}
 
