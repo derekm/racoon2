@@ -144,6 +144,42 @@ check "global ikev1 switch: ikev1 loads, ikev2 md5 still refused" fail "$C" \
     "remote legacy ikev1 acceptable_kmp ikev1 is RFC-deprecated (IKEv1 RFC 9395 s3 DEPRECATED) - allowed" \
     "remote modern ikev2 kmp_prf_alg HMAC-MD5 is RFC-deprecated"
 
+# 3. X.509-from-wire trust anchor must be explicit (cert_validate on needs
+#    ca_file XOR cert_trust_system on).
+if command -v openssl >/dev/null 2>&1; then
+	openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=samplecheck \
+	    -keyout "$E/cert/me.key" -out "$E/cert/me.crt" -days 2 >/dev/null 2>&1
+	v2cert() {	# v2cert NAME PEER EXTRA
+		cat <<EOT
+remote $1 {
+	acceptable_kmp { ikev2; };
+	ikev2 {
+		my_id fqdn "gw.example.com"; peers_id fqdn "peer.example.com"; peers_ipaddr "$2";
+		kmp_enc_alg { aes256_cbc; }; kmp_prf_alg { hmac_sha2_256; };
+		kmp_hash_alg { hmac_sha2_256; }; kmp_dh_group { modp2048; };
+		kmp_auth_method { rsasig; };
+		my_public_key x509pem "$E/cert/me.crt" "$E/cert/me.key";
+		cert_validate on;
+		$3
+	};
+};
+EOT
+	}
+	C=$T/cv-noanchor.conf; base "$C"; v2cert wire 127.0.0.4 "" >> "$C"
+	check "cert_validate without ca_file or cert_trust_system" fail "$C" \
+	    "remote wire ikev2: cert_validate on requires ca_file, or cert_trust_system on to trust the OS default CA store"
+	C=$T/cv-cafile.conf; base "$C"; v2cert wire 127.0.0.4 "ca_file \"$E/cert/me.crt\";" >> "$C"
+	check "cert_validate with ca_file" ok "$C"
+	C=$T/cv-system.conf; base "$C"; v2cert wire 127.0.0.4 "cert_trust_system on;" >> "$C"
+	check "cert_validate with explicit cert_trust_system on" ok "$C" \
+	    "remote wire ikev2: cert_trust_system on: peer chains are validated against the OS default CA store"
+	C=$T/cv-both.conf; base "$C"; v2cert wire 127.0.0.4 "ca_file \"$E/cert/me.crt\"; cert_trust_system on;" >> "$C"
+	check "ca_file and cert_trust_system are exclusive" fail "$C" \
+	    "remote wire ikev2: ca_file and cert_trust_system on are mutually exclusive"
+else
+	echo "FAIL: openssl needed for the cert_validate config checks"; fail=$((fail + 1))
+fi
+
 # 4. RFC 8598 split-DNS allowlist entries must be valid domain names.
 v2dns() {	# v2dns NAME PEER EXTRA
 	cat <<EOT
