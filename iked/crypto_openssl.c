@@ -495,7 +495,6 @@ int
 eay_check_x509cert_strict(rc_vchar_t *cert, char *CApath)
 {
 	X509_STORE *cert_ctx = NULL;
-	X509_LOOKUP *lookup = NULL;
 	X509 *x509 = NULL;
 	X509_STORE_CTX *csc = NULL;
 	int error = -1;
@@ -507,21 +506,26 @@ eay_check_x509cert_strict(rc_vchar_t *cert, char *CApath)
 	if (!CApath)
 		error = X509_STORE_set_default_paths(cert_ctx);
 	else {
-		X509_STORE_load_locations(cert_ctx, CApath, NULL);
-		X509_STORE_load_locations(cert_ctx, NULL, CApath);
-		lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_file());
-		if (lookup == NULL)
+		/* A configured ca_file is the ONLY trust anchor — do NOT also
+		 * load the system default CA bundle.  X509_LOOKUP_load_file
+		 * (NULL, X509_FILETYPE_DEFAULT) would pull in the WebPKI store
+		 * and let any system-trusted issuer pass despite ca_file being
+		 * a private CA, and it would paper over a typo'd/missing
+		 * ca_file.  If the configured file/dir fails to load, fail
+		 * closed.  X509_STORE_load_locations internally adds the
+		 * file and/or hash-dir lookup and reports whether the anchor
+		 * actually loaded. */
+		int fok = X509_STORE_load_locations(cert_ctx, CApath, NULL);
+		int dok = fok ? 0 :
+		    X509_STORE_load_locations(cert_ctx, NULL, CApath);
+		if (!fok && !dok) {
+			plog(PLOG_INTERR, PLOGLOC, 0,
+			    "X.509-from-wire: ca_file '%s' could not be loaded "
+			    "as a PEM file or hashed dir; failing closed\n",
+			    CApath);
 			goto end;
-		X509_LOOKUP_load_file(lookup, NULL, X509_FILETYPE_DEFAULT);
-		/* a plain file fails add_dir; that is fine — the file
-		 * source above already holds the PEM anchors.  We treat a
-		 * directory path as optional, so do not fail on it. */
-		lookup = X509_STORE_add_lookup(cert_ctx,
-					       X509_LOOKUP_hash_dir());
-		if (lookup == NULL)
-			goto end;
-		(void)X509_LOOKUP_add_dir(lookup, CApath, X509_FILETYPE_PEM);
-		error = 1;	/* file-source is authoritative */
+		}
+		error = 1;	/* configured anchor is authoritative */
 	}
 	if (!error) {
 		error = -1;
@@ -862,7 +866,7 @@ int
 eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 {
 	X509 *x509 = NULL;
-	GENERAL_NAMES *gens;
+	GENERAL_NAMES *gens = NULL;
 	GENERAL_NAME *gen;
 	int i, len;
 	int error = -1;
@@ -935,6 +939,8 @@ eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 	}
 	if (x509)
 		X509_free(x509);
+	if (gens)
+		GENERAL_NAMES_free(gens);
 
 	return error;
 }
