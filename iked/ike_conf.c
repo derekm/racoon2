@@ -1022,14 +1022,17 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
 	cert = ike_sa->peer_cert;
 
 	/* Chain-build + trust validation against the configured CA.
-	 * eay_check_x509cert(cert, NULL) uses the OpenSSL default store; a
-	 * configured ca_file is handed as the CA look-up path. */
+	 * STRICT: a self-signed or invalid-CA leaf must NOT pass — the lenient
+	 * cb_check_cert forces ok=1 for DEPTH_ZERO_SELF_SIGNED_CERT/INVALID_CA,
+	 * which would silently trust any self-signed peer cert.  eay_check_x509cert_strict
+	 * uses OpenSSL's default verify callback.  ca_file may be a PEM file or
+	 * a hashed-cert directory; NULL uses the default CA store. */
 	capath = ikev2_ca_file(conf) ?
 	    rc_vmem2str(ikev2_ca_file(conf)) : NULL;
-	err = eay_check_x509cert(cert, capath);
+	err = eay_check_x509cert_strict(cert, capath);
 	if (err) {
 		plog(PLOG_INTERR, PLOGLOC, 0,
-		     "X.509-from-wire: peer cert failed chain validation (%s)\n",
+		     "X.509-from-wire: peer cert failed STRICT chain validation (%s)\n",
 		     capath ? capath : "default CA paths");
 		return NULL;
 	}

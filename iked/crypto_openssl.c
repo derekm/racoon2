@@ -482,6 +482,86 @@ eay_check_x509cert(rc_vchar_t *cert, char *CApath)
 }
 
 /*
+ * STRICT chain verification for X.509-from-wire (a peer-AUTH trust
+ * decision).  Unlike eay_check_x509cert(), this does NOT install the
+ * lenient cb_check_cert callback (which forces ok=1 for
+ * DEPTH_ZERO_SELF_SIGNED_CERT and INVALID_CA) — a self-signed or
+ * invalid-CA leaf must NOT be accepted as a wire trust anchor.  Uses
+ * OpenSSL's default verify callback, which raises exactly those errors
+ * when the cert is not in the trust store.  CApath may be a single PEM
+ * file (racoon2 ca_file) or a hashed-cert directory; both are loaded.
+ */
+int
+eay_check_x509cert_strict(rc_vchar_t *cert, char *CApath)
+{
+	X509_STORE *cert_ctx = NULL;
+	X509_LOOKUP *lookup = NULL;
+	X509 *x509 = NULL;
+	X509_STORE_CTX *csc = NULL;
+	int error = -1;
+
+	cert_ctx = X509_STORE_new();
+	if (cert_ctx == NULL)
+		goto end;
+
+	if (!CApath)
+		error = X509_STORE_set_default_paths(cert_ctx);
+	else {
+		X509_STORE_load_locations(cert_ctx, CApath, NULL);
+		X509_STORE_load_locations(cert_ctx, NULL, CApath);
+		lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_file());
+		if (lookup == NULL)
+			goto end;
+		X509_LOOKUP_load_file(lookup, NULL, X509_FILETYPE_DEFAULT);
+		/* a plain file fails add_dir; that is fine — the file
+		 * source above already holds the PEM anchors.  We treat a
+		 * directory path as optional, so do not fail on it. */
+		lookup = X509_STORE_add_lookup(cert_ctx,
+					       X509_LOOKUP_hash_dir());
+		if (lookup == NULL)
+			goto end;
+		(void)X509_LOOKUP_add_dir(lookup, CApath, X509_FILETYPE_PEM);
+		error = 1;	/* file-source is authoritative */
+	}
+	if (!error) {
+		error = -1;
+		goto end;
+	}
+	error = -1;
+
+	x509 = mem2x509(cert);
+	if (x509 == NULL)
+		goto end;
+
+	csc = X509_STORE_CTX_new();
+	if (csc == NULL)
+		goto end;
+	X509_STORE_CTX_init(csc, cert_ctx, x509, NULL);
+	/* DEFAULT verify callback: self-signed / invalid-CA fail. */
+	error = X509_verify_cert(csc);
+	if (error <= 0) {
+		long v = X509_STORE_CTX_get_error(csc);
+		plog(PLOG_PROTOERR, PLOGLOC, 0,
+		     "X.509-from-wire: strict chain verify failed: %s\n",
+		     X509_verify_cert_error_string(v));
+		error = -1;
+	} else {
+		error = 0;	/* verified */
+	}
+	X509_STORE_CTX_cleanup(csc);
+
+      end:
+	if (csc)
+		X509_STORE_CTX_free(csc);
+	if (x509)
+		X509_free(x509);
+	if (cert_ctx)
+		X509_STORE_free(cert_ctx);
+	return error;
+}
+/* %%% */
+
+/*
  * callback function for verifing certificate.
  * this function is derived from cb() in openssl/apps/s_server.c
  */

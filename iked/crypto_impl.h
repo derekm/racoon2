@@ -58,6 +58,7 @@ extern void eay_set_engine (const char *);
 extern rc_vchar_t *eay_str2asn1dn (char *, int);
 extern int eay_cmp_asn1dn (rc_vchar_t *, rc_vchar_t *);
 extern int eay_check_x509cert (rc_vchar_t *, char *);
+extern int eay_check_x509cert_strict (rc_vchar_t *, char *);
 extern rc_vchar_t *eay_get_x509_pubkey (rc_vchar_t *, struct timeval *);
 extern rc_vchar_t *eay_get_x509asn1subjectname (rc_vchar_t *);
 extern int eay_get_x509subjectaltname (rc_vchar_t *, char **, int *, int);

@@ -233,9 +233,12 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 					    eay_get_x509cert(filename);
 					if (md) {
 						uint8_t v = IKEV2_CERT_X509_SIGN;
+						/* rc_vprepend returns a NEW buffer;
+						 * md must be freed here. */
 						my_cert = rc_vprepend(md, &v, sizeof(v));
+						rc_vfree(md);
 						if (!my_cert)
-							rc_vfree(md);
+							goto fail;
 						else {
 							TRACE((PLOGLOC,
 							    "initiator sends X.509 leaf (%s) in CERT payload\n",
@@ -443,6 +446,8 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 		rc_vfree(sa_i2);
 	if (auth)
 		rc_vfree(auth);
+	if (my_cert)
+		rc_vfree(my_cert);
 	ikev2_payloads_destroy(&payl);
 	return;
 
