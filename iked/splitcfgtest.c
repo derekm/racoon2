@@ -27,8 +27,14 @@
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 #include "ikev2_notify.h"
+#include "crypto_impl.h"
 #include "vmbuf.h"
 #include "test_util.h"
+
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 
 TEST_MAIN_STUBS();
 
@@ -72,6 +78,58 @@ mk_addrlist(int fam, const char *addrstr, int prefixlen)
 	return al;
 }
 
+/* REVIEW_2026-10-18 M1: a self-signed RSA cert with NO SAN whose subject
+ * carries the given CN bytes (cnlen may include an embedded NUL), and a
+ * second CN when cn2 != NULL.  Returns its DER as an rc_vchar_t. */
+static rc_vchar_t *
+mkcert_cn(const char *cn, int cnlen, const char *cn2)
+{
+	EVP_PKEY_CTX *kctx;
+	EVP_PKEY *pk = NULL;
+	X509 *x = NULL;
+	X509_NAME *nm;
+	rc_vchar_t *der = NULL;
+	unsigned char *q;
+	int len;
+
+	kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+	if (!kctx || EVP_PKEY_keygen_init(kctx) <= 0 ||
+	    EVP_PKEY_CTX_set_rsa_keygen_bits(kctx, 2048) <= 0 ||
+	    EVP_PKEY_keygen(kctx, &pk) <= 0)
+		goto out;
+	x = X509_new();
+	if (!x)
+		goto out;
+	ASN1_INTEGER_set(X509_get_serialNumber(x), 7);
+	X509_gmtime_adj(X509_getm_notBefore(x), 0);
+	X509_gmtime_adj(X509_getm_notAfter(x), 3600);
+	X509_set_pubkey(x, pk);
+	nm = X509_get_subject_name(x);
+	X509_NAME_add_entry_by_NID(nm, NID_commonName, V_ASN1_UTF8STRING,
+	    (const unsigned char *)cn, cnlen, -1, 0);
+	if (cn2)
+		X509_NAME_add_entry_by_NID(nm, NID_commonName, MBSTRING_ASC,
+		    (const unsigned char *)cn2, -1, -1, 0);
+	X509_set_issuer_name(x, nm);
+	if (X509_sign(x, pk, EVP_sha256()) <= 0)
+		goto out;
+	len = i2d_X509(x, NULL);
+	if (len <= 0 || (der = rc_vmalloc((size_t)len)) == NULL)
+		goto out;
+	q = (unsigned char *)der->v;
+	i2d_X509(x, &q);
+	der->l = (size_t)len;
+out:
+	if (kctx)
+		EVP_PKEY_CTX_free(kctx);
+	if (x)
+		X509_free(x);
+	if (pk)
+		EVP_PKEY_free(pk);
+	return der;
+}
+
+/* asserted FQDN identity in the sa->id_i layout (id_h + bytes) */
 /* REVIEW_2026-10-18 M4: an rcf_remote whose ikev2 accept_dns_domain
  * allowlist is `list` (static storage; one at a time). */
 static struct rcf_remote *
@@ -116,6 +174,21 @@ mk_cfg_reply(uint8_t *buf, size_t bl, int n, const int *types,
 	buf[3] = (uint8_t)(off & 0xff);
 	cfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
 	return &cfg->header;
+}
+
+static rc_vchar_t *
+mkid_fqdn(const char *name)
+{
+	size_t n = strlen(name);
+	rc_vchar_t *v = rc_vmalloc(sizeof(struct ikev2payl_ident_h) + n);
+
+	if (!v)
+		return NULL;
+	memset(v->v, 0, sizeof(struct ikev2payl_ident_h));
+	((uint8_t *)v->v)[0] = 2;	/* IKEV2_ID_FQDN */
+	memcpy((char *)v->v + sizeof(struct ikev2payl_ident_h), name, n);
+	v->l = sizeof(struct ikev2payl_ident_h) + n;
+	return v;
 }
 
 int
@@ -373,6 +446,436 @@ main(int argc, char *argv[])
 
 	rcs_free_addrlist(sel4.dst);
 	rcs_free_addrlist(sel6.dst);
+
+	/* ================= B.2c: RFC 4945 / 6125 FQDN identity matching ====
+	 * fqdn_id_match(cert_name, asserted, len, allow_wildcard): the
+	 * wildcard is only ever in the CERTIFICATE; an asserted ID with '*'
+	 * never matches (REVIEW_2026-10-18 H2: the old code had it reversed,
+	 * so IDi "*.example.com" bound to an "x.example.com" cert). */
+	CK(fqdn_id_match("gw.example.com", "gw.example.com", 14, 0) == 1,
+	   "exact FQDN matches");
+	CK(fqdn_id_match("GW.EXAMPLE.COM", "gw.example.com", 14, 0) == 1,
+	   "exact FQDN is case-insensitive");
+	CK(fqdn_id_match("gw.example.com", "gw.example.com", 5, 0) == 0,
+	   "length mismatch does not match");
+	/* reversed direction: asserted wildcard is refused, both settings */
+	CK(fqdn_id_match("x.example.com", "*.example.com", 13, 0) == 0,
+	   "asserted '*.example.com' does NOT bind to an x.example.com cert");
+	CK(fqdn_id_match("x.example.com", "*.example.com", 13, 1) == 0,
+	   "asserted wildcard refused even with allow_wildcard_cert on");
+	CK(fqdn_id_match("*.example.com", "*.example.com", 13, 1) == 0,
+	   "asserted wildcard refused even against an identical cert wildcard");
+	CK(fqdn_id_match("gw.example.com", "gw.example.com\0.evil", 20, 0) == 0,
+	   "asserted ID with an embedded NUL never matches");
+	/* certificate wildcard: only with allow_wildcard_cert on */
+	CK(fqdn_id_match("*.example.com", "a.example.com", 13, 0) == 0,
+	   "cert wildcard refused when allow_wildcard_cert is off");
+	CK(fqdn_id_match("*.example.com", "a.example.com", 13, 1) == 1,
+	   "cert wildcard matches one leftmost label when allowed");
+	CK(fqdn_id_match("*.Example.COM", "A.example.com", 13, 1) == 1,
+	   "cert wildcard is case-insensitive");
+	CK(fqdn_id_match("*.example.com", "a.b.example.com", 15, 1) == 0,
+	   "cert wildcard does NOT match an extra leftmost label (RFC 6125 s6.4.3)");
+	CK(fqdn_id_match("*.example.com", "example.com", 11, 1) == 0,
+	   "cert wildcard does not match the bare domain");
+	CK(fqdn_id_match("*.example.com", ".example.com", 12, 1) == 0,
+	   "cert wildcard needs a non-empty leftmost label");
+	CK(fqdn_id_match("*.gw.example.com", "x.gw.example.com", 16, 1) == 1,
+	   "cert wildcard with a multi-label suffix matches one label");
+	CK(fqdn_id_match("*.gw.example.com", "a.b.gw.example.com", 18, 1) == 0,
+	   "cert wildcard with a multi-label suffix rejects two extra labels");
+	CK(fqdn_id_match("*.com", "example.com", 11, 1) == 0,
+	   "cert wildcard over a single-label suffix (*.com) never matches");
+	CK(fqdn_id_match("gw.*.com", "gw.example.com", 14, 1) == 0,
+	   "non-leftmost '*' in the cert never matches");
+	CK(fqdn_id_match("g*.example.com", "gw.example.com", 14, 1) == 0,
+	   "partial-label '*' in the cert never matches");
+	CK(fqdn_id_match("*.*.example.com", "a.b.example.com", 15, 1) == 0,
+	   "a second '*' in the cert never matches");
+
+	/* ================= B.2d: SAN-iPAddress <-> IP peers_id binding ======
+	 * Build a minimal X.509 with an iPAddress SAN (192.0.2.77), DER-encode
+	 * it, and drive both eay_get_x509subjectipaddr() and
+	 * ikev2_wire_cert_id_ok() with a peers_id of type RCT_IDT_IPADDR —
+	 * the cert must bind to the IP identity (and a wrong IP must fail). */
+	{
+		EVP_PKEY *pk = NULL;
+		X509 *x = NULL;
+		X509_NAME *nm = NULL;
+		X509_EXTENSION *ext = NULL;
+		GENERAL_NAMES *sans = NULL;
+		GENERAL_NAME *gn = NULL;
+		rc_vchar_t *der = NULL;
+		rc_vchar_t *cert;
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa isa;
+		struct rc_idlist id;
+		unsigned char *p = NULL;
+		int len;
+		unsigned char ip4[4] = { 192, 0, 2, 77 };
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		memset(&isa, 0, sizeof(isa));
+		memset(&id, 0, sizeof(id));
+
+		/* simple self-signed RSA key + cert with an IP SAN */
+		{
+			EVP_PKEY_CTX *kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+			CK(kctx != NULL, "ip-bind: rsa pkey ctx");
+			if (!kctx) goto b2d_err;
+			CK(EVP_PKEY_keygen_init(kctx) > 0 &&
+			   EVP_PKEY_CTX_set_rsa_keygen_bits(kctx, 1024) > 0 &&
+			   EVP_PKEY_keygen(kctx, &pk) > 0,
+			   "ip-bind: rsa keygen");
+			EVP_PKEY_CTX_free(kctx);
+			if (!pk) goto b2d_err;
+		}
+		x = X509_new();
+		CK(x != NULL, "ip-bind: X509_new");
+		if (!x) goto b2d_err;
+		X509_set_version(x, 2);
+		ASN1_INTEGER_set(X509_get_serialNumber(x), 0x1234);
+		X509_gmtime_adj(X509_get_notBefore(x), 0);
+		X509_gmtime_adj(X509_get_notAfter(x), 3600L * 24 * 30);
+		nm = X509_get_subject_name(x);
+		X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
+					   (unsigned char *)"192.0.2.77",
+					   -1, -1, 0);
+		X509_set_issuer_name(x, nm);
+		X509_set_pubkey(x, pk);
+
+		/* SAN: iPAddress 192.0.2.77 */
+		sans = sk_GENERAL_NAME_new_null();
+		CK(sans != NULL, "ip-bind: SAN stack");
+		gn = GENERAL_NAME_new();
+		CK(gn != NULL, "ip-bind: GENERAL_NAME");
+		if (!gn) goto b2d_err;
+		gn->type = GEN_IPADD;
+		gn->d.ip = ASN1_OCTET_STRING_new();
+		ASN1_OCTET_STRING_set(gn->d.ip, ip4, 4);
+		sk_GENERAL_NAME_push(sans, gn);
+		ext = X509V3_EXT_i2d(NID_subject_alt_name, 0, sans);
+		CK(ext != NULL, "ip-bind: SAN extension");
+		X509_add_ext(x, ext, -1);
+		X509_EXTENSION_free(ext);
+		ext = NULL;	/* X509_add_ext copies; don't free again in b2d_err */
+		GENERAL_NAMES_free(sans);
+		sans = NULL;
+
+		X509_sign(x, pk, EVP_sha256());
+
+		/* DER-encode into a wire-capture-shaped rc_vchar_t */
+		len = i2d_X509(x, NULL);
+		CK(len > 0, "ip-bind: i2d size");
+		p = malloc((size_t)len);
+		CK(p != NULL, "ip-bind: der buf");
+		{
+			unsigned char *q = p;
+			i2d_X509(x, &q);
+		}
+		der = rc_vmalloc((size_t)len);
+		CK(der != NULL, "ip-bind: rc_vmalloc");
+		memcpy(der->v, p, (size_t)len);
+		der->l = (size_t)len;
+		free(p); p = NULL;
+		cert = der;
+
+		/* eay_get_x509subjectipaddr: pos 1 -> "192.0.2.77" */
+		{
+			char *s = eay_get_x509subjectipaddr(cert, 1);
+			CK(s != NULL && strcmp(s, "192.0.2.77") == 0,
+			   "eay_get_x509subjectipaddr(1)==192.0.2.77");
+			if (s) { printf("  (ipbind SAN %s)\n", s); racoon_free(s); }
+			CK(eay_get_x509subjectipaddr(cert, 2) == NULL,
+			   "eay_get_x509subjectipaddr(2)==NULL (one IP SAN)");
+		}
+
+		/* ikev2_wire_cert_id_ok: asserted IDi ip 192.0.2.77 must bind */
+		ikm.cert_validate = RCT_BOOL_ON;
+		rm.ikev2 = &ikm;
+		isa.rmconf = &rm;
+		isa.peer_cert = cert;
+		/* the peer asserted IDi as an IPv4 address matching the SAN.
+		 * sa->id_i stores the ID payload after the IKE header, i.e.
+		 * id_type + reserved[] + data (the AUTH-input form); replicate
+		 * that layout so the binding's id_h offset matches real life. */
+		isa.id_i = rc_vmalloc(sizeof(struct ikev2payl_ident_h) + 4);
+		CK(isa.id_i != NULL, "ip-bind: asserted IDi alloc");
+		isa.id_i_type = RCT_IDT_IPADDR;
+		isa.id_i->l = sizeof(struct ikev2payl_ident_h) + 4;
+		{
+			uint8_t *iv = (uint8_t *)isa.id_i->v;
+			iv[0] = 1;	/* IKEV2_ID_IPV4_ADDR */
+			iv[4] = 192; iv[5] = 0; iv[6] = 2; iv[7] = 77;
+		}
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) == 0,
+		   "ikev2_wire_cert_id_ok: asserted IP IDi matches cert SAN-iPAddress");
+
+		/* asserted IDi != cert SAN must FAIL (identity substitution) */
+		rc_vfree(isa.id_i);
+		isa.id_i = rc_vmalloc(sizeof(struct ikev2payl_ident_h) + 4);
+		CK(isa.id_i != NULL, "ip-bind: wrong asserted IDi alloc");
+		isa.id_i->l = sizeof(struct ikev2payl_ident_h) + 4;
+		{
+			uint8_t *iv = (uint8_t *)isa.id_i->v;
+			iv[0] = 1;	/* IKEV2_ID_IPV4_ADDR */
+			iv[4] = 198; iv[5] = 51; iv[6] = 100; iv[7] = 9;
+		}
+
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "ikev2_wire_cert_id_ok: asserted IDi != cert SAN rejected");
+
+		CK(1, "ip-bind block");
+	b2d_err:
+		if (sans) GENERAL_NAMES_free(sans);
+		if (ext) X509_EXTENSION_free(ext);
+		if (x) X509_free(x);
+		if (pk) EVP_PKEY_free(pk);
+		if (der) rc_vfree(der);
+		if (id.id) rc_vfree(id.id);
+		if (isa.id_i) rc_vfree(isa.id_i);
+	}
+
+	/* ============ B.2f: CN fallback is opt-in and NUL-safe ============
+	 * REVIEW_2026-10-18 M1: eay_get_x509subject_cn() used
+	 * X509_NAME_get_text_by_NID, so a CN "gw.example.com\0.evil" read as
+	 * "gw.example.com" (null-prefix).  It now refuses an embedded NUL or
+	 * a second CN, and the CN fallback needs cert_cn_fallback on. */
+	{
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa isa;
+		rc_vchar_t *cplain, *cnul, *ctwo;
+		char *cn;
+		static const char nulcn[] = "gw.example.com\0.evil.test";
+
+		cplain = mkcert_cn("gw.example.com", -1, NULL);
+		cnul = mkcert_cn(nulcn, (int)sizeof(nulcn) - 1, NULL);
+		ctwo = mkcert_cn("gw.example.com", -1, "other.example.com");
+		CK(cplain && cnul && ctwo, "B.2f: test certs built");
+
+		cn = cplain ? eay_get_x509subject_cn(cplain) : NULL;
+		CK(cn && strcmp(cn, "gw.example.com") == 0,
+		   "eay_get_x509subject_cn: plain CN returned");
+		free(cn);
+		cn = cnul ? eay_get_x509subject_cn(cnul) : NULL;
+		CK(cn == NULL, "eay_get_x509subject_cn: CN with embedded NUL refused");
+		free(cn);
+		cn = ctwo ? eay_get_x509subject_cn(ctwo) : NULL;
+		CK(cn == NULL, "eay_get_x509subject_cn: two CNs (ambiguous) refused");
+		free(cn);
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		memset(&isa, 0, sizeof(isa));
+		ikm.cert_validate = RCT_BOOL_ON;
+		rm.ikev2 = &ikm;
+		isa.rmconf = &rm;
+		isa.id_i = mkid_fqdn("gw.example.com");
+		isa.id_i_type = RCT_IDT_FQDN;
+
+		isa.peer_cert = cplain;
+		ikm.cert_cn_fallback = RCT_BOOL_OFF;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "CN-only cert does NOT bind with cert_cn_fallback off (default)");
+		ikm.cert_cn_fallback = RCT_BOOL_ON;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) == 0,
+		   "CN-only cert binds with cert_cn_fallback on");
+		isa.peer_cert = cnul;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "null-prefix CN does NOT bind gw.example.com even with cert_cn_fallback on");
+		isa.peer_cert = ctwo;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "two-CN cert does NOT bind with cert_cn_fallback on");
+		/* wildcard CN follows allow_wildcard_cert like a SAN */
+		rc_vfree(isa.id_i);
+		isa.id_i = mkid_fqdn("x.example.com");
+		{
+			rc_vchar_t *cw = mkcert_cn("*.example.com", -1, NULL);
+			isa.peer_cert = cw;
+			ikm.allow_wildcard_cert = RCT_BOOL_OFF;
+			CK(cw && ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+			   "wildcard CN refused with allow_wildcard_cert off");
+			ikm.allow_wildcard_cert = RCT_BOOL_ON;
+			CK(cw && ikev2_wire_cert_id_ok(&isa, TRUE) == 0,
+			   "wildcard CN binds one label with allow_wildcard_cert on");
+			if (cw) rc_vfree(cw);
+		}
+		isa.peer_cert = NULL;
+		rc_vfree(isa.id_i);
+		if (cplain) rc_vfree(cplain);
+		if (cnul) rc_vfree(cnul);
+		if (ctwo) rc_vfree(ctwo);
+	}
+
+	/* ============ B.2e: embedded-NUL SAN must not CN-fallback =====
+	 * A cert whose FIRST DNS SAN is "gw.example.com\0.evil.test"
+	 * (embedded NUL) and whose CN is "gw.example.com" must NOT bind to an
+	 * asserted IDi of "gw.example.com" via the CN fallback, and the
+	 * binder must still see a LATER clean DNS SAN.  Regression for the
+	 * d2d8896 guard: fix the return so a NUL entry is SKIPPED (return 0,
+	 * NULL altname) so the scan continues, not treated as end-of-list
+	 * (which would wrongly CN-fallback a null-prefix cert). */
+	{
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa isa;
+		X509 *x = NULL;
+		EVP_PKEY *pk = NULL;
+		STACK_OF(GENERAL_NAME) *sans = NULL;
+		GENERAL_NAME *gn0 = NULL, *gn1 = NULL;
+		X509_EXTENSION *ext = NULL;
+		unsigned char *p = NULL;
+		rc_vchar_t *der = NULL;
+		rc_vchar_t *cert = NULL;
+		int len;
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		memset(&isa, 0, sizeof(isa));
+		ikm.cert_validate = RCT_BOOL_ON;
+		rm.ikev2 = &ikm;
+		isa.rmconf = &rm;
+
+		/* simple self-signed RSA key + cert with two DNS SANs */
+		{
+			EVP_PKEY_CTX *kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+			CK(kctx != NULL, "nul: rsa pkey ctx");
+			if (!kctx) goto b2e_err;
+			CK(EVP_PKEY_keygen_init(kctx) > 0 &&
+			   EVP_PKEY_CTX_set_rsa_keygen_bits(kctx, 1024) > 0 &&
+			   EVP_PKEY_keygen(kctx, &pk) > 0,
+			   "nul: rsa keygen");
+			EVP_PKEY_CTX_free(kctx);
+			if (!pk) goto b2e_err;
+		}
+		x = X509_new();
+		CK(x != NULL, "nul: x509");
+		X509_set_version(x, 2);
+		ASN1_INTEGER_set(X509_get_serialNumber(x), 0x1235);
+		X509_gmtime_adj(X509_get_notBefore(x), 0);
+		X509_gmtime_adj(X509_get_notAfter(x), 3600L * 24 * 30);
+		{
+			X509_NAME *nm = X509_get_subject_name(x);
+			X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
+						   (unsigned char *)"gw.example.com",
+						   -1, -1, 0);
+			X509_set_issuer_name(x, nm);
+		}
+		X509_set_pubkey(x, pk);
+
+		/* SAN[0] = "gw.example.com\0.evil.test" (embedded NUL),
+		 * SAN[1] = "vpn.example.com" (clean, later) */
+		sans = sk_GENERAL_NAME_new(NULL);
+		CK(sans != NULL, "nul: SAN stack");
+		gn0 = GENERAL_NAME_new();
+		CK(gn0 != NULL, "nul: SAN0");
+		gn0->type = GEN_DNS;
+		gn0->d.dNSName = ASN1_IA5STRING_new();
+		ASN1_STRING_set(gn0->d.dNSName,
+				"gw.example.com\0.evil.test", 25);
+		sk_GENERAL_NAME_push(sans, gn0);
+		gn1 = GENERAL_NAME_new();
+		CK(gn1 != NULL, "nul: SAN1");
+		gn1->type = GEN_DNS;
+		gn1->d.dNSName = ASN1_IA5STRING_new();
+		ASN1_STRING_set(gn1->d.dNSName, "vpn.example.com", -1);
+		sk_GENERAL_NAME_push(sans, gn1);
+		ext = X509V3_EXT_i2d(NID_subject_alt_name, 0, sans);
+		CK(ext != NULL, "nul: SAN extension");
+		X509_add_ext(x, ext, -1);
+		X509_EXTENSION_free(ext);
+		ext = NULL;
+		GENERAL_NAMES_free(sans);
+		sans = NULL;
+
+		X509_sign(x, pk, EVP_sha256());
+		len = i2d_X509(x, NULL);
+		CK(len > 0, "nul: i2d");
+		if (len <= 0)
+			goto b2e_err;
+		p = malloc((size_t)len);
+		CK(p != NULL, "nul: der buf");
+		if (!p)
+			goto b2e_err;
+		{
+			unsigned char *q = p;
+			i2d_X509(x, &q);
+		}
+		der = rc_vmalloc((size_t)len);
+		CK(der != NULL, "nul: rc_vmalloc");
+		memcpy(der->v, p, (size_t)len);
+		der->l = (size_t)len;
+		free(p); p = NULL;
+		cert = der;
+		isa.peer_cert = cert;
+
+		/* SAN[1] is visible past the embedded-NUL SAN[0]: extraction
+		 * must SKIP SAN[0] (return 0, NULL altname), not treat it as
+		 * end-of-list. */
+		{
+			char *alt = NULL; int t = GENT_OTHERNAME;
+			CK(eay_get_x509subjectaltname(cert, &alt, &t, 1) == 0 &&
+			   alt == NULL,
+			   "nul: SAN1 extract skips embedded-NUL SAN0");
+			if (alt) racoon_free(alt);
+			alt = NULL; t = GENT_OTHERNAME;
+			CK(eay_get_x509subjectaltname(cert, &alt, &t, 2) == 0 &&
+			   alt && strcmp(alt, "vpn.example.com") == 0,
+			   "nul: SAN2 extract returns clean vpn.example.com");
+			if (alt) racoon_free(alt);
+		}
+
+		/* helper: the asserted FQDN IDi is built directly below
+		 * (set id_i and id_i_type on the SA, AUTH-input form). */
+
+		/* asserted IDi "gw.example.com": CN fallback must NOT fire
+		 * (authoritative SAN present), so the NUL-prefix identity
+		 * must be REJECTED. */
+		isa.id_i = rc_vmalloc(sizeof(struct ikev2payl_ident_h) +
+				      strlen("gw.example.com"));
+		CK(isa.id_i != NULL, "nul: asserted IDi (gw) alloc");
+		isa.id_i_type = RCT_IDT_FQDN;
+		isa.id_i->l = sizeof(struct ikev2payl_ident_h) +
+		    strlen("gw.example.com");
+		{
+			uint8_t *iv = (uint8_t *)isa.id_i->v;
+			memset(iv, 0, sizeof(struct ikev2payl_ident_h));
+			iv[0] = 2;	/* IKEV2_ID_FQDN */
+			memcpy(iv + sizeof(struct ikev2payl_ident_h),
+			       "gw.example.com", strlen("gw.example.com"));
+		}
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "nul: asserted gw.example.com REJECTED (no CN fallback)");
+
+		/* asserted IDi "vpn.example.com": the clean LATER SAN binds. */
+		rc_vfree(isa.id_i);
+		isa.id_i = rc_vmalloc(sizeof(struct ikev2payl_ident_h) +
+				      strlen("vpn.example.com"));
+		CK(isa.id_i != NULL, "nul: asserted IDi (vpn) alloc");
+		isa.id_i->l = sizeof(struct ikev2payl_ident_h) +
+		    strlen("vpn.example.com");
+		{
+			uint8_t *iv = (uint8_t *)isa.id_i->v;
+			memset(iv, 0, sizeof(struct ikev2payl_ident_h));
+			iv[0] = 2;	/* IKEV2_ID_FQDN */
+			memcpy(iv + sizeof(struct ikev2payl_ident_h),
+			       "vpn.example.com", strlen("vpn.example.com"));
+		}
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) == 0,
+		   "nul: asserted vpn.example.com binds clean later SAN");
+
+		CK(1, "nul block");
+	b2e_err:
+		if (sans) GENERAL_NAMES_free(sans);
+		if (ext) X509_EXTENSION_free(ext);
+		if (x) X509_free(x);
+		if (pk) EVP_PKEY_free(pk);
+		if (der) rc_vfree(der);
+		if (isa.id_i) rc_vfree(isa.id_i);
+	}
 
 	/* ================= B.4: INTERNAL_DNS_DOMAIN (25) =================
 	 * 1. Emit: responder with a configured split-DNS suffix, peer asked
@@ -742,6 +1245,12 @@ main(int argc, char *argv[])
 			memset(&src_remote, 0, sizeof(src_remote));
 			memset(&src_kmp, 0, sizeof(src_kmp));
 			src_remote.ikev2 = &src_kmp;
+			/* X.509-from-wire: cert_validate is a SCALAR rc_type — a
+			 * plain DEEPCOPY_VDUP can't carry it and rcf_deepcopy_kmp
+			 * must assign it explicitly or the runtime remote silently
+			 * reverts to OFF (the same dropped-field class as
+			 * dnssec_ta, caught live by i2icert-wire). */
+			src_kmp.cert_validate = RCT_BOOL_ON;
 			src_kmp.dnssec_ta = rc_vmalloc(strlen(ta2) + 1);
 			memcpy(src_kmp.dnssec_ta->v, ta2, strlen(ta2));
 			src_kmp.dnssec_ta->s[strlen(ta2)] = '\0';
@@ -756,6 +1265,8 @@ main(int argc, char *argv[])
 				   memcmp(cp->ikev2->dnssec_ta->v, ta2,
 					  strlen(ta2)) == 0,
 				   "deepcopy carries dnssec_ta (config path)");
+				CK(cp->ikev2->cert_validate == RCT_BOOL_ON,
+				   "deepcopy carries cert_validate (X.509-from-wire)");
 				/* rcf_clean_remote is static (not reusable from a
 				 * test); the source remote only ever set dnssec_ta,
 				 * so the copy owns exactly these three allocs. */

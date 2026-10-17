@@ -783,15 +783,71 @@ remote
 		The daemon will send a KE payload in the phase 2 of IKEv1.
 		default is off.
 
-	redirect_max (number) ;
-	redirect_period (number) ;
+	cert_validate (on|off) ;
 		It is valid for the ikev2 directive.
-		RFC 5685 s7 redirect-loop detection: an initiator follows at
-		most redirect_max redirects within redirect_period seconds;
-		a further N(REDIRECT) in that window is not followed and the
-		IKE_SA_INIT is aborted.
-		defaults are 5 and 300 (MAX_REDIRECTS and
-		REDIRECT_LOOP_DETECT_PERIOD).
+		X.509-from-wire: when on, the peer's key is taken from the
+		certificate it sends in its IKE_AUTH CERT payload (X.509
+		signature encoding).  The chain is verified strictly (no
+		self-signed or invalid-CA leaf) and AUTH is verified against
+		the leaf key; a missing or invalid certificate fails AUTH
+		(no fallback to peers_public_key).  The certificate identity
+		is then bound to the identity the peer asserted in IDi/IDr
+		(RFC 4945; see allow_wildcard_cert and cert_cn_fallback).
+		The trust anchor must be explicit: exactly one of ca_file or
+		cert_trust_system on is required, otherwise the
+		configuration is refused.
+		default is off.
+
+	ca_file "(file or directory)" ;
+		It is valid for the ikev2 directive.
+		The trust anchor for cert_validate: a PEM file of one or
+		more CA certificates, or an OpenSSL hashed-certificate
+		directory.  It is the only trust anchor; the OS default CA
+		store is not consulted.  A file that cannot be loaded fails
+		validation closed.
+
+	cert_trust_system (on|off) ;
+		It is valid for the ikev2 directive.
+		When on (and ca_file is not set), cert_validate verifies the
+		peer chain against the OS default CA store (the WebPKI
+		roots).  Any certificate from any public CA then chains;
+		only the identity binding constrains who can authenticate.
+		Setting both ca_file and cert_trust_system on is refused.
+		default is off.
+
+	allow_wildcard_cert (on|off) ;
+		It is valid for the ikev2 directive.
+		With cert_validate on, lets a certificate whose SAN-DNS (or
+		CN, see cert_cn_fallback) is "*.suffix" authenticate an
+		asserted FQDN identity of exactly one non-empty leftmost
+		label plus suffix (RFC 6125 s6.4.3).  The suffix must have
+		at least two labels ("*.com" never matches) and any other
+		'*' never matches.  An asserted IDi/IDr that contains '*' is
+		always refused: an ID payload is a name, not a pattern.
+		default is off (a wildcard certificate is refused).
+
+	cert_cn_fallback (on|off) ;
+		It is valid for the ikev2 directive.
+		With cert_validate on, lets a certificate that carries NO
+		subjectAltName at all bind an asserted FQDN identity through
+		its subject CN (legacy CN-ID, removed by RFC 9525).  A CN
+		with an embedded NUL, or a subject with more than one CN, is
+		always refused.  A certificate with any SAN never falls back
+		to the CN.
+		default is off (SAN-DNS / SAN-iPAddress only).
+
+	cert_intermediates (on|off) ;
+		It is valid for the ikev2 directive.
+		With cert_validate on, uses the X.509 certificates sent in
+		CERT payloads after the leaf (up to 4) as an untrusted pool
+		for building the chain to ca_file (RFC 7296 s3.6).  A wire
+		certificate is never a trust anchor, and an unparsable extra
+		certificate fails validation closed.  When off, the leaf must
+		be issued directly by a ca_file certificate.
+		Scope: chain, signature and validity period are checked.  No
+		extendedKeyUsage/keyUsage policy is applied to the leaf and
+		no CRL or OCSP revocation check is made.
+		default is off.
 
 	accept_redirect (on|off) ;
 		It is valid for the ikev2 directive.
@@ -819,6 +875,16 @@ remote
 		INTERNAL_DNS_DOMAIN.  Each entry must itself be a valid
 		domain name (no wildcards); otherwise it is a config error.
 		default is unset: no pushed domain is accepted.
+
+	redirect_max (number) ;
+	redirect_period (number) ;
+		It is valid for the ikev2 directive.
+		RFC 5685 s7 redirect-loop detection: an initiator follows at
+		most redirect_max redirects within redirect_period seconds;
+		a further N(REDIRECT) in that window is not followed and the
+		IKE_SA_INIT is aborted.
+		defaults are 5 and 300 (MAX_REDIRECTS and
+		REDIRECT_LOOP_DETECT_PERIOD).
 
 	my_public_key (x509pem|pkcs12|ascii) (pubkey) (privkey)
 		IT IS NOT FULLY IMPLEMENTED YET.

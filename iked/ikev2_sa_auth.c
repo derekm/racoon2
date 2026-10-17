@@ -210,8 +210,47 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_I, id_i, FALSE);
 
 	/*
-	 * [CERT+]
+	 * [CERT+] — send our X.509 leaf under RSA-signature AUTH so the
+	 * responder can validate the on-the-wire chain (X.509-from-wire).
+	 * Mirrors the childful responder's CERT+ block.  `my_cert` is
+	 * prepended with the X.509_SIGN encoding octet (RFC 7296 s3.6).
 	 */
+	if (!my_cert && ike_sa && ike_sa->rmconf && ike_sa->rmconf->ikev2) {
+		struct rc_alglist *kma = ike_sa->rmconf->ikev2->kmp_auth_method;
+		while (kma) {
+			if (kma->algtype == RCT_ALG_RSASIG) {
+				const char *filename = 0;
+				int err;
+				struct rc_pklist *pk =
+				    ike_sa->rmconf->ikev2->my_pubkey;
+				while (pk) {
+					if (pk->ftype == RCT_FTYPE_X509PEM)
+						filename = rc_vmem2str(pk->pubkey);
+					pk = pk->next;
+				}
+				if (filename && (err = rc_safefile(filename, FALSE)) == 0) {
+					rc_vchar_t *md =
+					    eay_get_x509cert(filename);
+					if (md) {
+						uint8_t v = IKEV2_CERT_X509_SIGN;
+						/* rc_vprepend returns a NEW buffer;
+						 * md must be freed here. */
+						my_cert = rc_vprepend(md, &v, sizeof(v));
+						rc_vfree(md);
+						if (!my_cert)
+							goto fail;
+						else {
+							TRACE((PLOGLOC,
+							    "initiator sends X.509 leaf (%s) in CERT payload\n",
+							    filename));
+						}
+					}
+				}
+				break;
+			}
+			kma = kma->next;
+		}
+	}
 	if (my_cert)
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CERT, my_cert, FALSE);
 
@@ -407,6 +446,8 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 		rc_vfree(sa_i2);
 	if (auth)
 		rc_vfree(auth);
+	if (my_cert)
+		rc_vfree(my_cert);
 	ikev2_payloads_destroy(&payl);
 	return;
 
@@ -583,12 +624,65 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			id_i = p;
 			break;
 		case IKEV2_PAYLOAD_CERT:
-#ifdef notyet
-			/* (draft-17)
-			 * Implementations MUST be capable of being configured to send and
-			 * accept up to four X.509 certificates in support of authentication,
-			 */
-#endif
+			{
+				struct ikev2payl_cert *pc =
+				    (struct ikev2payl_cert *)p;
+				size_t dlen;
+				uint8_t *cv;
+				uint32_t plen;
+				size_t rem;
+
+				/* RFC 7296 s3.6: capture the peer's leaf
+				 * certificate so AUTH can be validated
+				 * against it (X.509-from-wire).  This is the
+				 * responder leg (message-3 IDi/CERT/AUTH):
+				 * the responder keeps the initiator's cert to
+				 * verify AUTH against it when cert_validate
+				 * is on.  Only the first delivered raw
+				 * X.509_SIGN (encoding 4) leaf is kept. */
+				/* Bound dlen against the bytes actually
+				 * remaining in the received message, so a peer
+				 * (still unauthenticated at this point) cannot
+				 * forge a huge CERT payload length and trigger a
+				 * heap over-read in rc_vnew below. */
+				plen =
+				    get_payload_length(p);
+				rem =
+				    msg->l -
+				    ((uint8_t *)p -
+				     (uint8_t *)msg->v);
+				if (plen > rem)
+					plen = 0;
+				dlen = plen -
+				    sizeof(struct ikev2payl_cert);
+				cv = (uint8_t *)(pc + 1);
+				if (plen >=
+					    sizeof(struct ikev2payl_cert) &&
+					    pc->encoding ==
+						IKEV2_CERT_X509_SIGN &&
+					    !ike_sa->peer_cert &&
+					    dlen > 0) {
+						ike_sa->peer_cert =
+						    rc_vnew(cv, dlen);
+						TRACE((PLOGLOC,
+						    "responder captured peer X.509 cert (%zu bytes) from CERT payload\n",
+						    dlen));
+				} else if (plen >=
+					    sizeof(struct ikev2payl_cert) &&
+					    pc->encoding ==
+						IKEV2_CERT_X509_SIGN &&
+					    ike_sa->peer_cert &&
+					    dlen > 0 &&
+					    ike_sa->peer_cert_nextra <
+						IKEV2_PEER_CERT_EXTRA_MAX) {
+					ike_sa->peer_cert_extra[
+					    ike_sa->peer_cert_nextra++] =
+					    rc_vnew(cv, dlen);
+					TRACE((PLOGLOC,
+					    "captured extra X.509 cert #%d (%zu bytes)\n",
+					    ike_sa->peer_cert_nextra, dlen));
+				}
+			}
 			break;
 		case IKEV2_PAYLOAD_CERTREQ:
 			break;
@@ -728,12 +822,25 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			if (ike_sa->id_i)
 				rc_vfree(ike_sa->id_i);
 			ike_sa->id_i = rc_vnew((uint8_t *)(id_i + 1),
-					       get_payload_data_length(id_i));
+				       get_payload_data_length(id_i));
 			if (!ike_sa->id_i) {
 				rc_vfree(identity_req);
 				ikev2_eap_relay_free(relay);
 				racoon_free(relay);
 				goto fail_nomem;
+			}
+			/* record the asserted IDi TYPE here too (same call the
+			 * non-EAP path uses at the end of this function): the
+			 * final AUTH verify calls ikev2_wire_cert_id_ok() and
+			 * needs id_i_type to bind the cert to the IDi this EAP
+			 * peer asserted — without it the binder no-ops.
+			 * ikev2_id2rct_id returns an allocated idbuf even when
+			 * we only need the type out-param — free it. */
+			{
+				rc_vchar_t *t =
+				    ikev2_id2rct_id(id_i, &ike_sa->id_i_type);
+				if (t)
+					rc_vfree(t);
 			}
 			ike_sa->eap_relay = relay;
 			/* Retain the peer's child offer (SAi2/TSi/TSr[/CFG]) from
@@ -838,6 +945,14 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		rc_vfree(ike_sa->id_i);
 	ike_sa->id_i =
 	    rc_vnew((uint8_t *)(id_i + 1), get_payload_data_length(id_i));
+	/* record the ASSERTED IDi type so the RFC 4945 cert binding can verify
+	 * the leaf against the exact identity this peer asserted (IDi), not
+	 * merely against any configured peers_id entry. */
+	{
+		rc_vchar_t *t = ikev2_id2rct_id(id_i, &ike_sa->id_i_type);
+		if (t)
+			rc_vfree(t);
+	}
 
 	IF_TRACE(ikev2_id_dump("ID_i", id_i));
 
@@ -2675,12 +2790,65 @@ initiator_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			id_r = p;
 			break;
 		case IKEV2_PAYLOAD_CERT:
-#ifdef notyet
-			/* (draft-17)
-			 * Implementations MUST be capable of being configured to send and
-			 * accept up to four X.509 certificates in support of authentication,
-			 */
-#endif
+			{
+				struct ikev2payl_cert *pc =
+				    (struct ikev2payl_cert *)p;
+				size_t dlen;
+				uint8_t *cv;
+				uint32_t plen;
+				size_t rem;
+
+				/* RFC 7296 s3.6: capture the peer's leaf
+				 * certificate so AUTH can be validated
+				 * against it (X.509-from-wire).  Only the
+				 * first delivered cert is kept; a raw
+				 * X.509_SIGN (encoding 4) leaf is what
+				 * carries the AUTH key.  Other encoding
+				 * types (PKCS7 bundle etc.) are ignored
+				 * here (a future chain keep could add them). */
+				/* Bound dlen against the bytes actually
+				 * remaining in the received message, so a peer
+				 * (still unauthenticated at this point) cannot
+				 * forge a huge CERT payload length and trigger a
+				 * heap over-read in rc_vnew below. */
+				plen =
+				    get_payload_length(p);
+				rem =
+				    msg->l -
+				    ((uint8_t *)p -
+				     (uint8_t *)msg->v);
+				if (plen > rem)
+					plen = 0;
+				dlen = plen -
+				    sizeof(struct ikev2payl_cert);
+				cv = (uint8_t *)(pc + 1);
+				if (plen >=
+					    sizeof(struct ikev2payl_cert) &&
+					    pc->encoding ==
+						IKEV2_CERT_X509_SIGN &&
+					    !ike_sa->peer_cert &&
+					    dlen > 0) {
+						ike_sa->peer_cert =
+						    rc_vnew(cv, dlen);
+						TRACE((PLOGLOC,
+						    "captured peer X.509 cert (%zu bytes) from CERT payload\n",
+						    dlen));
+				} else if (plen >=
+					    sizeof(struct ikev2payl_cert) &&
+					    pc->encoding ==
+						IKEV2_CERT_X509_SIGN &&
+					    ike_sa->peer_cert &&
+					    dlen > 0 &&
+					    ike_sa->peer_cert_nextra <
+						IKEV2_PEER_CERT_EXTRA_MAX) {
+					ike_sa->peer_cert_extra[
+					    ike_sa->peer_cert_nextra++] =
+					    rc_vnew(cv, dlen);
+					TRACE((PLOGLOC,
+					    "captured extra X.509 cert #%d (%zu bytes)\n",
+					    ike_sa->peer_cert_nextra, dlen));
+				}
+			}
 			break;
 		case IKEV2_PAYLOAD_AUTH:
 			if (auth)
@@ -2752,6 +2920,13 @@ initiator_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		rc_vnew((uint8_t *)(id_r + 1), get_payload_data_length(id_r));;
 	if (!ike_sa->id_r)
 		goto fail_nomem;
+	/* record the ASSERTED IDr type so the RFC 4945 cert binding can verify
+	 * the leaf against the exact identity this peer asserted (IDr). */
+	{
+		rc_vchar_t *t = ikev2_id2rct_id(id_r, &ike_sa->id_r_type);
+		if (t)
+			rc_vfree(t);
+	}
 
 	ike_sa->verified_info.packet = rc_vdup(msg);
 	if (!ike_sa->verified_info.packet)
