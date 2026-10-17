@@ -36,6 +36,39 @@ kind_i2ipubkey() {
 	*-ecdsa) AUTH_METHOD=ecdsa; AUTH_HEX=14; EXP_METHOD='auth method 14'; CURVE='P-384' ;;
 	esac
 
+	# i2icert-wire variant: the RESPONDER does NOT config-pin the initiator's
+	# certificate (peers_public_key absent) — it trusts the certificate chain
+	# the initiator presents in the wire CERT payload, validated against the
+	# local CA via cert_validate on + ca_file (X.509-from-wire feature-gap P1).
+	# AUTH must then verify against the wire leaf pubkey, and the responder
+	# must log the wire-validation TRACE.
+	WIRE=0
+	case "$name" in
+	*-wire|*-wire-*) WIRE=1 ;;
+	esac
+	# RFC 4945 / RFC 6125 identity-binding variants (REVIEW_2026-10-18 H2).
+	# INIT_ID is the FQDN the initiator asserts in IDi (and the responder's
+	# peers_id, so the peers_id allowlist ACCEPTS it and the cert binding is
+	# the only guard); INIT_SAN is the initiator cert's SAN-DNS.  NEG=1 rows
+	# must NOT bring a child up and must log NEG_MSG on the responder.
+	INIT_ID=r2init-matrix; INIT_SAN=r2init-matrix; WILD_CONF=; NEG=0; NEG_MSG=
+	case "$name" in
+	*-wire-wildid)
+		# peer holds a valid cert for x.r2-wild.test but asserts the
+		# PATTERN *.r2-wild.test: refused (an ID payload is a name)
+		INIT_ID='*.r2-wild.test'; INIT_SAN=x.r2-wild.test
+		WILD_CONF='allow_wildcard_cert on;'
+		NEG=1; NEG_MSG="asserted FQDN identity contains '*'" ;;
+	*-wire-wildcert)
+		# genuine wildcard cert, plain asserted name, explicitly allowed
+		INIT_ID=x.r2-wild.test; INIT_SAN='*.r2-wild.test'
+		WILD_CONF='allow_wildcard_cert on;' ;;
+	*-wire-wildcert-off)
+		# same wildcard cert, allow_wildcard_cert left at its default (off)
+		INIT_ID=x.r2-wild.test; INIT_SAN='*.r2-wild.test'
+		NEG=1; NEG_MSG="peer cert identity does not match asserted ID" ;;
+	esac
+
 	PEER=$(i2i_peer "$name")
 	PEER_R=$(i2i_peer_r "$name")
 	PEER_ID=$(i2i_peer_resp_id "$PEER")
@@ -78,8 +111,19 @@ kind_i2ipubkey() {
 		openssl req -new -key "$C/certs/$seat.key" -out "$C/certs/$seat.csr" \
 			-subj "/CN=r2-matrix-$seat" 2>/dev/null \
 			|| { log "FAIL: req $seat"; return 1; }
+		if [ "$seat" = init ]; then
+			# The initiator's cert must carry a SAN-DNS equal to the
+			# peer identity r2init-matrix it presents, for the RFC 4945
+			# identity binding (X.509-from-wire: cert identity vs
+			# peers_id).  The box's OpenSSL 3.5.8 x509 -req has no
+			# -addext, so write a -extfile SAN config (as i2ieap does).
+			printf "subjectAltName=DNS:%s\n" "$INIT_SAN" > "$C/certs/init-san.cnf"
+			_ext="-extfile $C/certs/init-san.cnf"
+		else
+			_ext=
+		fi
 		openssl x509 -req -in "$C/certs/$seat.csr" -CA "$C/certs/ca.crt" \
-			-CAkey "$C/certs/ca.key" -CAcreateserial -out "$C/certs/$seat.crt" -days 3650 2>/dev/null \
+			-CAkey "$C/certs/ca.key" -CAcreateserial -out "$C/certs/$seat.crt" -days 3650 $_ext 2>/dev/null \
 			|| { log "FAIL: x509 $seat"; return 1; }
 	done
 	openssl x509 -in "$C/certs/ca.crt" -noout 2>/dev/null || { log "FAIL: ca.crt unreadable"; return 1; }
@@ -89,6 +133,19 @@ kind_i2ipubkey() {
 	# verified on the Fedora 44 box that `verify` + X509_STORE_set_default_paths
 	# accept it).  The system anchors are never modified.
 	SSLENV="SSL_CERT_FILE=$C/certs/ca.crt"
+
+RESP_PEERS_ID=$PEER_ID
+[ "$INIT_ID" != r2init-matrix ] && RESP_PEERS_ID=$INIT_ID
+# responder peer-key config: wire variant trusts the on-the-wire CERT chain
+# (cert_validate on + ca_file) and does NOT pin a config-file peer cert; the
+# normal variant pins peers_public_key as before.
+if [ "$WIRE" = 1 ]; then
+	WIRE_CONF="cert_validate on;
+		ca_file \"$C/certs/ca.crt\";
+		$WILD_CONF"
+else
+	WIRE_CONF='peers_public_key x509pem "'$C'/certs/init.crt";'
+fi
 
 cat > "$C/responder.conf" <<EOF
 interface {
@@ -102,7 +159,7 @@ remote matrix_resp {
 	ikev2 {
 		passive on;
 		my_id fqdn "racoon2-matrix";
-		peers_id fqdn "$PEER_ID";
+		peers_id fqdn "$RESP_PEERS_ID";
 		peers_ipaddr "$HI";
 		kmp_enc_alg { aes_gcm; };
 		kmp_prf_alg { hmac_sha2_256; };
@@ -110,7 +167,7 @@ remote matrix_resp {
 		kmp_dh_group { ecp256; };
 		kmp_auth_method { $AUTH_METHOD; };
 		my_public_key x509pem "$C/certs/resp.crt" "$C/certs/resp.key";
-		peers_public_key x509pem "$C/certs/init.crt";
+$WIRE_CONF
 		dpd_delay 60 sec;
 	};
 	selector_index sel_in;
@@ -155,7 +212,7 @@ resolver { resolver off; };
 remote matrix_init {
 	acceptable_kmp { ikev2; };
 	ikev2 {
-		my_id fqdn "r2init-matrix";
+		my_id fqdn "$INIT_ID";
 		peers_id fqdn "racoon2-matrix";
 		peers_ipaddr "$HR";
 		kmp_enc_alg { aes_gcm; };
@@ -242,7 +299,8 @@ EOF
 
 	up=0
 	i=0
-	while [ "$i" -lt 45 ]; do
+	_wait=45; [ "$NEG" = 1 ] && _wait=20
+	while [ "$i" -lt "$_wait" ]; do
 		re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		if [ "${re:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ]; then
@@ -252,6 +310,32 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
+	if [ "$NEG" = 1 ]; then
+		# fail-closed identity binding: no child, and the exact refusal
+		_rc=0
+		if [ "$up" -eq 1 ]; then
+			log "FAIL: $name: child came UP although the identity binding must refuse"
+			_rc=1
+		fi
+		if grep -qF -- "$NEG_MSG" "$D/resp-iked.log" 2>/dev/null; then
+			log "identity binding refused as required: '$NEG_MSG'"
+		else
+			log "FAIL: $name: responder log lacks '$NEG_MSG'"
+			grep -E "X.509-from-wire|AUTH|abort" "$D/resp-iked.log" 2>/dev/null | tail -8
+			_rc=1
+		fi
+		if ! grep -q "X.509-from-wire: peer cert validated" "$D/resp-iked.log" 2>/dev/null; then
+			log "FAIL: $name: chain did not validate, so the binding was never exercised"
+			_rc=1
+		fi
+		pkill -9 -f "$C/" 2>/dev/null || true
+		sleep 1
+		ip netns del "$NSR" 2>/dev/null || true
+		ip netns del "$NSI" 2>/dev/null || true
+		ip link del "$VR" 2>/dev/null || true
+		rm -rf "$PRIVRES_R" "$PRIVRES_I" "$C"
+		return $_rc
+	fi
 	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 
 	# PK-auth evidence: the iked TRACE 'auth method %d' must appear on BOTH
@@ -277,6 +361,24 @@ EOF
 	# netnss + SADB are still live and before config files are removed.
 	i2i_compliance "$D" "$C" "$NSR" "$NSI" "$HR" "$HI" "$name"; cpl=$?
 
+	# X.509-from-wire gate (i2icert-wire variant): the responder must have
+	# (a) captured the initiator's CERT payload and (b) chain-validated it
+	# against ca_file (TRACE 'X.509-from-wire: peer cert validated').  AUTH
+	# verification against the wire leaf is implied by child-up (the config
+	# carries NO peers_public_key for the wire variant, so the only key that
+	# could verify AUTH is the validated wire cert).
+	if [ "$WIRE" = 1 ]; then
+		wr=0
+		if grep -q "captured peer X.509 cert" "$D/resp-iked.log" 2>/dev/null && \
+		   grep -q "X.509-from-wire: peer cert validated" "$D/resp-iked.log" 2>/dev/null; then
+			log "X.509-from-wire: responder captured + chain-validated peer cert from the wire"
+			wr=1
+		else
+			log "FAIL: X.509-from-wire: missing captured-cert or chain-validated TRACE"
+		fi
+		[ "$wr" -ne 1 ] && cpl=1
+	fi
+
 	# kill daemons + teardown netns
 	pkill -9 -f "$C/" 2>/dev/null || true
 	sleep 1
@@ -288,7 +390,7 @@ EOF
 	if [ "$up" -ne 1 ] || [ "${pkm:-0}" -ne 1 ] || [ "$cpl" -ne 0 ]; then
 		log "FAIL: X.509 PK auth incomplete (up=${up:-0} pkm=${pkm:-0} cpl=$cpl method=$AUTH_METHOD)"
 		log "--- resp-iked.log ---"
-		grep -E "${EXP_METHOD}|IKE_AUTH|AUTH|abort|err=|FOLLOWUP|certificate|verify" "$D/resp-iked.log" 2>/dev/null | tail -8
+		grep -E "${EXP_METHOD}|IKE_AUTH|AUTH|abort|err=|FOLLOWUP|certificate|verify|X.509-from-wire|captured peer" "$D/resp-iked.log" 2>/dev/null | tail -10
 		log "--- init-iked.log ---"
 		grep -E "${EXP_METHOD}|IKE_AUTH|AUTH|abort|err=|FOLLOWUP|certificate|verify" "$D/init-iked.log" 2>/dev/null | tail -8
 		return 1

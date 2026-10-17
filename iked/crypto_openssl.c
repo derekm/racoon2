@@ -52,6 +52,7 @@
 #include <limits.h>
 #include <string.h>
 #include <netinet/in.h>		/* for htonl() */
+#include <arpa/inet.h>		/* for inet_ntop() (SAN-iPAddress) */
 
 #include "racoon.h"
 
@@ -416,6 +417,11 @@ eay_check_x509cert(rc_vchar_t *cert, char *CApath)
 	if (!CApath)
 		error = X509_STORE_set_default_paths(cert_ctx);
 	else {
+		/* CApath may be a single PEM trust-anchor file (the racoon2
+		 * ca_file keyword) OR a hashed-cert directory.  Load both
+		 * interpretations so either works: file -> X509_STORE file
+		 * source, dir -> hash-dir lookup below. */
+		X509_STORE_load_locations(cert_ctx, CApath, NULL);
 		X509_STORE_load_locations(cert_ctx, NULL, CApath);
 
 		lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_file());
@@ -475,6 +481,111 @@ eay_check_x509cert(rc_vchar_t *cert, char *CApath)
 
 	return (error);
 }
+
+/*
+ * STRICT chain verification for X.509-from-wire (a peer-AUTH trust
+ * decision).  Unlike eay_check_x509cert(), this does NOT install the
+ * lenient cb_check_cert callback (which forces ok=1 for
+ * DEPTH_ZERO_SELF_SIGNED_CERT and INVALID_CA) — a self-signed or
+ * invalid-CA leaf must NOT be accepted as a wire trust anchor.  Uses
+ * OpenSSL's default verify callback, which raises exactly those errors
+ * when the cert is not in the trust store.  CApath may be a single PEM
+ * file (racoon2 ca_file) or a hashed-cert directory; both are loaded.
+ */
+int
+eay_check_x509cert_strict(rc_vchar_t *cert, rc_vchar_t **extra, int nextra,
+    char *CApath)
+{
+	X509_STORE *cert_ctx = NULL;
+	X509_LOOKUP *lookup = NULL;
+	X509 *x509 = NULL;
+	STACK_OF(X509) *untrusted = NULL;
+	int i;
+	X509_STORE_CTX *csc = NULL;
+	int error = -1;
+
+	cert_ctx = X509_STORE_new();
+	if (cert_ctx == NULL)
+		goto end;
+
+	if (!CApath)
+		error = X509_STORE_set_default_paths(cert_ctx);
+	else {
+		X509_STORE_load_locations(cert_ctx, CApath, NULL);
+		X509_STORE_load_locations(cert_ctx, NULL, CApath);
+		lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_file());
+		if (lookup == NULL)
+			goto end;
+		X509_LOOKUP_load_file(lookup, NULL, X509_FILETYPE_DEFAULT);
+		/* a plain file fails add_dir; that is fine — the file
+		 * source above already holds the PEM anchors.  We treat a
+		 * directory path as optional, so do not fail on it. */
+		lookup = X509_STORE_add_lookup(cert_ctx,
+					       X509_LOOKUP_hash_dir());
+		if (lookup == NULL)
+			goto end;
+		(void)X509_LOOKUP_add_dir(lookup, CApath, X509_FILETYPE_PEM);
+		error = 1;	/* file-source is authoritative */
+	}
+	if (!error) {
+		error = -1;
+		goto end;
+	}
+	error = -1;
+
+	x509 = mem2x509(cert);
+	if (x509 == NULL)
+		goto end;
+
+	/* Extra wire CERTs (cert_intermediates on): an UNTRUSTED pool for
+	 * chain building only.  Every path must still end at the configured
+	 * anchor; a wire cert is never a trust anchor itself.  An unparsable
+	 * extra cert fails closed. */
+	if (nextra > 0) {
+		untrusted = sk_X509_new_null();
+		if (untrusted == NULL)
+			goto end;
+		for (i = 0; i < nextra; i++) {
+			X509 *xi = mem2x509(extra[i]);
+			if (xi == NULL || !sk_X509_push(untrusted, xi)) {
+				X509_free(xi);
+				plog(PLOG_PROTOERR, PLOGLOC, 0,
+				    "X.509-from-wire: extra CERT #%d unparsable; failing closed\n",
+				    i + 1);
+				goto end;
+			}
+		}
+	}
+
+	csc = X509_STORE_CTX_new();
+	if (csc == NULL)
+		goto end;
+	X509_STORE_CTX_init(csc, cert_ctx, x509, untrusted);
+	/* DEFAULT verify callback: self-signed / invalid-CA fail. */
+	error = X509_verify_cert(csc);
+	if (error <= 0) {
+		long v = X509_STORE_CTX_get_error(csc);
+		plog(PLOG_PROTOERR, PLOGLOC, 0,
+		     "X.509-from-wire: strict chain verify failed: %s\n",
+		     X509_verify_cert_error_string(v));
+		error = -1;
+	} else {
+		error = 0;	/* verified */
+	}
+	X509_STORE_CTX_cleanup(csc);
+
+      end:
+	if (csc)
+		X509_STORE_CTX_free(csc);
+	if (x509)
+		X509_free(x509);
+	if (untrusted)
+		sk_X509_pop_free(untrusted, X509_free);
+	if (cert_ctx)
+		X509_STORE_free(cert_ctx);
+	return error;
+}
+/* %%% */
 
 /*
  * callback function for verifing certificate.
@@ -805,28 +916,56 @@ eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 
 	gen = sk_GENERAL_NAME_value(gens, i);
 
-	/* make sure if the data is terminated by '\0'. */
-	if (gen->d.ia5->data[gen->d.ia5->length] != '\0') {
-#ifndef EAYDEBUG
-		plog(PLOG_PROTOERR, PLOGLOC, NULL,
-		     "data is not terminated by '\\0'.\n");
-		plogdump(PLOG_PROTOERR, PLOGLOC, 0,
-			 gen->d.ia5->data, gen->d.ia5->length + 1);
-#else
-		hexdump(gen->d.ia5->data, gen->d.ia5->length + 1);
-#endif
+	/* Only IA5STRING octet-string SAN types (DNS / email / URI) carry a
+	 * dereferenceable d.ia5.  A different GENERAL_NAME union member
+	 * (iPAddress / otherName / directoryName) MUST NOT be cast to
+	 * ASN1_IA5STRING — that would read wrong memory.  Bail out SAFELY:
+	 * report the entry EXISTS (return 0) with a NULL altname and the raw
+	 * type set, so the caller skips this SAN and keeps scanning later
+	 * positions — NOT as end-of-list (which would wrongly fail a cert
+	 * whose first SAN is iPAddress but which also carries a DNS
+	 * entry).  The real end-of-list keeps returning non-zero. */
+	*type = gen->type;
+	if (!(gen->type == GEN_DNS || gen->type == GEN_EMAIL ||
+	      gen->type == GEN_URI)) {
+		error = 0;
 		goto end;
 	}
 
-	len = gen->d.ia5->length + 1;
-	*altname = racoon_malloc(len);
-	if (!*altname)
-		goto end;
+	/* Return an allocated, NUL-terminated copy of the IA5STRING data.
+	 * Copy exactly length bytes and NUL-terminate ourselves — never probe
+	 * data[length] for a terminator (a one-past read; ASN1_STRING is not
+	 * guaranteed NUL-padded).  ASN1_STRING defines data to be length
+	 * bytes, so copying by length from get0_data is safe and bounded. */
+	{
+		const unsigned char *ia5 = ASN1_STRING_get0_data(gen->d.ia5);
+		int	ia5_len;
+		ia5_len = ASN1_STRING_length(gen->d.ia5);
+		if (ia5_len < 0)
+			goto end;
+		len = (size_t)ia5_len + 1;
+		/* Reject an EMBEDDED NUL inside the SAN (name is not a plain string):
+		 * callers compare with strlen()/strcasecmp() which stop at the first
+		 * NUL, so "gw.example.com\0.evil.test" would otherwise match peers_id
+		 * "gw.example.com".  A NUL inside a DNS/email/URI SAN is malformed —
+		 * SKIP the entry (leave *altname NULL, return 0) so the caller keeps
+		 * scanning later positions, exactly like the non-IA5 type guard
+		 * above.  Returning non-zero here would be treated as end-of-list and
+		 * wrongly fail (or CN-fallback) a cert whose first SAN is a
+		 * malformed-NUL DNS entry but which also carries a clean later SAN. */
+		if (ia5_len > 0 && memchr(ia5, '\0', (size_t)ia5_len) != NULL) {
+			error = 0;
+			goto end;
+		}
+		*altname = racoon_malloc(len);
+		if (!*altname)
+			goto end;
+		memcpy(*altname, ia5, (size_t)ia5_len);
+		(*altname)[ia5_len] = '\0';
+		*type = gen->type;
 
-	strlcpy(*altname, (char *)gen->d.ia5->data, len);
-	*type = gen->type;
-
-	error = 0;
+		error = 0;
+	}
 
       end:
 	if (error) {
@@ -844,6 +983,113 @@ eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 		X509_free(x509);
 
 	return error;
+}
+
+/*
+ * get the pos-th iPAddress subjectAltName from an X509 certificate as a
+ * NUL-terminated malloc'd presentation string ("A.B.C.D" or IPv6),
+ * NULL if there is no iPAddress entry at that ordinal position.  Skips
+ * non-iPAddress SAN entries (the ordinal positions count only GENT_IPADD
+ * entries, matching the SAN-DNS ordinal semantics in eay_get_x509subjectaltname
+ * but filtered to addresses).  Used for RFC 4945 identity binding of an IP
+ * peers_id to a cert whose identity is an IP SAN.  Caller racoon_free()s.
+ */
+char *
+eay_get_x509subjectipaddr(rc_vchar_t *cert, int pos)
+{
+	X509 *x509 = NULL;
+	GENERAL_NAMES *gens = NULL;
+	char *out = NULL;
+	int i, ipcount = 0;
+
+	if (pos < 1)
+		return NULL;
+
+	x509 = mem2x509(cert);
+	if (x509 == NULL)
+		goto end;
+	gens = X509_get_ext_d2i(x509, NID_subject_alt_name, NULL, NULL);
+	if (gens == NULL)
+		goto end;
+
+	for (i = 0; i < sk_GENERAL_NAME_num(gens); i++) {
+		GENERAL_NAME *gen = sk_GENERAL_NAME_value(gens, i);
+		int fam;
+		char buf[INET6_ADDRSTRLEN] = { 0 };
+
+		if (gen->type != GEN_IPADD)
+			continue;
+		ipcount++;
+		if (ipcount != pos)
+			continue;
+		fam = (gen->d.ip->length == 4) ? AF_INET :
+		    ((gen->d.ip->length == 16) ? AF_INET6 : AF_UNSPEC);
+		if (fam == AF_UNSPEC ||
+		    inet_ntop(fam, gen->d.ip->data, buf,
+			      sizeof(buf)) == NULL)
+			break;	/* malformed IP SAN; stop */
+		out = racoon_malloc(strlen(buf) + 1);
+		if (out)
+			strcpy(out, buf);
+		break;
+	}
+      end:
+	if (x509)
+		X509_free(x509);
+	if (gens)
+		GENERAL_NAMES_free(gens);
+	return out;
+}
+
+/*
+ * get the subject commonName (CN) from an X509 certificate, as a NUL-
+ * terminated malloc'd UTF-8 string, or NULL when it is absent, ambiguous
+ * (more than one CN), unconvertible, or carries an EMBEDDED NUL.  The
+ * caller compares with strlen()-bounded functions, so a CN such as
+ * "gw.example.com\0.evil" must be refused here (null-prefix attack),
+ * exactly like the SAN path in eay_get_x509subjectaltname().  Used only as
+ * the RFC 4945 identity-binding fallback (cert_cn_fallback on, no SAN).
+ */
+char *
+eay_get_x509subject_cn(rc_vchar_t *cert)
+{
+	X509 *x509 = NULL;
+	X509_NAME *subj;
+	X509_NAME_ENTRY *ent;
+	unsigned char *utf8 = NULL;
+	char *buf = NULL;
+	int idx, len;
+
+	x509 = mem2x509(cert);
+	if (x509 == NULL)
+		goto end;
+	subj = X509_get_subject_name(x509);
+	if (subj == NULL)
+		goto end;
+	idx = X509_NAME_get_index_by_NID(subj, NID_commonName, -1);
+	if (idx < 0)
+		goto end;
+	if (X509_NAME_get_index_by_NID(subj, NID_commonName, idx) >= 0)
+		goto end;	/* two CNs: ambiguous, refuse */
+	ent = X509_NAME_get_entry(subj, idx);
+	if (ent == NULL)
+		goto end;
+	len = ASN1_STRING_to_UTF8(&utf8, X509_NAME_ENTRY_get_data(ent));
+	if (len <= 0 || utf8 == NULL)
+		goto end;
+	if (memchr(utf8, '\0', (size_t)len) != NULL)
+		goto end;	/* embedded NUL: malformed name, refuse */
+	buf = malloc((size_t)len + 1);
+	if (buf == NULL)
+		goto end;
+	memcpy(buf, utf8, (size_t)len);
+	buf[len] = '\0';
+      end:
+	if (utf8)
+		OPENSSL_free(utf8);
+	if (x509)
+		X509_free(x509);
+	return buf;
 }
 
 /*

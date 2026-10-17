@@ -240,10 +240,16 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* allow_rfc_deprecated: refused unless on */
 	RCT_BOOL_OFF,		/* natt_follow_mapping (XFRM_MSG_MAPPING) */
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
+	RCT_BOOL_OFF,		/* cert_validate (X.509-from-wire off by default) */
+	NULL,			/* ca_file (trust anchor; NULL = default paths) */
+	RCT_BOOL_OFF,		/* cert_intermediates */
 	NULL,		/* accept_dns_domain */
 	300,		/* redirect_period */
 	5,		/* redirect_max */
 	RCT_BOOL_OFF,		/* accept_redirect */
+	RCT_BOOL_OFF,		/* cert_cn_fallback */
+	RCT_BOOL_OFF,		/* allow_wildcard_cert */
+	RCT_BOOL_OFF,		/* cert_trust_system */
 };
 
 #ifdef IKEV1
@@ -497,10 +503,16 @@ IKEV2_CONF_ATTR(rc_type, use_ppk)
 IKEV2_CONF_ATTR(rc_type, childless)
 IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
+IKEV2_CONF_ATTR(rc_type, cert_validate)
+IKEV2_CONF_ATTR(rc_vchar_t *, ca_file)
+IKEV2_CONF_ATTR(rc_type, cert_intermediates)
 IKEV2_CONF_ATTR(rc_vchar_t *, accept_dns_domain)
 IKEV2_CONF_ATTR(int, redirect_period)
 IKEV2_CONF_ATTR(int, redirect_max)
 IKEV2_CONF_ATTR(rc_type, accept_redirect)
+IKEV2_CONF_ATTR(rc_type, cert_cn_fallback)
+IKEV2_CONF_ATTR(rc_type, allow_wildcard_cert)
+IKEV2_CONF_ATTR(rc_type, cert_trust_system)
 IKEV2_CONF_ATTR(rc_type, require_config)
 IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
 IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)
@@ -992,8 +1004,300 @@ ikev2_private_key(struct ikev2_sa *ike_sa, rc_vchar_t *id_data)
 #endif
 
 /*
- * reads pre_shared_key from file
+ * X.509-from-wire (feature-gap P1): resolve the peer's public key from the
+ * certificate actually received in the IKE_AUTH CERT payload, instead of a
+ * config-file pin.  When the remote has cert_validate on and a peer cert was
+ * captured, build/validate the chain against ca_file and return the leaf
+ * pubkey (RSA/ECDSA ASN.1 as i2v_PUBKEY).  On any failure return NULL:
+ * the caller fails AUTH closed (no fallback to a configured pubkey).
  */
+rc_vchar_t *
+ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
+{
+	struct rcf_remote *conf;
+	rc_vchar_t *cert, *pubkey;
+	char *capath;
+	int err;
+
+	if (!ike_sa || !ike_sa->rmconf || !ike_sa->rmconf->ikev2)
+		return NULL;
+	conf = ike_sa->rmconf;
+	if (ikev2_cert_validate(conf) != RCT_BOOL_ON) {
+		/* cert_validate off is the normal default: not an error, just
+		 * means this remote is on the historical config-pin path. */
+		return NULL;
+	}
+	if (!ike_sa->peer_cert) {
+		/* A cert_validate-on peer that sent no CERT cannot authenticate
+		 * via the wire; AUTH fails in ikev2_auth_verify.  DEBUG, not
+		 * INTERR — a peer cert is optional on some auth methods. */
+		TRACE((PLOGLOC,
+		    "X.509-from-wire: no peer cert captured from wire\n"));
+		return NULL;
+	}
+
+	cert = ike_sa->peer_cert;
+
+	/* Chain-build + trust validation against the configured CA.
+	 * STRICT: a self-signed or invalid-CA leaf must NOT pass — the lenient
+	 * cb_check_cert forces ok=1 for DEPTH_ZERO_SELF_SIGNED_CERT/INVALID_CA,
+	 * which would silently trust any self-signed peer cert.  eay_check_x509cert_strict
+	 * uses OpenSSL's default verify callback.  ca_file may be a PEM file or
+	 * a hashed-cert directory; NULL (only with cert_trust_system on) uses
+	 * the OS default CA store. */
+	capath = ikev2_ca_file(conf) ?
+	    rc_vmem2str(ikev2_ca_file(conf)) : NULL;
+	if (!capath && ikev2_cert_trust_system(conf) != RCT_BOOL_ON) {
+		/* config load refuses this; fail closed if reached anyway */
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "X.509-from-wire: no ca_file and cert_trust_system off; "
+		     "refusing to validate against the OS CA store\n");
+		return NULL;
+	}
+	/* L2: extra CERT payloads are an untrusted intermediate pool only
+	 * with cert_intermediates on (default off: the leaf must be issued
+	 * directly by ca_file).  Scope: chain + signature + validity only;
+	 * no EKU/keyUsage policy and no CRL/OCSP check is applied. */
+	if (ikev2_cert_intermediates(conf) == RCT_BOOL_ON)
+		err = eay_check_x509cert_strict(cert, ike_sa->peer_cert_extra,
+		    ike_sa->peer_cert_nextra, capath);
+	else
+		err = eay_check_x509cert_strict(cert, NULL, 0, capath);
+	if (err) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "X.509-from-wire: peer cert failed STRICT chain validation (%s)\n",
+		     capath ? capath : "default CA paths");
+		return NULL;
+	}
+	TRACE((PLOGLOC,
+	    "X.509-from-wire: peer cert validated against %s\n",
+	    capath ? capath : "default CA paths"));
+
+	pubkey = eay_get_x509_pubkey(cert, &ike_sa->due_time);
+	if (!pubkey) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "X.509-from-wire: failed extracting peer pubkey from wire cert\n");
+		return NULL;
+	}
+	return pubkey;
+}
+
+/*
+ * RFC 4945 identity binding: when cert_validate is on and the peer's AUTH
+ * was verified against a chain-validated wire certificate, the certificate
+ * identity must match the identity the peer ASSERTED in its ID payload
+ * (IDi when verifying the initiator, IDr otherwise) — otherwise a peer with
+ * a valid chain for a DIFFERENT identity could substitute.  Checks the
+ * leaf's SAN-DNS (a certificate wildcard only with allow_wildcard_cert on)
+ * then the subject CN (only with cert_cn_fallback on, for a cert with no
+ * SAN at all), or the
+ * SAN-iPAddress for an asserted IP identity.  Returns 0 on a match; -1 on a
+ * mismatch, a missing/malformed asserted identity, or an identity type we
+ * cannot bind (FAIL CLOSED whenever cert_validate is on and a wire cert is
+ * present).  (RFC 7296 §2.16 AUTH proves possession of the private key; this
+ * binds that identity to the IKE-level peer policy.)  The peers_id allowlist
+ * remains a separate gate (ikev2_peer_id_ok).
+ */
+
+/*
+ * RFC 4945 / RFC 6125 FQDN identity match.  cert is the NUL-terminated name
+ * PRESENTED in the certificate (SAN-DNS or CN); asserted/asserted_len is the
+ * identity the peer ASSERTED in IDi/IDr (raw bytes, not NUL-terminated).
+ *
+ * The wildcard, if any, lives ONLY in the certificate (RFC 6125 s6.4.3: the
+ * presented identifier is the pattern, the reference identifier is a plain
+ * name).  An asserted identity containing '*' or a NUL never matches: a
+ * peer must not be able to claim "*.example.com" and have it bound to its
+ * own "x.example.com" certificate.  A certificate wildcard "*.suffix"
+ * matches exactly one non-empty leftmost label, only when allow_wildcard is
+ * set, and only when suffix has at least two labels (no "*.com").  Any other
+ * '*' in the certificate name never matches.  Otherwise: exact,
+ * case-insensitive, equal length.  Returns 1 on match, 0 otherwise.
+ */
+int
+fqdn_id_match(const char *cert, const char *asserted, size_t asserted_len,
+	      int allow_wildcard)
+{
+	size_t cert_len;
+
+	if (!cert || !asserted || asserted_len == 0)
+		return 0;
+	if (memchr(asserted, '*', asserted_len) != NULL ||
+	    memchr(asserted, '\0', asserted_len) != NULL)
+		return 0;	/* asserted IDs are names, never patterns */
+	cert_len = strlen(cert);
+	if (cert_len >= 2 && cert[0] == '*' && cert[1] == '.') {
+		const char *suffix = cert + 2;
+		size_t suffix_len = cert_len - 2;
+		const char *dot;
+
+		if (!allow_wildcard)
+			return 0;
+		if (suffix_len == 0 || memchr(suffix, '*', suffix_len) ||
+		    memchr(suffix, '.', suffix_len) == NULL)
+			return 0;	/* "*.com" or a second '*' */
+		dot = memchr(asserted, '.', asserted_len);
+		if (dot == NULL || dot == asserted)
+			return 0;	/* no / empty leftmost label */
+		if (asserted_len - (size_t)(dot - asserted) - 1 != suffix_len)
+			return 0;	/* exactly one leftmost label */
+		return strncasecmp(dot + 1, suffix, suffix_len) == 0;
+	}
+	if (memchr(cert, '*', cert_len) != NULL)
+		return 0;	/* partial / non-leftmost wildcard: never */
+	if (cert_len != asserted_len)
+		return 0;
+	return strncasecmp(cert, asserted, asserted_len) == 0;
+}
+/*
+ * RFC 4945 identity binding: when cert_validate is on and the peer's AUTH
+ * was verified against a chain-validated wire certificate, the certificate
+ * identity must correspond to the identity the peer ASSERTED in its ID
+ * payload (IDi when i_to_r, IDr otherwise) — otherwise a peer could assert
+ * one allowed identity while presenting a cert for a DIFFERENT allowed
+ * identity (the cert-SAN vs asserted-ID confusion).  The peers_id allowlist
+ * constraint is enforced separately by ikev2_peer_id_ok; this function binds
+ * the cert to the exact asserted identity.  Returns 0 on a match, non-zero
+ * on a mismatch.  (RFC 7296 §2.16 AUTH proves possession of the private key;
+ * this binds that identity to the IKE-level peer policy.)
+ */
+int
+ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa, int i_to_r)
+{
+	rc_vchar_t *cert;
+	rc_vchar_t *asserted = NULL;
+	rc_type asserted_type;
+	const char *asserted_data = NULL;
+	size_t asserted_len = 0;
+	char *alt;
+	int type, pos;
+
+	if (!ike_sa || !ike_sa->rmconf || !ike_sa->rmconf->ikev2 ||
+	    ikev2_cert_validate(ike_sa->rmconf) != RCT_BOOL_ON)
+		return 0;	/* not enforced: cert_validate off */
+	if (!ike_sa->peer_cert)
+		return 0;	/* no wire cert to bind (PKCS7/other auth) */
+
+	cert = ike_sa->peer_cert;
+	/* The asserted peer identity is IDi when verifying the initiator
+	 * (i_to_r) and IDr otherwise.  When the peer's AUTH was verified
+	 * against a config key (no wire cert / PSK) this is a no-op above. */
+	if (i_to_r) {
+		asserted = ike_sa->id_i;
+		asserted_type = ike_sa->id_i_type;
+	} else {
+		asserted = ike_sa->id_r;
+		asserted_type = ike_sa->id_r_type;
+	}
+	if (!asserted || !asserted->v || asserted->l == 0)
+		goto mismatch;	/* no asserted identity to bind — fail closed */
+	/* The stored asserted ID (sa->id_i/id_r) is the ID payload after the
+	 * IKE header — which still carries the id_type + reserved fields that
+	 * form the AUTH input and the peers_id compare.  The actual identity
+	 * value (FQDN bytes / IP octets) is past the ikev2payl_ident_h. */
+	if (asserted->l <= (size_t)sizeof(struct ikev2payl_ident_h))
+		goto mismatch;	/* no identity data — fail closed */
+	asserted_data = (const char *)asserted->v +
+	    sizeof(struct ikev2payl_ident_h);
+	asserted_len = asserted->l - sizeof(struct ikev2payl_ident_h);
+
+	if (asserted_type == RCT_IDT_FQDN) {
+		/* match against SAN-DNS (RFC 4945 §5.2a / RFC 6125), then the
+		 * subject CN as a fallback for certs identified only by CN.
+		 * Length-bound the compare against the asserted ID value. */
+		int saw_san = 0;
+		int wild = ikev2_allow_wildcard_cert(ike_sa->rmconf) ==
+		    RCT_BOOL_ON;
+
+		if (memchr(asserted_data, '*', asserted_len) != NULL) {
+			plog(PLOG_PROTOERR, PLOGLOC, 0,
+			     "X.509-from-wire: asserted FQDN identity contains "
+			     "'*'; an ID payload is a name, not a pattern\n");
+			goto mismatch;
+		}
+		for (pos = 1;; pos++) {
+			alt = NULL; type = GENT_OTHERNAME;
+			if (eay_get_x509subjectaltname(cert, &alt, &type,
+						       pos) != 0)
+				break;
+			saw_san = 1;
+			if (type == GENT_DNS && alt &&
+			    fqdn_id_match(alt, asserted_data,
+					  asserted_len, wild)) {
+				TRACE((PLOGLOC,
+				    "X.509-from-wire: cert SAN-DNS %s matches asserted IDi/IDr\n",
+				    alt));
+				racoon_free(alt);
+				return 0;
+			}
+			if (alt)
+				racoon_free(alt);
+		}
+		/* subject CN only when no SAN at all AND the operator opted
+		 * in (cert_cn_fallback on; RFC 9525 removed CN-ID) */
+		if (saw_san ||
+		    ikev2_cert_cn_fallback(ike_sa->rmconf) != RCT_BOOL_ON)
+			goto mismatch;
+		alt = eay_get_x509subject_cn(cert);
+		if (alt &&
+		    fqdn_id_match(alt, asserted_data, asserted_len, wild)) {
+			TRACE((PLOGLOC,
+			    "X.509-from-wire: cert subject CN %s matches asserted IDi/IDr\n",
+			    alt));
+			free(alt);
+			return 0;
+		}
+		free(alt);
+		goto mismatch;
+	} else if (asserted_type == RCT_IDT_IPADDR) {
+		/* The asserted ID payload carries the address as RAW octets
+		 * (4 for IPv4, 16 for IPv6).  The SAN-iPAddress is compared as
+		 * a presentation string, so format the asserted octets to a
+		 * presentation string first, then length-bound compare against
+		 * each SAN-iPAddress. */
+		char ipbuf[INET6_ADDRSTRLEN];
+		int fam = asserted_len == 4 ? AF_INET :
+		    (asserted_len == 16 ? AF_INET6 : AF_UNSPEC);
+		if (fam == AF_UNSPEC ||
+		    inet_ntop(fam, asserted_data, ipbuf,
+			      sizeof(ipbuf)) == NULL) {
+			/* malformed asserted IP identity; cannot bind —
+			 * fail closed */
+			goto mismatch;
+		}
+		for (pos = 1;; pos++) {
+			alt = eay_get_x509subjectipaddr(cert, pos);
+			if (!alt)
+				break;
+			if (strcmp(alt, ipbuf) == 0) {
+				TRACE((PLOGLOC,
+				    "X.509-from-wire: cert SAN-iPAddress %s matches asserted IDi/IDr\n",
+				    alt));
+				racoon_free(alt);
+				return 0;
+			}
+			racoon_free(alt);
+		}
+		goto mismatch;
+	}
+	/* Non-FQDN / non-IP asserted identity: nothing to bind the cert
+	 * SAN/CN against (e.g. KEY_ID / unknown type).  Fail closed — a
+	 * chain-validated wire cert whose identity we cannot bind to the
+	 * asserted ID must not be accepted unbound.  (verify_id / the
+	 * peers_id allowlist are NOT a complete backstop: ikev2_peer_id_ok
+	 * is skipped on the rm_index==0 default-clause path.) */
+	goto mismatch;
+mismatch:
+	/* Print the actual asserted identity VALUE (past the id_h), not the
+	 * raw id_type/reserved bytes that head asserted->v — those contain a
+	 * NUL in the reserved field so %.*s would print nothing useful. */
+	plog(PLOG_PROTOERR, PLOGLOC, 0,
+	     "X.509-from-wire: peer cert identity does not match asserted ID "
+	     "(RFC 4945; asserted %s type %d val \"%.*s\")\n",
+	     i_to_r ? "IDi" : "IDr", (int)asserted_type,
+	     (int)asserted_len, asserted_data ? asserted_data : "");
+	return -1;
+}
 rc_vchar_t *
 ikev2_pre_shared_key(struct ikev2_sa *ike_sa)
 {
@@ -5781,6 +6085,46 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 				if (kmp_auth_method &&
 				    kmp_auth_method->algtype == RCT_ALG_EAP)
 					break;
+				/* X.509-from-wire: cert_validate on means the
+				 * peer's key comes from the certificate in the
+				 * CERT payload (chain-validated against
+				 * ca_file), so a config peers_public_key is not
+				 * required — and must not be (it would let the
+				 * caller pin a key even when chain validation
+				 * is the intended trust model). */
+				if (ikev2_cert_validate(rmconf) ==
+				    RCT_BOOL_ON) {
+					/* The trust anchor must be EXPLICIT: either
+					 * ca_file (a pinned private CA) or
+					 * cert_trust_system on (deliberate opt-in to
+					 * the OS default CA store).  Neither is a
+					 * config error: an implicit WebPKI trust
+					 * would let any public-CA cert holder
+					 * authenticate.  Both is also an error
+					 * (ambiguous trust model). */
+					if (ikev2_ca_file(rmconf) == NULL &&
+					    ikev2_cert_trust_system(rmconf) !=
+					    RCT_BOOL_ON) {
+						++*err;
+						plog(PLOG_INTERR, PLOGLOC, 0,
+						     "remote %s ikev2: cert_validate on requires ca_file, "
+						     "or cert_trust_system on to trust the OS default CA store\n",
+						     rm_index);
+					} else if (ikev2_ca_file(rmconf) != NULL &&
+					    ikev2_cert_trust_system(rmconf) ==
+					    RCT_BOOL_ON) {
+						++*err;
+						plog(PLOG_INTERR, PLOGLOC, 0,
+						     "remote %s ikev2: ca_file and cert_trust_system on are "
+						     "mutually exclusive\n", rm_index);
+					} else if (ikev2_cert_trust_system(rmconf) ==
+					    RCT_BOOL_ON)
+						plog(PLOG_INTWARN, PLOGLOC, 0,
+						     "remote %s ikev2: cert_trust_system on: peer chains "
+						     "are validated against the OS default CA store\n",
+						     rm_index);
+					break;
+				}
 				if (!peers_pubkey) {
 					++*err;
 					plog(PLOG_INTERR, PLOGLOC, 0,
