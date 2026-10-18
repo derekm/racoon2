@@ -1,7 +1,10 @@
 #!/bin/sh
 # check-rows.sh <merged-log> <rows-manifest> <min-pass>
 #
-# Gate for the merged FreeBSD shard log, replacing the hard-coded TOTAL=106:
+# Gate for the merged FreeBSD shard log.  The gate is manifest equality,
+# not a numeric literal: the old `-eq 100` / `-eq 103` / `-eq 106` counts
+# drifted (f42a2e0, 9f77115) and d69a148 deleted the literal.  Do not
+# reintroduce one.  This script checks:
 #   - every manifest row has exactly ONE verdict line
 #     ("PASS|FAIL|XFAIL|XPASS freebsd-vnet <row>"),
 #   - no verdict for a row that is not in the manifest (a new row must be
@@ -10,10 +13,12 @@
 #     manifest marks "xfail",
 #   - PASS + XFAIL >= <min-pass> ("all" = every manifest row; a matrix that aborted early or ran an
 #     empty shard can never look green).
+# CR is stripped so a CRLF manifest does not depend on GNU awk.
 set -u
 LOG=${1:?log}; MAN=${2:?manifest}; MIN=${3:?min-pass}
 [ -s "$LOG" ] || { echo "ROWS: FAIL empty log $LOG"; exit 1; }
 awk -v min="$MIN" '
+	{ gsub(/\r/, "") }
 	FNR == NR {
 		if ($0 ~ /^[[:space:]]*(#|$)/) next
 		want[$1] = 1; nwant++
