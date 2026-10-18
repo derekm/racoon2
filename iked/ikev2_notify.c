@@ -1352,7 +1352,11 @@ ikev2_respond_with_notify_exch(rc_vchar_t *request, struct sockaddr *remote,
 	notify->nh.protocol_id = 0;
 	notify->nh.spi_size = 0;
 	put_uint16(&notify->nh.notify_message_type, msg_type);
-	memcpy(notify + 1, nmsg, nmsg_len);
+	/* A data-less notify (TICKET_NACK) passes nmsg == NULL, len 0;
+	 * memcpy(dst, NULL, 0) is undefined behaviour (C11 7.24.1p2) and
+	 * aborts a -fno-sanitize-recover build before the reply is sent. */
+	if (nmsg_len > 0)
+		memcpy(notify + 1, nmsg, nmsg_len);
 
 #ifdef HAVE_PRINT_ISAKMP_C
 	isakmp_printpacket(reply, local, remote, 1);
