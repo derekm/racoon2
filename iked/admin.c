@@ -450,9 +450,12 @@ admin_dispatch(int so2, char *combuf)
 		 * rather than silently closing, so a surviving DPD/rekey would
 		 * re-home traffic back onto the draining node.)  The client
 		 * re-initiates, re-hits this node's now-set peer-address drain,
-		 * and is answered REDIRECT to the sibling, where it resumes from
-		 * its ticket (RFC 5723 exchange 38, when a drain-time ferry
-		 * carries it) or falls back to a full IKE_SA_INIT.  Clearing a
+		 * and is answered REDIRECT to the sibling.  The client keeps
+		 * its ticket across the NACK; redirect-follow migrates the
+		 * store key and clears resume_declined so the sibling is
+		 * presented exchange 38 under the shared ticket key.  If
+		 * that sibling also NACKs, the client falls back to a full
+		 * IKE_SA_INIT there.  Clearing a
 		 * drain (no gw) only stops redirecting new sessions — it never
 		 * tears anything down.
 		 *

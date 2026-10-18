@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "vmbuf.h"
 #include "ikev2_resume_ticket.h"
@@ -451,6 +452,24 @@ main(void)
 		CHECK(r2ticket_replay_mark(ta, 9000, 5000) == 0,
 		      "replay: slots free again once those tickets expire");
 		r2ticket_replay_reset();
+		{
+			uint8_t ub[8];
+			uint32_t u = (uint32_t)time(NULL);
+			rc_vchar_t *tu;
+
+			memcpy(ub, &u, 4);
+			memset(ub + 4, 0x11, 4);
+			tu = rc_vnew(ub, 8);
+			r2ticket_replay_set_dir("/tmp/r2tick-replay-kat");
+			CHECK(tu && r2ticket_replay_mark(tu, 2000, 1000) == 0,
+			      "replay: first use recorded on disk");
+			r2ticket_replay_reset();
+			CHECK(r2ticket_replay_mark(tu, 2000, 1001) == 1,
+			      "replay: disk cache rejects after memory reset");
+			r2ticket_replay_set_dir(NULL);
+			r2ticket_replay_reset();
+			rc_vfree(tu);
+		}
 		rc_vfree(ta);
 		rc_vfree(tb);
 	}

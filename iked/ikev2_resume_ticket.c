@@ -58,7 +58,10 @@
  * Authenticated plaintext layout (network byte order):
  *   u32 expires_at   u8 auth_method   u64 spi_i   u64 spi_r
  *   u16 sa_len u8[] sa   u16 idi_len u8[] idi   u16 idr_len u8[] idr
- *   u8 sk_d_len u8[] sk_d
+ *   u8 sk_d_len u8[] sk_d   u32 cert_due
+ * cert_due is absolute unix time of the certificate notAfter, or 0 when
+ * the mint had no certificate expiry (PSK/EAP).  A non-zero value that
+ * is already past is refused by the resume acceptor, not by parse.
  */
 
 static rc_vchar_t *
@@ -77,7 +80,7 @@ r2tick_pack(const struct r2ticket_state *st)
 		return NULL;
 	if (sa_l > 65535 || idi_l > 65535 || idr_l > 65535)
 		return NULL;
-	len = 4 + 1 + 8 + 8 + 2 + sa_l + 2 + idi_l + 2 + idr_l + 1 + skd_l;
+	len = 4 + 1 + 8 + 8 + 2 + sa_l + 2 + idi_l + 2 + idr_l + 1 + skd_l + 4;
 	out = rc_vmalloc(len);
 	if (!out)
 		return NULL;
@@ -109,6 +112,10 @@ r2tick_pack(const struct r2ticket_state *st)
 
 	p[o++] = (uint8_t)skd_l;
 	if (skd_l) { memcpy(p + o, st->sk_d->v, skd_l); o += skd_l; }
+	p[o++] = (st->cert_due >> 24) & 0xff;
+	p[o++] = (st->cert_due >> 16) & 0xff;
+	p[o++] = (st->cert_due >> 8) & 0xff;
+	p[o++] = st->cert_due & 0xff;
 
 	if (o != out->l) {
 		rc_vfreez(out);
@@ -185,6 +192,11 @@ r2tick_unpack(const uint8_t *p, size_t len, struct r2ticket_state *st)
 		if (!st->sk_d) goto err;
 	}
 	o += v8;
+
+	if (o + 4 > len) goto err;
+	st->cert_due = ((uint32_t)p[o] << 24) | ((uint32_t)p[o+1] << 16) |
+	    ((uint32_t)p[o+2] << 8) | p[o+3];
+	o += 4;
 
 	/* The store record has no MAC, so be strict: trailing bytes past the
 	 * last field make the record self-delimiting and refuse a mangled
@@ -821,19 +833,119 @@ struct r2tick_seen {
 };
 static struct r2tick_seen r2tick_seen[R2TICK_REPLAY_SLOTS];
 
+/* RFC 5723 s4.3.1 used-ticket cache.  Memory is the fast path; when a
+ * directory is bound (beside the ticket key), each first use is also an
+ * O_EXCL file so a restart and any other process sharing that directory
+ * reject the same ticket.  r2ticket_replay_reset() clears memory only. */
+static char *r2tick_replay_dir;
+
+void
+r2ticket_replay_set_dir(const char *dir)
+{
+	if (r2tick_replay_dir) {
+		racoon_free(r2tick_replay_dir);
+		r2tick_replay_dir = NULL;
+	}
+	if (!dir || !*dir)
+		return;
+	r2tick_replay_dir = racoon_malloc(strlen(dir) + 1);
+	if (!r2tick_replay_dir)
+		return;
+	memcpy(r2tick_replay_dir, dir, strlen(dir) + 1);
+	if (mkdir(r2tick_replay_dir, 0700) < 0 && errno != EEXIST) {
+		racoon_free(r2tick_replay_dir);
+		r2tick_replay_dir = NULL;
+	}
+}
+
+void
+r2ticket_replay_bind_key(const char *keypath)
+{
+	const char *slash;
+	char *dir;
+	size_t n;
+
+	if (!keypath || !*keypath)
+		return;
+	slash = strrchr(keypath, '/');
+	if (!slash || slash == keypath)
+		return;
+	n = (size_t)(slash - keypath);
+	dir = racoon_malloc(n + sizeof("/ticket-replay"));
+	if (!dir)
+		return;
+	memcpy(dir, keypath, n);
+	memcpy(dir + n, "/ticket-replay", sizeof("/ticket-replay"));
+	r2ticket_replay_set_dir(dir);
+	racoon_free(dir);
+}
+
+/* 0 first use, 1 already used, -1 disk error (caller NACKs). */
+static int
+r2ticket_replay_disk(const uint8_t h[32], uint32_t expires_at, uint32_t now)
+{
+	char path[512], hex[65];
+	static const char xd[] = "0123456789abcdef";
+	uint8_t buf[4];
+	int fd, i;
+	ssize_t n;
+
+	if (!r2tick_replay_dir)
+		return 0;
+	for (i = 0; i < 32; i++) {
+		hex[i * 2] = xd[h[i] >> 4];
+		hex[i * 2 + 1] = xd[h[i] & 0xf];
+	}
+	hex[64] = '\0';
+	if (snprintf(path, sizeof(path), "%s/%s", r2tick_replay_dir, hex) >=
+	    (int)sizeof(path))
+		return -1;
+	fd = open(path, O_RDONLY);
+	if (fd >= 0) {
+		uint32_t exp = 0;
+
+		n = read(fd, buf, 4);
+		close(fd);
+		if (n == 4) {
+			exp = ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
+			    ((uint32_t)buf[2] << 8) | buf[3];
+			if (!r2ticket_expired(exp, now))
+				return 1;
+		}
+		unlink(path);
+	}
+	fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+	if (fd < 0)
+		return (errno == EEXIST) ? 1 : -1;
+	buf[0] = (expires_at >> 24) & 0xff;
+	buf[1] = (expires_at >> 16) & 0xff;
+	buf[2] = (expires_at >> 8) & 0xff;
+	buf[3] = expires_at & 0xff;
+	n = write(fd, buf, 4);
+	close(fd);
+	if (n != 4) {
+		unlink(path);
+		return -1;
+	}
+	return 0;
+}
+
 int
 r2ticket_replay_mark(const rc_vchar_t *ticket, uint32_t expires_at,
     uint32_t now)
 {
 	uint8_t h[32];
 	unsigned int hl = 0;
-	int i, slot = -1;
+	int i, slot = -1, disk;
 
 	if (!ticket || !ticket->l || r2ticket_expired(expires_at, now))
 		return -1;
 	if (EVP_Digest(ticket->v, ticket->l, h, &hl, EVP_sha256(), NULL) != 1
 	    || hl != sizeof(h))
 		return -1;
+	disk = r2ticket_replay_disk(h, expires_at, now);
+	if (disk != 0)
+		return disk;
 	for (i = 0; i < R2TICK_REPLAY_SLOTS; i++) {
 		struct r2tick_seen *e = &r2tick_seen[i];
 
