@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <dirent.h>
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -58,7 +59,10 @@
  * Authenticated plaintext layout (network byte order):
  *   u32 expires_at   u8 auth_method   u64 spi_i   u64 spi_r
  *   u16 sa_len u8[] sa   u16 idi_len u8[] idi   u16 idr_len u8[] idr
- *   u8 sk_d_len u8[] sk_d
+ *   u8 sk_d_len u8[] sk_d   u32 cert_due
+ * cert_due is absolute unix time of the certificate notAfter, or 0 when
+ * the mint had no certificate expiry (PSK/EAP).  A non-zero value that
+ * is already past is refused by the resume acceptor, not by parse.
  */
 
 static rc_vchar_t *
@@ -77,7 +81,7 @@ r2tick_pack(const struct r2ticket_state *st)
 		return NULL;
 	if (sa_l > 65535 || idi_l > 65535 || idr_l > 65535)
 		return NULL;
-	len = 4 + 1 + 8 + 8 + 2 + sa_l + 2 + idi_l + 2 + idr_l + 1 + skd_l;
+	len = 4 + 1 + 8 + 8 + 2 + sa_l + 2 + idi_l + 2 + idr_l + 1 + skd_l + 4;
 	out = rc_vmalloc(len);
 	if (!out)
 		return NULL;
@@ -109,6 +113,10 @@ r2tick_pack(const struct r2ticket_state *st)
 
 	p[o++] = (uint8_t)skd_l;
 	if (skd_l) { memcpy(p + o, st->sk_d->v, skd_l); o += skd_l; }
+	p[o++] = (st->cert_due >> 24) & 0xff;
+	p[o++] = (st->cert_due >> 16) & 0xff;
+	p[o++] = (st->cert_due >> 8) & 0xff;
+	p[o++] = st->cert_due & 0xff;
 
 	if (o != out->l) {
 		rc_vfreez(out);
@@ -185,6 +193,11 @@ r2tick_unpack(const uint8_t *p, size_t len, struct r2ticket_state *st)
 		if (!st->sk_d) goto err;
 	}
 	o += v8;
+
+	if (o + 4 > len) goto err;
+	st->cert_due = ((uint32_t)p[o] << 24) | ((uint32_t)p[o+1] << 16) |
+	    ((uint32_t)p[o+2] << 8) | p[o+3];
+	o += 4;
 
 	/* The store record has no MAC, so be strict: trailing bytes past the
 	 * last field make the record self-delimiting and refuse a mangled
@@ -821,19 +834,207 @@ struct r2tick_seen {
 };
 static struct r2tick_seen r2tick_seen[R2TICK_REPLAY_SLOTS];
 
+/* RFC 5723 s4.3.1 used-ticket cache.  Memory is the fast path; when a
+ * directory is bound (beside the ticket key), each first use is also an
+ * O_EXCL file so a restart and any other process sharing that directory
+ * reject the same ticket.  r2ticket_replay_reset() clears memory only. */
+static char *r2tick_replay_dir;
+
+void
+r2ticket_replay_set_dir(const char *dir)
+{
+	if (r2tick_replay_dir) {
+		racoon_free(r2tick_replay_dir);
+		r2tick_replay_dir = NULL;
+	}
+	if (!dir || !*dir)
+		return;
+	r2tick_replay_dir = racoon_malloc(strlen(dir) + 1);
+	if (!r2tick_replay_dir)
+		return;
+	memcpy(r2tick_replay_dir, dir, strlen(dir) + 1);
+	if (mkdir(r2tick_replay_dir, 0700) < 0 && errno != EEXIST) {
+		racoon_free(r2tick_replay_dir);
+		r2tick_replay_dir = NULL;
+	}
+}
+
+void
+r2ticket_replay_bind_key(const char *keypath)
+{
+	const char *slash;
+	char *dir;
+	size_t n;
+
+	if (!keypath || !*keypath)
+		return;
+	slash = strrchr(keypath, '/');
+	if (!slash || slash == keypath)
+		return;
+	n = (size_t)(slash - keypath);
+	dir = racoon_malloc(n + sizeof("/ticket-replay"));
+	if (!dir)
+		return;
+	memcpy(dir, keypath, n);
+	memcpy(dir + n, "/ticket-replay", sizeof("/ticket-replay"));
+	r2ticket_replay_set_dir(dir);
+	racoon_free(dir);
+}
+
+/* Review L3: a mark is written to a unique temp name and then link()ed
+ * into place, so a crash can never leave a short mark under the final
+ * name.  A short mark found anyway (an older iked, disk trouble) fails
+ * CLOSED: the ticket is treated as used, never accepted again.  The sweep
+ * reaps expired marks, and orphaned temp / short files once they are
+ * R2TICK_REPLAY_ORPHAN_AGE old (no live ticket outlives that). */
+#define R2TICK_REPLAY_SWEEP_EVERY	300	/* caller-clock seconds */
+#define R2TICK_REPLAY_ORPHAN_AGE	(7 * 86400)	/* wall seconds */
+static uint32_t r2tick_replay_last_sweep;
+static int r2tick_replay_swept;
+
+static int
+r2tick_replay_hexname(const char *n)
+{
+	int i;
+
+	for (i = 0; i < 64; i++)
+		if (!((n[i] >= '0' && n[i] <= '9') || (n[i] >= 'a' && n[i] <= 'f')))
+			return 0;
+	return n[64] == '\0';
+}
+
+/* Returns the number of files removed, -1 if the dir cannot be read. */
+int
+r2ticket_replay_sweep(uint32_t now)
+{
+	DIR *d;
+	struct dirent *de;
+	char path[512];
+	uint8_t buf[4];
+	struct stat st;
+	time_t wall = time(NULL);
+	int fd, removed = 0;
+	ssize_t n;
+
+	if (!r2tick_replay_dir)
+		return 0;
+	d = opendir(r2tick_replay_dir);
+	if (!d)
+		return -1;
+	while ((de = readdir(d)) != NULL) {
+		int hexname = r2tick_replay_hexname(de->d_name);
+		int tmpname = strncmp(de->d_name, ".tmp.", 5) == 0;
+		int drop = 0;
+
+		if (!hexname && !tmpname)
+			continue;
+		if (snprintf(path, sizeof(path), "%s/%s", r2tick_replay_dir,
+		    de->d_name) >= (int)sizeof(path))
+			continue;
+		if (lstat(path, &st) < 0 || !S_ISREG(st.st_mode))
+			continue;
+		if (hexname && st.st_size == 4 &&
+		    (fd = open(path, O_RDONLY)) >= 0) {
+			n = read(fd, buf, 4);
+			close(fd);
+			if (n == 4) {
+				uint32_t exp = ((uint32_t)buf[0] << 24) |
+				    ((uint32_t)buf[1] << 16) |
+				    ((uint32_t)buf[2] << 8) | buf[3];
+				drop = r2ticket_expired(exp, now);
+			}
+		} else if (wall - st.st_mtime >= R2TICK_REPLAY_ORPHAN_AGE) {
+			drop = 1;	/* stale temp or short mark */
+		}
+		if (drop && unlink(path) == 0)
+			removed++;
+	}
+	closedir(d);
+	return removed;
+}
+
+/* 0 first use, 1 already used, -1 disk error (caller NACKs). */
+static int
+r2ticket_replay_disk(const uint8_t h[32], uint32_t expires_at, uint32_t now)
+{
+	char path[512], tmp[560], hex[65];
+	static const char xd[] = "0123456789abcdef";
+	static unsigned int seq;
+	uint8_t buf[4];
+	int fd, i, rc;
+	ssize_t n;
+
+	if (!r2tick_replay_dir)
+		return 0;
+	if (!r2tick_replay_swept ||
+	    now - r2tick_replay_last_sweep >= R2TICK_REPLAY_SWEEP_EVERY) {
+		(void)r2ticket_replay_sweep(now);
+		r2tick_replay_last_sweep = now;
+		r2tick_replay_swept = 1;
+	}
+	for (i = 0; i < 32; i++) {
+		hex[i * 2] = xd[h[i] >> 4];
+		hex[i * 2 + 1] = xd[h[i] & 0xf];
+	}
+	hex[64] = '\0';
+	if (snprintf(path, sizeof(path), "%s/%s", r2tick_replay_dir, hex) >=
+	    (int)sizeof(path))
+		return -1;
+	fd = open(path, O_RDONLY);
+	if (fd >= 0) {
+		uint32_t exp = 0;
+
+		n = read(fd, buf, 4);
+		close(fd);
+		if (n != 4)
+			return 1;	/* short mark: fail closed (L3) */
+		exp = ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
+		    ((uint32_t)buf[2] << 8) | buf[3];
+		if (!r2ticket_expired(exp, now))
+			return 1;
+		unlink(path);	/* expired mark: the ticket is dead anyway */
+	}
+	if (snprintf(tmp, sizeof(tmp), "%s/.tmp.%ld.%u", r2tick_replay_dir,
+	    (long)getpid(), seq++) >= (int)sizeof(tmp))
+		return -1;
+	fd = open(tmp, O_CREAT | O_EXCL | O_WRONLY, 0600);
+	if (fd < 0)
+		return -1;
+	buf[0] = (expires_at >> 24) & 0xff;
+	buf[1] = (expires_at >> 16) & 0xff;
+	buf[2] = (expires_at >> 8) & 0xff;
+	buf[3] = expires_at & 0xff;
+	n = write(fd, buf, 4);
+	if (n != 4 || fsync(fd) != 0) {
+		close(fd);
+		unlink(tmp);
+		return -1;
+	}
+	close(fd);
+	rc = link(tmp, path);
+	i = errno;
+	unlink(tmp);
+	if (rc != 0)
+		return (i == EEXIST) ? 1 : -1;
+	return 0;
+}
+
 int
 r2ticket_replay_mark(const rc_vchar_t *ticket, uint32_t expires_at,
     uint32_t now)
 {
 	uint8_t h[32];
 	unsigned int hl = 0;
-	int i, slot = -1;
+	int i, slot = -1, disk;
 
 	if (!ticket || !ticket->l || r2ticket_expired(expires_at, now))
 		return -1;
 	if (EVP_Digest(ticket->v, ticket->l, h, &hl, EVP_sha256(), NULL) != 1
 	    || hl != sizeof(h))
 		return -1;
+	disk = r2ticket_replay_disk(h, expires_at, now);
+	if (disk != 0)
+		return disk;
 	for (i = 0; i < R2TICK_REPLAY_SLOTS; i++) {
 		struct r2tick_seen *e = &r2tick_seen[i];
 

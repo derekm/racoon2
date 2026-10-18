@@ -229,6 +229,8 @@ ike_msg_resume_store_save_from_sa(struct ikev2_sa *ike_sa)
 	st.idi = rc_vdup(ike_sa->id_i);
 	st.idr = rc_vdup(ike_sa->id_r);
 	st.sk_d = rc_vdup(ike_sa->sk_d);
+	st.cert_due = (ike_sa->due_time.tv_sec > 0) ?
+	    (uint32_t)ike_sa->due_time.tv_sec : 0;
 	if (!st.idi || !st.idr || !st.sk_d)
 		goto out;
 	if (r2ticket_store_save(ike_msg_resume_store_dir(), key,
@@ -272,7 +274,9 @@ ike_msg_session_resume_available(struct ikev2_sa *ike_sa)
 		if (lrc == 0) {
 			if (!r2ticket_expired(st.expires_at,
 			    (uint32_t)time(NULL)) && ticket_lt &&
-			    ticket_lt->l > 4)
+			    ticket_lt->l > 4 &&
+			    (st.cert_due == 0 ||
+			     (uint32_t)time(NULL) < st.cert_due))
 				have = 1;
 			else {
 				/* expired or empty: remove it from the store
@@ -314,17 +318,34 @@ ike_msg_session_resume_available(struct ikev2_sa *ike_sa)
  * fresh nonce and first message.  resume_declined stops
  * ikev2_initiator_start() from presenting a ticket again. */
 void
-ike_msg_session_resume_fallback(struct ikev2_sa *ike_sa, const char *why)
+ike_msg_resume_store_drop(struct ikev2_sa *ike_sa)
 {
 	char *key;
 
-	if ((key = ike_msg_resume_store_key(ike_sa->remote)) != NULL) {
-		r2ticket_store_clear(ike_msg_resume_store_dir(), key);
-		racoon_free(key);
-	}
+	if (!ike_sa || !ike_sa->remote)
+		return;
+	if ((key = ike_msg_resume_store_key(ike_sa->remote)) == NULL)
+		return;
+	r2ticket_store_clear(ike_msg_resume_store_dir(), key);
+	racoon_free(key);
+}
+
+void
+ike_msg_session_resume_fallback(struct ikev2_sa *ike_sa, const char *why)
+{
+	/* Do NOT delete the stored ticket. RFC 5723 s4.3.2 says the
+	 * initiator SHOULD drop a refused ticket, but a drain NACK is how
+	 * a concentrator ferries the client onto a sibling: the ticket
+	 * must still be in the store for ike_msg_resume_store_migrate()
+	 * when the fallback IKE_SA_INIT is answered with N(REDIRECT).
+	 * resume_declined stops THIS sa from presenting the ticket again
+	 * to the peer that just refused it. Redirect-follow clears that
+	 * flag after the migrate. A genuine refusal (bad key, reuse) is
+	 * overwritten when the full IKE_AUTH stores a new ticket, or
+	 * dropped then if the peer issues none. */
 	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-	    "RFC 5723: %s; dropped stored ticket, falling back to a full "
-	    "IKE_SA_INIT\n", why);
+	    "RFC 5723: %s; kept stored ticket for redirect ferry, "
+	    "falling back to a full IKE_SA_INIT\n", why);
 	ike_sa->resume_declined = 1;
 	ike_sa->resumed = 0;
 	ikev2_stop_retransmit(ike_sa);
@@ -795,6 +816,15 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		    "TICKET_NACK\n", ticket ? ticket->l : 0);
 		goto nack;
 	}
+	/* Cert notAfter carried in the ticket.  RFC 5723 resume has no
+	 * CERT payload, so cert_validate cannot re-check the chain here.
+	 * 0 means the mint had no certificate expiry (PSK/EAP). */
+	if (st.cert_due != 0 && (uint32_t)time(NULL) >= st.cert_due) {
+		isakmp_log(ike_sa, local, remote, packet, PLOG_PROTOERR,
+		    PLOGLOC, "RFC 5723: ticket cert notAfter passed -> "
+		    "TICKET_NACK\n");
+		goto nack;
+	}
 
 	/* RFC 5723 s6: the resumed keys and negotiated SA come from the ticket.
 	 * A validly-MAC'd ticket missing SA or OLD SK_d state (defensive: a
@@ -806,6 +836,11 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	/* RFC 5723 s4.3.1: "A reused ticket SHOULD be rejected by a gateway".
 	 * Each ticket resumes at most once; the client must then run a full
 	 * exchange (and may obtain a fresh ticket there). */
+	/* RFC 5723 s4.3.1: a reused ticket SHOULD be rejected.  The cache
+	 * is on disk beside the ticket key so a restart, and any other
+	 * iked that loads the same key file, sees the same single-use
+	 * set.  Bind before mark. */
+	r2ticket_replay_bind_key(keypath);
 	switch (r2ticket_replay_mark(ticket, st.expires_at,
 	    (uint32_t)time(NULL))) {
 	case 0:
@@ -946,6 +981,9 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	ike_sa->id_i = st.idi;	st.idi = NULL;
 	ike_sa->id_r = st.idr;	st.idr = NULL;
 	ike_sa->resumed = 1;	/* established by ticket, not full IKE_AUTH */
+	/* Do not pre-set verified_info.result. The resumed IKE_AUTH
+	 * still has to pass ikev2_auth_verify; VERIFIED_WAITING (0) until
+	 * that call returns is the honest state. */
 
 	/* RFC 5723 s4.3.4: remember the OLD SA the client resumed from, so
 	 * once the resumed IKE_AUTH succeeds we can silently delete it and
@@ -955,12 +993,9 @@ responder_ike_session_resume_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	ike_sa->resume_old_spi_i = st.spi_i;
 	ike_sa->resume_old_spi_r = st.spi_r;
 
-	/* The peer is already authenticated by the ticket: the resumed
-	 * IKE_AUTH must not re-run a full auth method.  Mark the SA
-	 * authenticated so responder_ike_sa_auth_cont() skips the
-	 * VERIFIED_FAILURE path; the subsequent initiator AUTH over the
-	 * resumed SK_pi (shared-key-mac) is verified normally. */
-	ike_sa->verified_info.result = VERIFIED_SUCCESS;
+	/* The peer is already identified by the ticket.  The resumed
+	 * IKE_AUTH still verifies AUTH (ikev2_auth_verify); do not mark
+	 * VERIFIED_SUCCESS here. */
 
 	/* Resumed IKE_AUTH arrives with msgid 1, encrypted under these keys;
 	 * the normal responder IKE_AUTH path takes over from here. */
@@ -1066,6 +1101,11 @@ ikev2_ticket_lt_opaque(struct ikev2_sa *ike_sa)
 
 	st.expires_at = (uint32_t)time(NULL) +
 	    (uint32_t)ikev2_session_resume_ticket_lifetime(rmconf);
+	/* 0 = no certificate expiry to enforce (PSK/EAP).  A cert mint
+	 * carries notAfter so a resume after expiry is NACKed even though
+	 * RFC 5723 sends no CERT. */
+	st.cert_due = (ike_sa->due_time.tv_sec > 0) ?
+	    (uint32_t)ike_sa->due_time.tv_sec : 0;
 	/* Store the SPIs in the same big-endian u64 form the codec packs and
 	 * ikev2_silently_delete_old_resumed_sa() matches — NOT via a raw
 	 * memcpy into the uint64, which on a little-endian host reverses the

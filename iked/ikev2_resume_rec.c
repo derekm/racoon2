@@ -19,17 +19,19 @@
 #include "rc_net.h"
 #include "ikev2_resume_rec.h"
 
-void
+int
 r2rs_key_from_vchar(struct r2rs_key *k, const rc_vchar_t *v)
 {
 	memset(k, 0, sizeof(*k));
 	if (!v || v->l == 0)
-		return;
+		return 0;
+	/* Refuse rather than truncate.  A restored SA must not come up
+	 * with a prefix of SK_d or an ID and look complete. */
 	if ((size_t)v->l > R2RS_MAXKEY)
-		k->len = R2RS_MAXKEY;
-	else
-		k->len = (uint16_t)v->l;
+		return -1;
+	k->len = (uint16_t)v->l;
 	memcpy(k->data, v->v, k->len);
+	return 0;
 }
 
 rc_vchar_t *
@@ -116,7 +118,7 @@ r2rs_validate(const struct r2rs_sa *rec)
 		return -1;
 	if (rec->magic != R2RS_MAGIC ||
 	    rec->version > R2RS_VERSION ||
-	    rec->version < R2RS_VERSION - 2)
+	    rec->version < 3)
 		return -1;
 	if (rec->resp_len > R2RS_MAXRESP)
 		return -1;

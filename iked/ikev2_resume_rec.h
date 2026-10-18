@@ -36,7 +36,7 @@ extern "C" {
  * the 576-byte frag threshold, so the armed form is the fragment
  * datagrams; resp_buf now holds either a whole packet (resp_nfrags==0)
  * or the concatenated fragment datagrams with per-datagram lengths. */
-#define R2RS_VERSION	5
+#define R2RS_VERSION	6
 #define R2RS_MAXRESP	4608
 #define R2RS_MAXFRAGS	8
 #define R2RS_MAXFRAG	576
@@ -113,9 +113,12 @@ struct r2rs_sa {
 	uint16_t resp_nfrags;
 	uint16_t resp_frag_len[R2RS_MAXFRAGS];
 	uint8_t resp_buf[R2RS_MAXRESP];
+	/* v6: certificate notAfter (unix seconds).  0 = none (PSK/EAP or
+	 * a v5 dump).  Appended so a v5-sized file still loads. */
+	uint32_t cert_due;
 } __attribute__((packed));
 
-void r2rs_key_from_vchar(struct r2rs_key *, const rc_vchar_t *);
+int r2rs_key_from_vchar(struct r2rs_key *, const rc_vchar_t *);
 rc_vchar_t *r2rs_key_to_vchar(const struct r2rs_key *);
 void r2rs_sa_to_wire(const struct sockaddr *, uint16_t *family,
     uint16_t *port, uint8_t addr[16]);
