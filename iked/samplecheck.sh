@@ -180,5 +180,28 @@ else
 	echo "FAIL: openssl needed for the cert_validate config checks"; fail=$((fail + 1))
 fi
 
+# 4. RFC 8598 split-DNS allowlist entries must be valid domain names
+#    (REVIEW_2026-10-18 M4).
+v2dns() {	# v2dns NAME PEER EXTRA
+	cat <<EOT
+remote $1 {
+	acceptable_kmp { ikev2; };
+	ikev2 {
+		my_id fqdn "gw.example.com"; peers_id fqdn "peer.example.com"; peers_ipaddr "$2";
+		kmp_enc_alg { aes256_cbc; }; kmp_prf_alg { hmac_sha2_256; };
+		kmp_hash_alg { hmac_sha2_256; }; kmp_dh_group { modp2048; };
+		kmp_auth_method { psk; }; pre_shared_key "$E/psk.txt";
+		$3
+	};
+};
+EOT
+}
+[ -f "$E/psk.txt" ] || echo samplecheck-psk > "$E/psk.txt"
+C=$T/dns-ok.conf; base "$C"; v2dns sd 127.0.0.5 'accept_dns_domain "corp.example, lab.test.";' >> "$C"
+check "accept_dns_domain with valid domains" ok "$C"
+C=$T/dns-bad.conf; base "$C"; v2dns sd 127.0.0.5 'accept_dns_domain "corp.example,*.lab";' >> "$C"
+check "accept_dns_domain refuses a wildcard entry" fail "$C" \
+    'remote sd ikev2: accept_dns_domain entry "*.lab" is not a valid domain name'
+
 echo "samplecheck: $n checks, $fail failures"
 [ $fail -eq 0 ]

@@ -233,6 +233,7 @@ static int rcf_fix_pre_shared_key (struct cf_list *, void *);
 static int rcf_fix_redirect_to (struct cf_list *, void *);
 static int rcf_fix_cert_validate (struct cf_list *, void *);
 static int rcf_fix_ca_file (struct cf_list *, void *);
+static int rcf_fix_accept_dns_domain (struct cf_list *, void *);
 static int rcf_fix_redirect_period (struct cf_list *, void *);
 static int rcf_fix_redirect_max (struct cf_list *, void *);
 static int rcf_fix_accept_redirect (struct cf_list *, void *);
@@ -369,6 +370,7 @@ struct rcf_tdf_t {
 	{ CFD_VERIFY_ID,		rcf_fix_verify_id, },
 	{ CFD_CERT_VALIDATE,		rcf_fix_cert_validate, },
 	{ CFD_CA_FILE,			rcf_fix_ca_file, },
+	{ CFD_ACCEPT_DNS_DOMAIN,		rcf_fix_accept_dns_domain, },
 	{ CFD_REDIRECT_PERIOD,		rcf_fix_redirect_period, },
 	{ CFD_REDIRECT_MAX,		rcf_fix_redirect_max, },
 	{ CFD_ACCEPT_REDIRECT,		rcf_fix_accept_redirect, },
@@ -2030,6 +2032,19 @@ rcf_fix_redirect_period(struct cf_list *head, void *dst0)
 }
 
 static int
+rcf_fix_accept_dns_domain(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ACCEPT_DNS_DOMAIN))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->accept_dns_domain))
+		return -1;
+
+	return 0;
+}
+
+static int
 rcf_fix_radius_server(struct cf_list *head, void *dst0)
 {
 	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
@@ -3654,6 +3669,7 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rc_vfree(n->pre_shared_key);
 	rc_vfree(n->redirect_to);
 	rc_vfree(n->ca_file);
+	rc_vfree(n->accept_dns_domain);
 	rc_vfree(n->my_principal);
 	rc_vfree(n->peers_principal);
 	rc_vfree(n->addresspool);
@@ -3718,6 +3734,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	 * the default OFF and the wire chain is never validated. */
 	new->cert_validate = src->cert_validate;
 	DEEPCOPY_VDUP(src->ca_file, new->ca_file);
+	DEEPCOPY_VDUP(src->accept_dns_domain, new->accept_dns_domain);
 	new->redirect_period = src->redirect_period;
 	new->redirect_max = src->redirect_max;
 	new->accept_redirect = src->accept_redirect;

@@ -999,6 +999,8 @@ int ikev2_process_config_request(struct ikev2_sa *,
     struct ikev2_child_param *);
 int ikev2_create_config_reply(struct ikev2_sa *,
     struct ikev2_child_sa *, struct ikev2_child_param *);
+int ikev2_dns_domain_normalize(const uint8_t *, size_t, char *, size_t);
+int ikev2_dns_domain_allowed(const char *, const char *);
 int ikev2_process_config_reply(struct ikev2_sa *, struct ikev2_child_sa *,
     struct ikev2_payload_header *);
 int ikev2_process_config_informational(struct ikev2_sa *,

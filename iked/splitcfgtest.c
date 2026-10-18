@@ -130,6 +130,52 @@ out:
 }
 
 /* asserted FQDN identity in the sa->id_i layout (id_h + bytes) */
+/* REVIEW_2026-10-18 M4: an rcf_remote whose ikev2 accept_dns_domain
+ * allowlist is `list` (static storage; one at a time). */
+static struct rcf_remote *
+mk_accept_rm(const char *list)
+{
+	static struct rcf_kmp k;
+	static struct rcf_remote r;
+	static rc_vchar_t *v;
+
+	if (v)
+		rc_vfree(v);
+	v = rc_vmalloc(strlen(list) + 1);
+	memcpy(v->v, list, strlen(list) + 1);
+	v->l = strlen(list);
+	memset(&k, 0, sizeof(k));
+	memset(&r, 0, sizeof(r));
+	k.accept_dns_domain = v;
+	r.ikev2 = &k;
+	return &r;
+}
+
+/* build a CFG_REPLY carrying the given (type, value, len) attributes */
+static struct ikev2_payload_header *
+mk_cfg_reply(uint8_t *buf, size_t bl, int n, const int *types,
+	     const char *const *vals, const size_t *lens)
+{
+	struct ikev2payl_config *cfg = (struct ikev2payl_config *)buf;
+	size_t off = sizeof(struct ikev2payl_config);
+	int i;
+
+	memset(buf, 0, bl);
+	cfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+	for (i = 0; i < n; ++i) {
+		struct ikev2cfg_attrib *a = (struct ikev2cfg_attrib *)(buf + off);
+
+		put_uint16(&a->type, types[i]);
+		put_uint16(&a->length, (uint16_t)lens[i]);
+		memcpy(IKEV2CFG_ATTR_VALUE(a), vals[i], lens[i]);
+		off += sizeof(*a) + lens[i];
+	}
+	buf[2] = (uint8_t)((off >> 8) & 0xff);
+	buf[3] = (uint8_t)(off & 0xff);
+	cfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+	return &cfg->header;
+}
+
 static rc_vchar_t *
 mkid_fqdn(const char *name)
 {
@@ -1018,6 +1064,7 @@ main(int argc, char *argv[])
 
 		memset(&c, 0, sizeof(c));
 		memset(&isa, 0, sizeof(isa));
+		isa.rmconf = mk_accept_rm("corp.example");	/* M4 allowlist */
 		ikev2_child_param_init(&c.child_param);
 		CK(ikev2_process_config_reply(&isa, &c, &cfg->header) == 0,
 		   "process_config_reply rc==0 (25)");
@@ -1026,6 +1073,129 @@ main(int argc, char *argv[])
 		   "25 committed to internal_dns_domain (corp.example)");
 		if (c.internal_dns_domain)
 			rc_vfree(c.internal_dns_domain);
+	}
+
+	/* ===== B.4b: INTERNAL_DNS_DOMAIN validation + allowlist (M4) =====
+	 * A peer-pushed 25 is only committed when it is a valid LDH name
+	 * inside accept_dns_domain (default: none); several are kept as a
+	 * space-separated list; a 26 after a refused 25 is ignored. */
+	{
+		char o[256];
+		static const struct { const char *v; size_t l; int ok;
+		    const char *norm; } dv[] = {
+			{ "corp.example", 12, 1, "corp.example" },
+			{ "Corp.Example.", 13, 1, "corp.example" },
+			{ "com", 3, 1, "com" },
+			{ ".", 1, 0, 0 },
+			{ "", 0, 0, 0 },
+			{ "a..b", 4, 0, 0 },
+			{ ".a.b", 4, 0, 0 },
+			{ "-a.b", 4, 0, 0 },
+			{ "a-.b", 4, 0, 0 },
+			{ "a.b-", 4, 0, 0 },
+			{ "a_b.example", 11, 0, 0 },
+			{ "corp\0.example", 13, 0, 0 },
+			{ "corp.example\n", 13, 0, 0 },
+			{ "$(id).example", 13, 0, 0 },
+			{ "a b.example", 11, 0, 0 },
+			{ "*.example", 9, 0, 0 },
+		};
+		char lab64[80], big[300];
+		size_t i;
+		struct ikev2_sa isa;
+		struct ikev2_child_sa c;
+		uint8_t buf[512];
+		struct ikev2_payload_header *ph;
+
+		for (i = 0; i < sizeof(dv) / sizeof(dv[0]); ++i) {
+			int r = ikev2_dns_domain_normalize(
+			    (const uint8_t *)dv[i].v, dv[i].l, o, sizeof(o));
+			CK((r == 0) == dv[i].ok &&
+			   (!dv[i].ok || strcmp(o, dv[i].norm) == 0),
+			   dv[i].ok ? "dns_domain valid LDH accepted+normalized"
+				    : "dns_domain invalid name refused");
+		}
+		memset(lab64, 'a', 64);
+		memcpy(lab64 + 64, ".example", 9);
+		CK(ikev2_dns_domain_normalize((uint8_t *)lab64, 72, o,
+		   sizeof(o)) != 0, "dns_domain 64-octet label refused");
+		/* lab64 + 1 = 63 'a' + ".example": the longest legal label */
+		CK(ikev2_dns_domain_normalize((uint8_t *)lab64 + 1, 71, o,
+		   sizeof(o)) == 0, "dns_domain 63-octet label accepted");
+		for (i = 0; i < 254; ++i)
+			big[i] = (i % 2) ? '.' : 'a';
+		big[253] = 'a';
+		CK(ikev2_dns_domain_normalize((uint8_t *)big, 253, o,
+		   sizeof(o)) == 0, "dns_domain 253 octets accepted");
+		CK(ikev2_dns_domain_normalize((uint8_t *)big, 254, o,
+		   sizeof(o)) != 0, "dns_domain 254 octets refused");
+
+		CK(ikev2_dns_domain_allowed("corp.example", "corp.example"),
+		   "allowlist: exact match");
+		CK(ikev2_dns_domain_allowed("eng.corp.example",
+		   "lab.test, corp.example."), "allowlist: subdomain match");
+		CK(!ikev2_dns_domain_allowed("evilcorp.example",
+		   "corp.example"), "allowlist: suffix without label boundary refused");
+		CK(!ikev2_dns_domain_allowed("example", "corp.example"),
+		   "allowlist: parent of an entry refused");
+		CK(!ikev2_dns_domain_allowed("corp.example", NULL),
+		   "allowlist: none configured accepts nothing");
+		CK(!ikev2_dns_domain_allowed("com", ""),
+		   "allowlist: empty list accepts nothing");
+
+		/* parse: no allowlist -> refused, nothing committed */
+		{
+			int t[1] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN };
+			const char *v[1] = { "corp.example" };
+			size_t l[1] = { 12 };
+
+			ph = mk_cfg_reply(buf, sizeof(buf), 1, t, v, l);
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			ikev2_child_param_init(&c.child_param);
+			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
+			   c.internal_dns_domain == NULL,
+			   "25 refused when accept_dns_domain unset (default)");
+		}
+		/* parse: hostile names refused even when allowlisted broadly */
+		{
+			int t[2] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+				     IKEV2_CFG_INTERNAL_DNSSEC_TA };
+			const char *v[2] = { "x.corp.example\n;rm", "\x01\x02\x03\x04" };
+			size_t l[2] = { 18, 4 };
+
+			ph = mk_cfg_reply(buf, sizeof(buf), 2, t, v, l);
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			isa.rmconf = mk_accept_rm("corp.example");
+			ikev2_child_param_init(&c.child_param);
+			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
+			   c.internal_dns_domain == NULL &&
+			   c.internal_dnssec_ta == NULL,
+			   "invalid 25 refused and its 26 ignored");
+		}
+		/* parse: out-of-allowlist refused, in-list kept, list built */
+		{
+			int t[3] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+				     IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+				     IKEV2_CFG_INTERNAL_DNS_DOMAIN };
+			const char *v[3] = { "corp.example", "com",
+					     "Lab.Test." };
+			size_t l[3] = { 12, 3, 9 };
+
+			ph = mk_cfg_reply(buf, sizeof(buf), 3, t, v, l);
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			isa.rmconf = mk_accept_rm("corp.example,lab.test");
+			ikev2_child_param_init(&c.child_param);
+			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
+			   c.internal_dns_domain != NULL &&
+			   strcmp(c.internal_dns_domain->s,
+				  "corp.example lab.test") == 0,
+			   "multiple 25s: allowed kept as list, 'com' refused");
+			if (c.internal_dns_domain)
+				rc_vfree(c.internal_dns_domain);
+		}
 	}
 
 	/* ============ B.6: INTERNAL_DNSSEC_TA (26, RFC 8598 §8) ==========
@@ -1288,6 +1458,7 @@ main(int argc, char *argv[])
 
 			memset(&c, 0, sizeof(c));
 			memset(&isa, 0, sizeof(isa));
+			isa.rmconf = mk_accept_rm("corp.example");
 			ikev2_child_param_init(&c.child_param);
 			CK(ikev2_process_config_reply(&isa, &c,
 			     &cfg->header) == 0,

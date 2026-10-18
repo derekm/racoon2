@@ -242,6 +242,7 @@ struct rcf_kmp ikev2_default_values = {
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
 	RCT_BOOL_OFF,		/* cert_validate (X.509-from-wire off by default) */
 	NULL,			/* ca_file (trust anchor; NULL = default paths) */
+	NULL,		/* accept_dns_domain */
 	300,		/* redirect_period */
 	5,		/* redirect_max */
 	RCT_BOOL_OFF,		/* accept_redirect */
@@ -503,6 +504,7 @@ IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
 IKEV2_CONF_ATTR(rc_type, cert_validate)
 IKEV2_CONF_ATTR(rc_vchar_t *, ca_file)
+IKEV2_CONF_ATTR(rc_vchar_t *, accept_dns_domain)
 IKEV2_CONF_ATTR(int, redirect_period)
 IKEV2_CONF_ATTR(int, redirect_max)
 IKEV2_CONF_ATTR(rc_type, accept_redirect)
@@ -5970,6 +5972,37 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 			++*err;
 			plog(PLOG_INTERR, PLOGLOC, 0,
 			     "remote %s ikev2 section lacks my_id\n", rm_index);
+		}
+
+		/* REVIEW_2026-10-18 M4: every accept_dns_domain entry must
+		 * itself be a valid LDH domain (no wildcards, no "."). */
+		if (ikev2_accept_dns_domain(rmconf)) {
+			const char *l = rc_vmem2str(
+			    ikev2_accept_dns_domain(rmconf));
+			char ent[256], nb[256];
+
+			while (l && *l) {
+				size_t el = 0;
+
+				while (*l == ',' || *l == ' ' || *l == '\t')
+					++l;
+				while (l[el] && l[el] != ',' && l[el] != ' ' &&
+				    l[el] != '\t')
+					++el;
+				if (el == 0)
+					break;
+				if (el >= sizeof(ent) ||
+				    (memcpy(ent, l, el), ent[el] = '\0',
+				     ikev2_dns_domain_normalize((uint8_t *)ent,
+				     el, nb, sizeof(nb)) != 0)) {
+					++*err;
+					plog(PLOG_INTERR, PLOGLOC, 0,
+					     "remote %s ikev2: accept_dns_domain entry "
+					     "\"%.*s\" is not a valid domain name\n",
+					     rm_index, (int)el, l);
+				}
+				l += el;
+			}
 		}
 
 		IKEV2_CONF(kmp_auth_method, rmconf, kmp_auth_method, 0);

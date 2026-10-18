@@ -34,6 +34,8 @@
 #include <assert.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <string.h>
+#include <strings.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -1020,6 +1022,86 @@ ikev2_process_mip6_home_prefix(struct ikev2_child_sa *child_sa, uint8_t *addr,
 }
 
 
+
+/*
+ * REVIEW_2026-10-18 M4 (RFC 8598 §5/§9): validate a peer-supplied
+ * INTERNAL_DNS_DOMAIN.  Accepts only an LDH domain name (RFC 1123
+ * labels of 1..63 letters/digits/hyphens, no leading/trailing hyphen),
+ * total <= 253 octets, an optional single trailing dot; no NUL, control
+ * characters, spaces or shell metacharacters.  On success writes the
+ * lower-cased name without the trailing dot to out and returns 0.
+ */
+int
+ikev2_dns_domain_normalize(const uint8_t *v, size_t len, char *out,
+			   size_t outlen)
+{
+	size_t i, lab = 0, labels = 0;
+
+	if (len > 0 && v[len - 1] == '.')
+		--len;
+	if (len == 0 || len > 253 || len + 1 > outlen)
+		return -1;
+	for (i = 0; i < len; ++i) {
+		uint8_t c = v[i];
+
+		if (c == '.') {
+			if (lab == 0 || v[i - 1] == '-')
+				return -1;
+			lab = 0;
+			out[i] = '.';
+			continue;
+		}
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		      (c >= '0' && c <= '9') || c == '-'))
+			return -1;
+		if (c == '-' && lab == 0)
+			return -1;
+		if (lab == 0)
+			++labels;
+		if (++lab > 63)
+			return -1;
+		out[i] = (char)tolower(c);
+	}
+	if (lab == 0 || v[len - 1] == '-')
+		return -1;
+	out[len] = '\0';
+	return labels > 0 ? 0 : -1;
+}
+
+/*
+ * Is the (normalized) domain inside the accept_dns_domain allowlist?  The
+ * list is comma/space separated; an entry matches the domain itself and
+ * any subdomain ("corp.example" allows "eng.corp.example", not
+ * "evilcorp.example").  NULL/empty list accepts nothing.
+ */
+int
+ikev2_dns_domain_allowed(const char *dom, const char *list)
+{
+	size_t dl;
+
+	if (!dom || !list)
+		return 0;
+	dl = strlen(dom);
+	while (*list) {
+		const char *e;
+		size_t el;
+
+		while (*list == ',' || *list == ' ' || *list == '\t')
+			++list;
+		for (e = list; *e && *e != ',' && *e != ' ' && *e != '\t'; ++e)
+			;
+		el = (size_t)(e - list);
+		if (el > 0 && list[el - 1] == '.')
+			--el;
+		if (el > 0 && el <= dl &&
+		    strncasecmp(dom + dl - el, list, el) == 0 &&
+		    (el == dl || dom[dl - el - 1] == '.'))
+			return 1;
+		list = e;
+	}
+	return 0;
+}
+
 static int
 ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				struct ikev2_child_sa *child_sa,
@@ -1220,23 +1302,54 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			}
 			break;
 		}
-		case IKEV2_CFG_INTERNAL_DNS_DOMAIN:
+		case IKEV2_CFG_INTERNAL_DNS_DOMAIN: {
 			/* RFC 8598 §7.2: a split-DNS suffix the initiator should
-			 * steer through this SA.  Commit to the child so the
-			 * updown script sees INTERNAL_DNS_DOMAIN. */
-			TRACE((PLOGLOC, "INTERNAL_DNS_DOMAIN: %.*s\n",
-			       (int)len, value));
-			rc_vfreez(child_sa->internal_dns_domain);
-			child_sa->internal_dns_domain = rc_vmalloc(len + 1);
-			if (!child_sa->internal_dns_domain)
+			 * steer through this SA.  REVIEW_2026-10-18 M4: it is
+			 * peer-controlled and lands in the updown environment,
+			 * so it must be a syntactically valid LDH name AND
+			 * inside the local accept_dns_domain allowlist (RFC
+			 * 8598 §5/§9; default: accept none).  Accepted
+			 * domains accumulate (several 25s are legal) as a
+			 * space-separated list. */
+			char dom[256];
+			size_t ol;
+			rc_vchar_t *nv;
+
+			prev_type = 0;	/* a 26 may only follow an ACCEPTED 25 */
+			if (ikev2_dns_domain_normalize(value, len, dom,
+			    sizeof(dom)) != 0) {
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
+				    PLOGLOC, "INTERNAL_DNS_DOMAIN is not a valid "
+				    "LDH domain name (%zu octets), ignored\n", len);
+				break;
+			}
+			if (!ikev2_dns_domain_allowed(dom,
+			    ikev2_accept_dns_domain(ike_sa->rmconf) ?
+			    rc_vmem2str(ikev2_accept_dns_domain(ike_sa->rmconf))
+			    : NULL)) {
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
+				    PLOGLOC, "INTERNAL_DNS_DOMAIN %s not in "
+				    "accept_dns_domain, ignored\n", dom);
+				break;
+			}
+			TRACE((PLOGLOC, "INTERNAL_DNS_DOMAIN: %s\n", dom));
+			ol = child_sa->internal_dns_domain ?
+			    strlen(child_sa->internal_dns_domain->s) : 0;
+			nv = rc_vmalloc(ol + (ol ? 1 : 0) + strlen(dom) + 1);
+			if (!nv)
 				return -1;
-			memcpy(child_sa->internal_dns_domain->v, value, len);
-			child_sa->internal_dns_domain->s[len] = '\0';
-			child_sa->internal_dns_domain->l = len + 1;
+			if (ol) {
+				memcpy(nv->v, child_sa->internal_dns_domain->v, ol);
+				nv->s[ol++] = ' ';
+			}
+			memcpy(nv->s + ol, dom, strlen(dom) + 1);
+			rc_vfreez(child_sa->internal_dns_domain);
+			child_sa->internal_dns_domain = nv;
 			/* RFC 8598 §4.2: a 26 trust anchor may only follow a 25
 			 * (or another 26) for the same domain. */
 			prev_type = IKEV2_CFG_INTERNAL_DNS_DOMAIN;
 			break;
+		}
 		case IKEV2_CFG_INTERNAL_DNSSEC_TA:
 			/* RFC 8598 §4.2: a 26 not immediately preceded by a 25
 			 * (or another 26 for the same domain) MUST be ignored —

@@ -848,6 +848,21 @@ remote
 		REDIRECT_SUPPORTED or REDIRECTED_FROM.
 		default is off.
 
+	accept_dns_domain (string) ;
+		It is valid for the ikev2 directive (initiator / CP client).
+		RFC 8598 split-DNS allowlist: a comma or space separated
+		list of domain names, e.g. "corp.example, lab.test".  An
+		INTERNAL_DNS_DOMAIN (25) pushed by the peer is accepted only
+		when it is a valid LDH domain name (labels of letters, digits
+		and hyphens, at most 253 octets, no NUL/control characters)
+		equal to or below one of these entries ("corp.example" allows
+		"eng.corp.example", not "evilcorp.example").  Anything else
+		is logged and ignored, and so is a DNSSEC trust anchor (26)
+		following it.  Accepted domains reach the updown script as
+		INTERNAL_DNS_DOMAIN.  Each entry must itself be a valid
+		domain name (no wildcards); otherwise it is a config error.
+		default is unset: no pushed domain is accepted.
+
 	redirect_max (number) ;
 	redirect_period (number) ;
 		It is valid for the ikev2 directive.
@@ -1000,6 +1015,10 @@ remote
 		    INTERNAL_ADDR6
 		    INTERNAL_DNS6
 		    INTERNAL_DHCP6
+		    INTERNAL_DNS_DOMAIN (RFC 8598 split-DNS domains from the
+		      peer: space-separated, each validated and inside
+		      accept_dns_domain; see there)
+		    INTERNAL_DNSSEC_TA (hex, for the preceding accepted domain)
 		For migration:
 		    OLD_SRC
 		    OLD_DST

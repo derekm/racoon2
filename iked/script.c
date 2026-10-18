@@ -565,7 +565,8 @@ ikev2_child_script_hook(struct ikev2_child_sa *child_sa, int script)
 		return;
 
 	/*
-	 * INTERNAL_DNS_DOMAIN (RFC 8598 §7.2 split-DNS suffix)
+	 * INTERNAL_DNS_DOMAIN (RFC 8598 §7.2 split-DNS suffixes): space-
+	 * separated list of the validated, accept_dns_domain-allowed domains
 	 */
 	if (script_env_append(&envp, &envc, "INTERNAL_DNS_DOMAIN",
 			      (child_sa->internal_dns_domain ?
