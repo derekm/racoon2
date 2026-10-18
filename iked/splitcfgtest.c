@@ -396,32 +396,51 @@ main(int argc, char *argv[])
 	rcs_free_addrlist(sel4.dst);
 	rcs_free_addrlist(sel6.dst);
 
-	/* ================= B.2c: RFC 4945 FQDN identity matching =========
-	 * fqdn_id_match: exact FQDN, wildcard-FQDN (single leftmost label),
-	 * case-insensitive; must reject multi-label wildcard over-match and
-	 * a literal '*' in a non-wildcard. */
-	CK(fqdn_id_match("gw.example.com", "gw.example.com", 14) == 1,
+	/* ================= B.2c: RFC 4945 / 6125 FQDN identity matching ====
+	 * fqdn_id_match(cert_name, asserted, len, allow_wildcard): the
+	 * wildcard is only ever in the CERTIFICATE; an asserted ID with '*'
+	 * never matches (REVIEW_2026-10-18 H2: the old code had it reversed,
+	 * so IDi "*.example.com" bound to an "x.example.com" cert). */
+	CK(fqdn_id_match("gw.example.com", "gw.example.com", 14, 0) == 1,
 	   "exact FQDN matches");
-	CK(fqdn_id_match("GW.EXAMPLE.COM", "gw.example.com", 14) == 1,
+	CK(fqdn_id_match("GW.EXAMPLE.COM", "gw.example.com", 14, 0) == 1,
 	   "exact FQDN is case-insensitive");
-	CK(fqdn_id_match("a.example.com", "*.example.com", 13) == 1,
-	   "wildcard matches single leftmost label");
-	CK(fqdn_id_match("A.Example.COM", "*.example.com", 13) == 1,
-	   "wildcard is case-insensitive");
-	CK(fqdn_id_match("a.b.example.com", "*.example.com", 13) == 0,
-	   "wildcard does NOT match extra leftmost label (RFC 6125 s6.4.3)");
-	CK(fqdn_id_match("example.com", "*.example.com", 13) == 0,
-	   "wildcard does not match bare domain");
-	CK(fqdn_id_match("x.gw.example.com", "*.gw.example.com", 16) == 1,
-	   "wildcard with a multi-label suffix matches one leftmost label");
-	CK(fqdn_id_match("a.b.gw.example.com", "*.gw.example.com", 16) == 0,
-	   "wildcard with a multi-label suffix rejects two extra labels");
-	CK(fqdn_id_match("gw.example.com", "*.gw.example.com", 16) == 0,
-	   "wildcard needs a distinct leftmost label (suffix too long)");
-	CK(fqdn_id_match("gw.example.com", "gw.*.com", 8) == 0,
-	   "literal '*' in non-wildcard does not match");
-	CK(fqdn_id_match("gw.example.com", "gw.example.com", 5) == 0,
+	CK(fqdn_id_match("gw.example.com", "gw.example.com", 5, 0) == 0,
 	   "length mismatch does not match");
+	/* reversed direction: asserted wildcard is refused, both settings */
+	CK(fqdn_id_match("x.example.com", "*.example.com", 13, 0) == 0,
+	   "asserted '*.example.com' does NOT bind to an x.example.com cert");
+	CK(fqdn_id_match("x.example.com", "*.example.com", 13, 1) == 0,
+	   "asserted wildcard refused even with allow_wildcard_cert on");
+	CK(fqdn_id_match("*.example.com", "*.example.com", 13, 1) == 0,
+	   "asserted wildcard refused even against an identical cert wildcard");
+	CK(fqdn_id_match("gw.example.com", "gw.example.com\0.evil", 20, 0) == 0,
+	   "asserted ID with an embedded NUL never matches");
+	/* certificate wildcard: only with allow_wildcard_cert on */
+	CK(fqdn_id_match("*.example.com", "a.example.com", 13, 0) == 0,
+	   "cert wildcard refused when allow_wildcard_cert is off");
+	CK(fqdn_id_match("*.example.com", "a.example.com", 13, 1) == 1,
+	   "cert wildcard matches one leftmost label when allowed");
+	CK(fqdn_id_match("*.Example.COM", "A.example.com", 13, 1) == 1,
+	   "cert wildcard is case-insensitive");
+	CK(fqdn_id_match("*.example.com", "a.b.example.com", 15, 1) == 0,
+	   "cert wildcard does NOT match an extra leftmost label (RFC 6125 s6.4.3)");
+	CK(fqdn_id_match("*.example.com", "example.com", 11, 1) == 0,
+	   "cert wildcard does not match the bare domain");
+	CK(fqdn_id_match("*.example.com", ".example.com", 12, 1) == 0,
+	   "cert wildcard needs a non-empty leftmost label");
+	CK(fqdn_id_match("*.gw.example.com", "x.gw.example.com", 16, 1) == 1,
+	   "cert wildcard with a multi-label suffix matches one label");
+	CK(fqdn_id_match("*.gw.example.com", "a.b.gw.example.com", 18, 1) == 0,
+	   "cert wildcard with a multi-label suffix rejects two extra labels");
+	CK(fqdn_id_match("*.com", "example.com", 11, 1) == 0,
+	   "cert wildcard over a single-label suffix (*.com) never matches");
+	CK(fqdn_id_match("gw.*.com", "gw.example.com", 14, 1) == 0,
+	   "non-leftmost '*' in the cert never matches");
+	CK(fqdn_id_match("g*.example.com", "gw.example.com", 14, 1) == 0,
+	   "partial-label '*' in the cert never matches");
+	CK(fqdn_id_match("*.*.example.com", "a.b.example.com", 15, 1) == 0,
+	   "a second '*' in the cert never matches");
 
 	/* ================= B.2d: SAN-iPAddress <-> IP peers_id binding ======
 	 * Build a minimal X.509 with an iPAddress SAN (192.0.2.77), DER-encode

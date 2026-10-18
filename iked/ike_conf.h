@@ -219,6 +219,7 @@ extern rc_type ikev2_childless(struct rcf_remote *);
 extern rc_vchar_t *ikev2_redirect_to(struct rcf_remote *);
 extern rc_type ikev2_cert_validate(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ca_file(struct rcf_remote *);
+extern rc_type ikev2_allow_wildcard_cert(struct rcf_remote *);
 extern rc_type ikev2_cert_trust_system(struct rcf_remote *);
 extern rc_type ikev2_natt_follow_mapping(struct rcf_remote *);
 extern rc_type ikev2_ppk_mandatory(struct rcf_remote *);
@@ -281,7 +282,7 @@ extern rc_vchar_t *ikev2_public_key(struct ikev2_sa *, rc_vchar_t *,
 				 struct timeval *);
 extern rc_vchar_t *ikev2_public_key_from_wire(struct ikev2_sa *);
 extern int ikev2_wire_cert_id_ok(struct ikev2_sa *, int);
-extern int fqdn_id_match(const char *, const char *, size_t);
+extern int fqdn_id_match(const char *, const char *, size_t, int);
 extern rc_vchar_t *ikev2_private_key(struct ikev2_sa *, rc_vchar_t *);
 extern rc_vchar_t *ikev2_pre_shared_key(struct ikev2_sa *);
 

@@ -394,6 +394,7 @@ pre_shared_key		{ DP; return(PRE_SHARED_KEY); }
 redirect_to		{ DP; return(REDIRECT_TO); }
 cert_validate		{ DP; return(CERT_VALIDATE); }
 ca_file			{ DP; return(CA_FILE); }
+allow_wildcard_cert		{ DP; return(ALLOW_WILDCARD_CERT); }
 cert_trust_system		{ DP; return(CERT_TRUST_SYSTEM); }
 radius_server		{ DP; return(RADIUS_SERVER); }
 radius_port		{ DP; return(RADIUS_PORT); }

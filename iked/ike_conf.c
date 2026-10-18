@@ -242,6 +242,7 @@ struct rcf_kmp ikev2_default_values = {
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
 	RCT_BOOL_OFF,		/* cert_validate (X.509-from-wire off by default) */
 	NULL,			/* ca_file (trust anchor; NULL = default paths) */
+	RCT_BOOL_OFF,		/* allow_wildcard_cert */
 	RCT_BOOL_OFF,		/* cert_trust_system */
 };
 
@@ -498,6 +499,7 @@ IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
 IKEV2_CONF_ATTR(rc_type, cert_validate)
 IKEV2_CONF_ATTR(rc_vchar_t *, ca_file)
+IKEV2_CONF_ATTR(rc_type, allow_wildcard_cert)
 IKEV2_CONF_ATTR(rc_type, cert_trust_system)
 IKEV2_CONF_ATTR(rc_type, require_config)
 IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
@@ -1066,7 +1068,7 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
  * identity must match the identity the peer ASSERTED in its ID payload
  * (IDi when verifying the initiator, IDr otherwise) — otherwise a peer with
  * a valid chain for a DIFFERENT identity could substitute.  Checks the
- * leaf's SAN-DNS (RFC 6125 wildcard-aware when the ASSERTED id is wildcard)
+ * leaf's SAN-DNS (a certificate wildcard only with allow_wildcard_cert on)
  * then the subject CN (only for a cert with no SAN at all), or the
  * SAN-iPAddress for an asserted IP identity.  Returns 0 on a match; -1 on a
  * mismatch, a missing/malformed asserted identity, or an identity type we
@@ -1077,48 +1079,54 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
  */
 
 /*
- * Wildcard FQDN match per RFC 6125 §6.4.3: a configured peers_id FQDN
- * beginning with a leftmost "*." label matches the cert name iff the cert
- * name has that many labels and the suffix (after the first label) equals
- * the peers_id minus its "*." prefix, case-insensitively, exactly one
- * leftmost label.  Non-wildcard: exact case-insensitive equality on all
- * labels (so "*.example.com" does NOT match "a.b.example.com").
- * pid is the NUL-free rc_vchar_t content of length pid_len.
+ * RFC 4945 / RFC 6125 FQDN identity match.  cert is the NUL-terminated name
+ * PRESENTED in the certificate (SAN-DNS or CN); asserted/asserted_len is the
+ * identity the peer ASSERTED in IDi/IDr (raw bytes, not NUL-terminated).
+ *
+ * The wildcard, if any, lives ONLY in the certificate (RFC 6125 s6.4.3: the
+ * presented identifier is the pattern, the reference identifier is a plain
+ * name).  An asserted identity containing '*' or a NUL never matches: a
+ * peer must not be able to claim "*.example.com" and have it bound to its
+ * own "x.example.com" certificate.  A certificate wildcard "*.suffix"
+ * matches exactly one non-empty leftmost label, only when allow_wildcard is
+ * set, and only when suffix has at least two labels (no "*.com").  Any other
+ * '*' in the certificate name never matches.  Otherwise: exact,
+ * case-insensitive, equal length.  Returns 1 on match, 0 otherwise.
  */
 int
-fqdn_id_match(const char *alt, const char *pid, size_t pid_len)
+fqdn_id_match(const char *cert, const char *asserted, size_t asserted_len,
+	      int allow_wildcard)
 {
-	const char *star;
-	size_t alt_len = strlen(alt);
+	size_t cert_len;
 
-	if (pid_len >= 2 && pid[0] == '*' && pid[1] == '.') {
-		const char *suffix = pid + 2;
-		size_t suffix_len = pid_len - 2;
+	if (!cert || !asserted || asserted_len == 0)
+		return 0;
+	if (memchr(asserted, '*', asserted_len) != NULL ||
+	    memchr(asserted, '\0', asserted_len) != NULL)
+		return 0;	/* asserted IDs are names, never patterns */
+	cert_len = strlen(cert);
+	if (cert_len >= 2 && cert[0] == '*' && cert[1] == '.') {
+		const char *suffix = cert + 2;
+		size_t suffix_len = cert_len - 2;
 		const char *dot;
-		/* alt must have a leftmost label + '.' + the full suffix. */
-		if (alt_len < suffix_len + 2)
+
+		if (!allow_wildcard)
 			return 0;
-		dot = strchr(alt, '.');
-		if (dot == NULL || dot == alt)
+		if (suffix_len == 0 || memchr(suffix, '*', suffix_len) ||
+		    memchr(suffix, '.', suffix_len) == NULL)
+			return 0;	/* "*.com" or a second '*' */
+		dot = memchr(asserted, '.', asserted_len);
+		if (dot == NULL || dot == asserted)
 			return 0;	/* no / empty leftmost label */
-		/* RFC 6125 s6.4.3: '*' matches EXACTLY ONE leftmost label, so
-		 * the remainder after the first dot must equal the suffix
-		 * label-for-label (same length AND content).  Because the
-		 * suffix itself may contain dots, we require the remainder
-		 * length to equal suffix_len and then compare byte-for-byte
-		 * — a name with extra leftmost labels ("a.b.example.com" vs
-		 * "*.example.com") fails the length check, which is correct. */
-		if (alt_len - (size_t)(dot - alt) - 1 != suffix_len)
-			return 0;
+		if (asserted_len - (size_t)(dot - asserted) - 1 != suffix_len)
+			return 0;	/* exactly one leftmost label */
 		return strncasecmp(dot + 1, suffix, suffix_len) == 0;
 	}
-	/* exact match on all labels */
-	if (alt_len != pid_len)
+	if (memchr(cert, '*', cert_len) != NULL)
+		return 0;	/* partial / non-leftmost wildcard: never */
+	if (cert_len != asserted_len)
 		return 0;
-	star = memchr(pid, '*', pid_len);
-	if (star != NULL)
-		return 0;	/* a literal '*' in a non-wildcard is a match fail */
-	return strncasecmp(alt, pid, pid_len) == 0;
+	return strncasecmp(cert, asserted, asserted_len) == 0;
 }
 /*
  * RFC 4945 identity binding: when cert_validate is on and the peer's AUTH
@@ -1177,6 +1185,15 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa, int i_to_r)
 		 * subject CN as a fallback for certs identified only by CN.
 		 * Length-bound the compare against the asserted ID value. */
 		int saw_san = 0;
+		int wild = ikev2_allow_wildcard_cert(ike_sa->rmconf) ==
+		    RCT_BOOL_ON;
+
+		if (memchr(asserted_data, '*', asserted_len) != NULL) {
+			plog(PLOG_PROTOERR, PLOGLOC, 0,
+			     "X.509-from-wire: asserted FQDN identity contains "
+			     "'*'; an ID payload is a name, not a pattern\n");
+			goto mismatch;
+		}
 		for (pos = 1;; pos++) {
 			alt = NULL; type = GENT_OTHERNAME;
 			if (eay_get_x509subjectaltname(cert, &alt, &type,
@@ -1185,7 +1202,7 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa, int i_to_r)
 			saw_san = 1;
 			if (type == GENT_DNS && alt &&
 			    fqdn_id_match(alt, asserted_data,
-					  asserted_len)) {
+					  asserted_len, wild)) {
 				TRACE((PLOGLOC,
 				    "X.509-from-wire: cert SAN-DNS %s matches asserted IDi/IDr\n",
 				    alt));
@@ -1200,7 +1217,7 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa, int i_to_r)
 			goto mismatch;
 		alt = eay_get_x509subject_cn(cert);
 		if (alt &&
-		    fqdn_id_match(alt, asserted_data, asserted_len)) {
+		    fqdn_id_match(alt, asserted_data, asserted_len, wild)) {
 			TRACE((PLOGLOC,
 			    "X.509-from-wire: cert subject CN %s matches asserted IDi/IDr\n",
 			    alt));
