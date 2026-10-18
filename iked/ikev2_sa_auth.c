@@ -808,12 +808,25 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			if (ike_sa->id_i)
 				rc_vfree(ike_sa->id_i);
 			ike_sa->id_i = rc_vnew((uint8_t *)(id_i + 1),
-					       get_payload_data_length(id_i));
+				       get_payload_data_length(id_i));
 			if (!ike_sa->id_i) {
 				rc_vfree(identity_req);
 				ikev2_eap_relay_free(relay);
 				racoon_free(relay);
 				goto fail_nomem;
+			}
+			/* record the asserted IDi TYPE here too (same call the
+			 * non-EAP path uses at the end of this function): the
+			 * final AUTH verify calls ikev2_wire_cert_id_ok() and
+			 * needs id_i_type to bind the cert to the IDi this EAP
+			 * peer asserted — without it the binder no-ops.
+			 * ikev2_id2rct_id returns an allocated idbuf even when
+			 * we only need the type out-param — free it. */
+			{
+				rc_vchar_t *t =
+				    ikev2_id2rct_id(id_i, &ike_sa->id_i_type);
+				if (t)
+					rc_vfree(t);
 			}
 			ike_sa->eap_relay = relay;
 			/* Retain the peer's child offer (SAi2/TSi/TSr[/CFG]) from

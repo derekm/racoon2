@@ -927,9 +927,15 @@ eay_get_x509subjectaltname(rc_vchar_t *cert, char **altname, int *type, int pos)
 		 * callers compare with strlen()/strcasecmp() which stop at the first
 		 * NUL, so "gw.example.com\0.evil.test" would otherwise match peers_id
 		 * "gw.example.com".  A NUL inside a DNS/email/URI SAN is malformed —
-		 * skip the entry (caller keeps scanning later positions). */
-		if (ia5_len > 0 && memchr(ia5, '\0', (size_t)ia5_len) != NULL)
+		 * SKIP the entry (leave *altname NULL, return 0) so the caller keeps
+		 * scanning later positions, exactly like the non-IA5 type guard
+		 * above.  Returning non-zero here would be treated as end-of-list and
+		 * wrongly fail (or CN-fallback) a cert whose first SAN is a
+		 * malformed-NUL DNS entry but which also carries a clean later SAN. */
+		if (ia5_len > 0 && memchr(ia5, '\0', (size_t)ia5_len) != NULL) {
+			error = 0;
 			goto end;
+		}
 		*altname = racoon_malloc(len);
 		if (!*altname)
 			goto end;

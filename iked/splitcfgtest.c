@@ -568,6 +568,173 @@ main(int argc, char *argv[])
 		if (isa.id_i) rc_vfree(isa.id_i);
 	}
 
+	/* ============ B.2e: embedded-NUL SAN must not CN-fallback =====
+	 * A cert whose FIRST DNS SAN is "gw.example.com\0.evil.test"
+	 * (embedded NUL) and whose CN is "gw.example.com" must NOT bind to an
+	 * asserted IDi of "gw.example.com" via the CN fallback, and the
+	 * binder must still see a LATER clean DNS SAN.  Regression for the
+	 * d2d8896 guard: fix the return so a NUL entry is SKIPPED (return 0,
+	 * NULL altname) so the scan continues, not treated as end-of-list
+	 * (which would wrongly CN-fallback a null-prefix cert). */
+	{
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa isa;
+		X509 *x = NULL;
+		EVP_PKEY *pk = NULL;
+		STACK_OF(GENERAL_NAME) *sans = NULL;
+		GENERAL_NAME *gn0 = NULL, *gn1 = NULL;
+		X509_EXTENSION *ext = NULL;
+		unsigned char *p = NULL;
+		rc_vchar_t *der = NULL;
+		rc_vchar_t *cert = NULL;
+		int len;
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		memset(&isa, 0, sizeof(isa));
+		ikm.cert_validate = RCT_BOOL_ON;
+		rm.ikev2 = &ikm;
+		isa.rmconf = &rm;
+
+		/* simple self-signed RSA key + cert with two DNS SANs */
+		{
+			EVP_PKEY_CTX *kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+			CK(kctx != NULL, "nul: rsa pkey ctx");
+			if (!kctx) goto b2e_err;
+			CK(EVP_PKEY_keygen_init(kctx) > 0 &&
+			   EVP_PKEY_CTX_set_rsa_keygen_bits(kctx, 1024) > 0 &&
+			   EVP_PKEY_keygen(kctx, &pk) > 0,
+			   "nul: rsa keygen");
+			EVP_PKEY_CTX_free(kctx);
+			if (!pk) goto b2e_err;
+		}
+		x = X509_new();
+		CK(x != NULL, "nul: x509");
+		X509_set_version(x, 2);
+		ASN1_INTEGER_set(X509_get_serialNumber(x), 0x1235);
+		X509_gmtime_adj(X509_get_notBefore(x), 0);
+		X509_gmtime_adj(X509_get_notAfter(x), 3600L * 24 * 30);
+		{
+			X509_NAME *nm = X509_get_subject_name(x);
+			X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
+						   (unsigned char *)"gw.example.com",
+						   -1, -1, 0);
+			X509_set_issuer_name(x, nm);
+		}
+		X509_set_pubkey(x, pk);
+
+		/* SAN[0] = "gw.example.com\0.evil.test" (embedded NUL),
+		 * SAN[1] = "vpn.example.com" (clean, later) */
+		sans = sk_GENERAL_NAME_new(NULL);
+		CK(sans != NULL, "nul: SAN stack");
+		gn0 = GENERAL_NAME_new();
+		CK(gn0 != NULL, "nul: SAN0");
+		gn0->type = GEN_DNS;
+		gn0->d.dNSName = ASN1_IA5STRING_new();
+		ASN1_STRING_set(gn0->d.dNSName,
+				"gw.example.com\0.evil.test", 25);
+		sk_GENERAL_NAME_push(sans, gn0);
+		gn1 = GENERAL_NAME_new();
+		CK(gn1 != NULL, "nul: SAN1");
+		gn1->type = GEN_DNS;
+		gn1->d.dNSName = ASN1_IA5STRING_new();
+		ASN1_STRING_set(gn1->d.dNSName, "vpn.example.com", -1);
+		sk_GENERAL_NAME_push(sans, gn1);
+		ext = X509V3_EXT_i2d(NID_subject_alt_name, 0, sans);
+		CK(ext != NULL, "nul: SAN extension");
+		X509_add_ext(x, ext, -1);
+		X509_EXTENSION_free(ext);
+		ext = NULL;
+		GENERAL_NAMES_free(sans);
+		sans = NULL;
+
+		X509_sign(x, pk, EVP_sha256());
+		len = i2d_X509(x, NULL);
+		CK(len > 0, "nul: i2d");
+		if (len <= 0)
+			goto b2e_err;
+		p = malloc((size_t)len);
+		CK(p != NULL, "nul: der buf");
+		if (!p)
+			goto b2e_err;
+		{
+			unsigned char *q = p;
+			i2d_X509(x, &q);
+		}
+		der = rc_vmalloc((size_t)len);
+		CK(der != NULL, "nul: rc_vmalloc");
+		memcpy(der->v, p, (size_t)len);
+		der->l = (size_t)len;
+		free(p); p = NULL;
+		cert = der;
+		isa.peer_cert = cert;
+
+		/* SAN[1] is visible past the embedded-NUL SAN[0]: extraction
+		 * must SKIP SAN[0] (return 0, NULL altname), not treat it as
+		 * end-of-list. */
+		{
+			char *alt = NULL; int t = GENT_OTHERNAME;
+			CK(eay_get_x509subjectaltname(cert, &alt, &t, 1) == 0 &&
+			   alt == NULL,
+			   "nul: SAN1 extract skips embedded-NUL SAN0");
+			if (alt) racoon_free(alt);
+			alt = NULL; t = GENT_OTHERNAME;
+			CK(eay_get_x509subjectaltname(cert, &alt, &t, 2) == 0 &&
+			   alt && strcmp(alt, "vpn.example.com") == 0,
+			   "nul: SAN2 extract returns clean vpn.example.com");
+			if (alt) racoon_free(alt);
+		}
+
+		/* helper: the asserted FQDN IDi is built directly below
+		 * (set id_i and id_i_type on the SA, AUTH-input form). */
+
+		/* asserted IDi "gw.example.com": CN fallback must NOT fire
+		 * (authoritative SAN present), so the NUL-prefix identity
+		 * must be REJECTED. */
+		isa.id_i = rc_vmalloc(sizeof(struct ikev2payl_ident_h) +
+				      strlen("gw.example.com"));
+		CK(isa.id_i != NULL, "nul: asserted IDi (gw) alloc");
+		isa.id_i_type = RCT_IDT_FQDN;
+		isa.id_i->l = sizeof(struct ikev2payl_ident_h) +
+		    strlen("gw.example.com");
+		{
+			uint8_t *iv = (uint8_t *)isa.id_i->v;
+			memset(iv, 0, sizeof(struct ikev2payl_ident_h));
+			iv[0] = 2;	/* IKEV2_ID_FQDN */
+			memcpy(iv + sizeof(struct ikev2payl_ident_h),
+			       "gw.example.com", strlen("gw.example.com"));
+		}
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "nul: asserted gw.example.com REJECTED (no CN fallback)");
+
+		/* asserted IDi "vpn.example.com": the clean LATER SAN binds. */
+		rc_vfree(isa.id_i);
+		isa.id_i = rc_vmalloc(sizeof(struct ikev2payl_ident_h) +
+				      strlen("vpn.example.com"));
+		CK(isa.id_i != NULL, "nul: asserted IDi (vpn) alloc");
+		isa.id_i->l = sizeof(struct ikev2payl_ident_h) +
+		    strlen("vpn.example.com");
+		{
+			uint8_t *iv = (uint8_t *)isa.id_i->v;
+			memset(iv, 0, sizeof(struct ikev2payl_ident_h));
+			iv[0] = 2;	/* IKEV2_ID_FQDN */
+			memcpy(iv + sizeof(struct ikev2payl_ident_h),
+			       "vpn.example.com", strlen("vpn.example.com"));
+		}
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) == 0,
+		   "nul: asserted vpn.example.com binds clean later SAN");
+
+		CK(1, "nul block");
+	b2e_err:
+		if (sans) GENERAL_NAMES_free(sans);
+		if (ext) X509_EXTENSION_free(ext);
+		if (x) X509_free(x);
+		if (pk) EVP_PKEY_free(pk);
+		if (der) rc_vfree(der);
+		if (isa.id_i) rc_vfree(isa.id_i);
+	}
+
 	/* ================= B.4: INTERNAL_DNS_DOMAIN (25) =================
 	 * 1. Emit: responder with a configured split-DNS suffix, peer asked
 	 *    for 25 -> CFG_REPLY carries  25 = "corp.example".

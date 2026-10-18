@@ -1053,14 +1053,17 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
 /*
  * RFC 4945 identity binding: when cert_validate is on and the peer's AUTH
  * was verified against a chain-validated wire certificate, the certificate
- * identity must also match the configured peers_id — otherwise a peer with a
- * valid chain for a DIFFERENT identity could authenticate.  Checks the leaf's
- * SAN-DNS (with wildcard-FQDN support), then the subject CN, against each
- * configured peers_id FQDN.  Returns 0 on a match, or when NO FQDN peers_id
- * is configured (pure CA-trust hub: nothing to bind against); non-zero on a
- * mismatch against a configured peers_id.  (RFC 7296 §2.16 AUTH proves
- * possession of the private key; this binds that identity to the IKE-level
- * peer policy.)
+ * identity must match the identity the peer ASSERTED in its ID payload
+ * (IDi when verifying the initiator, IDr otherwise) — otherwise a peer with
+ * a valid chain for a DIFFERENT identity could substitute.  Checks the
+ * leaf's SAN-DNS (RFC 6125 wildcard-aware when the ASSERTED id is wildcard)
+ * then the subject CN (only for a cert with no SAN at all), or the
+ * SAN-iPAddress for an asserted IP identity.  Returns 0 on a match; -1 on a
+ * mismatch, a missing/malformed asserted identity, or an identity type we
+ * cannot bind (FAIL CLOSED whenever cert_validate is on and a wire cert is
+ * present).  (RFC 7296 §2.16 AUTH proves possession of the private key; this
+ * binds that identity to the IKE-level peer policy.)  The peers_id allowlist
+ * remains a separate gate (ikev2_peer_id_ok).
  */
 
 /*
@@ -1148,13 +1151,13 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa, int i_to_r)
 		asserted_type = ike_sa->id_r_type;
 	}
 	if (!asserted || !asserted->v || asserted->l == 0)
-		return 0;	/* no asserted identity (resume/other) */
+		goto mismatch;	/* no asserted identity to bind — fail closed */
 	/* The stored asserted ID (sa->id_i/id_r) is the ID payload after the
 	 * IKE header — which still carries the id_type + reserved fields that
 	 * form the AUTH input and the peers_id compare.  The actual identity
 	 * value (FQDN bytes / IP octets) is past the ikev2payl_ident_h. */
 	if (asserted->l <= (size_t)sizeof(struct ikev2payl_ident_h))
-		return 0;	/* no identity data (unsupported type) */
+		goto mismatch;	/* no identity data — fail closed */
 	asserted_data = (const char *)asserted->v +
 	    sizeof(struct ikev2payl_ident_h);
 	asserted_len = asserted->l - sizeof(struct ikev2payl_ident_h);
@@ -1208,8 +1211,9 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa, int i_to_r)
 		if (fam == AF_UNSPEC ||
 		    inet_ntop(fam, asserted_data, ipbuf,
 			      sizeof(ipbuf)) == NULL) {
-			/* malformed asserted IP identity; cannot bind */
-			return 0;
+			/* malformed asserted IP identity; cannot bind —
+			 * fail closed */
+			goto mismatch;
 		}
 		for (pos = 1;; pos++) {
 			alt = eay_get_x509subjectipaddr(cert, pos);
@@ -1227,15 +1231,21 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa, int i_to_r)
 		goto mismatch;
 	}
 	/* Non-FQDN / non-IP asserted identity: nothing to bind the cert
-	 * SAN/CN against (e.g. KEY_ID).  Fall back to no-op — the peers_id
-	 * allowlist and verify_id checks still apply at their own sites. */
-	return 0;
+	 * SAN/CN against (e.g. KEY_ID / unknown type).  Fail closed — a
+	 * chain-validated wire cert whose identity we cannot bind to the
+	 * asserted ID must not be accepted unbound.  (verify_id / the
+	 * peers_id allowlist are NOT a complete backstop: ikev2_peer_id_ok
+	 * is skipped on the rm_index==0 default-clause path.) */
+	goto mismatch;
 mismatch:
+	/* Print the actual asserted identity VALUE (past the id_h), not the
+	 * raw id_type/reserved bytes that head asserted->v — those contain a
+	 * NUL in the reserved field so %.*s would print nothing useful. */
 	plog(PLOG_PROTOERR, PLOGLOC, 0,
 	     "X.509-from-wire: peer cert identity does not match asserted ID "
-	     "(RFC 4945; asserted %s \"%.*s\" type %d)\n",
-	     i_to_r ? "IDi" : "IDr", (int)(asserted ? asserted->l : 0),
-	     asserted ? (char *)asserted->v : "", (int)asserted_type);
+	     "(RFC 4945; asserted %s type %d val \"%.*s\")\n",
+	     i_to_r ? "IDi" : "IDr", (int)asserted_type,
+	     (int)asserted_len, asserted_data ? asserted_data : "");
 	return -1;
 }
 rc_vchar_t *
