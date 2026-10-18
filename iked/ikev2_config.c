@@ -33,6 +33,7 @@
 
 #include <assert.h>
 #include <ctype.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <sys/socket.h>

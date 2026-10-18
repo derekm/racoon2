@@ -10,6 +10,7 @@ configure   text eol=lf
 *.sh        text eol=lf
 *.py        text eol=lf
 *.tsv       text eol=lf
+*.rows      text eol=lf
 # automake aux script (extensionless): must stay LF in the tree and in
 # `git archive`, or the regenerated .y.c rule fails with CRLF errors.
 ylwrap      text eol=lf

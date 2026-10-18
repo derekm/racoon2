@@ -51,6 +51,11 @@ kind_i2inatt() {
 	mkdir -p "$PRIVRES_I" "$PRIVRES_R"
 
 	cleanup() {
+		# Rules live in the NAT netns, not on the runner host.  Flush
+		# them before the netns delete: an early return hits this EXIT
+		# trap, and a busy netns del must not leave the SNAT behind.
+		ip netns exec "$NSN" iptables -t nat -F POSTROUTING 2>/dev/null || true
+		ip netns exec "$NSN" iptables -F FORWARD 2>/dev/null || true
 		ip netns exec "$NSI" pkill -9 -f "$SBIN/iked" 2>/dev/null || true
 		ip netns exec "$NSR" pkill -9 -f "$SBIN/iked" 2>/dev/null || true
 		ip netns exec "$NSI" pkill -9 -f "$SBIN/spmd" 2>/dev/null || true
@@ -161,7 +166,10 @@ EOF
 	}
 	_extra=
 	_nat_conf init 10.9.0.2 192.0.5.1 r2init-matrix racoon2-matrix off 0
-	if [ "$_rebind" = 1 ] && [ -z "$_natk" ]; then _extra="
+	# _natk is 0 or 1, never empty.  [ -z "$_natk" ] is false for "0",
+	# which omitted natt_follow_mapping and made the on-row behave as off
+	# (MAPPING logged, encap stayed dport 4500, 0/6 pings).
+	if [ "$_rebind" = 1 ] && [ "$_natk" != 1 ]; then _extra="
 		natt_follow_mapping $_follow;"; fi
 	_nat_conf resp 192.0.5.1 192.0.5.254 racoon2-matrix r2init-matrix on $_wild
 
@@ -289,19 +297,32 @@ EOF
 			net.netfilter.nf_conntrack_udp_timeout_stream=2 2>/dev/null || true
 		ip netns exec "$NSN" iptables -t nat -I POSTROUTING 1 -s 10.9.0.0/24 \
 			-o "$VR1" -p udp -j SNAT --to-source 192.0.5.254:40000-40100
-		sleep 6
-		# The idle timeout alone did not drop the 4500 mapping on CI (any
-		# IKE/keepalive datagram in the window refreshes it; first CI run:
-		# encap unchanged, 6/6 pings over the OLD port).  Delete the NAT's
-		# UDP conntrack entries explicitly so the next ESP-in-UDP datagram
-		# MUST take a new 40000-40100 mapping.
+		# Idle timeout alone does not drop the 4500 mapping (any
+		# IKE/keepalive datagram refreshes it).  Delete the NAT's UDP
+		# conntrack entries so the next ESP-in-UDP datagram MUST take a
+		# new 40000-40100 mapping.
 		if ! command -v conntrack >/dev/null 2>&1; then
 			_bad="rebind: conntrack(8) not installed (needed to drop the NAT mapping)"
 		else
 			ip netns exec "$NSN" conntrack -D -p udp -s 10.9.0.2 >/dev/null 2>&1 || true
 		fi
+	fi
+	if [ "$_rebind" = 1 ] && [ -z "$_bad" ]; then
+		# Stimulus, then poll kernel state.  The proof pings are not the
+		# wait: follow=on does not start them until the outbound encap
+		# dport has moved (or 20s).  follow=off must not wait for a move
+		# that is a failure.
+		ip netns exec "$NSI" ping -c 1 -W 2 192.0.5.1 > "$D/ping-stim.txt" 2>&1 || true
+		_w=0
+		if [ "$_follow" = on ]; then
+			while [ "$_w" -lt 20 ]; do
+				_e1=$(_out_encap)
+				case "$_e1" in *"dport 40"[01][0-9][0-9]*) break ;; esac
+				_w=$((_w+1)); sleep 1
+			done
+		fi
 		ip netns exec "$NSI" ping -c 6 -i 1 -W 2 192.0.5.1 > "$D/ping-rebind.txt" 2>&1 || true
-		_w=0; while [ "$_w" -lt 10 ] && ! grep -q 'received XFRM MAPPING' "$D/resp-iked.log" 2>/dev/null; do
+		_w=0; while [ "$_w" -lt 5 ] && ! grep -q 'received XFRM MAPPING' "$D/resp-iked.log" 2>/dev/null; do
 			_w=$((_w+1)); sleep 1
 		done
 		_e1=$(_out_encap)

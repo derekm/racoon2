@@ -1,0 +1,78 @@
+# Box-tier evidence.  gate=box and gate=dpd rows do not run on GitHub
+# runners (R2_BOX / R2_DPD unset).  This workflow does not SSH to the
+# box and carries no secrets.  The box posts a summary; the nightly
+# job fails if the last accepted post is older than 36h.
+#
+# Box cron, after a run with R2_BOX=yes R2_DPD=yes:
+#   sh samples/linux-matrix/box-evidence.sh emit /path/to/matrix.log \
+#     > /tmp/box-evidence.txt
+#   gh workflow run box-evidence.yml --ref int/gsoc2026 \
+#     -f summary="$(cat /tmp/box-evidence.txt)"
+name: Box-tier evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      summary:
+        description: 'Output of box-evidence.sh emit'
+        required: true
+        type: string
+  repository_dispatch:
+    types: [box-evidence]
+  schedule:
+    - cron: '17 8 * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  record:
+    name: Accept box evidence
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate summary
+        env:
+          SUMMARY: ${{ github.event.client_payload.summary || inputs.summary }}
+        run: |
+          printf '%s' "$SUMMARY" > /tmp/box-evidence.txt
+          # emit always terminates the last line; do not append another.
+          sh samples/linux-matrix/box-evidence.sh check /tmp/box-evidence.txt
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: box-evidence
+          path: /tmp/box-evidence.txt
+          if-no-files-found: error
+
+  freshness:
+    name: Box evidence is fresh
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if the last accepted post is older than 36h
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          created=$(gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow box-evidence.yml --status success --limit 20 \
+            --json createdAt,event,conclusion \
+            --jq '[.[] | select(.event != "schedule")][0].createdAt')
+          if [ -z "$created" ] || [ "$created" = "null" ]; then
+            echo "FAIL: no accepted box-evidence post"
+            exit 1
+          fi
+          now=$(date -u +%s)
+          then=$(date -u -d "$created" +%s)
+          age=$(( (now - then) / 3600 ))
+          echo "last accepted post: $created (${age}h ago)"
+          if [ "$age" -gt 36 ]; then
+            echo "FAIL: box evidence is ${age}h old (max 36h)"
+            exit 1
+          fi
+          echo "box evidence fresh"
