@@ -1024,16 +1024,22 @@ eay_get_x509subjectipaddr(rc_vchar_t *cert, int pos)
 
 /*
  * get the subject commonName (CN) from an X509 certificate, as a NUL-
- * terminated malloc'd string (NULL if absent/unparseable).  Used as the
- * RFC 4945 identity-binding fallback when a cert has no usable SAN-DNS.
+ * terminated malloc'd UTF-8 string, or NULL when it is absent, ambiguous
+ * (more than one CN), unconvertible, or carries an EMBEDDED NUL.  The
+ * caller compares with strlen()-bounded functions, so a CN such as
+ * "gw.example.com\0.evil" must be refused here (null-prefix attack),
+ * exactly like the SAN path in eay_get_x509subjectaltname().  Used only as
+ * the RFC 4945 identity-binding fallback (cert_cn_fallback on, no SAN).
  */
 char *
 eay_get_x509subject_cn(rc_vchar_t *cert)
 {
 	X509 *x509 = NULL;
 	X509_NAME *subj;
-	char *buf;
-	int len;
+	X509_NAME_ENTRY *ent;
+	unsigned char *utf8 = NULL;
+	char *buf = NULL;
+	int idx, len;
 
 	x509 = mem2x509(cert);
 	if (x509 == NULL)
@@ -1041,24 +1047,30 @@ eay_get_x509subject_cn(rc_vchar_t *cert)
 	subj = X509_get_subject_name(x509);
 	if (subj == NULL)
 		goto end;
-	len = X509_NAME_get_text_by_NID(subj, NID_commonName, NULL, 0);
-	if (len <= 0)
+	idx = X509_NAME_get_index_by_NID(subj, NID_commonName, -1);
+	if (idx < 0)
 		goto end;
-	buf = malloc(len + 1);
+	if (X509_NAME_get_index_by_NID(subj, NID_commonName, idx) >= 0)
+		goto end;	/* two CNs: ambiguous, refuse */
+	ent = X509_NAME_get_entry(subj, idx);
+	if (ent == NULL)
+		goto end;
+	len = ASN1_STRING_to_UTF8(&utf8, X509_NAME_ENTRY_get_data(ent));
+	if (len <= 0 || utf8 == NULL)
+		goto end;
+	if (memchr(utf8, '\0', (size_t)len) != NULL)
+		goto end;	/* embedded NUL: malformed name, refuse */
+	buf = malloc((size_t)len + 1);
 	if (buf == NULL)
 		goto end;
-	if (X509_NAME_get_text_by_NID(subj, NID_commonName, buf, len + 1)
-	    <= 0) {
-		free(buf);
-		goto end;
-	}
-	if (x509)
-		X509_free(x509);
-	return buf;	/* NUL-terminated by libcrypto */
+	memcpy(buf, utf8, (size_t)len);
+	buf[len] = '\0';
       end:
+	if (utf8)
+		OPENSSL_free(utf8);
 	if (x509)
 		X509_free(x509);
-	return NULL;
+	return buf;
 }
 
 /*

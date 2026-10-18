@@ -242,6 +242,7 @@ struct rcf_kmp ikev2_default_values = {
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
 	RCT_BOOL_OFF,		/* cert_validate (X.509-from-wire off by default) */
 	NULL,			/* ca_file (trust anchor; NULL = default paths) */
+	RCT_BOOL_OFF,		/* cert_cn_fallback */
 	RCT_BOOL_OFF,		/* allow_wildcard_cert */
 	RCT_BOOL_OFF,		/* cert_trust_system */
 };
@@ -499,6 +500,7 @@ IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
 IKEV2_CONF_ATTR(rc_type, cert_validate)
 IKEV2_CONF_ATTR(rc_vchar_t *, ca_file)
+IKEV2_CONF_ATTR(rc_type, cert_cn_fallback)
 IKEV2_CONF_ATTR(rc_type, allow_wildcard_cert)
 IKEV2_CONF_ATTR(rc_type, cert_trust_system)
 IKEV2_CONF_ATTR(rc_type, require_config)
@@ -1069,7 +1071,8 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
  * (IDi when verifying the initiator, IDr otherwise) — otherwise a peer with
  * a valid chain for a DIFFERENT identity could substitute.  Checks the
  * leaf's SAN-DNS (a certificate wildcard only with allow_wildcard_cert on)
- * then the subject CN (only for a cert with no SAN at all), or the
+ * then the subject CN (only with cert_cn_fallback on, for a cert with no
+ * SAN at all), or the
  * SAN-iPAddress for an asserted IP identity.  Returns 0 on a match; -1 on a
  * mismatch, a missing/malformed asserted identity, or an identity type we
  * cannot bind (FAIL CLOSED whenever cert_validate is on and a wire cert is
@@ -1212,8 +1215,10 @@ ikev2_wire_cert_id_ok(struct ikev2_sa *ike_sa, int i_to_r)
 			if (alt)
 				racoon_free(alt);
 		}
-		/* only use subject CN when no SAN at all */
-		if (saw_san)
+		/* subject CN only when no SAN at all AND the operator opted
+		 * in (cert_cn_fallback on; RFC 9525 removed CN-ID) */
+		if (saw_san ||
+		    ikev2_cert_cn_fallback(ike_sa->rmconf) != RCT_BOOL_ON)
 			goto mismatch;
 		alt = eay_get_x509subject_cn(cert);
 		if (alt &&

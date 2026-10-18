@@ -422,6 +422,8 @@ struct rcf_kmp {
 	 * (default) keeps the historical config-file pubkey pin unchanged. */
 	rc_type cert_validate;
 	rc_vchar_t *ca_file;
+	/* cert_cn_fallback (on|off, default off): with cert_validate on, a certificate with NO SAN at all may bind an asserted FQDN through its subject CN (legacy; RFC 9525 removed CN-ID). Off = SAN-DNS only. */
+	rc_type cert_cn_fallback;
 	/* allow_wildcard_cert (on|off, default off): with cert_validate on, a certificate SAN-DNS (or CN) of the form *.suffix may match an asserted FQDN identity with one leftmost label (RFC 6125 s6.4.3). Asserted IDs containing '*' are always refused. */
 	rc_type allow_wildcard_cert;
 	/* cert_trust_system (on|off, default off): with cert_validate on and NO ca_file, validate the peer chain against the OS default CA store. Off = cert_validate without ca_file is a config error (no implicit WebPKI trust). */

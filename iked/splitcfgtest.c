@@ -78,6 +78,73 @@ mk_addrlist(int fam, const char *addrstr, int prefixlen)
 	return al;
 }
 
+/* REVIEW_2026-10-18 M1: a self-signed RSA cert with NO SAN whose subject
+ * carries the given CN bytes (cnlen may include an embedded NUL), and a
+ * second CN when cn2 != NULL.  Returns its DER as an rc_vchar_t. */
+static rc_vchar_t *
+mkcert_cn(const char *cn, int cnlen, const char *cn2)
+{
+	EVP_PKEY_CTX *kctx;
+	EVP_PKEY *pk = NULL;
+	X509 *x = NULL;
+	X509_NAME *nm;
+	rc_vchar_t *der = NULL;
+	unsigned char *q;
+	int len;
+
+	kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+	if (!kctx || EVP_PKEY_keygen_init(kctx) <= 0 ||
+	    EVP_PKEY_CTX_set_rsa_keygen_bits(kctx, 2048) <= 0 ||
+	    EVP_PKEY_keygen(kctx, &pk) <= 0)
+		goto out;
+	x = X509_new();
+	if (!x)
+		goto out;
+	ASN1_INTEGER_set(X509_get_serialNumber(x), 7);
+	X509_gmtime_adj(X509_getm_notBefore(x), 0);
+	X509_gmtime_adj(X509_getm_notAfter(x), 3600);
+	X509_set_pubkey(x, pk);
+	nm = X509_get_subject_name(x);
+	X509_NAME_add_entry_by_NID(nm, NID_commonName, V_ASN1_UTF8STRING,
+	    (const unsigned char *)cn, cnlen, -1, 0);
+	if (cn2)
+		X509_NAME_add_entry_by_NID(nm, NID_commonName, MBSTRING_ASC,
+		    (const unsigned char *)cn2, -1, -1, 0);
+	X509_set_issuer_name(x, nm);
+	if (X509_sign(x, pk, EVP_sha256()) <= 0)
+		goto out;
+	len = i2d_X509(x, NULL);
+	if (len <= 0 || (der = rc_vmalloc((size_t)len)) == NULL)
+		goto out;
+	q = (unsigned char *)der->v;
+	i2d_X509(x, &q);
+	der->l = (size_t)len;
+out:
+	if (kctx)
+		EVP_PKEY_CTX_free(kctx);
+	if (x)
+		X509_free(x);
+	if (pk)
+		EVP_PKEY_free(pk);
+	return der;
+}
+
+/* asserted FQDN identity in the sa->id_i layout (id_h + bytes) */
+static rc_vchar_t *
+mkid_fqdn(const char *name)
+{
+	size_t n = strlen(name);
+	rc_vchar_t *v = rc_vmalloc(sizeof(struct ikev2payl_ident_h) + n);
+
+	if (!v)
+		return NULL;
+	memset(v->v, 0, sizeof(struct ikev2payl_ident_h));
+	((uint8_t *)v->v)[0] = 2;	/* IKEV2_ID_FQDN */
+	memcpy((char *)v->v + sizeof(struct ikev2payl_ident_h), name, n);
+	v->l = sizeof(struct ikev2payl_ident_h) + n;
+	return v;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -585,6 +652,78 @@ main(int argc, char *argv[])
 		if (der) rc_vfree(der);
 		if (id.id) rc_vfree(id.id);
 		if (isa.id_i) rc_vfree(isa.id_i);
+	}
+
+	/* ============ B.2f: CN fallback is opt-in and NUL-safe ============
+	 * REVIEW_2026-10-18 M1: eay_get_x509subject_cn() used
+	 * X509_NAME_get_text_by_NID, so a CN "gw.example.com\0.evil" read as
+	 * "gw.example.com" (null-prefix).  It now refuses an embedded NUL or
+	 * a second CN, and the CN fallback needs cert_cn_fallback on. */
+	{
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa isa;
+		rc_vchar_t *cplain, *cnul, *ctwo;
+		char *cn;
+		static const char nulcn[] = "gw.example.com\0.evil.test";
+
+		cplain = mkcert_cn("gw.example.com", -1, NULL);
+		cnul = mkcert_cn(nulcn, (int)sizeof(nulcn) - 1, NULL);
+		ctwo = mkcert_cn("gw.example.com", -1, "other.example.com");
+		CK(cplain && cnul && ctwo, "B.2f: test certs built");
+
+		cn = cplain ? eay_get_x509subject_cn(cplain) : NULL;
+		CK(cn && strcmp(cn, "gw.example.com") == 0,
+		   "eay_get_x509subject_cn: plain CN returned");
+		free(cn);
+		cn = cnul ? eay_get_x509subject_cn(cnul) : NULL;
+		CK(cn == NULL, "eay_get_x509subject_cn: CN with embedded NUL refused");
+		free(cn);
+		cn = ctwo ? eay_get_x509subject_cn(ctwo) : NULL;
+		CK(cn == NULL, "eay_get_x509subject_cn: two CNs (ambiguous) refused");
+		free(cn);
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		memset(&isa, 0, sizeof(isa));
+		ikm.cert_validate = RCT_BOOL_ON;
+		rm.ikev2 = &ikm;
+		isa.rmconf = &rm;
+		isa.id_i = mkid_fqdn("gw.example.com");
+		isa.id_i_type = RCT_IDT_FQDN;
+
+		isa.peer_cert = cplain;
+		ikm.cert_cn_fallback = RCT_BOOL_OFF;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "CN-only cert does NOT bind with cert_cn_fallback off (default)");
+		ikm.cert_cn_fallback = RCT_BOOL_ON;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) == 0,
+		   "CN-only cert binds with cert_cn_fallback on");
+		isa.peer_cert = cnul;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "null-prefix CN does NOT bind gw.example.com even with cert_cn_fallback on");
+		isa.peer_cert = ctwo;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "two-CN cert does NOT bind with cert_cn_fallback on");
+		/* wildcard CN follows allow_wildcard_cert like a SAN */
+		rc_vfree(isa.id_i);
+		isa.id_i = mkid_fqdn("x.example.com");
+		{
+			rc_vchar_t *cw = mkcert_cn("*.example.com", -1, NULL);
+			isa.peer_cert = cw;
+			ikm.allow_wildcard_cert = RCT_BOOL_OFF;
+			CK(cw && ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+			   "wildcard CN refused with allow_wildcard_cert off");
+			ikm.allow_wildcard_cert = RCT_BOOL_ON;
+			CK(cw && ikev2_wire_cert_id_ok(&isa, TRUE) == 0,
+			   "wildcard CN binds one label with allow_wildcard_cert on");
+			if (cw) rc_vfree(cw);
+		}
+		isa.peer_cert = NULL;
+		rc_vfree(isa.id_i);
+		if (cplain) rc_vfree(cplain);
+		if (cnul) rc_vfree(cnul);
+		if (ctwo) rc_vfree(ctwo);
 	}
 
 	/* ============ B.2e: embedded-NUL SAN must not CN-fallback =====
