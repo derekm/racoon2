@@ -7,4 +7,3 @@
 # row-regex (full match)	check	value	why
 #   check: icv | traffic | safail  (value: 1)
 #          stat  (value: Counter=N[,Counter=N]  -- may rise by at most N)
-i2ike-redirect2	traffic	1	RFC 5685 two-gateway redirect row: the child's SAs are keyed to the LIVE sibling C but there is NO SPD policy row — spmd_pfkey.c refuses a tunnel-policy install when my_sa_ipaddr is absent ('No my_sa_ipaddr'), the same unpin that lets ike_determine_sa_endpoint follow the redirect.  Without an SPD row the harness's xa_probe never fires, so nothing moves data at row end by design.  The row's proof is the failover LANDING: initiator wire re-target to the LIVE sibling C + C and I both holding keyed ESP child SAs (esp>=2) while draining A stays at 0.  Data-plane traversal is explicitly out of scope for this landing row.
