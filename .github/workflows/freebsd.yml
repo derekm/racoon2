@@ -47,6 +47,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Dispatcher rows equal the manifest (before the VM)
+        run: sh samples/freebsd-ci/check-manifest.sh
+
       - name: Build and test on FreeBSD 15.1 (shard)
         uses: vmactions/freebsd-vm@v1
         with:
@@ -187,6 +190,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Dispatcher rows equal the manifest (before the 16.0 VM)
+        run: sh samples/freebsd-ci/check-manifest.sh
 
       - name: Build + vnet matrix shard on FreeBSD 16.0-CURRENT (official snapshot, QEMU+KVM)
         run: bash samples/freebsd-ci/freebsd-16-current-ci.sh --shard ${{ matrix.shard }} 3
