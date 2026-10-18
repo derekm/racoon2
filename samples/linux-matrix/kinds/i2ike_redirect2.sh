@@ -196,14 +196,15 @@ EOF
 			grep -q "redirect loop limit exceeded" "$D/i-iked.log" 2>/dev/null && { lim=1; break; }
 			i=$((i+1)); sleep 1
 		done
-		nC=$(grep -cE "${CID}\[500\].*INI_IKE_SA_INIT_SENT" "$D/i-iked.log" 2>/dev/null)
-		nA=$(grep -cE "${HR}\[500\].*INI_IKE_SA_INIT_SENT" "$D/i-iked.log" 2>/dev/null)
+		nC=$(grep -cE "${CID}\[500\].*-> INI_IKE_SA_INIT_SENT" "$D/i-iked.log" 2>/dev/null)
+		nA=$(grep -cE "${HR}\[500\].*-> INI_IKE_SA_INIT_SENT" "$D/i-iked.log" 2>/dev/null)
 		ae=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		ce=$(ip netns exec "$NSC" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		log "redirect-loop: limit_log=$lim retargets C=$nC A=$nA esp A=$ae C=$ce"
 		[ "$lim" -eq 1 ] || { log "FAIL: initiator never logged the RFC 5685 s7 redirect loop limit"; _rc=1; }
-		{ [ "${nC:-0}" -ge 3 ] && [ "${nA:-0}" -ge 3 ]; } || { log "FAIL: the A<->C redirect loop was not actually exercised"; _rc=1; }
-		[ $(( ${nC:-0} + ${nA:-0} )) -le 7 ] || { log "FAIL: initiator followed more than redirect_max redirects (C=$nC A=$nA)"; _rc=1; }
+		# exactly 1 initial send (to A) + redirect_max (5) follows
+		# alternating C,A,C,A,C: A=3, C=3.
+		{ [ "${nC:-0}" -eq 3 ] && [ "${nA:-0}" -eq 3 ]; } || { log "FAIL: expected exactly 1 + 5 IKE_SA_INIT sends (A=3 C=3), got A=$nA C=$nC"; _rc=1; }
 		{ [ "${ae:-0}" -eq 0 ] && [ "${ce:-0}" -eq 0 ]; } || { log "FAIL: an SA was installed during a redirect loop"; _rc=1; }
 		kill "$ASPMD" "$ISPMD" "$CSPMD" 2>/dev/null || true
 		pkill -9 -f "$C/" 2>/dev/null || true
