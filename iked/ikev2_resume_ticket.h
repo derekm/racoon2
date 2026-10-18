@@ -34,6 +34,7 @@ struct r2ticket_state {
 	rc_vchar_t	*idi;		/* IDi payload data */
 	rc_vchar_t	*idr;		/* IDr payload data */
 	rc_vchar_t	*sk_d;		/* OLD SK_d */
+	uint32_t	cert_due;	/* cert notAfter unix time, 0 if none */
 };
 
 /* Create a ticket under tkey (32-octet AES-256).  Returns fresh opaque
@@ -120,11 +121,17 @@ void r2ticket_store_clear(const char *dir, const char *key);
  * opaque ticket and returns 0 on first use, 1 when the ticket was seen
  * before, -1 when every slot holds an unexpired ticket (fail closed: the
  * caller NACKs, the client falls back to a full exchange).  The cache does
- * not survive an iked restart; rotate session_resume_ticket_key across
- * restarts when replay after restart matters. */
+ * does not survive an iked restart unless r2ticket_replay_bind_key() has
+ * pointed the cache at a directory (beside the ticket key).  That
+ * directory is the cluster single-use set: two ikeds that load the same
+ * key file share it.  r2ticket_replay_reset() clears memory only. */
 #define R2TICK_REPLAY_SLOTS	4096
 int r2ticket_replay_mark(const rc_vchar_t *ticket, uint32_t expires_at,
     uint32_t now);
 void r2ticket_replay_reset(void);
+void r2ticket_replay_set_dir(const char *dir);
+void r2ticket_replay_bind_key(const char *keypath);
+/* reap expired marks + orphaned temp/short files; files removed or -1 */
+int r2ticket_replay_sweep(uint32_t now);
 
 #endif /* IKEV2_RESUME_TICKET_H */

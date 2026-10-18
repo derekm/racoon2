@@ -300,6 +300,10 @@ ikev2_move_sa_impl(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 
 	ike_sa->remote = rcs_sadup(remote);
 	ike_sa->local = rcs_sadup(local);
+	/* Migrate before freeing old_r: the ticket store key is the peer
+	 * address bytes. */
+	if (old_r && ike_sa->is_initiator)
+		(void)ike_msg_resume_store_migrate(old_r, remote);
 	if (old_r)
 		rc_free(old_r);
 	if (old_l)
@@ -327,6 +331,9 @@ ikev2_move_sa_impl(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 	/* RFC 4555 §3.8: the next binding report must describe the
 	 * address we just moved to, not the INIT pins. */
 	ikev2_sa_repin_natd(ike_sa);
+	/* Crash dump of the new endpoints otherwise waits for the next
+	 * message-id advance. */
+	ike_sa->resume_dirty = 1;
 	isakmp_log(ike_sa, local, remote, 0, PLOG_INFO, PLOGLOC,
 		   "MOBIKE binding report re-pinned\n");
 	return 0;

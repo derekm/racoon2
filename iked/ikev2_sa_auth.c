@@ -3101,6 +3101,12 @@ initiator_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	 * from-ticket state now that the initial IKE_AUTH has succeeded, so
 	 * a later establish to this peer can resume via exchange 38. */
 	ike_msg_resume_store_save_from_sa(ike_sa);
+	/* NACK fallback kept the refused ticket so a redirect could ferry
+	 * it.  This full exchange did not redirect.  If the peer issued a
+	 * new ticket, save_from_sa overwrote the file.  If it issued none,
+	 * drop the refused one so the next SA does not present it again. */
+	if (ike_sa->resume_declined && !ike_sa->resume_ticket)
+		ike_msg_resume_store_drop(ike_sa);
 
 	/* RFC 6023: the child held back from the modified IKE_AUTH is now
 	 * negotiated with CREATE_CHILD_SA; give it a CREATE_CHILD proposal */

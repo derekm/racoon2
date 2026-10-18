@@ -1670,22 +1670,19 @@ ikev2_initiator_redirect_follow(struct ikev2_sa *ike_sa, struct sockaddr *remote
 	 * sibling (ike_sa->remote) so a carried ticket COULD be honoured at C
 	 * under the shared cluster key.
 	 *
-	 * NOTE this cannot fire today: RFC 5685 N(REDIRECT) only appears in an
-	 * IKE_SA_INIT response, and ikev2_initiator_start diverts to exchange
-	 * 38 before ever sending IKE_SA_INIT whenever a live unexpired ticket
-	 * exists for the peer.  So a live ticket for A sends a RESUME to A (no
-	 * IKE_SA_INIT, no redirect, migrate never runs), and reaching
-	 * IKE_SA_INIT requires an empty/expired store (migrate no-ops) or
-	 * resume_declined (still blocks at C).  The migrate call is therefore
-	 * a correct no-op on every reachable path today; making resume-on-
-	 * sibling actually reachable needs a mechanism that keeps the A ticket
-	 * live while STILL forcing the client through a fresh IKE_SA_INIT to A
-	 * (e.g. a drain-time ferry that issues a C-portable ticket instead of
-	 * NACKing, and clearing resume_declined on a redirect retarget). */
+	 * A live ticket diverts ikev2_initiator_start to exchange 38, so this
+	 * path is reached only after a TICKET_NACK fallback (resume_declined)
+	 * or an empty store.  The NACK path keeps the ticket on disk.  Migrate
+	 * it onto the sibling's address-key, then CLEAR resume_declined so
+	 * the sibling present is not blocked by the refusal we just left. */
 	if (ike_msg_resume_store_migrate(remote, ike_sa->remote))
 		TRACE((PLOGLOC, "RFC5685: carried resume ticket to "
-		       "redirected gw (defensive; resume-on-sibling needs the "
-		       "live two-gateway flow)\n"));
+		       "redirected gw\n"));
+	if (ike_sa->resume_declined)
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		    "RFC 5685: redirect ferry; resume_declined cleared "
+		    "so the sibling can be presented the kept ticket\n");
+	ike_sa->resume_declined = 0;
 	ikev2_initiator_start(ike_sa);
 	return 0;
 }

@@ -264,12 +264,14 @@ EOF
 		# a session back onto the node being drained (that would defeat
 		# the drain).  The refusal (NACK) forces the initiator to fall
 		# back to a fresh IKE_SA_INIT, which the draining node then
-		# answers N(REDIRECT) to a sibling.  Here (2-seat, no sibling)
-		# we gate on: the drain-NACK was SENT, the resume was NOT
-		# accepted, and the initiator dropped the ticket + began the
-		# full-exchange fallback.  The drain-sa goes to a non-reachable
-		# gw (no sibling in this 2-seat row); the point is the refusal,
-		# not landing the redirected re-init.
+		# answers N(REDIRECT).  The initiator KEEPS the ticket so the
+		# redirect-follow can migrate it onto the sibling.  Here
+		# (2-seat, unreachable sibling) we gate on: the drain-NACK
+		# was SENT, the resume was NOT accepted, and the initiator
+		# began the full-exchange fallback without deleting the
+		# ticket.  Landing the ticket on a live sibling is the ferry
+		# path (resume_declined cleared on retarget); this row does
+		# not provide that sibling.
 		"$SBIN/ikedctl" -s "$SOCK_R" drain-sa "$HI" 192.0.99.7 >/dev/null 2>&1 || true
 		log "i2iresume-drain: set drain-sa $HI -> 192.0.99.7 on responder before pass 2"
 		;;
@@ -353,7 +355,7 @@ EOF
 	*-nack)
 		nack_rcvd=$(grep -c 'received N(TICKET_NACK) in IKE_SESSION_RESUME response' \
 			"$D/init2-iked.log" 2>/dev/null || true)
-		fellback=$(grep -c 'ticket refused (TICKET_NACK); dropped stored ticket, falling back to a full IKE_SA_INIT' \
+		fellback=$(grep -c 'ticket refused (TICKET_NACK); kept stored ticket for redirect ferry, falling back to a full IKE_SA_INIT' \
 			"$D/init2-iked.log" 2>/dev/null || true)
 		kfail=$(grep -c 'ticket validation failed' "$D/resp-iked.log" 2>/dev/null || true)
 		# the full exchange re-ran on the initiator: an IKE_SA_INIT
@@ -377,7 +379,7 @@ EOF
 			"$D/resp-iked.log" 2>/dev/null || true)
 		nack_rcvd=$(grep -c 'received N(TICKET_NACK) in IKE_SESSION_RESUME response' \
 			"$D/init2-iked.log" 2>/dev/null || true)
-		fellback=$(grep -c 'ticket refused (TICKET_NACK); dropped stored ticket, falling back to a full IKE_SA_INIT' \
+		fellback=$(grep -c 'ticket refused (TICKET_NACK); kept stored ticket for redirect ferry, falling back to a full IKE_SA_INIT' \
 			"$D/init2-iked.log" 2>/dev/null || true)
 		full=$(grep -c 'INI_IKE_SA_INIT_SENT -> ' "$D/init2-iked.log" 2>/dev/null || true)
 		# Assert the redirect itself, not just
@@ -395,10 +397,10 @@ EOF
 			"$D/init2-iked.log" 2>/dev/null || true)
 		log "i2iresume-drain gates: up1=$up1 minted=$minted drain_nack=$drain_nack nack_rcvd=$nack_rcvd fellback=$fellback full=$full accepted=$accepted presented=$presented redir_tx=$redir_tx retarget=$retarget carried=$carried"
 		# The drained responder MUST refuse the ticketed resume (drain_nack)
-		# and NOT accept it; the initiator must receive the NACK, drop the
-		# stored ticket and begin the full-exchange fallback.  (up2 is not
-		# required: the drain redirects the fallback IKE_SA_INIT to a
-		# sibling that this 2-seat row does not provide.)
+		# and NOT accept it; the initiator must receive the NACK and
+		# begin the full-exchange fallback while keeping the ticket.
+		# (up2 is not required: the drain redirects the fallback
+		# IKE_SA_INIT to a sibling this 2-seat row does not provide.)
 		if [ "$up1" -eq 1 ] && [ "${minted:-0}" -ge 1 ] \
 		   && [ "${drain_nack:-0}" -ge 1 ] && [ "${nack_rcvd:-0}" -ge 1 ] \
 		   && [ "${fellback:-0}" -ge 1 ] && [ "${full:-0}" -ge 1 ] \
