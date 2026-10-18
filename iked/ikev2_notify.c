@@ -146,6 +146,14 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		TRACE((PLOGLOC, "peer supports redirection (REDIRECT_SUPPORTED "
 			"16406)\n"));
 		break;
+	case IKEV2_REDIRECT_FROM:
+		/* RFC 5685 s3/s9.3 (REVIEW M3): an initiator that was
+		 * redirected sends REDIRECTED_FROM instead of
+		 * REDIRECT_SUPPORTED; it is equally a support signal. */
+		ike_sa->peer_sent_redirect = 1;
+		TRACE((PLOGLOC, "peer supports redirection (REDIRECTED_FROM "
+			"16408)\n"));
+		break;
 	case IKEV2_USE_PPK:
 		/* RFC 8784 s2.2: the PEER (or, for the initiator view, the
 		 * responder's echo of) N(USE_PPK).  The responder decides to echo
