@@ -83,10 +83,16 @@ jobs:
       - name: Run the test matrix shard (xfrm backend)
         run: |
           set -o pipefail
-          CASES=${{ inputs.cases }}
-          ARGS="--src $GITHUB_WORKSPACE --shard ${{ matrix.shard }} 3"
-          [ -z "$CASES" ] || ARGS="$ARGS --cases $CASES"
-          sudo -E bash samples/linux-matrix/run.sh $ARGS | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+          CASES="${{ inputs.cases }}"
+          if [ -n "$CASES" ]; then
+            sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+              --shard ${{ matrix.shard }} 3 --cases "$CASES" \
+              | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+          else
+            sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+              --shard ${{ matrix.shard }} 3 \
+              | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+          fi
         env:
           R2_PREFIX: /usr/local/racoon2
           # any skip not expected by lanes/ubuntu.skip fails; a shard with
@@ -316,10 +322,16 @@ jobs:
           export I2I_SWANCTL_BIN=$(command -v swanctl || echo /usr/sbin/swanctl)
           "$I2I_SWANCTL_BIN" --version || true
           set -o pipefail
-          CASES=${{ inputs.cases }}
-          ARGS="--src $GITHUB_WORKSPACE --shard ${{ matrix.shard }} 3"
-          [ -z "$CASES" ] || ARGS="$ARGS --cases $CASES"
-          bash samples/linux-matrix/run.sh $ARGS | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+          CASES="${{ inputs.cases }}"
+          if [ -n "$CASES" ]; then
+            bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+              --shard ${{ matrix.shard }} 3 --cases "$CASES" \
+              | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+          else
+            bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+              --shard ${{ matrix.shard }} 3 \
+              | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+          fi
         env:
           R2_PREFIX: /usr/local/racoon2
           R2_REQUIRE_LIVE: 1

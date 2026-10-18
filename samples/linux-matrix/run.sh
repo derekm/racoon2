@@ -105,6 +105,17 @@ if [ -n "${SHARD_M:-}" ] && [ "${SHARD_K:-0}" -ge "$SHARD_M" ]; then
 	echo "error: --shard $SHARD_K $SHARD_M is an EMPTY shard (0 <= K < M required); use --shard 0 1 for a single full run" >&2
 	exit 2
 fi
+# An unanchored --cases can match a typo'd subset and still look green.
+# The warmup 'a^' is the one intentional unanchored pattern, and it does
+# not set R2_REQUIRE_LIVE.  '.*' is the documented all-rows filter
+# (run-shards.sh).  Any other live-lane filter must be anchored.
+if [ -n "$FILTER" ] && [ "$FILTER" != '.*' ] && [ "${R2_REQUIRE_LIVE:-0}" = 1 ]; then
+	case $FILTER in
+	^*) ;;
+	*) echo "error: --cases must be anchored (^...) when R2_REQUIRE_LIVE=1 (got: $FILTER)" >&2
+	   exit 2 ;;
+	esac
+fi
 export R2_SRC PREFIX ETC SBIN
 
 # RFC 9370 ADDKE availability gate (env/configure-specific).
@@ -307,8 +318,8 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 			log "XPASS $name (declared defect /$defect/ is gone: change expect to pass)"
 			log "FAIL $name"
 			fail=$((fail + 1)); xpass=$((xpass + 1))
-		elif grep -Eq -- "$defect" "$ROW_OUT"; then
-			log "XFAIL $name (known defect at its exact value: $(grep -Eo -- "$defect" "$ROW_OUT" | head -1))"
+		elif grep -E -- "$defect" "$ROW_OUT" | grep -Eq ' FAIL |^FAIL '; then
+			log "XFAIL $name (known defect at its exact value: $(grep -E -- "$defect" "$ROW_OUT" | grep -E ' FAIL |^FAIL ' | head -1))"
 			xfail=$((xfail + 1))
 		else
 			log "FAIL $name (xfail row failed WITHOUT its declared defect /$defect/)"

@@ -1,8 +1,10 @@
 # name	kind	expect	workers	note	gate	defect
 # expect: pass | skip | xfail
 #   xfail: a KNOWN defect, excused only at its exact wrong value: column 7
-#   is an ERE that must match the row's output (e.g. 'hmac\(sha256\) 96
-#   \(want 128\)').  If the row passes it is XPASS and FAILS, so a fix
+#   is an ERE matched only against a failure-verdict line (a line matching
+#   ' FAIL ' or '^FAIL '), not against arbitrary log noise.  A regex that
+#   hits only a debug line does not excuse a different failure.
+#   If the row passes it is XPASS and FAILS, so a fix
 #   forces the row back to "pass" (run.sh usage).  No waivers: rows are
 #   pass, xfail-at-exact-value, or a gate listed in the lane manifest
 #   (an xfail row with no gate writes "-" in the gate column: empty tab
