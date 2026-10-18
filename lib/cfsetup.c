@@ -233,6 +233,7 @@ static int rcf_fix_pre_shared_key (struct cf_list *, void *);
 static int rcf_fix_redirect_to (struct cf_list *, void *);
 static int rcf_fix_cert_validate (struct cf_list *, void *);
 static int rcf_fix_ca_file (struct cf_list *, void *);
+static int rcf_fix_accept_redirect (struct cf_list *, void *);
 static int rcf_fix_cert_cn_fallback (struct cf_list *, void *);
 static int rcf_fix_allow_wildcard_cert (struct cf_list *, void *);
 static int rcf_fix_cert_trust_system (struct cf_list *, void *);
@@ -366,6 +367,7 @@ struct rcf_tdf_t {
 	{ CFD_VERIFY_ID,		rcf_fix_verify_id, },
 	{ CFD_CERT_VALIDATE,		rcf_fix_cert_validate, },
 	{ CFD_CA_FILE,			rcf_fix_ca_file, },
+	{ CFD_ACCEPT_REDIRECT,		rcf_fix_accept_redirect, },
 	{ CFD_CERT_CN_FALLBACK,		rcf_fix_cert_cn_fallback, },
 	{ CFD_ALLOW_WILDCARD_CERT,		rcf_fix_allow_wildcard_cert, },
 	{ CFD_CERT_TRUST_SYSTEM,		rcf_fix_cert_trust_system, },
@@ -1979,6 +1981,19 @@ rcf_fix_cert_cn_fallback(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_CERT_CN_FALLBACK))
 		return -1;
 	if (rcf_fix_boolean(head->nextp, &dst->cert_cn_fallback))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_accept_redirect(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ACCEPT_REDIRECT))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->accept_redirect))
 		return -1;
 
 	return 0;
@@ -3673,6 +3688,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	 * the default OFF and the wire chain is never validated. */
 	new->cert_validate = src->cert_validate;
 	DEEPCOPY_VDUP(src->ca_file, new->ca_file);
+	new->accept_redirect = src->accept_redirect;
 	new->cert_cn_fallback = src->cert_cn_fallback;
 	new->allow_wildcard_cert = src->allow_wildcard_cert;
 	new->cert_trust_system = src->cert_trust_system;

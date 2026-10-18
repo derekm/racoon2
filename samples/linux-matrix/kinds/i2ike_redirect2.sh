@@ -115,7 +115,7 @@ interface { ike { "$HI"; }; spmd { unix "$SPMIF_I"; }; spmd_password "$ETC/spmd.
 resolver { resolver off; };
 remote i_init {
 	acceptable_kmp { ikev2; };
-	ikev2 { passive off; my_id fqdn "ic2"; peers_id fqdn "afront"; peers_ipaddr "$HR";
+	ikev2 { passive off; accept_redirect on; my_id fqdn "ic2"; peers_id fqdn "afront"; peers_ipaddr "$HR";
 		kmp_enc_alg { aes256_cbc; }; kmp_prf_alg { hmac_sha2_256; }; kmp_hash_alg { hmac_sha2_256; };
 		kmp_dh_group { ecp256; }; kmp_auth_method { psk; }; pre_shared_key "$C/psk/macos.psk"; dpd_delay 300 sec; };
 	selector_index sel_in; };

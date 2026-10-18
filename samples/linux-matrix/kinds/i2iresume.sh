@@ -61,6 +61,10 @@ kind_i2iresume() {
 
 	row_ns "$name"
 	HR=192.0.7.1; HI=192.0.7.2
+	# the -drain variant follows the responder's N(REDIRECT): explicit
+	# opt-in on the initiator (accept_redirect, default off)
+	I_REDIR=
+	case "$name" in *-drain) I_REDIR='accept_redirect on;' ;; esac
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 	# ticket store dirs (initiator store + responder legacy crash dir)
 	TKSTORE="$C/tickets"; mkdir -p "$TKSTORE"
@@ -136,6 +140,7 @@ remote matrix_init {
 	acceptable_kmp { ikev2; };
 	ikev2 {
 		passive off;
+		$I_REDIR
 		my_id fqdn "racoon2-si";
 		peers_id fqdn "racoon2-sr";
 		peers_ipaddr "$HR";

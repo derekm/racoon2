@@ -314,11 +314,16 @@ initiator_start_after_gen(int rc, void *arg)
 	 * (same class as FRAGMENTATION_SUPPORTED above): it changes nothing
 	 * for a normal negotiation — the responder only answers REDIRECT
 	 * when ITS local policy (redirect_to / drain) says to. */
-	ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
-			    ikev2_notify_payload(0, 0, 0,
+	/* Opt-in only (accept_redirect on): an IKE_SA_INIT REDIRECT is
+	 * unauthenticated, so being steered to another gateway is an
+	 * explicit operator decision.  After a redirect, REDIRECTED_FROM
+	 * below is the support signal (s3) and 16406 is still sent. */
+	if (ikev2_accept_redirect(ike_sa->rmconf) == RCT_BOOL_ON)
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
 						 IKEV2_REDIRECT_SUPPORTED,
 						 0, 0),
-			    TRUE);
+				    TRUE);
 #ifdef WITH_INTERMEDIATE
 	/* RFC 9242: offer the IKE_INTERMEDIATE exchange capability (the 16438
 	 * notify).  Gated by the remote's 'offer_intermediate' config (default

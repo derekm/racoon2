@@ -42,6 +42,12 @@ kind_i2ike_drain() {
 	# for this row — it may fail to connect, which is fine and expected).
 	# What we prove is the responder's decision + established-SA teardown.
 	DGW=192.0.99.7
+	# -noaccept variant (REVIEW_2026-10-18 M3): the initiator leaves
+	# accept_redirect at its default (off), so it must NOT advertise
+	# REDIRECT_SUPPORTED, the drained responder must drop (not redirect)
+	# its IKE_SA_INIT, and it must never re-target to $DGW.
+	I_REDIR='accept_redirect on;'; NOACC=0
+	case "$name" in *-noaccept) I_REDIR=; NOACC=1 ;; esac
 
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 	mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C/psk"
@@ -68,7 +74,7 @@ interface { ike { "$HI"; }; spmd { unix "$SPMIF_I"; }; spmd_password "$ETC/spmd.
 resolver { resolver off; };
 remote drain_init {
 	acceptable_kmp { ikev2; };
-	ikev2 { passive off; my_id fqdn "idrain"; peers_id fqdn "rdrain"; peers_ipaddr "$HR";
+	ikev2 { passive off; $I_REDIR my_id fqdn "idrain"; peers_id fqdn "rdrain"; peers_ipaddr "$HR";
 		kmp_enc_alg { aes256_cbc; }; kmp_prf_alg { hmac_sha2_256; }; kmp_hash_alg { hmac_sha2_256; };
 		kmp_dh_group { ecp256; }; kmp_auth_method { psk; }; pre_shared_key "$C/psk/macos.psk"; dpd_delay 300 sec; };
 	selector_index sel_in; };
@@ -110,7 +116,7 @@ EOF
 	RSPMD=$!
 	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
-	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0001 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
+	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0003 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 
 	( ip netns exec "$NSI" "$SBIN/spmd" -F -f "$C/initiator.conf" ) >"$D/init-spmd.log" 2>&1 &
 	ISPMD=$!
@@ -199,6 +205,24 @@ EOF
 		i=$((i+1)); sleep 1
 	done
 	R_ESP2=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+	if [ "$NOACC" = 1 ]; then
+		_rc=0
+		[ "$followed" -eq 0 ] || { log "FAIL: accept_redirect off but the initiator re-targeted to $DGW"; _rc=1; }
+		grep -q "drained peer did not offer REDIRECT_SUPPORTED" "$D/resp-iked.log" 2>/dev/null \
+			|| { log "FAIL: drained responder did not log the no-16406 drop"; _rc=1; }
+		grep -q "peer supports redirection (REDIRECT_SUPPORTED" "$D/resp-iked.log" 2>/dev/null \
+			&& { log "FAIL: initiator advertised REDIRECT_SUPPORTED with accept_redirect off"; _rc=1; }
+		[ "$R_ESP2" -eq 0 ] || { log "FAIL: drained peer re-established against draining node (R esp=$R_ESP2)"; _rc=1; }
+		kill "$RSPMD" "$ISPMD" 2>/dev/null || true
+		pkill -9 -f "$C/" 2>/dev/null || true
+		for NS in "$NSR" "$NSI"; do ip netns del "$NS" 2>/dev/null || true; done
+		[ "$_rc" -eq 0 ] && log "drain -noaccept OK: no 16406 offered, drained responder dropped the IKE_SA_INIT, no re-target"
+		return $_rc
+	fi
+	# the responder TRACE (-D 0x0003) proves the initiator advertised 16406
+	# (accept_redirect on); the -noaccept variant asserts its absence.
+	grep -q "peer supports redirection (REDIRECT_SUPPORTED" "$D/resp-iked.log" 2>/dev/null \
+		|| { log "FAIL: initiator with accept_redirect on did not advertise REDIRECT_SUPPORTED"; return 1; }
 	[ "$followed" -eq 1 ] || { log "FAIL: drained peer's new IKE_SA_INIT was not answered REDIRECT to $DGW (initiator never re-targeted to drain gw)"; return 1; }
 	[ "$R_ESP2" -eq 0 ] || { log "FAIL: drained peer re-established against draining node (R esp=$R_ESP2)"; return 1; }
 
