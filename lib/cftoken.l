@@ -394,6 +394,8 @@ pre_shared_key		{ DP; return(PRE_SHARED_KEY); }
 redirect_to		{ DP; return(REDIRECT_TO); }
 cert_validate		{ DP; return(CERT_VALIDATE); }
 ca_file			{ DP; return(CA_FILE); }
+redirect_period		{ DP; return(REDIRECT_PERIOD); }
+redirect_max		{ DP; return(REDIRECT_MAX); }
 accept_redirect		{ DP; return(ACCEPT_REDIRECT); }
 cert_cn_fallback		{ DP; return(CERT_CN_FALLBACK); }
 allow_wildcard_cert		{ DP; return(ALLOW_WILDCARD_CERT); }

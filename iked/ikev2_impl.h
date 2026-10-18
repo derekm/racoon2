@@ -375,6 +375,9 @@ struct ikev2_sa {
 					 * responder's N(REDIRECT) */
 	rc_vchar_t *redirect_ni;	/* the echoed Ni verbatim from the
 					 * N(REDIRECT), matching ike_sa->n_i */
+	int redirect_count;		/* RFC 5685 s7: redirects followed in
+					 * the current loop-detect window */
+	time_t redirect_window;		/* start of that window */
 	int redirect_follow;		/* RFC 5685 initiator: a verified
 					 * redirect was received and the
 					 * IKE_SA_INIT is being re-run against

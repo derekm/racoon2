@@ -71,6 +71,11 @@ kind_i2ike_redirect2() {
 	PRIVRES_A="/tmp/r2-${name}-resume-a"; PRIVRES_I="/tmp/r2-${name}-resume-i"; PRIVRES_C="/tmp/r2-${name}-resume-c"
 	D="/tmp/r2-${name}"; C="/tmp/r2-${name}-conf"
 	DGW=$CID
+	# -loop variant (REVIEW_2026-10-18 M2): A statically redirects to C and
+	# C back to A; the initiator must stop after redirect_max (default 5,
+	# RFC 5685 s7 MAX_REDIRECTS) follows within redirect_period (300 s).
+	A_RT=; C_RT=; LOOP=0
+	case "$name" in *-loop) A_RT="redirect_to \"$CID\";"; C_RT="redirect_to \"$HR\";"; LOOP=1 ;; esac
 
 	rm -rf "$PRIVRES_A" "$PRIVRES_I" "$PRIVRES_C" "$D" "$C"
 	mkdir -p "$PRIVRES_A" "$PRIVRES_I" "$PRIVRES_C" "$D" "$C/psk"
@@ -83,7 +88,7 @@ interface { ike { "$HR"; }; spmd { unix "$SPMIF_A"; }; spmd_password "$ETC/spmd.
 resolver { resolver off; };
 remote a_resp {
 acceptable_kmp { ikev2; };
-ikev2 { passive on; my_id fqdn "afront"; peers_id fqdn "ic2"; peers_ipaddr "$HI";
+ikev2 { passive on; $A_RT my_id fqdn "afront"; peers_id fqdn "ic2"; peers_ipaddr "$HI";
 	kmp_enc_alg { aes256_cbc; }; kmp_prf_alg { hmac_sha2_256; }; kmp_hash_alg { hmac_sha2_256; };
 	kmp_dh_group { ecp256; }; kmp_auth_method { psk; }; pre_shared_key "$C/psk/macos.psk"; dpd_delay 300 sec; };
 selector_index sel_in; };
@@ -99,7 +104,7 @@ interface { ike { "$CID"; }; spmd { unix "$SPMIF_C"; }; spmd_password "$ETC/spmd
 resolver { resolver off; };
 remote c_resp {
 	acceptable_kmp { ikev2; };
-	ikev2 { passive on; my_id fqdn "afront"; peers_id fqdn "ic2"; peers_ipaddr "$HI";
+	ikev2 { passive on; $C_RT my_id fqdn "afront"; peers_id fqdn "ic2"; peers_ipaddr "$HI";
 		kmp_enc_alg { aes256_cbc; }; kmp_prf_alg { hmac_sha2_256; }; kmp_hash_alg { hmac_sha2_256; };
 		kmp_dh_group { ecp256; }; kmp_auth_method { psk; }; pre_shared_key "$C/psk/macos.psk"; dpd_delay 300 sec; };
 	selector_index sel_in; };
@@ -183,6 +188,28 @@ EOF
 
 	sleep 2
 	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+
+	if [ "$LOOP" = 1 ]; then
+		_rc=0; i=0; lim=0
+		[ -f "$D/i-iked.log" ] || touch "$D/i-iked.log"
+		while [ "$i" -lt 40 ]; do
+			grep -q "redirect loop limit exceeded" "$D/i-iked.log" 2>/dev/null && { lim=1; break; }
+			i=$((i+1)); sleep 1
+		done
+		nC=$(grep -cE "${CID}\[500\].*INI_IKE_SA_INIT_SENT" "$D/i-iked.log" 2>/dev/null)
+		nA=$(grep -cE "${HR}\[500\].*INI_IKE_SA_INIT_SENT" "$D/i-iked.log" 2>/dev/null)
+		ae=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+		ce=$(ip netns exec "$NSC" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+		log "redirect-loop: limit_log=$lim retargets C=$nC A=$nA esp A=$ae C=$ce"
+		[ "$lim" -eq 1 ] || { log "FAIL: initiator never logged the RFC 5685 s7 redirect loop limit"; _rc=1; }
+		{ [ "${nC:-0}" -ge 3 ] && [ "${nA:-0}" -ge 3 ]; } || { log "FAIL: the A<->C redirect loop was not actually exercised"; _rc=1; }
+		[ $(( ${nC:-0} + ${nA:-0} )) -le 7 ] || { log "FAIL: initiator followed more than redirect_max redirects (C=$nC A=$nA)"; _rc=1; }
+		{ [ "${ae:-0}" -eq 0 ] && [ "${ce:-0}" -eq 0 ]; } || { log "FAIL: an SA was installed during a redirect loop"; _rc=1; }
+		kill "$ASPMD" "$ISPMD" "$CSPMD" 2>/dev/null || true
+		pkill -9 -f "$C/" 2>/dev/null || true
+		for NS in "$NSR" "$NSI" "$NSC" "$NBH"; do ip netns del "$NS" 2>/dev/null || true; done
+		return $_rc
+	fi
 
 	up=0; i=0
 	while [ "$i" -lt 45 ]; do

@@ -93,6 +93,11 @@ int ikev2_parse_redirect_notify_data(rc_vchar_t *, uint8_t *, rc_vchar_t **,
  * initiator sends in its re-sent IKE_SA_INIT to the new gateway,
  * carrying the ORIGINAL (redirecting) gateway's identity. */
 rc_vchar_t *ikev2_build_redirected_from_data(uint8_t, rc_vchar_t *);
+/* RFC 5685 s7 redirect-loop limit: returns 0 when one more redirect may
+ * be followed (and counts it), -1 when more than max redirects arrived
+ * within period seconds of the window start. */
+int ikev2_redirect_loop_check(int *count, time_t *window, time_t now,
+			      int max, int period);
 /* RFC 5685 redirect follow: resolve a recorded redirect target into a
  * struct sockaddr (IPv4/IPv6 literal) for re-initiation.  Returns NULL
  * for FQDN (no resolver at this layer) or a malformed identity. */

@@ -1565,6 +1565,20 @@ ikev2_initiator_redirect_follow(struct ikev2_sa *ike_sa, struct sockaddr *remote
 	 * verified redirect). */
 	ike_sa->redirect_rx = 0;
 
+	/* RFC 5685 s7 (REVIEW_2026-10-18 M2): bound redirect loops. */
+	if (ikev2_redirect_loop_check(&ike_sa->redirect_count,
+	    &ike_sa->redirect_window, time(NULL),
+	    ike_sa->rmconf ? ikev2_redirect_max(ike_sa->rmconf) : 5,
+	    ike_sa->rmconf ? ikev2_redirect_period(ike_sa->rmconf) : 300)
+	    != 0) {
+		isakmp_log(ike_sa, 0, remote, 0, PLOG_PROTOWARN, PLOGLOC,
+			   "RFC5685 s7: redirect loop limit exceeded "
+			   "(%d redirects within %d s), not following\n",
+			   ike_sa->redirect_count, ike_sa->rmconf ?
+			   ikev2_redirect_period(ike_sa->rmconf) : 300);
+		return -1;
+	}
+
 	/* Capture the ORIGINAL (redirecting) gateway identity from the peer
 	 * we first tried (`remote`) for the REDIRECTED_FROM notify. */
 	switch (remote->sa_family) {

@@ -422,6 +422,10 @@ struct rcf_kmp {
 	 * (default) keeps the historical config-file pubkey pin unchanged. */
 	rc_type cert_validate;
 	rc_vchar_t *ca_file;
+	/* RFC 5685 s7 REDIRECT_LOOP_DETECT_PERIOD (s) */
+	int redirect_period;
+	/* RFC 5685 s7 MAX_REDIRECTS */
+	int redirect_max;
 	/* accept_redirect (on|off, default off): RFC 5685 initiator. On = advertise REDIRECT_SUPPORTED (16406) in IKE_SA_INIT and follow a verified N(REDIRECT). Off = do not advertise; an N(REDIRECT) is refused. */
 	rc_type accept_redirect;
 	/* cert_cn_fallback (on|off, default off): with cert_validate on, a certificate with NO SAN at all may bind an asserted FQDN through its subject CN (legacy; RFC 9525 removed CN-ID). Off = SAN-DNS only. */
