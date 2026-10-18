@@ -101,16 +101,13 @@ test_keys(void)
 	rc_vfree(v);
 	CHECK(k.len == 0 && r2rs_key_to_vchar(&k) == NULL, "key empty in");
 
-	/* oversize input truncates to R2RS_MAXKEY, never beyond */
+	/* oversize input is refused, never truncated into a slot that
+	 * restore would treat as complete */
 	memset(longish, 0x5a, sizeof(longish));
 	v = rc_vnew(longish, sizeof(longish));
-	r2rs_key_from_vchar(&k, v);
+	ok = r2rs_key_from_vchar(&k, v) != 0 && k.len == 0;
 	rc_vfree(v);
-	ok = k.len == R2RS_MAXKEY;
-	back = r2rs_key_to_vchar(&k);
-	ok = ok && back && back->l == R2RS_MAXKEY;
-	rc_vfree(back);
-	CHECK(ok, "key oversize truncates to MAXKEY");
+	CHECK(ok, "key oversize refused");
 
 	/* boundary: exactly MAXKEY survives untouched */
 	v = rc_vnew(longish, R2RS_MAXKEY);

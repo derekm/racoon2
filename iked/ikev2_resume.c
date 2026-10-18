@@ -17,6 +17,10 @@
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <linux/netlink.h>
+#include <linux/xfrm.h>
+#endif
 
 #include "gcmalloc.h"
 #include "racoon.h"
@@ -129,6 +133,77 @@ resume_dump_predates_boot(const char *path)
 	up = (time_t)dup;
 	boot_time = now - up;
 	return st.st_mtime < boot_time;
+}
+
+/* 1 = inbound ESP SA is in the kernel, 0 = confirmed absent, -1 = could
+ * not ask (leave the boot-time kernel_lost decision alone).  Own netlink
+ * socket so this does not race iked's async XFRM queue. */
+static int
+resume_kernel_esp_present(const struct sockaddr *dst, uint32_t spi_host)
+{
+#if defined(__linux__)
+	int fd, n;
+	struct {
+		struct nlmsghdr nlh;
+		struct xfrm_usersa_id id;
+	} req;
+	char resp[512];
+	struct nlmsghdr *nh;
+	struct sockaddr_nl addr;
+
+	if (!dst || spi_host == 0)
+		return -1;
+	fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_XFRM);
+	if (fd < 0)
+		return -1;
+	memset(&req, 0, sizeof(req));
+	req.nlh.nlmsg_len = sizeof(req);
+	req.nlh.nlmsg_type = XFRM_MSG_GETSA;
+	req.nlh.nlmsg_flags = NLM_F_REQUEST;
+	req.nlh.nlmsg_seq = 1;
+	req.id.spi = htonl(spi_host);
+	req.id.proto = IPPROTO_ESP;
+	if (dst->sa_family == AF_INET) {
+		req.id.family = AF_INET;
+		memcpy(&req.id.daddr,
+		    &((const struct sockaddr_in *)dst)->sin_addr, 4);
+	} else if (dst->sa_family == AF_INET6) {
+		req.id.family = AF_INET6;
+		memcpy(&req.id.daddr,
+		    &((const struct sockaddr_in6 *)dst)->sin6_addr, 16);
+	} else {
+		close(fd);
+		return -1;
+	}
+	memset(&addr, 0, sizeof(addr));
+	addr.nl_family = AF_NETLINK;
+	if (sendto(fd, &req, sizeof(req), 0, (struct sockaddr *)&addr,
+	    sizeof(addr)) < 0) {
+		close(fd);
+		return -1;
+	}
+	n = recv(fd, resp, sizeof(resp), 0);
+	close(fd);
+	if (n < (int)sizeof(struct nlmsghdr))
+		return -1;
+	nh = (struct nlmsghdr *)resp;
+	if (nh->nlmsg_type == NLMSG_ERROR) {
+		struct nlmsgerr *e = NLMSG_DATA(nh);
+
+		if (e->error == 0)
+			return 1;
+		if (e->error == -ENOENT)
+			return 0;
+		return -1;
+	}
+	if (nh->nlmsg_type == XFRM_MSG_NEWSA)
+		return 1;
+	return -1;
+#else
+	(void)dst;
+	(void)spi_host;
+	return -1;
+#endif
 }
 
 static int
@@ -392,18 +467,44 @@ ikev2_resume_save(struct ikev2_sa *sa)
 	if (sa->rmconf && sa->rmconf->rm_index)
 		snprintf(rec.rm_index, sizeof(rec.rm_index), "%s",
 		    rc_vmem2str(sa->rmconf->rm_index));
-	r2rs_key_from_vchar(&rec.sk_d, sa->sk_d);
-	r2rs_key_from_vchar(&rec.sk_ai, sa->sk_a_i);
-	r2rs_key_from_vchar(&rec.sk_ar, sa->sk_a_r);
-	r2rs_key_from_vchar(&rec.sk_ei, sa->sk_e_i);
-	r2rs_key_from_vchar(&rec.sk_er, sa->sk_e_r);
-	r2rs_key_from_vchar(&rec.sk_pi, sa->sk_p_i);
-	r2rs_key_from_vchar(&rec.sk_pr, sa->sk_p_r);
-	r2rs_key_from_vchar(&rec.n_i, sa->n_i);
-	r2rs_key_from_vchar(&rec.n_r, sa->n_r);
-	r2rs_key_from_vchar(&rec.id_i, sa->id_i);
-	r2rs_key_from_vchar(&rec.id_r, sa->id_r);
+	if (r2rs_key_from_vchar(&rec.sk_d, sa->sk_d) != 0 ||
+	    r2rs_key_from_vchar(&rec.sk_ai, sa->sk_a_i) != 0 ||
+	    r2rs_key_from_vchar(&rec.sk_ar, sa->sk_a_r) != 0 ||
+	    r2rs_key_from_vchar(&rec.sk_ei, sa->sk_e_i) != 0 ||
+	    r2rs_key_from_vchar(&rec.sk_er, sa->sk_e_r) != 0 ||
+	    r2rs_key_from_vchar(&rec.sk_pi, sa->sk_p_i) != 0 ||
+	    r2rs_key_from_vchar(&rec.sk_pr, sa->sk_p_r) != 0 ||
+	    r2rs_key_from_vchar(&rec.n_i, sa->n_i) != 0 ||
+	    r2rs_key_from_vchar(&rec.n_r, sa->n_r) != 0 ||
+	    r2rs_key_from_vchar(&rec.id_i, sa->id_i) != 0 ||
+	    r2rs_key_from_vchar(&rec.id_r, sa->id_r) != 0) {
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		    "resume: key or ID exceeds %d octets; refusing "
+		    "truncated dump\n", R2RS_MAXKEY);
+		return -1;
+	}
 
+	n = 0;
+	for (ch = IKEV2_CHILD_LIST_FIRST(&sa->children);
+	     !IKEV2_CHILD_LIST_END(ch);
+	     ch = IKEV2_CHILD_LIST_NEXT(ch)) {
+		uint32_t in_spi = 0, out_spi = 0;
+
+		if (ch->state != IKEV2_CHILD_STATE_MATURE)
+			continue;
+		if (ch->my_proposal && ch->my_proposal[1])
+			in_spi = prop_spi_host(ch->my_proposal[1]);
+		if (ch->peer_proposal)
+			out_spi = prop_spi_host(ch->peer_proposal);
+		if (in_spi && out_spi)
+			n++;
+	}
+	if (n > R2RS_MAXCHILD) {
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		    "resume: %d mature children exceed %d; refusing "
+		    "partial dump\n", n, R2RS_MAXCHILD);
+		return -1;
+	}
 	n = 0;
 	for (ch = IKEV2_CHILD_LIST_FIRST(&sa->children);
 	     !IKEV2_CHILD_LIST_END(ch) && n < R2RS_MAXCHILD;
@@ -456,6 +557,8 @@ ikev2_resume_save(struct ikev2_sa *sa)
 		n++;
 	}
 	rec.nchild = (uint32_t)n;
+	rec.cert_due = (sa->due_time.tv_sec > 0) ?
+	    (uint32_t)sa->due_time.tv_sec : 0;
 
 	/* v4: persist the last-armed response (whole-packet form only;
 	 * frags are variable-length, skip them) so a restart replays a
@@ -566,17 +669,20 @@ restore_one(const char *path)
 	fd = open(path, O_RDONLY);
 	if (fd < 0)
 		return -1;
+	memset(&rec, 0, sizeof(rec));
 	{
 		ssize_t nr = read(fd, &rec, sizeof(rec));
 		close(fd);
 		if (nr < 0)
 			return -1;
 		if (nr != (ssize_t)sizeof(rec)) {
-			/* v3/v4 dump: prefix-sized, zero the new tail */
-			if (nr == (ssize_t)offsetof(struct r2rs_sa, resp_msgid) ||
+			/* v5 dump is the current record minus the trailing
+			 * cert_due.  v3/v4 are shorter prefixes.  Tail is
+			 * already zero from the memset above. */
+			if (nr == (ssize_t)sizeof(rec) - (ssize_t)sizeof(rec.cert_due) ||
+			    nr == (ssize_t)offsetof(struct r2rs_sa, resp_msgid) ||
 			    nr == (ssize_t)offsetof(struct r2rs_sa, resp_nfrags))
-				memset((char *)&rec + nr, 0,
-				    sizeof(rec) - nr);
+				;
 			else
 				return -1;
 		}
@@ -828,16 +934,29 @@ restore_one(const char *path)
 			}
 		}
 		ch->state = IKEV2_CHILD_STATE_MATURE;
-		if (kernel_lost)
-			remain = 1;
-		else
-			remain = resume_remain_from_dump(c->expire_at, now,
-			    IKEV2_DEFAULT_IPSEC_LIFETIME_TIME);
+		{
+			int child_lost = kernel_lost;
+
+			if (!child_lost) {
+				int kp = resume_kernel_esp_present(sa->local,
+				    c->in_spi);
+
+				if (kp == 0)
+					child_lost = 1;
+			}
+			if (child_lost)
+				remain = 1;
+			else
+				remain = resume_remain_from_dump(c->expire_at,
+				    now, IKEV2_DEFAULT_IPSEC_LIFETIME_TIME);
+		}
 		ikev2_child_arm_expire(ch, remain);
 	}
 
 	sa->child_created = (int)rec.nchild;
 	sa->state = IKEV2_STATE_ESTABLISHED;
+	if (rec.cert_due > 0)
+		sa->due_time.tv_sec = (time_t)rec.cert_due;
 	{
 		time_t remain = resume_remain_from_dump(rec.ike_expire_at, now,
 		    ikev2_kmp_sa_lifetime_time(sa->rmconf));

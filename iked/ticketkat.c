@@ -10,9 +10,12 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <string.h>
+#include <sys/time.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "vmbuf.h"
 #include "ikev2_resume_ticket.h"
@@ -451,6 +454,102 @@ main(void)
 		CHECK(r2ticket_replay_mark(ta, 9000, 5000) == 0,
 		      "replay: slots free again once those tickets expire");
 		r2ticket_replay_reset();
+		{
+			uint8_t ub[8];
+			uint32_t u = (uint32_t)time(NULL);
+			rc_vchar_t *tu;
+
+			memcpy(ub, &u, 4);
+			memset(ub + 4, 0x11, 4);
+			tu = rc_vnew(ub, 8);
+			{	/* start from an empty mark dir (earlier runs) */
+				DIR *cd = opendir("/tmp/r2tick-replay-kat");
+				struct dirent *ce;
+				char cp[600];
+
+				while (cd && (ce = readdir(cd)) != NULL) {
+					if (!strcmp(ce->d_name, ".") || !strcmp(ce->d_name, ".."))
+						continue;
+					snprintf(cp, sizeof(cp), "/tmp/r2tick-replay-kat/%s", ce->d_name);
+					unlink(cp);
+				}
+				if (cd)
+					closedir(cd);
+			}
+			r2ticket_replay_set_dir("/tmp/r2tick-replay-kat");
+			CHECK(tu && r2ticket_replay_mark(tu, 2000, 1000) == 0,
+			      "replay: first use recorded on disk");
+			r2ticket_replay_reset();
+			CHECK(r2ticket_replay_mark(tu, 2000, 1001) == 1,
+			      "replay: disk cache rejects after memory reset");
+			/* L3: short mark fails closed; sweep reaps expired
+			 * marks and old orphans, never a live mark */
+			{
+				const char *rd = "/tmp/r2tick-replay-kat";
+				char p1[600];
+				FILE *fp;
+				struct timeval tv[2];
+				int nlive = 0;
+				DIR *dd;
+				struct dirent *de;
+
+				snprintf(p1, sizeof(p1), "%s/%064d", rd, 0);
+				fp = fopen(p1, "w");
+				if (fp)
+					fclose(fp);	/* 0-byte mark */
+				CHECK(r2ticket_replay_sweep(1001) == 0,
+				      "replay sweep: fresh short mark kept (may be in flight)");
+				tv[0].tv_sec = tv[1].tv_sec = time(NULL) - 8 * 86400;
+				tv[0].tv_usec = tv[1].tv_usec = 0;
+				utimes(p1, tv);
+				snprintf(p1, sizeof(p1), "%s/.tmp.1.1", rd);
+				fp = fopen(p1, "w");
+				if (fp)
+					fclose(fp);
+				utimes(p1, tv);
+				CHECK(r2ticket_replay_sweep(1001) == 2,
+				      "replay sweep: old short mark + old temp reaped");
+				CHECK(r2ticket_replay_sweep(1500) == 0,
+				      "replay sweep: live mark kept before expiry");
+				dd = opendir(rd);
+				while (dd && (de = readdir(dd)) != NULL)
+					if (de->d_name[0] != '.')
+						nlive++;
+				if (dd)
+					closedir(dd);
+				CHECK(nlive == 1, "replay sweep: exactly the live mark remains");
+				CHECK(r2ticket_replay_mark(tu, 2000, 1500) == 1,
+				      "replay: live mark still rejects after sweep");
+				CHECK(r2ticket_replay_sweep(2000) == 1,
+				      "replay sweep: mark reaped at ticket expiry");
+				/* a short mark under the final name: fail closed */
+				r2ticket_replay_reset();
+				{
+					uint8_t hh[32];
+					unsigned int hl = 0;
+					char hx[65];
+					int q;
+					static const char xd[] = "0123456789abcdef";
+
+					EVP_Digest(tu->v, tu->l, hh, &hl, EVP_sha256(), NULL);
+					for (q = 0; q < 32; q++) {
+						hx[q * 2] = xd[hh[q] >> 4];
+						hx[q * 2 + 1] = xd[hh[q] & 0xf];
+					}
+					hx[64] = '\0';
+					snprintf(p1, sizeof(p1), "%s/%s", rd, hx);
+					fp = fopen(p1, "w");
+					if (fp)
+						fclose(fp);
+				}
+				CHECK(r2ticket_replay_mark(tu, 4000, 2100) == 1,
+				      "replay: short (crash) mark fails closed, ticket not re-accepted");
+				unlink(p1);
+			}
+			r2ticket_replay_set_dir(NULL);
+			r2ticket_replay_reset();
+			rc_vfree(tu);
+		}
 		rc_vfree(ta);
 		rc_vfree(tb);
 	}

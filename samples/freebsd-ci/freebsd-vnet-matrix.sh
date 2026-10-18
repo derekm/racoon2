@@ -2270,7 +2270,7 @@ REOF
 	case $_name in
 	*-nack)
 		_nrcv=$(grep -c 'received N(TICKET_NACK) in IKE_SESSION_RESUME response' /tmp/freeb/init2-iked.log 2>/dev/null || true)
-		_fb=$(grep -c 'ticket refused (TICKET_NACK); dropped stored ticket, falling back to a full IKE_SA_INIT' /tmp/freeb/init2-iked.log 2>/dev/null || true)
+		_fb=$(grep -c 'ticket refused (TICKET_NACK); kept stored ticket for redirect ferry, falling back to a full IKE_SA_INIT' /tmp/freeb/init2-iked.log 2>/dev/null || true)
 		_kfail=$(grep -c 'ticket validation failed' $FR 2>/dev/null || true)
 		_full=$(grep -c 'INI_IKE_SA_INIT_SENT -> ' /tmp/freeb/init2-iked.log 2>/dev/null || true)
 		_tk2=$(ls "$_T/tickets"/r2tkt-* 2>/dev/null | head -1)
