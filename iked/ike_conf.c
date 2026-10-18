@@ -242,6 +242,7 @@ struct rcf_kmp ikev2_default_values = {
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
 	RCT_BOOL_OFF,		/* cert_validate (X.509-from-wire off by default) */
 	NULL,			/* ca_file (trust anchor; NULL = default paths) */
+	RCT_BOOL_OFF,		/* cert_trust_system */
 };
 
 #ifdef IKEV1
@@ -497,6 +498,7 @@ IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
 IKEV2_CONF_ATTR(rc_type, cert_validate)
 IKEV2_CONF_ATTR(rc_vchar_t *, ca_file)
+IKEV2_CONF_ATTR(rc_type, cert_trust_system)
 IKEV2_CONF_ATTR(rc_type, require_config)
 IKEV2_CONF_ATTR(rc_type, ppk_mandatory)
 IKEV2_CONF_ATTR(rc_vchar_t *, ppk_id)
@@ -992,8 +994,8 @@ ikev2_private_key(struct ikev2_sa *ike_sa, rc_vchar_t *id_data)
  * certificate actually received in the IKE_AUTH CERT payload, instead of a
  * config-file pin.  When the remote has cert_validate on and a peer cert was
  * captured, build/validate the chain against ca_file and return the leaf
- * pubkey (RSA/ECDSA ASN.1 as i2v_PUBKEY).  On any failure return NULL so the
- * caller falls back to the configured pubkey.
+ * pubkey (RSA/ECDSA ASN.1 as i2v_PUBKEY).  On any failure return NULL:
+ * the caller fails AUTH closed (no fallback to a configured pubkey).
  */
 rc_vchar_t *
 ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
@@ -1027,9 +1029,17 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
 	 * cb_check_cert forces ok=1 for DEPTH_ZERO_SELF_SIGNED_CERT/INVALID_CA,
 	 * which would silently trust any self-signed peer cert.  eay_check_x509cert_strict
 	 * uses OpenSSL's default verify callback.  ca_file may be a PEM file or
-	 * a hashed-cert directory; NULL uses the default CA store. */
+	 * a hashed-cert directory; NULL (only with cert_trust_system on) uses
+	 * the OS default CA store. */
 	capath = ikev2_ca_file(conf) ?
 	    rc_vmem2str(ikev2_ca_file(conf)) : NULL;
+	if (!capath && ikev2_cert_trust_system(conf) != RCT_BOOL_ON) {
+		/* config load refuses this; fail closed if reached anyway */
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "X.509-from-wire: no ca_file and cert_trust_system off; "
+		     "refusing to validate against the OS CA store\n");
+		return NULL;
+	}
 	err = eay_check_x509cert_strict(cert, capath);
 	if (err) {
 		plog(PLOG_INTERR, PLOGLOC, 0,
@@ -6013,21 +6023,34 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 				 * is the intended trust model). */
 				if (ikev2_cert_validate(rmconf) ==
 				    RCT_BOOL_ON) {
-					/* Loud, at config load, if the trust
-					 * anchor is not pinned: a cert_validate-on
-					 * remote with NO ca_file validates the
-					 * peer chain against the OS default CA
-					 * store — a broad implicit trust that an
-					 * operator usually did not intend for a
-					 * VPN peer trust decision (the identity
-					 * binding to peers_id still constrains
-					 * it when an FQDN peers_id exists). */
-					if (ikev2_ca_file(rmconf) == NULL)
+					/* The trust anchor must be EXPLICIT: either
+					 * ca_file (a pinned private CA) or
+					 * cert_trust_system on (deliberate opt-in to
+					 * the OS default CA store).  Neither is a
+					 * config error: an implicit WebPKI trust
+					 * would let any public-CA cert holder
+					 * authenticate.  Both is also an error
+					 * (ambiguous trust model). */
+					if (ikev2_ca_file(rmconf) == NULL &&
+					    ikev2_cert_trust_system(rmconf) !=
+					    RCT_BOOL_ON) {
+						++*err;
+						plog(PLOG_INTERR, PLOGLOC, 0,
+						     "remote %s ikev2: cert_validate on requires ca_file, "
+						     "or cert_trust_system on to trust the OS default CA store\n",
+						     rm_index);
+					} else if (ikev2_ca_file(rmconf) != NULL &&
+					    ikev2_cert_trust_system(rmconf) ==
+					    RCT_BOOL_ON) {
+						++*err;
+						plog(PLOG_INTERR, PLOGLOC, 0,
+						     "remote %s ikev2: ca_file and cert_trust_system on are "
+						     "mutually exclusive\n", rm_index);
+					} else if (ikev2_cert_trust_system(rmconf) ==
+					    RCT_BOOL_ON)
 						plog(PLOG_INTWARN, PLOGLOC, 0,
-						     "remote %s ikev2: cert_validate on but NO ca_file "
-						     "— peer certificate chain will be validated "
-						     "against the system default CA store; set "
-						     "ca_file to pin a specific trust anchor\n",
+						     "remote %s ikev2: cert_trust_system on: peer chains "
+						     "are validated against the OS default CA store\n",
 						     rm_index);
 					break;
 				}

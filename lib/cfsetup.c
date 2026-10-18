@@ -233,6 +233,7 @@ static int rcf_fix_pre_shared_key (struct cf_list *, void *);
 static int rcf_fix_redirect_to (struct cf_list *, void *);
 static int rcf_fix_cert_validate (struct cf_list *, void *);
 static int rcf_fix_ca_file (struct cf_list *, void *);
+static int rcf_fix_cert_trust_system (struct cf_list *, void *);
 static int rcf_fix_radius_server (struct cf_list *, void *);
 static int rcf_fix_radius_port (struct cf_list *, void *);
 static int rcf_fix_radius_secret_file (struct cf_list *, void *);
@@ -363,6 +364,7 @@ struct rcf_tdf_t {
 	{ CFD_VERIFY_ID,		rcf_fix_verify_id, },
 	{ CFD_CERT_VALIDATE,		rcf_fix_cert_validate, },
 	{ CFD_CA_FILE,			rcf_fix_ca_file, },
+	{ CFD_CERT_TRUST_SYSTEM,		rcf_fix_cert_trust_system, },
 	{ CFD_VERIFY_PUBKEY,		rcf_fix_verify_pubkey, },
 	{ CFD_SEND_CERT,		rcf_fix_send_cert, },
 	{ CFD_SEND_CERT_REQ,		rcf_fix_send_cert_req, },
@@ -1934,6 +1936,19 @@ rcf_fix_ca_file(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_CA_FILE))
 		return -1;
 	if (rcf_fix_string(head->nextp, &dst->ca_file))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_cert_trust_system(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_CERT_TRUST_SYSTEM))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->cert_trust_system))
 		return -1;
 
 	return 0;
@@ -3628,6 +3643,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	 * the default OFF and the wire chain is never validated. */
 	new->cert_validate = src->cert_validate;
 	DEEPCOPY_VDUP(src->ca_file, new->ca_file);
+	new->cert_trust_system = src->cert_trust_system;
 	DEEPCOPY_PKLIST(src->my_pubkey, new->my_pubkey);
 	DEEPCOPY_PKLIST(src->peers_pubkey, new->peers_pubkey);
 	DEEPCOPY_ADDRLIST(src->peers_ipaddr, new->peers_ipaddr);

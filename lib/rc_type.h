@@ -422,6 +422,8 @@ struct rcf_kmp {
 	 * (default) keeps the historical config-file pubkey pin unchanged. */
 	rc_type cert_validate;
 	rc_vchar_t *ca_file;
+	/* cert_trust_system (on|off, default off): with cert_validate on and NO ca_file, validate the peer chain against the OS default CA store. Off = cert_validate without ca_file is a config error (no implicit WebPKI trust). */
+	rc_type cert_trust_system;
 };
 
 /* selector info */

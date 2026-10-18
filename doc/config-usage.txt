@@ -783,6 +783,38 @@ remote
 		The daemon will send a KE payload in the phase 2 of IKEv1.
 		default is off.
 
+	cert_validate (on|off) ;
+		It is valid for the ikev2 directive.
+		X.509-from-wire: when on, the peer's key is taken from the
+		certificate it sends in its IKE_AUTH CERT payload (X.509
+		signature encoding).  The chain is verified strictly (no
+		self-signed or invalid-CA leaf) and AUTH is verified against
+		the leaf key; a missing or invalid certificate fails AUTH
+		(no fallback to peers_public_key).  The certificate identity
+		is then bound to the identity the peer asserted in IDi/IDr
+		(RFC 4945; see allow_wildcard_cert and cert_cn_fallback).
+		The trust anchor must be explicit: exactly one of ca_file or
+		cert_trust_system on is required, otherwise the
+		configuration is refused.
+		default is off.
+
+	ca_file "(file or directory)" ;
+		It is valid for the ikev2 directive.
+		The trust anchor for cert_validate: a PEM file of one or
+		more CA certificates, or an OpenSSL hashed-certificate
+		directory.  It is the only trust anchor; the OS default CA
+		store is not consulted.  A file that cannot be loaded fails
+		validation closed.
+
+	cert_trust_system (on|off) ;
+		It is valid for the ikev2 directive.
+		When on (and ca_file is not set), cert_validate verifies the
+		peer chain against the OS default CA store (the WebPKI
+		roots).  Any certificate from any public CA then chains;
+		only the identity binding constrains who can authenticate.
+		Setting both ca_file and cert_trust_system on is refused.
+		default is off.
+
 	my_public_key (x509pem|pkcs12|ascii) (pubkey) (privkey)
 		IT IS NOT FULLY IMPLEMENTED YET.
 		It is valid for both directives of the ikev1 and ikev2.

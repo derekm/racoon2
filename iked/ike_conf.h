@@ -219,6 +219,7 @@ extern rc_type ikev2_childless(struct rcf_remote *);
 extern rc_vchar_t *ikev2_redirect_to(struct rcf_remote *);
 extern rc_type ikev2_cert_validate(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ca_file(struct rcf_remote *);
+extern rc_type ikev2_cert_trust_system(struct rcf_remote *);
 extern rc_type ikev2_natt_follow_mapping(struct rcf_remote *);
 extern rc_type ikev2_ppk_mandatory(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ppk_id(struct rcf_remote *);
