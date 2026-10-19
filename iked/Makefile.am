@@ -1,7 +1,7 @@
 # $Id: Makefile.in,v 1.51 2009/03/27 07:24:26 mk Exp $
 
 
-AM_CPPFLAGS =	-I. -I./extra
+AM_CPPFLAGS =	-I. -I./extra -I$(srcdir)/extra
 AM_CPPFLAGS +=	@CPPFLAGS@
 AM_CPPFLAGS += -DSYSCONFDIR='"$(sysconfdir)"'
 AM_CPPFLAGS += -DDEBUG
@@ -169,7 +169,7 @@ test_ikev1_hardening_LDADD = $(addtest_ikedsrc) $(LDADD)
 test_ts_substitute_SOURCES = test_ts_substitute.c
 test_ts_substitute_LDADD = $(addtest_ikedsrc) $(LDADD)
 test_natoa_SOURCES = test_natoa.c
-test_natoa_CPPFLAGS = $(AM_CPPFLAGS) -Iikev1
+test_natoa_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/ikev1
 test_natoa_LDADD = $(addtest_ikedsrc) $(LDADD)
 test_ip_any_SOURCES = test_ip_any.c
 test_ip_any_LDADD = $(addtest_ikedsrc) $(LDADD)
