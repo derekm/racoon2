@@ -53,7 +53,7 @@ linux*)
 	;;
 esac
 
-CPPFLAGS="-I../lib $CPPFLAGS"
+CPPFLAGS="-I../lib -I$srcdir/../lib $CPPFLAGS"	# VPATH: generated + source headers
 LDFLAGS="-L../lib $LDFLAGS"
 
 dnl check OPTFLAG

@@ -40,7 +40,7 @@ AC_ARG_ENABLE(debug,
 		  case "$enable_debug" in
 			  yes|'')
 				  AC_MSG_RESULT(yes)
-				  CFLAGS="-g -Wall -DSPMD_DEBUG"
+				  CFLAGS="$CFLAGS -g -Wall -DSPMD_DEBUG"
 			  ;;
 			  no)
 				  AC_MSG_RESULT(no)
@@ -119,7 +119,12 @@ AC_ARG_WITH(libracoon,
 [   --with-libracoon=PATH   libracoon [default path ../lib]],
         libracoon_path="$withval", libracoon_path="../lib")
 AC_MSG_RESULT($libracoon_path)
-	CFLAGS="$CFLAGS -I$libracoon_path"
+	dnl VPATH: libracoon's headers live in the
+	dnl SOURCE tree, its generated files and library in the build tree.
+	case "$libracoon_path" in
+	/*)	CPPFLAGS="-I$libracoon_path $CPPFLAGS" ;;
+	*)	CPPFLAGS="-I$libracoon_path -I$srcdir/$libracoon_path $CPPFLAGS" ;;
+	esac
 	LDFLAGS="$LDFLAGS -L$libracoon_path"
 	LIBS="-lracoon $LIBS"
 

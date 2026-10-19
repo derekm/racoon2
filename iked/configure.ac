@@ -420,10 +420,15 @@ dnl time.)
 if test -z "$RACOONLIBDIR"; then
  	RACOONLIBDIR=../lib
 fi
-if test -z "$RACOONINCLUEDIR"; then
+if test -z "$RACOONINCLUDEDIR"; then
  	RACOONINCLUDEDIR=$RACOONLIBDIR
 fi
-CPPFLAGS="-I$RACOONINCLUDEDIR $CPPFLAGS"
+dnl VPATH: a relative libracoon dir names both the
+dnl build tree (generated headers) and the source tree (the rest).
+case "$RACOONINCLUDEDIR" in
+/*)	CPPFLAGS="-I$RACOONINCLUDEDIR $CPPFLAGS" ;;
+*)	CPPFLAGS="-I$RACOONINCLUDEDIR -I$srcdir/$RACOONINCLUDEDIR $CPPFLAGS" ;;
+esac
 LDFLAGS="-L$RACOONLIBDIR $LDFLAGS"
 LIBS="-lracoon $LIBS"
 
