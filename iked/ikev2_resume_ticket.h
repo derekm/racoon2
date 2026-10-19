@@ -131,5 +131,7 @@ int r2ticket_replay_mark(const rc_vchar_t *ticket, uint32_t expires_at,
 void r2ticket_replay_reset(void);
 void r2ticket_replay_set_dir(const char *dir);
 void r2ticket_replay_bind_key(const char *keypath);
+/* reap expired marks + orphaned temp/short files; files removed or -1 */
+int r2ticket_replay_sweep(uint32_t now);
 
 #endif /* IKEV2_RESUME_TICKET_H */
