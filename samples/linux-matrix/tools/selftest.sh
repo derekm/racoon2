@@ -146,19 +146,52 @@ if [ -f "$FB/lanes/all.rows" ]; then
 		{ echo "SELFTEST FAIL check-rows rejected a CRLF manifest"; bad=1; }
 fi
 
-# Box-tier evidence: a complete PASS summary checks, a missing row does not.
+# Box-tier evidence: a complete PASS summary checks, a missing row does not,
+# and (REVIEW_2026-10-18 M5) the evidence is bound to one commit SHA.
 BE=$HERE/box-evidence.sh
 printf 'a	k	pass	0	n	box\nb	k	pass	0	n	dpd\n' > "$T/be.cases"
 printf 'PASS a (ok)\nPASS b (ok)\n' > "$T/be.log"
-R2_CASES="$T/be.cases" sh "$BE" emit "$T/be.log" > "$T/be.ev"
-if R2_CASES="$T/be.cases" sh "$BE" check "$T/be.ev" >/dev/null; then
-	echo "SELFTEST PASS box-evidence accepts a complete summary"
+BR=$T/be.repo
+mkdir -p "$BR" && git -C "$BR" init -q && echo x > "$BR/f" && git -C "$BR" add f &&
+	git -C "$BR" -c user.name=t -c user.email=t@t commit -qm t
+BSHA=$(git -C "$BR" rev-parse HEAD)
+R2_SRC="$BR" R2_CASES="$T/be.cases" sh "$BE" emit "$T/be.log" > "$T/be.ev"
+if R2_CASES="$T/be.cases" sh "$BE" check "$T/be.ev" "$BSHA" >/dev/null; then
+	echo "SELFTEST PASS box-evidence accepts a complete summary for its commit"
 else
 	echo "SELFTEST FAIL box-evidence rejected a complete summary"; bad=1
 fi
+if R2_CASES="$T/be.cases" sh "$BE" check "$T/be.ev" 0000000000000000000000000000000000000000 2>"$T/be.err" >/dev/null; then
+	echo "SELFTEST FAIL box-evidence accepted evidence for another commit"; bad=1
+elif grep -q 'evidence is for commit' "$T/be.err"; then
+	echo "SELFTEST PASS box-evidence rejects another commit with a reason"
+else
+	echo "SELFTEST FAIL box-evidence commit mismatch gave no reason"; bad=1
+fi
+sed "s/^commit: .*/commit: 0000000000000000000000000000000000000000/" "$T/be.ev" > "$T/be.ev2"
+if R2_CASES="$T/be.cases" sh "$BE" check "$T/be.ev2" 0000000000000000000000000000000000000000 >/dev/null 2>&1; then
+	echo "SELFTEST FAIL box-evidence accepted an edited commit line"; bad=1
+else
+	echo "SELFTEST PASS box-evidence rejects an edited commit line (sha256)"
+fi
+grep -v '^commit: ' "$T/be.ev" > "$T/be.ev3"
+if R2_CASES="$T/be.cases" sh "$BE" check "$T/be.ev3" "$BSHA" 2>"$T/be.err" >/dev/null; then
+	echo "SELFTEST FAIL box-evidence accepted a summary without commit"; bad=1
+elif grep -q "no 'commit:' line" "$T/be.err"; then
+	echo "SELFTEST PASS box-evidence rejects a summary without commit"
+else
+	echo "SELFTEST FAIL box-evidence missing commit gave no reason"; bad=1
+fi
+echo y >> "$BR/f"
+if R2_SRC="$BR" R2_CASES="$T/be.cases" sh "$BE" emit "$T/be.log" >/dev/null 2>&1; then
+	echo "SELFTEST FAIL box-evidence emitted for a dirty tree"; bad=1
+else
+	echo "SELFTEST PASS box-evidence refuses to emit for a dirty tree"
+fi
+git -C "$BR" checkout -q f
 printf 'PASS a (ok)\n' > "$T/be.log"
-R2_CASES="$T/be.cases" sh "$BE" emit "$T/be.log" > "$T/be.ev" || true
-if R2_CASES="$T/be.cases" sh "$BE" check "$T/be.ev" >/dev/null; then
+R2_SRC="$BR" R2_CASES="$T/be.cases" sh "$BE" emit "$T/be.log" > "$T/be.ev" || true
+if R2_CASES="$T/be.cases" sh "$BE" check "$T/be.ev" "$BSHA" >/dev/null 2>&1; then
 	echo "SELFTEST FAIL box-evidence accepted a missing row"; bad=1
 else
 	echo "SELFTEST PASS box-evidence rejects a missing row"
