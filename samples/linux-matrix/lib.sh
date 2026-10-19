@@ -217,16 +217,11 @@ charon_reset() {
 	# the on-fabric ICMP cheat kill: ESP-decapped inner pings to the host
 	# arrive with iif != r2h, so the DROP only kills non-tunnel ICMP.
 	iptables -t raw -D PREROUTING -i "$VETH_H" -s "${CIP}/32" -p icmp -j DROP 2>/dev/null || true
-	# Debian/Ubuntu strongswan 6 runs charon-systemd (strongswan.service)
-	# in the root netns; it owns /var/run/charon.vici (a filesystem socket,
-	# shared across netns), so the rows' swanctl talked to IT instead of
-	# the row's charon and initiated from the wrong netns (sid lane:
-	# "initiate failed: establishing CHILD_SA 'ch' failed").
-	systemctl stop strongswan.service strongswan-starter.service 2>/dev/null || true
-	killall -9 charon charon-systemd starter 2>/dev/null || true
-	rm -f /var/run/charon.pid /var/run/starter.charon.pid /var/run/charon.ctl \
-	    /var/run/charon.vici
-	ip netns exec "$NS" ipsec stop 2>/dev/null || true
+	# The host's strongswan.service / charon-systemd owns the host vici
+	# socket; rows used to stop it and kill every charon.  Rows now use a
+	# private vici socket, swanctl dir and /run (I2I_SW_ROOT, review M6),
+	# so the host daemon is left alone and only row charons are killed.
+	i2i_charon_kill
 	sleep 1
 }
 
