@@ -146,6 +146,14 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		TRACE((PLOGLOC, "peer supports redirection (REDIRECT_SUPPORTED "
 			"16406)\n"));
 		break;
+	case IKEV2_REDIRECT_FROM:
+		/* RFC 5685 s3/s9.3 (REVIEW M3): an initiator that was
+		 * redirected sends REDIRECTED_FROM instead of
+		 * REDIRECT_SUPPORTED; it is equally a support signal. */
+		ike_sa->peer_sent_redirect = 1;
+		TRACE((PLOGLOC, "peer supports redirection (REDIRECTED_FROM "
+			"16408)\n"));
+		break;
 	case IKEV2_USE_PPK:
 		/* RFC 8784 s2.2: the PEER (or, for the initiator view, the
 		 * responder's echo of) N(USE_PPK).  The responder decides to echo
@@ -351,6 +359,19 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		 * Ni), then abort this IKE_SA and re-run against the new
 		 * gateway.  The SA-less nature (SPI_R=0, msgid=0) is
 		 * checked in initiator_ike_sa_init_recv. */
+		/* REVIEW_2026-10-18 M3: a REDIRECT is only honoured when
+		 * this side opted in (accept_redirect on) and therefore
+		 * advertised REDIRECT_SUPPORTED; otherwise an unsolicited
+		 * redirect is ignored and the exchange is dropped. */
+		if (!ike_sa->rmconf ||
+		    ikev2_accept_redirect(ike_sa->rmconf) != RCT_BOOL_ON) {
+			isakmp_log(ike_sa, local, remote, packet,
+				   PLOG_PROTOWARN, PLOGLOC,
+				   "N(REDIRECT) refused (accept_redirect off); "
+				   "dropping\n");
+			++isakmpstat.payload_ignored;
+			return -1;
+		}
 		{
 			rc_vchar_t *gw = 0, *ni = 0;
 			uint8_t gwt = 0;
@@ -400,10 +421,24 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			ike_sa->redirect_ni = ni;
 			ike_sa->redirect_gw_type = gwt;
 			ike_sa->redirect_rx = 1;
-			TRACE((PLOGLOC,
-			       "RFC5685: redirected by peer to gw type %u "
-			       "(%.*s), echoed Ni verified\n",
-			       (unsigned)gwt, (int)gw->l, (char *)gw->u));
+			{
+				/* L6: render the gateway, never print raw
+				 * address octets as a string. */
+				char gs[INET6_ADDRSTRLEN + 1];
+
+				gs[0] = '\0';
+				if (gwt == 1 && gw->l == 4)
+					inet_ntop(AF_INET, gw->u, gs, sizeof(gs));
+				else if (gwt == 2 && gw->l == 16)
+					inet_ntop(AF_INET6, gw->u, gs, sizeof(gs));
+				else
+					snprintf(gs, sizeof(gs), "<%zu-octet id>",
+						 gw->l);
+				TRACE((PLOGLOC,
+				       "RFC5685: redirected by peer to gw type %u "
+				       "(%s), echoed Ni verified\n",
+				       (unsigned)gwt, gs));
+			}
 		}
 		break;
 
@@ -1317,7 +1352,11 @@ ikev2_respond_with_notify_exch(rc_vchar_t *request, struct sockaddr *remote,
 	notify->nh.protocol_id = 0;
 	notify->nh.spi_size = 0;
 	put_uint16(&notify->nh.notify_message_type, msg_type);
-	memcpy(notify + 1, nmsg, nmsg_len);
+	/* A data-less notify (TICKET_NACK) passes nmsg == NULL, len 0;
+	 * memcpy(dst, NULL, 0) is undefined behaviour (C11 7.24.1p2) and
+	 * aborts a -fno-sanitize-recover build before the reply is sent. */
+	if (nmsg_len > 0)
+		memcpy(notify + 1, nmsg, nmsg_len);
 
 #ifdef HAVE_PRINT_ISAKMP_C
 	isakmp_printpacket(reply, local, remote, 1);
@@ -1842,4 +1881,23 @@ ikev2_push_ip_allowed(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 		}
 	}
 	drop_ip_allowed(payl, has4, has6);
+}
+
+/*
+ * RFC 5685 s7: "the client SHOULD NOT accept more than MAX_REDIRECTS
+ * (5) redirects within REDIRECT_LOOP_DETECT_PERIOD (300 s)".  Pure
+ * helper (unit-tested in notifytest).
+ */
+int
+ikev2_redirect_loop_check(int *count, time_t *window, time_t now,
+			  int max, int period)
+{
+	if (*count == 0 || now < *window || now - *window >= period) {
+		*window = now;
+		*count = 0;
+	}
+	if (*count >= max)
+		return -1;
+	++*count;
+	return 0;
 }

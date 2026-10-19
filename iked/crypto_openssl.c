@@ -493,10 +493,13 @@ eay_check_x509cert(rc_vchar_t *cert, char *CApath)
  * file (racoon2 ca_file) or a hashed-cert directory; both are loaded.
  */
 int
-eay_check_x509cert_strict(rc_vchar_t *cert, char *CApath)
+eay_check_x509cert_strict(rc_vchar_t *cert, rc_vchar_t **extra, int nextra,
+    char *CApath)
 {
 	X509_STORE *cert_ctx = NULL;
 	X509 *x509 = NULL;
+	STACK_OF(X509) *untrusted = NULL;
+	int i;
 	X509_STORE_CTX *csc = NULL;
 	int error = -1;
 
@@ -538,10 +541,30 @@ eay_check_x509cert_strict(rc_vchar_t *cert, char *CApath)
 	if (x509 == NULL)
 		goto end;
 
+	/* Extra wire CERTs (cert_intermediates on): an UNTRUSTED pool for
+	 * chain building only.  Every path must still end at the configured
+	 * anchor; a wire cert is never a trust anchor itself.  An unparsable
+	 * extra cert fails closed. */
+	if (nextra > 0) {
+		untrusted = sk_X509_new_null();
+		if (untrusted == NULL)
+			goto end;
+		for (i = 0; i < nextra; i++) {
+			X509 *xi = mem2x509(extra[i]);
+			if (xi == NULL || !sk_X509_push(untrusted, xi)) {
+				X509_free(xi);
+				plog(PLOG_PROTOERR, PLOGLOC, 0,
+				    "X.509-from-wire: extra CERT #%d unparsable; failing closed\n",
+				    i + 1);
+				goto end;
+			}
+		}
+	}
+
 	csc = X509_STORE_CTX_new();
 	if (csc == NULL)
 		goto end;
-	X509_STORE_CTX_init(csc, cert_ctx, x509, NULL);
+	X509_STORE_CTX_init(csc, cert_ctx, x509, untrusted);
 	/* DEFAULT verify callback: self-signed / invalid-CA fail. */
 	error = X509_verify_cert(csc);
 	if (error <= 0) {
@@ -560,6 +583,8 @@ eay_check_x509cert_strict(rc_vchar_t *cert, char *CApath)
 		X509_STORE_CTX_free(csc);
 	if (x509)
 		X509_free(x509);
+	if (untrusted)
+		sk_X509_pop_free(untrusted, X509_free);
 	if (cert_ctx)
 		X509_STORE_free(cert_ctx);
 	return error;
@@ -1024,16 +1049,22 @@ eay_get_x509subjectipaddr(rc_vchar_t *cert, int pos)
 
 /*
  * get the subject commonName (CN) from an X509 certificate, as a NUL-
- * terminated malloc'd string (NULL if absent/unparseable).  Used as the
- * RFC 4945 identity-binding fallback when a cert has no usable SAN-DNS.
+ * terminated malloc'd UTF-8 string, or NULL when it is absent, ambiguous
+ * (more than one CN), unconvertible, or carries an EMBEDDED NUL.  The
+ * caller compares with strlen()-bounded functions, so a CN such as
+ * "gw.example.com\0.evil" must be refused here (null-prefix attack),
+ * exactly like the SAN path in eay_get_x509subjectaltname().  Used only as
+ * the RFC 4945 identity-binding fallback (cert_cn_fallback on, no SAN).
  */
 char *
 eay_get_x509subject_cn(rc_vchar_t *cert)
 {
 	X509 *x509 = NULL;
 	X509_NAME *subj;
-	char *buf;
-	int len;
+	X509_NAME_ENTRY *ent;
+	unsigned char *utf8 = NULL;
+	char *buf = NULL;
+	int idx, len;
 
 	x509 = mem2x509(cert);
 	if (x509 == NULL)
@@ -1041,24 +1072,30 @@ eay_get_x509subject_cn(rc_vchar_t *cert)
 	subj = X509_get_subject_name(x509);
 	if (subj == NULL)
 		goto end;
-	len = X509_NAME_get_text_by_NID(subj, NID_commonName, NULL, 0);
-	if (len <= 0)
+	idx = X509_NAME_get_index_by_NID(subj, NID_commonName, -1);
+	if (idx < 0)
 		goto end;
-	buf = malloc(len + 1);
+	if (X509_NAME_get_index_by_NID(subj, NID_commonName, idx) >= 0)
+		goto end;	/* two CNs: ambiguous, refuse */
+	ent = X509_NAME_get_entry(subj, idx);
+	if (ent == NULL)
+		goto end;
+	len = ASN1_STRING_to_UTF8(&utf8, X509_NAME_ENTRY_get_data(ent));
+	if (len <= 0 || utf8 == NULL)
+		goto end;
+	if (memchr(utf8, '\0', (size_t)len) != NULL)
+		goto end;	/* embedded NUL: malformed name, refuse */
+	buf = malloc((size_t)len + 1);
 	if (buf == NULL)
 		goto end;
-	if (X509_NAME_get_text_by_NID(subj, NID_commonName, buf, len + 1)
-	    <= 0) {
-		free(buf);
-		goto end;
-	}
-	if (x509)
-		X509_free(x509);
-	return buf;	/* NUL-terminated by libcrypto */
+	memcpy(buf, utf8, (size_t)len);
+	buf[len] = '\0';
       end:
+	if (utf8)
+		OPENSSL_free(utf8);
 	if (x509)
 		X509_free(x509);
-	return NULL;
+	return buf;
 }
 
 /*

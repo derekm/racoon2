@@ -44,7 +44,29 @@ kind_i2ipubkey() {
 	# must log the wire-validation TRACE.
 	WIRE=0
 	case "$name" in
-	*-wire) WIRE=1 ;;
+	*-wire|*-wire-*) WIRE=1 ;;
+	esac
+	# RFC 4945 / RFC 6125 identity-binding variants (REVIEW_2026-10-18 H2).
+	# INIT_ID is the FQDN the initiator asserts in IDi (and the responder's
+	# peers_id, so the peers_id allowlist ACCEPTS it and the cert binding is
+	# the only guard); INIT_SAN is the initiator cert's SAN-DNS.  NEG=1 rows
+	# must NOT bring a child up and must log NEG_MSG on the responder.
+	INIT_ID=r2init-matrix; INIT_SAN=r2init-matrix; WILD_CONF=; NEG=0; NEG_MSG=
+	case "$name" in
+	*-wire-wildid)
+		# peer holds a valid cert for x.r2-wild.test but asserts the
+		# PATTERN *.r2-wild.test: refused (an ID payload is a name)
+		INIT_ID='*.r2-wild.test'; INIT_SAN=x.r2-wild.test
+		WILD_CONF='allow_wildcard_cert on;'
+		NEG=1; NEG_MSG="asserted FQDN identity contains '*'" ;;
+	*-wire-wildcert)
+		# genuine wildcard cert, plain asserted name, explicitly allowed
+		INIT_ID=x.r2-wild.test; INIT_SAN='*.r2-wild.test'
+		WILD_CONF='allow_wildcard_cert on;' ;;
+	*-wire-wildcert-off)
+		# same wildcard cert, allow_wildcard_cert left at its default (off)
+		INIT_ID=x.r2-wild.test; INIT_SAN='*.r2-wild.test'
+		NEG=1; NEG_MSG="peer cert identity does not match asserted ID" ;;
 	esac
 
 	PEER=$(i2i_peer "$name")
@@ -95,7 +117,7 @@ kind_i2ipubkey() {
 			# identity binding (X.509-from-wire: cert identity vs
 			# peers_id).  The box's OpenSSL 3.5.8 x509 -req has no
 			# -addext, so write a -extfile SAN config (as i2ieap does).
-			printf "subjectAltName=DNS:r2init-matrix\n" > "$C/certs/init-san.cnf"
+			printf "subjectAltName=DNS:%s\n" "$INIT_SAN" > "$C/certs/init-san.cnf"
 			_ext="-extfile $C/certs/init-san.cnf"
 		else
 			_ext=
@@ -112,12 +134,15 @@ kind_i2ipubkey() {
 	# accept it).  The system anchors are never modified.
 	SSLENV="SSL_CERT_FILE=$C/certs/ca.crt"
 
+RESP_PEERS_ID=$PEER_ID
+[ "$INIT_ID" != r2init-matrix ] && RESP_PEERS_ID=$INIT_ID
 # responder peer-key config: wire variant trusts the on-the-wire CERT chain
 # (cert_validate on + ca_file) and does NOT pin a config-file peer cert; the
 # normal variant pins peers_public_key as before.
 if [ "$WIRE" = 1 ]; then
-	WIRE_CONF='cert_validate on;
-		ca_file "'$C'/certs/ca.crt";'
+	WIRE_CONF="cert_validate on;
+		ca_file \"$C/certs/ca.crt\";
+		$WILD_CONF"
 else
 	WIRE_CONF='peers_public_key x509pem "'$C'/certs/init.crt";'
 fi
@@ -134,7 +159,7 @@ remote matrix_resp {
 	ikev2 {
 		passive on;
 		my_id fqdn "racoon2-matrix";
-		peers_id fqdn "$PEER_ID";
+		peers_id fqdn "$RESP_PEERS_ID";
 		peers_ipaddr "$HI";
 		kmp_enc_alg { aes_gcm; };
 		kmp_prf_alg { hmac_sha2_256; };
@@ -187,7 +212,7 @@ resolver { resolver off; };
 remote matrix_init {
 	acceptable_kmp { ikev2; };
 	ikev2 {
-		my_id fqdn "r2init-matrix";
+		my_id fqdn "$INIT_ID";
 		peers_id fqdn "racoon2-matrix";
 		peers_ipaddr "$HR";
 		kmp_enc_alg { aes_gcm; };
@@ -274,7 +299,8 @@ EOF
 
 	up=0
 	i=0
-	while [ "$i" -lt 45 ]; do
+	_wait=45; [ "$NEG" = 1 ] && _wait=20
+	while [ "$i" -lt "$_wait" ]; do
 		re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		if [ "${re:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ]; then
@@ -284,6 +310,32 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
+	if [ "$NEG" = 1 ]; then
+		# fail-closed identity binding: no child, and the exact refusal
+		_rc=0
+		if [ "$up" -eq 1 ]; then
+			log "FAIL: $name: child came UP although the identity binding must refuse"
+			_rc=1
+		fi
+		if grep -qF -- "$NEG_MSG" "$D/resp-iked.log" 2>/dev/null; then
+			log "identity binding refused as required: '$NEG_MSG'"
+		else
+			log "FAIL: $name: responder log lacks '$NEG_MSG'"
+			grep -E "X.509-from-wire|AUTH|abort" "$D/resp-iked.log" 2>/dev/null | tail -8
+			_rc=1
+		fi
+		if ! grep -q "X.509-from-wire: peer cert validated" "$D/resp-iked.log" 2>/dev/null; then
+			log "FAIL: $name: chain did not validate, so the binding was never exercised"
+			_rc=1
+		fi
+		pkill -9 -f "$C/" 2>/dev/null || true
+		sleep 1
+		ip netns del "$NSR" 2>/dev/null || true
+		ip netns del "$NSI" 2>/dev/null || true
+		ip link del "$VR" 2>/dev/null || true
+		rm -rf "$PRIVRES_R" "$PRIVRES_I" "$C"
+		return $_rc
+	fi
 	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 
 	# PK-auth evidence: the iked TRACE 'auth method %d' must appear on BOTH

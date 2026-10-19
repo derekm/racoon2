@@ -244,6 +244,12 @@ struct ikev2_sa {
 	 * ca_file and verify AUTH against the leaf pubkey, instead of the
 	 * config-file pubkey pin.  NULL when no CERT payload was received. */
 	rc_vchar_t *peer_cert;
+	/* Additional X.509 CERT payloads after the leaf (RFC 7296 s3.6:
+	 * intermediates).  Captured bounded; used only as an UNTRUSTED
+	 * chain-building pool, and only with cert_intermediates on. */
+#define IKEV2_PEER_CERT_EXTRA_MAX	4
+	rc_vchar_t *peer_cert_extra[IKEV2_PEER_CERT_EXTRA_MAX];
+	int peer_cert_nextra;
 
 	struct encryptor *encryptor;
 	struct authenticator *authenticator;
@@ -375,6 +381,9 @@ struct ikev2_sa {
 					 * responder's N(REDIRECT) */
 	rc_vchar_t *redirect_ni;	/* the echoed Ni verbatim from the
 					 * N(REDIRECT), matching ike_sa->n_i */
+	int redirect_count;		/* RFC 5685 s7: redirects followed in
+					 * the current loop-detect window */
+	time_t redirect_window;		/* start of that window */
 	int redirect_follow;		/* RFC 5685 initiator: a verified
 					 * redirect was received and the
 					 * IKE_SA_INIT is being re-run against
@@ -996,6 +1005,8 @@ int ikev2_process_config_request(struct ikev2_sa *,
     struct ikev2_child_param *);
 int ikev2_create_config_reply(struct ikev2_sa *,
     struct ikev2_child_sa *, struct ikev2_child_param *);
+int ikev2_dns_domain_normalize(const uint8_t *, size_t, char *, size_t);
+int ikev2_dns_domain_allowed(const char *, const char *);
 int ikev2_process_config_reply(struct ikev2_sa *, struct ikev2_child_sa *,
     struct ikev2_payload_header *);
 int ikev2_process_config_informational(struct ikev2_sa *,

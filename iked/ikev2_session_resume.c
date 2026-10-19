@@ -302,7 +302,7 @@ ike_msg_session_resume_available(struct ikev2_sa *ike_sa)
 		    "RFC 5723: resuming via IKE_SESSION_RESUME\n");
 		/* hand the loaded ticket to the sender, which re-loads its own
 		 * copy from the store; this intermediate state is no longer
-		 * owned and must not linger (review deleg_ddc1e0d6) */
+		 * owned and must not linger */
 		r2ticket_state_free(&st);
 		initiator_ike_session_resume_send(ike_sa);
 		return 1;
@@ -388,7 +388,7 @@ initiator_ike_session_resume_send(struct ikev2_sa *ike_sa)
 	/* the done: tail always runs r2ticket_state_free(&st), and goto fail
 	 * can reach it before r2ticket_store_load() has zeroed the struct
 	 * (its parameter-check early -1 fires before its memset) — so clear
-	 * it up front or a stray pointer gets free()'d (review deleg_ddc1e0d6) */
+	 * it up front or a stray pointer gets free()'d */
 	memset(&st, 0, sizeof(st));
 
 	if (!(key = ike_msg_resume_store_key(ike_sa->remote)))

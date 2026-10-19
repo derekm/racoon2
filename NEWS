@@ -1,5 +1,18 @@
 $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 
+2026-10-17 Derek Moore
+
+	* Session resumption (RFC 5723) ticket format change: the sealed
+	  ticket state gained a u32 cert_due field (certificate notAfter
+	  carried across resumption).  There is no version bump visible to
+	  older nodes, so during a rolling cluster upgrade a ticket minted
+	  by one version is refused (TICKET_NACK) by the other and the peer
+	  falls back to a full IKE_SA_INIT/IKE_AUTH.  No SA is lost; expect
+	  a burst of full handshakes until every node runs the same build.
+	* Ticket replay marks (ticket-replay/ next to the ticket key) are
+	  now written atomically and swept: expired marks are removed, and
+	  a short mark fails closed.
+
 2026-09-12 Derek Moore
 
 	* IKEv2 iPhone: shared child PFS gate (initiator + responder).

@@ -10,7 +10,7 @@
 #   A (192.0.11.1)     C (192.0.11.3)
 #          \     I (192.0.11.2)   /     protected address 192.0.30.0 served by BOTH A and C
 #
-# Concentrator model (the key fix, ICS research finding):
+# Concentrator model (the key fix):
 #   - The CHILD's TRAFFIC SELECTOR targets the protected ADDRESS 192.0.30.0
 #     (its name $PTC32, a BARE address — rcs_getaddrlist parses a bare IPv4
 #     with no "/N" as /32, NOT /24), which every pool gateway serves
@@ -27,13 +27,14 @@
 #   (The earlier failed attempts either pinned each gateway's OWN address as the
 #    child dst — C rejected TSr==A — or used the wrong responder src/dst sense.)
 #
-# DATA PLANE / xfrm audit note: the child has SAs keyed to C but NO SPD policy
-# row — spmd_pfkey.c refuses a tunnel-policy install when my_sa_ipaddr is absent
-# ("No my_sa_ipaddr"), and that same unpin is what lets ike_determine_sa_endpoint
-# follow the redirect.  So no data-plane traffic is moved and the harness's
-# xa_probe never fires; xfrm_audit.tsv declares the traffic check for exactly
-# this reason.  The row's proof is the failover LANDING (wire re-target + keyed
-# child on the sibling), not data-plane traversal.
+# DATA PLANE (REVIEW_2026-10-18 M5): the tunnel endpoints are unpinned, so
+# spmd installs no static SPD row for them ("tunnel endpoints unpinned") and
+# iked posts the policy pair with the NEGOTIATED endpoints when the child
+# matures (initiator: ikev2_child_state_set; responder: IKE_AUTH path) —
+# after a redirect those are C's.  Both gateways own the protected address
+# on lo, so an ICMP echo I -> 192.0.30.0 must traverse the I<->C tunnel
+# (SPD tmpl dst C, both seats' ESP counters rise); the harness xa_probe and
+# xfrm audit assert the same with no exemption.
 #
 # Flow:
 #   1. I establishes a child to A (TS: I <-> 192.0.30.0 protected addr).
@@ -71,6 +72,11 @@ kind_i2ike_redirect2() {
 	PRIVRES_A="/tmp/r2-${name}-resume-a"; PRIVRES_I="/tmp/r2-${name}-resume-i"; PRIVRES_C="/tmp/r2-${name}-resume-c"
 	D="/tmp/r2-${name}"; C="/tmp/r2-${name}-conf"
 	DGW=$CID
+	# -loop variant (REVIEW_2026-10-18 M2): A statically redirects to C and
+	# C back to A; the initiator must stop after redirect_max (default 5,
+	# RFC 5685 s7 MAX_REDIRECTS) follows within redirect_period (300 s).
+	A_RT=; C_RT=; LOOP=0
+	case "$name" in *-loop) A_RT="redirect_to \"$CID\";"; C_RT="redirect_to \"$HR\";"; LOOP=1 ;; esac
 
 	rm -rf "$PRIVRES_A" "$PRIVRES_I" "$PRIVRES_C" "$D" "$C"
 	mkdir -p "$PRIVRES_A" "$PRIVRES_I" "$PRIVRES_C" "$D" "$C/psk"
@@ -83,7 +89,7 @@ interface { ike { "$HR"; }; spmd { unix "$SPMIF_A"; }; spmd_password "$ETC/spmd.
 resolver { resolver off; };
 remote a_resp {
 acceptable_kmp { ikev2; };
-ikev2 { passive on; my_id fqdn "afront"; peers_id fqdn "ic2"; peers_ipaddr "$HI";
+ikev2 { passive on; $A_RT my_id fqdn "afront"; peers_id fqdn "ic2"; peers_ipaddr "$HI";
 	kmp_enc_alg { aes256_cbc; }; kmp_prf_alg { hmac_sha2_256; }; kmp_hash_alg { hmac_sha2_256; };
 	kmp_dh_group { ecp256; }; kmp_auth_method { psk; }; pre_shared_key "$C/psk/macos.psk"; dpd_delay 300 sec; };
 selector_index sel_in; };
@@ -99,7 +105,7 @@ interface { ike { "$CID"; }; spmd { unix "$SPMIF_C"; }; spmd_password "$ETC/spmd
 resolver { resolver off; };
 remote c_resp {
 	acceptable_kmp { ikev2; };
-	ikev2 { passive on; my_id fqdn "afront"; peers_id fqdn "ic2"; peers_ipaddr "$HI";
+	ikev2 { passive on; $C_RT my_id fqdn "afront"; peers_id fqdn "ic2"; peers_ipaddr "$HI";
 		kmp_enc_alg { aes256_cbc; }; kmp_prf_alg { hmac_sha2_256; }; kmp_hash_alg { hmac_sha2_256; };
 		kmp_dh_group { ecp256; }; kmp_auth_method { psk; }; pre_shared_key "$C/psk/macos.psk"; dpd_delay 300 sec; };
 	selector_index sel_in; };
@@ -115,7 +121,7 @@ interface { ike { "$HI"; }; spmd { unix "$SPMIF_I"; }; spmd_password "$ETC/spmd.
 resolver { resolver off; };
 remote i_init {
 	acceptable_kmp { ikev2; };
-	ikev2 { passive off; my_id fqdn "ic2"; peers_id fqdn "afront"; peers_ipaddr "$HR";
+	ikev2 { passive off; accept_redirect on; my_id fqdn "ic2"; peers_id fqdn "afront"; peers_ipaddr "$HR";
 		kmp_enc_alg { aes256_cbc; }; kmp_prf_alg { hmac_sha2_256; }; kmp_hash_alg { hmac_sha2_256; };
 		kmp_dh_group { ecp256; }; kmp_auth_method { psk; }; pre_shared_key "$C/psk/macos.psk"; dpd_delay 300 sec; };
 	selector_index sel_in; };
@@ -150,8 +156,11 @@ EOF
 		ip netns exec "$_NS" ip link set "$_SEAT" up
 		ip netns exec "$_NS" ip addr add "$_ADDR/24" dev "$_SEAT"
 	done
-	# (No protected-net lo/route scaffolding: the /32 child selector below
-	# needs no backing interface, and this row does not move data.)
+	# Protected address on both gateways' lo (it answers the echo) and an
+	# on-link route for it on I (the outer route is chosen by the SPD).
+	ip netns exec "$NSR" ip addr add "$PTC32/32" dev lo
+	ip netns exec "$NSC" ip addr add "$PTC32/32" dev lo
+	ip netns exec "$NSI" ip route add "$PTC32/32" dev "$VLI"
 
 	# IKE/UDP-XFRM allow per seat (each seat reaches every other on /24).
 	for ns in "$NSR:$HR" "$NSI:$HI" "$NSC:$CID"; do
@@ -183,6 +192,29 @@ EOF
 
 	sleep 2
 	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
+
+	if [ "$LOOP" = 1 ]; then
+		_rc=0; i=0; lim=0
+		[ -f "$D/i-iked.log" ] || touch "$D/i-iked.log"
+		while [ "$i" -lt 40 ]; do
+			grep -q "redirect loop limit exceeded" "$D/i-iked.log" 2>/dev/null && { lim=1; break; }
+			i=$((i+1)); sleep 1
+		done
+		nC=$(grep -cE "${CID}\[500\].*-> INI_IKE_SA_INIT_SENT" "$D/i-iked.log" 2>/dev/null)
+		nA=$(grep -cE "${HR}\[500\].*-> INI_IKE_SA_INIT_SENT" "$D/i-iked.log" 2>/dev/null)
+		ae=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+		ce=$(ip netns exec "$NSC" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+		log "redirect-loop: limit_log=$lim retargets C=$nC A=$nA esp A=$ae C=$ce"
+		[ "$lim" -eq 1 ] || { log "FAIL: initiator never logged the RFC 5685 s7 redirect loop limit"; _rc=1; }
+		# exactly 1 initial send (to A) + redirect_max (5) follows
+		# alternating C,A,C,A,C: A=3, C=3.
+		{ [ "${nC:-0}" -eq 3 ] && [ "${nA:-0}" -eq 3 ]; } || { log "FAIL: expected exactly 1 + 5 IKE_SA_INIT sends (A=3 C=3), got A=$nA C=$nC"; _rc=1; }
+		{ [ "${ae:-0}" -eq 0 ] && [ "${ce:-0}" -eq 0 ]; } || { log "FAIL: an SA was installed during a redirect loop"; _rc=1; }
+		kill "$ASPMD" "$ISPMD" "$CSPMD" 2>/dev/null || true
+		pkill -9 -f "$C/" 2>/dev/null || true
+		for NS in "$NSR" "$NSI" "$NSC" "$NBH"; do ip netns del "$NS" 2>/dev/null || true; done
+		return $_rc
+	fi
 
 	up=0; i=0
 	while [ "$i" -lt 45 ]; do
@@ -249,16 +281,23 @@ EOF
 	[ "$cup" -eq 1 ] || { log "FAIL: sibling C did not complete the redirected session (C esp=${ce:-0} I esp=${ie:-0})"; return 1; }
 	[ "$A_FINAL" -eq 0 ] || { log "FAIL: client re-established against the draining A (A esp=$A_FINAL)"; return 1; }
 
-	# Data plane: the child SAs are keyed (C esp>=2, I esp>=2) and the
-	# initiator's wire re-target to C is asserted above.  There is NO SPD
-	# policy row for this child (spmd_pfkey refuses a tunnel install without
-	# my_sa_ipaddr — the same unpin that follows the redirect), so no
-	# data-plane traversal is possible, which is out of scope for this
-	# failover-landing proof — the xfrm audit's traffic check is
-	# XFAIL-declared for this row for exactly that reason.  Landing + wire
-	# re-target are the gates.
+	# Data plane: the SPD must now carry the child to C (tmpl dst C), and
+	# an echo to the protected address must succeed through it with C's
+	# and I's ESP packet counters rising.
+	i=0; spd=0
+	while [ "$i" -lt 15 ]; do
+		ip netns exec "$NSI" ip xfrm policy 2>/dev/null | grep -A3 "dst $PTC32/32" | grep -q "tmpl src $HI dst $CID" && { spd=1; break; }
+		i=$((i+1)); sleep 1
+	done
+	[ "$spd" -eq 1 ] || { log "FAIL: no I SPD row for $PTC32 tunnelled to C ($CID)"; ip netns exec "$NSI" ip xfrm policy >&2; return 1; }
+	cpk0=$(ip netns exec "$NSC" ip -s xfrm state 2>/dev/null | awk 'match($0, /[0-9]+\(packets\)/) { s += substr($0, RSTART, RLENGTH - 9) } END { print s + 0 }')
+	ip netns exec "$NSI" ping -c 3 -W 2 -I "$HI" "$PTC32" >"$D/ping.out" 2>&1 \
+		|| { log "FAIL: echo to protected $PTC32 over the redirected tunnel failed: $(tail -n 2 "$D/ping.out" | tr '\n' ' ')"; return 1; }
+	cpk1=$(ip netns exec "$NSC" ip -s xfrm state 2>/dev/null | awk 'match($0, /[0-9]+\(packets\)/) { s += substr($0, RSTART, RLENGTH - 9) } END { print s + 0 }')
+	[ "$cpk1" -gt "$cpk0" ] || { log "FAIL: C ESP packet counters did not rise ($cpk0 -> $cpk1)"; return 1; }
+	log "redirect2 data plane OK: I SPD tmpl dst $CID, echo to $PTC32 answered through C (C pkts $cpk0 -> $cpk1)"
 
-	log "redirect2 live proof OK: A drained+closed, I's new IKE_SA_INIT redirected to LIVE sibling C, C completed full IKE_AUTH + child up, A stayed at 0"
+	log "redirect2 live proof OK: A drained+closed, I's new IKE_SA_INIT redirected to LIVE sibling C, C completed full IKE_AUTH + child up + data plane through C, A stayed at 0"
 	echo ok > "$D/redirect2.gate"
 
 	kill "$ASPMD" "$ISPMD" "$CSPMD" 2>/dev/null || true

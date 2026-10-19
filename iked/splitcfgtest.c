@@ -78,6 +78,119 @@ mk_addrlist(int fam, const char *addrstr, int prefixlen)
 	return al;
 }
 
+/* REVIEW_2026-10-18 M1: a self-signed RSA cert with NO SAN whose subject
+ * carries the given CN bytes (cnlen may include an embedded NUL), and a
+ * second CN when cn2 != NULL.  Returns its DER as an rc_vchar_t. */
+static rc_vchar_t *
+mkcert_cn(const char *cn, int cnlen, const char *cn2)
+{
+	EVP_PKEY_CTX *kctx;
+	EVP_PKEY *pk = NULL;
+	X509 *x = NULL;
+	X509_NAME *nm;
+	rc_vchar_t *der = NULL;
+	unsigned char *q;
+	int len;
+
+	kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+	if (!kctx || EVP_PKEY_keygen_init(kctx) <= 0 ||
+	    EVP_PKEY_CTX_set_rsa_keygen_bits(kctx, 2048) <= 0 ||
+	    EVP_PKEY_keygen(kctx, &pk) <= 0)
+		goto out;
+	x = X509_new();
+	if (!x)
+		goto out;
+	ASN1_INTEGER_set(X509_get_serialNumber(x), 7);
+	X509_gmtime_adj(X509_getm_notBefore(x), 0);
+	X509_gmtime_adj(X509_getm_notAfter(x), 3600);
+	X509_set_pubkey(x, pk);
+	nm = X509_get_subject_name(x);
+	X509_NAME_add_entry_by_NID(nm, NID_commonName, V_ASN1_UTF8STRING,
+	    (const unsigned char *)cn, cnlen, -1, 0);
+	if (cn2)
+		X509_NAME_add_entry_by_NID(nm, NID_commonName, MBSTRING_ASC,
+		    (const unsigned char *)cn2, -1, -1, 0);
+	X509_set_issuer_name(x, nm);
+	if (X509_sign(x, pk, EVP_sha256()) <= 0)
+		goto out;
+	len = i2d_X509(x, NULL);
+	if (len <= 0 || (der = rc_vmalloc((size_t)len)) == NULL)
+		goto out;
+	q = (unsigned char *)der->v;
+	i2d_X509(x, &q);
+	der->l = (size_t)len;
+out:
+	if (kctx)
+		EVP_PKEY_CTX_free(kctx);
+	if (x)
+		X509_free(x);
+	if (pk)
+		EVP_PKEY_free(pk);
+	return der;
+}
+
+/* asserted FQDN identity in the sa->id_i layout (id_h + bytes) */
+/* REVIEW_2026-10-18 M4: an rcf_remote whose ikev2 accept_dns_domain
+ * allowlist is `list` (static storage; one at a time). */
+static struct rcf_remote *
+mk_accept_rm(const char *list)
+{
+	static struct rcf_kmp k;
+	static struct rcf_remote r;
+	static rc_vchar_t *v;
+
+	if (v)
+		rc_vfree(v);
+	v = rc_vmalloc(strlen(list) + 1);
+	memcpy(v->v, list, strlen(list) + 1);
+	v->l = strlen(list);
+	memset(&k, 0, sizeof(k));
+	memset(&r, 0, sizeof(r));
+	k.accept_dns_domain = v;
+	r.ikev2 = &k;
+	return &r;
+}
+
+/* build a CFG_REPLY carrying the given (type, value, len) attributes */
+static struct ikev2_payload_header *
+mk_cfg_reply(uint8_t *buf, size_t bl, int n, const int *types,
+	     const char *const *vals, const size_t *lens)
+{
+	struct ikev2payl_config *cfg = (struct ikev2payl_config *)buf;
+	size_t off = sizeof(struct ikev2payl_config);
+	int i;
+
+	memset(buf, 0, bl);
+	cfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+	for (i = 0; i < n; ++i) {
+		struct ikev2cfg_attrib *a = (struct ikev2cfg_attrib *)(buf + off);
+
+		put_uint16(&a->type, types[i]);
+		put_uint16(&a->length, (uint16_t)lens[i]);
+		memcpy(IKEV2CFG_ATTR_VALUE(a), vals[i], lens[i]);
+		off += sizeof(*a) + lens[i];
+	}
+	buf[2] = (uint8_t)((off >> 8) & 0xff);
+	buf[3] = (uint8_t)(off & 0xff);
+	cfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+	return &cfg->header;
+}
+
+static rc_vchar_t *
+mkid_fqdn(const char *name)
+{
+	size_t n = strlen(name);
+	rc_vchar_t *v = rc_vmalloc(sizeof(struct ikev2payl_ident_h) + n);
+
+	if (!v)
+		return NULL;
+	memset(v->v, 0, sizeof(struct ikev2payl_ident_h));
+	((uint8_t *)v->v)[0] = 2;	/* IKEV2_ID_FQDN */
+	memcpy((char *)v->v + sizeof(struct ikev2payl_ident_h), name, n);
+	v->l = sizeof(struct ikev2payl_ident_h) + n;
+	return v;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -396,32 +509,51 @@ main(int argc, char *argv[])
 	rcs_free_addrlist(sel4.dst);
 	rcs_free_addrlist(sel6.dst);
 
-	/* ================= B.2c: RFC 4945 FQDN identity matching =========
-	 * fqdn_id_match: exact FQDN, wildcard-FQDN (single leftmost label),
-	 * case-insensitive; must reject multi-label wildcard over-match and
-	 * a literal '*' in a non-wildcard. */
-	CK(fqdn_id_match("gw.example.com", "gw.example.com", 14) == 1,
+	/* ================= B.2c: RFC 4945 / 6125 FQDN identity matching ====
+	 * fqdn_id_match(cert_name, asserted, len, allow_wildcard): the
+	 * wildcard is only ever in the CERTIFICATE; an asserted ID with '*'
+	 * never matches (REVIEW_2026-10-18 H2: the old code had it reversed,
+	 * so IDi "*.example.com" bound to an "x.example.com" cert). */
+	CK(fqdn_id_match("gw.example.com", "gw.example.com", 14, 0) == 1,
 	   "exact FQDN matches");
-	CK(fqdn_id_match("GW.EXAMPLE.COM", "gw.example.com", 14) == 1,
+	CK(fqdn_id_match("GW.EXAMPLE.COM", "gw.example.com", 14, 0) == 1,
 	   "exact FQDN is case-insensitive");
-	CK(fqdn_id_match("a.example.com", "*.example.com", 13) == 1,
-	   "wildcard matches single leftmost label");
-	CK(fqdn_id_match("A.Example.COM", "*.example.com", 13) == 1,
-	   "wildcard is case-insensitive");
-	CK(fqdn_id_match("a.b.example.com", "*.example.com", 13) == 0,
-	   "wildcard does NOT match extra leftmost label (RFC 6125 s6.4.3)");
-	CK(fqdn_id_match("example.com", "*.example.com", 13) == 0,
-	   "wildcard does not match bare domain");
-	CK(fqdn_id_match("x.gw.example.com", "*.gw.example.com", 16) == 1,
-	   "wildcard with a multi-label suffix matches one leftmost label");
-	CK(fqdn_id_match("a.b.gw.example.com", "*.gw.example.com", 16) == 0,
-	   "wildcard with a multi-label suffix rejects two extra labels");
-	CK(fqdn_id_match("gw.example.com", "*.gw.example.com", 16) == 0,
-	   "wildcard needs a distinct leftmost label (suffix too long)");
-	CK(fqdn_id_match("gw.example.com", "gw.*.com", 8) == 0,
-	   "literal '*' in non-wildcard does not match");
-	CK(fqdn_id_match("gw.example.com", "gw.example.com", 5) == 0,
+	CK(fqdn_id_match("gw.example.com", "gw.example.com", 5, 0) == 0,
 	   "length mismatch does not match");
+	/* reversed direction: asserted wildcard is refused, both settings */
+	CK(fqdn_id_match("x.example.com", "*.example.com", 13, 0) == 0,
+	   "asserted '*.example.com' does NOT bind to an x.example.com cert");
+	CK(fqdn_id_match("x.example.com", "*.example.com", 13, 1) == 0,
+	   "asserted wildcard refused even with allow_wildcard_cert on");
+	CK(fqdn_id_match("*.example.com", "*.example.com", 13, 1) == 0,
+	   "asserted wildcard refused even against an identical cert wildcard");
+	CK(fqdn_id_match("gw.example.com", "gw.example.com\0.evil", 20, 0) == 0,
+	   "asserted ID with an embedded NUL never matches");
+	/* certificate wildcard: only with allow_wildcard_cert on */
+	CK(fqdn_id_match("*.example.com", "a.example.com", 13, 0) == 0,
+	   "cert wildcard refused when allow_wildcard_cert is off");
+	CK(fqdn_id_match("*.example.com", "a.example.com", 13, 1) == 1,
+	   "cert wildcard matches one leftmost label when allowed");
+	CK(fqdn_id_match("*.Example.COM", "A.example.com", 13, 1) == 1,
+	   "cert wildcard is case-insensitive");
+	CK(fqdn_id_match("*.example.com", "a.b.example.com", 15, 1) == 0,
+	   "cert wildcard does NOT match an extra leftmost label (RFC 6125 s6.4.3)");
+	CK(fqdn_id_match("*.example.com", "example.com", 11, 1) == 0,
+	   "cert wildcard does not match the bare domain");
+	CK(fqdn_id_match("*.example.com", ".example.com", 12, 1) == 0,
+	   "cert wildcard needs a non-empty leftmost label");
+	CK(fqdn_id_match("*.gw.example.com", "x.gw.example.com", 16, 1) == 1,
+	   "cert wildcard with a multi-label suffix matches one label");
+	CK(fqdn_id_match("*.gw.example.com", "a.b.gw.example.com", 18, 1) == 0,
+	   "cert wildcard with a multi-label suffix rejects two extra labels");
+	CK(fqdn_id_match("*.com", "example.com", 11, 1) == 0,
+	   "cert wildcard over a single-label suffix (*.com) never matches");
+	CK(fqdn_id_match("gw.*.com", "gw.example.com", 14, 1) == 0,
+	   "non-leftmost '*' in the cert never matches");
+	CK(fqdn_id_match("g*.example.com", "gw.example.com", 14, 1) == 0,
+	   "partial-label '*' in the cert never matches");
+	CK(fqdn_id_match("*.*.example.com", "a.b.example.com", 15, 1) == 0,
+	   "a second '*' in the cert never matches");
 
 	/* ================= B.2d: SAN-iPAddress <-> IP peers_id binding ======
 	 * Build a minimal X.509 with an iPAddress SAN (192.0.2.77), DER-encode
@@ -566,6 +698,78 @@ main(int argc, char *argv[])
 		if (der) rc_vfree(der);
 		if (id.id) rc_vfree(id.id);
 		if (isa.id_i) rc_vfree(isa.id_i);
+	}
+
+	/* ============ B.2f: CN fallback is opt-in and NUL-safe ============
+	 * REVIEW_2026-10-18 M1: eay_get_x509subject_cn() used
+	 * X509_NAME_get_text_by_NID, so a CN "gw.example.com\0.evil" read as
+	 * "gw.example.com" (null-prefix).  It now refuses an embedded NUL or
+	 * a second CN, and the CN fallback needs cert_cn_fallback on. */
+	{
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa isa;
+		rc_vchar_t *cplain, *cnul, *ctwo;
+		char *cn;
+		static const char nulcn[] = "gw.example.com\0.evil.test";
+
+		cplain = mkcert_cn("gw.example.com", -1, NULL);
+		cnul = mkcert_cn(nulcn, (int)sizeof(nulcn) - 1, NULL);
+		ctwo = mkcert_cn("gw.example.com", -1, "other.example.com");
+		CK(cplain && cnul && ctwo, "B.2f: test certs built");
+
+		cn = cplain ? eay_get_x509subject_cn(cplain) : NULL;
+		CK(cn && strcmp(cn, "gw.example.com") == 0,
+		   "eay_get_x509subject_cn: plain CN returned");
+		free(cn);
+		cn = cnul ? eay_get_x509subject_cn(cnul) : NULL;
+		CK(cn == NULL, "eay_get_x509subject_cn: CN with embedded NUL refused");
+		free(cn);
+		cn = ctwo ? eay_get_x509subject_cn(ctwo) : NULL;
+		CK(cn == NULL, "eay_get_x509subject_cn: two CNs (ambiguous) refused");
+		free(cn);
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		memset(&isa, 0, sizeof(isa));
+		ikm.cert_validate = RCT_BOOL_ON;
+		rm.ikev2 = &ikm;
+		isa.rmconf = &rm;
+		isa.id_i = mkid_fqdn("gw.example.com");
+		isa.id_i_type = RCT_IDT_FQDN;
+
+		isa.peer_cert = cplain;
+		ikm.cert_cn_fallback = RCT_BOOL_OFF;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "CN-only cert does NOT bind with cert_cn_fallback off (default)");
+		ikm.cert_cn_fallback = RCT_BOOL_ON;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) == 0,
+		   "CN-only cert binds with cert_cn_fallback on");
+		isa.peer_cert = cnul;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "null-prefix CN does NOT bind gw.example.com even with cert_cn_fallback on");
+		isa.peer_cert = ctwo;
+		CK(ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+		   "two-CN cert does NOT bind with cert_cn_fallback on");
+		/* wildcard CN follows allow_wildcard_cert like a SAN */
+		rc_vfree(isa.id_i);
+		isa.id_i = mkid_fqdn("x.example.com");
+		{
+			rc_vchar_t *cw = mkcert_cn("*.example.com", -1, NULL);
+			isa.peer_cert = cw;
+			ikm.allow_wildcard_cert = RCT_BOOL_OFF;
+			CK(cw && ikev2_wire_cert_id_ok(&isa, TRUE) != 0,
+			   "wildcard CN refused with allow_wildcard_cert off");
+			ikm.allow_wildcard_cert = RCT_BOOL_ON;
+			CK(cw && ikev2_wire_cert_id_ok(&isa, TRUE) == 0,
+			   "wildcard CN binds one label with allow_wildcard_cert on");
+			if (cw) rc_vfree(cw);
+		}
+		isa.peer_cert = NULL;
+		rc_vfree(isa.id_i);
+		if (cplain) rc_vfree(cplain);
+		if (cnul) rc_vfree(cnul);
+		if (ctwo) rc_vfree(ctwo);
 	}
 
 	/* ============ B.2e: embedded-NUL SAN must not CN-fallback =====
@@ -860,6 +1064,7 @@ main(int argc, char *argv[])
 
 		memset(&c, 0, sizeof(c));
 		memset(&isa, 0, sizeof(isa));
+		isa.rmconf = mk_accept_rm("corp.example");	/* M4 allowlist */
 		ikev2_child_param_init(&c.child_param);
 		CK(ikev2_process_config_reply(&isa, &c, &cfg->header) == 0,
 		   "process_config_reply rc==0 (25)");
@@ -868,6 +1073,129 @@ main(int argc, char *argv[])
 		   "25 committed to internal_dns_domain (corp.example)");
 		if (c.internal_dns_domain)
 			rc_vfree(c.internal_dns_domain);
+	}
+
+	/* ===== B.4b: INTERNAL_DNS_DOMAIN validation + allowlist (M4) =====
+	 * A peer-pushed 25 is only committed when it is a valid LDH name
+	 * inside accept_dns_domain (default: none); several are kept as a
+	 * space-separated list; a 26 after a refused 25 is ignored. */
+	{
+		char o[256];
+		static const struct { const char *v; size_t l; int ok;
+		    const char *norm; } dv[] = {
+			{ "corp.example", 12, 1, "corp.example" },
+			{ "Corp.Example.", 13, 1, "corp.example" },
+			{ "com", 3, 1, "com" },
+			{ ".", 1, 0, 0 },
+			{ "", 0, 0, 0 },
+			{ "a..b", 4, 0, 0 },
+			{ ".a.b", 4, 0, 0 },
+			{ "-a.b", 4, 0, 0 },
+			{ "a-.b", 4, 0, 0 },
+			{ "a.b-", 4, 0, 0 },
+			{ "a_b.example", 11, 0, 0 },
+			{ "corp\0.example", 13, 0, 0 },
+			{ "corp.example\n", 13, 0, 0 },
+			{ "$(id).example", 13, 0, 0 },
+			{ "a b.example", 11, 0, 0 },
+			{ "*.example", 9, 0, 0 },
+		};
+		char lab64[80], big[300];
+		size_t i;
+		struct ikev2_sa isa;
+		struct ikev2_child_sa c;
+		uint8_t buf[512];
+		struct ikev2_payload_header *ph;
+
+		for (i = 0; i < sizeof(dv) / sizeof(dv[0]); ++i) {
+			int r = ikev2_dns_domain_normalize(
+			    (const uint8_t *)dv[i].v, dv[i].l, o, sizeof(o));
+			CK((r == 0) == dv[i].ok &&
+			   (!dv[i].ok || strcmp(o, dv[i].norm) == 0),
+			   dv[i].ok ? "dns_domain valid LDH accepted+normalized"
+				    : "dns_domain invalid name refused");
+		}
+		memset(lab64, 'a', 64);
+		memcpy(lab64 + 64, ".example", 9);
+		CK(ikev2_dns_domain_normalize((uint8_t *)lab64, 72, o,
+		   sizeof(o)) != 0, "dns_domain 64-octet label refused");
+		/* lab64 + 1 = 63 'a' + ".example": the longest legal label */
+		CK(ikev2_dns_domain_normalize((uint8_t *)lab64 + 1, 71, o,
+		   sizeof(o)) == 0, "dns_domain 63-octet label accepted");
+		for (i = 0; i < 254; ++i)
+			big[i] = (i % 2) ? '.' : 'a';
+		big[253] = 'a';
+		CK(ikev2_dns_domain_normalize((uint8_t *)big, 253, o,
+		   sizeof(o)) == 0, "dns_domain 253 octets accepted");
+		CK(ikev2_dns_domain_normalize((uint8_t *)big, 254, o,
+		   sizeof(o)) != 0, "dns_domain 254 octets refused");
+
+		CK(ikev2_dns_domain_allowed("corp.example", "corp.example"),
+		   "allowlist: exact match");
+		CK(ikev2_dns_domain_allowed("eng.corp.example",
+		   "lab.test, corp.example."), "allowlist: subdomain match");
+		CK(!ikev2_dns_domain_allowed("evilcorp.example",
+		   "corp.example"), "allowlist: suffix without label boundary refused");
+		CK(!ikev2_dns_domain_allowed("example", "corp.example"),
+		   "allowlist: parent of an entry refused");
+		CK(!ikev2_dns_domain_allowed("corp.example", NULL),
+		   "allowlist: none configured accepts nothing");
+		CK(!ikev2_dns_domain_allowed("com", ""),
+		   "allowlist: empty list accepts nothing");
+
+		/* parse: no allowlist -> refused, nothing committed */
+		{
+			int t[1] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN };
+			const char *v[1] = { "corp.example" };
+			size_t l[1] = { 12 };
+
+			ph = mk_cfg_reply(buf, sizeof(buf), 1, t, v, l);
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			ikev2_child_param_init(&c.child_param);
+			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
+			   c.internal_dns_domain == NULL,
+			   "25 refused when accept_dns_domain unset (default)");
+		}
+		/* parse: hostile names refused even when allowlisted broadly */
+		{
+			int t[2] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+				     IKEV2_CFG_INTERNAL_DNSSEC_TA };
+			const char *v[2] = { "x.corp.example\n;rm", "\x01\x02\x03\x04" };
+			size_t l[2] = { 18, 4 };
+
+			ph = mk_cfg_reply(buf, sizeof(buf), 2, t, v, l);
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			isa.rmconf = mk_accept_rm("corp.example");
+			ikev2_child_param_init(&c.child_param);
+			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
+			   c.internal_dns_domain == NULL &&
+			   c.internal_dnssec_ta == NULL,
+			   "invalid 25 refused and its 26 ignored");
+		}
+		/* parse: out-of-allowlist refused, in-list kept, list built */
+		{
+			int t[3] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+				     IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+				     IKEV2_CFG_INTERNAL_DNS_DOMAIN };
+			const char *v[3] = { "corp.example", "com",
+					     "Lab.Test." };
+			size_t l[3] = { 12, 3, 9 };
+
+			ph = mk_cfg_reply(buf, sizeof(buf), 3, t, v, l);
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			isa.rmconf = mk_accept_rm("corp.example,lab.test");
+			ikev2_child_param_init(&c.child_param);
+			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
+			   c.internal_dns_domain != NULL &&
+			   strcmp(c.internal_dns_domain->s,
+				  "corp.example lab.test") == 0,
+			   "multiple 25s: allowed kept as list, 'com' refused");
+			if (c.internal_dns_domain)
+				rc_vfree(c.internal_dns_domain);
+		}
 	}
 
 	/* ============ B.6: INTERNAL_DNSSEC_TA (26, RFC 8598 §8) ==========
@@ -1130,6 +1458,7 @@ main(int argc, char *argv[])
 
 			memset(&c, 0, sizeof(c));
 			memset(&isa, 0, sizeof(isa));
+			isa.rmconf = mk_accept_rm("corp.example");
 			ikev2_child_param_init(&c.child_param);
 			CK(ikev2_process_config_reply(&isa, &c,
 			     &cfg->header) == 0,

@@ -233,6 +233,14 @@ static int rcf_fix_pre_shared_key (struct cf_list *, void *);
 static int rcf_fix_redirect_to (struct cf_list *, void *);
 static int rcf_fix_cert_validate (struct cf_list *, void *);
 static int rcf_fix_ca_file (struct cf_list *, void *);
+static int rcf_fix_cert_intermediates (struct cf_list *, void *);
+static int rcf_fix_accept_dns_domain (struct cf_list *, void *);
+static int rcf_fix_redirect_period (struct cf_list *, void *);
+static int rcf_fix_redirect_max (struct cf_list *, void *);
+static int rcf_fix_accept_redirect (struct cf_list *, void *);
+static int rcf_fix_cert_cn_fallback (struct cf_list *, void *);
+static int rcf_fix_allow_wildcard_cert (struct cf_list *, void *);
+static int rcf_fix_cert_trust_system (struct cf_list *, void *);
 static int rcf_fix_radius_server (struct cf_list *, void *);
 static int rcf_fix_radius_port (struct cf_list *, void *);
 static int rcf_fix_radius_secret_file (struct cf_list *, void *);
@@ -363,6 +371,14 @@ struct rcf_tdf_t {
 	{ CFD_VERIFY_ID,		rcf_fix_verify_id, },
 	{ CFD_CERT_VALIDATE,		rcf_fix_cert_validate, },
 	{ CFD_CA_FILE,			rcf_fix_ca_file, },
+	{ CFD_CERT_INTERMEDIATES,		rcf_fix_cert_intermediates, },
+	{ CFD_ACCEPT_DNS_DOMAIN,		rcf_fix_accept_dns_domain, },
+	{ CFD_REDIRECT_PERIOD,		rcf_fix_redirect_period, },
+	{ CFD_REDIRECT_MAX,		rcf_fix_redirect_max, },
+	{ CFD_ACCEPT_REDIRECT,		rcf_fix_accept_redirect, },
+	{ CFD_CERT_CN_FALLBACK,		rcf_fix_cert_cn_fallback, },
+	{ CFD_ALLOW_WILDCARD_CERT,		rcf_fix_allow_wildcard_cert, },
+	{ CFD_CERT_TRUST_SYSTEM,		rcf_fix_cert_trust_system, },
 	{ CFD_VERIFY_PUBKEY,		rcf_fix_verify_pubkey, },
 	{ CFD_SEND_CERT,		rcf_fix_send_cert, },
 	{ CFD_SEND_CERT_REQ,		rcf_fix_send_cert_req, },
@@ -1934,6 +1950,110 @@ rcf_fix_ca_file(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_CA_FILE))
 		return -1;
 	if (rcf_fix_string(head->nextp, &dst->ca_file))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_cert_trust_system(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_CERT_TRUST_SYSTEM))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->cert_trust_system))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_allow_wildcard_cert(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ALLOW_WILDCARD_CERT))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->allow_wildcard_cert))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_cert_cn_fallback(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_CERT_CN_FALLBACK))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->cert_cn_fallback))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_accept_redirect(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ACCEPT_REDIRECT))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->accept_redirect))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_redirect_max(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_REDIRECT_MAX))
+		return -1;
+	if (rcf_fix_number(head->nextp, &dst->redirect_max))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_redirect_period(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_REDIRECT_PERIOD))
+		return -1;
+	if (rcf_fix_number(head->nextp, &dst->redirect_period))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_accept_dns_domain(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ACCEPT_DNS_DOMAIN))
+		return -1;
+	if (rcf_fix_string(head->nextp, &dst->accept_dns_domain))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_cert_intermediates(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_CERT_INTERMEDIATES))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->cert_intermediates))
 		return -1;
 
 	return 0;
@@ -3564,6 +3684,7 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rc_vfree(n->pre_shared_key);
 	rc_vfree(n->redirect_to);
 	rc_vfree(n->ca_file);
+	rc_vfree(n->accept_dns_domain);
 	rc_vfree(n->my_principal);
 	rc_vfree(n->peers_principal);
 	rc_vfree(n->addresspool);
@@ -3628,6 +3749,14 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	 * the default OFF and the wire chain is never validated. */
 	new->cert_validate = src->cert_validate;
 	DEEPCOPY_VDUP(src->ca_file, new->ca_file);
+	new->cert_intermediates = src->cert_intermediates;
+	DEEPCOPY_VDUP(src->accept_dns_domain, new->accept_dns_domain);
+	new->redirect_period = src->redirect_period;
+	new->redirect_max = src->redirect_max;
+	new->accept_redirect = src->accept_redirect;
+	new->cert_cn_fallback = src->cert_cn_fallback;
+	new->allow_wildcard_cert = src->allow_wildcard_cert;
+	new->cert_trust_system = src->cert_trust_system;
 	DEEPCOPY_PKLIST(src->my_pubkey, new->my_pubkey);
 	DEEPCOPY_PKLIST(src->peers_pubkey, new->peers_pubkey);
 	DEEPCOPY_ADDRLIST(src->peers_ipaddr, new->peers_ipaddr);
