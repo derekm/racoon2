@@ -1251,6 +1251,17 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			/* netmask -> prefixlen (count leading set bits) */
 			for (plen = 0; plen < 32 && (m & (0x80000000U >> plen)); plen++)
 				;
+			/* RFC 7296 §3.15.2: the netmask must be a valid,
+			 * contiguous prefix.  Bits set after the leading run
+			 * would commit a wrong (non-prefix) subnet. */
+			if (m != (plen == 0 ? 0 : (0xffffffffU << (32 - plen)))) {
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
+					PLOGLOC,
+					"INTERNAL_IP4_SUBNET non-contiguous netmask %s ignored\n",
+					inet_ntop(AF_INET, &smask, addrstr,
+						sizeof(addrstr)));
+				break;
+			}
 			TRACE((PLOGLOC, "INTERNAL_IP4_SUBNET: %s/%d\n",
 			       inet_ntop(AF_INET, &saddr, addrstr,
 					 sizeof(addrstr)), plen));
@@ -1300,6 +1311,15 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			}
 			sd = (struct ikev2cfg_ip6addr *)value;
 			plen = sd->prefixlen;
+			/* RFC 7296 §3.15.2: prefixlen is 0..128; clamp a
+			 * malformed peer value rather than commit a >128 mask. */
+			if (plen > 128) {
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
+					PLOGLOC,
+					"INTERNAL_IP6_SUBNET prefixlen %d clamped to 128\n",
+					plen);
+				plen = 128;
+			}
 			TRACE((PLOGLOC, "INTERNAL_IP6_SUBNET: %s/%d\n",
 			       inet_ntop(AF_INET6, sd->addr, addrstr,
 					 sizeof(addrstr)), plen));
@@ -1368,6 +1388,18 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			    prev_type != IKEV2_CFG_INTERNAL_DNSSEC_TA) {
 				TRACE((PLOGLOC,
 				       "INTERNAL_DNSSEC_TA without preceding domain, ignored\n"));
+				prev_type = 0;
+				break;
+			}
+			/* RFC 8598 §8: a TA is Key Tag(2)|Alg(1)|Digest
+			 * Type(1)|Digest Data(>=1), so a body shorter than
+			 * 5 octets cannot be a well-formed anchor; reject it
+			 * rather than commit garbage to the updown env. */
+			if (len < 5) {
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
+					PLOGLOC,
+					"INTERNAL_DNSSEC_TA too short (%zu octets, need >=5), ignored\n",
+					len);
 				prev_type = 0;
 				break;
 			}
