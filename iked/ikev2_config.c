@@ -1045,13 +1045,22 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 		len = IKEV2CFG_ATTR_LENGTH(attr);
 		value = IKEV2CFG_ATTR_VALUE(attr);
 		TRACE((PLOGLOC, "attribute type %d len %zd\n", type, len));
-		if (ikev2_cfg_attr_len(type) != 0 &&
-		    ikev2_cfg_attr_len(type) < (int)len) {
-			isakmp_log(ike_sa, 0, 0, 0,
-				   PLOG_PROTOERR, PLOGLOC,
-				   "Configuration payload type %d has bogus data length %zu\n",
-				   type, len);
-			return -1;
+		{
+			/* Fixed-size attributes must be EXACTLY the expected
+			 * length.  The old check only rejected len > expected,
+			 * so an attacker-short declared length (e.g. type 10,
+			 * len 0) let the handlers below memcpy() the full
+			 * fixed width (af_addrsize up to 21 bytes) from a
+			 * truncated value -> heap over-read into the lease
+			 * lists / updown env.  RFC 7296 s3.15. */
+			int want = ikev2_cfg_attr_len(type);
+			if (want != 0 && (int)len != want) {
+				isakmp_log(ike_sa, 0, 0, 0,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "Configuration payload type %d has bogus data length %zu (expected %d)\n",
+					   type, len, want);
+				return -1;
+			}
 		}
 		switch (type) {
 		case IKEV2_CFG_INTERNAL_IP4_ADDRESS:

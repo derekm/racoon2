@@ -1005,7 +1005,7 @@ sadb_x_migrate_callback(struct rcpfk_msg *param)
 		      continue;
 		    }
 		    ((struct sockaddr_in *)policy->peers_sa_ipaddr->a.ipaddr)->sin_addr =
-		      ((struct sockaddr_in *)iph1->local)->sin_addr;
+		      ((struct sockaddr_in *)iph1->remote)->sin_addr;
 		  }
 		  break;
 		case AF_INET6:

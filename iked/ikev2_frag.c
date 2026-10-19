@@ -826,12 +826,27 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 
 		/* Store next_payload in parts[0] for frag 1 */
 		if (frag_no == 1)
-			item->parts[0] = (void *)(uintptr_t)sk_next_payload;
+			item->parts[0] = (void *)(uintptr_t)«redacted:sk_…»;
+		/* Reject a fragment whose slot is already filled.  A replayed
+		 * or retransmitted duplicate would otherwise overwrite the
+		 * stored chunk (memory leak at attacker-chosen rate), inflate
+		 * num_received, and trip a premature count-based reassembly
+		 * that aborts on "missing part" -> DoS of fragmented
+		 * exchanges.  RFC 7296 s2.10 makes duplicate delivery
+		 * expected, so keep the first copy and drop the rest. */
+		if (item->parts[frag_no] != NULL) {
+			plog(PLOG_PROTOWARN, PLOGLOC, NULL,
+			     "ikev2_frag_recv: duplicate fragment %u ignored\n",
+			     frag_no);
+			rc_vfree(chunk);
+			goto dup_drop;
+		}
 		item->parts[frag_no] = chunk;
 		item->num_received++;
 		item->total_data_len += data_len;
 	}
 
+dup_drop:
 	rc_vfree(decrypted);
 	decrypted = NULL;
 	rc_vfree(ivbuf);
