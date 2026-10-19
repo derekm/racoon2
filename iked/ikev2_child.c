@@ -1255,8 +1255,7 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 		cbits = ikev2_child_encr_keylen_bits(matching_my_proposal);
 		/* Fail closed on unresolvable strength: with the knob on,
 		 * a child or parent strength that cannot be resolved must
-		 * not silently slip through the gate (auditor review
-		 * deleg_f9b2b14b).  An own-config matched proposal always
+		 * not silently slip through the gate.  An own-config matched proposal always
 		 * resolves, so this only trips on malformed/unknown ENCR. */
 		if (pbits == 0 || cbits == 0) {
 			isakmp_log(ike_sa, local, remote, 0,
