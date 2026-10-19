@@ -10,7 +10,7 @@
 #   A (192.0.11.1)     C (192.0.11.3)
 #          \     I (192.0.11.2)   /     protected address 192.0.30.0 served by BOTH A and C
 #
-# Concentrator model (the key fix, ICS research finding):
+# Concentrator model (the key fix):
 #   - The CHILD's TRAFFIC SELECTOR targets the protected ADDRESS 192.0.30.0
 #     (its name $PTC32, a BARE address — rcs_getaddrlist parses a bare IPv4
 #     with no "/N" as /32, NOT /24), which every pool gateway serves
