@@ -219,6 +219,7 @@ extern rc_type ikev2_childless(struct rcf_remote *);
 extern rc_vchar_t *ikev2_redirect_to(struct rcf_remote *);
 extern rc_type ikev2_cert_validate(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ca_file(struct rcf_remote *);
+extern rc_type ikev2_cert_intermediates(struct rcf_remote *);
 extern rc_vchar_t *ikev2_accept_dns_domain(struct rcf_remote *);
 extern int ikev2_redirect_period(struct rcf_remote *);
 extern int ikev2_redirect_max(struct rcf_remote *);

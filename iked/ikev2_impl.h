@@ -244,6 +244,12 @@ struct ikev2_sa {
 	 * ca_file and verify AUTH against the leaf pubkey, instead of the
 	 * config-file pubkey pin.  NULL when no CERT payload was received. */
 	rc_vchar_t *peer_cert;
+	/* Additional X.509 CERT payloads after the leaf (RFC 7296 s3.6:
+	 * intermediates).  Captured bounded; used only as an UNTRUSTED
+	 * chain-building pool, and only with cert_intermediates on. */
+#define IKEV2_PEER_CERT_EXTRA_MAX	4
+	rc_vchar_t *peer_cert_extra[IKEV2_PEER_CERT_EXTRA_MAX];
+	int peer_cert_nextra;
 
 	struct encryptor *encryptor;
 	struct authenticator *authenticator;

@@ -493,10 +493,13 @@ eay_check_x509cert(rc_vchar_t *cert, char *CApath)
  * file (racoon2 ca_file) or a hashed-cert directory; both are loaded.
  */
 int
-eay_check_x509cert_strict(rc_vchar_t *cert, char *CApath)
+eay_check_x509cert_strict(rc_vchar_t *cert, rc_vchar_t **extra, int nextra,
+    char *CApath)
 {
 	X509_STORE *cert_ctx = NULL;
 	X509 *x509 = NULL;
+	STACK_OF(X509) *untrusted = NULL;
+	int i;
 	X509_STORE_CTX *csc = NULL;
 	int error = -1;
 
@@ -538,10 +541,30 @@ eay_check_x509cert_strict(rc_vchar_t *cert, char *CApath)
 	if (x509 == NULL)
 		goto end;
 
+	/* Extra wire CERTs (cert_intermediates on): an UNTRUSTED pool for
+	 * chain building only.  Every path must still end at the configured
+	 * anchor; a wire cert is never a trust anchor itself.  An unparsable
+	 * extra cert fails closed. */
+	if (nextra > 0) {
+		untrusted = sk_X509_new_null();
+		if (untrusted == NULL)
+			goto end;
+		for (i = 0; i < nextra; i++) {
+			X509 *xi = mem2x509(extra[i]);
+			if (xi == NULL || !sk_X509_push(untrusted, xi)) {
+				X509_free(xi);
+				plog(PLOG_PROTOERR, PLOGLOC, 0,
+				    "X.509-from-wire: extra CERT #%d unparsable; failing closed\n",
+				    i + 1);
+				goto end;
+			}
+		}
+	}
+
 	csc = X509_STORE_CTX_new();
 	if (csc == NULL)
 		goto end;
-	X509_STORE_CTX_init(csc, cert_ctx, x509, NULL);
+	X509_STORE_CTX_init(csc, cert_ctx, x509, untrusted);
 	/* DEFAULT verify callback: self-signed / invalid-CA fail. */
 	error = X509_verify_cert(csc);
 	if (error <= 0) {
@@ -560,6 +583,8 @@ eay_check_x509cert_strict(rc_vchar_t *cert, char *CApath)
 		X509_STORE_CTX_free(csc);
 	if (x509)
 		X509_free(x509);
+	if (untrusted)
+		sk_X509_pop_free(untrusted, X509_free);
 	if (cert_ctx)
 		X509_STORE_free(cert_ctx);
 	return error;

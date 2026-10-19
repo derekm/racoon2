@@ -422,6 +422,8 @@ struct rcf_kmp {
 	 * (default) keeps the historical config-file pubkey pin unchanged. */
 	rc_type cert_validate;
 	rc_vchar_t *ca_file;
+	/* accept CA certs from extra CERT payloads as untrusted intermediates (default off) */
+	rc_type cert_intermediates;
 	/* RFC 8598 split-DNS allowlist (comma list) */
 	rc_vchar_t *accept_dns_domain;
 	/* RFC 5685 s7 REDIRECT_LOOP_DETECT_PERIOD (s) */

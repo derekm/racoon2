@@ -56,6 +56,7 @@
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 #include "var.h"
 #ifdef RACOON2
@@ -1796,6 +1797,144 @@ providertest(int ac, char **av)
 	return 0;
 }
 
+
+/*
+ * Review L2: eay_check_x509cert_strict with an untrusted intermediate
+ * pool (cert_intermediates).  root -> inter -> leaf; root is the only
+ * anchor (a temp ca_file).
+ */
+static X509 *
+sc_mkcert(const char *cn, EVP_PKEY *key, X509 *issuer, EVP_PKEY *ikey,
+    int ca, long serial)
+{
+	X509 *x = X509_new();
+	X509_NAME *n;
+	X509_EXTENSION *ext;
+	X509V3_CTX ctx;
+
+	X509_set_version(x, 2);
+	ASN1_INTEGER_set(X509_get_serialNumber(x), serial);
+	X509_gmtime_adj(X509_getm_notBefore(x), -3600);
+	X509_gmtime_adj(X509_getm_notAfter(x), 86400);
+	X509_set_pubkey(x, key);
+	n = X509_get_subject_name(x);
+	X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC,
+	    (const unsigned char *)cn, -1, -1, 0);
+	X509_set_issuer_name(x, issuer ? X509_get_subject_name(issuer) : n);
+	X509V3_set_ctx(&ctx, issuer ? issuer : x, x, NULL, NULL, 0);
+	ext = X509V3_EXT_conf_nid(NULL, &ctx, NID_basic_constraints,
+	    ca ? "critical,CA:TRUE" : "CA:FALSE");
+	X509_add_ext(x, ext, -1);
+	X509_EXTENSION_free(ext);
+	if (ca) {
+		ext = X509V3_EXT_conf_nid(NULL, &ctx, NID_key_usage,
+		    "critical,keyCertSign,cRLSign");
+		X509_add_ext(x, ext, -1);
+		X509_EXTENSION_free(ext);
+	}
+	X509_sign(x, ikey ? ikey : key, EVP_sha256());
+	return x;
+}
+
+static rc_vchar_t *
+sc_der(X509 *x)
+{
+	rc_vchar_t *v;
+#ifndef EAYDEBUG
+	unsigned char *p;
+	int l = i2d_X509(x, NULL);
+
+	v = rc_vmalloc(l);
+	p = (unsigned char *)v->v;
+	i2d_X509(x, &p);
+#else
+	BIO *b = BIO_new(BIO_s_mem());
+	char *d;
+	long l;
+
+	PEM_write_bio_X509(b, x);
+	l = BIO_get_mem_data(b, &d);
+	v = rc_vnew(d, l);
+	BIO_free(b);
+#endif
+	return v;
+}
+
+static int
+strictchaintest(int ac, char **av)
+{
+	EVP_PKEY *kr, *ki, *kl, *kx;
+	X509 *root, *inter, *leaf, *rogue;
+	rc_vchar_t *vleaf, *vinter, *vrogue, *vbad, *ex[2];
+	char path[] = "/tmp/eaytest-ca-XXXXXX";
+	int fd, fails = 0, r;
+	FILE *fp;
+
+	printf("\n**Test for strict chain + untrusted intermediates (L2)**\n");
+#if OPENSSL_VERSION_NUMBER < 0x30000000L
+	printf("SKIP: needs OpenSSL >= 3 (EVP_EC_gen)\n");
+	return 0;
+#else
+	kr = EVP_EC_gen("P-256");
+	ki = EVP_EC_gen("P-256");
+	kl = EVP_EC_gen("P-256");
+	kx = EVP_EC_gen("P-256");
+	if (!kr || !ki || !kl || !kx) {
+		printf("keygen failed\n");
+		return -1;
+	}
+	root = sc_mkcert("r2 test root", kr, NULL, NULL, 1, 1);
+	inter = sc_mkcert("r2 test inter", ki, root, kr, 1, 2);
+	leaf = sc_mkcert("leaf.example", kl, inter, ki, 0, 3);
+	/* same subject as inter, but self-signed (not under root) */
+	rogue = sc_mkcert("r2 test inter", kx, NULL, NULL, 1, 4);
+
+	fd = mkstemp(path);
+	if (fd < 0 || (fp = fdopen(fd, "w")) == NULL) {
+		printf("mkstemp failed\n");
+		return -1;
+	}
+	PEM_write_X509(fp, root);
+	fclose(fp);
+
+	vleaf = sc_der(leaf);
+	vinter = sc_der(inter);
+	vrogue = sc_der(rogue);
+	vbad = rc_vnew("not a certificate", 17);
+
+#define SC(desc, want, got) do { r = (got); \
+	if ((r == 0) != (want)) { fails++; \
+	    printf("FAIL %s (rc=%d)\n", desc, r); } \
+	else printf("ok   %s\n", desc); } while (0)
+
+	SC("inter directly under root verifies", 1,
+	    eay_check_x509cert_strict(vinter, NULL, 0, path));
+	SC("leaf without intermediates fails (default off path)", 0,
+	    eay_check_x509cert_strict(vleaf, NULL, 0, path));
+	ex[0] = vinter;
+	SC("leaf + wire intermediate verifies", 1,
+	    eay_check_x509cert_strict(vleaf, ex, 1, path));
+	ex[0] = vrogue;
+	SC("leaf + rogue same-name self-signed CA fails", 0,
+	    eay_check_x509cert_strict(vleaf, ex, 1, path));
+	ex[0] = vbad; ex[1] = vinter;
+	SC("unparsable extra cert fails closed", 0,
+	    eay_check_x509cert_strict(vleaf, ex, 2, path));
+	ex[0] = vleaf;
+	SC("wire cert is never an anchor (self-signed rogue + itself)", 0,
+	    eay_check_x509cert_strict(vrogue, ex, 1, path));
+#undef SC
+
+	unlink(path);
+	rc_vfree(vleaf); rc_vfree(vinter); rc_vfree(vrogue); rc_vfree(vbad);
+	X509_free(root); X509_free(inter); X509_free(leaf); X509_free(rogue);
+	EVP_PKEY_free(kr); EVP_PKEY_free(ki); EVP_PKEY_free(kl);
+	EVP_PKEY_free(kx);
+	printf("strictchain: %d failure(s)\n", fails);
+	return fails ? -1 : 0;
+#endif
+}
+
 struct {
 	char *name;
 	int (*func) __P((int, char **));
@@ -1813,6 +1952,9 @@ struct {
 	{ "hmac", hmactest, },
 	{ "cipher", ciphertest, },
 	{ "legacycipher", legacyciphertest, },
+#ifdef RACOON2
+	{ "strictchain", strictchaintest, },
+#endif
 #ifndef RACOON2
 #ifndef CERTTEST_BROKEN
 	{ "cert", certtest, },

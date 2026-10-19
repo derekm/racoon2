@@ -667,6 +667,20 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 						TRACE((PLOGLOC,
 						    "responder captured peer X.509 cert (%zu bytes) from CERT payload\n",
 						    dlen));
+				} else if (plen >=
+					    sizeof(struct ikev2payl_cert) &&
+					    pc->encoding ==
+						IKEV2_CERT_X509_SIGN &&
+					    ike_sa->peer_cert &&
+					    dlen > 0 &&
+					    ike_sa->peer_cert_nextra <
+						IKEV2_PEER_CERT_EXTRA_MAX) {
+					ike_sa->peer_cert_extra[
+					    ike_sa->peer_cert_nextra++] =
+					    rc_vnew(cv, dlen);
+					TRACE((PLOGLOC,
+					    "captured extra X.509 cert #%d (%zu bytes)\n",
+					    ike_sa->peer_cert_nextra, dlen));
 				}
 			}
 			break;
@@ -2819,6 +2833,20 @@ initiator_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 						TRACE((PLOGLOC,
 						    "captured peer X.509 cert (%zu bytes) from CERT payload\n",
 						    dlen));
+				} else if (plen >=
+					    sizeof(struct ikev2payl_cert) &&
+					    pc->encoding ==
+						IKEV2_CERT_X509_SIGN &&
+					    ike_sa->peer_cert &&
+					    dlen > 0 &&
+					    ike_sa->peer_cert_nextra <
+						IKEV2_PEER_CERT_EXTRA_MAX) {
+					ike_sa->peer_cert_extra[
+					    ike_sa->peer_cert_nextra++] =
+					    rc_vnew(cv, dlen);
+					TRACE((PLOGLOC,
+					    "captured extra X.509 cert #%d (%zu bytes)\n",
+					    ike_sa->peer_cert_nextra, dlen));
 				}
 			}
 			break;

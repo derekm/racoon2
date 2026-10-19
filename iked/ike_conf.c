@@ -242,6 +242,7 @@ struct rcf_kmp ikev2_default_values = {
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
 	RCT_BOOL_OFF,		/* cert_validate (X.509-from-wire off by default) */
 	NULL,			/* ca_file (trust anchor; NULL = default paths) */
+	RCT_BOOL_OFF,		/* cert_intermediates */
 	NULL,		/* accept_dns_domain */
 	300,		/* redirect_period */
 	5,		/* redirect_max */
@@ -504,6 +505,7 @@ IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
 IKEV2_CONF_ATTR(rc_type, cert_validate)
 IKEV2_CONF_ATTR(rc_vchar_t *, ca_file)
+IKEV2_CONF_ATTR(rc_type, cert_intermediates)
 IKEV2_CONF_ATTR(rc_vchar_t *, accept_dns_domain)
 IKEV2_CONF_ATTR(int, redirect_period)
 IKEV2_CONF_ATTR(int, redirect_max)
@@ -1052,7 +1054,15 @@ ikev2_public_key_from_wire(struct ikev2_sa *ike_sa)
 		     "refusing to validate against the OS CA store\n");
 		return NULL;
 	}
-	err = eay_check_x509cert_strict(cert, capath);
+	/* L2: extra CERT payloads are an untrusted intermediate pool only
+	 * with cert_intermediates on (default off: the leaf must be issued
+	 * directly by ca_file).  Scope: chain + signature + validity only;
+	 * no EKU/keyUsage policy and no CRL/OCSP check is applied. */
+	if (ikev2_cert_intermediates(conf) == RCT_BOOL_ON)
+		err = eay_check_x509cert_strict(cert, ike_sa->peer_cert_extra,
+		    ike_sa->peer_cert_nextra, capath);
+	else
+		err = eay_check_x509cert_strict(cert, NULL, 0, capath);
 	if (err) {
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "X.509-from-wire: peer cert failed STRICT chain validation (%s)\n",

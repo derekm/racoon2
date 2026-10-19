@@ -836,6 +836,19 @@ remote
 		to the CN.
 		default is off (SAN-DNS / SAN-iPAddress only).
 
+	cert_intermediates (on|off) ;
+		It is valid for the ikev2 directive.
+		With cert_validate on, uses the X.509 certificates sent in
+		CERT payloads after the leaf (up to 4) as an untrusted pool
+		for building the chain to ca_file (RFC 7296 s3.6).  A wire
+		certificate is never a trust anchor, and an unparsable extra
+		certificate fails validation closed.  When off, the leaf must
+		be issued directly by a ca_file certificate.
+		Scope: chain, signature and validity period are checked.  No
+		extendedKeyUsage/keyUsage policy is applied to the leaf and
+		no CRL or OCSP revocation check is made.
+		default is off.
+
 	accept_redirect (on|off) ;
 		It is valid for the ikev2 directive.
 		RFC 5685 initiator opt-in.  When on, this side sends
