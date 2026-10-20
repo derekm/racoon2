@@ -1436,14 +1436,17 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				break;
 			}
 			/* RFC 8598 §4.2: a TA is Key Tag(2)|Alg(1)|Digest
-			 * Type(1)|Digest Data(>=1), so a body shorter than
+			 * Type(1)|Digest Data(>=1).  A non-empty body under
 			 * 5 octets cannot be a well-formed anchor; reject it
 			 * rather than commit garbage to the updown env.
-			 * Do NOT clear prev_type here: adjacency (RFC 8598
-			 * §4.2) keys off wire order — this 26 still sits in
-			 * 25/26 sequence, so a following well-formed 26 must
-			 * remain acceptable.  Only a 26 with no preceding 25
-			 * (handled above) is a hard break of the chain. */
+			 * A zero-length 26 is a legal empty attribute (a
+			 * "clear"), so it is a silent no-op, not an error.
+			 * Either way leave prev_type intact: the domain
+			 * association we keep is that of the last ACCEPTED
+			 * 25/26 on the wire (this 26 still applies to it),
+			 * which is exactly the precedence checked above. */
+			if (len == 0)
+				break;		/* empty TA: clear, no error */
 			if (len < 5) {
 				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
 					PLOGLOC,
