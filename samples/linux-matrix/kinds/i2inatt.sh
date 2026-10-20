@@ -80,10 +80,19 @@ kind_i2inatt() {
 	_R2_PREV_TRAP=$(trap -p EXIT)
 	trap 'cleanup' EXIT
 
+	# One terminal used by EVERY return after the trap is installed: drop
+	# the row's EXIT trap, run cleanup, and restore run.sh's handler so an
+	# early failure can't permanently wipe the runner's EXIT backstop.
+	_finish() {
+		trap - EXIT
+		cleanup
+		[ -n "${_R2_PREV_TRAP:-}" ] && eval "$_R2_PREV_TRAP"
+	}
+
 	ip netns add "$NSI" && ip netns add "$NSN" && ip netns add "$NSR" || {
-		log "FAIL: netns create"; return 1; }
-	ip link add "$VI1" type veth peer name "$VI2" || { log "FAIL: veth i"; return 1; }
-	ip link add "$VR1" type veth peer name "$VR2" || { log "FAIL: veth r"; return 1; }
+		log "FAIL: netns create"; _finish; return 1; }
+	ip link add "$VI1" type veth peer name "$VI2" || { log "FAIL: veth i"; _finish; return 1; }
+	ip link add "$VR1" type veth peer name "$VR2" || { log "FAIL: veth r"; _finish; return 1; }
 	ip link set "$VI1" netns "$NSI"
 	ip link set "$VI2" netns "$NSN"
 	ip link set "$VR1" netns "$NSN"

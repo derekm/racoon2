@@ -197,6 +197,50 @@ else
 	echo "SELFTEST PASS box-evidence rejects a missing row"
 fi
 
+# kill-guard: every netns-unsafe kill form is
+# refused, the row-scoped forms are accepted, and the real kinds/ are clean.
+KG="$HERE/tools/kill-guard.sh"
+while IFS= read -r l; do
+	printf '%s\n' "$l" > "$T/kg.sh"
+	if sh "$KG" "$T/kg.sh" >/dev/null 2>&1; then
+		echo "SELFTEST FAIL kill-guard missed: $l"; bad=1
+	else
+		echo "SELFTEST PASS kill-guard refuses: $l"
+	fi
+done <<'KG'
+	pkill -9 -f "$SBIN/iked" 2>/dev/null || true
+	pkill -9 -f "${SBIN}/spmd" 2>/dev/null || true
+	pkill -9 -f $SBIN/iked
+	pkill -9 -f ${SBIN}/spmd || true
+	killall -9 iked
+	killall spmd 2>/dev/null
+	ip netns exec "$NSR" pkill -9 -f "$C/"
+	pkill -9 iked
+	pkill -9 -f /usr/local/racoon2/sbin/spmd
+	pkill -f charon
+KG
+while IFS= read -r l; do
+	printf '%s\n' "$l" > "$T/kg.sh"
+	if sh "$KG" "$T/kg.sh" >/dev/null 2>&1; then
+		echo "SELFTEST PASS kill-guard accepts: $l"
+	else
+		echo "SELFTEST FAIL kill-guard false positive: $l"; bad=1
+	fi
+done <<'KG'
+	pkill -9 -f "$C/" 2>/dev/null || true
+	pkill -0 -f "$C/" 2>/dev/null || crash=1
+	pkill -9 -f "$C/initiator.conf" 2>/dev/null || true
+	pkill -9 -f "radiusd -d $RADD" 2>/dev/null || true
+	pkill -f "$D/live.pcap" 2>/dev/null || true
+	# pkill -9 -f "$SBIN/iked" is the cross-shard bug (comment only)
+	echo "no killall here"
+KG
+if sh "$KG" >/dev/null 2>&1; then
+	echo "SELFTEST PASS kill-guard: kinds/ and lib.sh are clean"
+else
+	echo "SELFTEST FAIL kill-guard: kinds/ or lib.sh has a netns-unsafe kill"; sh "$KG"; bad=1
+fi
+
 # xfrm_audit.tsv lint and the per-row noprobe
 # setting: a wrapped entry is refused; the shipped tsv is clean; a
 # `traffic` exemption alone does NOT disable the harness probe, `noprobe`
