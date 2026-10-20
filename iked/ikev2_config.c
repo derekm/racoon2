@@ -628,6 +628,8 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 	rc_vchar_t	*cfg_payload;
 	struct rcf_address	*a;
 	struct ikev2payl_config_h cfgh;
+	int assigned_v4 = 0;	/* an INTERNAL_IP4_ADDRESS is in this reply */
+	int emitted_dns = 0;	/* >=1 INTERNAL_IP4/6_DNS was appended */
 #ifdef DEBUG_TRACE
 	char addrstr[INET6_ADDRSTRLEN];
 #endif
@@ -653,6 +655,7 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 
 			switch (a->af) {
 			case AF_INET:
+				assigned_v4 = 1;
 				type = IKEV2_CFG_INTERNAL_IP4_ADDRESS;
 				addrsize = sizeof(struct in_addr);
 				len = sizeof(struct in_addr);
@@ -704,6 +707,7 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 	if ((param->cfg_ip4_dns || param->cfg_ip6_dns) &&
 	    ikev2_dns(ike_sa->rmconf)) {
 		struct rc_addrlist	*dnslist;
+		size_t before = cfg_payload->l;
 		int err;
 
 		TRACE((PLOGLOC, "INTERNAL_DNS:\n"));
@@ -714,6 +718,9 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 		    param->cfg_ip4_dns, IKEV2_CFG_INTERNAL_IP4_DNS,
 		    param->cfg_ip6_dns, IKEV2_CFG_INTERNAL_IP6_DNS);
 		rcs_free_addrlist(dnslist);
+		/* RFC 8598 §4.2: a DNS_DOMAIN/TA may only ride a reply that
+		 * also carries >=1 DNS address.  Record whether any was. */
+		emitted_dns = (cfg_payload->l > before);
 	}
 
 	if ((param->cfg_ip4_dhcp || param->cfg_ip6_dhcp) &&
@@ -744,6 +751,9 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 	if (child_sa && child_sa->selector &&
 	    (param->cfg_ip4_subnet || param->cfg_ip6_subnet)) {
 		struct rcf_selector *sel;
+		int v4_subnet_count = 0, v4_mask_ok = 0;
+		struct in_addr v4_mask;
+		memset(&v4_mask, 0, sizeof(v4_mask));
 		for (sel = child_sa->selector; sel; sel = sel->next) {
 			struct rc_addrlist *al;
 			for (al = sel->dst; al; al = al->next) {
@@ -776,20 +786,14 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 					    ! rc_vconcat(cfg_payload, &addr, sizeof(addr)) ||
 					    ! rc_vconcat(cfg_payload, &mask, sizeof(mask)))
 						goto err;
-					/* Legacy Windows clients (and some L2TP
-					 * gateways) do not understand RFC 7296
-					 * INTERNAL_IP4_SUBNET (13); they still take
-					 * the older INTERNAL_IP4_NETMASK (2) and
-					 * apply it to their assigned internal
-					 * address.  Emit the SAME mask as attr 2 so
-					 * those clients route the split subnet too.
-					 * §3.15.1: netmask is a plain IPv4 address. */
-					cfg_attrib_set(&hdr,
-					    IKEV2_CFG_INTERNAL_IP4_NETMASK,
-					    sizeof(struct in_addr));
-					if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
-					    ! rc_vconcat(cfg_payload, &mask, sizeof(mask)))
-						goto err;
+					/* Remember the (single) v4 split
+					 * subnet's mask for the legacy
+					 * INTERNAL_IP4_NETMASK (2) gate below. */
+					if (!v4_mask_ok) {
+						v4_mask = mask;
+						v4_mask_ok = 1;
+					}
+					v4_subnet_count++;
 				} else if (sa->sa_family == AF_INET6 &&
 				    param->cfg_ip6_subnet) {
 					struct ikev2cfg_ip6addr d;
@@ -818,14 +822,31 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 				}
 			}
 		}
+		/* RFC 7296 §3.15.1: at most ONE INTERNAL_IP4_NETMASK (2),
+		 * and only used with an INTERNAL_IP4_ADDRESS.  Legacy
+		 * Windows repurposes 2 as the split-subnet mask, so emit
+		 * it once (the single v4 split subnet) only when this
+		 * reply also assigns the client an IPv4 address. */
+		if (assigned_v4 && v4_subnet_count == 1 && v4_mask_ok) {
+			struct ikev2cfg_attrib hdr;
+			TRACE((PLOGLOC, "INTERNAL_IP4_NETMASK: %s\n",
+			    inet_ntoa(v4_mask)));
+			cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_IP4_NETMASK,
+			    sizeof(struct in_addr));
+			if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
+			    ! rc_vconcat(cfg_payload, &v4_mask, sizeof(v4_mask)))
+				goto err;
+		}
 	}
 
-	/* Split-DNS (RFC 8598 §7.2): when the peer asked for
-	 * INTERNAL_DNS_DOMAIN (25) and the responder has a configured split-DNS
-	 * suffix, emit it (a bare domain string).  Legacy Windows and some
-	 * road-warrior clients use this to steer only matching queries through
-	 * the tunnel. */
-	if (param->cfg_dns_domain && ikev2_dns_domain(ike_sa->rmconf)) {
+	/* Split-DNS (RFC 8598 §7.2): only when the peer asked for
+	 * INTERNAL_DNS_DOMAIN (25) AND this reply also carries >=1 DNS
+	 * address (RFC 8598 §4.2: a 25 must not be sent alone), AND the
+	 * responder has a configured split-DNS suffix.  Legacy Windows and
+	 * some road-warrior clients use this to steer only matching
+	 * queries through the tunnel. */
+	if (emitted_dns && param->cfg_dns_domain &&
+	    ikev2_dns_domain(ike_sa->rmconf)) {
 		const char *dd = rc_vmem2str(ikev2_dns_domain(ike_sa->rmconf));
 		size_t ddlen = strlen(dd);
 		struct ikev2cfg_attrib hdr;
@@ -846,7 +867,7 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 	 * carries no domain name and relies on the preceding 25, so it must
 	 * never be emitted as a stray / unpaired attribute — a receiver MUST
 	 * ignore an un-paired 26). */
-	if (param->cfg_dnssec_ta && param->cfg_dns_domain &&
+	if (emitted_dns && param->cfg_dnssec_ta && param->cfg_dns_domain &&
 	    ikev2_dnssec_ta(ike_sa->rmconf) &&
 	    ikev2_dns_domain(ike_sa->rmconf)) {
 		const char *ta = rc_vmem2str(ikev2_dnssec_ta(ike_sa->rmconf));
