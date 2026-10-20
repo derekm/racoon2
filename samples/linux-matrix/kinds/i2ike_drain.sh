@@ -42,7 +42,7 @@ kind_i2ike_drain() {
 	# for this row — it may fail to connect, which is fine and expected).
 	# What we prove is the responder's decision + established-SA teardown.
 	DGW=192.0.99.7
-	# -noaccept variant (REVIEW_2026-10-18 M3): the initiator leaves
+	# -noaccept variant: the initiator leaves
 	# accept_redirect at its default (off), so it must NOT advertise
 	# REDIRECT_SUPPORTED, the drained responder must drop (not redirect)
 	# its IKE_SA_INIT, and it must never re-target to $DGW.
