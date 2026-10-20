@@ -876,6 +876,19 @@ remote
 		domain name (no wildcards); otherwise it is a config error.
 		default is unset: no pushed domain is accepted.
 
+	legacy_split_netmask (on|off) ;
+		It is valid for the ikev2 directive (responder / CP server).
+		Interoperability option for old clients that expect one
+		INTERNAL_IP4_NETMASK (2) per INTERNAL_IP4_SUBNET (13) pushed
+		in a CFG_REPLY.  RFC 7296 s3.15.1 allows at most one netmask,
+		and only together with an INTERNAL_IP4_ADDRESS, so with this
+		off (the default) iked sends one netmask only when exactly one
+		v4 split subnet is pushed.  When on, iked sends a netmask
+		after each v4 split subnet, still only when the reply assigns
+		an IPv4 address.  This is not RFC conformant; enable it only
+		for a peer known to need it.
+		default is off.
+
 	redirect_max (number) ;
 	redirect_period (number) ;
 		It is valid for the ikev2 directive.
