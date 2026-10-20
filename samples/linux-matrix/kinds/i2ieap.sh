@@ -348,12 +348,12 @@ EOF
 
 	method=MSCHAPv2; [ "$I2IEAP_TLS" -eq 1 ] && method=EAP-TLS
 	[ "$fail" -eq 0 ] && log "PASS $name (EAP-$method + responder cert -> ESTABLISHED, ESP up)"
-	# cleanup on EVERY exit path (this row's daemons and netns): the old
-	# kind only pkilled at START, so a finished i2ieap row left its
-	# iked/spmd/radiusd/charon running (live orphan load for the whole
-	# sweep) until some later row coincidentally killed them.
-	pkill -9 -f "$C/" 2>/dev/null || true
-	pkill -9 -f "radiusd -d $RADD" 2>/dev/null || true
+	# cleanup on EVERY exit path (this row's daemons/sockets/netns): the
+	# old kind only pkilled at START, so a finished row left its daemons
+	# running as live orphan load for the whole sweep.
+	pkill -9 -f "$C/" 2>/dev/null || true              # row's iked/spmd (-f $C/conf)
+	pkill -9 -f "radiusd -d $RADD" 2>/dev/null || true # row's radiusd
+	i2i_charon_kill                                    # row's charon (argv carries the charon conf/socket paths, not $C/)
 	for _ns in "$NSR" "$NSI"; do ip netns del "$_ns" 2>/dev/null || true; done
 	return "$fail"
 }
