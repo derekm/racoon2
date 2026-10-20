@@ -200,8 +200,22 @@ EOF
 	[ "$_up" = 1 ] || _bad="no esp transport SA pair in both netns (r=${_er:-0} i=${_ei:-0})"
 
 	if [ "$_up" = 1 ]; then
-		ip netns exec "$NSI" ping -c 1 -W 5 192.0.5.1 > "$D/ping.txt" 2>&1 || true
-		grep -q '1 received' "$D/ping.txt" || _bad="${_bad:+$_bad; }ICMP did not cross NAT-T transport"
+		# ICMP across NAT-T.  This is a READINESS wait, not a single shot:
+		# "esp SA pair present" can be true while the child data path is
+		# still being installed (under 3-shard loads the responder's
+		# spmd_pfkey may be a second or two behind the SA being listed),
+		# so a single `ping -c 1` races that window and drops valid rows.
+		# Poll until a reply crosses (or 20s), THEN assert data really
+		# flowed.  A real data-path failure still fails the row.
+		_icmpok=0
+		_p=0
+		while [ "$_p" -lt 20 ]; do
+			ip netns exec "$NSI" ping -c 1 -W 3 192.0.5.1 > "$D/ping.txt" 2>&1 || true
+			if grep -q '1 received' "$D/ping.txt"; then _icmpok=1; break; fi
+			_p=$((_p+1)); sleep 1
+		done
+		grep -q '1 received' "$D/ping.txt" || \
+			_bad="${_bad:+$_bad; }ICMP did not cross NAT-T transport"
 		rm -f "$D/tcp-recv.txt"
 		# TCP across the NAT-T transport.  Ncat 7.92's nested
 		# `ip netns exec sh -c "nc -l ... &"` exits the inner shell
