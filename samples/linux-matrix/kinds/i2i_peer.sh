@@ -84,7 +84,14 @@ i2i_charon_kill() {
 	# global pgrep scan that truly killed charon was removed as the
 	# cross-shard race fix, so this real-pid kill must now do the work).
 	_pf="$I2I_SW_ROOT/run/strongswan/charon.pid"
-	[ -f "$_pf" ] && kill -9 "$(cat "$_pf" 2>/dev/null)" 2>/dev/null || true
+	if [ -f "$_pf" ]; then
+		_pid=$(cat "$_pf" 2>/dev/null)
+		# only SIGKILL if the pid really is charon: strongSwan pidfiles from
+		# older runs can hold a dead PID that the kernel has recycled onto
+		# an unrelated process, so a blind kill is the same unwanted
+		# cross-process class as the removed global scan.
+		case "$(cat "/proc/$_pid/comm" 2>/dev/null)" in charon) kill -9 "$_pid" 2>/dev/null || true ;; esac
+	fi
 	rm -f "$I2I_SW_ROOT/run/charon.pid" "$I2I_SW_ROOT/run/charon.ctl" \
 	      "$I2I_SW_ROOT/run/strongswan/charon.pid" "$I2I_SW_ROOT/charon.vici"
 }
@@ -112,8 +119,9 @@ I2I_ESP="${I2I_ESP:-}"
 # (fail-closed since 2026-10-06: iked reads the file, it never derives a
 # SHA-256(ppk_id) fallback).  charon sends the typed PPK_ID_FIXED (0x02)
 # identity, re-arbitrating our s5.1 type-octet fix against a second
-# implementation.  The secret file is provisioned per-run in i2iinit.sh
-# and removed at cleanup.
+# implementation.  The secret file is provisioned per-run in i2iinit.sh and
+# LEFT IN PLACE (shared by every ppk row; deleting it at any row's cleanup
+# races a parallel shard's IKE_AUTH read).
 I2I_PPK=${I2I_PPK:-0}
 I2I_PPK_ID=${I2I_PPK_ID:-rfc8784-mat}
 I2I_PPK_HEX=1e9546cc8758e5f4bf1f5d3476f79bfea60c7bd4822a32058e23cf16107eef0b
