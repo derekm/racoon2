@@ -883,7 +883,7 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 	 * hex `dnssec_ta` (DS-style Key Tag|Alg|Digest Type|Digest Data); when
 	 * the peer asked for INTERNAL_DNSSEC_TA (26) AND a 25 will actually be
 	 * emitted (domain requested + configured), emit 26 IMMEDIATELY AFTER
-	 * that INTERNAL_DNS_DOMAIN (25) it belongs to (RFC 8598 §3.1/§4.2: 26
+	 * that INTERNAL_DNS_DOMAIN (25) it belongs to (RFC 8598 §3.2/§4.2: 26
 	 * carries no domain name and relies on the preceding 25, so it must
 	 * never be emitted as a stray / unpaired attribute — a receiver MUST
 	 * ignore an un-paired 26). */
