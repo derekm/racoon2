@@ -1615,7 +1615,7 @@ rcs_free_addrlist(sel4.dst);
 		}
 
 		/* negative: 26 NOT emitted when the peer did not ask for it,
-		 * nor when it asked for 26 but NOT 25 (RFC 8598 §3.1/§4.2:
+		 * nor when it asked for 26 but NOT 25 (RFC 8598 §3.2/§4.2:
 		 * 26 relies on the preceding 25 and must not float alone) */
 		{
 			struct ikev2_child_param p2;
@@ -1853,6 +1853,62 @@ rcs_free_addrlist(sel4.dst);
 				rc_vfree(ec.internal_dns_domain);
 			if (ec.internal_dnssec_ta)
 				rc_vfree(ec.internal_dnssec_ta);
+		}
+
+		/* empty-26 must NOT free the prior committed anchor: 25 -> good-26
+		 * -> empty-26 leaves the good anchor intact (RFC 8598 §4.2 empty
+		 * attr is a no-op, not a clear).  A fixture that frees or clears
+		 * on a length-0 26 fails the l==8 assertion below. */
+		{
+			uint8_t fb[256];
+			uint8_t foff = 0;
+			struct ikev2payl_config *fcfg;
+			struct ikev2_sa fisa;
+			struct ikev2_child_sa fc;
+			struct ikev2cfg_attrib *fa;
+
+			memset(fb, 0, sizeof(fb));
+			fcfg = (struct ikev2payl_config *)fb;
+			fcfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+			foff = sizeof(struct ikev2payl_config);
+			fa = (struct ikev2cfg_attrib *)(fb + foff);
+			put_uint16(&fa->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
+			put_uint16(&fa->length, (uint16_t)strlen("corp.example"));
+			memcpy(IKEV2CFG_ATTR_VALUE(fa), "corp.example",
+			    strlen("corp.example"));
+			foff += sizeof(*fa) + strlen("corp.example");
+			fa = (struct ikev2cfg_attrib *)(fb + foff);
+			put_uint16(&fa->type, IKEV2_CFG_INTERNAL_DNSSEC_TA);
+			put_uint16(&fa->length, 8);
+			memcpy(IKEV2CFG_ATTR_VALUE(fa),
+			    "\x00\x01\x02\x03\x04\x05\x06\x07", 8);
+			foff += sizeof(*fa) + 8;
+			fa = (struct ikev2cfg_attrib *)(fb + foff);
+			put_uint16(&fa->type, IKEV2_CFG_INTERNAL_DNSSEC_TA);
+			put_uint16(&fa->length, 0);	/* legal empty attr */
+			foff += sizeof(*fa);
+			{
+				uint8_t pl[2];
+				pl[0] = (uint8_t)((foff >> 8) & 0xff);
+				pl[1] = (uint8_t)(foff & 0xff);
+				memcpy((uint8_t *)&fcfg->header.payload_length,
+				    pl, 2);
+			}
+			fcfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+			memset(&fc, 0, sizeof(fc));
+			memset(&fisa, 0, sizeof(fisa));
+			fisa.rmconf = mk_accept_rm("corp.example");
+			ikev2_child_param_init(&fc.child_param);
+			CK(ikev2_process_config_reply(&fisa, &fc,
+			    &fcfg->header) == 0,
+			    "process_config_reply rc==0 (good-26 -> empty-26)");
+			CK(fc.internal_dnssec_ta != NULL &&
+			    fc.internal_dnssec_ta->l == 8,
+			    "empty 26 does NOT free the prior committed anchor");
+			if (fc.internal_dns_domain)
+				rc_vfree(fc.internal_dns_domain);
+			if (fc.internal_dnssec_ta)
+				rc_vfree(fc.internal_dnssec_ta);
 		}
 
 		/* Adjacency survives a DROPPED short 26 (RFC 8598 §4.2 keys
