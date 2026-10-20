@@ -109,7 +109,10 @@ EOF
 
 	up=0
 	i=0
-	while [ "$i" -lt 45 ]; do
+	# establish is an EVENT wait: under shard CPU starvation the iked pair
+	# takes longer to bring the child up, so the bound must be generous
+	# (and only trip for a genuinely stuck DUT, not slow scheduling).
+	while [ "$i" -lt 120 ]; do
 		re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		if [ "${re:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ]; then

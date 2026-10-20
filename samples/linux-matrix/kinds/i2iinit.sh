@@ -825,32 +825,33 @@ fi
 	# confirmed the PPK_IDENTITY (TRACE level, enabled by I2I_DBG=0x0003).
 	ppk_ok=0
 	if [ "$I2I_PPK" = 1 ]; then
-		# responder-seat USE_PPK evidence (iked: its log; charon: its own
-		# 'using PPK for PPK_ID' line).  Init-seat markers likewise; the
-		# iked-only 'responder confirmed PPK_IDENTITY' TRACE line only
-		# exists when the RESPONDER seat is iked.
-		if [ "$PEER_R" = charon ]; then
-			# 'loaded PPK shared key' is written BEFORE the exchange and
-			# survives run.sh's SIGKILL that truncates charon's log mid-
-			# response; the later 'using PPK for PPK_ID' line falls after the
-			# truncation point and would false-fail.  AUTH passing (up=1) with
-			# the iked initiator having mixed PPK is the infallible proof both
-			# seats mixed the same PPK.
-			gre=$(grep -c "loaded PPK shared key" "$D/charon-resp.log" 2>/dev/null)
-		else
-			gre=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/resp-iked.log" 2>/dev/null)
-		fi
-		if [ "$PEER" = charon ]; then
-			gie=$(grep -c "using PPK for PPK_ID '" "$D/charon-init.log" 2>/dev/null)
-			gid=1
-		else
-			gie=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/init-iked.log" 2>/dev/null)
-			gid=$(grep -c "RFC 8784: responder confirmed PPK_IDENTITY" "$D/init-iked.log" 2>/dev/null)
-		fi
-		if [ "${gre:-0}" -ge 1 ] && [ "${gie:-0}" -ge 1 ] && [ "${gid:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
-			ppk_ok=1
-			log "RFC 8784 PPK: USE_PPK echoed both seats + PPK_IDENTITY confirmed; child up => PPK-mixed SK_d matched"
-		else
+		# Event-wait for the PPK wire markers: they are append-only log
+		# lines written as the exchange completes, and under shard CPU load
+		# the log flush can lag the child landing (up=1).  Poll up to ~120s
+		# so a slow-but-correct exchange is not a false failure; a DUT that
+		# truly never applies PPK still times out and fails.
+		_gp=0
+		while [ "$_gp" -lt 120 ]; do
+			if [ "$PEER_R" = charon ]; then
+				gre=$(grep -c "loaded PPK shared key" "$D/charon-resp.log" 2>/dev/null)
+			else
+				gre=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/resp-iked.log" 2>/dev/null)
+			fi
+			if [ "$PEER" = charon ]; then
+				gie=$(grep -c "using PPK for PPK_ID '" "$D/charon-init.log" 2>/dev/null)
+				gid=1
+			else
+				gie=$(grep -c "peer uses RFC 8784 PPK (USE_PPK)" "$D/init-iked.log" 2>/dev/null)
+				gid=$(grep -c "RFC 8784: responder confirmed PPK_IDENTITY" "$D/init-iked.log" 2>/dev/null)
+			fi
+			if [ "${gre:-0}" -ge 1 ] && [ "${gie:-0}" -ge 1 ] && [ "${gid:-0}" -ge 1 ] && [ "$up" -eq 1 ]; then
+				ppk_ok=1
+				log "RFC 8784 PPK: USE_PPK echoed both seats + PPK_IDENTITY confirmed; child up => PPK-mixed SK_d matched"
+				break
+			fi
+			_gp=$((_gp+1)); sleep 1
+		done
+		if [ "$ppk_ok" != 1 ]; then
 			log "FAIL: RFC 8784 PPK markers absent (resp_use_ppk=${gre:-0} init_use_ppk=${gie:-0} init/charon_id_confirm=${gid:-0})"
 		fi
 	fi
