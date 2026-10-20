@@ -1729,6 +1729,9 @@ rcs_free_addrlist(sel4.dst);
 			    "process_config_reply rc==0 (short 26)");
 			CK(tc.internal_dnssec_ta == NULL,
 			    "short INTERNAL_DNSSEC_TA (<5 octets) NOT committed");
+			/* free the ACCEPTED 25's committed domain (mk_accept_rm) */
+			if (tc.internal_dns_domain)
+				rc_vfree(tc.internal_dns_domain);
 		}
 
 		/* Adjacency survives a DROPPED short 26 (RFC 8598 §4.2 keys
