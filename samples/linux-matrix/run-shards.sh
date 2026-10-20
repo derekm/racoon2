@@ -26,15 +26,15 @@
 #   exit       0 iff every shard PASSed (fail counts summed)
 set -u
 HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-# Guard (regression pin, review deleg_da371ec2): a kind must NEVER kill
-# daemons by the shared prefix ($SBIN) or wrap pkill in 'ip netns exec' —
-# 'ip netns exec' only changes the network ns and does NOT scope pkill's
-# /proc scan, so that pattern SIGKILLs every shard's daemon.  This was the
-# box's cross-shard killer; fail the run rather than reintroduce it.
-# (Only non-comment lines count — comments legitimately describe the bug.)
-if grep -rEn 'pkill([^#]*)"\$SBIN|ip netns exec[^#]*pkill' "$HERE/kinds/" 2>/dev/null \
-   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' >/dev/null; then
-	echo "run-shards: FAIL: kinds/ reintroduced a netns-unsafe daemon kill (pkill \$SBIN or ip netns exec ... pkill)" >&2
+# Guard (regression pin): a kind must NEVER kill daemons by the shared
+# prefix ($SBIN / ${SBIN}), by bare daemon name, with killall, or with pkill
+# wrapped in 'ip netns exec' — 'ip netns exec' only changes the network ns
+# and does NOT scope pkill's /proc scan, so those patterns SIGKILL every
+# shard's daemons.  This was the box's cross-shard killer; fail the run
+# rather than reintroduce it.  The checker (and its self-test in
+# tools/selftest.sh) lives in tools/kill-guard.sh.
+if ! sh "$HERE/tools/kill-guard.sh"; then
+	echo "run-shards: FAIL: kinds/ reintroduced a netns-unsafe daemon kill (see tools/kill-guard.sh)" >&2
 	exit 2
 fi
 # xfrm_audit.tsv must stay one entry per line (tools: xa_tsv_lint).
