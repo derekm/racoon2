@@ -149,7 +149,7 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
-	[ "$up" -eq 1 ] || { log "FAIL: child not established (R esp=${re:-0} I esp=${ie:-0})"; pkill -9 -f "$C/" 2>/dev/null || true; return 1; }
+	[ "$up" -eq 1 ] || { log "FAIL: child not established (R esp=${re:-0} I esp=${ie:-0})"; _cl; return 1; }
 
 	# 4b: drain-sa SET must tear down the established IKE_SA locally
 	# (gw is positional: a "-to" flag would be eaten by ikedctl's

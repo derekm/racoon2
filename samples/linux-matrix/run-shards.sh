@@ -26,6 +26,17 @@
 #   exit       0 iff every shard PASSed (fail counts summed)
 set -u
 HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+# Guard (regression pin, review deleg_da371ec2): a kind must NEVER kill
+# daemons by the shared prefix ($SBIN) or wrap pkill in 'ip netns exec' —
+# 'ip netns exec' only changes the network ns and does NOT scope pkill's
+# /proc scan, so that pattern SIGKILLs every shard's daemon.  This was the
+# box's cross-shard killer; fail the run rather than reintroduce it.
+# (Only non-comment lines count — comments legitimately describe the bug.)
+if grep -rEn 'pkill([^#]*)"\$SBIN|ip netns exec[^#]*pkill' "$HERE/kinds/" 2>/dev/null \
+   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' >/dev/null; then
+	echo "run-shards: FAIL: kinds/ reintroduced a netns-unsafe daemon kill (pkill \$SBIN or ip netns exec ... pkill)" >&2
+	exit 2
+fi
 M=${1:-1}
 CASES=${2:-.*}
 MERGED=${3:-/tmp/r2-shards.log}
