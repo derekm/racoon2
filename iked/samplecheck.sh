@@ -180,8 +180,7 @@ else
 	echo "FAIL: openssl needed for the cert_validate config checks"; fail=$((fail + 1))
 fi
 
-# 4. RFC 8598 split-DNS allowlist entries must be valid domain names
-#    (REVIEW_2026-10-18 M4).
+# 4. RFC 8598 split-DNS allowlist entries must be valid domain names.
 v2dns() {	# v2dns NAME PEER EXTRA
 	cat <<EOT
 remote $1 {

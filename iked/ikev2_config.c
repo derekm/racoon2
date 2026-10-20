@@ -1065,7 +1065,7 @@ ikev2_process_mip6_home_prefix(struct ikev2_child_sa *child_sa, uint8_t *addr,
 
 
 /*
- * REVIEW_2026-10-18 M4 (RFC 8598 §5/§9): validate a peer-supplied
+ * RFC 8598 §5/§9: validate a peer-supplied
  * INTERNAL_DNS_DOMAIN.  Accepts only an LDH domain name (RFC 1123
  * labels of 1..63 letters/digits/hyphens, no leading/trailing hyphen),
  * total <= 253 octets, an optional single trailing dot; no NUL, control
@@ -1397,7 +1397,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 		}
 		case IKEV2_CFG_INTERNAL_DNS_DOMAIN: {
 			/* RFC 8598 §4.1: a split-DNS suffix the initiator should
-			 * steer through this SA.  REVIEW_2026-10-18 M4: it is
+			 * steer through this SA.  It is
 			 * peer-controlled and lands in the updown environment,
 			 * so it must be a syntactically valid LDH name AND
 			 * inside the local accept_dns_domain allowlist (RFC

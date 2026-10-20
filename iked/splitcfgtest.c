@@ -130,7 +130,7 @@ out:
 }
 
 /* asserted FQDN identity in the sa->id_i layout (id_h + bytes) */
-/* REVIEW_2026-10-18 M4: an rcf_remote whose ikev2 accept_dns_domain
+/* An rcf_remote whose ikev2 accept_dns_domain
  * allowlist is `list` (static storage; one at a time). */
 static struct rcf_remote *
 mk_accept_rm(const char *list)

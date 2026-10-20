@@ -5987,7 +5987,7 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 			     "remote %s ikev2 section lacks my_id\n", rm_index);
 		}
 
-		/* REVIEW_2026-10-18 M4: every accept_dns_domain entry must
+		/* Every accept_dns_domain entry must
 		 * itself be a valid LDH domain (no wildcards, no "."). */
 		if (ikev2_accept_dns_domain(rmconf)) {
 			const char *l = rc_vmem2str(
