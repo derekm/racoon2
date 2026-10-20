@@ -718,7 +718,7 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 		    param->cfg_ip4_dns, IKEV2_CFG_INTERNAL_IP4_DNS,
 		    param->cfg_ip6_dns, IKEV2_CFG_INTERNAL_IP6_DNS);
 		rcs_free_addrlist(dnslist);
-		/* RFC 8598 §4.2: a DNS_DOMAIN/TA may only ride a reply that
+		/* RFC 8598 §3.2: a DNS_DOMAIN/TA may only ride a reply that
 		 * also carries >=1 DNS address.  Record whether any was. */
 		emitted_dns = (cfg_payload->l > before);
 	}
@@ -859,9 +859,9 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 		}
 	}
 
-	/* Split-DNS (RFC 8598 §7.2): only when the peer asked for
+	/* Split-DNS (RFC 8598 §4.1): only when the peer asked for
 	 * INTERNAL_DNS_DOMAIN (25) AND this reply also carries >=1 DNS
-	 * address (RFC 8598 §4.2: a 25 must not be sent alone), AND the
+	 * address (RFC 8598 §3.2: a 25 must not be sent alone), AND the
 	 * responder has a configured split-DNS suffix.  Legacy Windows and
 	 * some road-warrior clients use this to steer only matching
 	 * queries through the tunnel. */
@@ -1376,7 +1376,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			break;
 		}
 		case IKEV2_CFG_INTERNAL_DNS_DOMAIN: {
-			/* RFC 8598 §7.2: a split-DNS suffix the initiator should
+			/* RFC 8598 §4.1: a split-DNS suffix the initiator should
 			 * steer through this SA.  REVIEW_2026-10-18 M4: it is
 			 * peer-controlled and lands in the updown environment,
 			 * so it must be a syntactically valid LDH name AND
@@ -1435,18 +1435,23 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				prev_type = 0;
 				break;
 			}
-			/* RFC 8598 §4.2: a TA is Key Tag(2)|Alg(1)|Digest
-			 * Type(1)|Digest Data(>=1).  A non-empty body under
-			 * 5 octets cannot be a well-formed anchor; reject it
-			 * rather than commit garbage to the updown env.
-			 * A zero-length 26 is a legal empty attribute (a
-			 * "clear"), so it is a silent no-op, not an error.
-			 * Either way leave prev_type intact: the domain
-			 * association we keep is that of the last ACCEPTED
-			 * 25/26 on the wire (this 26 still applies to it),
-			 * which is exactly the precedence checked above. */
+			/* RFC 8598 §4.2: a TA is either EMPTY (Length 0) or one
+			 * trust anchor, DNSKEY Key Tag(2)|Alg(1)|Digest Type(1)
+			 * |Digest Data(>=1).  A non-empty body under 5 octets
+			 * cannot be a well-formed anchor; reject it rather than
+			 * commit garbage to the updown env.  A zero-length 26
+			 * is a legal empty attribute: a silent no-op (we do NOT
+			 * free the last anchor — a 26 has no domain of its own,
+			 * so treating it as a clear could drop another domain's
+			 * anchor).  Either way keep prev_type: §4.2 keys
+			 * adjacency off the immediately preceding 25/26 — this
+			 * 26, dropped or empty, is still type 26 and applies to
+			 * the same domain as the preceding accepted 25, so a
+			 * following well-formed 26 remains "immediately
+			 * preceded by" it; only a REJECTED 25 (above) or a
+			 * non-25/26 type (below) breaks the chain. */
 			if (len == 0)
-				break;		/* empty TA: clear, no error */
+				break;		/* empty TA: no-op, no error */
 			if (len < 5) {
 				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
 					PLOGLOC,
