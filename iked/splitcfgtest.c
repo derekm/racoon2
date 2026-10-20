@@ -1446,10 +1446,14 @@ rcs_free_addrlist(sel4.dst);
 		}
 		/* parse: an ACCEPTED 25, then a REJECTED 25, breaks the chain —
 		 * a following well-formed 26 is unpaired and MUST be ignored.
-		 * Pins the prev_type=0 set on a rejected 25 (ikev2_config.c); a
-		 * leading-invalid-25 row cannot do that (prev_type already 0).
-		 * Note: a rejected 25 also resets the accumulated internal_
-		 * dns_domain list, so only the 26-ignored half is asserted here. */
+		 * Pins the prev_type=0 set on a rejected 25 (ikev2_config.c);
+		 * a leading-invalid-25 row cannot do that (prev_type already 0).
+		 * A rejected 25 clears prev_type but LEAVES the already-accepted
+		 * domain (the reject paths `break` without touching
+		 * internal_dns_domain; only the accept path rebuilds it), so the
+		 * good 26 is ignored while the first accepted domain is retained.
+		 * Compare with strcmp on ->s: rc_vmalloc sizes ->l = str+1, so
+		 * an `l == strlen(...)` conjunct is an off-by-one. */
 		{
 			int t[3] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
 				     IKEV2_CFG_INTERNAL_DNS_DOMAIN,
@@ -1465,9 +1469,11 @@ rcs_free_addrlist(sel4.dst);
 			isa.rmconf = mk_accept_rm("corp.example");
 			ikev2_child_param_init(&c.child_param);
 			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
-			   c.internal_dnssec_ta == NULL,
+			   c.internal_dnssec_ta == NULL &&
+			   c.internal_dns_domain != NULL &&
+			   strcmp(c.internal_dns_domain->s, "corp.example") == 0,
 			   "accepted 25 -> rejected 25 -> good 26: 26 unpaired, "
-			   "ignored (rejected 25 reset prev_type)");
+			   "ignored; first accepted domain retained");
 			if (c.internal_dnssec_ta)
 				rc_vfree(c.internal_dnssec_ta);
 			if (c.internal_dns_domain)
