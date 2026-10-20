@@ -565,7 +565,7 @@ fb_charon_gate() {
 	_bad=""
 	if [ "$FB_CH" = i ]; then _il=$FR; _ij=$jr; else _il=$FI; _ij=$ji; fi
 	_g=$(fb_grp "$_idh")
-	grep -qE "selected proposal: IKE:[^ ]*$_g[^ ]*KE1_ML_KEM_768" $FB_CL || _bad="charon did not select IKE ...$_g...KE1_ML_KEM_768"
+	grep -qE "selected proposal: IKE:[^ ]*${_g}[^ ]*KE1_ML_KEM_768" $FB_CL || _bad="charon did not select IKE ...$_g...KE1_ML_KEM_768"
 	if [ "$FB_CH" = i ]; then
 		grep -q 'state change: CONNECTING => ESTABLISHED' $FB_CL || _bad="${_bad:+$_bad; }charon initiator never ESTABLISHED"
 	else

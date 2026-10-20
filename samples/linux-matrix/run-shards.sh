@@ -37,6 +37,13 @@ if ! sh "$HERE/tools/kill-guard.sh"; then
 	echo "run-shards: FAIL: kinds/ reintroduced a netns-unsafe daemon kill (see tools/kill-guard.sh)" >&2
 	exit 2
 fi
+# Every tracked shell script must parse under the interpreter its shebang
+# names (a #!/bin/sh kind with bash-only syntax breaks under dash).
+if ! sh "$HERE/tools/sh-lint.sh" "$HERE/../.." >/dev/null; then
+	sh "$HERE/tools/sh-lint.sh" "$HERE/../.." >&2
+	echo "run-shards: FAIL: shell syntax lint (see tools/sh-lint.sh)" >&2
+	exit 2
+fi
 # xfrm_audit.tsv must stay one entry per line (tools: xa_tsv_lint).
 if ! HERE="$HERE" sh -c '. "$HERE/xfrm_audit.sh"; xa_tsv_lint'; then
 	echo "run-shards: FAIL: xfrm_audit.tsv is malformed (see xa_tsv_lint)" >&2
