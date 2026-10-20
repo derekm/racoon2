@@ -27,7 +27,7 @@
 #   (The earlier failed attempts either pinned each gateway's OWN address as the
 #    child dst — C rejected TSr==A — or used the wrong responder src/dst sense.)
 #
-# DATA PLANE (REVIEW_2026-10-18 M5): the tunnel endpoints are unpinned, so
+# DATA PLANE: the tunnel endpoints are unpinned, so
 # spmd installs no static SPD row for them ("tunnel endpoints unpinned") and
 # iked posts the policy pair with the NEGOTIATED endpoints when the child
 # matures (initiator: ikev2_child_state_set; responder: IKE_AUTH path) —
@@ -72,7 +72,7 @@ kind_i2ike_redirect2() {
 	PRIVRES_A="/tmp/r2-${name}-resume-a"; PRIVRES_I="/tmp/r2-${name}-resume-i"; PRIVRES_C="/tmp/r2-${name}-resume-c"
 	D="/tmp/r2-${name}"; C="/tmp/r2-${name}-conf"
 	DGW=$CID
-	# -loop variant (REVIEW_2026-10-18 M2): A statically redirects to C and
+	# -loop variant: A statically redirects to C and
 	# C back to A; the initiator must stop after redirect_max (default 5,
 	# RFC 5685 s7 MAX_REDIRECTS) follows within redirect_period (300 s).
 	A_RT=; C_RT=; LOOP=0

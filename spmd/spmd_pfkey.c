@@ -457,7 +457,7 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 
 	if (rc->samode == RCT_IPSM_TUNNEL &&
 	    (!pl->my_sa_ipaddr || !pl->peers_sa_ipaddr)) {
-		/* REVIEW_2026-10-18 M5: an UNPINNED tunnel (no my_sa_ipaddr
+		/* An UNPINNED tunnel (no my_sa_ipaddr
 		 * and/or peers_sa_ipaddr) has no static endpoints to put in
 		 * the SPD template: its endpoints are the IKE_SA's, which
 		 * may move (RFC 5685 redirect).  iked installs the policy
@@ -1929,7 +1929,7 @@ sl_to_rc_wo_addr(struct rcf_selector *sl, struct rcpfk_msg *rc)
 	/*** set rc->sa_src, rc->sa_dst ***/
 	if (rc->samode == RCT_IPSM_TUNNEL ||
 	    rc->samode == RCT_IPSM_TRANSPORT) {
-		/* REVIEW_2026-10-18 M5: an unpinned endpoint is supplied by
+		/* An unpinned endpoint is supplied by
 		 * the caller (spmif POLICY ADD carries the SA endpoints), the
 		 * same as a non-INET (macro) one below.  Erroring out here
 		 * also freed rc under the shell.c caller, which ignores the

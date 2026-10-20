@@ -158,7 +158,7 @@ struct sadb_response_method ikev2_sadb_callback = {
 /*
  * A policy whose SPD rows cannot be installed statically by spmd and are
  * instead posted by iked per child SA (spmif POLICY ADD/DELETE) with the
- * negotiated endpoints: peers_sa_ipaddr IP_RW, or (REVIEW_2026-10-18 M5)
+ * negotiated endpoints: peers_sa_ipaddr IP_RW, or
  * an UNPINNED tunnel (no my_sa_ipaddr and/or peers_sa_ipaddr), whose
  * endpoints follow the IKE_SA — e.g. to a sibling after an RFC 5685
  * redirect.  spmd skips such a policy at startup.
@@ -221,7 +221,7 @@ ikev2_child_state_set(struct ikev2_child_sa *child_sa,
 
 	if (old_state != IKEV2_CHILD_STATE_MATURE &&
 	    state == IKEV2_CHILD_STATE_MATURE) {
-		/* REVIEW_2026-10-18 M5: the initiator of a dynamic (unpinned
+		/* The initiator of a dynamic (unpinned
 		 * tunnel) policy posts its SPD pair once the child is keyed;
 		 * the responder does so in its IKE_AUTH/CREATE_CHILD path. */
 		if (child_sa->is_initiator && child_sa->preceding_satype == 0 &&
