@@ -119,7 +119,7 @@ AC_ARG_WITH(libracoon,
 [   --with-libracoon=PATH   libracoon [default path ../lib]],
         libracoon_path="$withval", libracoon_path="../lib")
 AC_MSG_RESULT($libracoon_path)
-	dnl VPATH (REVIEW_2026-10-18 L5): libracoon's headers live in the
+	dnl VPATH: libracoon's headers live in the
 	dnl SOURCE tree, its generated files and library in the build tree.
 	case "$libracoon_path" in
 	/*)	CPPFLAGS="-I$libracoon_path $CPPFLAGS" ;;

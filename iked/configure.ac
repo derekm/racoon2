@@ -423,7 +423,7 @@ fi
 if test -z "$RACOONINCLUDEDIR"; then
  	RACOONINCLUDEDIR=$RACOONLIBDIR
 fi
-dnl VPATH (REVIEW_2026-10-18 L5): a relative libracoon dir names both the
+dnl VPATH: a relative libracoon dir names both the
 dnl build tree (generated headers) and the source tree (the rest).
 case "$RACOONINCLUDEDIR" in
 /*)	CPPFLAGS="-I$RACOONINCLUDEDIR $CPPFLAGS" ;;
