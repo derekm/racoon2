@@ -1464,8 +1464,12 @@ rcs_free_addrlist(sel4.dst);
 			ikev2_child_param_init(&c.child_param);
 			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
 			   c.internal_dnssec_ta == NULL &&
-			   c.internal_dns_domain != NULL,
-			   "accepted 25 -> rejected 25 -> good 26: 26 unpaired, ignored");
+			   c.internal_dns_domain != NULL &&
+			   c.internal_dns_domain->l == strlen("corp.example"),
+			   "accepted 25 -> rejected 25 -> good 26: 26 unpaired, "
+			   "ignored; first accepted domain retained");
+			if (c.internal_dnssec_ta)
+				rc_vfree(c.internal_dnssec_ta);
 			if (c.internal_dns_domain)
 				rc_vfree(c.internal_dns_domain);
 		}
