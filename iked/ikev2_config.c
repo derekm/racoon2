@@ -858,7 +858,7 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 			goto err;
 	}
 
-	/* Split-DNS DNSSEC trust anchor (RFC 8598 §8).  The responder cannot
+	/* Split-DNS DNSSEC trust anchor (RFC 8598 §4.2).  The responder cannot
 	 * source a trust anchor from DNS, so the operator configures it as a
 	 * hex `dnssec_ta` (DS-style Key Tag|Alg|Digest Type|Digest Data); when
 	 * the peer asked for INTERNAL_DNSSEC_TA (26) AND a 25 will actually be
@@ -1415,7 +1415,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				prev_type = 0;
 				break;
 			}
-			/* RFC 8598 §8: a TA is Key Tag(2)|Alg(1)|Digest
+			/* RFC 8598 §4.2: a TA is Key Tag(2)|Alg(1)|Digest
 			 * Type(1)|Digest Data(>=1), so a body shorter than
 			 * 5 octets cannot be a well-formed anchor; reject it
 			 * rather than commit garbage to the updown env.
@@ -1431,7 +1431,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 					len);
 				break;
 			}
-			/* RFC 8598 §8: a DNSSEC trust anchor (Key Tag|Alg|
+			/* RFC 8598 §4.2: a DNSSEC trust anchor (Key Tag|Alg|
 			 * Digest Type|Digest Data) for the domain in the
 			 * immediately preceding INTERNAL_DNS_DOMAIN (25).
 			 * Commit the raw bytes so the updown script receives
