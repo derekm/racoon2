@@ -416,7 +416,7 @@ main(int argc, char *argv[])
 				   "redirect parse: truncated rejected");
 			}
 		}
-		/* RFC 5685 s7 redirect-loop limit (REVIEW_2026-10-18 M2) */
+		/* RFC 5685 s7 redirect-loop limit */
 		{
 			int cnt = 0, k, okc = 0;
 			time_t win = 0, t0 = 1000000;
