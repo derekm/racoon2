@@ -234,10 +234,27 @@ EOF
 		# arrives at the responder twice, the second copy landing in the
 		# GETSPI window (response not yet armed) or right after it (armed).
 		# It must be short-circuited, never re-processed.
-		if ! ip netns exec "$NSI" tc qdisc replace dev "$VI" root netem duplicate 100% 2>/dev/null; then
-			log "FAIL: cannot apply netem duplicate on $NSI/$VI (no tc?); abort"
+		if ! ip netns exec "$NSI" tc qdisc add dev "$VI" root handle 1: prio 2>/dev/null; then
+			log "FAIL: cannot apply netem prio on $NSI/$VI (no tc?); abort"
 			break
 		fi
+		ip netns exec "$NSI" tc qdisc add dev "$VI" parent 1:1 handle 20: netem duplicate 100% 2>/dev/null || \
+			{ log "FAIL: cannot add netem duplicate on $NSI/$VI; abort"; break; }
+		# Scope the duplicate to IKE control (UDP) only.  A whole-veth
+		# `netem duplicate` also duplicates the xa_probe data-plane
+		# (ESP proto 50, ICMP proto 1) that runs every 0.5s while the
+		# window is armed, so the responder's ESP anti-replay rejects the
+		# duplicated ESP and XfrmInStateSeqError rises -> xfrm_audit.sh
+		# `xfrm_stat` FAILs the row (observed +8).  Here only the UDP
+		# IKE frames are duplicated; ESP (proto 50) and the ICMP probes
+		# (proto 1) fall to the default prio band with no duplicate, so
+		# the IKE CREATE_CHILD replay is exercised and the ESP counters
+		# stay clean.  (No NAT in this row, so IKE is UDP and ESP is
+		# plain proto 50, not UDP-encap — confirmed by the audit's
+		# xfrm_stat expectation for every non-NAT row.)
+		ip netns exec "$NSI" tc filter add dev "$VI" parent 1: protocol ip prio 1 \
+			u32 match ip protocol 17 0xff flowid 1:1 2>/dev/null || \
+			{ log "FAIL: cannot add UDP-scope filter on $NSI/$VI; abort"; break; }
 		# DIAG tap: ingress on the RESPONDER veth (post-netem, so the
 		# duplicated copies ARE visible there; a tap on the initiator
 		# egress sits ABOVE netem and would only ever show the original).
@@ -281,7 +298,7 @@ EOF
 		# silent; the tcpdump tap above and the wire count below
 		# arbitrate between those two.)
 		sleep 12
-		ip netns exec "$NSI" tc qdisc replace dev "$VI" root netem duplicate 0% 2>/dev/null || true
+		ip netns exec "$NSI" tc qdisc del dev "$VI" root 2>/dev/null || true
 		sleep 4
 		if [ -n "${TCPID:-}" ]; then
 			kill "$TCPID" 2>/dev/null || true
