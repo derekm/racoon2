@@ -78,7 +78,7 @@ mk_addrlist(int fam, const char *addrstr, int prefixlen)
 	return al;
 }
 
-/* REVIEW_2026-10-18 M1: a self-signed RSA cert with NO SAN whose subject
+/* A self-signed RSA cert with NO SAN whose subject
  * carries the given CN bytes (cnlen may include an embedded NUL), and a
  * second CN when cn2 != NULL.  Returns its DER as an rc_vchar_t. */
 static rc_vchar_t *
@@ -887,7 +887,7 @@ rcs_free_addrlist(sel4.dst);
 	/* ================= B.2c: RFC 4945 / 6125 FQDN identity matching ====
 	 * fqdn_id_match(cert_name, asserted, len, allow_wildcard): the
 	 * wildcard is only ever in the CERTIFICATE; an asserted ID with '*'
-	 * never matches (REVIEW_2026-10-18 H2: the old code had it reversed,
+	 * never matches (the old code had it reversed,
 	 * so IDi "*.example.com" bound to an "x.example.com" cert). */
 	CK(fqdn_id_match("gw.example.com", "gw.example.com", 14, 0) == 1,
 	   "exact FQDN matches");
@@ -1076,7 +1076,7 @@ rcs_free_addrlist(sel4.dst);
 	}
 
 	/* ============ B.2f: CN fallback is opt-in and NUL-safe ============
-	 * REVIEW_2026-10-18 M1: eay_get_x509subject_cn() used
+	 * eay_get_x509subject_cn() used
 	 * X509_NAME_get_text_by_NID, so a CN "gw.example.com\0.evil" read as
 	 * "gw.example.com" (null-prefix).  It now refuses an embedded NUL or
 	 * a second CN, and the CN fallback needs cert_cn_fallback on. */

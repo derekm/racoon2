@@ -46,7 +46,7 @@ kind_i2ipubkey() {
 	case "$name" in
 	*-wire|*-wire-*) WIRE=1 ;;
 	esac
-	# RFC 4945 / RFC 6125 identity-binding variants (REVIEW_2026-10-18 H2).
+	# RFC 4945 / RFC 6125 identity-binding variants.
 	# INIT_ID is the FQDN the initiator asserts in IDi (and the responder's
 	# peers_id, so the peers_id allowlist ACCEPTS it and the cert binding is
 	# the only guard); INIT_SAN is the initiator cert's SAN-DNS.  NEG=1 rows
