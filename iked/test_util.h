@@ -100,6 +100,7 @@ int opt_ipv4_only = FALSE;                                                 \
 int opt_ipv6_only = FALSE;                                                 \
 int isakmp_port = 4500;                                                    \
 int isakmp_port_dest = 4500;                                               \
+const char *ike_pcap_file = NULL;                                            \
 const char *options_short = "";                                            \
 const struct option options_long[] = { {0, 0, 0, 0} };                     \
 void trace_info(const char *location, const char *formatstr, ...)          \

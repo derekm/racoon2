@@ -151,10 +151,42 @@ mk_accept_rm(const char *list)
 	return &r;
 }
 
+/* RFC 8598 §3.2 — a CFG_REPLY's 25/26 count only
+ * when the same reply carries an INTERNAL_IP4/6_DNS server.  Every
+ * well-formed test reply therefore starts with one INTERNAL_IP4_DNS
+ * (192.0.2.53); put_dns4() writes it at buf+off and returns the new off. */
+static size_t
+put_dns4(uint8_t *b, size_t off)
+{
+	struct ikev2cfg_attrib *a = (struct ikev2cfg_attrib *)(b + off);
+	static const uint8_t dns[4] = { 192, 0, 2, 53 };
+
+	put_uint16(&a->type, IKEV2_CFG_INTERNAL_IP4_DNS);
+	put_uint16(&a->length, sizeof(dns));
+	memcpy(IKEV2CFG_ATTR_VALUE(a), dns, sizeof(dns));
+	return off + sizeof(*a) + sizeof(dns);
+}
+
+/* run the REAL receive path, then release the DNS server leases it
+ * recorded (no check inspects them; this keeps LSan clean across the
+ * memset-reused child structs) */
+static int
+process_reply(struct ikev2_sa *isa, struct ikev2_child_sa *c,
+	      struct ikev2_payload_header *ph)
+{
+	int rc = ikev2_process_config_reply(isa, c, ph);
+
+	while (!LIST_EMPTY(&c->internal_ip4_dns))
+		rc_addrpool_release_addr(LIST_FIRST(&c->internal_ip4_dns));
+	while (!LIST_EMPTY(&c->internal_ip6_dns))
+		rc_addrpool_release_addr(LIST_FIRST(&c->internal_ip6_dns));
+	return rc;
+}
+
 /* build a CFG_REPLY carrying the given (type, value, len) attributes */
 static struct ikev2_payload_header *
-mk_cfg_reply(uint8_t *buf, size_t bl, int n, const int *types,
-	     const char *const *vals, const size_t *lens)
+mk_cfg_reply_x(uint8_t *buf, size_t bl, int dns, int n, const int *types,
+	       const char *const *vals, const size_t *lens)
 {
 	struct ikev2payl_config *cfg = (struct ikev2payl_config *)buf;
 	size_t off = sizeof(struct ikev2payl_config);
@@ -162,6 +194,8 @@ mk_cfg_reply(uint8_t *buf, size_t bl, int n, const int *types,
 
 	memset(buf, 0, bl);
 	cfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+	if (dns)
+		off = put_dns4(buf, off);	/* RFC 8598 §3.2: a DNS server */
 	for (i = 0; i < n; ++i) {
 		struct ikev2cfg_attrib *a = (struct ikev2cfg_attrib *)(buf + off);
 
@@ -174,6 +208,44 @@ mk_cfg_reply(uint8_t *buf, size_t bl, int n, const int *types,
 	buf[3] = (uint8_t)(off & 0xff);
 	cfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
 	return &cfg->header;
+}
+
+/* the usual well-formed reply: one INTERNAL_IP4_DNS, then the attributes */
+static struct ikev2_payload_header *
+mk_cfg_reply(uint8_t *buf, size_t bl, int n, const int *types,
+	     const char *const *vals, const size_t *lens)
+{
+	return mk_cfg_reply_x(buf, bl, 1, n, types, vals, lens);
+}
+
+/* count attributes of `type` in a built CFG_REPLY payload; copy up to
+ * `max` 4-octet values into `v4` (for NETMASK checks) */
+static int
+count_cfg_attr(rc_vchar_t *pl, unsigned int type, struct in_addr *v4, int max)
+{
+	uint8_t *b;
+	size_t left;
+	int n = 0;
+
+	if (!pl || pl->l < sizeof(struct ikev2payl_config_h))
+		return 0;
+	b = (uint8_t *)pl->v + sizeof(struct ikev2payl_config_h);
+	left = pl->l - sizeof(struct ikev2payl_config_h);
+	while (left >= sizeof(struct ikev2cfg_attrib)) {
+		struct ikev2cfg_attrib *a = (struct ikev2cfg_attrib *)b;
+		unsigned int t = IKEV2CFG_ATTR_TYPE(a), l = IKEV2CFG_ATTR_LENGTH(a);
+
+		if (sizeof(*a) + l > left)
+			break;
+		if (t == type) {
+			if (v4 && n < max && l == 4)
+				memcpy(&v4[n], IKEV2CFG_ATTR_VALUE(a), 4);
+			n++;
+		}
+		b += sizeof(*a) + l;
+		left -= sizeof(*a) + l;
+	}
+	return n;
 }
 
 static rc_vchar_t *
@@ -476,11 +548,85 @@ main(int argc, char *argv[])
 		rcs_free_addrlist(sB2.dst);
 	}
 
+	/* legacy_split_netmask (explicit opt-in, default
+	 * off).  on: one INTERNAL_IP4_NETMASK (2) per v4 split subnet, still
+	 * only when the reply assigns an IPv4 address; off (default, above):
+	 * RFC 7296 §3.15.1 at-most-one.  Cases: on+2 subnets+addr -> 2 masks in
+	 * subnet order; on+1 subnet+addr -> exactly 1 (no duplicate from the
+	 * single-subnet path); on+2 subnets, NO addr -> 0; on is the ONLY way
+	 * to get >1 (off + 2 subnets -> 0 is the A2 pin above). */
+	{
+		static const struct { int nsub; int addr; int want; const char *what; } lc[] = {
+			{ 2, 1, 2, "legacy_split_netmask on, 2 v4 subnets + IP4 addr: one NETMASK(2) per subnet" },
+			{ 1, 1, 1, "legacy_split_netmask on, 1 v4 subnet + IP4 addr: exactly one NETMASK(2)" },
+			{ 2, 0, 0, "legacy_split_netmask on, 2 v4 subnets, NO IP4 addr: no NETMASK(2)" },
+		};
+		size_t li;
+
+		for (li = 0; li < sizeof(lc) / sizeof(lc[0]); li++) {
+			struct ikev2_child_sa cL;
+			struct ikev2_sa isaL;
+			struct ikev2_child_param pL;
+			struct rcf_selector sL1, sL2;
+			struct rcf_kmp kL;
+			struct rcf_remote rL;
+			struct rcf_address *raL = NULL;
+			struct rcf_address_list_head leasesL;
+			struct in_addr v4L, m[4];
+			int nm;
+
+			memset(&cL, 0, sizeof(cL));
+			memset(&isaL, 0, sizeof(isaL));
+			memset(&sL1, 0, sizeof(sL1));
+			memset(&sL2, 0, sizeof(sL2));
+			memset(&kL, 0, sizeof(kL));
+			memset(&rL, 0, sizeof(rL));
+			memset(m, 0, sizeof(m));
+			kL.legacy_split_netmask = RCT_BOOL_ON;
+			rL.ikev2 = &kL;
+			isaL.rmconf = &rL;
+			ikev2_child_param_init(&pL);
+			pL.cfg_ip4_subnet = 1;
+			sL1.dst = mk_addrlist(AF_INET, "10.20.0.0", 16);
+			if (lc[li].nsub == 2) {
+				sL2.dst = mk_addrlist(AF_INET, "192.168.50.0", 24);
+				sL1.next = &sL2;
+			}
+			cL.selector = &sL1;
+			LIST_INIT(&leasesL);
+			if (lc[li].addr) {
+				inet_pton(AF_INET, "10.99.0.10", &v4L);
+				raL = rc_address_new(AF_INET, (uint8_t *)&v4L, 24,
+				    NULL, &leasesL);
+				if (raL)
+					LIST_INSERT_HEAD(&cL.lease_list, raL, link_sa);
+			}
+			CK(ikev2_create_config_reply(&isaL, &cL, &pL) == 0,
+			   "create_config_reply rc==0 (legacy_split_netmask)");
+			nm = count_cfg_attr(pL.cfg_payload,
+			    IKEV2_CFG_INTERNAL_IP4_NETMASK, m, 4);
+			CK(nm == lc[li].want, lc[li].what);
+			if (lc[li].want >= 1)
+				CK(m[0].s_addr == htonl(0xffff0000U),
+				   "legacy NETMASK #1 == /16 (first subnet)");
+			if (lc[li].want == 2)
+				CK(m[1].s_addr == htonl(0xffffff00U),
+				   "legacy NETMASK #2 == /24 (second subnet)");
+			if (pL.cfg_payload)
+				rc_vfree(pL.cfg_payload);
+			if (raL)
+				rc_addrpool_release_addr(raL);
+			rcs_free_addrlist(sL1.dst);
+			if (sL2.dst)
+				rcs_free_addrlist(sL2.dst);
+		}
+	}
+
 	if (child.child_param.cfg_payload)
 		rc_vfree(child.child_param.cfg_payload);
 
 	/* ================= B.2 mirror: INITIATOR parsing =================
-	 * Drive the real ikev2_process_config_reply() with a fabricated
+	 * Drive the real process_reply() with a fabricated
 	 * CFG_REPLY carrying INTERNAL_IP4_SUBNET(13) + INTERNAL_IP6_SUBNET(15)
 	 * and assert the subnets are COMMITTED to the child (addr + prefixlen)
 	 * in internal_ip4_subnet / internal_ip6_subnet. */
@@ -545,8 +691,8 @@ main(int argc, char *argv[])
 		memset(&isa, 0, sizeof(isa));
 		ikev2_child_param_init(&c.child_param);
 
-		CK(ikev2_process_config_reply(&isa, &c, &cfg->header) == 0,
-		   "ikev2_process_config_reply(13/15) rc==0");
+		CK(process_reply(&isa, &c, &cfg->header) == 0,
+		   "process_reply(13/15) rc==0");
 
 		ra = LIST_FIRST(&c.internal_ip4_subnet);
 		CK(ra != NULL, "ip4 subnet committed to internal_ip4_subnet");
@@ -624,8 +770,8 @@ main(int argc, char *argv[])
 			memset(&isa, 0, sizeof(isa));
 			ikev2_child_param_init(&c.child_param);
 
-			CK(ikev2_process_config_reply(&isa, &c, &cfg->header) == 0,
-			   "ikev2_process_config_reply(13 /0) rc==0");
+			CK(process_reply(&isa, &c, &cfg->header) == 0,
+			   "process_reply(13 /0) rc==0");
 
 			ra = LIST_FIRST(&c.internal_ip4_subnet);
 			CK(ra != NULL, "ip4 /0 subnet committed");
@@ -685,7 +831,7 @@ main(int argc, char *argv[])
 			memset(&nc, 0, sizeof(nc));
 			memset(&nisa, 0, sizeof(nisa));
 			ikev2_child_param_init(&nc.child_param);
-			CK(ikev2_process_config_reply(&nisa, &nc,
+			CK(process_reply(&nisa, &nc,
 			    &ncfg->header) == 0,
 			    "process_config_reply rc==0 (non-contig v4 mask)");
 			CK(LIST_EMPTY(&nc.internal_ip4_subnet),
@@ -728,7 +874,7 @@ main(int argc, char *argv[])
 			memset(&nc, 0, sizeof(nc));
 			memset(&nisa, 0, sizeof(nisa));
 			ikev2_child_param_init(&nc.child_param);
-			CK(ikev2_process_config_reply(&nisa, &nc,
+			CK(process_reply(&nisa, &nc,
 			    &ncfg->header) == 0,
 			    "process_config_reply rc==0 (v6 prefix >128)");
 			CK(LIST_EMPTY(&nc.internal_ip6_subnet),
@@ -1315,6 +1461,7 @@ rcs_free_addrlist(sel4.dst);
 		cfg = (struct ikev2payl_config *)buf;
 		cfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
 		off = sizeof(struct ikev2payl_config);
+		off = put_dns4(buf, off);	/* RFC 8598 §3.2 */
 		{
 			struct ikev2cfg_attrib *a =
 			    (struct ikev2cfg_attrib *)(buf + off);
@@ -1336,7 +1483,7 @@ rcs_free_addrlist(sel4.dst);
 		memset(&isa, 0, sizeof(isa));
 		isa.rmconf = mk_accept_rm("corp.example");	/* M4 allowlist */
 		ikev2_child_param_init(&c.child_param);
-		CK(ikev2_process_config_reply(&isa, &c, &cfg->header) == 0,
+		CK(process_reply(&isa, &c, &cfg->header) == 0,
 		   "process_config_reply rc==0 (25)");
 		CK(c.internal_dns_domain != NULL &&
 		   strcmp(c.internal_dns_domain->s, "corp.example") == 0,
@@ -1423,7 +1570,7 @@ rcs_free_addrlist(sel4.dst);
 			memset(&c, 0, sizeof(c));
 			memset(&isa, 0, sizeof(isa));
 			ikev2_child_param_init(&c.child_param);
-			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
+			CK(process_reply(&isa, &c, ph) == 0 &&
 			   c.internal_dns_domain == NULL,
 			   "25 refused when accept_dns_domain unset (default)");
 		}
@@ -1439,17 +1586,21 @@ rcs_free_addrlist(sel4.dst);
 			memset(&isa, 0, sizeof(isa));
 			isa.rmconf = mk_accept_rm("corp.example");
 			ikev2_child_param_init(&c.child_param);
-			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
+			CK(process_reply(&isa, &c, ph) == 0 &&
 			   c.internal_dns_domain == NULL &&
 			   c.internal_dnssec_ta == NULL,
 			   "invalid 25 refused and its 26 ignored");
 		}
 		/* parse: an ACCEPTED 25, then a REJECTED 25, breaks the chain —
 		 * a following well-formed 26 is unpaired and MUST be ignored.
-		 * Pins the prev_type=0 set on a rejected 25 (ikev2_config.c); a
-		 * leading-invalid-25 row cannot do that (prev_type already 0).
-		 * Note: a rejected 25 also resets the accumulated internal_
-		 * dns_domain list, so only the 26-ignored half is asserted here. */
+		 * Pins the prev_type=0 set on a rejected 25 (ikev2_config.c);
+		 * a leading-invalid-25 row cannot do that (prev_type already 0).
+		 * A rejected 25 clears prev_type but LEAVES the already-accepted
+		 * domain (the reject paths `break` without touching
+		 * internal_dns_domain; only the accept path rebuilds it), so the
+		 * good 26 is ignored while the first accepted domain is retained.
+		 * Compare with strcmp on ->s: rc_vmalloc sizes ->l = str+1, so
+		 * an `l == strlen(...)` conjunct is an off-by-one. */
 		{
 			int t[3] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
 				     IKEV2_CFG_INTERNAL_DNS_DOMAIN,
@@ -1464,10 +1615,12 @@ rcs_free_addrlist(sel4.dst);
 			memset(&isa, 0, sizeof(isa));
 			isa.rmconf = mk_accept_rm("corp.example");
 			ikev2_child_param_init(&c.child_param);
-			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
-			   c.internal_dnssec_ta == NULL,
+			CK(process_reply(&isa, &c, ph) == 0 &&
+			   c.internal_dnssec_ta == NULL &&
+			   c.internal_dns_domain != NULL &&
+			   strcmp(c.internal_dns_domain->s, "corp.example") == 0,
 			   "accepted 25 -> rejected 25 -> good 26: 26 unpaired, "
-			   "ignored (rejected 25 reset prev_type)");
+			   "ignored; first accepted domain retained");
 			if (c.internal_dnssec_ta)
 				rc_vfree(c.internal_dnssec_ta);
 			if (c.internal_dns_domain)
@@ -1487,13 +1640,81 @@ rcs_free_addrlist(sel4.dst);
 			memset(&isa, 0, sizeof(isa));
 			isa.rmconf = mk_accept_rm("corp.example,lab.test");
 			ikev2_child_param_init(&c.child_param);
-			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
+			CK(process_reply(&isa, &c, ph) == 0 &&
 			   c.internal_dns_domain != NULL &&
 			   strcmp(c.internal_dns_domain->s,
 				  "corp.example lab.test") == 0,
 			   "multiple 25s: allowed kept as list, 'com' refused");
 			if (c.internal_dns_domain)
 				rc_vfree(c.internal_dns_domain);
+		}
+		/* RFC 8598 §1, §3.2: 25/26 are only
+		 * meaningful with an INTERNAL_IP4/6_DNS server in the SAME
+		 * reply.  (a) 25+26, no DNS server -> neither committed;
+		 * (b) an IPv6 DNS server AFTER the 25/26 satisfies it (order
+		 * independent); (c) a later reply without DNS does not touch
+		 * the domain/TA committed by an earlier valid reply. */
+		{
+			int t[2] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+				     IKEV2_CFG_INTERNAL_DNSSEC_TA };
+			const char *v[2] = { "corp.example",
+					     "\x01\x02\x08\x02\xaa\xbb" };
+			size_t l[2] = { 12, 6 };
+
+			ph = mk_cfg_reply_x(buf, sizeof(buf), 0, 2, t, v, l);
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			isa.rmconf = mk_accept_rm("corp.example");
+			ikev2_child_param_init(&c.child_param);
+			CK(process_reply(&isa, &c, ph) == 0 &&
+			   c.internal_dns_domain == NULL &&
+			   c.internal_dnssec_ta == NULL,
+			   "split-DNS: 25+26 with NO DNS server in the reply: both refused");
+			rc_vfreez(c.internal_dns_domain);
+			rc_vfreez(c.internal_dnssec_ta);
+		}
+		{
+			static const char dns6[16] = { 0x20, 0x01, 0x0d, 0xb8,
+			    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x53 };
+			int t[3] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+				     IKEV2_CFG_INTERNAL_DNSSEC_TA,
+				     IKEV2_CFG_INTERNAL_IP6_DNS };
+			const char *v[3] = { "corp.example",
+					     "\x01\x02\x08\x02\xaa\xbb", dns6 };
+			size_t l[3] = { 12, 6, 16 };
+
+			ph = mk_cfg_reply_x(buf, sizeof(buf), 0, 3, t, v, l);
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			isa.rmconf = mk_accept_rm("corp.example");
+			ikev2_child_param_init(&c.child_param);
+			CK(process_reply(&isa, &c, ph) == 0 &&
+			   c.internal_dns_domain != NULL &&
+			   strcmp(c.internal_dns_domain->s, "corp.example") == 0 &&
+			   c.internal_dnssec_ta != NULL &&
+			   c.internal_dnssec_ta->l == 6,
+			   "split-DNS: INTERNAL_IP6_DNS after the 25/26 satisfies §3.2 (both kept)");
+
+			/* (c) second reply, no DNS server: earlier commit intact */
+			{
+				int t2[2] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+					      IKEV2_CFG_INTERNAL_DNSSEC_TA };
+				const char *v2[2] = { "lab.corp.example",
+						      "\x09\x09\x08\x02\xcc" };
+				size_t l2[2] = { 16, 5 };
+
+				ph = mk_cfg_reply_x(buf, sizeof(buf), 0, 2, t2, v2, l2);
+				CK(process_reply(&isa, &c, ph) == 0 &&
+				   c.internal_dns_domain != NULL &&
+				   strcmp(c.internal_dns_domain->s,
+					  "corp.example") == 0 &&
+				   c.internal_dnssec_ta != NULL &&
+				   c.internal_dnssec_ta->l == 6 &&
+				   ((uint8_t *)c.internal_dnssec_ta->v)[0] == 0x01,
+				   "split-DNS: a later reply without DNS leaves the earlier domain+TA untouched");
+			}
+			rc_vfreez(c.internal_dns_domain);
+			rc_vfreez(c.internal_dnssec_ta);
 		}
 	}
 
@@ -1741,6 +1962,7 @@ rcs_free_addrlist(sel4.dst);
 			cfg = (struct ikev2payl_config *)buf;
 			cfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
 			off = sizeof(struct ikev2payl_config);
+			off = put_dns4(buf, off);	/* RFC 8598 §3.2 */
 			a = (struct ikev2cfg_attrib *)(buf + off);
 			put_uint16(&a->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
 			put_uint16(&a->length, (uint16_t)strlen(dd));
@@ -1764,7 +1986,7 @@ rcs_free_addrlist(sel4.dst);
 			memset(&isa, 0, sizeof(isa));
 			isa.rmconf = mk_accept_rm("corp.example");
 			ikev2_child_param_init(&c.child_param);
-			CK(ikev2_process_config_reply(&isa, &c,
+			CK(process_reply(&isa, &c,
 			     &cfg->header) == 0,
 			   "process_config_reply rc==0 (26)");
 			CK(c.internal_dnssec_ta != NULL &&
@@ -1795,6 +2017,7 @@ rcs_free_addrlist(sel4.dst);
 			tcfg = (struct ikev2payl_config *)tb;
 			tcfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
 			toff = sizeof(struct ikev2payl_config);
+			toff = put_dns4(tb, toff);	/* RFC 8598 §3.2 */
 			ta = (struct ikev2cfg_attrib *)(tb + toff);
 			put_uint16(&ta->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
 			put_uint16(&ta->length, (uint16_t)strlen("corp.example"));
@@ -1818,7 +2041,7 @@ rcs_free_addrlist(sel4.dst);
 			memset(&tisa, 0, sizeof(tisa));
 			tisa.rmconf = mk_accept_rm("corp.example");
 			ikev2_child_param_init(&tc.child_param);
-			CK(ikev2_process_config_reply(&tisa, &tc,
+			CK(process_reply(&tisa, &tc,
 			    &tcfg->header) == 0,
 			    "process_config_reply rc==0 (short 26)");
 			CK(tc.internal_dnssec_ta == NULL,
@@ -1844,6 +2067,7 @@ rcs_free_addrlist(sel4.dst);
 			ecfg = (struct ikev2payl_config *)eb;
 			ecfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
 			eoff = sizeof(struct ikev2payl_config);
+			eoff = put_dns4(eb, eoff);	/* RFC 8598 §3.2 */
 			ea = (struct ikev2cfg_attrib *)(eb + eoff);
 			put_uint16(&ea->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
 			put_uint16(&ea->length, (uint16_t)strlen("corp.example"));
@@ -1872,7 +2096,7 @@ rcs_free_addrlist(sel4.dst);
 			memset(&eisa, 0, sizeof(eisa));
 			eisa.rmconf = mk_accept_rm("corp.example");
 			ikev2_child_param_init(&ec.child_param);
-			CK(ikev2_process_config_reply(&eisa, &ec,
+			CK(process_reply(&eisa, &ec,
 			    &ecfg->header) == 0,
 			    "process_config_reply rc==0 (empty-26 -> good-26)");
 			CK(ec.internal_dnssec_ta != NULL &&
@@ -1900,6 +2124,7 @@ rcs_free_addrlist(sel4.dst);
 			fcfg = (struct ikev2payl_config *)fb;
 			fcfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
 			foff = sizeof(struct ikev2payl_config);
+			foff = put_dns4(fb, foff);	/* RFC 8598 §3.2 */
 			fa = (struct ikev2cfg_attrib *)(fb + foff);
 			put_uint16(&fa->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
 			put_uint16(&fa->length, (uint16_t)strlen("corp.example"));
@@ -1928,7 +2153,7 @@ rcs_free_addrlist(sel4.dst);
 			memset(&fisa, 0, sizeof(fisa));
 			fisa.rmconf = mk_accept_rm("corp.example");
 			ikev2_child_param_init(&fc.child_param);
-			CK(ikev2_process_config_reply(&fisa, &fc,
+			CK(process_reply(&fisa, &fc,
 			    &fcfg->header) == 0,
 			    "process_config_reply rc==0 (good-26 -> empty-26)");
 			CK(fc.internal_dnssec_ta != NULL &&
@@ -1957,6 +2182,7 @@ rcs_free_addrlist(sel4.dst);
 			ucfg = (struct ikev2payl_config *)ub;
 			ucfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
 			uoff = sizeof(struct ikev2payl_config);
+			uoff = put_dns4(ub, uoff);	/* RFC 8598 §3.2 */
 			ua = (struct ikev2cfg_attrib *)(ub + uoff);
 			put_uint16(&ua->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
 			put_uint16(&ua->length, (uint16_t)strlen("corp.example"));
@@ -1985,7 +2211,7 @@ rcs_free_addrlist(sel4.dst);
 			memset(&uisa, 0, sizeof(uisa));
 			uisa.rmconf = mk_accept_rm("corp.example");
 			ikev2_child_param_init(&uc.child_param);
-			CK(ikev2_process_config_reply(&uisa, &uc,
+			CK(process_reply(&uisa, &uc,
 			    &ucfg->header) == 0,
 			    "process_config_reply rc==0 (good 26 after short 26)");
 			CK(uc.internal_dnssec_ta != NULL &&
@@ -2031,7 +2257,7 @@ rcs_free_addrlist(sel4.dst);
 			memset(&c2, 0, sizeof(c2));
 			memset(&isa2, 0, sizeof(isa2));
 			ikev2_child_param_init(&c2.child_param);
-			CK(ikev2_process_config_reply(&isa2, &c2,
+			CK(process_reply(&isa2, &c2,
 			     &cfg2->header) == 0,
 			   "process_config_reply rc==0 (lone 26)");
 			CK(c2.internal_dnssec_ta == NULL,
@@ -2069,7 +2295,7 @@ rcs_free_addrlist(sel4.dst);
 			memset(&c2, 0, sizeof(c2));
 			memset(&isa2, 0, sizeof(isa2));
 			ikev2_child_param_init(&c2.child_param);
-			CK(ikev2_process_config_reply(&isa2, &c2,
+			CK(process_reply(&isa2, &c2,
 			     &cfg2->header) == 0,
 			   "process_config_reply rc==0 (26 after SUPPORTED_ATTRIBUTES)");
 			CK(c2.internal_dnssec_ta == NULL,
