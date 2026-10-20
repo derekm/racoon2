@@ -74,6 +74,10 @@ kind_i2inatt() {
 		ip link del "$VR1" 2>/dev/null || true
 	}
 	cleanup
+	# preserve run.sh's EXIT trap (iked_restore) and restore it when this
+	# sourced kind finishes — `trap - EXIT` here would wipe the runner's
+	# handler for the whole shard.
+	_R2_PREV_TRAP=$(trap -p EXIT)
 	trap 'cleanup' EXIT
 
 	ip netns add "$NSI" && ip netns add "$NSN" && ip netns add "$NSR" || {
@@ -489,6 +493,7 @@ EOF
 			log "PASS $name (NAT-T transport across SNAT: esp SAs, ICMP+TCP, N4 NAT-OA)"
 		fi
 		trap - EXIT; cleanup
+		[ -n "${_R2_PREV_TRAP:-}" ] && eval "$_R2_PREV_TRAP"
 		return 0
 	fi
 	log "FAIL $name ($_bad)"
@@ -499,5 +504,6 @@ EOF
 	log "--- init iked (NAT/TS) ---"
 	grep -iE 'nat|TS|substitut|OA|error|fail' "$D/init-iked.log" 2>/dev/null | tail -40 || true
 	trap - EXIT; cleanup
+	[ -n "${_R2_PREV_TRAP:-}" ] && eval "$_R2_PREV_TRAP"
 	return 1
 }
