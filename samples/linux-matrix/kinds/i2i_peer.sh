@@ -68,14 +68,16 @@ chmod 755 "$I2I_SWANCTL_BIN"
 # i2i_charon_kill — kill only charons this harness started (pidfile) or
 # that run inside a matrix netns; a host charon is never signalled.
 i2i_charon_kill() {
+	# Kill ONLY this shard's charons (I2I_SW_ROOT/charon.pids — per-shard
+	# strongSWAN root, so it names only charons this shard started; a host
+	# charon is never signalled).  A global `pgrep -x charon` + per-netns
+	# scan must NOT run here: when charon rows run in parallel shards it
+	# kills a SIBLING shard's charon — that cross-shard kill is the race
+	# that forced the (now removed) charon->shard-0 pinning.
 	if [ -f "$I2I_SW_ROOT/charon.pids" ]; then
 		while read -r _p; do kill -9 "$_p" 2>/dev/null || true; done <"$I2I_SW_ROOT/charon.pids"
 		: >"$I2I_SW_ROOT/charon.pids"
 	fi
-	for _p in $(pgrep -x charon 2>/dev/null); do
-		_ns=$(ip netns identify "$_p" 2>/dev/null)
-		[ -n "$_ns" ] && kill -9 "$_p" 2>/dev/null || true
-	done
 	rm -f "$I2I_SW_ROOT/run/charon.pid" "$I2I_SW_ROOT/run/charon.ctl" \
 	      "$I2I_SW_ROOT/run/strongswan/charon.pid" "$I2I_SW_ROOT/charon.vici"
 }
