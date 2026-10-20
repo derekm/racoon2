@@ -234,10 +234,12 @@ racoon2 mapping:
 
 Implemented in this repository (commit history is the evidence):
 
-* `iked/ike_conf.c` — `nsa_deprecated_alg()` + `PLOG_INTWARN` at
-  `alglist_to_proppair()`: any offer of DES/3DES/MD5/SHA-1/MODP-768/
-  1024/1536 is logged at proposal-build time.  Advisory; never changes
-  negotiation.
+* `iked/ike_conf.c` — `nsa_deprecated_alg()`: a proposal using
+  DES/3DES/MD5/SHA-1/MODP-768/1024/1536 is REFUSED at config load when
+  `allow_nsa_deprecated` is off (the shipped-default for the samples);
+  with it on, the offer is logged (`PLOG_INTWARN`) at proposal-build but
+  still sent.  Not advisory / "never changes negotiation" — the default
+  refuses the config (section 8 is the behavior).
 * `samples/` — deployment samples moved to the compliant baseline;
   fixtures carry an explicit "test scope, not a recommendation" header.
 * `samples/nsa-fips.conf` — strict CNSSP-15 copy-from baseline.
