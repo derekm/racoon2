@@ -277,7 +277,7 @@ EOF
 		# here for a frame (20s cadence; the window must span >=1 period
 		# even under 3-shard CPU load).
 		_w=0
-		while [ "$_w" -lt 90 ] && \
+		while [ "$_w" -lt 240 ] && \
 		      ! grep -qE 'isakmp-nat-keep-alive|length 1' "$D/natk.txt" 2>/dev/null; do
 			_w=$((_w+1)); sleep 1
 		done

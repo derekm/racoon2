@@ -226,11 +226,14 @@ EOF
 	sleep 2
 	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >/dev/null 2>&1 || true
 
-	# Refusals surface fast (IKE_AUTH round-trip); acceptance too.  Wait
-	# up to ~30 s for the outcome to settle, then measure the gate.
+	# Refusals surface on the IKE_AUTH round-trip; acceptance too.  Wait up
+	# to ~120 s for the outcome to settle (this is an EVENT wait for the
+	# outcome, so under shard CPU starvation the auth round-trip + log
+	# flush still have ample wall time; the bound is only there to fail a
+	# genuinely stuck DUT, not to race slow scheduling), then measure.
 	up=0
 	i=0
-	while [ "$i" -lt 30 ]; do
+	while [ "$i" -lt 120 ]; do
 		re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		if [ "${re:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ]; then up=1; break; fi
