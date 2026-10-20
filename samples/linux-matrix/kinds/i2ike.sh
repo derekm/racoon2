@@ -275,8 +275,10 @@ EOF
 	rekeyed=0; i=0
 	while [ "$i" -lt 120 ]; do
 		SRn=$(spi "$NSR"); SIn=$(spi "$NSI")
-		nr=$(comm -13 <(printf '%s\n' "$SR0") <(printf '%s\n' "$SRn") | grep -c spi)
-		ni=$(comm -13 <(printf '%s\n' "$SI0") <(printf '%s\n' "$SIn") | grep -c spi)
+		nr=$(printf '%s\n' "$SRn" | awk -v old="$SR0" \
+		    'BEGIN { k = split(old, a, "\n"); for (j = 1; j <= k; j++) o[a[j]] = 1 } !($0 in o)' | grep -c spi)
+		ni=$(printf '%s\n' "$SIn" | awk -v old="$SI0" \
+		    'BEGIN { k = split(old, a, "\n"); for (j = 1; j <= k; j++) o[a[j]] = 1 } !($0 in o)' | grep -c spi)
 		# The ADDKE rekey is the one that installs a REAL ML-KEM keymat: a new
 		# ESP SPI on both sides AND a matching `g_ir_present=Y` keymat sha256
 		# line on each side, different from the baseline.  Keep polling until
