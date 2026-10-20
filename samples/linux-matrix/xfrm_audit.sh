@@ -50,6 +50,13 @@ xa_sample() {	# xa_sample <row> <tag> <outdir>   (netns n<row>-*)
 # probed again.  Rows whose selectors are subnets or TCP-only are not
 # probed here and must move data themselves (i2inatt, i2io4 ... do).
 xa_probe() {
+	# A row that declares a traffic exemption (xfrm_audit.tsv
+	# `traffic 1`) must NOT be probed: it either never carries data
+	# (i2ike-drain — drain deletes the child, so a probe landing beside
+	# the delete makes one direction's counter racy) or moves data
+	# itself.  Skipping the probe keeps counters flat so the declared
+	# XFAIL path is the pass (and an XPASS would correctly flag data).
+	[ -z "$(xa_allow "$1" traffic)" ] || return 0
 	for _xns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
 		case $_xns in "n$1-"*) ;; *) continue ;; esac
 		_xaddr=$(ip -n "$_xns" -o addr 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "inet" || $i == "inet6") { a = $(i + 1); sub(/\/.*/, "", a); printf "%s ", a } }')

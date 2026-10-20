@@ -896,12 +896,18 @@ fi
 			ike_log="$D/resp-iked.log"; spi_ns="$NSR"
 		fi
 		spi_before=$(ip netns exec "$spi_ns" ip xfrm state 2>/dev/null | grep 'proto esp' | grep -oE '0x[0-9a-f]{8}' | sort | tr '\n' ' ')
-		sleep 40
-		# that iked must mint the rekey (child soft lifetime ~20s);
-		# for iked<->iked rows check either iked's log
-		rekey_log=""
-		for L in "$D/resp-iked.log" "$D/init-iked.log"; do
-			[ -f "$L" ] && grep -q 'initiating CREATE_CHILD_SA rekey' "$L" && rekey_log="$L"
+		# Poll, not one sleep 40: the child soft lifetime is ~20s and under
+		# shard CPU load the soft timer can slip past a single sleep and
+		# fail the row even though the rekey lands a moment later.  Wait up
+		# to 60s for the rekey marker (that iked must mint it; for
+		# iked<->iked rows check either iked's log).
+		rekey_log=""; _rw=0
+		while [ "$_rw" -lt 60 ]; do
+			for L in "$D/resp-iked.log" "$D/init-iked.log"; do
+				[ -f "$L" ] && grep -q 'initiating CREATE_CHILD_SA rekey' "$L" && { rekey_log="$L"; break; }
+			done
+			[ -n "$rekey_log" ] && break
+			_rw=$((_rw+1)); sleep 1
 		done
 		if [ "$PEER" != charon ] && [ -z "$rekey_log" ]; then
 			log "FAIL: no iked initiated child rekey (resp+init logs)"

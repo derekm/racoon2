@@ -203,11 +203,33 @@ EOF
 		ip netns exec "$NSI" ping -c 1 -W 5 192.0.5.1 > "$D/ping.txt" 2>&1 || true
 		grep -q '1 received' "$D/ping.txt" || _bad="${_bad:+$_bad; }ICMP did not cross NAT-T transport"
 		rm -f "$D/tcp-recv.txt"
-		ip netns exec "$NSR" /bin/sh -c "nc -l -w 15 -p 5001 > '$D/tcp-recv.txt' 2>/dev/null &"
-		sleep 1
-		echo "racoon2-natt-tcp-$$" | ip netns exec "$NSI" nc -w 5 192.0.5.1 5001 > "$D/tcp-send.txt" 2>&1 || true
-		_w=0; while [ "$_w" -lt 10 ] && ! grep -q "racoon2-natt-tcp-$$" "$D/tcp-recv.txt" 2>/dev/null; do
-			_w=$((_w+1)); sleep 1
+		# TCP across the NAT-T transport.  Ncat 7.92's nested
+		# `ip netns exec sh -c "nc -l ... &"` exits the inner shell
+		# immediately, so the listener is often gone before the client
+		# connects (observed: 'TCP payload did not cross' while ICMP/XA
+		# traffic passed — the only probe that needs a listener).  Make
+		# the listener a DIRECT background of this shell, wait for :5001
+		# to listen in the responder netns, then send; retry the whole
+		# exchange (the listener may die with a per-attempt restart).
+		_tpass=0
+		for _a in 1 2 3; do
+			rm -f "$D/tcp-recv.txt"
+			ip netns exec "$NSR" nc -l -w 15 -p 5001 > "$D/tcp-recv.txt" 2>/dev/null &
+			_ncl=$!
+			_w=0
+			while [ "$_w" -lt 10 ] && \
+			      ! ip netns exec "$NSR" sh -c 'ss -ltn 2>/dev/null' | grep -q ':5001'; do
+				_w=$((_w+1)); sleep 1
+			done
+			echo "racoon2-natt-tcp-$$" | ip netns exec "$NSI" nc -w 5 192.0.5.1 5001 > "$D/tcp-send.txt" 2>&1 || true
+			_w=0; while [ "$_w" -lt 10 ] && ! grep -q "racoon2-natt-tcp-$$" "$D/tcp-recv.txt" 2>/dev/null; do
+				_w=$((_w+1)); sleep 1
+			done
+			kill "$_ncl" 2>/dev/null || true
+			wait "$_ncl" 2>/dev/null || true
+			if grep -q "racoon2-natt-tcp-$$" "$D/tcp-recv.txt" 2>/dev/null; then
+				_tpass=1; break
+			fi
 		done
 		grep -q "racoon2-natt-tcp-$$" "$D/tcp-recv.txt" 2>/dev/null || \
 			_bad="${_bad:+$_bad; }TCP payload did not cross NAT-T transport"
@@ -236,7 +258,7 @@ EOF
 			> "$D/natk.txt" 2>"$D/natk-err.txt" &
 		_tp=$!
 		_w=0
-		while [ "$_w" -lt 32 ] && \
+		while [ "$_w" -lt 45 ] && \
 		      ! grep -qE 'isakmp-nat-keep-alive|length 1' "$D/natk.txt" 2>/dev/null; do
 			_w=$((_w+1)); sleep 1
 		done

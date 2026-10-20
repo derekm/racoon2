@@ -7,3 +7,7 @@
 # row-regex (full match)	check	value	why
 #   check: icv | traffic | safail  (value: 1)
 #          stat  (value: Counter=N[,Counter=N]  -- may rise by at most N)
+i2ike-drain	traffic	1	row never pings (drain proof + redirect only); xa_probe can
+	send data before/after the drain deletes the child, so one direction's
+	counter is racy (rose=0/1).  Declare no-traffic: xa_probe is skipped so
+	the counters stay flat and the XFAIL path is the pass.
