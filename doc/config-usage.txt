@@ -241,8 +241,11 @@ o Cryptographic algorithm and its representation
 		aes_gcm
 		twofish_cbc
 
-	aes_gcm is ESP only (RFC 4106 ICV16). Do not put it in
-	kmp_enc_alg. Pair with esp_auth_alg { non_auth; }.
+	aes_gcm is valid as an IKE cipher too (RFC 5282,
+	IKEV2TRANSF_ENCR_AES_GCM_ICV16), so it is allowed in
+	kmp_enc_alg; the iPhone/road-warrior responder offers it first
+	so RFC 9242 IntAuth_A can run.  For ESP, aes_gcm is RFC 4106
+	ICV16; pair with esp_auth_alg { non_auth; }.
 
 	kmp_hash_alg directive can have one of the following algorithm types.
 
@@ -1031,7 +1034,10 @@ remote
 		    INTERNAL_DNS_DOMAIN (RFC 8598 split-DNS domains from the
 		      peer: space-separated, each validated and inside
 		      accept_dns_domain; see there)
-		    INTERNAL_DNSSEC_TA (hex, for the preceding accepted domain)
+		    INTERNAL_DNSSEC_TA (hex; ONE unbound blob for all accepted
+		      domains today — per-(domain, anchor) binding is an open
+		      conformance item, so do NOT assume it belongs to any one
+		      preceding domain until that store lands)
 		For migration:
 		    OLD_SRC
 		    OLD_DST
