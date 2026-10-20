@@ -1311,14 +1311,17 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			}
 			sd = (struct ikev2cfg_ip6addr *)value;
 			plen = sd->prefixlen;
-			/* RFC 7296 §3.15.2: prefixlen is 0..128; clamp a
-			 * malformed peer value rather than commit a >128 mask. */
+			/* RFC 7296 §3.15.2: prefixlen is 0..128.  A value above
+			 * 128 is protocol-invalid; reject the attribute rather
+			 * than install a /128 host route from a malformed
+			 * peer value (rcs_in6_prefixlen2mask drops >128, so a
+			 * clamp would silently become a host route). */
 			if (plen > 128) {
 				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
 					PLOGLOC,
-					"INTERNAL_IP6_SUBNET prefixlen %d clamped to 128\n",
+					"INTERNAL_IP6_SUBNET prefixlen %d out of range (0..128), ignored\n",
 					plen);
-				plen = 128;
+				break;
 			}
 			TRACE((PLOGLOC, "INTERNAL_IP6_SUBNET: %s/%d\n",
 			       inet_ntop(AF_INET6, sd->addr, addrstr,
