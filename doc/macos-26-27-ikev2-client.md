@@ -42,7 +42,10 @@ If Add VPN Configuration does nothing after auth: known Tahoe bug, corrupt `/Lib
 - Local ID: `macos.client` (must equal iked `peers_id`)
 - User Authentication: **None** (do not pick Username / EAP)
 - Machine Authentication: **Shared Secret**
-- Shared Secret: contents of `/usr/local/racoon2/etc/racoon2/psk/macos.psk` on the Ubuntu box (`sudo cat`; 32 random bytes from `pskgen -r -s 32`)
+- Shared Secret: the 32 random bytes `pskgen -r -s 32` emitted when the
+  responder's `/usr/local/racoon2/etc/racoon2/psk/macos.psk` was created;
+  enter that value on the phone. Do not `sudo cat` the file into a chat or
+  log — it is a live secret.
 
 Leave certificate / EAP / password empty. A Username+password profile is EAP-MSCHAPv2; this iked remote is `kmp_auth_method { psk; }` only.
 
