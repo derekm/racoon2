@@ -411,6 +411,71 @@ main(int argc, char *argv[])
 			rc_addrpool_release_addr(raA);
 	}
 
+	/* A2 at-most-one pin: two v4 split subnets + one assigned v4 address.
+	 * INTERNAL_IP4_NETMASK is single-valued (RFC 7296 §3.15.1, Multi-Valued
+	 * NO; one netmask cannot express two splits), so it must be SUPPRESSED
+	 * here, not emitted once per v4 subnet (the old per-dst behavior). */
+	{
+		struct ikev2_child_sa cB;
+		struct ikev2_sa isaB;
+		struct ikev2_child_param pB;
+		struct rcf_selector sA2, sB2;
+		struct ikev2payl_config_h *cfghB;
+		struct rcf_address *raB = NULL;
+		struct rcf_address_list_head leasesB;
+		struct in_addr v4B;
+		uint8_t *pb, *bodyb;
+		size_t blenb;
+		int nM2b = 0;
+
+		memset(&cB, 0, sizeof(cB));
+		memset(&isaB, 0, sizeof(isaB));
+		memset(&sA2, 0, sizeof(sA2));
+		memset(&sB2, 0, sizeof(sB2));
+		ikev2_child_param_init(&pB);
+		pB.cfg_ip4_subnet = 1;
+		sA2.dst = mk_addrlist(AF_INET, "10.20.0.0", 24);
+		sB2.dst = mk_addrlist(AF_INET, "192.168.50.0", 24);
+		sA2.next = &sB2;
+		cB.selector = &sA2;
+		LIST_INIT(&leasesB);
+		inet_pton(AF_INET, "10.99.0.10", &v4B);
+		raB = rc_address_new(AF_INET, (uint8_t *)&v4B, 24, NULL, &leasesB);
+		if (raB)
+			LIST_INSERT_HEAD(&cB.lease_list, raB, link_sa);
+		CK(ikev2_create_config_reply(&isaB, &cB, &pB) == 0,
+		   "create_config_reply rc==0 (A2 two v4 subnets)");
+		if (pB.cfg_payload && pB.cfg_payload->l > 0) {
+			pb = (uint8_t *)pB.cfg_payload->v;
+			cfghB = (struct ikev2payl_config_h *)pb;
+			bodyb = pb + sizeof(*cfghB);
+			blenb = pB.cfg_payload->l - sizeof(*cfghB);
+			for (; blenb > 0; ) {
+				struct ikev2cfg_attrib *a =
+				    (struct ikev2cfg_attrib *)bodyb;
+				unsigned int t, l;
+				if (blenb < sizeof(*a))
+					break;
+				t = IKEV2CFG_ATTR_TYPE(a);
+				l = IKEV2CFG_ATTR_LENGTH(a);
+				if (sizeof(*a) + l > blenb)
+					break;
+				if (t == IKEV2_CFG_INTERNAL_IP4_NETMASK)
+					nM2b++;
+				bodyb += sizeof(*a) + l;
+				blenb -= sizeof(*a) + l;
+			}
+		}
+		CK(nM2b == 0,
+		   "two v4 subnets: NETMASK(2) NOT emitted (at most one)");
+		if (pB.cfg_payload)
+			rc_vfree(pB.cfg_payload);
+		if (raB)
+			rc_addrpool_release_addr(raB);
+		rcs_free_addrlist(sA2.dst);
+		rcs_free_addrlist(sB2.dst);
+	}
+
 	if (child.child_param.cfg_payload)
 		rc_vfree(child.child_param.cfg_payload);
 
@@ -1126,7 +1191,7 @@ rcs_free_addrlist(sel4.dst);
 		ikm.dns_domain->s[strlen("corp.example")] = '\0';
 		ikm.dns_domain->l = strlen("corp.example") + 1;
 		/* A3: a DNS_DOMAIN(25) may only ride a reply that also carries
-		 * >=1 DNS address (RFC 8598 §4.2); supply one here. */
+		 * >=1 DNS address (RFC 8598 §3.2); supply one here. */
 		ikm.cfg_dns = mk_addrlist(AF_INET, "8.8.8.8", 32);
 
 		memset(&isa, 0, sizeof(isa));
@@ -1209,7 +1274,7 @@ rcs_free_addrlist(sel4.dst);
 		}
 
 		/* A3 negative: dns_domain requested + configured, but NO DNS
-		 * address request -> a 25 must NOT be emitted (RFC 8598 §4.2). */
+		 * address request -> a 25 must NOT be emitted (RFC 8598 §3.2). */
 		{
 			struct ikev2_child_param p3;
 			struct ikev2_sa isa3;
@@ -1403,7 +1468,7 @@ rcs_free_addrlist(sel4.dst);
 		}
 	}
 
-	/* ============ B.6: INTERNAL_DNSSEC_TA (26, RFC 8598 §8) ==========
+	/* ============ B.6: INTERNAL_DNSSEC_TA (26, RFC 8598 §4.2) ==========
 	 * 1. Emit: responder with a configured hex `dnssec_ta` trust anchor
 	 *    and a peer that asked for 26 -> CFG_REPLY carries 26 = the
 	 *    decoded bytes (Key Tag|Alg|Digest Type|Digest Data), placed
@@ -1686,7 +1751,7 @@ rcs_free_addrlist(sel4.dst);
 
 		/* receive-side negative (review A5): a 26 must carry >=5
 		 * octets (Key Tag 2|Alg 1|Digest Type 1|Digest Data, RFC
-		 * 8598 §8); a short anchor must be dropped, not committed.
+		 * 8598 §4.2); a short anchor must be dropped, not committed.
 		 * Preceded by an ACCEPTED 25 so we exercise the length gate,
 		 * not the adjacency gate. */
 		{
@@ -1732,6 +1797,62 @@ rcs_free_addrlist(sel4.dst);
 			/* free the ACCEPTED 25's committed domain (mk_accept_rm) */
 			if (tc.internal_dns_domain)
 				rc_vfree(tc.internal_dns_domain);
+		}
+
+		/* receive: a legal ZERO-length 26 (RFC 8598 §4.2 empty attr) is a
+		 * silent no-op and must NOT reset adjacency: 25 -> empty-26 ->
+		 * good-26 still commits the good anchor, and the empty 26 itself
+		 * commits nothing. */
+		{
+			uint8_t eb[256];
+			uint8_t eoff = 0;
+			struct ikev2payl_config *ecfg;
+			struct ikev2_sa eisa;
+			struct ikev2_child_sa ec;
+			struct ikev2cfg_attrib *ea;
+
+			memset(eb, 0, sizeof(eb));
+			ecfg = (struct ikev2payl_config *)eb;
+			ecfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+			eoff = sizeof(struct ikev2payl_config);
+			ea = (struct ikev2cfg_attrib *)(eb + eoff);
+			put_uint16(&ea->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
+			put_uint16(&ea->length, (uint16_t)strlen("corp.example"));
+			memcpy(IKEV2CFG_ATTR_VALUE(ea), "corp.example",
+			    strlen("corp.example"));
+			eoff += sizeof(*ea) + strlen("corp.example");
+			ea = (struct ikev2cfg_attrib *)(eb + eoff);
+			put_uint16(&ea->type, IKEV2_CFG_INTERNAL_DNSSEC_TA);
+			put_uint16(&ea->length, 0);	/* legal empty attr */
+			eoff += sizeof(*ea);		/* no value octets */
+			ea = (struct ikev2cfg_attrib *)(eb + eoff);
+			put_uint16(&ea->type, IKEV2_CFG_INTERNAL_DNSSEC_TA);
+			put_uint16(&ea->length, 8);
+			memcpy(IKEV2CFG_ATTR_VALUE(ea),
+			    "\x00\x01\x02\x03\x04\x05\x06\x07", 8);
+			eoff += sizeof(*ea) + 8;
+			{
+				uint8_t pl[2];
+				pl[0] = (uint8_t)((eoff >> 8) & 0xff);
+				pl[1] = (uint8_t)(eoff & 0xff);
+				memcpy((uint8_t *)&ecfg->header.payload_length,
+				    pl, 2);
+			}
+			ecfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+			memset(&ec, 0, sizeof(ec));
+			memset(&eisa, 0, sizeof(eisa));
+			eisa.rmconf = mk_accept_rm("corp.example");
+			ikev2_child_param_init(&ec.child_param);
+			CK(ikev2_process_config_reply(&eisa, &ec,
+			    &ecfg->header) == 0,
+			    "process_config_reply rc==0 (empty-26 -> good-26)");
+			CK(ec.internal_dnssec_ta != NULL &&
+			    ec.internal_dnssec_ta->l == 8,
+			    "good 26 after a legal EMPTY 26 still committed");
+			if (ec.internal_dns_domain)
+				rc_vfree(ec.internal_dns_domain);
+			if (ec.internal_dnssec_ta)
+				rc_vfree(ec.internal_dnssec_ta);
 		}
 
 		/* Adjacency survives a DROPPED short 26 (RFC 8598 §4.2 keys

@@ -769,8 +769,8 @@ struct ikev2cfg_attrib {
 #define	IKEV2_CFG_MIP6_HOME_PREFIX	16	/* (RFC5026) */
 #define	IKEV2_CFG_INTERNAL_IP6_LINK	17	/* (ikev2-ipv6-config-03) */
 #define	IKEV2_CFG_IP6_PREFIX		18	/* (ikev2-ipv6-config-03) */
-#define	IKEV2_CFG_INTERNAL_DNS_DOMAIN	25	/* RFC 8598 §7.2 */
-#define	IKEV2_CFG_INTERNAL_DNSSEC_TA	26	/* RFC 8598 §8 */
+#define	IKEV2_CFG_INTERNAL_DNS_DOMAIN	25	/* RFC 8598 §4.1 */
+#define	IKEV2_CFG_INTERNAL_DNSSEC_TA	26	/* RFC 8598 §4.2 */
 /*	reserved			19-24, 27-16383 */
 /*	private use			16384-32767 */
 

@@ -31,7 +31,7 @@
  * isakmp_parse() walks the generic payload chain; every Vendor ID payload
  * then goes through check_vendorid() (the short-VID over-read fixed in
  * 4528ad9), every HASH payload through ike_payload_body_cmp() (the short
- * HASH over-read fixed in e9202ab), and every SA payload through
+ * HASH over-read fixed in 060d321), and every SA payload through
  * get_proppair() (proposal/transform walk).  The ISAKMP header length is
  * patched to the input length unless bit0 of the first byte is set.
  */

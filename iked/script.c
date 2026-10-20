@@ -565,7 +565,7 @@ ikev2_child_script_hook(struct ikev2_child_sa *child_sa, int script)
 		return;
 
 	/*
-	 * INTERNAL_DNS_DOMAIN (RFC 8598 §7.2 split-DNS suffixes): space-
+	 * INTERNAL_DNS_DOMAIN (RFC 8598 §4.1 split-DNS suffixes): space-
 	 * separated list of the validated, accept_dns_domain-allowed domains
 	 */
 	if (script_env_append(&envp, &envc, "INTERNAL_DNS_DOMAIN",
@@ -574,7 +574,7 @@ ikev2_child_script_hook(struct ikev2_child_sa *child_sa, int script)
 		return;
 
 	/*
-	 * INTERNAL_DNSSEC_TA (RFC 8598 §8 trust anchor, hex-encoded raw
+	 * INTERNAL_DNSSEC_TA (RFC 8598 §4.2 trust anchor, hex-encoded raw
 	 * Key Tag|Alg|Digest Type|Digest Data)
 	 */
 	if (child_sa->internal_dnssec_ta) {
