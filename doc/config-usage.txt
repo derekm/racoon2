@@ -877,6 +877,10 @@ remote
 		following it.  Accepted domains reach the updown script as
 		INTERNAL_DNS_DOMAIN.  Each entry must itself be a valid
 		domain name (no wildcards); otherwise it is a config error.
+		RFC 8598 s3.2: 25 and 26 are honoured only when the same
+		CFG_REPLY also carries an INTERNAL_IP4_DNS or INTERNAL_IP6_DNS
+		server; otherwise they are logged and ignored, and a domain/TA
+		accepted from an earlier reply is kept.
 		default is unset: no pushed domain is accepted.
 
 	redirect_max (number) ;

@@ -1135,6 +1135,24 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 	uint8_t	*value;
 	char	addrstr[INET6_ADDRSTRLEN];
 	struct rcf_address	*addr;
+	/* RFC 8598 §1, §3.2: split-DNS domains (25)
+	 * and their trust anchors (26) only mean "resolve these names via the
+	 * INTERNAL_IP4/6_DNS servers in this reply".  A reply carrying 25/26
+	 * but NO DNS server is malformed; its 25/26 must not reach the updown
+	 * env.  Track whether this reply had a DNS server and whether it
+	 * committed any 25/26, and roll the 25/26 commit back at the end. */
+	int got_dns = 0, got_split = 0;
+	rc_vchar_t *pre_dom = NULL, *pre_ta = NULL;
+	int ret = -1;
+
+	if (child_sa->internal_dns_domain &&
+	    !(pre_dom = rc_vdup(child_sa->internal_dns_domain)))
+		return -1;
+	if (child_sa->internal_dnssec_ta &&
+	    !(pre_ta = rc_vdup(child_sa->internal_dnssec_ta))) {
+		rc_vfreez(pre_dom);
+		return -1;
+	}
 
 	for (bytes = get_payload_length(cfg) - sizeof(*cfg),
 		 attr = (struct ikev2cfg_attrib *)(cfg + 1);
@@ -1162,7 +1180,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 					   PLOG_PROTOERR, PLOGLOC,
 					   "Configuration payload type %d has bogus data length %zu (expected %d)\n",
 					   type, len, want);
-				return -1;
+				goto out;
 			}
 		}
 		switch (type) {
@@ -1171,7 +1189,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 					      &child_sa->internal_ip4_addr);
 			if (! addr) {
 						      TRACE((PLOGLOC, "failed processing INTERNAL_IP4_ADDRESS\n"));
-				return -1;
+				goto out;
 			}
 			LIST_INSERT_HEAD(&child_sa->loan_list, addr, link_sa);
 			break;
@@ -1180,7 +1198,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 					      &child_sa->internal_ip6_addr);
 			if (! addr) {
 				TRACE((PLOGLOC, "failed processing INTERNAL_IP6_ADDRESS\n"));
-				return -1;
+				goto out;
 			}
 			LIST_INSERT_HEAD(&child_sa->loan_list, addr, link_sa);
 			break;
@@ -1194,14 +1212,15 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			if (!rc_address_new(AF_INET, value, 0, 0,
 					   &child_sa->internal_ip4_dns)) {
 				TRACE((PLOGLOC, "failed processing INTERNAL_IP4_DNS\n"));
-				return -1;
+				goto out;
 			}
+			got_dns = 1;
 			break;
 		case IKEV2_CFG_INTERNAL_IP4_NBNS:
 			if (!rc_address_new(AF_INET, value, 0, 0,
 					   &child_sa->internal_ip4_nbns)) {
 				TRACE((PLOGLOC, "failed processing INTERNAL_IP4_NBNS\n"));
-				return -1;
+				goto out;
 			}
 			break;
 		case IKEV2_CFG_INTERNAL_ADDRESS_EXPIRY:
@@ -1216,7 +1235,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			if (!rc_address_new(AF_INET, value, 0, 0,
 					   &child_sa->internal_ip4_dhcp)) {
 				TRACE((PLOGLOC, "failed processing INTERNAL_IP4_DHCP\n"));
-				return -1;
+				goto out;
 			}
 			break;
 		case IKEV2_CFG_APPLICATION_VERSION:
@@ -1229,15 +1248,16 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			child_sa->peer_application_version = rc_vnew(value, len);
 			if (!child_sa->peer_application_version) {
 				TRACE((PLOGLOC, "failed allocating memory\n"));
-				return -1;
+				goto out;
 			}
 			break;
 		case IKEV2_CFG_INTERNAL_IP6_DNS:
 			if (!rc_address_new(AF_INET6, value, 0, 0,
 					   &child_sa->internal_ip6_dns)) {
 				TRACE((PLOGLOC, "failed processing INTERNAL_IP6_DNS\n"));
-				return -1;
+				goto out;
 			}
+			got_dns = 1;
 			break;
 		case IKEV2_CFG_INTERNAL_IP6_NBNS:
 			isakmp_log(ike_sa, 0, 0, 0,
@@ -1290,7 +1310,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 					    0, &child_sa->internal_ip4_subnet)) {
 				TRACE((PLOGLOC,
 				       "failed processing INTERNAL_IP4_SUBNET\n"));
-				return -1;
+				goto out;
 			}
 			break;
 		}
@@ -1351,7 +1371,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 					    0, &child_sa->internal_ip6_subnet)) {
 				TRACE((PLOGLOC,
 				       "failed processing INTERNAL_IP6_SUBNET\n"));
-				return -1;
+				goto out;
 			}
 			break;
 		}
@@ -1390,7 +1410,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			    strlen(child_sa->internal_dns_domain->s) : 0;
 			nv = rc_vmalloc(ol + (ol ? 1 : 0) + strlen(dom) + 1);
 			if (!nv)
-				return -1;
+				goto out;
 			if (ol) {
 				memcpy(nv->v, child_sa->internal_dns_domain->v, ol);
 				nv->s[ol++] = ' ';
@@ -1398,6 +1418,7 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			memcpy(nv->s + ol, dom, strlen(dom) + 1);
 			rc_vfreez(child_sa->internal_dns_domain);
 			child_sa->internal_dns_domain = nv;
+			got_split = 1;
 			/* RFC 8598 §4.2: a 26 trust anchor may only follow a 25
 			 * (or another 26) for the same domain. */
 			prev_type = IKEV2_CFG_INTERNAL_DNS_DOMAIN;
@@ -1448,9 +1469,10 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			rc_vfreez(child_sa->internal_dnssec_ta);
 			child_sa->internal_dnssec_ta = rc_vmalloc(len);
 			if (!child_sa->internal_dnssec_ta)
-				return -1;
+				goto out;
 			memcpy(child_sa->internal_dnssec_ta->v, value, len);
 			child_sa->internal_dnssec_ta->l = len;
+			got_split = 1;
 			prev_type = IKEV2_CFG_INTERNAL_DNSSEC_TA;
 			break;
 		case IKEV2_CFG_MIP6_HOME_PREFIX:
@@ -1480,7 +1502,22 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			prev_type = 0;
 	}
 
-	return 0;
+	if (got_split && !got_dns) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
+		    "INTERNAL_DNS_DOMAIN/INTERNAL_DNSSEC_TA without any "
+		    "INTERNAL_IP4_DNS/INTERNAL_IP6_DNS in the reply "
+		    "(RFC 8598 s3.2), ignored\n");
+		rc_vfreez(child_sa->internal_dns_domain);
+		child_sa->internal_dns_domain = pre_dom;
+		rc_vfreez(child_sa->internal_dnssec_ta);
+		child_sa->internal_dnssec_ta = pre_ta;
+		pre_dom = pre_ta = NULL;
+	}
+	ret = 0;
+out:
+	rc_vfreez(pre_dom);
+	rc_vfreez(pre_ta);
+	return ret;
 }
 
 
