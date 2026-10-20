@@ -199,6 +199,22 @@ EOF
 	_bad=""
 	[ "$_up" = 1 ] || _bad="no esp transport SA pair in both netns (r=${_er:-0} i=${_ei:-0})"
 
+	# NAT Keepalive capture: open it BEFORE the ICMP/TCP probes so it spans
+	# the whole SA-up period.  Keepalives are emitted on a ~20s cadence from
+	# SA establishment; opening the capture only AFTER the probes (which run
+	# 20-50s under 3-shard load) used to miss the periodic 1-byte 0xff frames.
+	_tp=
+	if [ "$_up" = 1 ] && [ "$_natk" = 1 ]; then
+		command -v tcpdump >/dev/null 2>&1 || \
+			_bad="keepalive: no tcpdump (needed to capture the 1-byte 0xff frame)"
+	fi
+	if [ "$_up" = 1 ] && [ "$_natk" = 1 ] && [ -z "$_bad" ]; then
+		ip netns exec "$NSR" tcpdump -nni "$VR2" -c 1 \
+			'udp port 4500 and less 50' \
+			> "$D/natk.txt" 2>"$D/natk-err.txt" &
+		_tp=$!
+	fi
+
 	if [ "$_up" = 1 ]; then
 		# ICMP across NAT-T.  This is a READINESS wait, not a single shot:
 		# "esp SA pair present" can be true while the child data path is
@@ -250,29 +266,18 @@ EOF
 	fi
 
 	if [ "$_natk" = 1 ] && [ -z "$_bad" ]; then
-		command -v tcpdump >/dev/null 2>&1 || \
-			_bad="keepalive: no tcpdump (needed to capture the 1-byte 0xff frame)"
-	fi
-	if [ "$_natk" = 1 ] && [ -z "$_bad" ]; then
 		# RFC 3948 §2.2 / RFC 7296 §3.23.5 NAT-T Keepalive, LIVE proof of
 		# natt_natk_callback (armed by natt_start_natk once a seat sees
 		# itself behind a NAT or its peer behind a NAT).  In this SNAT
-		# topology BOTH iked seats arm it (initiator behind_nat=Y,
-		# responder peer_behind_nat=Y) and each sends a 1-byte 0xff
-		# keepalive to the floated UDP:4500; the responder's own keepalive
-		# (192.0.5.1 -> 192.0.5.254) is outbound on its veth, the
-		# initiator's is inbound, so capture ANY 1-byte UDP:4500 frame on
-		# the responder's veth (tcpdump prints 1-byte payloads as "UDP,
-		# length 1" / names them isakmp-nat-keep-alive).  tcpdump's
-		# greater/less are WIRE bytes incl. the 14-byte Ethernet header:
-		# a 1-byte keepalive = 14+20(IP)+8(UDP)+1 = 43, so 'less 50'
-		# catches it; ESP-in-UDP frames are far larger.
-		ip netns exec "$NSR" tcpdump -nni "$VR2" -c 1 \
-			'udp port 4500 and less 50' \
-			> "$D/natk.txt" 2>"$D/natk-err.txt" &
-		_tp=$!
+		# topology BOTH iked seats arm it and each sends a 1-byte 0xff
+		# keepalive to the floated UDP:4500; capture ANY 1-byte UDP:4500
+		# frame on the responder's veth (1-byte keepalive = 43 wire bytes,
+		# 'less 50' catches it; ESP-in-UDP is far larger).  The capture was
+		# already opened BEFORE the data probes; wait up to 90s total from
+		# here for a frame (20s cadence; the window must span >=1 period
+		# even under 3-shard CPU load).
 		_w=0
-		while [ "$_w" -lt 45 ] && \
+		while [ "$_w" -lt 90 ] && \
 		      ! grep -qE 'isakmp-nat-keep-alive|length 1' "$D/natk.txt" 2>/dev/null; do
 			_w=$((_w+1)); sleep 1
 		done
