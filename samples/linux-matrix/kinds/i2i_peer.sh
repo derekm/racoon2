@@ -78,6 +78,13 @@ i2i_charon_kill() {
 		while read -r _p; do kill -9 "$_p" 2>/dev/null || true; done <"$I2I_SW_ROOT/charon.pids"
 		: >"$I2I_SW_ROOT/charon.pids"
 	fi
+	# charon.pids holds the PID of the netns wrapper subshell, not charon
+	# itself.  strongSwan writes its OWN pid into the bind-mounted private
+	# run dir; read and kill that too so charon actually goes away (the old
+	# global pgrep scan that truly killed charon was removed as the
+	# cross-shard race fix, so this real-pid kill must now do the work).
+	_pf="$I2I_SW_ROOT/run/strongswan/charon.pid"
+	[ -f "$_pf" ] && kill -9 "$(cat "$_pf" 2>/dev/null)" 2>/dev/null || true
 	rm -f "$I2I_SW_ROOT/run/charon.pid" "$I2I_SW_ROOT/run/charon.ctl" \
 	      "$I2I_SW_ROOT/run/strongswan/charon.pid" "$I2I_SW_ROOT/charon.vici"
 }
