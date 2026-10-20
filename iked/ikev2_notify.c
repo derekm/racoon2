@@ -359,7 +359,7 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		 * Ni), then abort this IKE_SA and re-run against the new
 		 * gateway.  The SA-less nature (SPI_R=0, msgid=0) is
 		 * checked in initiator_ike_sa_init_recv. */
-		/* REVIEW_2026-10-18 M3: a REDIRECT is only honoured when
+		/* A REDIRECT is only honoured when
 		 * this side opted in (accept_redirect on) and therefore
 		 * advertised REDIRECT_SUPPORTED; otherwise an unsolicited
 		 * redirect is ignored and the exchange is dropped. */
