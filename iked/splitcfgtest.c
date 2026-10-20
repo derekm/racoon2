@@ -506,7 +506,99 @@ main(int argc, char *argv[])
 				    LIST_FIRST(&c.internal_ip4_subnet));
 		}
 
-	rcs_free_addrlist(sel4.dst);
+		/* receive-side negatives (review A6): a 13 whose netmask is
+		 * not a contiguous prefix, and a 15 whose prefixlen is out
+		 * of range, must NOT be committed (RFC 7296 §3.15.2). */
+		{
+			uint8_t nb[1 + sizeof(struct ikev2payl_config) +
+				    2 * sizeof(struct in_addr) + 8];
+			int noff = 0;
+			struct ikev2payl_config *ncfg;
+			struct ikev2_child_sa nc;
+			struct ikev2_sa nisa;
+
+			memset(nb, 0, sizeof(nb));
+			ncfg = (struct ikev2payl_config *)nb;
+			ncfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+			noff += sizeof(struct ikev2payl_config);
+			{
+				struct ikev2cfg_attrib *a =
+				    (struct ikev2cfg_attrib *)(nb + noff);
+				struct in_addr addr, mask;
+				put_uint16(&a->type,
+				    IKEV2_CFG_INTERNAL_IP4_SUBNET);
+				put_uint16(&a->length,
+				    2 * sizeof(struct in_addr));
+				inet_pton(AF_INET, "10.20.0.0", &addr);
+				inet_pton(AF_INET, "255.255.0.255", &mask);
+				memcpy(IKEV2CFG_ATTR_VALUE(a), &addr,
+				    sizeof(addr));
+				memcpy(IKEV2CFG_ATTR_VALUE(a) + sizeof(addr),
+				    &mask, sizeof(mask));
+				noff += sizeof(*a) + 2 * sizeof(struct in_addr);
+			}
+			{
+				uint8_t pl[2];
+				pl[0] = (uint8_t)((noff >> 8) & 0xff);
+				pl[1] = (uint8_t)(noff & 0xff);
+				memcpy((uint8_t *)&ncfg->header.payload_length,
+				    pl, 2);
+			}
+			ncfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+			memset(&nc, 0, sizeof(nc));
+			memset(&nisa, 0, sizeof(nisa));
+			ikev2_child_param_init(&nc.child_param);
+			CK(ikev2_process_config_reply(&nisa, &nc,
+			    &ncfg->header) == 0,
+			    "process_config_reply rc==0 (non-contig v4 mask)");
+			CK(LIST_EMPTY(&nc.internal_ip4_subnet),
+			    "non-contiguous v4 netmask NOT committed");
+		}
+		{
+			uint8_t nb[1 + sizeof(struct ikev2payl_config) +
+				    sizeof(struct ikev2cfg_ip6addr) + 8];
+			int noff = 0;
+			struct ikev2payl_config *ncfg;
+			struct ikev2_child_sa nc;
+			struct ikev2_sa nisa;
+
+			memset(nb, 0, sizeof(nb));
+			ncfg = (struct ikev2payl_config *)nb;
+			ncfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+			noff += sizeof(struct ikev2payl_config);
+			{
+				struct ikev2cfg_attrib *a =
+				    (struct ikev2cfg_attrib *)(nb + noff);
+				struct ikev2cfg_ip6addr d;
+				memset(&d, 0, sizeof(d));
+				d.prefixlen = 200;
+				put_uint16(&a->type,
+				    IKEV2_CFG_INTERNAL_IP6_SUBNET);
+				put_uint16(&a->length,
+				    sizeof(struct ikev2cfg_ip6addr));
+				memcpy(IKEV2CFG_ATTR_VALUE(a), &d, sizeof(d));
+				noff += sizeof(*a) +
+				    sizeof(struct ikev2cfg_ip6addr);
+			}
+			{
+				uint8_t pl[2];
+				pl[0] = (uint8_t)((noff >> 8) & 0xff);
+				pl[1] = (uint8_t)(noff & 0xff);
+				memcpy((uint8_t *)&ncfg->header.payload_length,
+				    pl, 2);
+			}
+			ncfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+			memset(&nc, 0, sizeof(nc));
+			memset(&nisa, 0, sizeof(nisa));
+			ikev2_child_param_init(&nc.child_param);
+			CK(ikev2_process_config_reply(&nisa, &nc,
+			    &ncfg->header) == 0,
+			    "process_config_reply rc==0 (v6 prefix >128)");
+			CK(LIST_EMPTY(&nc.internal_ip6_subnet),
+			    "out-of-range v6 prefixlen NOT committed");
+		}
+
+rcs_free_addrlist(sel4.dst);
 	rcs_free_addrlist(sel6.dst);
 
 	/* ================= B.2c: RFC 4945 / 6125 FQDN identity matching ====
@@ -1472,6 +1564,53 @@ main(int argc, char *argv[])
 				rc_vfree(c.internal_dnssec_ta);
 			if (c.internal_dns_domain)
 				rc_vfree(c.internal_dns_domain);
+		}
+
+		/* receive-side negative (review A5): a 26 must carry >=5
+		 * octets (Key Tag 2|Alg 1|Digest Type 1|Digest Data, RFC
+		 * 8598 §8); a short anchor must be dropped, not committed.
+		 * Preceded by an ACCEPTED 25 so we exercise the length gate,
+		 * not the adjacency gate. */
+		{
+			uint8_t tb[256];
+			uint8_t toff = 0;
+			struct ikev2payl_config *tcfg;
+			struct ikev2_sa tisa;
+			struct ikev2_child_sa tc;
+			struct ikev2cfg_attrib *ta;
+
+			memset(tb, 0, sizeof(tb));
+			tcfg = (struct ikev2payl_config *)tb;
+			tcfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+			toff = sizeof(struct ikev2payl_config);
+			ta = (struct ikev2cfg_attrib *)(tb + toff);
+			put_uint16(&ta->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
+			put_uint16(&ta->length, (uint16_t)strlen("corp.example"));
+			memcpy(IKEV2CFG_ATTR_VALUE(ta), "corp.example",
+			    strlen("corp.example"));
+			toff += sizeof(*ta) + strlen("corp.example");
+			ta = (struct ikev2cfg_attrib *)(tb + toff);
+			put_uint16(&ta->type, IKEV2_CFG_INTERNAL_DNSSEC_TA);
+			put_uint16(&ta->length, 3);
+			memcpy(IKEV2CFG_ATTR_VALUE(ta), "\x01\x02\x03", 3);
+			toff += sizeof(*ta) + 3;
+			{
+				uint8_t pl[2];
+				pl[0] = (uint8_t)((toff >> 8) & 0xff);
+				pl[1] = (uint8_t)(toff & 0xff);
+				memcpy((uint8_t *)&tcfg->header.payload_length,
+				    pl, 2);
+			}
+			tcfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+			memset(&tc, 0, sizeof(tc));
+			memset(&tisa, 0, sizeof(tisa));
+			tisa.rmconf = mk_accept_rm("corp.example");
+			ikev2_child_param_init(&tc.child_param);
+			CK(ikev2_process_config_reply(&tisa, &tc,
+			    &tcfg->header) == 0,
+			    "process_config_reply rc==0 (short 26)");
+			CK(tc.internal_dnssec_ta == NULL,
+			    "short INTERNAL_DNSSEC_TA (<5 octets) NOT committed");
 		}
 
 		/* receive-side negative (RFC 8598 §4.2 MUST): a 26 not
