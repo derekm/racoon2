@@ -1444,6 +1444,35 @@ rcs_free_addrlist(sel4.dst);
 			   c.internal_dnssec_ta == NULL,
 			   "invalid 25 refused and its 26 ignored");
 		}
+		/* parse: an ACCEPTED 25, then a REJECTED 25, breaks the chain —
+		 * a following well-formed 26 is unpaired and MUST be ignored.
+		 * Pins the prev_type=0 set on a rejected 25 (ikev2_config.c); a
+		 * leading-invalid-25 row cannot do that (prev_type already 0).
+		 * Note: a rejected 25 also resets the accumulated internal_
+		 * dns_domain list, so only the 26-ignored half is asserted here. */
+		{
+			int t[3] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+				     IKEV2_CFG_INTERNAL_DNS_DOMAIN,
+				     IKEV2_CFG_INTERNAL_DNSSEC_TA };
+			const char *v[3] = { "corp.example",
+					     "x.corp.example\n;rm",
+					     "\x01\x02\x03\x04\x05\x06\x07\x08" };
+			size_t l[3] = { 12, 18, 8 };
+
+			ph = mk_cfg_reply(buf, sizeof(buf), 3, t, v, l);
+			memset(&c, 0, sizeof(c));
+			memset(&isa, 0, sizeof(isa));
+			isa.rmconf = mk_accept_rm("corp.example");
+			ikev2_child_param_init(&c.child_param);
+			CK(ikev2_process_config_reply(&isa, &c, ph) == 0 &&
+			   c.internal_dnssec_ta == NULL,
+			   "accepted 25 -> rejected 25 -> good 26: 26 unpaired, "
+			   "ignored (rejected 25 reset prev_type)");
+			if (c.internal_dnssec_ta)
+				rc_vfree(c.internal_dnssec_ta);
+			if (c.internal_dns_domain)
+				rc_vfree(c.internal_dns_domain);
+		}
 		/* parse: out-of-allowlist refused, in-list kept, list built */
 		{
 			int t[3] = { IKEV2_CFG_INTERNAL_DNS_DOMAIN,
@@ -1503,7 +1532,7 @@ rcs_free_addrlist(sel4.dst);
 		ikm.dns_domain->s[strlen("corp.example")] = '\0';
 		ikm.dns_domain->l = strlen("corp.example") + 1;
 		/* A3: a DNS_DOMAIN(25)/DNSSEC_TA(26) may only ride a reply
-		 * carrying >=1 DNS address (RFC 8598 §4.2); supply one. */
+		 * carrying >=1 DNS address (RFC 8598 §3.2); supply one. */
 		ikm.cfg_dns = mk_addrlist(AF_INET, "8.8.8.8", 32);
 		ikm.dnssec_ta = rc_vmalloc(strlen(taha) + 1);
 		memcpy(ikm.dnssec_ta->v, taha, strlen(taha));
@@ -1694,7 +1723,7 @@ rcs_free_addrlist(sel4.dst);
 						blen3 -= sizeof(*a) + l;
 					}
 					CK(n26c == 0,
-					   "no 26 without a 25 (unpaired, RFC 8598 §3.1)");
+					   "no 26 without a 25 (unpaired, RFC 8598 §3.2/§4.2)");
 					rc_vfree(p3.cfg_payload);
 				}
 			}
