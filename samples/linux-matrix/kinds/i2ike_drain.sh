@@ -89,6 +89,13 @@ EOF
 	pkill -9 -f "$C/" 2>/dev/null || true
 	rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
 
+	# Row cleanup for EVERY return path after the daemons are up: an early
+	# `return 1` must not leave this row's iked/spmd retransmitting (extra
+	# shard load) or its netns behind.
+	_cl() {
+		pkill -9 -f "$C/" 2>/dev/null || true
+		for _ns in "$NSR" "$NSI"; do ip netns del "$_ns" 2>/dev/null || true; done
+	}
 	for NS in "$NSR" "$NSI"; do
 		ip netns del "$NS" 2>/dev/null || true
 		ip netns add "$NS"
@@ -177,9 +184,9 @@ EOF
 		[ "${R_AFTER:-1}" -eq 0 ] && break
 		i=$((i+1)); sleep 1
 	done
-	[ "$R_BEFORE" -ge 2 ] || { log "FAIL: unexpected pre-drain R esp=$R_BEFORE"; return 1; }
-	[ "$R_AFTER" -eq 0 ] || { log "FAIL: drain-sa did not tear down established SA (R esp $R_BEFORE -> $R_AFTER)"; return 1; }
-	[ "$closed" -eq 1 ] || { log "FAIL: drain-sa did NOT silently close the established IKE_SA (no 'aborting ike_sa') — a surviving DPD/rekey would re-home traffic onto the draining node"; return 1; }
+	[ "$R_BEFORE" -ge 2 ] || { log "FAIL: unexpected pre-drain R esp=$R_BEFORE"; _cl; return 1; }
+	[ "$R_AFTER" -eq 0 ] || { log "FAIL: drain-sa did not tear down established SA (R esp $R_BEFORE -> $R_AFTER)"; _cl; return 1; }
+	[ "$closed" -eq 1 ] || { log "FAIL: drain-sa did NOT silently close the established IKE_SA (no 'aborting ike_sa') — a surviving DPD/rekey would re-home traffic onto the draining node"; _cl; return 1; }
 	log "drain-sa SET: established IKE_SA silently closed (abort) + R esp $R_BEFORE -> $R_AFTER"
 
 	# 4a: a NEW IKE_SA_INIT from the drained peer is answered REDIRECT and
@@ -233,9 +240,9 @@ EOF
 	# the responder TRACE (-D 0x0003) proves the initiator advertised 16406
 	# (accept_redirect on); the -noaccept variant asserts its absence.
 	grep -q "peer supports redirection (REDIRECT_SUPPORTED" "$D/resp-iked.log" 2>/dev/null \
-		|| { log "FAIL: initiator with accept_redirect on did not advertise REDIRECT_SUPPORTED"; return 1; }
-	[ "$followed" -eq 1 ] || { log "FAIL: drained peer's new IKE_SA_INIT was not answered REDIRECT to $DGW (initiator never re-targeted to drain gw)"; return 1; }
-	[ "$R_ESP2" -eq 0 ] || { log "FAIL: drained peer re-established against draining node (R esp=$R_ESP2)"; return 1; }
+		|| { log "FAIL: initiator with accept_redirect on did not advertise REDIRECT_SUPPORTED"; _cl; return 1; }
+	[ "$followed" -eq 1 ] || { log "FAIL: drained peer's new IKE_SA_INIT was not answered REDIRECT to $DGW (initiator never re-targeted to drain gw)"; _cl; return 1; }
+	[ "$R_ESP2" -eq 0 ] || { log "FAIL: drained peer re-established against draining node (R esp=$R_ESP2)"; _cl; return 1; }
 
 	log "drain live proof OK: established SA torn down on SET + new IKE_SA_INIT answered REDIRECT [drain], no re-establish on draining node"
 	echo ok > "$D/drain.gate"
