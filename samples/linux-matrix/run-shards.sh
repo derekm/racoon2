@@ -137,8 +137,17 @@ while read -r pid shard_log; do
 	pass=$(grep -E '^pass=[0-9]+ fail=[0-9]+ skip=[0-9]+( |$)' "$shard_log" | tail -1 | sed -E 's/^pass=([0-9]+) fail=([0-9]+) skip=([0-9]+)( xfail=([0-9]+))?.*$/\1 \2 \3 \5/')
 	[ -z "$pass" ] && pass="0 0 0"
 	set -- $pass
-	total_pass=$((total_pass + $1 + ${4:-0})); total_fail=$((total_fail + $2)); total_skip=$((total_skip + $3))
-	echo "== shard $(basename "$shard_log") pass=$1 fail=$2 skip=$3"
+	# run.sh's own fail= can be wrong when a kind logs FAIL but its exit
+	# status does not reach the summary (observed: rc=0 while the merged
+	# log shows explicit FAIL <name> verdicts).  Count bare "FAIL <name>"
+	# verdict lines directly and take the max, so a row that genuinely
+	# failed is NEVER reported green.  (The die lines carry a trailing
+	# message, so the anchored regex matches only run.sh's verdict.)
+	vf=$(grep -cE '^FAIL [a-zA-Z0-9_-]+$' "$shard_log")
+	[ -n "$vf" ] || vf=0
+	eff_fail=$2; [ "$vf" -gt "$eff_fail" ] && eff_fail=$vf
+	total_pass=$((total_pass + $1 + ${4:-0})); total_fail=$((total_fail + eff_fail)); total_skip=$((total_skip + $3))
+	echo "== shard $(basename "$shard_log") pass=$1 fail=$eff_fail skip=$3"
 done <"$rc_file"
 rm -f "$rc_file"
 
