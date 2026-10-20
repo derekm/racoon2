@@ -56,10 +56,17 @@ kind_i2inatt() {
 		# trap, and a busy netns del must not leave the SNAT behind.
 		ip netns exec "$NSN" iptables -t nat -F POSTROUTING 2>/dev/null || true
 		ip netns exec "$NSN" iptables -F FORWARD 2>/dev/null || true
-		ip netns exec "$NSI" pkill -9 -f "$SBIN/iked" 2>/dev/null || true
-		ip netns exec "$NSR" pkill -9 -f "$SBIN/iked" 2>/dev/null || true
-		ip netns exec "$NSI" pkill -9 -f "$SBIN/spmd" 2>/dev/null || true
-		ip netns exec "$NSR" pkill -9 -f "$SBIN/spmd" 2>/dev/null || true
+		# Kill ONLY this row's daemons, by the row-unique config path.
+		# An `ip netns exec ... pkill -9 -f "$SBIN/spmd"` here was the
+		# cross-shard race: `ip netns exec` only changes the NETWORK ns,
+		# it does not restrict pkill's /proc scan, so `pkill -f $SBIN`
+		# killed every shard's iked/spmd that shares the installed prefix.
+		# A sibling i2inatt row's cleanup then SIGKILLd another shard's
+		# daemon mid-setup (the 'spmd Killed' in i2ike-collide /
+		# drain-noaccept and the keepalive row's iked dying before it
+		# emitted its 0xff keepalive).  Every daemon here runs with
+		# `-f $C/<conf>.conf`, so $C scopes the kill to this row alone.
+		pkill -9 -f "$C/" 2>/dev/null || true
 		ip netns del "$NSI" 2>/dev/null || true
 		ip netns del "$NSN" 2>/dev/null || true
 		ip netns del "$NSR" 2>/dev/null || true
