@@ -37,6 +37,11 @@ if grep -rEn 'pkill([^#]*)"\$SBIN|ip netns exec[^#]*pkill' "$HERE/kinds/" 2>/dev
 	echo "run-shards: FAIL: kinds/ reintroduced a netns-unsafe daemon kill (pkill \$SBIN or ip netns exec ... pkill)" >&2
 	exit 2
 fi
+# xfrm_audit.tsv must stay one entry per line (tools: xa_tsv_lint).
+if ! HERE="$HERE" sh -c '. "$HERE/xfrm_audit.sh"; xa_tsv_lint'; then
+	echo "run-shards: FAIL: xfrm_audit.tsv is malformed (see xa_tsv_lint)" >&2
+	exit 2
+fi
 M=${1:-1}
 CASES=${2:-.*}
 MERGED=${3:-/tmp/r2-shards.log}

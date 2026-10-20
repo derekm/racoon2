@@ -151,6 +151,13 @@ EOF
 	done
 	[ "$up" -eq 1 ] || { log "FAIL: child not established (R esp=${re:-0} I esp=${ie:-0})"; _cl; return 1; }
 
+	# Data-plane proof BEFORE the drain: the child
+	# must carry traffic both ways while it is still up, so the xfrm audit
+	# sees the inbound+outbound counters rise on both seats.  Doing it here
+	# (not racing the harness probe against the drain's SA teardown) is
+	# what keeps this row free of any xfrm_audit.tsv traffic exemption.
+	i2i_dataplane "$NSI" "$HR" "$name pre-drain" || { _cl; return 1; }
+
 	# 4b: drain-sa SET must tear down the established IKE_SA locally
 	# (gw is positional: a "-to" flag would be eaten by ikedctl's
 	# top-level getopt before the drain-sa branch runs).
