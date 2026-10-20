@@ -4089,11 +4089,11 @@ alg_to_proppair(struct rc_alglist *alg, int type,
  * NSA "Securing IPsec Virtual Private Networks" (executive summary +
  * "Configuring IPsec Virtual Private Networks", CNSSP-15): warn when a
  * configured proposal would use an algorithm the guidance lists as
- * obsolete (DES/3DES, MD5, SHA-1, MODP 768/1024/1536).  A proposal that
- * uses one is REFUSED at config load unless allow_nsa_deprecated is on
- * (not advisory); with it on, the offer is logged (PLOG_INTWARN) but
- * still sent, which is a downgrade surface an operator should clear.
- * See doc/nsa-ipsec-hardening.md.
+ * obsolete (DES/3DES, MD5, SHA-1, MODP 768/1024/1536).  The config-load
+ * consistency check (ike_conf_depr_check) REFUSES such a proposal unless
+ * allow_nsa_deprecated is on; reaching this proposal-build warn means the
+ * switch is on and the offer is logged (PLOG_INTWARN) but still sent — a
+ * downgrade surface an operator should clear.  See doc/nsa-ipsec-hardening.md.
  */
 static int
 nsa_deprecated_alg(const struct rc_alglist *alg)
