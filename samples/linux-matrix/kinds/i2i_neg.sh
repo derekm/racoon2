@@ -233,21 +233,30 @@ EOF
 	# genuinely stuck DUT, not to race slow scheduling), then measure.
 	up=0
 	i=0
+	# EXPECT=refuse: the first refusal marker does
+	# NOT end the wait.  The initiator may retry (a fresh IKE_SA_INIT from
+	# spmd's ACQUIRE or iked's own retransmit/re-drive), and EVERY attempt
+	# must be refused.  So keep sampling the SADs for a quiet window of
+	# REFUSE_SETTLE seconds after the LAST refusal marker (a new marker —
+	# i.e. a refused retry — restarts the window); any child coming up at
+	# any point in that window is up=1 and fails the row.
+	REFUSE_SETTLE=${REFUSE_SETTLE:-20}
+	nref=0; settle_until=
 	while [ "$i" -lt 120 ]; do
 		re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		if [ "${re:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ]; then up=1; break; fi
-		# For EXPECT=refuse the child must NOT come up (so the esp test
-		# never settles it).  Break once the responder's AUTH refusal
-		# marker is logged — the outcome is decided, and holding the
-		# shard a full 120s on every successful refuse would only add
-		# self-inflicted load for the other shards.
-		if [ "$EXPECT" = refuse ] && \
-		   grep -qE 'authentication failure|does not match peers id|exceeds parent IKE_SA strength' "$D/resp-iked.log" 2>/dev/null; then
-			break
+		if [ "$EXPECT" = refuse ]; then
+			n=$(grep -cE 'authentication failure|does not match peers id|exceeds parent IKE_SA strength' "$D/resp-iked.log" 2>/dev/null)
+			n=${n:-0}
+			if [ "$n" -gt "$nref" ]; then
+				nref=$n; settle_until=$((i + REFUSE_SETTLE))
+			fi
+			[ -n "$settle_until" ] && [ "$i" -ge "$settle_until" ] && break
 		fi
 		i=$((i+1)); sleep 1
 	done
+	[ "$EXPECT" = refuse ] && log "refuse window: $nref refusal(s) logged, observed ${i}s, child up=$up"
 	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 	sleep 2
 
