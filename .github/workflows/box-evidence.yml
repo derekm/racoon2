@@ -3,7 +3,7 @@
 # box and carries no secrets.  The box posts a summary; the nightly
 # job fails if the last accepted post is older than 36h.
 #
-# The evidence is bound to ONE commit (REVIEW_2026-10-18 M5): emit records
+# The evidence is bound to ONE commit: emit records
 # the tested checkout's HEAD, `record` only accepts it when that equals the
 # dispatched ref's sha, and the nightly `freshness` job only passes when an
 # accepted post exists for the CURRENT tip.  These rows need root, netns

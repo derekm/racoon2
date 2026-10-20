@@ -16,7 +16,7 @@
 # check FILE [SHA] exits 0 only when the summary lists every gate=box and
 # gate=dpd row exactly once as PASS, fail=0, the sha256 matches, the
 # timestamp is within R2_BOX_EVIDENCE_MAX_AGE hours (default 36), and
-# (REVIEW_2026-10-18 M5) its "commit:" line names exactly SHA (default:
+# its "commit:" line names exactly SHA (default:
 # R2_BOX_EVIDENCE_COMMIT, else `git rev-parse HEAD` of this checkout), so
 # evidence from older code never vouches for a newer tip.  emit records
 # the commit of R2_SRC (default: this checkout) and refuses a dirty tree.

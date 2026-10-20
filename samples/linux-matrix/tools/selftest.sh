@@ -147,7 +147,7 @@ if [ -f "$FB/lanes/all.rows" ]; then
 fi
 
 # Box-tier evidence: a complete PASS summary checks, a missing row does not,
-# and (REVIEW_2026-10-18 M5) the evidence is bound to one commit SHA.
+# and the evidence is bound to one commit SHA.
 BE=$HERE/box-evidence.sh
 printf 'a	k	pass	0	n	box\nb	k	pass	0	n	dpd\n' > "$T/be.cases"
 printf 'PASS a (ok)\nPASS b (ok)\n' > "$T/be.log"
