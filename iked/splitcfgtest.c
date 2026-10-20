@@ -1911,10 +1911,11 @@ rcs_free_addrlist(sel4.dst);
 				rc_vfree(fc.internal_dnssec_ta);
 		}
 
-		/* Adjacency survives a DROPPED short 26 (RFC 8598 §4.2 keys
-		 * off wire order, not committed-ness): 25, short-26(ignored),
-		 * good-26 must still commit the good anchor.  Regression-pins
-		 * the prev_type-clear bug. */
+		/* Adjacency survives a DROPPED short 26 (RFC 8598 §4.2): 25,
+		 * short-26(ignored), good-26 must still commit the good anchor —
+		 * the dropped 26 is still type 26 on the wire and applies to the
+		 * preceding accepted 25's domain.  Regression-pins the
+		 * prev_type-clear bug.  (A REJECTED 25 does break the chain.) */
 		{
 			uint8_t ub[256];
 			uint8_t uoff = 0;
