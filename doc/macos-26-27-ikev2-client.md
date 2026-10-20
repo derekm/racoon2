@@ -14,7 +14,9 @@ Responder on this box (WSL Ubuntu, mirrored networking):
 - Sample in tree: [samples/macos_ikev2.conf](../samples/macos_ikev2.conf)
 - IKE identity: Remote ID `racoon2.wsl`, Local ID `macos.client`
 - Auth: IKEv2 PSK only (no EAP, no cert)
-- IKE SA: AES-256/128-CBC, PRF/INTEGR HMAC-SHA2-256, DH 14 (`modp2048`) then 15 (`modp3072`)
+- IKE SA: responds agile; the sample offers AES-GCM (RFC 5282) first so
+  RFC 9242 IntAuth_A can run, then AES-256/128-CBC. PRF/INTEG
+  HMAC-SHA2-256, DH 14 (`modp2048`) then 15 (`modp3072`).
 - Child SA: ESP AES-GCM-16 (`aes_gcm` + `non_auth`), fallback AES-CBC + HMAC-SHA2-256. iPhone took the fallback.
 - NAT-T UDP 4500: **proven** (`encap type espinudp` in `ip xfrm state`)
 - ESP ICV: hmac(sha256) at **128 bits** (RFC 4868). The old 96-bit

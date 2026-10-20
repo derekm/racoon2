@@ -1034,10 +1034,10 @@ remote
 		    INTERNAL_DNS_DOMAIN (RFC 8598 split-DNS domains from the
 		      peer: space-separated, each validated and inside
 		      accept_dns_domain; see there)
-		    INTERNAL_DNSSEC_TA (hex; ONE unbound blob for all accepted
-		      domains today — per-(domain, anchor) binding is an open
-		      conformance item, so do NOT assume it belongs to any one
-		      preceding domain until that store lands)
+		    INTERNAL_DNSSEC_TA (hex; the LAST accepted anchor, bound to
+		      no specific domain today — per-(domain, anchor) binding is
+		      an open conformance item, so do NOT assume it belongs to
+		      any one accepted domain until that store lands)
 		For migration:
 		    OLD_SRC
 		    OLD_DST
