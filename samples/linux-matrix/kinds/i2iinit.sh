@@ -154,11 +154,20 @@ esac
 	# iked now refuses to derive a non-secret PPK when the file is
 	# missing.  Both mandatory and optional rows provision the file.
 	PPK_FILE="$ETC/ppk/${I2I_PPK_ID}.bin"
-	rm -f "$PPK_FILE"
 	if [ "$I2I_PPK" = 1 ]; then
 		mkdir -p "$ETC/ppk"
-		( umask 077
-		  printf "$(printf '%s' "$I2I_PPK_HEX" | sed 's/../\\x&/g')" > "$PPK_FILE" )
+		# PARALLEL-SAFE provisioning: ppk rows share this exact file (same
+		# ppk_id rfc8784-mat, same 32-byte I2I_PPK_HEX).  NEVER rm it here —
+		# an unconditional rm (old code) deleted the file a PARALLEL shard's
+		# responder was about to load mid-establish, failing
+		# ikev2_ppk_load ('missing or unreadable') even though the row
+		# provisioned correctly.  Only create/refresh the bytes atomically
+		# (write a tmp, then mv) and only when they differ.
+		if [ "$(od -An -tx1 "$PPK_FILE" 2>/dev/null | tr -d ' \n')" != "$I2I_PPK_HEX" ]; then
+			_tmp="$PPK_FILE.tmp.$$"
+			( umask 077; printf "$(printf '%s' "$I2I_PPK_HEX" | sed 's/../\\x&/g')" > "$_tmp" )
+			mv -f "$_tmp" "$PPK_FILE"
+		fi
 		[ "$(od -An -tx1 "$PPK_FILE" | tr -d ' \n')" = "$I2I_PPK_HEX" ] || {
 			log "FAIL: could not provision $PPK_FILE"; return 1; }
 	fi

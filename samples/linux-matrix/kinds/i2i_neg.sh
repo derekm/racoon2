@@ -237,6 +237,15 @@ EOF
 		re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		if [ "${re:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ]; then up=1; break; fi
+		# For EXPECT=refuse the child must NOT come up (so the esp test
+		# never settles it).  Break once the responder's AUTH refusal
+		# marker is logged — the outcome is decided, and holding the
+		# shard a full 120s on every successful refuse would only add
+		# self-inflicted load for the other shards.
+		if [ "$EXPECT" = refuse ] && \
+		   grep -qE 'authentication failure|does not match peers id|exceeds parent IKE_SA strength' "$D/resp-iked.log" 2>/dev/null; then
+			break
+		fi
 		i=$((i+1)); sleep 1
 	done
 	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
