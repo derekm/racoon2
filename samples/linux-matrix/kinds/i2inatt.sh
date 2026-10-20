@@ -287,6 +287,12 @@ EOF
 		else
 			_bad="${_bad:+$_bad; }no 1-byte NAT Keepalive (0xff) on UDP:4500"
 			cat "$D/natk-err.txt" "$D/natk.txt" 2>/dev/null | tail -5
+			# KP-DIAG: the row dirs are wiped per-row, so dump the live
+			# wire/capture state here (it survives in the merged log) to
+			# tell "keepalive never sent" from "sent but tcpdump missed":
+			# a fresh 6s tcpdump on the responder veth while the SA is up.
+			log "KP-DIAG: natk_lines=$(wc -l <"$D/natk.txt" 2>/dev/null) netns=$(ip netns list 2>/dev/null | wc -l) avmem=$(free -m 2>/dev/null | awk 'NR==2{print $7}')"
+			log "KP-DIAG-live: $( ( ip netns exec "$NSR" timeout 6 tcpdump -nni "$VR2" -c 2 'udp port 4500 and less 50' 2>&1 ) | tr '\n' ' ' | tail -c 300 )"
 		fi
 	fi
 
