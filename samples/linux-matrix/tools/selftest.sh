@@ -197,5 +197,52 @@ else
 	echo "SELFTEST PASS box-evidence rejects a missing row"
 fi
 
+# xfrm_audit.tsv lint and the per-row noprobe
+# setting: a wrapped entry is refused; the shipped tsv is clean; a
+# `traffic` exemption alone does NOT disable the harness probe, `noprobe`
+# does.
+TB=$(printf '\t')
+( HERE="$HERE"; . "$HERE/xfrm_audit.sh"; xa_tsv_lint ) >/dev/null 2>&1 \
+	&& echo "SELFTEST PASS xa_tsv_lint: shipped xfrm_audit.tsv is clean" \
+	|| { echo "SELFTEST FAIL xa_tsv_lint: shipped xfrm_audit.tsv"; bad=1; }
+printf 'r1%straffic%s1%swhy starts here and\n%scontinues on a wrapped line\n' "$TB" "$TB" "$TB" "$TB" > "$T/xa-wrap.tsv"
+printf 'r1%sbogus%s1%swhy\n' "$TB" "$TB" "$TB" > "$T/xa-check.tsv"
+printf 'r1%straffic%s1\n' "$TB" "$TB" > "$T/xa-3f.tsv"
+for tf in xa-wrap xa-check xa-3f; do
+	if ( HERE="$HERE"; . "$HERE/xfrm_audit.sh"; xa_tsv_lint "$T/$tf.tsv" ) >/dev/null 2>&1; then
+		echo "SELFTEST FAIL xa_tsv_lint accepted $tf"; bad=1
+	else
+		echo "SELFTEST PASS xa_tsv_lint refuses $tf"
+	fi
+done
+mkdir -p "$T/xa"
+cp "$HERE/xfrm_audit.sh" "$T/xa/"
+printf 'rt%straffic%s1%sdeclared no-traffic, probe still runs\nrn%snoprobe%s1%srow moves its own data\n' \
+	"$TB" "$TB" "$TB" "$TB" "$TB" "$TB" > "$T/xa/xfrm_audit.tsv"
+for row in rt rn rx; do
+	: > "$T/xa/ipcalls"
+	( HERE="$T/xa"; . "$T/xa/xfrm_audit.sh"
+	  ip() { echo "$*" >> "$T/xa/ipcalls"; }
+	  xa_probe "$row" "$T/xa" ) >/dev/null 2>&1
+	n=$(wc -l < "$T/xa/ipcalls")
+	case $row in
+	rn) [ "$n" -eq 0 ] && echo "SELFTEST PASS noprobe row is not probed" \
+	        || { echo "SELFTEST FAIL noprobe row was probed ($n ip calls)"; bad=1; } ;;
+	*)  [ "$n" -gt 0 ] && echo "SELFTEST PASS row $row is probed (traffic exemption does not skip the probe)" \
+	        || { echo "SELFTEST FAIL row $row was not probed"; bad=1; } ;;
+	esac
+done
+# regression pin: i2ike-drain carries no xfrm_audit.tsv exemption
+# and proves its data plane before the drain is set
+if grep -Eq '^i2ike-drain(-noaccept)?'"$TB" "$HERE/xfrm_audit.tsv"; then
+	echo "SELFTEST FAIL i2ike-drain is exempted in xfrm_audit.tsv"; bad=1
+else
+	echo "SELFTEST PASS i2ike-drain has no xfrm_audit.tsv exemption"
+fi
+awk '/i2i_dataplane .*pre-drain/ { p = NR } /drain-sa "\$HI"/ && !d { d = NR } END { exit !(p && d && p < d) }' \
+	"$HERE/kinds/i2ike_drain.sh" \
+	&& echo "SELFTEST PASS i2ike-drain probes the data plane before drain-sa" \
+	|| { echo "SELFTEST FAIL i2ike-drain: no pre-drain data-plane probe"; bad=1; }
+
 [ "$bad" = 0 ] && echo "SELFTEST: all passed" || echo "SELFTEST: FAILURES"
 exit "$bad"

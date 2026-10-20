@@ -5,5 +5,10 @@
 # reports XPASS and FAILS the row so the entry has to be deleted.
 #
 # row-regex (full match)	check	value	why
+# ONE entry per line, exactly 4 TAB-separated fields; put any longer
+# explanation on the # comment lines above the entry (xa_tsv_lint).
 #   check: icv | traffic | safail  (value: 1)
+#          noprobe  (value: 1) -- the harness data-path probe (xa_probe)
+#                   skips this row; NOT an assertion waiver (traffic is
+#                   still asserted unless separately declared)
 #          stat  (value: Counter=N[,Counter=N]  -- may rise by at most N)

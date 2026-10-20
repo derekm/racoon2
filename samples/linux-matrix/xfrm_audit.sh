@@ -50,6 +50,11 @@ xa_sample() {	# xa_sample <row> <tag> <outdir>   (netns n<row>-*)
 # probed again.  Rows whose selectors are subnets or TCP-only are not
 # probed here and must move data themselves (i2inatt, i2io4 ... do).
 xa_probe() {
+	# A row that declares `noprobe 1` in xfrm_audit.tsv is not probed by
+	# the harness (it must move its own data, or declare why it cannot).
+	# This is independent of the `traffic` XFAIL check: a traffic
+	# exemption alone never disables the probe.
+	[ -z "$(xa_allow "$1" noprobe)" ] || return 0
 	for _xns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
 		case $_xns in "n$1-"*) ;; *) continue ;; esac
 		_xaddr=$(ip -n "$_xns" -o addr 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "inet" || $i == "inet6") { a = $(i + 1); sub(/\/.*/, "", a); printf "%s ", a } }')
@@ -127,8 +132,33 @@ xa_allow() {	# xa_allow <row> <check>  -> prints value or nothing
 	done < "$XA_HERE/xfrm_audit.tsv"
 }
 
+# xa_tsv_lint [file]: xfrm_audit.tsv must hold ONE entry per line —
+# exactly 4 TAB-separated fields (regex, check, value, why), a non-empty
+# regex that does not start with whitespace, and a known check.  A wrapped
+# "why" would otherwise become a stray line that xa_allow silently skips.
+xa_tsv_lint() {
+	_tf=${1:-$XA_HERE/xfrm_audit.tsv}
+	[ -f "$_tf" ] || return 0
+	awk -F'\t' -v f="$_tf" '
+		/^#/ || /^$/ { next }
+		{
+			why = ""
+			if (NF != 4) why = "has " NF " TAB fields (want 4: regex check value why)"
+			else if ($1 == "" || $1 ~ /^[ \t]/) why = "empty or indented row regex (wrapped continuation line?)"
+			else if ($2 !~ /^(icv|traffic|safail|stat|noprobe)$/) why = "unknown check \"" $2 "\""
+			else if ($2 != "stat" && $3 != "1") why = "value must be 1 for check " $2
+			else if ($4 == "") why = "empty why"
+			if (why != "") { printf "xa_tsv_lint: %s:%d: %s\n", f, NR, why; bad = 1 }
+		}
+		END { exit bad ? 1 : 0 }' "$_tf" >&2
+}
+
 xa_check() {	# xa_check <row>  -> 0 ok, 1 audit failure
 	xa_enabled || return 0
+	if ! xa_tsv_lint; then
+		log "XA $1 FAIL xfrm_audit.tsv is malformed (one entry per line, 4 TAB fields)"
+		return 1
+	fi
 	[ -n "${XA_PID:-}" ] && { kill "$XA_PID" 2>/dev/null; wait "$XA_PID" 2>/dev/null; }
 	XA_PID=
 	xa_sample "$1" SAMPLE "$XA_DIR"
