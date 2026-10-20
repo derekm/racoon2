@@ -129,7 +129,10 @@ EOF
 
 	up=0
 	i=0
-	while [ "$i" -lt 45 ]; do
+	# establish is an EVENT wait: under shard CPU load the iked pair takes
+	# longer to bring the child up, so the bound must be generous and only
+	# trip for a genuinely stuck DUT.
+	while [ "$i" -lt 120 ]; do
 		re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		if [ "${re:-0}" -ge 2 ] && [ "${ie:-0}" -ge 2 ]; then
@@ -164,15 +167,23 @@ EOF
 	# redirect.
 	i=0; closed=0
 	[ -f "$D/resp-iked.log" ] || touch "$D/resp-iked.log"
-	while [ "$i" -lt 15 ]; do
+	while [ "$i" -lt 20 ]; do
 		if grep -q "aborting ike_sa" "$D/resp-iked.log" 2>/dev/null; then
 			closed=1
 			break
 		fi
 		i=$((i+1)); sleep 1
 	done
-	sleep 2
-	R_AFTER=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+	# Event-wait: the kernel ESP SAs are torn down ASYNCHRONOUSLY after
+	# 'aborting ike_sa' and can lag under shard load; poll R esp to 0
+	# instead of sampling once (a 2->1 at a single sample was a false fail).
+	R_AFTER=-1
+	i=0
+	while [ "$i" -lt 30 ]; do
+		R_AFTER=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+		[ "${R_AFTER:-1}" -eq 0 ] && break
+		i=$((i+1)); sleep 1
+	done
 	[ "$R_BEFORE" -ge 2 ] || { log "FAIL: unexpected pre-drain R esp=$R_BEFORE"; return 1; }
 	[ "$R_AFTER" -eq 0 ] || { log "FAIL: drain-sa did not tear down established SA (R esp $R_BEFORE -> $R_AFTER)"; return 1; }
 	[ "$closed" -eq 1 ] || { log "FAIL: drain-sa did NOT silently close the established IKE_SA (no 'aborting ike_sa') — a surviving DPD/rekey would re-home traffic onto the draining node"; return 1; }
