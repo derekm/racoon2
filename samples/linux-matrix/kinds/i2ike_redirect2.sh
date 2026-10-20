@@ -233,12 +233,23 @@ EOF
 	log "drain-sa exit=$? (out: $(cat "$D/drain.out" 2>/dev/null | tr '\n' ' '))"
 	i=0; closed=0
 	[ -f "$D/a-iked.log" ] || touch "$D/a-iked.log"
-	while [ "$i" -lt 15 ]; do
+	while [ "$i" -lt 20 ]; do
 		if grep -q "aborting ike_sa" "$D/a-iked.log" 2>/dev/null; then closed=1; break; fi
 		i=$((i+1)); sleep 1
 	done
-	sleep 2
-	A_AFTER=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+	# Event-wait: 'aborting ike_sa' is logged first, then the kernel ESP SAs
+	# are torn down ASYNCHRONOUSLY and can lag the abort under shard load, so
+	# poll for A esp to reach 0 instead of sampling once after a fixed 2s
+	# (a 2->1 at a single sample was a false fail of an SA that closed a
+	# moment later).  A drain that genuinely leaks a child never reaches 0
+	# and still fails.
+	A_AFTER=-1
+	i=0
+	while [ "$i" -lt 30 ]; do
+		A_AFTER=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+		[ "${A_AFTER:-1}" -eq 0 ] && break
+		i=$((i+1)); sleep 1
+	done
 	[ "$A_BEFORE" -ge 2 ] || { log "FAIL: pre-drain A esp=$A_BEFORE"; return 1; }
 	[ "$A_AFTER" -eq 0 ] || { log "FAIL: drain did not close established SA (A esp $A_BEFORE -> $A_AFTER)"; return 1; }
 	[ "$closed" -eq 1 ] || { log "FAIL: drain did not abort the established IKE_SA ('aborting ike_sa' missing)"; return 1; }
