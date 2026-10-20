@@ -297,7 +297,10 @@ main(int argc, char *argv[])
 		}
 		CK(found13, "reply contains INTERNAL_IP4_SUBNET (13)");
 		CK(found15, "reply contains INTERNAL_IP6_SUBNET (15)");
-		CK(found2, "reply contains INTERNAL_IP4_NETMASK (2) beside 13");
+		/* RFC 7296 §3.15.1: only ONE NETMASK(2), used only with an
+		 * INTERNAL_IP4_ADDRESS.  This fixture assigns no address, so 2
+		 * must NOT appear (review A2). */
+		CK(!found2, "INTERNAL_IP4_NETMASK (2) ABSENT without an assigned IP4 address");
 
 		/* negative: with NO subnet request, neither attribute appears */
 		{
@@ -337,6 +340,75 @@ main(int argc, char *argv[])
 			if (p2.cfg_payload)
 				rc_vfree(p2.cfg_payload);
 		}
+	}
+
+	/* ============= A2: NETMASK(2) emitted once, gated on IP4 addr =====
+	 * RFC 7296 §3.15.1: only ONE INTERNAL_IP4_NETMASK, and only used
+	 * with an INTERNAL_IP4_ADDRESS.  This fixture assigns a v4 address
+	 * (lease) plus a single v4 split subnet -> exactly one 2 with the
+	 * /24 mask. */
+	{
+		struct ikev2_child_sa cA;
+		struct ikev2_sa isaA;
+		struct ikev2_child_param pA;
+		struct rcf_address *raA = NULL;
+		struct rcf_address_list_head leases;
+		struct in_addr v4A;
+		uint8_t *p;
+		size_t plen, blen;
+		struct ikev2payl_config_h *cfghA;
+		uint8_t *body;
+		int nAddr = 0, nM2 = 0, i;
+
+		memset(&cA, 0, sizeof(cA));
+		memset(&isaA, 0, sizeof(isaA));
+		ikev2_child_param_init(&pA);
+		pA.cfg_ip4_subnet = 1;
+		cA.selector = child.selector;	/* sel4(10.20.0.0/24)+sel6 */
+		LIST_INIT(&leases);
+		inet_pton(AF_INET, "10.99.0.10", &v4A);
+		raA = rc_address_new(AF_INET, (uint8_t *)&v4A, 24, NULL, &leases);
+		if (raA)
+			LIST_INSERT_HEAD(&cA.lease_list, raA, link_sa);
+
+		CK(ikev2_create_config_reply(&isaA, &cA, &pA) == 0,
+		   "create_config_reply rc==0 (A2 address+subnet)");
+		CK(pA.cfg_payload != NULL && pA.cfg_payload->l > 0,
+		   "A2 reply allocated");
+		plen = pA.cfg_payload->l;
+		p = (uint8_t *)pA.cfg_payload->v;
+		cfghA = (struct ikev2payl_config_h *)p;
+		body = p + sizeof(*cfghA);
+		blen = plen - sizeof(*cfghA);
+		for (i = 0; blen > 0; ++i) {
+			struct ikev2cfg_attrib *a =
+			    (struct ikev2cfg_attrib *)body;
+			unsigned int t, l;
+			if (blen < sizeof(*a))
+				break;
+			t = IKEV2CFG_ATTR_TYPE(a);
+			l = IKEV2CFG_ATTR_LENGTH(a);
+			if (sizeof(*a) + l > blen)
+				break;
+			if (t == IKEV2_CFG_INTERNAL_IP4_ADDRESS)
+				nAddr++;
+			if (t == IKEV2_CFG_INTERNAL_IP4_NETMASK) {
+				uint8_t *v = IKEV2CFG_ATTR_VALUE(a);
+				uint32_t m2;
+				memcpy(&m2, v, sizeof(m2));
+				CK(ntohl(m2) == 0xffffff00,
+				   "A2 INTERNAL_IP4_NETMASK == /24");
+				nM2++;
+			}
+			body += sizeof(*a) + l;
+			blen -= sizeof(*a) + l;
+		}
+		CK(nAddr == 1, "A2 reply assigns one IP4 address");
+		CK(nM2 == 1, "A2 NETMASK(2) emitted exactly once beside the address");
+		if (pA.cfg_payload)
+			rc_vfree(pA.cfg_payload);
+		if (raA)
+			rc_addrpool_release_addr(raA);
 	}
 
 	if (child.child_param.cfg_payload)
@@ -1053,12 +1125,16 @@ rcs_free_addrlist(sel4.dst);
 		memcpy(ikm.dns_domain->v, "corp.example", strlen("corp.example"));
 		ikm.dns_domain->s[strlen("corp.example")] = '\0';
 		ikm.dns_domain->l = strlen("corp.example") + 1;
+		/* A3: a DNS_DOMAIN(25) may only ride a reply that also carries
+		 * >=1 DNS address (RFC 8598 §4.2); supply one here. */
+		ikm.cfg_dns = mk_addrlist(AF_INET, "8.8.8.8", 32);
 
 		memset(&isa, 0, sizeof(isa));
 		isa.rmconf = &rm;
 		memset(&c, 0, sizeof(c));
 		ikev2_child_param_init(&p);
 		p.cfg_dns_domain = 1;
+		p.cfg_ip4_dns = 1;	/* A3: dns_domain needs a DNS address too */
 
 		CK(ikev2_create_config_reply(&isa, &c, &p) == 0,
 		   "create_config_reply rc==0 (dns_domain)");
@@ -1131,6 +1207,43 @@ rcs_free_addrlist(sel4.dst);
 				CK(1, "no-request reply handles DNS (non-null)");
 			}
 		}
+
+		/* A3 negative: dns_domain requested + configured, but NO DNS
+		 * address request -> a 25 must NOT be emitted (RFC 8598 §4.2). */
+		{
+			struct ikev2_child_param p3;
+			struct ikev2_sa isa3;
+			memset(&isa3, 0, sizeof(isa3));
+			isa3.rmconf = &rm;
+			ikev2_child_param_init(&p3);
+			p3.cfg_dns_domain = 1;	/* no cfg_ip4_dns */
+			CK(ikev2_create_config_reply(&isa3, &c, &p3) == 0,
+			   "reply rc==0 dns_domain w/o dns addr");
+			if (p3.cfg_payload) {
+				uint8_t *body3 = (uint8_t *)p3.cfg_payload->v +
+				    sizeof(struct ikev2payl_config_h);
+				size_t bl3 = p3.cfg_payload->l -
+				    sizeof(struct ikev2payl_config_h);
+				int n25 = 0;
+				for (; bl3 > 0; ) {
+					struct ikev2cfg_attrib *a =
+					    (struct ikev2cfg_attrib *)body3;
+					unsigned int t, l;
+					if (bl3 < sizeof(*a))
+						break;
+					t = IKEV2CFG_ATTR_TYPE(a);
+					l = IKEV2CFG_ATTR_LENGTH(a);
+					if (sizeof(*a) + l > bl3)
+						break;
+					if (t == IKEV2_CFG_INTERNAL_DNS_DOMAIN) n25++;
+					body3 += sizeof(*a) + l;
+					bl3 -= sizeof(*a) + l;
+				}
+				CK(n25 == 0, "no 25 without a DNS address emitted (A3)");
+				rc_vfree(p3.cfg_payload);
+			}
+		}
+		rcs_free_addrlist(ikm.cfg_dns);
 
 		/* parse: initiator receives 25 in a CFG_REPLY */
 		memset(buf, 0, sizeof(buf));
@@ -1324,6 +1437,9 @@ rcs_free_addrlist(sel4.dst);
 		memcpy(ikm.dns_domain->v, "corp.example", strlen("corp.example"));
 		ikm.dns_domain->s[strlen("corp.example")] = '\0';
 		ikm.dns_domain->l = strlen("corp.example") + 1;
+		/* A3: a DNS_DOMAIN(25)/DNSSEC_TA(26) may only ride a reply
+		 * carrying >=1 DNS address (RFC 8598 §4.2); supply one. */
+		ikm.cfg_dns = mk_addrlist(AF_INET, "8.8.8.8", 32);
 		ikm.dnssec_ta = rc_vmalloc(strlen(taha) + 1);
 		memcpy(ikm.dnssec_ta->v, taha, strlen(taha));
 		ikm.dnssec_ta->s[strlen(taha)] = '\0';
@@ -1335,6 +1451,7 @@ rcs_free_addrlist(sel4.dst);
 		ikev2_child_param_init(&p);
 		p.cfg_dns_domain = 1;
 		p.cfg_dnssec_ta = 1;
+		p.cfg_ip4_dns = 1;	/* A3: need a DNS address too */
 
 		CK(ikev2_create_config_reply(&isa, &c, &p) == 0,
 		   "create_config_reply rc==0 (dnssec_ta)");
@@ -1382,6 +1499,7 @@ rcs_free_addrlist(sel4.dst);
 		}
 		rc_vfree(ikm.dns_domain);
 		rc_vfree(ikm.dnssec_ta);
+		rcs_free_addrlist(ikm.cfg_dns);
 
 		/* deepcopy regression: the DAEMON config path hands iked
 		 * rcf_deepcopy_remote() (rcf_get_remotebyindex/byaddr), and

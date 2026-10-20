@@ -201,6 +201,12 @@ check "accept_dns_domain with valid domains" ok "$C"
 C=$T/dns-bad.conf; base "$C"; v2dns sd 127.0.0.5 'accept_dns_domain "corp.example,*.lab";' >> "$C"
 check "accept_dns_domain refuses a wildcard entry" fail "$C" \
     'remote sd ikev2: accept_dns_domain entry "*.lab" is not a valid domain name'
+C=$T/lsn-on.conf; base "$C"; v2dns ln 127.0.0.6 'legacy_split_netmask on;' >> "$C"
+check "legacy_split_netmask on parses" ok "$C"
+C=$T/lsn-off.conf; base "$C"; v2dns lf 127.0.0.7 'legacy_split_netmask off;' >> "$C"
+check "legacy_split_netmask off parses" ok "$C"
+C=$T/lsn-bad.conf; base "$C"; v2dns lb 127.0.0.8 'legacy_split_netmask maybe;' >> "$C"
+check "legacy_split_netmask refuses a non-boolean" fail "$C"
 
 echo "samplecheck: $n checks, $fail failures"
 [ $fail -eq 0 ]

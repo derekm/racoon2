@@ -422,6 +422,8 @@ struct rcf_kmp {
 	 * (default) keeps the historical config-file pubkey pin unchanged. */
 	rc_type cert_validate;
 	rc_vchar_t *ca_file;
+	/* legacy_split_netmask (on|off, default off): on = one INTERNAL_IP4_NETMASK (2) per IPv4 split subnet for legacy Windows clients (violates RFC 7296 s3.15.1 'at most one'); off = RFC-strict, attr 2 only for a single v4 split subnet */
+	rc_type legacy_split_netmask;
 	/* accept CA certs from extra CERT payloads as untrusted intermediates (default off) */
 	rc_type cert_intermediates;
 	/* RFC 8598 split-DNS allowlist (comma list) */

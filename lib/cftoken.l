@@ -394,6 +394,7 @@ pre_shared_key		{ DP; return(PRE_SHARED_KEY); }
 redirect_to		{ DP; return(REDIRECT_TO); }
 cert_validate		{ DP; return(CERT_VALIDATE); }
 ca_file			{ DP; return(CA_FILE); }
+legacy_split_netmask		{ DP; return(LEGACY_SPLIT_NETMASK); }
 cert_intermediates		{ DP; return(CERT_INTERMEDIATES); }
 accept_dns_domain		{ DP; return(ACCEPT_DNS_DOMAIN); }
 redirect_period		{ DP; return(REDIRECT_PERIOD); }

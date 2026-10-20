@@ -233,6 +233,7 @@ static int rcf_fix_pre_shared_key (struct cf_list *, void *);
 static int rcf_fix_redirect_to (struct cf_list *, void *);
 static int rcf_fix_cert_validate (struct cf_list *, void *);
 static int rcf_fix_ca_file (struct cf_list *, void *);
+static int rcf_fix_legacy_split_netmask (struct cf_list *, void *);
 static int rcf_fix_cert_intermediates (struct cf_list *, void *);
 static int rcf_fix_accept_dns_domain (struct cf_list *, void *);
 static int rcf_fix_redirect_period (struct cf_list *, void *);
@@ -371,6 +372,7 @@ struct rcf_tdf_t {
 	{ CFD_VERIFY_ID,		rcf_fix_verify_id, },
 	{ CFD_CERT_VALIDATE,		rcf_fix_cert_validate, },
 	{ CFD_CA_FILE,			rcf_fix_ca_file, },
+	{ CFD_LEGACY_SPLIT_NETMASK,		rcf_fix_legacy_split_netmask, },
 	{ CFD_CERT_INTERMEDIATES,		rcf_fix_cert_intermediates, },
 	{ CFD_ACCEPT_DNS_DOMAIN,		rcf_fix_accept_dns_domain, },
 	{ CFD_REDIRECT_PERIOD,		rcf_fix_redirect_period, },
@@ -2054,6 +2056,19 @@ rcf_fix_cert_intermediates(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_CERT_INTERMEDIATES))
 		return -1;
 	if (rcf_fix_boolean(head->nextp, &dst->cert_intermediates))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_legacy_split_netmask(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_LEGACY_SPLIT_NETMASK))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->legacy_split_netmask))
 		return -1;
 
 	return 0;
@@ -3749,6 +3764,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	 * the default OFF and the wire chain is never validated. */
 	new->cert_validate = src->cert_validate;
 	DEEPCOPY_VDUP(src->ca_file, new->ca_file);
+	new->legacy_split_netmask = src->legacy_split_netmask;
 	new->cert_intermediates = src->cert_intermediates;
 	DEEPCOPY_VDUP(src->accept_dns_domain, new->accept_dns_domain);
 	new->redirect_period = src->redirect_period;
