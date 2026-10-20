@@ -1187,7 +1187,13 @@ fi
 	i2i_peer_i_cleanup "$PEER"
 	i2i_peer_r_cleanup "$PEER_R" "$name"
 	pkill -9 -f "$C/" 2>/dev/null || true
-	rm -f "$PPK_FILE"
+	# NEVER remove $PPK_FILE here: it is the shared RFC 8784 secret
+	# ($ETC/ppk/rfc8784-mat.bin) used by every ppk row, and this cleanup
+	# runs for EVERY i2iinit row on EVERY shard.  Deleting it at the end of
+	# a non-PPK row was the real cross-shard race — it removed the secret a
+	# PARALLEL shard's PPK row was about to read at IKE_AUTH
+	# (ikev2_ppk_load -> missing/unreadable -> PPK markers absent).  The
+	# secret is the same 32 bytes for all rows; leave it in place.
 	rm -f "$I2I_CHARON_VDIR"/r2-${name}.conf
 	sleep 1
 	ip netns del "$NSR" 2>/dev/null || true
