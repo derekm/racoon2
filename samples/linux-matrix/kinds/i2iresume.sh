@@ -382,7 +382,7 @@ EOF
 		fellback=$(grep -c 'ticket refused (TICKET_NACK); kept stored ticket for redirect ferry, falling back to a full IKE_SA_INIT' \
 			"$D/init2-iked.log" 2>/dev/null || true)
 		full=$(grep -c 'INI_IKE_SA_INIT_SENT -> ' "$D/init2-iked.log" 2>/dev/null || true)
-		# REVIEW_2026-10-18 M5: assert the redirect itself, not just
+		# Assert the redirect itself, not just
 		# the NACK.  The drained responder answers the fallback
 		# IKE_SA_INIT with N(REDIRECT, 192.0.99.7) [drain] (-D 0x0003
 		# TRACE), the initiator follows: it ferries the kept ticket to
