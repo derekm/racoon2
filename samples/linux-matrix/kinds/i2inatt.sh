@@ -216,13 +216,13 @@ EOF
 			_bad="keepalive: no tcpdump (needed to capture the 1-byte 0xff frame)"
 	fi
 	if [ "$_up" = 1 ] && [ "$_natk" = 1 ] && [ -z "$_bad" ]; then
-		# Continuous capture (NO -c 1): with -c 1 tcpdump exits after the
-		# FIRST packet that matches, and under parallel load that first
-		# <50-byte UDP/4500 frame can be a stray that is NOT the keepalive
-		# (observed: capture stopped at 1 non-keepalive line, so the 20s-
-		# cadence 0xff frame that followed was never seen and the row
-		# false-failed).  The while-loop below bounds the window and kills
-		# it, so capture everything matching for the full period.
+		# Keepalive capture.  The keepalive red was NOT a capture issue:
+		# natk.txt was empty and the row's iked had been SIGKILLd by a
+		# SIBLING i2inatt cleanup's netns-unsafe `pkill -9 -f
+		# "$SBIN/{iked,spmd}"` (ip netns exec does not scope pkill's /proc
+		# scan) before its first ~20s 0xff was due — see cleanup() above,
+		# the real root cause.  Capture the FULL window so the periodic
+		# frame, once the daemon lives, is caught; the loop bounds it.
 		ip netns exec "$NSR" tcpdump -nni "$VR2" \
 			'udp port 4500 and less 50' \
 			> "$D/natk.txt" 2>"$D/natk-err.txt" &
