@@ -238,8 +238,10 @@ EOF
 			SIn=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort)
 			re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 			ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
-			nr=$(comm -13 <(printf '%s\n' "$SR0") <(printf '%s\n' "$SRn") | grep -c spi)
-			ni=$(comm -13 <(printf '%s\n' "$SI0") <(printf '%s\n' "$SIn") | grep -c spi)
+			nr=$(printf '%s\n' "$SRn" | awk -v old="$SR0" \
+			    'BEGIN { k = split(old, a, "\n"); for (j = 1; j <= k; j++) o[a[j]] = 1 } !($0 in o)' | grep -c spi)
+			ni=$(printf '%s\n' "$SIn" | awk -v old="$SI0" \
+			    'BEGIN { k = split(old, a, "\n"); for (j = 1; j <= k; j++) o[a[j]] = 1 } !($0 in o)' | grep -c spi)
 			ky_i=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/init-iked.log" 2>/dev/null \
 				| grep -oE 'sha256=[0-9a-f]+' | tail -1 || true)
 			ky_r=$(grep -oE 'sha256=[0-9a-f]+ g_ir_present=Y' "$D/resp-iked.log" 2>/dev/null \
