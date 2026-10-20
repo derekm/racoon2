@@ -182,9 +182,13 @@ charon {
 SCEOF
 	} >"$_scf"
 	: >"$_log"
-	# private /run (pid/ctl files) inside ip-netns-exec's own mount ns
-	_pr='mount --bind "$1" /run && mkdir -p /run/strongswan && shift && exec "$@"'
-	( ip netns exec "$_ns" sh -c "$_pr" sh "$I2I_SW_ROOT/run" $_sb env STRONGSWAN_CONF="$_scf" ${I2I_OPENSSL_ENV:-} \
+	# private /run (pid/ctl files) inside a FRESH mount ns: `ip netns exec`
+	# does NOT itself create a private mount namespace, so without `unshare
+	# -m` the bind would stomp the host/another shard's /run (two parallel
+	# charon starts -> 'charon already running').  unshare -m then bind the
+	# row's private dir onto /run, clear any stale pidfile, then exec.
+	_pr='mount --bind "$1" /run && mkdir -p /run/strongswan && rm -f /run/strongswan/charon.pid && shift && exec "$@"'
+	( ip netns exec "$_ns" unshare -m sh -c "$_pr" sh "$I2I_SW_ROOT/run" $_sb env STRONGSWAN_CONF="$_scf" ${I2I_OPENSSL_ENV:-} \
 	    "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
 	    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) \
 	    >"${_log%.log}.stdout.log" 2>&1 &
@@ -197,7 +201,7 @@ SCEOF
 	if grep -q 'invalid configuration' "${_log%.log}.stdout.log" 2>/dev/null; then
 		echo "i2i_charon_run: charon rejected $_scf; stock config, stdout log only" >>"$_log"
 		printf 'charon { plugins { vici { socket = %s } } }\n' "$I2I_VICI_URI" >"$_scf.min"
-		( ip netns exec "$_ns" sh -c "$_pr" sh "$I2I_SW_ROOT/run" $_sb env STRONGSWAN_CONF="$_scf.min" ${I2I_OPENSSL_ENV:-} \
+		( ip netns exec "$_ns" unshare -m sh -c "$_pr" sh "$I2I_SW_ROOT/run" $_sb env STRONGSWAN_CONF="$_scf.min" ${I2I_OPENSSL_ENV:-} \
 		    "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
 		    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) \
 		    >>"$_log" 2>&1 &
