@@ -218,6 +218,35 @@ mk_cfg_reply(uint8_t *buf, size_t bl, int n, const int *types,
 	return mk_cfg_reply_x(buf, bl, 1, n, types, vals, lens);
 }
 
+/* count attributes of `type` in a built CFG_REPLY payload; copy up to
+ * `max` 4-octet values into `v4` (for NETMASK checks) */
+static int
+count_cfg_attr(rc_vchar_t *pl, unsigned int type, struct in_addr *v4, int max)
+{
+	uint8_t *b;
+	size_t left;
+	int n = 0;
+
+	if (!pl || pl->l < sizeof(struct ikev2payl_config_h))
+		return 0;
+	b = (uint8_t *)pl->v + sizeof(struct ikev2payl_config_h);
+	left = pl->l - sizeof(struct ikev2payl_config_h);
+	while (left >= sizeof(struct ikev2cfg_attrib)) {
+		struct ikev2cfg_attrib *a = (struct ikev2cfg_attrib *)b;
+		unsigned int t = IKEV2CFG_ATTR_TYPE(a), l = IKEV2CFG_ATTR_LENGTH(a);
+
+		if (sizeof(*a) + l > left)
+			break;
+		if (t == type) {
+			if (v4 && n < max && l == 4)
+				memcpy(&v4[n], IKEV2CFG_ATTR_VALUE(a), 4);
+			n++;
+		}
+		b += sizeof(*a) + l;
+		left -= sizeof(*a) + l;
+	}
+	return n;
+}
 
 static rc_vchar_t *
 mkid_fqdn(const char *name)
@@ -519,6 +548,79 @@ main(int argc, char *argv[])
 		rcs_free_addrlist(sB2.dst);
 	}
 
+	/* legacy_split_netmask (explicit opt-in, default
+	 * off).  on: one INTERNAL_IP4_NETMASK (2) per v4 split subnet, still
+	 * only when the reply assigns an IPv4 address; off (default, above):
+	 * RFC 7296 §3.15.1 at-most-one.  Cases: on+2 subnets+addr -> 2 masks in
+	 * subnet order; on+1 subnet+addr -> exactly 1 (no duplicate from the
+	 * single-subnet path); on+2 subnets, NO addr -> 0; on is the ONLY way
+	 * to get >1 (off + 2 subnets -> 0 is the A2 pin above). */
+	{
+		static const struct { int nsub; int addr; int want; const char *what; } lc[] = {
+			{ 2, 1, 2, "legacy_split_netmask on, 2 v4 subnets + IP4 addr: one NETMASK(2) per subnet" },
+			{ 1, 1, 1, "legacy_split_netmask on, 1 v4 subnet + IP4 addr: exactly one NETMASK(2)" },
+			{ 2, 0, 0, "legacy_split_netmask on, 2 v4 subnets, NO IP4 addr: no NETMASK(2)" },
+		};
+		size_t li;
+
+		for (li = 0; li < sizeof(lc) / sizeof(lc[0]); li++) {
+			struct ikev2_child_sa cL;
+			struct ikev2_sa isaL;
+			struct ikev2_child_param pL;
+			struct rcf_selector sL1, sL2;
+			struct rcf_kmp kL;
+			struct rcf_remote rL;
+			struct rcf_address *raL = NULL;
+			struct rcf_address_list_head leasesL;
+			struct in_addr v4L, m[4];
+			int nm;
+
+			memset(&cL, 0, sizeof(cL));
+			memset(&isaL, 0, sizeof(isaL));
+			memset(&sL1, 0, sizeof(sL1));
+			memset(&sL2, 0, sizeof(sL2));
+			memset(&kL, 0, sizeof(kL));
+			memset(&rL, 0, sizeof(rL));
+			memset(m, 0, sizeof(m));
+			kL.legacy_split_netmask = RCT_BOOL_ON;
+			rL.ikev2 = &kL;
+			isaL.rmconf = &rL;
+			ikev2_child_param_init(&pL);
+			pL.cfg_ip4_subnet = 1;
+			sL1.dst = mk_addrlist(AF_INET, "10.20.0.0", 16);
+			if (lc[li].nsub == 2) {
+				sL2.dst = mk_addrlist(AF_INET, "192.168.50.0", 24);
+				sL1.next = &sL2;
+			}
+			cL.selector = &sL1;
+			LIST_INIT(&leasesL);
+			if (lc[li].addr) {
+				inet_pton(AF_INET, "10.99.0.10", &v4L);
+				raL = rc_address_new(AF_INET, (uint8_t *)&v4L, 24,
+				    NULL, &leasesL);
+				if (raL)
+					LIST_INSERT_HEAD(&cL.lease_list, raL, link_sa);
+			}
+			CK(ikev2_create_config_reply(&isaL, &cL, &pL) == 0,
+			   "create_config_reply rc==0 (legacy_split_netmask)");
+			nm = count_cfg_attr(pL.cfg_payload,
+			    IKEV2_CFG_INTERNAL_IP4_NETMASK, m, 4);
+			CK(nm == lc[li].want, lc[li].what);
+			if (lc[li].want >= 1)
+				CK(m[0].s_addr == htonl(0xffff0000U),
+				   "legacy NETMASK #1 == /16 (first subnet)");
+			if (lc[li].want == 2)
+				CK(m[1].s_addr == htonl(0xffffff00U),
+				   "legacy NETMASK #2 == /24 (second subnet)");
+			if (pL.cfg_payload)
+				rc_vfree(pL.cfg_payload);
+			if (raL)
+				rc_addrpool_release_addr(raL);
+			rcs_free_addrlist(sL1.dst);
+			if (sL2.dst)
+				rcs_free_addrlist(sL2.dst);
+		}
+	}
 
 	if (child.child_param.cfg_payload)
 		rc_vfree(child.child_param.cfg_payload);

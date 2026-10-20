@@ -752,6 +752,9 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 	    (param->cfg_ip4_subnet || param->cfg_ip6_subnet)) {
 		struct rcf_selector *sel;
 		int v4_subnet_count = 0, v4_mask_ok = 0;
+		/* RFC-strict by default; see legacy_split_netmask */
+		int legacy_nm = assigned_v4 &&
+		    ikev2_legacy_split_netmask(ike_sa->rmconf) == RCT_BOOL_ON;
 		struct in_addr v4_mask;
 		memset(&v4_mask, 0, sizeof(v4_mask));
 		for (sel = child_sa->selector; sel; sel = sel->next) {
@@ -794,6 +797,22 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 						v4_mask_ok = 1;
 					}
 					v4_subnet_count++;
+					/* legacy_split_netmask on: the
+					 * pre-RFC-strict behaviour legacy
+					 * Windows needs for >1 split subnet —
+					 * one attr 2 after EACH v4 subnet
+					 * (violates RFC 7296 §3.15.1 "at most
+					 * one"; explicit operator opt-in). */
+					if (legacy_nm) {
+						TRACE((PLOGLOC, "INTERNAL_IP4_NETMASK (legacy_split_netmask): %s\n",
+						    inet_ntoa(mask)));
+						cfg_attrib_set(&hdr,
+						    IKEV2_CFG_INTERNAL_IP4_NETMASK,
+						    sizeof(struct in_addr));
+						if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
+						    ! rc_vconcat(cfg_payload, &mask, sizeof(mask)))
+							goto err;
+					}
 				} else if (sa->sa_family == AF_INET6 &&
 				    param->cfg_ip6_subnet) {
 					struct ikev2cfg_ip6addr d;
@@ -827,7 +846,8 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 		 * Windows repurposes 2 as the split-subnet mask, so emit
 		 * it once (the single v4 split subnet) only when this
 		 * reply also assigns the client an IPv4 address. */
-		if (assigned_v4 && v4_subnet_count == 1 && v4_mask_ok) {
+		if (!legacy_nm && assigned_v4 && v4_subnet_count == 1 &&
+		    v4_mask_ok) {
 			struct ikev2cfg_attrib hdr;
 			TRACE((PLOGLOC, "INTERNAL_IP4_NETMASK: %s\n",
 			    inet_ntoa(v4_mask)));
