@@ -288,5 +288,28 @@ awk '/i2i_dataplane .*pre-drain/ { p = NR } /drain-sa "\$HI"/ && !d { d = NR } E
 	&& echo "SELFTEST PASS i2ike-drain probes the data plane before drain-sa" \
 	|| { echo "SELFTEST FAIL i2ike-drain: no pre-drain data-plane probe"; bad=1; }
 
+# sh-lint: a #!/bin/sh script with bash-only syntax is refused, a bash
+# script with the same syntax and a clean POSIX script are accepted, and
+# the real tree is clean.
+SL="$HERE/tools/sh-lint.sh"
+rm -rf "$T/shl" && mkdir -p "$T/shl" && (
+	cd "$T/shl" && git init -q . &&
+	printf '#!/bin/sh\nn=$(comm -13 <(printf "a\\n") <(printf "b\\n"))\n' > bad.sh &&
+	printf '#!/usr/bin/env bash\nn=$(comm -13 <(printf "a\\n") <(printf "b\\n"))\n' > ok-bash.sh &&
+	printf '#!/bin/sh\nn=$(printf "a\\n" | grep -c a)\n' > ok.sh &&
+	git add bad.sh ok-bash.sh ok.sh ) >/dev/null 2>&1
+if sh "$SL" "$T/shl" >"$T/shl.out" 2>&1; then
+	echo "SELFTEST FAIL sh-lint accepted a #!/bin/sh script with process substitution"; bad=1
+elif grep -q 'bad.sh' "$T/shl.out" && ! grep -q 'ok-bash.sh\|ok.sh' "$T/shl.out"; then
+	echo "SELFTEST PASS sh-lint refuses bash syntax under #!/bin/sh only"
+else
+	echo "SELFTEST FAIL sh-lint flagged the wrong files:"; cat "$T/shl.out"; bad=1
+fi
+if sh "$SL" "$HERE/../.." >/dev/null 2>&1; then
+	echo "SELFTEST PASS sh-lint: every tracked shell script parses under its shebang"
+else
+	echo "SELFTEST FAIL sh-lint: tracked scripts"; sh "$SL" "$HERE/../.."; bad=1
+fi
+
 [ "$bad" = 0 ] && echo "SELFTEST: all passed" || echo "SELFTEST: FAILURES"
 exit "$bad"

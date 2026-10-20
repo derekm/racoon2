@@ -41,6 +41,11 @@ jobs:
           sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
             libssl-dev libkrb5-dev libpcap-dev bison flex
 
+      - name: 'Shell script lint (sh -n per shebang + shellcheck -S error)'
+        run: |
+          sudo apt-get install -y -qq shellcheck dash
+          sh samples/linux-matrix/tools/sh-lint.sh .
+
       - name: Bootstrap
         run: autoreconf -fi
 

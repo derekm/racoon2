@@ -99,6 +99,8 @@ i2i_compliance() {
 			_checked=1
 			grep -q "pre_shared_key\|my_public_key\|my_pubkey" "$_cc" || a13_ok=0
 		done
+		# one fixed path, kept as a loop so `continue` mirrors the block above
+		# shellcheck disable=SC2066
 		for _cc in "${I2I_CHARON_VDIR:?}/r2-$_name.conf"; do
 			[ -f "$_cc" ] || continue
 			_checked=1
