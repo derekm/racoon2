@@ -76,31 +76,19 @@ for shard in $(seq 1 1 "$M"); do
 	eval "A$shard="
 done
 
-# 1) charon rows -> shard 0 (index 1).  Pin by ROW NAME containing 'charon'
-#    (match /charon/ over the whole "name kind" line): names are
-#    e.g. i2iinit-ecdsa-charonr / i2iinit-rsa-pss-charonr / i2iconf-addrpool-
-#    charon.  The old `grep ' charon$'` matched ZERO of them ("charonr" has
-#    no trailing space; "addrpool-charon" has no space before charon), so
-#    charon rows were NOT serialized and two ran at once, colliding on
-#    strongSwan's host-global /run + the shared charon.pids list (two
-#    charon starts + cross-kills -> 'charon already running' / AUTH_FAILED).
-if printf '%s' "$rows" | grep -q 'charon'; then
-	# keep relative order: assign each charon row, in order, to shard 0
-	for r in $(printf '%s' "$rows" | awk '/charon/{print $1}'); do
-		eval "A1=\"\${A1:-} $r\""
-	done
-fi
-
-# 2) round-robin the remaining (non-charon) rows across all shards IN ORDER.
-#    row_ns() names every resource from the row NAME (netns/sockets/D/C/
-#    resume dirs are per-row), so two concurrent same-kind rows now use
-#    disjoint resources on one host — no kind-family packing needed.
-#    NOTE: build $non via command substitution and loop with `for`, NOT
-#    `printf | while` — a pipeline's while runs in a subshell and the
-#    A$shard=  assignment would be lost here.
-non=$(printf '%s' "$rows" | awk '!/charon/{print $1}' | sed '/^[[:space:]]*$/d')
+# Round-robin ALL rows (including charon rows) across shards IN ORDER.
+# row_ns() names every resource from the row NAME (netns/sockets/D/C/resume
+# dirs are per-row).  Charon rows now also run in parallel safely: each
+# shard gets a fresh strongSWAN root (I2I_SW_ROOT with its own charon.pids,
+# /run bound via unshare -m, VICI socket), and i2i_charon_kill is scoped to
+# the shard's OWN pids — a global netns scan was the cross-shard charon-kill
+# race that forced the charon->shard-0 pinning.  No kind is pinned.
+# NOTE: build $all via command substitution and loop with `for`, NOT
+# `printf | while` — a pipeline's while runs in a subshell and the
+# A$shard=  assignment would be lost here.
+all=$(printf '%s' "$rows" | awk '{print $1}' | sed '/^[[:space:]]*$/d')
 ii=0
-for n in $non; do
+for n in $all; do
 	[ -n "$n" ] || continue
 	shard=$(( (ii % M) + 1 )); ii=$((ii + 1))
 	eval "A$shard=\"\${A$shard:-} $n\""
