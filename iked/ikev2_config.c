@@ -1397,13 +1397,17 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 			/* RFC 8598 §8: a TA is Key Tag(2)|Alg(1)|Digest
 			 * Type(1)|Digest Data(>=1), so a body shorter than
 			 * 5 octets cannot be a well-formed anchor; reject it
-			 * rather than commit garbage to the updown env. */
+			 * rather than commit garbage to the updown env.
+			 * Do NOT clear prev_type here: adjacency (RFC 8598
+			 * §4.2) keys off wire order — this 26 still sits in
+			 * 25/26 sequence, so a following well-formed 26 must
+			 * remain acceptable.  Only a 26 with no preceding 25
+			 * (handled above) is a hard break of the chain. */
 			if (len < 5) {
 				isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN,
 					PLOGLOC,
 					"INTERNAL_DNSSEC_TA too short (%zu octets, need >=5), ignored\n",
 					len);
-				prev_type = 0;
 				break;
 			}
 			/* RFC 8598 §8: a DNSSEC trust anchor (Key Tag|Alg|

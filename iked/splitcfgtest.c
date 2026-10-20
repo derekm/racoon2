@@ -1613,6 +1613,63 @@ rcs_free_addrlist(sel4.dst);
 			    "short INTERNAL_DNSSEC_TA (<5 octets) NOT committed");
 		}
 
+		/* Adjacency survives a DROPPED short 26 (RFC 8598 §4.2 keys
+		 * off wire order, not committed-ness): 25, short-26(ignored),
+		 * good-26 must still commit the good anchor.  Regression-pins
+		 * the prev_type-clear bug. */
+		{
+			uint8_t ub[256];
+			uint8_t uoff = 0;
+			struct ikev2payl_config *ucfg;
+			struct ikev2_sa uisa;
+			struct ikev2_child_sa uc;
+			struct ikev2cfg_attrib *ua;
+
+			memset(ub, 0, sizeof(ub));
+			ucfg = (struct ikev2payl_config *)ub;
+			ucfg->cfgh.cfg_type = IKEV2_CFG_REPLY;
+			uoff = sizeof(struct ikev2payl_config);
+			ua = (struct ikev2cfg_attrib *)(ub + uoff);
+			put_uint16(&ua->type, IKEV2_CFG_INTERNAL_DNS_DOMAIN);
+			put_uint16(&ua->length, (uint16_t)strlen("corp.example"));
+			memcpy(IKEV2CFG_ATTR_VALUE(ua), "corp.example",
+			    strlen("corp.example"));
+			uoff += sizeof(*ua) + strlen("corp.example");
+			ua = (struct ikev2cfg_attrib *)(ub + uoff);
+			put_uint16(&ua->type, IKEV2_CFG_INTERNAL_DNSSEC_TA);
+			put_uint16(&ua->length, 3);
+			memcpy(IKEV2CFG_ATTR_VALUE(ua), "\x01\x02\x03", 3);
+			uoff += sizeof(*ua) + 3;
+			ua = (struct ikev2cfg_attrib *)(ub + uoff);
+			put_uint16(&ua->type, IKEV2_CFG_INTERNAL_DNSSEC_TA);
+			put_uint16(&ua->length, (uint16_t)tara_len);
+			memcpy(IKEV2CFG_ATTR_VALUE(ua), tara, tara_len);
+			uoff += sizeof(*ua) + tara_len;
+			{
+				uint8_t pl[2];
+				pl[0] = (uint8_t)((uoff >> 8) & 0xff);
+				pl[1] = (uint8_t)(uoff & 0xff);
+				memcpy((uint8_t *)&ucfg->header.payload_length,
+				    pl, 2);
+			}
+			ucfg->header.next_payload = IKEV2_PAYLOAD_CONFIG;
+			memset(&uc, 0, sizeof(uc));
+			memset(&uisa, 0, sizeof(uisa));
+			uisa.rmconf = mk_accept_rm("corp.example");
+			ikev2_child_param_init(&uc.child_param);
+			CK(ikev2_process_config_reply(&uisa, &uc,
+			    &ucfg->header) == 0,
+			    "process_config_reply rc==0 (good 26 after short 26)");
+			CK(uc.internal_dnssec_ta != NULL &&
+			   uc.internal_dnssec_ta->l == tara_len &&
+			   memcmp(uc.internal_dnssec_ta->v, tara, tara_len) == 0,
+			    "good 26 after a dropped short 26 still committed");
+			if (uc.internal_dnssec_ta)
+				rc_vfree(uc.internal_dnssec_ta);
+			if (uc.internal_dns_domain)
+				rc_vfree(uc.internal_dns_domain);
+		}
+
 		/* receive-side negative (RFC 8598 §4.2 MUST): a 26 not
 		 * immediately preceded by its 25 (or another 26) is ignored,
 		 * not committed.  Two cases: a lone 26, and a 26 after an
