@@ -243,14 +243,53 @@ rct2pfk_enctype(int type)
 #endif
 	case RCT_ALG_TWOFISH_CBC:
 		return SADB_X_EALG_TWOFISHCBC;
+	/* ESP AES-CCM (RFC 4309 transforms 14/15/16 = ICV-8/12/16).  Linux
+	 * XFRM does NOT use this mapping (it goes through if_xfrm.c's
+	 * aead_map -> rfc4309(ccm(aes))); this is the PF_KEY/BSD leg.  No
+	 * FreeBSD/NetBSD header in this tree defines a CCM ESP ealg id yet
+	 * (the "return 0" arm below keeps config-check from errx-killing
+	 * iked).  The guarded arms wire the esp_ealg id the moment a BSD
+	 * defines it; do not add a BSD CCM-ESP matrix row until a real SA
+	 * can install (kernel ealg + header id). */
+#if defined(SADB_X_EALG_AES_CCM16) || defined(SADB_X_EALG_AESCCM16)
+	case RCT_ALG_AES_CCM:			/* ICV-12 (transform 15) */
+#ifdef SADB_X_EALG_AES_CCM16
+		return SADB_X_EALG_AES_CCM16;
+#else
+		return SADB_X_EALG_AESCCM16;
+#endif
+#elif defined(SADB_X_EALG_AES_CCM) || defined(SADB_X_EALG_AESCCM)
+	case RCT_ALG_AES_CCM:			/* ICV-12 (transform 15) */
+#ifdef SADB_X_EALG_AES_CCM
+		return SADB_X_EALG_AES_CCM;
+#else
+		return SADB_X_EALG_AESCCM;
+#endif
+#endif
+#if defined(SADB_X_EALG_AES_CCM8) || defined(SADB_X_EALG_AESCCM8)
+	case RCT_ALG_AES_CCM8:			/* ICV-8 (transform 14) */
+#ifdef SADB_X_EALG_AES_CCM8
+		return SADB_X_EALG_AES_CCM8;
+#else
+		return SADB_X_EALG_AESCCM8;
+#endif
+#endif
+#if defined(SADB_X_EALG_AES_CCM16) || defined(SADB_X_EALG_AESCCM16)
+	case RCT_ALG_AES_CCM16:			/* ICV-16 (transform 16) */
+#ifdef SADB_X_EALG_AES_CCM16
+		return SADB_X_EALG_AES_CCM16;
+#else
+		return SADB_X_EALG_AESCCM16;
+#endif
+#endif
+#if !defined(SADB_X_EALG_AES_CCM16) && !defined(SADB_X_EALG_AESCCM16) \
+    && !defined(SADB_X_EALG_AES_CCM8) && !defined(SADB_X_EALG_AESCCM8) \
+    && !defined(SADB_X_EALG_AES_CCM)  && !defined(SADB_X_EALG_AESCCM)
 	case RCT_ALG_AES_CCM:
 	case RCT_ALG_AES_CCM8:
 	case RCT_ALG_AES_CCM16:
-		/* No pfkey id on this tree's headers (FreeBSD/NetBSD have no
-		 * AES-CCM ESP ealg even defined).  Return 0 so
-		 * rcpfk_supported_enc says unsupported instead of errx
-		 * killing iked at config-check. */
 		return 0;
+#endif
 #ifdef SADB_X_EALG_CHACHA20POLY1305
 	case RCT_ALG_CHACHA20_POLY1305:
 		/* FreeBSD/NetBSD define SADB_X_EALG_CHACHA20POLY1305 (15);

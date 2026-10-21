@@ -235,6 +235,8 @@ static const struct xfrm_aeadmap aead_map[] = {
 	{ RCT_ALG_AES_GCM8,	"rfc4106(gcm(aes))",	64 },
 	{ RCT_ALG_AES_GCM12,	"rfc4106(gcm(aes))",	96 },
 	{ RCT_ALG_AES_CCM,	"rfc4309(ccm(aes))",	96 },
+	{ RCT_ALG_AES_CCM8,	"rfc4309(ccm(aes))",	64 },
+	{ RCT_ALG_AES_CCM16,	"rfc4309(ccm(aes))",	128 },
 	/* ChaCha20-Poly1305 (RFC 7634).  The kernel name is the rfc7539esp
 	 * template with a COMMA (rfc7539esp(chacha20,poly1305)); the
 	 * chacha20poly1305 base name binds in AF_ALG but XFRM only resolves

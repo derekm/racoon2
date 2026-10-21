@@ -235,6 +235,10 @@ i2i_compliance() {
 		# ChaCha20-Poly1305 (RFC 7634): racoon2 logs enctype=CHACHA20-POLY1305
 		# (enct=116); the kernel SAD AEAD is rfc7539esp(chacha20,poly1305).
 		_aa4="CHACHA20-POLY1305|rfc7539esp"; _a4c='ChaCha20-Poly1305 (RFC 7634)' ;;
+	*-esp-ccm8|*-esp-ccm|*-esp-ccm16)
+		# AES-CCM (RFC 4309) ESP: racoon2 logs enctype=AES-CCM-8/12/16 (transforms
+		# 14/15/16); kernel SAD AEAD rfc4309(ccm(aes)); 3-byte RFC 4309 salt.
+		_aa4="AES-CCM|ccm\(aes\)|aes_ccm"; _a4c='AES-CCM (RFC 4309)' ;;
 	*-esp-cbc128|*-esp-cbc192|*-esp-cbc256|*-esp-sha384|*-esp-sha512|*-esp-xcbc|*-esp-cmac|*i2io4-cbc*)
 		_aa4="enctype=AES(128|192|256)?-CBC|enc cbc\(aes\)"; _a4c='AES-CBC (RFC 4868)' ;;
 	*-esp-ctr|*-esp-ctr128|*-esp-ctr192|*-esp-ctr256)
@@ -252,7 +256,7 @@ i2i_compliance() {
 	# -esp-cbc192 / -esp-ctr rows are interop/classical coverage, so they
 	# report INFO (established, outside the claim), never PASS.
 	case "$name" in
-	*-esp-cbc192|*-esp-ctr|*-esp-ctr192|*-esp-ctr256|*-esp-3des|*-ike-3des|*-esp-chacha|*-esp-chacha-esn)
+	*-esp-cbc192|*-esp-ctr|*-esp-ctr192|*-esp-ctr256|*-esp-3des|*-ike-3des|*-esp-chacha|*-esp-chacha-esn|*-esp-ccm8|*-esp-ccm|*-esp-ccm16)
 		[ "$a4_ok" -eq 1 ] && PLOG A4 INFO "ESP cipher $_a4c established but outside v3.0e claimed set ($_aa4 for $name)"
 		[ "$a4_ok" -eq 0 ] && PLOG A4 FAIL "ESP cipher absent from logs (wanted $_aa4)"
 		;;

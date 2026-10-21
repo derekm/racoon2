@@ -118,6 +118,9 @@ esac
 	*-esp-ctr*)    I2I_ESP_ENC="aes_ctr";    I2I_ESP_AUTH="non_auth"
 		I2I_DEPR_SW="allow_rfc_deprecated on;" ;;
 	*-esp-chacha*) I2I_ESP_ENC="chacha20_poly1305"; I2I_ESP_AUTH="non_auth" ;;
+	*-esp-ccm8*)   I2I_ESP_ENC="aes_ccm8";  I2I_ESP_AUTH="non_auth" ;;
+	*-esp-ccm16*)  I2I_ESP_ENC="aes_ccm16"; I2I_ESP_AUTH="non_auth" ;;
+	*-esp-ccm*)    I2I_ESP_ENC="aes_ccm";   I2I_ESP_AUTH="non_auth" ;;
 esac
 	case "$name" in
 	*-ike-cbc128*|*-ike-cbc192*|*-ike-cbc256*|*-ike-ctr*|*-ike-3des*) I2I_CLASSICAL=1 ;;
@@ -1143,6 +1146,42 @@ fi
 		else
 			shape_ok=0
 			log 'FAIL: -esp-chacha row but responder SAD lacks aead rfc7539esp(chacha20,poly1305) 72-hex'
+		fi
+		;;
+	*-esp-ccm8)
+		# RFC 4309 AES-CCM ICV-8 (ESP transform 14) for the CHILD.  racoon2
+		# maps RCT_ALG_AES_CCM8 to the kernel AEAD rfc4309(ccm(aes)) with a
+		# 64-bit ICV (lib/if_xfrm.c aead_map).  Child key = AES key || 3-byte
+		# RFC 4309 salt (nonce = salt||8B IV); kernel rfc4309(ccm(aes))
+		# module autoloads via cryptomgr on first install.
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'aead rfc4309\(ccm\(aes\)\) 0x[0-9a-f]+ 64$'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD aead rfc4309(ccm(aes)) 64-bit ICV (AES-CCM-8)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-ccm8 row but responder SAD lacks aead rfc4309(ccm(aes)) 64-bit'
+		fi
+		;;
+	*-esp-ccm16)
+		# RFC 4309 AES-CCM ICV-16 (ESP transform 16): rfc4309(ccm(aes))
+		# 128-bit ICV (aead_map).  Same 3-byte-salt child key shape.
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'aead rfc4309\(ccm\(aes\)\) 0x[0-9a-f]+ 128$'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD aead rfc4309(ccm(aes)) 128-bit ICV (AES-CCM-16)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-ccm16 row but responder SAD lacks aead rfc4309(ccm(aes)) 128-bit'
+		fi
+		;;
+	*-esp-ccm)
+		# RFC 4309 AES-CCM ICV-12 (ESP transform 15): rfc4309(ccm(aes))
+		# 96-bit ICV (aead_map).  Baseline ESP CCM-12 (the wired ICV-12 leg).
+		if ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -qE 'aead rfc4309\(ccm\(aes\)\) 0x[0-9a-f]+ 96$'; then
+			shape_ok=1
+			log 'ESP shape: responder SAD aead rfc4309(ccm(aes)) 96-bit ICV (AES-CCM-12)'
+		else
+			shape_ok=0
+			log 'FAIL: -esp-ccm row but responder SAD lacks aead rfc4309(ccm(aes)) 96-bit'
 		fi
 		;;
 	*-esn)
