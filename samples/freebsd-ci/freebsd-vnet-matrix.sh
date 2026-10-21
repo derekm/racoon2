@@ -2432,6 +2432,19 @@ case "$ROW" in
 	run i2iinit-ike-ccm8  inet 192.0.5.2 192.0.5.1 aes_ccm8  hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 	run i2iinit-ike-ccm   inet 192.0.5.2 192.0.5.1 aes_ccm   hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 	run i2iinit-ike-ccm16 inet 192.0.5.2 192.0.5.1 aes_ccm16 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
+	# ESP AES-CCM rows are EXPECTED-REJECT: FreeBSD 15.1 esp_xform /
+	# supported_ealgs[] (and every OCF SADB ealg this tree's headers
+	# define) has no CCM ESP ealg id, so racoon2 must refuse at
+	# config-check ("not supported by kernel").  Verdict gates on that
+	# marker + no child, so when a future FreeBSD kernel ships CCM ESP
+	# the row goes red (child appears) and must be converted to a
+	# positive accept — at which point the guarded SADB_X_EALG_AES_CCM8/
+	# CCM/CCM16 arms in lib/rc_type.c should be confirmed against the
+	# real id.  (IKE CCM above is OpenSSL-only and backend-independent;
+	# only the ESP leg is kernel-gated.)
+	run i2iinit-esp-ccm8  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ccm8"  "non_auth" 300 300 0 x ""
+	run i2iinit-esp-ccm   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ccm"   "non_auth" 300 300 0 x ""
+	run i2iinit-esp-ccm16 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ccm16" "non_auth" 300 300 0 x ""
 	run i2iinit-ike-3des   inet 192.0.5.2 192.0.5.1 3des_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfsha384  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_384 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""
 		run i2iinit-prfsha512  inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_512 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a ""

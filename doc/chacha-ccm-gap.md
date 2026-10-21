@@ -13,7 +13,7 @@ Measured on yescorp@192.168.0.165, kernel 7.2.5-200.fc44, OpenSSL 3.5.8, 2026-10
 
 ## Not positive — do not offer
 
-- FreeBSD pfkey IDs for CCM. `rct2pfk_enctype` returns 0 for `RCT_ALG_AES_CCM`/`RCT_ALG_AES_CCM8`/`RCT_ALG_AES_CCM16` so config-check logs "not supported" instead of `errx` killing iked. There is no CCM ESP ealg in this tree's headers (FreeBSD/NetBSD define none). Do not add a FreeBSD CCM-ESP row until the header grows the id and a row can install a real SA. (ChaCha ealg 15 IS present on FreeBSD — see Positive.)
+- FreeBSD pfkey IDs for CCM. `rct2pfk_enctype` returns 0 for `RCT_ALG_AES_CCM`/`RCT_ALG_AES_CCM8`/`RCT_ALG_AES_CCM16` so config-check logs "not supported" instead of `errx` killing iked. FreeBSD 15.1 `esp_xform`/`supported_ealgs[]` has no CCM ESP ealg (and this tree's headers define none). Matrix rows `i2iinit-esp-ccm8/ccm/ccm16` (FreeBSD) are **expected-reject kernel-gap** — racoon2 must refuse CCM ESP at config-check; the row goes red if a future FreeBSD kernel ships the ealg (then fill in the guarded `SADB_X_EALG_AES_CCM*/AESCCM*` arms in `lib/rc_type.c` and flip to a positive accept). IKE CCM is OpenSSL-only and fully positive on FreeBSD (302-4, `i2iinit-ike-ccm*`).
 - ESP CCM ICV-8 and ICV-16 on Linux. NOT POSITIVE as of 2026-10-07; **wired 2026-10-20**: added `RCT_ALG_AES_CCM8` (ICV 64-bit) and `RCT_ALG_AES_CCM16` (ICV 128-bit) to the Linux `lib/if_xfrm.c` `aead_map` (→ `rfc4309(ccm(aes))`), matrix rows `i2iinit-esp-ccm8/ccm16`. Linux ESP CCM is now full (all three RFC 4309 tag lengths).
 
 ## Config
