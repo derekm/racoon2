@@ -2606,6 +2606,9 @@ case "$ROW" in
 	i2iinit-ike-ccm8) run_row i2iinit-ike-ccm8 inet 192.0.5.2 192.0.5.1 aes_ccm8 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-ike-ccm) run_row i2iinit-ike-ccm inet 192.0.5.2 192.0.5.1 aes_ccm hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-ike-ccm16) run_row i2iinit-ike-ccm16 inet 192.0.5.2 192.0.5.1 aes_ccm16 hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
+	i2iinit-esp-ccm8) run_row i2iinit-esp-ccm8 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ccm8" "non_auth" 300 300 0 x "" ;;
+	i2iinit-esp-ccm) run_row i2iinit-esp-ccm inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ccm" "non_auth" 300 300 0 x "" ;;
+	i2iinit-esp-ccm16) run_row i2iinit-esp-ccm16 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_ccm16" "non_auth" 300 300 0 x "" ;;
 	i2iinit-ike-3des)   run_row i2iinit-ike-3des   inet 192.0.5.2 192.0.5.1 3des_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-prfsha384) run_row i2iinit-prfsha384 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_384 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
 	i2iinit-prfsha512) run_row i2iinit-prfsha512 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_512 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;

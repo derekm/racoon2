@@ -245,27 +245,16 @@ rct2pfk_enctype(int type)
 		return SADB_X_EALG_TWOFISHCBC;
 	/* ESP AES-CCM (RFC 4309 transforms 14/15/16 = ICV-8/12/16).  Linux
 	 * XFRM does NOT use this mapping (it goes through if_xfrm.c's
-	 * aead_map -> rfc4309(ccm(aes))); this is the PF_KEY/BSD leg.  No
-	 * FreeBSD/NetBSD header in this tree defines a CCM ESP ealg id yet
-	 * (the "return 0" arm below keeps config-check from errx-killing
-	 * iked).  The guarded arms wire the esp_ealg id the moment a BSD
-	 * defines it; do not add a BSD CCM-ESP matrix row until a real SA
-	 * can install (kernel ealg + header id). */
-#if defined(SADB_X_EALG_AES_CCM16) || defined(SADB_X_EALG_AESCCM16)
-	case RCT_ALG_AES_CCM:			/* ICV-12 (transform 15) */
-#ifdef SADB_X_EALG_AES_CCM16
-		return SADB_X_EALG_AES_CCM16;
-#else
-		return SADB_X_EALG_AESCCM16;
-#endif
-#elif defined(SADB_X_EALG_AES_CCM) || defined(SADB_X_EALG_AESCCM)
-	case RCT_ALG_AES_CCM:			/* ICV-12 (transform 15) */
-#ifdef SADB_X_EALG_AES_CCM
-		return SADB_X_EALG_AES_CCM;
-#else
-		return SADB_X_EALG_AESCCM;
-#endif
-#endif
+	 * aead_map -> rfc4309(ccm(aes))); this is the PF_KEY/BSD leg.
+	 * Verified 2026-10-21 on FreeBSD 15.1-RELEASE-p4: neither releng/15.1
+	 * nor main pfkeyv2.h defines a CCM ESP ealg id (SADB_X_EALG stops at
+	 * AESGMAC=23; key.c supported_ealgs[] has no CCM), so on FreeBSD every
+	 * arm below is compiled out and each rc type falls to its OWN return 0
+	 * (rcpfk_supported_enc() -> unsupported; config-check keeps iked alive,
+	 * never errx).  Each transform maps ONLY to its own length's id - ICV-12
+	 * never to an ICV-16 id - and a missing id is its own return 0.  When a
+	 * BSD defines an id (and its kernel esp_xform registers it), confirm the
+	 * nominal id here and flip the matching FreeBSD row to a positive accept. */
 #if defined(SADB_X_EALG_AES_CCM8) || defined(SADB_X_EALG_AESCCM8)
 	case RCT_ALG_AES_CCM8:			/* ICV-8 (transform 14) */
 #ifdef SADB_X_EALG_AES_CCM8
@@ -273,6 +262,20 @@ rct2pfk_enctype(int type)
 #else
 		return SADB_X_EALG_AESCCM8;
 #endif
+#else
+	case RCT_ALG_AES_CCM8:			/* ICV-8 (transform 14) */
+		return 0;
+#endif
+#if defined(SADB_X_EALG_AES_CCM) || defined(SADB_X_EALG_AESCCM)
+	case RCT_ALG_AES_CCM:			/* ICV-12 (transform 15) */
+#ifdef SADB_X_EALG_AES_CCM
+		return SADB_X_EALG_AES_CCM;
+#else
+		return SADB_X_EALG_AESCCM;
+#endif
+#else
+	case RCT_ALG_AES_CCM:			/* ICV-12 (transform 15) */
+		return 0;
 #endif
 #if defined(SADB_X_EALG_AES_CCM16) || defined(SADB_X_EALG_AESCCM16)
 	case RCT_ALG_AES_CCM16:			/* ICV-16 (transform 16) */
@@ -281,13 +284,8 @@ rct2pfk_enctype(int type)
 #else
 		return SADB_X_EALG_AESCCM16;
 #endif
-#endif
-#if !defined(SADB_X_EALG_AES_CCM16) && !defined(SADB_X_EALG_AESCCM16) \
-    && !defined(SADB_X_EALG_AES_CCM8) && !defined(SADB_X_EALG_AESCCM8) \
-    && !defined(SADB_X_EALG_AES_CCM)  && !defined(SADB_X_EALG_AESCCM)
-	case RCT_ALG_AES_CCM:
-	case RCT_ALG_AES_CCM8:
-	case RCT_ALG_AES_CCM16:
+#else
+	case RCT_ALG_AES_CCM16:			/* ICV-16 (transform 16) */
 		return 0;
 #endif
 #ifdef SADB_X_EALG_CHACHA20POLY1305
