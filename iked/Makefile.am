@@ -25,7 +25,7 @@ endif
 IKEV2_NATT_SRC = nattraversal.c
 
 IKEV2_SRC = ikev2.c ikev2_sa_auth.c ikev2_transmit.c ikev2_mobike.c ikev2_sa_init.c ikev2_informational.c ikev2_session_resume.c ikev2_intermediate.c ikev2_auth.c ikev2_child.c ikev2_cookie.c ikev2_notify.c ikev2_packet.c ikev2_payload.c ikev2_decrypt.c ikev2_proposal.c ikev2_rekey.c ikev2_config.c ikev2_frag.c ikev2_resume.c ikev2_resume_rec.c ikev2_resume_ticket.c ikev2_qcd.c ikev2_addke.c ikev2_addke_rounds.c ikev2_eap.c ikev2_radius.c ikev2_eap_relay.c ikev2_eap_round.c ikev2_eap_drive.c ikev2_eap_emit.c ikev2_drain.c ikev2cfg_walk.c
-IKED_COMMON = main.c dh.c hashcmp.c ike_sa.c ike_conf.c ike_deprecated.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC}
+IKED_COMMON = main.c blocklist_peer.c dh.c hashcmp.c ike_sa.c ike_conf.c ike_deprecated.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC}
 
 if USE_EPOLL
 evlooptest_SOURCES = evlooptest.c evloop_epoll.c
@@ -197,7 +197,7 @@ endif
 
 if USE_EPOLL
 addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
-	ike_deprecated.$(OBJEXT) \
+	ike_deprecated.$(OBJEXT) blocklist_peer.$(OBJEXT) \
 	isakmp.$(OBJEXT) authenticator.$(OBJEXT) encryptor.$(OBJEXT) \
 	crypto_openssl.$(OBJEXT) crypto_workers.$(OBJEXT) str2val.$(OBJEXT) \
 	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
@@ -207,7 +207,7 @@ addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	$(addtest_admin)
 else
 addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
-	ike_deprecated.$(OBJEXT) \
+	ike_deprecated.$(OBJEXT) blocklist_peer.$(OBJEXT) \
 	isakmp.$(OBJEXT) authenticator.$(OBJEXT) encryptor.$(OBJEXT) \
 	crypto_openssl.$(OBJEXT) crypto_workers.$(OBJEXT) str2val.$(OBJEXT) \
 	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \

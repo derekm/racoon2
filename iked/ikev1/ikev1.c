@@ -64,6 +64,7 @@
 #include "racoon.h"
 
 #include "isakmp.h"
+#include "blocklist_peer.h"
 #include "ikev2.h"
 #include "keyed_hash.h"
 #include "isakmp_impl.h"
@@ -255,6 +256,9 @@ ikev1_main(rc_vchar_t *msg, struct sockaddr *remote, struct sockaddr *local)
 	if (memcmp(&isakmp->i_ck, r_ck0, sizeof(isakmp_cookie_t)) == 0) {
 		plog(PLOG_PROTOERR, PLOGLOC, 0,
 		     "malformed cookie received.\n");
+		iked_blocklist_peer(IKED_BL_AUTH_FAIL,
+		    isakmp_find_socket_blocklist(local), remote,
+		    "iked zero-cookie");
 		++isakmpstat.invalid_ike_spi;
 		return -1;
 	}
