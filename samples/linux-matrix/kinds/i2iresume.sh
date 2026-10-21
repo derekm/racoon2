@@ -231,6 +231,21 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
+	# The kernel ESP SAs (what up1 polls) are installed BEFORE the initiator
+	# writes the captured ticket to its store (ESTABLISHED -> resume save ->
+	# ticket store save).  Pass 2 starts with a SIGKILL, so on a loaded
+	# runner that kill could land in between and leave no ticket to
+	# present ("no stored ticket ... fresh IKE_SA_INIT").  Wait, bounded,
+	# for the store write before killing the pass-1 initiator.  Poll the
+	# log line iked prints after the rename into place (the r2tkt-*.XXXXXX
+	# temp file would match a filename glob before the write is complete).
+	i=0
+	while [ "$up1" -eq 1 ] && [ "$i" -lt 15 ]; do
+		grep -q 'RFC 5723: persisted session-resumption ticket for peer' \
+			"$D/init-iked.log" 2>/dev/null && break
+		i=$((i+1)); sleep 1
+	done
+	if [ "$i" -gt 0 ]; then log "i2iresume: pass-1 ticket store write took ${i}s after child UP"; fi
 	minted=$(grep -c 'issuing session-resumption ticket' "$D/resp-iked.log" 2>/dev/null || true)
 	stored=$(ls "$TKSTORE"/r2tkt-* 2>/dev/null | wc -l)
 
