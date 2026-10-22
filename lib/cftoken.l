@@ -366,6 +366,7 @@ dpd_maxfail		{ DP; return(DPD_MAXFAIL); }
 	/* valid for ikev2 */
 cookie_required		{ DP; return(COOKIE_REQUIRED); }
 addke_required		{ DP; return(ADDKE_REQUIRED); }
+addke_alg		{ DP; return(ADDKE_ALG); }
 parent_child_strength	{ DP; return(PARENT_CHILD_STRENGTH); }
 addke_unrequested	{ DP; return(ADDKE_UNREQUESTED); }
 allow_nsa_deprecated	{ DP; return(ALLOW_NSA_DEPRECATED); }

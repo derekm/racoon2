@@ -155,7 +155,7 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			"16408)\n"));
 		break;
 	case IKEV2_USE_PPK:
-		/* RFC 8784 s2.2: the PEER (or, for the initiator view, the
+		/* RFC 8784 §2: the PEER (or, for the initiator view, the
 		 * responder's echo of) N(USE_PPK).  The responder decides to echo
 		 * and set ppk_active in its IKE_SA_INIT response build; the
 		 * initiator resolves ppk_active from this echo + its
@@ -327,7 +327,7 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		TRACE((PLOGLOC, "peer echoes SIG_HASH_ALGORITHMS (16431)\n"));
 		break;
 	case IKEV2_USE_PPK:
-		/* RFC 8784 s2.2: the PEER (or, for the initiator view, the
+		/* RFC 8784 §2: the PEER (or, for the initiator view, the
 		 * responder's echo of) N(USE_PPK).  The responder decides to echo
 		 * and set ppk_active in its IKE_SA_INIT response build; the
 		 * initiator resolves ppk_active from this echo + its

@@ -857,7 +857,7 @@ test_zeroize(void)
 }
 
 
-/* RFC 8784 s4.2: the PPK mixing KAT.  With the IKEv2 convention that every
+/* RFC 8784 s3: the PPK mixing KAT.  With the IKEv2 convention that every
  * PRF's output length equals its (preferred) key length, prf+(PPK,SK_d') is
  * a single iteration: T1 = prf(PPK, SK_d' | 0x01) = HMAC-SHA256(PPK, ...)
  * -- exactly the first prf+ block ikev2_prf_plus() emits.  Input: SK_d' =
@@ -892,7 +892,7 @@ test_rfc8784_ppk(void)
 	prf = hmacsha256_new();
 	if (!prf)
 		goto out;
-	/* prf+ first iteration (RFC 8784 s4.2 one-shot form). */
+	/* prf+ first iteration (RFC 8784 s3 one-shot form). */
 	if (prf->method->key(prf, &ppk) != 0)
 		goto out;
 	prf->method->start(prf);

@@ -440,7 +440,18 @@ struct rcf_kmp {
 	rc_type allow_wildcard_cert;
 	/* cert_trust_system (on|off, default off): with cert_validate on and NO ca_file, validate the peer chain against the OS default CA store. Off = cert_validate without ca_file is a config error (no implicit WebPKI trust). */
 	rc_type cert_trust_system;
-};
+	/* RFC 9370 initial-IKE_SA ADDKE offer list (addke_alg { mlkem768;
+	 * mlkem1024; }): the ADDKE round methods this iked INITIATOR offers in
+	 * SAi1, one per Transform Type ADDKE1..ADDKE7 (types 6..6+N-1), so an
+	 * initial IKE_SA negotiates N distinct IKE_INTERMEDIATE rounds (RFC 9370
+	 * s2.2.1 — the exact shape a PQC client like iOS drives).  NULL/unset =
+	 * historical behaviour: offer a single round-1 ML-KEM-768 type-6.  The
+	 * responder side needs no knob: it already echoes every proposed ADDKE
+	 * type (6..12) it selects, so the round count follows the initiator's
+	 * offer.  Max 7 methods, distinct per RFC 9370 s2.2.1 (a repeated
+	 * Transform ID over the selection, except NONE, is refused). */
+	struct rc_alglist *addke_offer;
+	};
 
 /* selector info */
 struct rcf_selector {

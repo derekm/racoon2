@@ -495,6 +495,7 @@ IKEV2_CONF_ATTR(int, natk_interval)
 IKEV2_CONF_ATTR(rc_type, addke_required)
 IKEV2_CONF_ATTR(rc_type, parent_child_strength)
 IKEV2_CONF_ATTR(rc_type, addke_unrequested)
+IKEV2_CONF_ATTR(struct rc_alglist *, addke_offer)
 IKEV2_CONF_ATTR(rc_type, allow_nsa_deprecated)
 IKEV2_CONF_ATTR(rc_type, allow_rfc_deprecated)
 IKEV2_CONF_ATTR(rc_type, offer_intermediate)
@@ -4228,13 +4229,13 @@ alglist_to_addke_proppair(struct rc_alglist *alg)
 			     rct2str(alg->algtype));
 			goto fail;
 		}
-		/* RFC 9370 s2.2.2: a negotiated set never repeats a method,
+		/* RFC 9370 s2.2.1: a negotiated set never repeats a method,
 		 * so a config listing one twice can only fail; reject it */
 		for (i = 0; i < round; ++i) {
 			if (seen[i] == code) {
 				plog(PLOG_INTERR, PLOGLOC, NULL,
 				     "addke_alg: %s listed more than once "
-				     "(RFC 9370 s2.2.2)\n",
+				     "(RFC 9370 s2.2.1)\n",
 				     rct2str(alg->algtype));
 				goto fail;
 			}
@@ -4653,43 +4654,84 @@ ikev2_initial_child_ke(struct ikev2_child_sa *child_sa)
 
 #ifdef WITH_ADDKE
 /*
- * RFC 9370 ADDKE offer on an IKE_SA-rekey CREATE_CHILD request: append a
- * type-6 ML-KEM768 transform to proplist[1].  The IKE_SA proposal is built by
- * ikev2_conf_to_proplist (not child_sa->my_proposal), so this reuses that
- * shape; ikev2_transf_addke lives here.  Returns 1 if the type-6 is present
+ * RFC 9370 ADDKE offer on the INITIAL IKE_SA (and an IKE_SA-rekey
+ * CREATE_CHILD request): append the ADDKE round transforms to proplist[1].
+ * The IKE_SA proposal is built by ikev2_conf_to_proplist (not
+ * child_sa->my_proposal), so this reuses that shape;
+ * ikev2_transf_addke lives here.
+ *
+ * The round methods come from the remote's IKE-level `addke_alg` list
+ * (ikev2_addke_offer -> rcf_kmp.addke_offer): each configured method is
+ * its own Transform Type ADDKE1..ADDKE7 (types 6..6+N-1), so an iked
+ * INITIATOR offers a multi-round initial IKE_SA exactly like a PQC client
+ * (e.g. iOS [37,36]).  When unset, the historical behaviour is preserved:
+ * offer a single round-1 ML-KEM-768 type-6 so existing single-round rows
+ * are unchanged.  Returns 1 if the ADDKE transform(s) are present
  * (appended or already there), 0 on missing proposal / nomem.
  */
 int
-ikev2_maybe_offer_ikesa_addke(struct prop_pair **proplist)
+ikev2_maybe_offer_ikesa_addke(struct rcf_remote *conf,
+			      struct prop_pair **proplist)
 {
-	struct prop_pair *tail, *p6;
+	struct prop_pair *tail, *chain;
 	struct rc_alglist def;
+	struct rc_alglist *offer = 0;
 
 	if (!proplist || !proplist[1]) {
 		plog(PLOG_DEBUG, PLOGLOC, NULL,
 		     "ikesa-addke offer: no proplist[1]\n");
 		return 0;
 	}
+	/* already carries at least one ADDKE type (6..12)? don't re-add. */
 	for (tail = proplist[1]->tnext; tail; tail = tail->next)
-		if (tail->trns &&
-		    ((struct ikev2transform *)tail->trns)->transform_type ==
-		    IKEV2TRANSFORM_TYPE_ADDKE)
+		if (tail->trns && ((struct ikev2transform *)tail->trns)->
+		    transform_type >= IKEV2TRANSFORM_TYPE_ADDKE &&
+		    ((struct ikev2transform *)tail->trns)->transform_type <=
+		    IKEV2TRANSFORM_TYPE_ADDKE + 6)
 			return 1;
+
+	offer = ikev2_addke_offer(conf);
+	if (offer) {
+		/* config-driven multi-round offer: one transform per method,
+		 * types ADDKE1..ADDKE7.  The RFC 9370 s2.2.1
+		 * no-duplicate-method check (distinct method per round) lives
+		 * inside alglist_to_addke_proppair. */
+		chain = alglist_to_addke_proppair(offer);
+		if (!chain) {
+			plog(PLOG_DEBUG, PLOGLOC, NULL,
+			     "ikesa-addke offer: addke_alg build failed\n");
+			return 0;
+		}
+		if (proplist[1]->tnext) {
+			for (tail = proplist[1]->tnext; tail && tail->next;
+			     tail = tail->next)
+				;
+			tail->next = chain;
+		} else
+			proplist[1]->tnext = chain;
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		     "ikesa-addke offer: appended addke_alg rounds (types "
+		     "6..6+N-1)\n");
+		return 1;
+	}
+
+	/* default: single round-1 ML-KEM-768 (historical/iOS-compatible). */
 	memset(&def, 0, sizeof(def));
 	def.algtype = RCT_ALG_MLKEM768;
-	p6 = alglist_to_proppair(&def, IKEV2TRANSFORM_TYPE_ADDKE,
-				 &ikev2_transf_addke[0], IKE_DEPR_CTX_IKE);
-	if (!p6) {
+	tail = alglist_to_proppair(&def, IKEV2TRANSFORM_TYPE_ADDKE,
+				   &ikev2_transf_addke[0], IKE_DEPR_CTX_IKE);
+	if (!tail) {
 		plog(PLOG_DEBUG, PLOGLOC, NULL,
 		     "ikesa-addke offer: alglist_to_proppair failed\n");
 		return 0;
 	}
 	if (proplist[1]->tnext) {
-		for (tail = proplist[1]->tnext; tail && tail->next; tail = tail->next)
+		for (chain = proplist[1]->tnext; chain && chain->next;
+		     chain = chain->next)
 			;
-		tail->next = p6;
+		chain->next = tail;
 	} else
-		proplist[1]->tnext = p6;
+		proplist[1]->tnext = tail;
 	plog(PLOG_DEBUG, PLOGLOC, NULL,
 	     "ikesa-addke offer: appended type-6 (prop %p tnext %p)\n",
 	     (void *)proplist[1], (void *)proplist[1]->tnext);

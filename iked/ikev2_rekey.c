@@ -669,7 +669,7 @@ ikev2_rekey_ikesa_init_send(struct ikev2_child_sa *child_sa)
 	 * IKE_SA with ML-KEM via the IKE_FOLLOWUP_KE exchange (we complete
 	 * SK(1) once its KEr ciphertext lands).  If the peer does not select
 	 * it, the proposal is simply accepted without ADDKE. */
-	ikev2_maybe_offer_ikesa_addke(proplist);
+	ikev2_maybe_offer_ikesa_addke(new_sa->rmconf, proplist);
 #endif
 	sa = ikev2_pack_proposal(proplist);
 	if (!sa) {

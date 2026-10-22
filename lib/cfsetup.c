@@ -205,6 +205,7 @@ static int rcf_fix_exchange_mode (struct cf_list *, void *);
 static int rcf_fix_my_gssapi_id (struct cf_list *, void *);
 static int rcf_fix_cookie_required (struct cf_list *, void *);
 static int rcf_fix_addke_required (struct cf_list *, void *);
+static int rcf_fix_addke_alg (struct cf_list *, void *);
 static int rcf_fix_parent_child_strength (struct cf_list *, void *);
 static int rcf_fix_addke_unrequested (struct cf_list *, void *);
 static int rcf_fix_allow_nsa_deprecated (struct cf_list *, void *);
@@ -411,6 +412,7 @@ struct rcf_tdf_t {
 	{ CFD_MY_GSSAPI_ID,		rcf_fix_my_gssapi_id, },
 	{ CFD_COOKIE_REQUIRED,		rcf_fix_cookie_required, },
 	{ CFD_ADDKE_REQUIRED,		rcf_fix_addke_required, },
+	{ CFD_ADDKE_ALG,		rcf_fix_addke_alg, },
 	{ CFD_PARENT_CHILD_STRENGTH,	rcf_fix_parent_child_strength, },
 	{ CFD_ADDKE_UNREQUESTED,	rcf_fix_addke_unrequested, },
 	{ CFD_ALLOW_NSA_DEPRECATED,	rcf_fix_allow_nsa_deprecated, },
@@ -1611,6 +1613,19 @@ rcf_fix_addke_required(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_ADDKE_REQUIRED))
 		return -1;
 	if (rcf_fix_boolean(head->nextp, &dst->addke_required))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_addke_alg(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_ADDKE_ALG))
+		return -1;
+	if (rcf_fix_alglist(head->nextp, &dst->addke_offer))
 		return -1;
 
 	return 0;
@@ -3693,6 +3708,7 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rcf_clean_alglist(n->kmp_prf_alg);
 	rcf_clean_alglist(n->kmp_dh_group);
 	rcf_clean_alglist(n->kmp_auth_method);
+	rcf_clean_alglist(n->addke_offer);
 	rc_vfree(n->my_gssapi_id);
 	rcf_clean_pklist(n->my_pubkey);
 	rcf_clean_pklist(n->peers_pubkey);
@@ -3784,6 +3800,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_ALGLIST(src->kmp_prf_alg, new->kmp_prf_alg);
 	DEEPCOPY_ALGLIST(src->kmp_dh_group, new->kmp_dh_group);
 	DEEPCOPY_ALGLIST(src->kmp_auth_method, new->kmp_auth_method);
+	DEEPCOPY_ALGLIST(src->addke_offer, new->addke_offer);
 	new->addke_required = src->addke_required;
 	new->parent_child_strength = src->parent_child_strength;
 	new->addke_unrequested = src->addke_unrequested;

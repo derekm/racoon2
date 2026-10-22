@@ -147,7 +147,7 @@ ikev2_addke_method_is_mlkem(unsigned int transform_id)
 	return ikev2_addke_mlkem_param(transform_id) != NULL;
 }
 /* dhgroup for a classical ADDKE method id, or NULL if not a DH group. */
-static const struct dhgroup *
+const struct dhgroup *
 ikev2_addke_method_dhgroup(unsigned int transform_id)
 {
 	struct algdef *def;

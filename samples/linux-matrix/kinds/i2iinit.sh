@@ -141,6 +141,51 @@ esac
 	case "$name" in
 	*-ppk*) I2I_PPK=1; I2I_DBG=0x0003 ;;
 	esac
+	# Multi-round INITIAL-IKE_SA rows (-fr2 / -fr3): the iked initiator
+	# offers MULTIPLE distinct ADDKE rounds in SAi1 via the IKE-level
+	# `addke_alg { ... }` knob (ikev2_addke_offer -> rcf_kmp.addke_offer).
+	# Each method is its own Transform Type ADDKE1..ADDKE7 (types 6..6+N-1);
+	# the responder echoes the whole set and N IKE_INTERMEDIATE rounds run.
+	# -fr2 is the exact iOS [37,36] order (ML-KEM-1024 then ML-KEM-768);
+	# -fr3 mixes a CLASSICAL ECP-256 round (RFC 9370 s2.2.1: the spec does
+	# not distinguish classical (EC)DH from post-quantum KEs, so a
+	# classical group is a legal IKE_INTERMEDIATE round method) between
+	# two ML-KEM rounds.  These are the ONLY rows that pin the RFC 8784
+	# final-round PPK gate (c3ba071): the initial path records, per
+	# seat, exactly ONE 'RFC 8784: PPK applied after intermediate round'
+	# TRACE after ALL negotiated rounds and none between, and up=1 proves
+	# the PPK-mixed SK_d/SK_pi/SK_pr (and the RFC 9370 s2.2.2 SKEYSEED
+	# chain) matched both sides -- a PPK applied per-round diverges and the
+	# child never lands.  Force PPK + TRACE debug for these rows.
+	MULTI_ADDKE=""
+	case "$name" in
+	*-addke-fr2) MULTI_ADDKE="mlkem1024 mlkem768" ;;
+	*-addke-fr3) MULTI_ADDKE="mlkem768 ecp256 mlkem1024" ;;
+	esac
+	ADDKE_ALG_TXT_I=""   # IKE-level addke_alg offer in the iked remote block
+	MR_HEX=""; NROUNDS=1; T6=06000024
+	if [ -n "$MULTI_ADDKE" ]; then
+		# per-round wire transform id hex for the gate (type 6+r).
+		# MLKEM512=0x23 MLKEM768=0x24 MLKEM1024=0x25 ECP256=0x13 ...
+		MR_HEX=""; MR_RND=0; ADDKE_ALG_TXT_I="addke_alg { "
+		for m in $MULTI_ADDKE; do
+			case "$m" in
+			mlkem512)   idh=23 ;;
+			mlkem768)   idh=24 ;;
+			mlkem1024)  idh=25 ;;
+			ecp256)     idh=13 ;;
+			*) idh=00 ;;
+			esac
+			tt=$((6 + MR_RND))
+			MR_HEX="$MR_HEX $(printf '%02x0000%s' "$tt" "$idh")"
+			ADDKE_ALG_TXT_I="$ADDKE_ALG_TXT_I$m; "
+			MR_RND=$((MR_RND + 1))
+		done
+		ADDKE_ALG_TXT_I="$ADDKE_ALG_TXT_I};"
+		NROUNDS=$MR_RND
+		T6=$(printf '%s' "$MR_HEX" | awk '{print $1}')
+		I2I_PPK=1; I2I_DBG=0x0003
+	fi
 	# PPK direction: when iked is the IKE INITIATOR (-ppk-charonr), it must
 	# REQUIRE the PPK (ppk_mandatory on).  RFC 8784: an initiator that only
 	# OPTIONALLY uses the PPK advertises N(NO_PPK_AUTH) in IKE_AUTH
@@ -585,6 +630,7 @@ remote matrix_init {
 $AUTH_TXT_I
 $I2I_SIG_PSS_TXT_I
 $PPK_TXT
+$ADDKE_ALG_TXT_I
 $CHILDLESS_TXT_I
 $IKE_TXT_I
 $CFG_REQ_TXT_I
@@ -828,6 +874,32 @@ fi
 	else
 		log "FAIL: classical-CBC row ran ${nint} IKE_INTERMEDIATE round(s), expected exactly 0"
 		R2_CASE_FAIL=1
+	fi
+
+	# Multi-round INITIAL-IKE_SA gate (-addke-fr2 / -fr3, NROUNDS>1): every
+	# ADDKE type 6..6+N-1 must be on the wire in SAi1 (the initiator's
+	# IKE_SA_INIT SA_hex dump), BOTH seats must drive/await the full N-round
+	# sequence (one 'IKE_INTERMEDIATE ADDKE round complete' line per round),
+	# and the RFC 8784 final-round PPK gate must apply the PPK EXACTLY ONCE
+	# after the last round (c3ba071).  up=1 then proves the RFC 9370 s2.2.2
+	# SKEYSEED chain + PPK-mixed keys matched both sides.  A PPK applied
+	# per-round emits N markers and the AUTH never verifies (child not UP).
+	mr_ok=1
+	if [ "$NROUNDS" -gt 1 ]; then
+		rnd_c_i=$(grep -c 'IKE_INTERMEDIATE ADDKE round complete' "$D/init-iked.log" 2>/dev/null || true)
+		rnd_c_r=$(grep -c 'IKE_INTERMEDIATE ADDKE round complete' "$D/resp-iked.log" 2>/dev/null || true)
+		for th in $MR_HEX; do
+			[ "$(grep -c "IKE_SA_INIT SA_hex=.*$th" "$D/init-iked.log" 2>/dev/null || true)" -ge 1 ] || mr_ok=0
+		done
+		ppk_i=$(grep -c 'RFC 8784: PPK applied after intermediate round' "$D/init-iked.log" 2>/dev/null || true)
+		ppk_r=$(grep -c 'RFC 8784: PPK applied after intermediate round' "$D/resp-iked.log" 2>/dev/null || true)
+		if [ "$rnd_c_i" -ge "$NROUNDS" ] && [ "$rnd_c_r" -ge "$NROUNDS" ] \
+		   && [ "$ppk_i" -eq 1 ] && [ "$ppk_r" -eq 1 ] && [ "$mr_ok" -eq 1 ]; then
+			log "MULTI-ROUND INITIAL IKE_SA: $NROUNDS rounds (types 6..$((6+NROUNDS-1)) in SAi1), round-complete x${rnd_c_i}/${rnd_c_r}, PPK applied exactly once per seat (i=$ppk_i r=$ppk_r), child UP => SKEYSEED + PPK keymat matched"
+		else
+			mr_ok=0
+			log "FAIL: multi-round initial ADDKE incomplete (rounds_i=$rnd_c_i rounds_r=$rnd_c_r want=$NROUNDS ppk_i=$ppk_i ppk_r=$ppk_r want_each=1 wire_types_ok=$mr_ok)"
+		fi
 	fi
 
 	# RFC 8784 PPK rows: with USE_PPK on both seats the child only lands if
@@ -1466,8 +1538,8 @@ fi
 		fi
 	fi
 
-	if { [ "${up_req:-1}" = 1 ] && [ "$up" -ne 1 ]; } || { [ "${up_req:-1}" = 0 ] && { [ "$up" -ne 0 ] || [ "${cp_refuse:-0}" -ne 1 ]; }; } || { [ "$need_pqc" = 1 ] && { [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; }; } || [ "$cpl" -ne 0 ] || [ "${childless_ok:-0}" -ne 1 ] || [ "$sig_ok" -ne 1 ] || [ "${shape_ok:-1}" -ne 1 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; } || [ "${rk_ok:-0}" -ne 1 ] || [ "${onechild_ok:-0}" -ne 1 ]; then
-		log "FAIL: i2iinit incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} cpl=$cpl childless_ok=${childless_ok:-0} sig_ok=$sig_ok shape_ok=${shape_ok:-1} ppk_ok=${ppk_ok:-0} pfsrekey_ok=${pfsrekey_ok:-0} rk_ok=${rk_ok:-0} onechild_ok=${onechild_ok:-0} peeri=${PEER} peerr=${PEER_R})"
+	if { [ "${up_req:-1}" = 1 ] && [ "$up" -ne 1 ]; } || { [ "${up_req:-1}" = 0 ] && { [ "$up" -ne 0 ] || [ "${cp_refuse:-0}" -ne 1 ]; }; } || { [ "$need_pqc" = 1 ] && { [ "${nint:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ]; }; }	|| [ "$cpl" -ne 0 ] || [ "${childless_ok:-0}" -ne 1 ] || [ "$sig_ok" -ne 1 ] || [ "${shape_ok:-1}" -ne 1 ] || { [ "$I2I_PPK" = 1 ] && [ "${ppk_ok:-0}" -ne 1 ]; } || { case "$name" in *-pfsrekey*) [ "${pfsrekey_ok:-0}" -ne 1 ] ;; *) false ;; esac; } || [ "${rk_ok:-0}" -ne 1 ] || [ "${onechild_ok:-0}" -ne 1 ] || [ "${mr_ok:-1}" -ne 1 ]; then
+		log "FAIL: i2iinit incomplete (up=${up:-0} nint=${nint:-0} pqc=${pqc:-0} mr_ok=${mr_ok:-1} cpl=$cpl childless_ok=${childless_ok:-0} sig_ok=$sig_ok shape_ok=${shape_ok:-1} ppk_ok=${ppk_ok:-0} pfsrekey_ok=${pfsrekey_ok:-0} rk_ok=${rk_ok:-0} onechild_ok=${onechild_ok:-0} peeri=${PEER} peerr=${PEER_R})"
 		if [ "$PEER" = charon ]; then
 			log "--- charon-init.log ---"
 			i2i_peer_i_diag "$D" charon

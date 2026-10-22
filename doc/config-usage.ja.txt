@@ -574,6 +574,19 @@ o remote
 		ビルドされた場合のみ利用可能。デフォルトは off (ADDKE を要求しない
 		ピアには通常の応答のみ)。
 
+	addke_alg (algorithm-list) ;
+		これは ikev2 ディレクティブで有効です。
+		この iked ピアが初期 IKE_SA で提示する ADDKE ラウンド方式を設定します (RFC 9370 s2.2.1)。
+		方式ごとに 1 ラウンドで、それぞれが Transform Type ADDKE1..ADDKE7 (type 6..12) になります:
+		    addke_alg { mlkem1024; mlkem768; };
+		方式は ML-KEM (mlkem512/mlkem768/mlkem1024) または古典 DH グループ (ecp256, curve25519, modp2048, ...) です。
+		RFC 9370 はラウンドで古典/耐量子の区別をしないため、各ラウンドは IKE_INTERMEDIATE 交換 (RFC 9242, N(16438)) として実行されます。
+		これは初期 IKE_SA の提示です。子 SA (リキー) の ADDKE 提示は sa ブロックの esp_addke_alg です。
+		未設定時は 1 ラウンドの ML-KEM-768 type-6 (iOS と相互運用可能な従来デフォルト) を提示します。
+		最大 7 方式、それぞれ異なる必要があります (同じ方式の繰り返しは拒否 - RFC 9370 s2.2.1)。
+		ML-KEM バックエンド (--enable-addke) でビルドされた場合のみ利用可能。
+
+
 	need_pfs (on|off) ;
 			ikev1,ikev2でのみ有効なディレクティブ
 			PFSを有効にするかどうかを定義する。

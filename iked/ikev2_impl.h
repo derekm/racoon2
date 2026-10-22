@@ -301,6 +301,19 @@ struct ikev2_sa {
 	rc_vchar_t *intermediate_req;	/* current round's request content (IntAuth) */
 	rc_vchar_t *intermediate_resp;	/* current round's response content (IntAuth) */
 	void *intermediate_priv;	/* initiator ML-KEM priv (EVP_PKEY *) */
+	/* RFC 9370 s2.2.1: IKE_INTERMEDIATE ADDKE rounds may carry a
+	 * CLASSICAL KE method too (transform id from the shared DH
+	 * registry, e.g. ECP256=19, CURVE25519=31, MODP2048=14) — the spec
+	 * makes no classical/PQ distinction.  For a classical round both
+	 * sides hold a DH keypair: generate ours (oakley_dh_generate),
+	 * exchange public values in the KE payload, and each computes
+	 * g^xy = oakley_dh_compute(dh, our_pub, our_priv, peer_pub).
+	 * intermediate_dhgroup is NULL on an ML-KEM round (where
+	 * intermediate_priv holds the KEM keypair).  Freed in
+	 * ikev2_intermediate_clear(). */
+	const struct dhgroup *intermediate_dhgroup;
+	rc_vchar_t *intermediate_dh_priv;
+	rc_vchar_t *intermediate_dh_pub;
 	/* R1 (review): cached gen-0 IKE_INTERMEDIATE RESPONSE (full wire
 	 * packet, already authenticated under the pre-update keys).  On a
 	 * retransmitted gen-0 request the responder is on gen-1 and can no
@@ -318,9 +331,9 @@ struct ikev2_sa {
 	 * (echoed by the responder that holds the PPK; confirmed by the
 	 * initiator that received the echo).  Gates the SK_d/SK_pi/SK_pr
 	 * re-derivation with the PPK in ikev2_compute_keys() -- and hence
-	 * MUST be zero on any rekeyed/resumed SA (the RFC 8784 s2.2 rule: PPK
-	 * is used only for the initial IKE SA; rekey is taken at the first
-	 * opportunity).  peer_sent_use_ppk records that the PEER offered
+	 * MUST be zero on any rekeyed/resumed SA (RFC 8784 §2: PPK
+	 * is negotiated in IKE_SA_INIT and used only for the initial IKE SA;
+	 * rekey is taken at the first opportunity).  peer_sent_use_ppk records that the PEER offered
 	 * (responder view) or echoed (initiator view) N(USE_PPK);
 	 * peer_ppk_identity_ok is confirmed when the peer's N(PPK_IDENTITY)
 	 * matched our configured PPK_ID in IKE_AUTH. */
@@ -737,6 +750,7 @@ extern void ikev2_followup_ke_recv(struct ikev2_sa *, rc_vchar_t *,
 extern int ikev2_addke_selectable(void);
 extern int ikev2_addke_selftest(void);
 extern int ikev2_addke_method_is_mlkem(unsigned int);
+extern const struct dhgroup *ikev2_addke_method_dhgroup(unsigned int);
 extern int ikev2_addke_round_keygen(struct ikev2_child_sa *,
 				    unsigned int, rc_vchar_t **);
 extern void ikev2_addke_round_state_clear(struct ikev2_child_sa *);

@@ -733,6 +733,24 @@ remote
 		default is off (a peer that never offered ADDKE gets a plain
 		response and no followup).
 
+	addke_alg (algorithm-list) ;
+		It is valid for the ikev2 directive.
+		It configures the ADDKE round methods this iked peer OFFERS
+		in the INITIAL IKE_SA (RFC 9370 s2.2.1), one method per round,
+		each on its own Transform Type ADDKE1..ADDKE7 (types 6..12):
+		    addke_alg { mlkem1024; mlkem768; };
+		The methods may be ML-KEM (mlkem512/mlkem768/mlkem1024) or a
+		classical DH group (ecp256, curve25519, modp2048, ...) - RFC
+		9370 makes no classical/post-quantum distinction in the
+		rounds, and each round runs as an IKE_INTERMEDIATE exchange
+		(RFC 9242, N(16438)).  This is the INITIAL IKE_SA offer; the
+		child-SA (rekey) ADDKE offer is a separate esp_addke_alg on
+		the sa block.  When unset, a single round-1 ML-KEM-768 type-6
+		is offered (the historical default, interoperable with iOS).
+		Max 7 methods, each distinct (a repeated method is refused -
+		RFC 9370 s2.2.1).  Only available on builds with the ML-KEM
+		backend (--enable-addke).
+
 	allow_nsa_deprecated (on|off) ;
 		It is valid for both directives of the ikev1 and ikev2.
 		It allows the NSA/CNSSP-15 obsolete transforms: the DES

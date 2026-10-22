@@ -1682,13 +1682,17 @@ ikev2_cleanse_key_gen(rc_vchar_t **p)
  *	if fails, ike_sa does not change
  */
 
-/* RFC 8784 s4.2: apply the PPK to an ALREADY-DERIVED key generation,
- * re-deriving SK_d/SK_pi/SK_pr as prf+(PPK, key).  Used only on the
+/* RFC 8784 s3: apply the PPK to an ALREADY-DERIVED key generation,
+ * re-deriving SK_d/SK_pi/SK_pr as prf+(PPK, key').  Used only on the
  * FINAL generation, after all IKE_INTERMEDIATE ADDKE rounds have updated
- * SKEYSEED/SK_* (RFC 9867 s3.1.1: the PPK application is the LAST key
- * action before the keys are used in IKE_AUTH).  Skipped while
- * ppk_deferred is set so intermediate SKEYSEED(1)=prf(SK_d, ...) sees the
- * UN-PPK'd SK_d -- a responder cannot know the PPK until it sees
+ * SKEYSEED/SK_* — the IKE_INTERMEDIATE per-round chain is RFC 9370
+ * s2.2.2 (SKEYSEED(n) = prf(SK_d(n-1), SK(n) | Ni | Nr) using the UN-PPK'd
+ * SK_d(n-1)), and per RFC 9867 s3.1.1 the PPK application MUST be the LAST
+ * key action before IKE_AUTH (note: this code ONLY applies the PPK to the
+ * final generation; it does NOT implement RFC 9867's full SK_*
+ * recalculation, which also re-derives SK_ei/SK_ar/SK_ai/SK_er).  Skipped
+ * while ppk_deferred is set so intermediate SKEYSEED(1)=prf(SK_d, ...) sees
+ * the UN-PPK'd SK_d -- a responder cannot know the PPK until it sees
  * PPK_IDENTITY in IKE_AUTH.  Returns 0 on success, -1 on failure (SA must
  * be aborted).  ppk_active is never set on a rekeyed/resumed SA, so the
  * apply path is initial-SA only. */
@@ -1801,15 +1805,16 @@ ikev2_compute_keys(struct ikev2_sa *ike_sa)
 	if (!sk_pr)
 		goto fail;
 
-	/* RFC 8784 s4.2: when the USE_PPK session is active (ppk_active,
+	/* RFC 8784 s3: when the USE_PPK session is active (ppk_active,
 	 * negotiated in IKE_SA_INIT only), re-derive the three keys the
 	 * PPK protects.  SK_ai/ar/ei/er are deliberately left from the
 	 * un-PPK'ed prf+ output -- they already protected IKE_SA_INIT and
 	 * IKE_AUTH (the PPK is unknown to the responder until IKE_AUTH).
 	 * All IKEv2 PRFs have output length == preferred key length, so a
-	 * single prf+ iteration (T1 = prf(PPK, key | 0x01)) suffices.
-	 * ppk_active is never set on a rekeyed/resumed SA (RFC 8784 s2.2:
-	 * PPK for the initial SA only), so rekeys derive classically. */
+	 * single prf+ iteration (T1 = prf(PPK, key' | 0x01)) suffices.
+	 * ppk_active is never set on a rekeyed/resumed SA (RFC 8784 §2:
+	 * PPK is negotiated in IKE_SA_INIT for the initial SA only), so
+	 * rekeys derive classically. */
 	if (ike_sa->ppk_active && !ike_sa->ppk_deferred) {
 		rc_vchar_t *ppk = 0, *sk_d2 = 0, *sk_pi2 = 0, *sk_pr2 = 0;
 

@@ -203,11 +203,28 @@ ikev2_initiator_start(struct ikev2_sa *ike_sa)
 	 * 16438 capability notify is sent alongside).  If the peer does not
 	 * negotiate IKE_INTERMEDIATE, the ADDKE-bearing proposal is simply
 	 * skipped to a classical fallback. */
-	ikev2_maybe_offer_ikesa_addke(proplist);
+	ikev2_maybe_offer_ikesa_addke(conf, proplist);
 #endif
 	sa = ikev2_pack_proposal(proplist);
 	if (!sa)
 		goto fail;
+	/* Wire-proposal diagnostic the matrix gates on (mirror of the
+	 * CREATE_CHILD_SA request SA_hex= dump): the full SAi1 the initiator
+	 * is about to send, INCLUDING every offered ADDKE round transform
+	 * (types 6..6+N-1 for a multi-round addke_alg offer).  This is what
+	 * lets an initial-IKE_SA row assert all N ADDKE types on the wire. */
+	{
+		char hx[512];
+		size_t hl = sa->l;
+		size_t i;
+		if (hl > sizeof(hx) / 2)
+			hl = sizeof(hx) / 2;
+		for (i = 0; i < hl; i++)
+			snprintf(&hx[i * 2], 3, "%02x", sa->u[i]);
+		hx[i * 2] = '\0';
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "IKE_SA_INIT SA_hex=%s\n", hx);
+	}
 
 	{
 		struct ikev2_dh_ctx *ctx;
@@ -339,10 +356,11 @@ initiator_start_after_gen(int rc, void *arg)
 				    TRUE);
 	}
 #endif
-	/* RFC 8784 s2.2: offer PPK use.  Gated on the remote's 'use_ppk'
-	 * config (default OFF).  The responder echoes N(USE_PPK) iff it
-	 * holds a PPK for this peer; the mandatory/optional decision is
-	 * resolved in initiator_ike_sa_init_recv(). */
+	/* RFC 8784: offer PPK use (the s2 USE_PPK notify; the s3 mix is
+	 * applied to SK_d/SK_pi/SK_pr as prf+(PPK, key')).  Gated on the
+	 * remote's 'use_ppk' config (default OFF).  The responder echoes
+	 * N(USE_PPK) iff it holds a PPK for this peer; the mandatory/optional
+	 * decision is resolved in initiator_ike_sa_init_recv(). */
 	if (ikev2_use_ppk(ike_sa->rmconf) == RCT_BOOL_ON) {
 		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(0, 0, 0,
@@ -982,21 +1000,23 @@ responder_state0_after_gen(int rc, void *arg)
 		}
 	}
 #endif
-	/* RFC 8784 s2.2: echo N(USE_PPK) only when the peer offered it AND
+	/* RFC 8784 s2: echo N(USE_PPK) only when the peer offered it AND
 	 * we are configured with a PPK for this peer (use_ppk on and a
 	 * ppk_id set).  Once echoed we are committed: ikev2_compute_keys()
-	 * re-derives SK_d/SK_pi/SK_pr with the PPK (ppk_active), and
-	 * IKE_AUTH must then confirm the PPK_IDENTITY or the SA aborts. */
+	 * re-derives SK_d/SK_pi/SK_pr as prf+(PPK, key') (RFC 8784 s3
+	 * mix, ppk_active), and IKE_AUTH must then confirm the
+	 * PPK_IDENTITY or the SA aborts. */
 	if (ike_sa->peer_sent_use_ppk &&
 	    ikev2_use_ppk(ike_sa->rmconf) == RCT_BOOL_ON &&
 	    ikev2_ppk_id(ike_sa->rmconf) != NULL) {
 		ike_sa->ppk_active = 1;
 #ifdef WITH_INTERMEDIATE
-		/* RFC 9867 s3.1.1: with an ADDKE intermediate round pending, defer
-		 * the PPK mix -- the intermediate SKEYSEED(1)=prf(SK_d,...) must see
+		/* RFC 9370 s2.2.2: with an ADDKE intermediate round pending, defer
+		 * the PPK mix -- the intermediate SKEYSEED(n)=prf(SK_d(n-1),...) must see
 		 * the un-PPK'd SK_d (a responder cannot know the PPK until IKE_AUTH
 		 * PPK_IDENTITY); ikev2_ppk_apply() runs on the final generation in
-		 * responder_ike_intermediate_recv. */
+		 * responder_ike_intermediate_recv (RFC 8784 s3 formula, applied
+		 * once at the end; not RFC 9867 s3.1.1's full SK_* recalc). */
 		if (ike_sa->intermediate_negotiated && ike_sa->negotiated_sa &&
 		    ike_sa->negotiated_sa->addke != 0)
 			ike_sa->ppk_deferred = 1;
@@ -1414,19 +1434,22 @@ initiator_ike_sa_init_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	 */
 #endif
 
-	/* RFC 8784 s2.2: we offered N(USE_PPK); the responder echoed it iff
+	/* RFC 8784 s2: we offered N(USE_PPK); the responder echoed it iff
 	 * it holds a PPK for us.  mandatory==ON and no echo is a downgrade
 	 * (quantum-vulnerable) and MUST abort the exchange; mandatory==OFF
 	 * and no echo continues without a PPK (keys derived unmodified).
 	 * This runs before the SKEYSEED compute, so ikev2_compute_keys()
-	 * sees ppk_active and re-derives SK_d/SK_pi/SK_pr accordingly. */
+	 * sees ppk_active and re-derives SK_d/SK_pi/SK_pr as prf+(PPK,key')
+	 * (RFC 8784 s3 mix). */
 	if (ikev2_use_ppk(ike_sa->rmconf) == RCT_BOOL_ON) {
 		if (ike_sa->peer_sent_use_ppk) {
 			ike_sa->ppk_active = 1;
 #ifdef WITH_INTERMEDIATE
-			/* RFC 9867 s3.1.1: defer the PPK mix until the final generation
+			/* RFC 9370 s2.2.2: defer the PPK mix until the final generation
 			 * (after the ADDKE intermediate round), so both peers derive
-			 * subsequent rounds from the un-PPK'd SK_d. */
+			 * subsequent rounds from the un-PPK'd SK_d(n-1).  Applied once
+			 * at the end via the RFC 8784 s3 formula; this code does NOT do
+			 * RFC 9867 s3.1.1's full SK_* recalculation. */
 			if (ike_sa->intermediate_negotiated && ike_sa->negotiated_sa &&
 			    ike_sa->negotiated_sa->addke != 0)
 				ike_sa->ppk_deferred = 1;

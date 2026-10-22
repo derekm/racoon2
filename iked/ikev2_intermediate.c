@@ -62,9 +62,27 @@
 #include "ikev2_impl.h"
 #include "ikev2_notify.h"
 #include "nattraversal.h"
+#include "oakley.h"
 #include "var.h"
 #include "sockmisc.h"
 #include "debug.h"
+
+/* Free THIS round's private crypto state: the initiator ML-KEM keypair and
+ * any classical-DH round keypair.  Called after a round's shared secret is
+ * consumed and from ikev2_intermediate_clear.  Safe to call repeatedly. */
+static void
+intermediate_round_crypto_clear(struct ikev2_sa *sa)
+{
+	if (sa->intermediate_priv) {
+		EVP_PKEY_free((EVP_PKEY *)sa->intermediate_priv);
+		sa->intermediate_priv = 0;
+	}
+	rc_vfreez(sa->intermediate_dh_priv);
+	sa->intermediate_dh_priv = 0;
+	rc_vfreez(sa->intermediate_dh_pub);
+	sa->intermediate_dh_pub = 0;
+	sa->intermediate_dhgroup = 0;
+}
 
 void
 ikev2_intermediate_clear(struct ikev2_sa *sa)
@@ -86,10 +104,7 @@ ikev2_intermediate_clear(struct ikev2_sa *sa)
 	sa->prev_sk_a_r = 0;
 	rc_vfreez(sa->prev_sk_e_r);
 	sa->prev_sk_e_r = 0;
-	if (sa->intermediate_priv) {
-		EVP_PKEY_free((EVP_PKEY *)sa->intermediate_priv);
-		sa->intermediate_priv = 0;
-	}
+	intermediate_round_crypto_clear(sa);
 }
 
 /* Drop only the gen-0 response replay cache.  Called once IKE_AUTH is
@@ -597,7 +612,6 @@ initiator_ike_intermediate_send(struct ikev2_sa *sa)
 	struct ikev2_payloads payl;
 	rc_vchar_t *pub = 0, *ke = 0, *pkt = 0, *cA = 0, *content = 0;
 	rc_vchar_t *inner = 0;
-	EVP_PKEY *priv = 0;
 	uint32_t method;
 
 	if (!sa->intermediate_negotiated || !sa->negotiated_sa) {
@@ -638,22 +652,64 @@ initiator_ike_intermediate_send(struct ikev2_sa *sa)
 		ikev2_abort(sa, ECONNREFUSED);
 		return;
 	}
-	if (ikev2_addke_mlkem_keygen(method, &pub, &priv) != 0) {
-		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+	/* RFC 9370 s2.2.1: dispatch the round's KE method — ML-KEM (ids 35/36/37)
+	 * OR a classical DH group (ECP/ECP2/MODP/curve) sharing the DH
+	 * registry; the spec makes no classical/PQ distinction. */
+	if (ikev2_addke_method_is_mlkem(method)) {
+		EVP_PKEY *kp = 0;
+		if (ikev2_addke_mlkem_keygen(method, &pub, &kp) != 0 ||
+		    !pub || !kp) {
+			isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "IKE_INTERMEDIATE: ML-KEM keygen failed\n");
-		ikev2_abort(sa, ECONNREFUSED);
-		return;
+			ikev2_abort(sa, ECONNREFUSED);
+			return;
+		}
+		/* drop any stale round state, then keep the KEM keypair */
+		intermediate_round_crypto_clear(sa);
+		sa->intermediate_priv = kp;
+	} else {
+		const struct dhgroup *dh =
+		    ikev2_addke_method_dhgroup(method);
+		rc_vchar_t *dh_priv = 0;
+
+		if (dh == NULL) {
+			isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: unsupported round method %u\n",
+			   method);
+			ikev2_abort(sa, ECONNREFUSED);
+			return;
+		}
+		if (oakley_dh_generate((struct dhgroup *)dh, &pub,
+				       &dh_priv) < 0 || !pub || !dh_priv) {
+			rc_vfree(pub); pub = 0;
+			rc_vfreez(dh_priv);
+			isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: classical DH keygen failed\n");
+			ikev2_abort(sa, ECONNREFUSED);
+			return;
+		}
+		/* keep the DH group + keypair for the g^xy completion */
+		intermediate_round_crypto_clear(sa);
+		sa->intermediate_dhgroup = dh;
+		sa->intermediate_dh_priv = dh_priv;
+		sa->intermediate_dh_pub = rc_vnew(pub->v, pub->l);
+		if (sa->intermediate_dh_pub == NULL) {
+			intermediate_round_crypto_clear(sa);
+			rc_vfree(pub); pub = 0;
+			isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: cannot hold DH pub\n");
+			ikev2_abort(sa, ECONNREFUSED);
+			return;
+		}
 	}
+	/* ke carries the value to send: ML-KEM pubkey or our DH public. */
 	ke = intermediate_ke_payload(method, pub);
-	pub = 0;
+	rc_vfree(pub); pub = 0;
 	if (!ke) {
-		EVP_PKEY_free(priv);
+		intermediate_round_crypto_clear(sa);
 		ikev2_abort(sa, ECONNREFUSED);
 		return;
 	}
-	if (sa->intermediate_priv)
-		EVP_PKEY_free((EVP_PKEY *)sa->intermediate_priv);
-	sa->intermediate_priv = priv;
 
 	ikev2_payloads_init(&payl);
 	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ke, FALSE);
@@ -752,36 +808,89 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	ke = intermediate_find_ke(packet);
 	if (!ke)
 		goto malformed;
-	if (ntohs(ke->ke_h.dh_group_id) != sa->negotiated_sa->addke) {
-		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
-			   "IKE_INTERMEDIATE: round KE method %u != negotiated %u\n",
-			   ntohs(ke->ke_h.dh_group_id), sa->negotiated_sa->addke);
-		goto malformed;
+	/* RFC 9370 multi-round: validate THIS round's KE method against the
+	 * per-round negotiated method list (addke_methods[round], type
+	 * ADDKE1+r), not the type-6-only shorthand sa->negotiated_sa->addke.
+	 * A 2-round offer (37 then 36) makes round 2 carry method 36 while
+	 * addke is still the round-1 value 37; matching against addke would
+	 * abort a legal multi-round exchange.  The round index is the
+	 * number of already-completed rounds (intermediate_finish_round has
+	 * not run for this response yet), exactly as the send path picks the
+	 * request method. */
+	{
+		int rnd = sa->intermediate_rounds;
+		unsigned int expect;
+
+		if (sa->negotiated_sa->addke_nrounds > 0) {
+			if (rnd < 0 || rnd >= sa->negotiated_sa->addke_nrounds) {
+				isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				    "IKE_INTERMEDIATE: round %d out of range "
+				    "(nrounds=%d)\n", rnd,
+				    sa->negotiated_sa->addke_nrounds);
+				goto malformed;
+			}
+			expect = sa->negotiated_sa->addke_methods[rnd];
+		} else {
+			/* legacy single-round descriptor */
+			expect = (unsigned int)sa->negotiated_sa->addke;
+		}
+		if (ntohs(ke->ke_h.dh_group_id) != expect) {
+			isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: round KE method %u != "
+			   "negotiated %u\n",
+			   ntohs(ke->ke_h.dh_group_id), expect);
+			goto malformed;
+		}
 	}
 	body = intermediate_ke_body(ke);
 	if (!body)
 		goto malformed;
-	if (!sa->intermediate_priv) {
+	if (!sa->intermediate_priv && !sa->intermediate_dhgroup) {
 		/* Duplicate of the response we already consumed this round
-		 * (the shared secret was obtained and intermediate_priv freed).
+		 * (the shared secret was obtained and this round's crypto
+		 * state freed — the ML-KEM keypair or the DH keypair).
 		 * Idempotent -- ignore it, the SA survives (F1). */
 		isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
 			   "IKE_INTERMEDIATE: duplicate response, ignoring\n");
 		rc_vfree(body);
 		return;
 	}
-	if (ikev2_addke_mlkem_decap((EVP_PKEY *)sa->intermediate_priv,
-				    body, &ss) != 0) {
-		rc_vfree(body);
-		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-			   "IKE_INTERMEDIATE: ML-KEM decap failed\n");
-		goto abort;
+	/* RFC 9370 s2.2.1: dispatch the round's shared-secret derivation —
+	 * ML-KEM decap or classical g^xy = oakley_dh_compute(peer KEr pub). */
+	{
+		unsigned int cmethod;
+		int rnd = sa->intermediate_rounds;
+
+		if (sa->negotiated_sa->addke_nrounds > 0)
+			cmethod = sa->negotiated_sa->addke_methods[rnd];
+		else
+			cmethod = (unsigned int)sa->negotiated_sa->addke;
+		if (ikev2_addke_method_is_mlkem(cmethod)) {
+			if (ikev2_addke_mlkem_decap((EVP_PKEY *)
+				    sa->intermediate_priv, body, &ss) != 0) {
+				rc_vfree(body);
+				isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				   "IKE_INTERMEDIATE: ML-KEM decap failed\n");
+				goto abort;
+			}
+		} else {
+			const struct dhgroup *dh = sa->intermediate_dhgroup;
+			if (dh == NULL || sa->intermediate_dh_priv == NULL ||
+			    sa->intermediate_dh_pub == NULL ||
+			    oakley_dh_compute((struct dhgroup *)dh,
+				sa->intermediate_dh_pub,
+				sa->intermediate_dh_priv, body, &ss) < 0 ||
+			    ss == NULL) {
+				rc_vfree(body);
+				isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				   "IKE_INTERMEDIATE: classical DH round "
+				   "failed\n");
+				goto abort;
+			}
+		}
 	}
 	rc_vfree(body);
-	if (sa->intermediate_priv) {
-		EVP_PKEY_free((EVP_PKEY *)sa->intermediate_priv);
-		sa->intermediate_priv = 0;
-	}
+	intermediate_round_crypto_clear(sa);
 
 	/* hold the RESPONSE content (IntAuth_r chunk) */
 	ib = intermediate_packet_inner_blob(packet);
@@ -809,17 +918,30 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 
 	/* RFC 9370 multi-round: if more rounds remain, send the next
 	 * IKE_INTERMEDIATE request with the next negotiated method; only
-	 * after the FINAL round do we advance to IKE_AUTH. */
+	 * after the FINAL round do we advance to IKE_AUTH.  The
+	 * intermediate requests are built with an explicit
+	 * sa->intermediate_msgid (not via ikev2_request_id), so the
+	 * request-mint reserve never advanced sa->send_message_id -- a
+	 * multi-round INITIATOR would otherwise drop this round's response
+	 * as out-of-order (ikev2_check_message_ordering rejects any id
+	 * > send_message_id).  Advance the reserve to the NEXT id so the
+	 * response to this round is accepted. */
 	if (sa->negotiated_sa->addke_nrounds > 0 &&
 	    sa->intermediate_rounds < sa->negotiated_sa->addke_nrounds) {
 		sa->intermediate_msgid++;
+		sa->send_message_id = sa->intermediate_msgid + 1;
 		initiator_ike_intermediate_send(sa);
 		return;
 	}
 
-	/* RFC 9867 s3.1.1: the IKE_INTERMEDIATE rounds are all done -- apply
-	 * the PPK to the FINAL generation now, before IKE_AUTH derives AUTH
-	 * and child keymat from SK_d/SK_pi/SK_pr. */
+	/* All IKE_INTERMEDIATE rounds are done (RFC 9370 s2.2.2 chain of
+	 * SKEYSEED(n)=prf(SK_d(n-1),SK(n)|Ni|Nr) consumed) -- apply the
+	 * PPK to the FINAL generation now (RFC 8784 s3: SK_d/SK_pi/SK_pr =
+	 * prf+(PPK, key')), before IKE_AUTH derives AUTH and child keymat.
+	 * This code applies the PPK ONLY once, at the end; it does NOT do
+	 * RFC 9867 s3.1.1's full SK_* recalculation in the intermediate
+	 * rounds (RFC 9867 s3.1.1 is cited only as "PPK = last key
+	 * action"). */
 	if (sa->ppk_active && sa->ppk_deferred) {
 		sa->ppk_deferred = 0;
 		if (ikev2_ppk_apply(sa) != 0) {
@@ -922,14 +1044,45 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	sa->intermediate_req = req;
 	req = 0;
 
-	if (ikev2_addke_mlkem_encap(round_method, body,
-				    &ct, &ss) != 0) {
+	/* RFC 9370 s2.2.1: dispatch the round's shared-secret derivation and
+	 * the KEr value.  ML-KEM: encapsulate against the peer's pubkey ->
+	 * ciphertext (+shared).  Classical DH: generate OUR keypair, send our
+	 * public as KEr, and compute g^xy against the peer's KEi public. */
+	if (ikev2_addke_method_is_mlkem(round_method)) {
+		if (ikev2_addke_mlkem_encap(round_method, body,
+					    &ct, &ss) != 0) {
+			rc_vfree(body);
+			goto drop;
+		}
+	} else {
+		const struct dhgroup *dh =
+		    ikev2_addke_method_dhgroup(round_method);
+		rc_vchar_t *own_pub = 0, *own_priv = 0;
+
+		if (dh == NULL ||
+		    oakley_dh_generate((struct dhgroup *)dh, &own_pub,
+				       &own_priv) < 0 || !own_pub || !own_priv) {
+			rc_vfree(body);
+			rc_vfree(own_pub);
+			rc_vfreez(own_priv);
+			goto drop;
+		}
+		if (oakley_dh_compute((struct dhgroup *)dh, own_pub,
+				      own_priv, body, &ss) < 0 || ss == NULL) {
+			rc_vfree(body);
+			rc_vfree(own_pub);
+			rc_vfreez(own_priv);
+			rc_vfreez(ss);
+			goto drop;
+		}
 		rc_vfree(body);
-		goto drop;
+		rc_vfreez(own_priv);
+		/* KEr carries OUR public value (classical: both sides send
+		 * their public in the KE payload). */
+		ct = own_pub;
 	}
-	rc_vfree(body);
 	kep = intermediate_ke_payload(round_method, ct);
-	ct = 0;
+	rc_vfree(ct); ct = 0;
 	if (!kep)
 		goto drop;
 
@@ -1018,10 +1171,14 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 		return;
 	}
 	rc_vfree(ss);
-	/* RFC 9867 s3.1.1 / RFC 8784 s2.2: mix the PPK into the IKE keys only
+	/* RFC 9370 s2.2.2 / RFC 8784 s3: mix the PPK into the IKE keys only
 	 * on the FINAL IKE_INTERMEDIATE generation -- after ALL negotiated
 	 * ADDKE rounds.  The following IKE_AUTH request (and its child keymat,
-	 * and the responder's AUTH) use the PPK'd SK_d/SK_pi/SK_pr.
+	 * and the responder's AUTH) use the PPK'd SK_d/SK_pi/SK_pr (RFC 8784
+	 * s3: SK_d/SK_pi/SK_pr = prf+(PPK, key')).  This code applies the
+	 * PPK ONLY once at the end; it does NOT do RFC 9867 s3.1.1's full
+	 * SK_* recalculation in the rounds (RFC 9867 s3.1.1 is cited only as
+	 * "PPK = last key action").
 	 *
 	 * RFC 9370 s2.2.2 chains SKEYSEED(n) = prf(SK_d(n-1), SK(n)|Ni|Nr);
 	 * SK_d(n-1) MUST therefore be the PLAIN (un-PPK'd) previous generation
