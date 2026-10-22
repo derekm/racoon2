@@ -1018,11 +1018,23 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 		return;
 	}
 	rc_vfree(ss);
-	/* RFC 9867 s3.1.1: the IKE_INTERMEDIATE rounds are all done -- apply
-	 * the PPK to the FINAL generation now; the following IKE_AUTH request
-	 * (and its child keymat, and the responder's AUTH) use the PPK'd
-	 * SK_d/SK_pi/SK_pr. */
-	if (sa->ppk_active && sa->ppk_deferred) {
+	/* RFC 9867 s3.1.1 / RFC 8784 s2.2: mix the PPK into the IKE keys only
+	 * on the FINAL IKE_INTERMEDIATE generation -- after ALL negotiated
+	 * ADDKE rounds.  The following IKE_AUTH request (and its child keymat,
+	 * and the responder's AUTH) use the PPK'd SK_d/SK_pi/SK_pr.
+	 *
+	 * RFC 9370 s2.2.2 chains SKEYSEED(n) = prf(SK_d(n-1), SK(n)|Ni|Nr);
+	 * SK_d(n-1) MUST therefore be the PLAIN (un-PPK'd) previous generation
+	 * for every non-final round, or the intermediate SKEYSEED diverges from
+	 * a peer that mixes the PPK only after its final round (iOS 26 [37,36]):
+	 * the responder was PPK-ing at round 1 (ppk_deferred is set at INIT and
+	 * only this block clears it), so SKEYSEED(2) used a PPK'd SK_d(1) and
+	 * the resulting IKE_AUTH keys could not decrypt the peer's AUTH request
+	 * ('failed to decrypt message' + retransmit until err=110).  apply only
+	 * when every negotiated round is done. */
+	if (sa->ppk_active && sa->ppk_deferred &&
+	    (sa->negotiated_sa->addke_nrounds <= 0 ||
+	     sa->intermediate_rounds >= sa->negotiated_sa->addke_nrounds)) {
 		sa->ppk_deferred = 0;
 		if (ikev2_ppk_apply(sa) != 0) {
 			isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
