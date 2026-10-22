@@ -68,6 +68,7 @@
 #include "ike_conf.h"
 #include "ikev2.h"
 #include "ikev2_impl.h"
+#include "crypto_impl.h"	/* random_bytes() — mint fresh per-round links */
 #include "plog.h"
 
 /*
@@ -456,22 +457,32 @@ ikev2_addke_selftest(void)
  * RFC 9370 s2.2.4 + draft-ietf-ipsecme-ikev2-mlkem-09:
  *
  * After a CREATE_CHILD_SA that selected an ADDKE transform, the
- * initiator sends IKE_FOLLOWUP_KE (exch 44) requests:
+ * initiator sends IKE_FOLLOWUP_KE (exch 44) requests, one per round:
  *
- *   HDR(IKE_FOLLOWUP_KE), SK { KEi(1), N(ADDITIONAL_KEY_EXCHANGE)(link) }
+ *   HDR(IKE_FOLLOWUP_KE), SK { KEi(n), N(ADDITIONAL_KEY_EXCHANGE)(link) }
  *
- * where KEi(1) is a KE payload whose Key Exchange Method field equals
- * the negotiated ADDKE transform ID (36 = ML-KEM-768) carrying the
+ * where KEi(n) is a KE payload whose Key Exchange Method field equals
+ * the n-th negotiated ADDKE transform ID (36 = ML-KEM-768) carrying the
  * initiator's raw ML-KEM-768 public key (1184 bytes, FIPS 203), and
- * the ADDITIONAL_KEY_EXCHANGE notification (16441) echoes the link
- * data from our CREATE_CHILD_SA response.  The responder encapsulates
- * against that public key and replies:
+ * the ADDITIONAL_KEY_EXCHANGE notification (16441) echoes the link the
+ * responder issued for this round.  The responder encapsulates against
+ * that public key and replies:
  *
- *   HDR(IKE_FOLLOWUP_KE), SK { KEr(1) }
+ *   HDR(IKE_FOLLOWUP_KE), SK { KEr(n) }            (final round)
+ *   HDR(IKE_FOLLOWUP_KE), SK { KEr(n),
+ *                              N(ADDITIONAL_KEY_EXCHANGE)(link_{n+1}) }
+ *                                                    (non-final round)
  *
- * with KEr(1) carrying the 1088-byte ciphertext (same method field).
- * Both sides now share the 32-byte ML-KEM-768 shared secret, which
- * appends to the child KEYMAT input after Nr (rfc9370 s2.2.4).
+ * with KEr(n) carrying the 1088-byte ciphertext (same method field).
+ * Per RFC 9370 s2.2.4 the responder mints a FRESH link for EVERY round
+ * it expects another followup after (i.e. every non-final response,
+ * including the CREATE_CHILD_SA response for round 1 at ikev2_child.c
+ * and each IKE_FOLLOWUP_KE response for rounds 2..n-1); the final-round
+ * response is KE-only.  The initiator must echo the link received in
+ * the LAST response on its next request — not reuse the round-1 link.
+ * Both sides accumulate the shared secret from each round into
+ * SK(1)||..||SK(n), which appends to the child KEYMAT input after Nr
+ * (rfc9370 s2.2.4).
  */
 
 /*
@@ -805,6 +816,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	if (is_response) {
 		struct ikev2_payload_header *rp;
 		struct ikev2payl_ke *rke = 0;
+		struct ikev2_payload_header *rlink = 0;
 		struct ikev2_child_sa *rchild = 0;
 		rc_vchar_t *rct = 0;
 		int rtype;
@@ -817,7 +829,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * request, parse the KEr(1) ciphertext, decapsulate to
 		 * SK(1), and complete the deferred keymat install.
 		 */
-		/* parse: SK { KEr(1) } */
+		/* parse: SK { KEr(n), [N(ADDITIONAL_KEY_EXCHANGE)(link)] } */
 		rp = (struct ikev2_payload_header *)(ikehdr + 1);
 		for (rtype = ikehdr->next_payload;
 		     rtype != IKEV2_NO_NEXT_PAYLOAD;
@@ -830,6 +842,21 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 					return;
 				}
 				rke = (struct ikev2payl_ke *)rp;
+			} else if (rtype == IKEV2_PAYLOAD_NOTIFY) {
+				struct ikev2payl_notify *nt =
+				    (struct ikev2payl_notify *)rp;
+				if (get_notify_type(nt) ==
+				    IKEV2_ADDITIONAL_KEY_EXCHANGE) {
+					if (rlink) {
+						isakmp_log(ike_sa, local,
+						    remote, msg,
+						    PLOG_PROTOERR, PLOGLOC,
+						    "duplicate "
+						    "ADDITIONAL_KEY_EXCHANGE\n");
+						return;
+					}
+					rlink = rp;
+				}
 			}
 		}
 		if (!rke) {
@@ -887,6 +914,47 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				   "IKE_FOLLOWUP_KE response for unknown "
 				   "pending child (msgid %u)\n", rmsgid);
 			return;
+		}
+
+		/*
+		 * RFC 9370 s2.2.4: the responder mints a FRESH
+		 * ADDITIONAL_KEY_EXCHANGE (16441) link on every non-final
+		 * followup response so the initiator can tie its next
+		 * request to the next round.  Adopt it (replacing the
+		 * round-1 / previous-round link) while this child still
+		 * has another round pending, so the next
+		 * ikev2_initiator_followup_send() echoes the responder's
+		 * new link instead of the stale one — a strict peer (iOS)
+		 * rejects a followup carrying an unknown link.
+		 */
+		if (rlink && rchild->addke_round + 1 < rchild->addke_nrounds) {
+			struct ikev2payl_notify *nt =
+			    (struct ikev2payl_notify *)rlink;
+			size_t dl;
+
+			if (get_payload_length(rlink) <
+			    (int)(sizeof(struct ikev2payl_notify) +
+				  nt->nh.spi_size)) {
+				isakmp_log(ike_sa, local, remote, msg,
+					   PLOG_PROTOERR, PLOGLOC,
+					   "IKE_FOLLOWUP_KE response "
+					   "truncated ADDITIONAL_KEY_EXCHANGE\n");
+				return;
+			}
+			dl = get_payload_length(rlink) -
+			     sizeof(struct ikev2payl_notify) - nt->nh.spi_size;
+			if (dl > 0 && dl <= 64) {
+				rc_vfreez(rchild->addke_link);
+				rchild->addke_link =
+				    rc_vnew(get_notify_data(nt), dl);
+				TRACE((PLOGLOC,
+				       "initiator adopted fresh ADDKE link "
+				       "(%zu B) for round %d/%d\n",
+				       dl, rchild->addke_round + 1,
+				       rchild->addke_nrounds));
+			}
+			if (rchild->addke_link == NULL)
+				return;	/* ENOMEM */
 		}
 
 		if (get_payload_data_length(&rke->header) < sizeof(rke->ke_h)) {
@@ -1237,6 +1305,9 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		struct ikev2payl_ke_h keh;
 		rc_vchar_t *ker = 0;
 		rc_vchar_t *pkt;
+		int more_rounds =
+		    (child_sa->addke_round + 1 < child_sa->addke_nrounds);
+		rc_vchar_t *new_link = NULL;
 
 		ikev2_payloads_init(&payl);
 		memset(&keh, 0, sizeof(keh));
@@ -1247,6 +1318,43 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			goto nomem;
 		}
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ker, FALSE);
+		/*
+		 * RFC 9370 s2.2.4: whenever another followup is expected
+		 * (this is NOT the final round), the responder MUST mint a
+		 * FRESH ADDITIONAL_KEY_EXCHANGE (16441) link for the NEXT
+		 * round and return it in this response; the initiator
+		 * echoes it on the next request.  The final round's
+		 * response is KE-only.  Store the new link into
+		 * child_sa->addke_link so the next IKE_FOLLOWUP_KE request
+		 * exact-matches (followup_ke_find_child) against the link
+		 * we just issued.  Without this neither iked (re-sending
+		 * the stale round-1 link) nor a strict peer (iOS) can
+		 * complete round 2+.
+		 */
+		if (more_rounds) {
+			new_link = random_bytes(16);
+			if (!new_link) {
+				ikev2_payloads_destroy(&payl);
+				rc_vfree(ker);
+				goto nomem;
+			}
+			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+					    ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE,
+								 0, 0,
+								 IKEV2_ADDITIONAL_KEY_EXCHANGE,
+								 new_link->v,
+								 new_link->l),
+					    TRUE);
+			rc_vfreez(child_sa->addke_link);
+			child_sa->addke_link = new_link;
+			new_link = NULL;	/* now owned by the child */
+			TRACE((PLOGLOC,
+			       "ADDKE: minted fresh followup link (%zu B) "
+			       "for round %d/%d\n",
+			       child_sa->addke_link->l,
+			       child_sa->addke_round + 1,
+			       child_sa->addke_nrounds));
+		}
 		pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
 					     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
 					     IKEV2FLAG_RESPONSE,

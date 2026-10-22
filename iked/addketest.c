@@ -770,6 +770,11 @@ followup_multiround_tests(void)
 	CHECK(c->addke_round == 1 &&
 	      c->addke_sk && c->addke_sk->l == OSSL_ML_KEM_SHARED_SECRET_BYTES,
 	      "multi-round: round 0 accumulated SK(1), cursor advanced");
+	/* RFC 9370 s2.2.4: a non-final response mints a FRESH link for the
+	 * next round (the "mround" 6-byte probe must be replaced), so the
+	 * next followup exact-matches the link the responder just issued. */
+	CHECK(c->addke_link && c->addke_link->l == 16,
+	      "multi-round: round-0 response minted a fresh (16 B) link");
 
 	/* wrong method on round 1 is refused (methods[1]=m768) */
 	followup_reset();
