@@ -272,6 +272,13 @@ struct ikev2_isakmpsa {
 	struct algdef *dhdef;
 	/* RFC 9370 ADDKE: negotiated additional key exchange method (0 = none) */
 	int addke;
+	/* RFC 9370 multi-round: one negotiated method per ADDKE round, in
+	 * transform-type order (ADDKE1..ADDKE7 = types 6..12).  addke is
+	 * round 0 (methods[0]) for back-compat; addke_nrounds is how many
+	 * rounds were negotiated (0 = classical).  Rounds run sequential in
+	 * type order, each consuming one IKE_INTERMEDIATE exchange. */
+	unsigned int addke_methods[8];	/* ADDKE1..ADDKE7 (+ NONE) */
+	int addke_nrounds;
 
 	struct ikev2_isakmpsa *next;	/* next transform */
 	/* struct remoteconf *rmconf; *//* backpointer to remoteconf */

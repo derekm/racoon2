@@ -600,8 +600,7 @@ initiator_ike_intermediate_send(struct ikev2_sa *sa)
 	EVP_PKEY *priv = 0;
 	uint32_t method;
 
-	if (!sa->intermediate_negotiated || !sa->negotiated_sa ||
-	    sa->negotiated_sa->addke == 0) {
+	if (!sa->intermediate_negotiated || !sa->negotiated_sa) {
 		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "IKE_INTERMEDIATE: no negotiated ADDKE method\n");
 		ikev2_abort(sa, ECONNREFUSED);
@@ -613,7 +612,32 @@ initiator_ike_intermediate_send(struct ikev2_sa *sa)
 		ikev2_abort(sa, ECONNREFUSED);
 		return;
 	}
-	method = sa->negotiated_sa->addke;
+	/* RFC 9370 multi-round: pick the method for the CURRENT round (the
+	 * round index equals the number of completed rounds).  A legacy
+	 * single-round descriptor uses negotiated_sa->addke. */
+	{
+		int rnd = sa->intermediate_rounds;
+
+		if (sa->negotiated_sa->addke_nrounds > 0) {
+			if (rnd < 0 || rnd >= sa->negotiated_sa->addke_nrounds) {
+				isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				    "IKE_INTERMEDIATE: round %d out of range "
+				    "(nrounds=%d)\n", rnd,
+				    sa->negotiated_sa->addke_nrounds);
+				ikev2_abort(sa, ECONNREFUSED);
+				return;
+			}
+			method = sa->negotiated_sa->addke_methods[rnd];
+		} else {
+			method = (unsigned int)sa->negotiated_sa->addke;
+		}
+	}
+	if (method == 0) {
+		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "IKE_INTERMEDIATE: no method for round\n");
+		ikev2_abort(sa, ECONNREFUSED);
+		return;
+	}
 	if (ikev2_addke_mlkem_keygen(method, &pub, &priv) != 0) {
 		isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "IKE_INTERMEDIATE: ML-KEM keygen failed\n");
@@ -783,6 +807,16 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	}
 	rc_vfree(ss);
 
+	/* RFC 9370 multi-round: if more rounds remain, send the next
+	 * IKE_INTERMEDIATE request with the next negotiated method; only
+	 * after the FINAL round do we advance to IKE_AUTH. */
+	if (sa->negotiated_sa->addke_nrounds > 0 &&
+	    sa->intermediate_rounds < sa->negotiated_sa->addke_nrounds) {
+		sa->intermediate_msgid++;
+		initiator_ike_intermediate_send(sa);
+		return;
+	}
+
 	/* RFC 9867 s3.1.1: the IKE_INTERMEDIATE rounds are all done -- apply
 	 * the PPK to the FINAL generation now, before IKE_AUTH derives AUTH
 	 * and child keymat from SK_d/SK_pi/SK_pr. */
@@ -798,7 +832,8 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 		       "RFC 8784: PPK applied after intermediate round\n"));
 	}
 
-	/* only ADDKE1 (one round) is implemented here */
+	/* final round done: advance to IKE_AUTH (msgid = last
+	 * intermediate + 1) */
 	ikev2_set_state(sa, IKEV2_STATE_INI_IKE_AUTH_SENT);
 	ikev2_update_message_id(sa, sa->intermediate_msgid, TRUE);
 	initiator_state1_send(sa, 0, sa->remote);
@@ -828,9 +863,10 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	rc_vchar_t *inner = 0;
 	struct ikev2_payloads payl;
 	uint32_t rmsgid;
+	unsigned int round_method = 0;
+	int rnd;
 
-	if (!sa->intermediate_negotiated || !sa->negotiated_sa ||
-	    sa->negotiated_sa->addke == 0) {
+	if (!sa->intermediate_negotiated || !sa->negotiated_sa) {
 		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
 			   "IKE_INTERMEDIATE: not negotiated, dropping\n");
 		goto drop;
@@ -845,17 +881,31 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 			   "IKE_INTERMEDIATE: unexpected response\n");
 		goto drop;
 	}
+	/* RFC 9370 multi-round: the negotiated ADDKE methods are stored in
+	 * transform-type order; the current round index equals the number
+	 * of completed rounds (intermediate_rounds, bumped by
+	 * intermediate_finish_round).  A legacy single-round descriptor
+	 * (nrounds 0) uses negotiated_sa->addke. */
+	rnd = sa->intermediate_rounds;
+	if (sa->negotiated_sa->addke_nrounds > 0) {
+		if (rnd >= 0 && rnd < sa->negotiated_sa->addke_nrounds)
+			round_method = sa->negotiated_sa->addke_methods[rnd];
+	} else {
+		round_method = (unsigned int)sa->negotiated_sa->addke;
+	}
+	if (round_method == 0)
+		goto drop;
 	rmsgid = get_uint32(&ikehdr->message_id);
 
 	ke = intermediate_find_ke(packet);
 	isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
 		   "responder-inter walked ke=%p\n", (void *)ke);
-	if (!ke || (uint32_t)ntohs(ke->ke_h.dh_group_id) != sa->negotiated_sa->addke)
+	if (!ke || (uint32_t)ntohs(ke->ke_h.dh_group_id) != round_method)
 		goto drop;
 	body = intermediate_ke_body(ke);
 	isakmp_log(sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,
 		   "responder-inter ke_body=%p addke=%u\n", (void *)body,
-		   sa->negotiated_sa->addke);
+		   round_method);
 	if (!body)
 		goto drop;
 
@@ -872,13 +922,13 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	sa->intermediate_req = req;
 	req = 0;
 
-	if (ikev2_addke_mlkem_encap(sa->negotiated_sa->addke, body,
+	if (ikev2_addke_mlkem_encap(round_method, body,
 				    &ct, &ss) != 0) {
 		rc_vfree(body);
 		goto drop;
 	}
 	rc_vfree(body);
-	kep = intermediate_ke_payload(sa->negotiated_sa->addke, ct);
+	kep = intermediate_ke_payload(round_method, ct);
 	ct = 0;
 	if (!kep)
 		goto drop;

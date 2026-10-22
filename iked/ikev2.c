@@ -1021,10 +1021,30 @@ ikev2_proppair_to_isakmpsa(struct prop_pair *prop)
 				ikev2_dhinfo(get_uint16(&transf->transform_id));
 			break;
 		case IKEV2TRANSFORM_TYPE_ADDKE:
-			/* RFC 9370: remember which ADDKE method the peer
-			 * proposed so the IKE-rekey response can echo it. */
-			s->addke = get_uint16(&transf->transform_id);
+		case IKEV2TRANSFORM_TYPE_ADDKE + 1:
+		case IKEV2TRANSFORM_TYPE_ADDKE + 2:
+		case IKEV2TRANSFORM_TYPE_ADDKE + 3:
+		case IKEV2TRANSFORM_TYPE_ADDKE + 4:
+		case IKEV2TRANSFORM_TYPE_ADDKE + 5:
+		case IKEV2TRANSFORM_TYPE_ADDKE + 6:
+			/* RFC 9370: ADDKE1..ADDKE7 (transform types 6..12) are
+			 * each an optional additional key-exchange round; the
+			 * round index is (type - ADDKE).  Record the method
+			 * (NONE id = 0 -> no round) per type.  s->addke mirrors
+			 * round 1 for back-compat. */
+		{
+			int r = transf->transform_type - IKEV2TRANSFORM_TYPE_ADDKE;
+			unsigned int id = get_uint16(&transf->transform_id);
+
+			if (r == 0)
+				s->addke = (int)id;
+			if (r >= 0 && r < (int)(sizeof(s->addke_methods) /
+						sizeof(s->addke_methods[0])))
+				s->addke_methods[r] = id;
+			if (r + 1 > s->addke_nrounds)
+				s->addke_nrounds = r + 1;
 			break;
+		}
 		default:
 			isakmp_log(0, 0, 0, 0,
 				   PLOG_PROTOERR, PLOGLOC,
@@ -1230,17 +1250,20 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 		 * caller passes allow_init_addke (16438 negotiated); the
 		 * IKE_SA-rekey path (spi != NULL) records it independently so
 		 * FOLLOWUP_KE can run.  Without 16438, INIT stays classical. */
-		/* RFC 9370: record the SELECTED ADDKE method from the matched
-		 * peer proposal only.  isakmp_find_match already decided it and
+		/* RFC 9370: record the SELECTED ADDKE methods from the matched
+		 * peer proposal.  isakmp_find_match already decided it and
 		 * stamped the ACCEPTED peer p_no (isakmp.c found_match, MINE
 		 * case) into matched_proposal->prop->p_no (1-based).  CRITICAL:
 		 * peer_proposal[] is indexed by prop->p_no DIRECTLY (1-based,
 		 * from isakmp_parse_proposal); slot 0 is always the NULL
 		 * sentinel.  peer_proposal[_pno-1] would read slot 0 for the
 		 * first proposal and lose type-6 (regression: classical SAr1,
-		 * no 16438 echo, no IKE_INTERMEDIATE round).  A type-6 on a
+		 * no 16438 echo, no IKE_INTERMEDIATE round).  A transform on a
 		 * NON-matched proposal must never seed result->addke -- it
-		 * would grow SAr1 a type-6 the match never selected. */
+		 * would grow SAr1 a transform the match never selected.
+		 * ADDKE1..ADDKE7 (types 6..12) are all collected so a
+		 * multi-round initial-IKE_SA offer (e.g. iOS 7x37 ML-KEM-1024)
+		 * is echoed in full and N IKE_INTERMEDIATE rounds run. */
 		if (matched_proposal) {
 			unsigned int _pno = matched_proposal->prop->p_no;
 			if (_pno >= 1 && _pno < MAXPROPPAIRLEN) {
@@ -1250,11 +1273,32 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 				for (tr = mp ? mp->tnext : NULL; tr; tr = tr->next) {
 					struct ikev2transform *t =
 					    (struct ikev2transform *)tr->trns;
-					if (t && t->transform_type ==
-						    IKEV2TRANSFORM_TYPE_ADDKE) {
-						result->addke =
+					unsigned int tt;
+
+					if (!t)
+						continue;
+					tt = t->transform_type;
+					if (tt < IKEV2TRANSFORM_TYPE_ADDKE ||
+					    tt > IKEV2TRANSFORM_TYPE_ADDKE +
+						IKEV2_ADDKE_MAX_ROUNDS - 1)
+						continue;
+					{
+						int r = (int)(tt -
+						    IKEV2TRANSFORM_TYPE_ADDKE);
+						unsigned int id =
 						    get_uint16(&t->transform_id);
-						break;
+
+						if (r == 0)
+							result->addke = (int)id;
+						if (r < (int)(sizeof(
+							result->addke_methods) /
+							sizeof(result->
+							    addke_methods[0])))
+							result->addke_methods[r] =
+							    id;
+						if (r + 1 > result->addke_nrounds)
+							result->addke_nrounds =
+							    r + 1;
 					}
 				}
 			}
@@ -1388,16 +1432,38 @@ ikev2_ikesa_to_proposal_sub(rc_vchar_t *buf, struct ikev2_isakmpsa *sa,
 		++num_transf;
 	}
 
-	/* RFC 9370: echo the negotiated ADDKE method in the response
-	 * SA (only present when the peer proposed type-6). */
-	if (sa->addke != 0) {
-		if (buf)
-			prev = ikev2_transform_header(p, prev,
-						      sizeof(struct ikev2transform),
-						      IKEV2TRANSFORM_TYPE_ADDKE,
-						      sa->addke);
-		p += sizeof(struct ikev2transform);
-		++num_transf;
+	/* RFC 9370: echo each negotiated ADDKE round as its own transform
+	 * type ADDKE1..ADDKE7 (only for rounds the peer proposed and we
+	 * selected; NONE-method rounds are omitted).  A legacy single-
+	 * round descriptor (addke set, nrounds 0) still emits one type-6,
+	 * and a classical SA emits none. */
+	{
+		int nr = sa->addke_nrounds;
+		int r;
+
+		if (nr <= 1 && sa->addke != 0 && (nr == 0 ||
+		    sa->addke_methods[0] == (unsigned int)sa->addke)) {
+			/* single negotiated round (or legacy descriptor) */
+			if (buf)
+				prev = ikev2_transform_header(p, prev,
+				    sizeof(struct ikev2transform),
+				    IKEV2TRANSFORM_TYPE_ADDKE,
+				    (uint32_t)sa->addke);
+			p += sizeof(struct ikev2transform);
+			++num_transf;
+		} else {
+			for (r = 0; r < nr; r++) {
+				if (sa->addke_methods[r] == 0)
+					continue;	/* NONE: skip round */
+				if (buf)
+					prev = ikev2_transform_header(p, prev,
+					    sizeof(struct ikev2transform),
+					    IKEV2TRANSFORM_TYPE_ADDKE + r,
+					    sa->addke_methods[r]);
+				p += sizeof(struct ikev2transform);
+				++num_transf;
+			}
+		}
 	}
 
 	if (buf) {
