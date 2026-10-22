@@ -84,7 +84,7 @@ eay_set_random(uint32_t size)
 	if (buf) {
 		uint32_t i;
 		for (i = 0; i < size; i++)
-			buf->v[i] = (u_char)(0xA0 + i);
+			buf->v[i] = (unsigned char)(0xA0 + i);
 	}
 	return buf;
 }
