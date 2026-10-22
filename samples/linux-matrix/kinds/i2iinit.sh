@@ -884,21 +884,21 @@ fi
 	# after the last round (c3ba071).  up=1 then proves the RFC 9370 s2.2.2
 	# SKEYSEED chain + PPK-mixed keys matched both sides.  A PPK applied
 	# per-round emits N markers and the AUTH never verifies (child not UP).
-	mr_ok=1
+	mr_ok=1; wt_ok=1
 	if [ "$NROUNDS" -gt 1 ]; then
 		rnd_c_i=$(grep -c 'IKE_INTERMEDIATE ADDKE round complete' "$D/init-iked.log" 2>/dev/null || true)
 		rnd_c_r=$(grep -c 'IKE_INTERMEDIATE ADDKE round complete' "$D/resp-iked.log" 2>/dev/null || true)
 		for th in $MR_HEX; do
-			[ "$(grep -c "IKE_SA_INIT SA_hex=.*$th" "$D/init-iked.log" 2>/dev/null || true)" -ge 1 ] || mr_ok=0
+			[ "$(grep -c "IKE_SA_INIT SA_hex=.*$th" "$D/init-iked.log" 2>/dev/null || true)" -ge 1 ] || wt_ok=0
 		done
 		ppk_i=$(grep -c 'RFC 8784: PPK applied after intermediate round' "$D/init-iked.log" 2>/dev/null || true)
 		ppk_r=$(grep -c 'RFC 8784: PPK applied after intermediate round' "$D/resp-iked.log" 2>/dev/null || true)
 		if [ "$rnd_c_i" -ge "$NROUNDS" ] && [ "$rnd_c_r" -ge "$NROUNDS" ] \
-		   && [ "$ppk_i" -eq 1 ] && [ "$ppk_r" -eq 1 ] && [ "$mr_ok" -eq 1 ]; then
+		   && [ "$ppk_i" -eq 1 ] && [ "$ppk_r" -eq 1 ] && [ "$wt_ok" -eq 1 ]; then
 			log "MULTI-ROUND INITIAL IKE_SA: $NROUNDS rounds (types 6..$((6+NROUNDS-1)) in SAi1), round-complete x${rnd_c_i}/${rnd_c_r}, PPK applied exactly once per seat (i=$ppk_i r=$ppk_r), child UP => SKEYSEED + PPK keymat matched"
 		else
 			mr_ok=0
-			log "FAIL: multi-round initial ADDKE incomplete (rounds_i=$rnd_c_i rounds_r=$rnd_c_r want=$NROUNDS ppk_i=$ppk_i ppk_r=$ppk_r want_each=1 wire_types_ok=$mr_ok)"
+			log "FAIL: multi-round initial ADDKE incomplete (rounds_i=$rnd_c_i rounds_r=$rnd_c_r want=$NROUNDS ppk_i=$ppk_i ppk_r=$ppk_r want_each=1 wire_types_ok=$wt_ok)"
 		fi
 	fi
 
