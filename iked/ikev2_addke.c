@@ -69,6 +69,7 @@
 #include "ikev2.h"
 #include "ikev2_impl.h"
 #include "crypto_impl.h"	/* random_bytes() — mint fresh per-round links */
+#include "debug.h"		/* TRACE() */
 #include "plog.h"
 
 /*
