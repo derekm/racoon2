@@ -64,6 +64,31 @@ plog_location(const char *file, int line, const char *func)
  * the crypto self-test; stub so the TU links standalone. */
 struct isakmpstat isakmpstat;
 
+/* TRACE() (debug.h) and eay_set_random() (crypto_impl.h) are referenced
+ * by ikev2_addke.c's responder followup (which now mints a fresh per-round
+ * link with random_bytes()); stub so the standalone TU links.  debug_trace
+ * stays 0 so the trace calls are runtime no-ops. */
+int debug_trace;
+
+void
+trace_debug(const char *location, const char *fmt, ...)
+{
+	(void)location; (void)fmt;
+}
+
+rc_vchar_t *
+eay_set_random(uint32_t size)
+{
+	rc_vchar_t *buf = rc_vmalloc(size);
+
+	if (buf) {
+		uint32_t i;
+		for (i = 0; i < size; i++)
+			buf->v[i] = (u_char)(0xA0 + i);
+	}
+	return buf;
+}
+
 /* the followup-link tests below read back the last log line and the
  * notify the handler answered with */
 static char last_log[256];
