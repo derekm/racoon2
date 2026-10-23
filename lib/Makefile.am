@@ -37,7 +37,13 @@ LOG_COMPILER = $(SHELL) $(srcdir)/sample-wrapper.sh
 AM_TESTS_ENVIRONMENT = R2_SAMPLE_CONF='$(abs_srcdir)/../samples/libsample.conf'; export R2_SAMPLE_CONF;
 kmtest_SOURCES = kmtest.c kmtest_backend.c
 if USE_XFRM
-TESTS += xfrmnatt xfrmtmpl xfrmnltest
+# xfrmnatt and xfrmtmpl talk to the REAL kernel (guarded only by
+# geteuid()/return-77) and are kernel-mutating, so auto-running them from
+# `make check` on a dev box is hostile. Build them (check_PROGRAMS) but keep
+# them OUT of TESTS; run them manually as root when live coverage is wanted.
+# Hermetic xfrmnltest (#includes if_xfrm.c under XFRM_UNITTEST, mocks the
+# kernel over a socketpair) stays in the default check.
+TESTS += xfrmnltest
 check_PROGRAMS += xfrmnatt xfrmtmpl xfrmnltest
 # xfrmnltest #includes if_xfrm.c (XFRM_UNITTEST) and mocks the kernel
 # with socketpairs; libracoon only supplies plog/rcs_* helpers.

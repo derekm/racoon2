@@ -574,6 +574,16 @@ isakmp_open_address(struct sockaddr *addr, int port)
 	}
 
 	if (inherited < 0) {
+		/* Allow a restart to rebind 500/4500 when the previous
+		 * instance's socket is still lingering (graceful-stop or a
+		 * not-yet-reaped child); best-effort, never fatal. */
+#ifdef SO_REUSEADDR
+		{
+			int one = 1;
+			(void)setsockopt(p->sock, SOL_SOCKET, SO_REUSEADDR,
+				    (const void *)&one, sizeof(one));
+		}
+#endif
 		if (bind(p->sock, sa, SOCKADDR_LEN(sa)) < 0) {
 			if (rc_listenfds() > 0 && errno == EADDRINUSE) {
 				plog(PLOG_DEBUG, PLOGLOC, NULL,
