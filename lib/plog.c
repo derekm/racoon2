@@ -159,14 +159,29 @@ static void
 plog_output(int tag, struct rc_log *plg, const char *msg)
 {
 	char timestamp[20];	/* "%Y-%m-%d %T" */
-	struct tm *tm;
+	struct tm tm, *tm_p;
 	time_t t;
 	int found, pri;
 	size_t i;
 
 	t = time(NULL);
-	tm = localtime(&t);
-	if (strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %T", tm) == 0)
+#ifdef HAVE_PTHREAD
+	/* Worker threads (crypto/EAP jobs) and the main loop both log;
+	 * localtime() returns a process-wide static struct and races.
+	 * localtime_r fills the caller's stack tm instead. */
+	tm_p = localtime_r(&t, &tm) == NULL ? NULL : &tm;
+#else
+	/* Single-threaded build: copy off the static result anyway so
+	 * both paths use a local tm, never the shared buffer. */
+	tm_p = localtime(&t);
+	if (tm_p) {
+		tm = *tm_p;
+		tm_p = &tm;
+	}
+#endif
+	if (tm_p == NULL ||
+	    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %T",
+		     tm_p) == 0)
 		timestamp[0] = '\0';
 
 	if (output_stdout) {
