@@ -72,6 +72,11 @@
 
 #include "racoon.h"
 
+/* Bounded retries for an xfrm resync dump that keeps overflowing the
+ * request socket mid-dump (sustained event storm); beyond this the
+ * resync gives up with EAGAIN instead of recursing without bound. */
+#define XFRM_RESYNC_MAX_RETRY	5
+
 #ifndef IPPROTO_ESP
 #define IPPROTO_ESP 50
 #endif
@@ -306,6 +311,13 @@ pending_clear(void)
 static void
 pending_set(struct rcpfk_msg *rc, int type, uint32_t seq)
 {
+	/* NOTE: overlapping ops DO occur (the xfrmnltest harness proves a
+	 * second pending_set can fire while one op is outstanding). A hard
+	 * assert here crashes on that. The real defect is that a second op
+	 * overwrites the single pending slot and the first op's reply is
+	 * then not "ours", silently dropping its callback. Tracked: needs an
+	 * outstanding-op queue keyed by seq (see plan 2026-10-23_xfrm-review-
+	 * followups KR-9) instead of one slot. */
 	pending_type = type;
 	pending_seq = seq;
 	pending_spi = rc->spi;
@@ -2449,7 +2461,12 @@ xfrm_resync(struct rcpfk_msg *rc)
 {
 	struct rcpfk_msg tmp;
 	int r, ret = 0;
+	/* Iterative restart, depth-bounded: a request socket that keeps
+	 * overflowing during the resync dump (sustained event storm) must
+	 * not recurse without bound. */
+	int restart = 0;
 
+restart_resync:
 	xfrm_need_resync = 0;
 	xfrm_stat_resync++;
 	resync_count++;
@@ -2484,7 +2501,12 @@ xfrm_resync(struct rcpfk_msg *rc)
 			plog(PLOG_INTWARN, PLOGLOC, NULL,
 			    "xfrm: resync dump overflowed, restarting\n");
 			resync_sa_seq = resync_spd_seq = 0;
-			return xfrm_resync(rc);
+			if (++restart > XFRM_RESYNC_MAX_RETRY) {
+				xfrm_seterror(rc, EAGAIN,
+				    "resync dump restart exceeded retry cap");
+				return -1;
+			}
+			goto restart_resync;
 		}
 	}
 	plog(PLOG_INFO, PLOGLOC, NULL, "xfrm: SAD/SPD resync %u complete\n",

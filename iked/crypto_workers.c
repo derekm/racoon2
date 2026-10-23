@@ -92,9 +92,17 @@ crypto_workers_init(int nthreads)
 #endif
 #ifdef O_NONBLOCK
 	{
+		/* Both ends non-blocking: the read side so drain() never
+		 * blocks, the write side so a worker in notify_write()
+		 * cannot stall in a full pipe (a full pipe already carries
+		 * a pending byte and drain is level-triggered, so an EAGAIN
+		 * drop cannot lose the wakeup). */
 		int fl = fcntl(notify[0], F_GETFL);
 		if (fl >= 0)
 			(void)fcntl(notify[0], F_SETFL, fl | O_NONBLOCK);
+		fl = fcntl(notify[1], F_GETFL);
+		if (fl >= 0)
+			(void)fcntl(notify[1], F_SETFL, fl | O_NONBLOCK);
 	}
 #endif
 #ifndef HAVE_PTHREAD

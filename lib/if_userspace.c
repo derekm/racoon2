@@ -329,8 +329,11 @@ rcpfk_send_get(struct rcpfk_msg *rc)
 int
 rcpfk_send_acquire(struct rcpfk_msg *rc)
 {
-	(void)rc;
-	return 0;
+	/* A silent success here would make on-demand IKE initiation from a
+	 * trap policy never happen while the daemon looks fine; fail loudly
+	 * like migrate. */
+	us_seterror(rc, EOPNOTSUPP, "userspace acquire not implemented");
+	return -1;
 }
 
 int
@@ -366,15 +369,15 @@ rcpfk_send_spddelete2(struct rcpfk_msg *rc)
 int
 rcpfk_send_spdget(struct rcpfk_msg *rc)
 {
-	(void)rc;
-	return 0;
+	us_seterror(rc, EOPNOTSUPP, "userspace spdget not implemented");
+	return -1;
 }
 
 int
 rcpfk_send_spddump(struct rcpfk_msg *rc)
 {
-	(void)rc;
-	return 0;
+	us_seterror(rc, EOPNOTSUPP, "userspace spddump not implemented");
+	return -1;
 }
 
 int
