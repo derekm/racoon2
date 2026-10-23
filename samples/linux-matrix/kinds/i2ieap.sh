@@ -295,7 +295,14 @@ EOF
 	( ip netns exec "$NSR" env "$SSLENV" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	RSPMD=$!
 	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSR" env "$SSLENV" RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
+	# Honor the row's workers cell: with a numeric R2_WORKERS the iked must
+	# run the crypto worker pool so the EAP RADIUS round executes on a worker
+	# thread instead of inlining into the select loop (a multi-second RADIUS
+	# round on a real link would otherwise block every other SA). The gate
+	# below asserts the 'crypto workers: N' startup line when N>0.
+	_R2WKP=""
+	[ -n "${R2_WORKERS:-}" ] && _R2WKP="RACOON2_CRYPTO_WORKERS=$R2_WORKERS"
+	( ip netns exec "$NSR" env "$SSLENV" ${_R2WKP:+$_R2WKP RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R"} \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0003 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 	IKE_RPID=$!
 	sleep 2
@@ -344,6 +351,20 @@ EOF
 	if [ "${re:-0}" -lt 2 ]; then
 		log "FAIL: responder ESP states <2 ($re)"
 		fail=1
+	fi
+	# Pool-enabled proof: with a numeric workers cell the daemon must have
+	# started its crypto worker pool (non-inline EAP round). This is what
+	# closes the "EAP blocks the select loop" gate.
+	if [ -n "${R2_WORKERS:-}" ] && [ "${R2_WORKERS:-0}" -gt 0 ]; then
+		if ! grep -q "crypto workers: $R2_WORKERS" "$D/resp-iked.log"; then
+			log "FAIL: responder iked did not start crypto workers=$R2_WORKERS (EAP round would block the loop)"
+			fail=1
+		elif grep -q "crypto workers: 0" "$D/resp-iked.log"; then
+			log "FAIL: responder iked fell back to workers=0"
+			fail=1
+		else
+			log "EAP pooled: responder iked crypto workers=$R2_WORKERS (non-inline RADIUS round)"
+		fi
 	fi
 
 	method=MSCHAPv2; [ "$I2IEAP_TLS" -eq 1 ] && method=EAP-TLS
