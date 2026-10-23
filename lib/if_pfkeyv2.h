@@ -61,10 +61,11 @@
  * (*BSD PF_KEY), lib/if_xfrm.c (Linux NETLINK_XFRM), and lib/if_userspace.c
  * (loopback stub). The XFRM backend synthesizes the PF_KEY-isms
  * (spi/satype/samode/lifetimes); the userspace backend fakes them. Treat it
- * as a compatibility shim over kernel state, not as authoritative. XFRM-native
- * concepts (offload dev, if_id, mark) have no field here by design. The
- * `pfkey_*` names in spmd are the legacy label for this same portable ABI, not
- * a claim that raw PF_KEYv2 is spoken.
+ * as a compatibility shim over kernel state, not as authoritative. The
+ * XFRM-native concepts below (mark, if_id, device offload) have no PF_KEY
+ * spelling; the *BSD and loopback backends ignore them. The `pfkey_*` names
+ * in spmd are the legacy label for this same portable ABI, not a claim that
+ * raw PF_KEYv2 is spoken.
  */
 struct rcpfk_msg {
 	int so;				/* KM fd: PF_KEY, NETLINK_XFRM, or userspace loopback */
@@ -129,6 +130,19 @@ struct rcpfk_msg {
 	uint16_t natt_sport;
 	uint16_t natt_dport;
 	uint8_t natt_type;		/* 0 unset; Linux UDP_ENCAP_ESPINUDP */
+
+	/* --- XFRM-native policy/offload (Linux NETLINK_XFRM only). *BSD
+	 * PF_KEY and the loopback userspace backend have no equivalent and
+	 * ignore these; 0/"" = unset. These are the features XFRM supports
+	 * that PF_KEY has no spelling for. Set by the config/grammar layer;
+	 * emitted by the XFRM backend (lib/if_xfrm.c) as XFRMA_MARK,
+	 * XFRMA_IF_ID and XFRMA_OFFLOAD_DEV. --- */
+	uint32_t mark;			/* XFRMA_MARK value (honored with mark_mask) */
+	uint32_t mark_mask;		/* XFRMA_MARK mask; non-zero => emit */
+	uint32_t if_id;			/* XFRMA_IF_ID: per-SA/policy interface/VRF */
+	uint32_t offload_ifindex;	/* XFRMA_OFFLOAD_DEV: device ifindex */
+	uint8_t offload_flags;		/* XFRM_OFFLOAD_* (direction) or 0 = unset */
+	char offload_ifname[16];	/* offload device name; resolved to ifindex at send */
 
 	/* internal buffers; no need to touch from external */
 	struct sockaddr_storage sa_src_storage;

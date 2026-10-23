@@ -57,6 +57,7 @@
 #endif
 
 #include <netinet/in.h>
+#include <net/if.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1108,6 +1109,11 @@ xfrm_nlmsg(char *buf, size_t buflen, uint16_t type, uint16_t flags,
 	return n;
 }
 
+static int add_xfrm_mark_ifid_attrs(struct nlmsghdr *, size_t,
+    struct rcpfk_msg *);
+static int add_xfrm_offload_attr(struct nlmsghdr *, size_t,
+    struct rcpfk_msg *);
+
 static int
 xfrm_send_sa(struct rcpfk_msg *rc, uint16_t nltype)
 {
@@ -1136,9 +1142,77 @@ xfrm_send_sa(struct rcpfk_msg *rc, uint16_t nltype)
 		    add_replay_esn_attr(n, sizeof(buf), rc))
 			return -1;
 	}
+	/* XFRM-native: mark / if_id / device offload (offload is SA-only). */
+	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc) ||
+	    add_xfrm_offload_attr(n, sizeof(buf), rc))
+		return -1;
 	pending_set(rc, nltype, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
 }
+
+/*
+ * XFRM-native policy/offload attributes (mark, if_id; plus the device offload
+ * on the SA path). PF_KEY has no spelling for these; only the Linux backend
+ * emits them, and only when the compile-time headers know the attribute
+ * (guarded so an older kernel UAPI header still compiles). The *BSD PF_KEY and
+ * loopback backends ignore the rcpfk_msg fields entirely.
+ */
+static int
+add_xfrm_mark_ifid_attrs(struct nlmsghdr *n, size_t maxlen,
+    struct rcpfk_msg *rc)
+{
+#if defined(XFRMA_MARK) && defined(XFRMA_IF_ID)
+	if (rc->mark_mask != 0) {
+		struct xfrm_mark m;
+
+		memset(&m, 0, sizeof(m));
+		m.v = rc->mark;
+		m.m = rc->mark_mask;
+		if (xfrm_addattr(n, maxlen, XFRMA_MARK, &m, sizeof(m)))
+			return -1;
+	}
+	if (rc->if_id != 0)
+		if (xfrm_addattr(n, maxlen, XFRMA_IF_ID, &rc->if_id,
+		    sizeof(rc->if_id)))
+			return -1;
+#else
+	(void)n;
+	(void)maxlen;
+	(void)rc;
+#endif
+	return 0;
+}
+
+static int
+add_xfrm_offload_attr(struct nlmsghdr *n, size_t maxlen,
+    struct rcpfk_msg *rc)
+{
+#ifdef XFRMA_OFFLOAD_DEV
+	struct xfrm_user_offload od;
+	uint32_t idx = rc->offload_ifindex;
+
+	if (rc->offload_flags == 0)
+		return 0;	/* offload not requested */
+	if (idx == 0 && rc->offload_ifname[0] != '\0')
+		idx = if_nametoindex(rc->offload_ifname);
+	if (idx == 0) {
+		xfrm_seterror(rc, ENODEV, "offload device %s not found",
+		    rc->offload_ifname[0] ? rc->offload_ifname :
+		    "(no ifindex)");
+		return -1;
+	}
+	memset(&od, 0, sizeof(od));
+	od.ifindex = (int)idx;
+	od.flags = rc->offload_flags;
+	return xfrm_addattr(n, maxlen, XFRMA_OFFLOAD_DEV, &od, sizeof(od));
+#else
+	(void)n;
+	(void)maxlen;
+	(void)rc;
+	return 0;
+#endif
+}
+
 
 int
 rcpfk_init(struct rcpfk_msg *rc, struct rcpfk_cb *cb0)
@@ -1334,6 +1408,9 @@ xfrm_send_policy(struct rcpfk_msg *rc, uint16_t nltype)
 		xfrm_seterror(rc, EINVAL, "invalid pltype=%d", rc->pltype);
 		return -1;
 	}
+	/* XFRM-native: mark / if_id on the policy (offload is SA-only). */
+	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
+		return -1;
 	pending_set(rc, nltype, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
 }
