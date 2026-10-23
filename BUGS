@@ -1,5 +1,7 @@
 $Id: BUGS,v 1.30 2009/03/26 04:26:00 fukumoto Exp $
 
+Entries are tagged by status; STALE-2009 retained for history but likely fixed in the modern XFRM era.
+
 common issues
 
    + Lifetime of byte only works on Linux based OS, though racoon2 will
@@ -7,6 +9,7 @@ common issues
      a matter of racoon2.  The kernel code has to be fixed in order to use
      this function.  The XFRM backend installs both byte and time hard/soft
      limits (XFRM_INF when the racoon value is 0).
+[STALE-2009 likely-FIXED]
 
    + Linux SAD/SPD default is NETLINK_XFRM (`--with-km-backend=xfrm`).
      AF_KEY (CONFIG_NET_KEY) drops dumps/ACQUIRE/EXPIRE when the
@@ -15,12 +18,14 @@ common issues
      state/policy` after iked+spmd matches that sel. After a failed
      IKEv1 session, leftover SAs are not auto-flushed: `ip xfrm
      state flush` / `ip xfrm policy flush` (or reboot).
+[OPEN]
 
    + --with-km-backend=userspace is a loopback + optional unix datagram
      to RACOON2_DATAPLANE_SOCK. It is not a DPDK fast path. Do not add
      XFRMA_OFFLOAD_DEV / if_id until ethtool shows non-[fixed]
      esp-hw-offload. rcpfk_* is the southbound ABI; do not add a second
      vtable.
+[OPEN]
 
    + NetBSD kernel that enabled NAT-T, which you defined options IPSEC_NAT_T
      when you built your kernel, can not send packets which triggered
@@ -29,16 +34,19 @@ common issues
      pair of SAs into the kernel, but the kernel seems not to find a
      suitable SA.  Currently, we are not thinking that this is a bug
      of racoon2. This is most likely fixed in NetBSD > 8.0.
+[STALE-2009 likely-FIXED]
 
    + IKEv1 connections do not work after an IKEv2 connection has been
      made without rebooting the system. It is not sufficient to restart
      racoon2. The issue currently being investigated.
+[STALE-2009 likely-FIXED]
 
 spmd(8)
 
    + In some configurations, spmd(8) does not install the desired
      security policies into the kernel. The issue currently being
      investigated.
+[STALE-2009 likely-FIXED]
 
 iked(8)
 
@@ -50,54 +58,68 @@ iked(8)
      message may be cryptic, since it is not checked by configuration
      check routine of iked. (Probably it will result in "no proposal
      chosen".)
+[OPEN]
 
    + SA bundles (e.g. AH+ESP) does not conform to protocol spec.
+[OPEN]
 
    + The certificate authentication method is not yet tested.
+[CONFIRMED-FIXED e7a7283]
 
    + After rekeying IKE_SA, iked may spit some warning messages, if
      the rekey negotiation or delete request was started from both
      ends at once.
+[STALE-2009 likely-FIXED]
 
    + NAT-T is not available on Mac OS X. We could not specify the second
      binding port (i.e. 4500), which are usually used for NAT-T. If you
      specify it, racoon2 cannot send packets. So please use --disable-natt
      when compiling.
+[STALE-2009 likely-FIXED]
 
    + IKEv1 NAT-T only works under limited situations in which
      a user knows the outer address of the NAT box in advance and
      configures the address into peers_ipaddr and peers_sa_ipaddr.
      If you would like to use NAT-T automatically, please use IKEv2
      protocol instead.
+[OPEN]
 
    + In IKEv1 phase 1, only Main mode is supported.
      (Aggressive mode is not supported.)
+[OPEN]
 
    + Due to a Linux kernel bug (as of 2.6.22), IKEv1 Dead-Peer
      Detection cannot be used on Linux.  That is, non-zero dpd_delay
      may NOT be specified in configuration.
+[STALE-2009 likely-FIXED]
 
    + DH negotiation with MODP Group 3072-bit and 6144-bit are broken
      on x86 machines with some versions of OpenSSL.  It probably appears
      OpenSSL 0.9.8f and fixed in 0.9.8h.  For more information, please
      refer to
      http://www.mail-archive.com/openssl-dev@openssl.org/msg23228.html
+[STALE-2009 likely-FIXED]
 
 
 kinkd(8)
 
    + User-to-User mode is not yet available (and thus the GETTGT command
      and related payloads are not yet implemented).
+[STALE-2009]
 
    + Retrieving ticket is currently implemented as a blocking
      operation.  Therefore kinkd will be stalled for a while if there
      is no answer from the KDC (the KDC is not responding, packets
      are dropped, etc).
+[STALE-2009]
 
    + The replay cache is not preserved across restarts.
+[STALE-2009]
 
    + When linked with the MIT krb5 library, the credential cache size
      (thus the virtual size of the daemon) will continue to grow and
      never be reduced.
+[STALE-2009]
 
    + SA bundles (e.g. AH+ESP) in tunnel mode do not work.
+[STALE-2009]
