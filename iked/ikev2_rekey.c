@@ -1144,6 +1144,11 @@ ikev2_rekey_responder_tail(struct ikev2_rekey_responder_ctx *ctx)
 #ifdef WITH_ADDKE
 	if (new_sa->negotiated_sa && new_sa->negotiated_sa->addke != 0) {
 		old_sa->addke_rekey_pending = 1;
+		old_sa->addke_rekey_round = 0;
+		if (old_sa->addke_rekey_sk) {
+			rc_vfreez(old_sa->addke_rekey_sk);
+			old_sa->addke_rekey_sk = NULL;
+		}
 		old_sa->addke_rekey_link = random_bytes(16);
 		if (!old_sa->addke_rekey_link)
 			goto fail;
@@ -1274,6 +1279,11 @@ ikev2_addke_rekey_timeout(void *param)
 
 	old_sa->addke_rekey_timer = NULL;
 	old_sa->addke_rekey_pending = 0;
+	old_sa->addke_rekey_round = 0;
+	if (old_sa->addke_rekey_sk) {
+		rc_vfreez(old_sa->addke_rekey_sk);
+		old_sa->addke_rekey_sk = NULL;
+	}
 #ifdef WITH_ADDKE
 	if (old_sa->addke_rekey_init != NULL) {
 		ikev2_rekey_ikesa_init_abandon(old_sa);
@@ -1330,16 +1340,138 @@ ikev2_rekey_abandon_parked(struct ikev2_sa *old_sa)
 }
 
 /*
- * Complete a deferred ADDKE IKE-SA rekey once the IKE_FOLLOWUP_KE
- * supplied SK(1): SKEYSEED = prf(SK_d, g^ir | Ni | Nr | SK(1))
+ * One responder IKE-SA-rekey ADDKE round.
+ * Appends this round's shared secret to old_sa->addke_rekey_sk.
+ * Returns 1 if a non-final reply (KEr + a fresh 16441) was sent and the
+ * rekey stays parked for the next followup.  Returns 0 if this was the
+ * final round: the caller must ikev2_rekey_responder_addke_complete()
+ * with old_sa->addke_rekey_sk (SK(1)|...|SK(n)).  Returns -1 on error.
+ *
+ * RFC 9370 s2.2.4: every non-final IKE_FOLLOWUP_KE response MUST carry a
+ * fresh ADDITIONAL_KEY_EXCHANGE link.  Completing after SK(1) and
+ * replying KE-only left iOS's round-2 request with no link to echo
+ * (chain: 34 only); we then rejected it and the phone deleted the SA.
+ */
+int
+ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
+				  rc_vchar_t *ct, uint32_t msgid,
+				  unsigned int ke_method)
+{
+	struct ikev2_rekey_responder_ctx *ctx;
+	struct ikev2_sa *new_sa;
+	int nrounds, round;
+	unsigned int expect;
+	rc_vchar_t *acc;
+
+	if (!old_sa || !ss || !ct)
+		return -1;
+	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
+	new_sa = old_sa->new_sa;
+	if (!ctx || !new_sa || !new_sa->negotiated_sa)
+		return -1;
+
+	nrounds = new_sa->negotiated_sa->addke_nrounds;
+	if (nrounds <= 0)
+		nrounds = new_sa->negotiated_sa->addke != 0 ? 1 : 0;
+	round = old_sa->addke_rekey_round;
+	if (round < 0 || round >= nrounds || round >= 8)
+		return -1;
+	expect = new_sa->negotiated_sa->addke_methods[round];
+	if (expect == 0)
+		expect = (unsigned int)new_sa->negotiated_sa->addke;
+	if (ke_method != expect) {
+		isakmp_log(old_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE-SA rekey followup method %u != round %d "
+			   "method %u\n",
+			   ke_method, round, expect);
+		return -1;
+	}
+
+	acc = rc_vmalloc((old_sa->addke_rekey_sk ?
+			  old_sa->addke_rekey_sk->l : 0) + ss->l);
+	if (!acc)
+		return -1;
+	if (old_sa->addke_rekey_sk) {
+		memcpy(acc->v, old_sa->addke_rekey_sk->v,
+		       old_sa->addke_rekey_sk->l);
+		rc_vfreez(old_sa->addke_rekey_sk);
+	}
+	memcpy((uint8_t *)acc->v + acc->l - ss->l, ss->v, ss->l);
+	old_sa->addke_rekey_sk = acc;
+
+	if (round + 1 < nrounds) {
+		rc_vchar_t *new_link;
+		struct ikev2_payloads payl;
+		struct ikev2payl_ke_h keh;
+		rc_vchar_t *ker = 0;
+		rc_vchar_t *pkt = 0;
+
+		new_link = random_bytes(16);
+		if (!new_link)
+			return -1;
+		ikev2_payloads_init(&payl);
+		memset(&keh, 0, sizeof(keh));
+		keh.dh_group_id = htons((uint16_t)ke_method);
+		ker = rc_vprepend(ct, &keh, sizeof(keh));
+		if (!ker) {
+			ikev2_payloads_destroy(&payl);
+			rc_vfree(new_link);
+			return -1;
+		}
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ker, FALSE);
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(
+					IKEV2_NOTIFY_PROTO_NONE, 0, 0,
+					IKEV2_ADDITIONAL_KEY_EXCHANGE,
+					new_link->v, new_link->l),
+				    TRUE);
+		pkt = ikev2_packet_construct(
+			IKEV2EXCH_IKE_FOLLOWUP_KE,
+			(old_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
+			IKEV2FLAG_RESPONSE,
+			msgid, old_sa, &payl);
+		rc_vfree(ker);
+		if (!pkt) {
+			ikev2_payloads_destroy(&payl);
+			rc_vfree(new_link);
+			return -1;
+		}
+		if (ikev2_transmit_response(old_sa, pkt, ctx->local,
+					    ctx->remote) != 0) {
+			ikev2_payloads_destroy(&payl);
+			rc_vfree(new_link);
+			return -1;
+		}
+		ikev2_payloads_destroy(&payl);
+		rc_vfreez(old_sa->addke_rekey_link);
+		old_sa->addke_rekey_link = new_link;
+		old_sa->addke_rekey_round = round + 1;
+		if (old_sa->addke_rekey_timer)
+			SCHED_KILL(old_sa->addke_rekey_timer);
+		old_sa->addke_rekey_timer =
+		    sched_new(10, ikev2_addke_rekey_timeout, old_sa);
+		isakmp_log(old_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "IKE-SA rekey ADDKE round %d/%d done; minted "
+			   "followup link\n",
+			   round + 1, nrounds);
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * Complete a deferred ADDKE IKE-SA rekey once the final IKE_FOLLOWUP_KE
+ * supplied the last SK(n): SKEYSEED = prf(SK_d, g^ir | Ni | Nr | SK(1)|...)
  * (rfc9370 s2.2.4), then keys/adopt/establish.  Called from
- * ikev2_followup_ke_recv() on the IKE thread.
+ * ikev2_followup_ke_recv() on the IKE thread.  ke_method is this round's
+ * KE group id (the final round is not necessarily methods[0]).
  */
 int
 ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 				     rc_vchar_t *addke_sk,
 				     rc_vchar_t *ct,
-				     uint32_t followup_msgid)
+				     uint32_t followup_msgid,
+				     unsigned int ke_method)
 {
 	struct ikev2_rekey_responder_ctx *ctx;
 	struct ikev2_sa *new_sa;
@@ -1361,6 +1493,9 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 
 	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir, addke_sk) != 0)
 		goto fail;
+	rc_vfreez(old_sa->addke_rekey_sk);
+	old_sa->addke_rekey_sk = NULL;
+	old_sa->addke_rekey_round = 0;
 	if (ikev2_rekey_responder_finish(ctx) != 0)
 		goto fail;
 	/* success: the rekeyed SA is complete in its own right (already in
@@ -1387,8 +1522,7 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 
 		ikev2_payloads_init(&payl);
 		memset(&keh, 0, sizeof(keh));
-		keh.dh_group_id =
-		    htons((uint16_t)new_sa->negotiated_sa->addke);
+		keh.dh_group_id = htons((uint16_t)ke_method);
 		ker = rc_vprepend(ct, &keh, sizeof(keh));
 		if (!ker) {
 			ikev2_payloads_destroy(&payl);
@@ -1479,6 +1613,9 @@ struct ikev2_rekey_init_recv_ctx {
 	int addke_deferred;	/* defer SKEYSEED pending the followup */
 	void *addke_priv;	/* EVP_PKEY * (ML-KEM private key) */
 	int addke_method;	/* negotiated ADDKE method id */
+	int addke_round;	/* completed followup rounds */
+	int addke_nrounds;	/* negotiated rounds (1 if legacy) */
+	int addke_final;	/* last followup response decapsulated */
 	rc_vchar_t *addke_link;	/* link echoed in N(16441) */
 	uint32_t addke_followup_msgid;
 	rc_vchar_t *addke_sk;	/* SK(1) once the followup response lands */
@@ -1651,6 +1788,11 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		ctx->addke_deferred = 1;
 		ctx->addke_priv = kp;
 		ctx->addke_method = new_sa->negotiated_sa->addke;
+		ctx->addke_round = 0;
+		ctx->addke_nrounds =
+		    new_sa->negotiated_sa->addke_nrounds > 0 ?
+		    new_sa->negotiated_sa->addke_nrounds : 1;
+		ctx->addke_final = 0;
 		/*
 		 * RFC 9370 s2.2.2: the link is the responder's opaque blob
 		 * from N(ADDITIONAL_KEY_EXCHANGE) in this CREATE_CHILD_SA
@@ -1857,11 +1999,15 @@ ikev2_rekey_ikesa_init_followup_send(struct ikev2_sa *old_sa,
  */
 int
 ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *old_sa,
-				      rc_vchar_t *ct)
+				      rc_vchar_t *ct,
+				      const uint8_t *next_link,
+				      size_t next_link_len)
 {
 	struct ikev2_rekey_init_recv_ctx *ctx;
 	EVP_PKEY *kp;
 	rc_vchar_t *ss = NULL;
+	rc_vchar_t *acc;
+	int nrounds;
 
 	ctx = (struct ikev2_rekey_init_recv_ctx *)old_sa->addke_rekey_init;
 	if (!ctx || !ctx->addke_deferred)
@@ -1881,7 +2027,65 @@ ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *old_sa,
 		return -1;
 	}
 	EVP_PKEY_free(kp);
-	ctx->addke_sk = ss;
+	acc = rc_vmalloc((ctx->addke_sk ? ctx->addke_sk->l : 0) + ss->l);
+	if (!acc) {
+		rc_vfree(ss);
+		return -1;
+	}
+	if (ctx->addke_sk) {
+		memcpy(acc->v, ctx->addke_sk->v, ctx->addke_sk->l);
+		rc_vfreez(ctx->addke_sk);
+	}
+	memcpy((uint8_t *)acc->v + acc->l - ss->l, ss->v, ss->l);
+	rc_vfree(ss);
+	ctx->addke_sk = acc;
+
+	nrounds = ctx->addke_nrounds > 0 ? ctx->addke_nrounds : 1;
+	if (ctx->addke_round + 1 < nrounds) {
+		unsigned int next;
+		rc_vchar_t *pub = NULL;
+		EVP_PKEY *nkp = NULL;
+
+		if (!next_link || next_link_len == 0 || next_link_len > 64) {
+			isakmp_log(old_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+				   "IKE-SA rekey followup response missing "
+				   "fresh ADDITIONAL_KEY_EXCHANGE link "
+				   "(round %d/%d)\n",
+				   ctx->addke_round + 1, nrounds);
+			return -1;
+		}
+		if (!ctx->new_sa || !ctx->new_sa->negotiated_sa)
+			return -1;
+		next = ctx->new_sa->negotiated_sa->addke_methods[
+		    ctx->addke_round + 1];
+		if (next == 0 ||
+		    ikev2_addke_mlkem_keygen(next, &pub, &nkp) != 0 ||
+		    !pub || !nkp) {
+			rc_vfree(pub);
+			EVP_PKEY_free(nkp);
+			return -1;
+		}
+		rc_vfreez(ctx->addke_link);
+		ctx->addke_link = rc_vnew(next_link, next_link_len);
+		if (!ctx->addke_link) {
+			rc_vfree(pub);
+			EVP_PKEY_free(nkp);
+			return -1;
+		}
+		ctx->addke_priv = nkp;
+		ctx->addke_method = (int)next;
+		ctx->addke_round++;
+		if (ikev2_rekey_ikesa_init_followup_send(old_sa, ctx,
+							 pub) != 0) {
+			rc_vfree(pub);
+			return -1;
+		}
+		rc_vfree(pub);
+		old_sa->addke_rekey_timer =
+		    sched_new(10, ikev2_addke_rekey_timeout, old_sa);
+		return 0;
+	}
+	ctx->addke_final = 1;
 	if (!ctx->addke_g_ir_ready)
 		return 0;	/* g_ir not computed yet; the tail finishes */
 	ctx->addke_followup_msgid = 0;
@@ -1940,6 +2144,13 @@ ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *ctx)
 		 * the followup-wait timeout NOW that g_ir is done (the ctx
 		 * is stable; dh_done no longer holds it). */
 		ctx->addke_g_ir_ready = 1;
+		if (ctx->addke_nrounds > 1 && !ctx->addke_final) {
+			if (!old_sa->addke_rekey_timer)
+				old_sa->addke_rekey_timer =
+				    sched_new(10, ikev2_addke_rekey_timeout,
+					      old_sa);
+			return;
+		}
 		if (!ctx->addke_sk) {
 			if (!old_sa->addke_rekey_timer)
 				old_sa->addke_rekey_timer =

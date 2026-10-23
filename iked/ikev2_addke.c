@@ -896,14 +896,36 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 					      sizeof(rke->ke_h));
 				if (!rct)
 					return;
-				if (ikev2_rekey_ikesa_init_addke_complete(
-						ike_sa, rct) < 0)
-					isakmp_log(ike_sa, local,
-					    remote, msg, PLOG_INTERR,
-					    PLOGLOC,
-					    "failed completing "
-					    "initiator IKE_SA-rekey "
-					    "ADDKE\n");
+				{
+					const uint8_t *lb = NULL;
+					size_t ll = 0;
+
+					if (rlink) {
+						struct ikev2payl_notify *nt =
+						    (struct ikev2payl_notify *)rlink;
+						size_t dl;
+
+						if (get_payload_length(rlink) >=
+						    (int)(sizeof(*nt) +
+							  nt->nh.spi_size)) {
+							dl = get_payload_length(rlink) -
+							    sizeof(*nt) -
+							    nt->nh.spi_size;
+							if (dl > 0 && dl <= 64) {
+								lb = get_notify_data(nt);
+								ll = dl;
+							}
+						}
+					}
+					if (ikev2_rekey_ikesa_init_addke_complete(
+						ike_sa, rct, lb, ll) < 0)
+						isakmp_log(ike_sa, local,
+						    remote, msg, PLOG_INTERR,
+						    PLOGLOC,
+						    "failed completing "
+						    "initiator IKE_SA-rekey "
+						    "ADDKE\n");
+				}
 				ikev2_update_message_id(ike_sa, rmsgid, TRUE);
 				ikev2_followup_wakeup_next(ike_sa);
 				rc_vfree(rct);
@@ -1240,10 +1262,32 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 
 	/* SK(1) now known: complete the deferred exchange. */
 	if (rekey_link_match) {
-		/* ADDKE IKE-SA rekey: finish SKEYSEED + keys with SK(1),
-		 * reply KEr(1) inside the completion. */
-		if (ikev2_rekey_responder_addke_complete(ike_sa, ss, ct,
-						   get_uint32(&ikehdr->message_id)) < 0) {
+		int rr;
+
+		/*
+		 * Multi-round IKE-SA rekey: a non-final followup mints a
+		 * fresh 16441 and stays parked.  Only the final round
+		 * derives SKEYSEED and establishes the new SA.
+		 */
+		rr = ikev2_rekey_responder_addke_round(ike_sa, ss, ct,
+			get_uint32(&ikehdr->message_id), ke_method);
+		if (rr < 0) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed ADDKE IKE-SA rekey round\n");
+			rc_vfreez(ss);
+			ss = 0;
+			goto invalid;
+		}
+		if (rr > 0) {
+			rc_vfreez(ss);
+			ss = 0;
+			goto done;
+		}
+		if (ikev2_rekey_responder_addke_complete(ike_sa,
+				ike_sa->addke_rekey_sk, ct,
+				get_uint32(&ikehdr->message_id),
+				ke_method) < 0) {
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_INTERR, PLOGLOC,
 				   "failed to complete ADDKE IKE-SA rekey\n");

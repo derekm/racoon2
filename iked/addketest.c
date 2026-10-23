@@ -356,10 +356,20 @@ dh_value_len(struct dhgroup *dhgrp)
 }
 
 int
-ikev2_rekey_responder_addke_complete(struct ikev2_sa *sa, rc_vchar_t *sk,
-				     rc_vchar_t *ct, uint32_t followup_msgid)
+ikev2_rekey_responder_addke_round(struct ikev2_sa *sa, rc_vchar_t *ss,
+				  rc_vchar_t *ct, uint32_t followup_msgid,
+				  unsigned int ke_method)
 {
-	(void)sa; (void)sk; (void)ct; (void)followup_msgid;
+	(void)sa; (void)ss; (void)ct; (void)followup_msgid; (void)ke_method;
+	return 0;
+}
+
+int
+ikev2_rekey_responder_addke_complete(struct ikev2_sa *sa, rc_vchar_t *sk,
+				     rc_vchar_t *ct, uint32_t followup_msgid,
+				     unsigned int ke_method)
+{
+	(void)sa; (void)sk; (void)ct; (void)followup_msgid; (void)ke_method;
 	++n_rekey_complete;
 	return -1;
 }
@@ -372,9 +382,10 @@ ikev2_rekey_ikesa_init_followup_msgid(struct ikev2_sa *sa)
 }
 
 int
-ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *sa, rc_vchar_t *ct)
+ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *sa, rc_vchar_t *ct,
+				      const uint8_t *link, size_t link_len)
 {
-	(void)sa; (void)ct;
+	(void)sa; (void)ct; (void)link; (void)link_len;
 	return -1;
 }
 

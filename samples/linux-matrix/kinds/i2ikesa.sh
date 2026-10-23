@@ -20,6 +20,14 @@ kind_i2ikesa() {
 
 	row_ns "$name"
 	HR=192.0.4.1; HI=192.0.4.2
+	IKE_ADDKE=""
+	FR2=0
+	case "$name" in
+	i2ikesa-addke-fr2)
+		IKE_ADDKE='		addke_alg { mlkem1024; mlkem768; };'
+		FR2=1
+		;;
+	esac
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 
 	cat > "$C/responder.conf" <<EOF
@@ -43,6 +51,7 @@ remote matrix_resp {
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
+		${IKE_ADDKE}
 	};
 	selector_index sel_in;
 };
@@ -98,6 +107,7 @@ remote matrix_init {
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
 		kmp_sa_lifetime_time 30 sec;
+		${IKE_ADDKE}
 	};
 	selector_index sel_in;
 };
@@ -218,6 +228,22 @@ EOF
 	else
 		log "FAIL: IKE_SA rekey not ADDKE/ML-KEM (ikesa=${ikesa:-0})"
 	fi
+	fr2ok=1
+	if [ "${FR2:-0}" -eq 1 ]; then
+		fr2ok=0
+		if ! grep -q 'IKE-SA rekey ADDKE round 1/2 done; minted followup link' "$D/resp-iked.log"; then
+			log "FAIL: responder did not mint a fresh link on non-final IKE-SA rekey followup"
+		elif ! grep -q 'IKE_SA rekey ADDKE SK(1) 64 bytes' "$D/resp-iked.log" \
+		  || ! grep -q 'IKE_SA rekey ADDKE SK(1) 64 bytes' "$D/init-iked.log"; then
+			log "FAIL: two-round IKE-SA rekey did not accumulate SK(1)|SK(2) (64 bytes) on both sides"
+		elif grep -q 'missing KE or ADDITIONAL_KEY_EXCHANGE' "$D/resp-iked.log" \
+		  || grep -q 'missing KE or ADDITIONAL_KEY_EXCHANGE' "$D/init-iked.log"; then
+			log "FAIL: followup rejected for missing link"
+		else
+			fr2ok=1
+			log "IKE-SA rekey 2-round: link minted, SK(1)|SK(2) 64 bytes both sides"
+		fi
+	fi
 
 	# Rekey teardown — MUST actually run the old-SA dispose path, or the
 	# test proves nothing.  The initiator's rekey-done tail starts a wire
@@ -276,6 +302,7 @@ EOF
 	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 
 	if [ "$up" -ne 1 ] || [ "${ikesa:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] \
+	   || [ "${fr2ok:-1}" -ne 1 ] \
 	   || [ "${crash:-0}" -ne 0 ] || [ "${akill:-0}" -ne 0 ] || [ "${del:-0}" -ne 0 ]; then
 		log "FAIL: PQC init-SA + IKE_SA rekey ADDKE incomplete (up=${up:-0} ikesa=${ikesa:-0} pqc=${pqc:-0} crash=${crash:-0} akill=${akill:-0} del=${del:-0})"
 		log "--- init-iked.log (IKE_SA rekey ADDKE) ---"
