@@ -77,8 +77,8 @@ struct rcpfk_msg {
 	struct sockaddr *sa_dst;
 	struct sockaddr *sa2_src;   /* required for pfkey migrate */
 	struct sockaddr *sa2_dst;   /* required for pfkey migrate */
-    struct sockaddr *sa_natoa_src;
-    struct sockaddr *sa_natoa_dst;
+	struct sockaddr *sa_natoa_src;
+	struct sockaddr *sa_natoa_dst;
 	uint32_t spi;
 	uint32_t reqid;
 	uint8_t satype;
@@ -137,8 +137,8 @@ struct rcpfk_msg {
 	struct sockaddr_storage sa2_dst_storage; /* required for pfkey migrate */
 	struct sockaddr_storage sp_src_storage;
 	struct sockaddr_storage sp_dst_storage;
-    struct sockaddr_storage sa_natoa_src_storage;
-    struct sockaddr_storage sa_natoa_dst_storage;
+	struct sockaddr_storage sa_natoa_src_storage;
+	struct sockaddr_storage sa_natoa_dst_storage;
 };
 
 struct rcpfk_cb {

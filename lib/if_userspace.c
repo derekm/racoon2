@@ -421,9 +421,20 @@ rcpfk_handler(struct rcpfk_msg *rc)
 	ssize_t n;
 	int r = 0;
 
-	n = recv(rc->so, buf, sizeof(buf), 0);
+	n = recv(rc->so, buf, sizeof(buf), MSG_TRUNC);
 	if (n < 0) {
 		us_seterror(rc, errno, "%s", strerror(errno));
+		return -1;
+	}
+	/* MSG_TRUNC returns the full datagram length even when the buffer is
+	 * too small. A return above sizeof(buf) means the peer sent a frame
+	 * larger than US_BUFLEN and the tail was dropped by the kernel;
+	 * reject it rather than parse the truncated head as a valid message
+	 * (there is no reassembly above the unix datagram boundary). */
+	if ((size_t)n > sizeof(buf)) {
+		us_seterror(rc, EMSGSIZE,
+		    "userspace datagram %zd exceeds %zu bytes",
+		    n, sizeof(buf));
 		return -1;
 	}
 	if ((size_t)n < sizeof(*h)) {

@@ -23,6 +23,14 @@ endif
 endif
 EXTRA_DIST = if_xfrm.c if_pfkeyv2.c if_userspace.c xfrmnatt.c xfrmtmpl.c xfrmnltest.c
 libracoon_la_LIBADD = $(LTLIBOBJS) -lpcap
+# NOTE: keep the libtool version-info at the default 0:0:0 (soname
+# libracoon.so.0). Bumping it to 1:0:0 (libracoon.so.1) IS the right ABI-drift
+# guard, but it is a coordinated deploy: every consumer (iked/spmd/kinkd) must
+# relink to the new soname and the old .so.0 must be removed in the SAME
+# install, otherwise the prefix ends up with a broken mix (verified 2026-10-23:
+# a piecemeal bump left spmd with DT_NEEDED on both .so.0 and .so.1 and
+# 'libracoon.so.0 => not found'). Do the bump only as a coordinated prod
+# deploy per doc/OPERATIONS.md.
 TESTS = sample kmtest loginkat icketest
 check_PROGRAMS = sample kmtest loginkat icketest
 sample_SOURCES = sample.c
