@@ -153,6 +153,13 @@ us_pack(char *buf, size_t buflen, uint32_t type, struct rcpfk_msg *rc)
 	dl = salen(rc->sa_dst);
 	el = (uint16_t)rc->enckeylen;
 	al = (uint16_t)rc->authkeylen;
+	if ((size_t)el != rc->enckeylen || (size_t)al != rc->authkeylen) {
+		us_seterror(rc, EOVERFLOW,
+		    "key length %zu/%zu exceeds the %u-bit wire key length",
+		    rc->enckeylen, rc->authkeylen,
+		    (unsigned)(sizeof(el) * 8));
+		return -1;
+	}
 	need = sizeof(*h) + sl + dl + el + al;
 	if (need > buflen)
 		return -1;
@@ -257,7 +264,12 @@ rcpfk_init(struct rcpfk_msg *rc, struct rcpfk_cb *cb0)
 	cb = cb0;
 	reply_fd = -1;
 	dp_fd = -1;
-	next_spi = rc_spirange_min;
+	/* Start the userspace SPI sequence at a per-process pseudo-random
+	 * offset so it is not a fixed, predictable base. Still monotonic, so
+	 * SPIs stay unique within this loopback backend for a process. */
+	next_spi = rc_spirange_min +
+	    (uint32_t)(((unsigned long)getpid() * 2654435761u) %
+	    ((uint32_t)rc_spirange_max - rc_spirange_min + 1u));
 	rc->so = -1;
 	if (socketpair(AF_UNIX, type, 0, sp) < 0 &&
 	    socketpair(AF_UNIX, SOCK_DGRAM, 0, sp) < 0 &&

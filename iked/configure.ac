@@ -3,7 +3,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.71])
-AC_INIT([racoon2], [2018-07-09], [racoon2@mailmain.astron.com])
+AC_INIT([racoon2], [1.0.0], [racoon2@mailmain.astron.com])
 AC_CONFIG_MACRO_DIRS([m4])
 AM_INIT_AUTOMAKE([subdir-objects])
 LT_INIT
