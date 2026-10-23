@@ -52,7 +52,20 @@
 #endif
 #define RCPFK_SOCKBUFSIZE	128 * 1024
 
-/* racoon PF_KEY message container */
+/*
+ * struct rcpfk_msg — the portable kernel-management (SAD/SPD) ABI, NOT the
+ * PF_KEYv2 wire format despite the historical filename.
+ *
+ * This is a PF_KEY-shaped message container that the three XOR-compiled
+ * backends all implement through the rcpfk_* entry points: lib/if_pfkeyv2.c
+ * (*BSD PF_KEY), lib/if_xfrm.c (Linux NETLINK_XFRM), and lib/if_userspace.c
+ * (loopback stub). The XFRM backend synthesizes the PF_KEY-isms
+ * (spi/satype/samode/lifetimes); the userspace backend fakes them. Treat it
+ * as a compatibility shim over kernel state, not as authoritative. XFRM-native
+ * concepts (offload dev, if_id, mark) have no field here by design. The
+ * `pfkey_*` names in spmd are the legacy label for this same portable ABI, not
+ * a claim that raw PF_KEYv2 is spoken.
+ */
 struct rcpfk_msg {
 	int so;				/* KM fd: PF_KEY, NETLINK_XFRM, or userspace loopback */
 	char estr[RCPFK_ERRSTRBUFSIZE];
