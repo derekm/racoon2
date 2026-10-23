@@ -299,10 +299,14 @@ EOF
 	# run the crypto worker pool so the EAP RADIUS round executes on a worker
 	# thread instead of inlining into the select loop (a multi-second RADIUS
 	# round on a real link would otherwise block every other SA). The gate
-	# below asserts the 'crypto workers: N' startup line when N>0.
-	_R2WKP=""
-	[ -n "${R2_WORKERS:-}" ] && _R2WKP="RACOON2_CRYPTO_WORKERS=$R2_WORKERS"
-	( ip netns exec "$NSR" env "$SSLENV" ${_R2WKP:+$_R2WKP RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R"} \
+	# below asserts the 'crypto workers: N' startup line when N>0. The sock
+	# and resume dir are passed unconditionally; only the workers var is
+	# conditional (mirrors ikev2.sh so an empty cell cannot drop the other
+	# env).
+	_WK=""
+	[ -n "${R2_WORKERS-}" ] && _WK="RACOON2_CRYPTO_WORKERS=$R2_WORKERS"
+	( ip netns exec "$NSR" env "$SSLENV" RACOON2_ADMIN_SOCK="$SOCK_R" \
+	    RACOON2_RESUME_DIR="$PRIVRES_R" $_WK \
 	    "$SBIN/iked" -F -f "$C/responder.conf" -D 0x0003 -l "$D/resp-iked.log" ) >"$D/resp-iked.out" 2>&1 &
 	IKE_RPID=$!
 	sleep 2

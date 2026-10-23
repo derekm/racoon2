@@ -118,7 +118,7 @@ dnl Checks for library functions.
 AC_FUNC_MEMCMP
 AC_FUNC_STRFTIME
 AC_FUNC_VPRINTF
-AC_CHECK_FUNCS(gettimeofday mktime socket strdup strerror strtol getifaddrs)
+AC_CHECK_FUNCS(gettimeofday mktime socket strdup strerror strtol getifaddrs localtime_r)
 dnl AC_LIBSOURCES([strlcpy.c, strlcat.c, atoll.c, memcmp.c])
 AC_REPLACE_FUNCS(strlcpy strlcat atoll)
 

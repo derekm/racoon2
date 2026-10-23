@@ -165,14 +165,15 @@ plog_output(int tag, struct rc_log *plg, const char *msg)
 	size_t i;
 
 	t = time(NULL);
-#ifdef HAVE_PTHREAD
+#ifdef HAVE_LOCALTIME_R
 	/* Worker threads (crypto/EAP jobs) and the main loop both log;
 	 * localtime() returns a process-wide static struct and races.
 	 * localtime_r fills the caller's stack tm instead. */
 	tm_p = localtime_r(&t, &tm) == NULL ? NULL : &tm;
 #else
-	/* Single-threaded build: copy off the static result anyway so
-	 * both paths use a local tm, never the shared buffer. */
+	/* No localtime_r: copy off the static result so this function
+	 * never formats the shared buffer (still races if another
+	 * thread is mid-localtime(); enable HAVE_LOCALTIME_R to be safe). */
 	tm_p = localtime(&t);
 	if (tm_p) {
 		tm = *tm_p;

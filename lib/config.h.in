@@ -39,6 +39,9 @@
 /* Define to 1 if you have the <linux/xfrm.h> header file. */
 #undef HAVE_LINUX_XFRM_H
 
+/* Define to 1 if you have the `localtime_r' function. */
+#undef HAVE_LOCALTIME_R
+
 /* Define to 1 if you have the `mktime' function. */
 #undef HAVE_MKTIME
 
