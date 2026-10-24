@@ -918,13 +918,32 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 						}
 					}
 					if (ikev2_rekey_ikesa_init_addke_complete(
-						ike_sa, rct, lb, ll) < 0)
+						ike_sa, rct, lb, ll) < 0) {
 						isakmp_log(ike_sa, local,
 						    remote, msg, PLOG_INTERR,
 						    PLOGLOC,
 						    "failed completing "
 						    "initiator IKE_SA-rekey "
 						    "ADDKE\n");
+						/* Fail closed:
+						 * complete() may have
+						 * consumed the deferred
+						 * ML-KEM key and appended
+						 * SK(n) before rejecting a
+						 * missing / oversized next
+						 * link. Do NOT advance the
+						 * message id (that ACKs the
+						 * peer so it stops
+						 * retransmitting a request we
+						 * did not complete) and
+						 * abandon the parked rekey
+						 * so it cannot later finish
+						 * from slid-around state. */
+						ikev2_rekey_abandon_parked(
+						    ike_sa);
+						rc_vfree(rct);
+						return;
+					}
 				}
 				ikev2_update_message_id(ike_sa, rmsgid, TRUE);
 				ikev2_followup_wakeup_next(ike_sa);
@@ -950,34 +969,62 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * new link instead of the stale one — a strict peer (iOS)
 		 * rejects a followup carrying an unknown link.
 		 */
-		if (rlink && rchild->addke_round + 1 < rchild->addke_nrounds) {
-			struct ikev2payl_notify *nt =
-			    (struct ikev2payl_notify *)rlink;
+		if (rchild->addke_round + 1 < rchild->addke_nrounds) {
+			/*
+			 * RFC 9370 s2.2.4: a non-final followup response
+			 * MUST carry a FRESH ADDITIONAL_KEY_EXCHANGE link
+			 * for the next round. It is mandatory, not
+			 * optional: a missing or unusable (not 1..64 B)
+			 * link must fail the child series HERE rather than
+			 * echo the previous-round link into the next
+			 * request — a strict peer (iOS) rejects that, and
+			 * the IKE-SA rekey initiator already rejects it
+			 * (missing/oversized, see
+			 * ikev2_rekey_ikesa_init_addke_complete).
+			 */
+			struct ikev2payl_notify *nt;
 			size_t dl;
 
+			if (!rlink) {
+				isakmp_log(ike_sa, local, remote, msg,
+				    PLOG_PROTOERR, PLOGLOC,
+				    "IKE_FOLLOWUP_KE response missing "
+				    "ADDITIONAL_KEY_EXCHANGE link "
+				    "(round %d/%d)\n",
+				    rchild->addke_round + 1,
+				    rchild->addke_nrounds);
+				return;
+			}
+			nt = (struct ikev2payl_notify *)rlink;
 			if (get_payload_length(rlink) <
 			    (int)(sizeof(struct ikev2payl_notify) +
 				  nt->nh.spi_size)) {
 				isakmp_log(ike_sa, local, remote, msg,
-					   PLOG_PROTOERR, PLOGLOC,
-					   "IKE_FOLLOWUP_KE response "
-					   "truncated ADDITIONAL_KEY_EXCHANGE\n");
+				    PLOG_PROTOERR, PLOGLOC,
+				    "IKE_FOLLOWUP_KE response "
+				    "truncated ADDITIONAL_KEY_EXCHANGE\n");
 				return;
 			}
 			dl = get_payload_length(rlink) -
-			     sizeof(struct ikev2payl_notify) - nt->nh.spi_size;
-			if (dl > 0 && dl <= 64) {
-				rc_vfreez(rchild->addke_link);
-				rchild->addke_link =
-				    rc_vnew(get_notify_data(nt), dl);
-				TRACE((PLOGLOC,
-				       "initiator adopted fresh ADDKE link "
-				       "(%zu B) for round %d/%d\n",
-				       dl, rchild->addke_round + 1,
-				       rchild->addke_nrounds));
+			     (int)(sizeof(struct ikev2payl_notify) +
+				   nt->nh.spi_size);
+			if (dl == 0 || dl > 64) {
+				isakmp_log(ike_sa, local, remote, msg,
+				    PLOG_PROTOERR, PLOGLOC,
+				    "IKE_FOLLOWUP_KE response "
+				    "ADDITIONAL_KEY_EXCHANGE link not "
+				    "usable (%zu B)\n", dl);
+				return;
 			}
+			rc_vfreez(rchild->addke_link);
+			rchild->addke_link = rc_vnew(get_notify_data(nt), dl);
 			if (rchild->addke_link == NULL)
 				return;	/* ENOMEM */
+			TRACE((PLOGLOC,
+			       "initiator adopted fresh ADDKE link "
+			       "(%zu B) for round %d/%d\n",
+			       dl, rchild->addke_round + 1,
+			       rchild->addke_nrounds));
 		}
 
 		if (get_payload_data_length(&rke->header) < sizeof(rke->ke_h)) {
@@ -1390,6 +1437,37 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 								 new_link->v,
 								 new_link->l),
 					    TRUE);
+			/* The fresh link is committed to
+			 * child_sa->addke_link ONLY after the response is
+			 * actually transmitted (below), so a failed send
+			 * leaves the old link + round in place and
+			 * followup_ke_find_child still matches the
+			 * initiator's retransmit. This mirrors the rekey
+			 * responder (ikev2_rekey_responder_addke_round). */
+		}
+		pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
+					     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
+					     IKEV2FLAG_RESPONSE,
+					     get_uint32(&ikehdr->message_id),
+					     ike_sa, &payl);
+		rc_vfree(ker);
+		if (!pkt) {
+			if (new_link)
+				rc_vfree(new_link);
+			ikev2_payloads_destroy(&payl);
+			goto nomem;
+		}
+		if (ikev2_transmit_response(ike_sa, pkt, local, remote) != 0) {
+			isakmp_log(ike_sa, local, remote, msg,
+				   PLOG_INTERR, PLOGLOC,
+				   "failed sending IKE_FOLLOWUP_KE response\n");
+			if (new_link)
+				rc_vfree(new_link);
+			ikev2_payloads_destroy(&payl);
+			goto done;	/* not sent: keep old link + round */
+		}
+		ikev2_payloads_destroy(&payl);
+		if (more_rounds) {
 			rc_vfreez(child_sa->addke_link);
 			child_sa->addke_link = new_link;
 			new_link = NULL;	/* now owned by the child */
@@ -1400,21 +1478,6 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			       child_sa->addke_round + 1,
 			       child_sa->addke_nrounds));
 		}
-		pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
-					     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
-					     IKEV2FLAG_RESPONSE,
-					     get_uint32(&ikehdr->message_id),
-					     ike_sa, &payl);
-		rc_vfree(ker);
-		if (!pkt) {
-			ikev2_payloads_destroy(&payl);
-			goto nomem;
-		}
-		if (ikev2_transmit_response(ike_sa, pkt, local, remote) != 0)
-			isakmp_log(ike_sa, local, remote, msg,
-				   PLOG_INTERR, PLOGLOC,
-				   "failed sending IKE_FOLLOWUP_KE response\n");
-		ikev2_payloads_destroy(&payl);
 	}
 
 	/* advance the round cursor; install only after the last round */

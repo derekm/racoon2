@@ -1,6 +1,7 @@
 # XFRM-native features: mark, if_id, and hardware-accelerated offload
 
-Status: **structures + Linux backend encoding landed** (`<commit>`). Config
+Status: **structures + Linux backend encoding landed** (`daa77da`, emit gate
+refined in `c161725`-followups). Config
 grammar wiring and the DGX Spark HW-offload bring-up are the next steps below.
 This extends `struct rcpfk_msg` (lib/if_pfkeyv2.h) with the three XFRM-native
 features PF_KEY cannot express, and the NETLINK_XFRM backend now emits them.
@@ -24,7 +25,10 @@ features PF_KEY cannot express, and the NETLINK_XFRM backend now emits them.
   on a kernel without the attr the field is simply not emitted.
 - `offload_flags` is the XFRM_OFFLOAD_* direction bit (0 = outbound,
   `XFRM_OFFLOAD_INBOUND` for inbound), `offload_ifname` is resolved to an
-  index via `if_nametoindex()` when `offload_ifindex` is 0.
+  index via `if_nametoindex()` when `offload_ifindex` is 0. An offload SA is
+  requested iff a device is named (non-zero `offload_ifindex` or non-empty
+  `offload_ifname`); `offload_flags == 0` with a named device is a valid
+  outbound request and is still emitted.
 
 ## Next implementation steps (not yet in tree)
 

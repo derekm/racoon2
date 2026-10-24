@@ -232,11 +232,15 @@ ikev2_transmit_response(struct ikev2_sa *sa, rc_vchar_t *pkt,
 			struct sockaddr *local, struct sockaddr *remote)
 {
 	/* take ownership like the real path (handler expects the pkt to be
-	 * consumed here); free so the unit test does not leak */
+	 * consumed here); free so the unit test does not leak. Return 0 like
+	 * the real function does on success — a non-zero return is a
+	 * transmit FAILURE the callers now branch on (round is committed
+	 * only after a successful send), so the stub must not masquerade a
+	 * success as a failure. */
 	(void)sa; (void)local; (void)remote;
 	if (pkt)
 		rc_vfree(pkt);
-	return -1;
+	return 0;
 }
 
 int

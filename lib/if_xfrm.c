@@ -1163,14 +1163,18 @@ add_xfrm_offload_attr(struct nlmsghdr *n, size_t maxlen,
 	struct xfrm_user_offload od;
 	uint32_t idx = rc->offload_ifindex;
 
-	if (rc->offload_flags == 0)
-		return 0;	/* offload not requested */
+	/* offload is requested iff a device is named. offload_flags is the
+	 * kernel XFRM_OFFLOAD_* direction (<1> = INBOUND, 0 = OUTBOUND), NOT
+	 * a presence flag: flags==0 with a device is a legitimate outbound
+	 * offload request and must still be emitted (bug: gating on
+	 * flags==0 as "not requested" silently produced a software SA). */
 	if (idx == 0 && rc->offload_ifname[0] != '\0')
 		idx = if_nametoindex(rc->offload_ifname);
+	if (idx == 0 && rc->offload_ifname[0] == '\0')
+		return 0;	/* no offload device specified: not requested */
 	if (idx == 0) {
 		xfrm_seterror(rc, ENODEV, "offload device %s not found",
-		    rc->offload_ifname[0] ? rc->offload_ifname :
-		    "(no ifindex)");
+		    rc->offload_ifname);
 		return -1;
 	}
 	memset(&od, 0, sizeof(od));
