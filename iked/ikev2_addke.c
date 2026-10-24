@@ -1403,6 +1403,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		int more_rounds =
 		    (child_sa->addke_round + 1 < child_sa->addke_nrounds);
 		rc_vchar_t *new_link = NULL;
+		rc_vchar_t *newsk = NULL;
 
 		ikev2_payloads_init(&payl);
 		memset(&keh, 0, sizeof(keh));
@@ -1448,6 +1449,30 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			 * initiator's retransmit. This mirrors the rekey
 			 * responder (ikev2_rekey_responder_addke_round). */
 		}
+		/*
+		 * Pre-allocate this round's accumulated SK(1..n) BEFORE the
+		 * response is sent: nothing that can fail (malloc) may remain
+		 * after a successful transmit. The link and the SK are then
+		 * committed below as ONE atomic pointer-swing, so the committed
+		 * child state always matches what the peer decaps on the next
+		 * round. (After a send succeeds, a retransmit is answered from
+		 * the response cache and the advanced window — not by append
+		 * placement; pre-allocating removes the one failing `goto nomem`
+		 * a post-send append could otherwise interpose between the link
+		 * swap and the SK store.)
+		 */
+		newsk = rc_vmalloc((child_sa->addke_sk ?
+				    child_sa->addke_sk->l : 0) + ss->l);
+		if (!newsk) {
+			if (new_link)
+				rc_vfree(new_link);
+			ikev2_payloads_destroy(&payl);
+			goto nomem;
+		}
+		if (child_sa->addke_sk)
+			memcpy(newsk->v, child_sa->addke_sk->v,
+			       child_sa->addke_sk->l);
+		memcpy(newsk->v + newsk->l - ss->l, ss->v, ss->l);
 		pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
 					     (ike_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
 					     IKEV2FLAG_RESPONSE,
@@ -1457,6 +1482,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		if (!pkt) {
 			if (new_link)
 				rc_vfree(new_link);
+			rc_vfree(newsk);
 			ikev2_payloads_destroy(&payl);
 			goto nomem;
 		}
@@ -1467,15 +1493,18 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			rc_vfree(pkt);	/* failure path: caller owns the packet */
 			if (new_link)
 				rc_vfree(new_link);
+			rc_vfree(newsk);
 			ikev2_payloads_destroy(&payl);
 			/* restore the inbound window so a retransmit of THIS id
 			 * passes the ordering check and re-enters; the SK/link/
-			 * round are all uncommitted, so re-entry (after the SK
-			 * deferral) cannot double them. */
+			 * round are all uncommitted, so re-entry cannot double
+			 * them. */
 			ike_sa->recv_message_id = saved_mid;
 			goto done;	/* not sent: keep old link + round */
 		}
 		ikev2_payloads_destroy(&payl);
+		/* atomic commit after a successful transmit (no alloc here):
+		 * link (if any) + accumulated SK pointer-swing together. */
 		if (more_rounds) {
 			rc_vfreez(child_sa->addke_link);
 			child_sa->addke_link = new_link;
@@ -1487,31 +1516,9 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			       child_sa->addke_round + 1,
 			       child_sa->addke_nrounds));
 		}
-	}
-
-	/* advance the round cursor; install only after the last round */
-	/* append this round's shared secret to SK(1)..SK(n), in order, now that
-	 * a response was actually sent — a retransmit that re-enters this
-	 * handler cannot append again (a pre-send append would double addke_sk
-	 * into ss1|ss2 and desync the key against the initiator). */
-	{
-		rc_vchar_t *acc;
-	
-		acc = rc_vmalloc((child_sa->addke_sk ?
-				  child_sa->addke_sk->l : 0) + ss->l);
-		if (!acc) {
-			rc_vfreez(ss);
-			ss = 0;
-			goto nomem;
-		}
-		if (child_sa->addke_sk) {
-			memcpy(acc->v, child_sa->addke_sk->v,
-			       child_sa->addke_sk->l);
-			rc_vfreez(child_sa->addke_sk);
-			child_sa->addke_sk = 0;
-		}
-		memcpy(acc->v + acc->l - ss->l, ss->v, ss->l);
-		child_sa->addke_sk = acc;
+		rc_vfreez(child_sa->addke_sk);
+		child_sa->addke_sk = newsk;
+		newsk = NULL;	/* now owned by the child */
 		rc_vfreez(ss);
 		ss = 0;
 	}
