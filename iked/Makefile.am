@@ -142,6 +142,15 @@ check_PROGRAMS += tcpstreamtest
 tcpstreamtest_SOURCES = tcpstreamtest.c ikev2_tcp.c
 tcpstreamtest_LDADD = $(LDADD)
 
+# The per-connection tcp_stream transport object (iked/ikev2_tcp_stream.c)
+# over real loopback TCP: non-blocking connect that completes, one-time
+# originator prefix vs the responder's no-prefix reply, and marker-stripped
+# IKE delivery to the dispatch callback on both sides.
+TESTS += tcpobjtest
+check_PROGRAMS += tcpobjtest
+tcpobjtest_SOURCES = tcpobjtest.c ikev2_tcp_stream.c ikev2_tcp.c
+tcpobjtest_LDADD = $(LDADD)
+
 # RFC 7296 §3.15.2 split-tunnel CP attributes (13/15): drives the real
 # ikev2_create_config_reply() with a fabricated split selector.
 # Full-link (addtest_ikedsrc): unconditional, no optional-feature dep.
