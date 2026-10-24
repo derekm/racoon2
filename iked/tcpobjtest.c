@@ -138,16 +138,33 @@ main(void)
 	CHECK(nrecv == 1 && capl[0] == 32 && cap[0][0] == 0x01,
 	      "recv: originator dispatch got the no-prefix reply");
 
-	/* --- short IKE record is DROPPED (IKE syntax, not framing-fatal) --- */
+	/* --- short IKE record is DROPPED (transport rule, not framing-fatal) --- */
 	nrecv = 0;
 	{
 		const unsigned char tiny[] = { 0x42 };	/* < sizeof(ikev2_header) */
 		CHECK(tcp_stream_send(origin, tiny, sizeof(tiny)) == 0,
 		      "send: short (1-byte) IKE message");
-		for (tries = 5000; tries > 0 && nrecv == 0; tries--)
-			if (tcp_stream_on_readable(resp) < 0)
-				break;
-		CHECK(nrecv == 0, "recv: short IKE dropped, stream NOT closed");
+	}
+	{
+		struct pollfd pf;
+		int waitms = 0, dead = 0;
+
+		pf.fd = resp->fd;
+		pf.events = POLLIN;
+		/* The short record must be consumed: no dispatch, no -1
+		 * (framing-fatal would set dead). */
+		while (nrecv == 0 && waitms < 1000 && !dead) {
+			int r = poll(&pf, 1, 100);
+			if (r > 0) {
+				int ar = tcp_stream_on_readable(resp);
+				if (ar < 0)
+					dead = 1;
+			} else if (r < 0) {
+				dead = 1;
+			}
+			waitms += 100;
+		}
+		CHECK(!dead && nrecv == 0, "recv: short IKE dropped, stream NOT closed");
 	}
 	/* the same stream still works after the short-IKE drop */
 	nrecv = 0;
@@ -159,15 +176,12 @@ main(void)
 
 		pf.fd = resp->fd;
 		pf.events = POLLIN;
-		while (nrecv == 0 && waitms < 2000 && !dead) {
+			while (nrecv == 0 && waitms < 2000 && !dead) {
 			int r = poll(&pf, 1, 100);
 			if (r > 0) {
 				int ar = tcp_stream_on_readable(resp);
-				if (ar < 0) {
+				if (ar < 0)
 					dead = 1;
-					printf("DEBUG on_readable -1 errno=%d (%s)\n",
-					       errno, strerror(errno));
-				}
 			} else if (r < 0) {
 				dead = 1;
 			}
@@ -189,8 +203,9 @@ main(void)
 		c = tcp_stream_connect((struct sockaddr *)&cr, NULL, capture, NULL);
 		CHECK(c != NULL, "refused: stream created");
 		if (c) {
-			CHECK(wait_done(c, 3000) != 0,
-			      "refused: connect_done (after ERR/HUP wake) reports failure");
+			int wd = wait_done(c, 3000);
+			CHECK(wd != 0 && errno == ECONNREFUSED,
+			      "refused: connect_done reports ECONNREFUSED after ERR/HUP wake");
 			tcp_stream_free(c);
 		}
 	}

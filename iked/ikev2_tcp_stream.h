@@ -19,10 +19,11 @@
  * Framing-fatal (bad prefix, Len 0/1, malformed, peer FIN, hard I/O error)
  * returns -1 from on_readable()/send()/flush() and the caller MUST close the
  * stream -- once any returns -1 the stream is dead and must not be retried.
- * A short IKE record (fewer bytes than an IKEv2 header) is an IKE syntax
- * problem (RFC 9329 s6.1 -> INVALID_SYNTAX over the same stream), not a
- * framing error, and is DROPPED by the stream: it never reaches dispatch and
- * never closes the stream.
+ * A record shorter than an IKEv2 header has no SPI or msgid to route a
+ * response to, so it is DROPPED by the stream: it never reaches dispatch and
+ * never closes the stream.  (The RFC 9329 s6.1 INVALID_SYNTAX MUST is the IKE
+ * layer's responsibility on full messages that pass this gate; a sub-header
+ * drop is a transport rule, not that path.)
  *
  * All buffers are heap-allocated (they are 64KB); destroy with
  * tcp_stream_free().
@@ -57,6 +58,7 @@ struct tcp_stream {
 	size_t obuf_len;		/* bytes queued in obuf */
 	size_t obuf_off;		/* bytes of obuf already written */
 	int prefix_sent;		/* originator's one-time "IKETCP" done */
+	struct tcp_record *tb;		/* heap-encoded outbound record (not stack) */
 	tcp_stream_dispatch dispatch;	/* the IKE receive entry (ikev2_input) */
 	void *arg;
 };
@@ -87,10 +89,11 @@ int tcp_stream_connect_done(struct tcp_stream *);
 /* Returns >0 activity, 0 nothing ready (EAGAIN), -1 FATAL (close the stream). */
 int tcp_stream_on_readable(struct tcp_stream *);
 /* Queue + flush an IKE message on the stream (takes a copy of ike,n).
- * Returns 0 sent, 1 still pending (want EPOLLOUT and call flush() again),
- * -1 FATAL (close the stream; the stream is dead, do not retry). */
+ * Returns: 0 fully written, 1 queued but still writing (want EPOLLOUT, call
+ * flush() again), 2 NOT queued -- send buffer full, nothing lost -- flush()
+ * first then retry, -1 FATAL hard write error (close; do not retry). */
 int tcp_stream_send(struct tcp_stream *, const unsigned char *ike, size_t n);
-/* Write more of any queued partial record; 1 if still pending, -1 fatal. */
+/* Write more of any queued partial record; 0 written, 1 still pending, -1 fatal. */
 int tcp_stream_flush(struct tcp_stream *);
 
 void tcp_stream_free(struct tcp_stream *);

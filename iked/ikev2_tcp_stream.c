@@ -5,10 +5,10 @@
  * See ikev2_tcp_stream.h.  This unit owns the socket, the framing de-framer,
  * and the non-blocking send buffer; the iked main loop will hold these
  * streams and drive them.  Framing-fatal (bad prefix, Len 0/1, malformed)
- * returns -1 from on_readable() so the caller closes the stream; a non-zero
- * IKE dispatch return is NOT stream-fatal (RFC 9329 s6.1 handles IKE errors
- * with INVALID_SYNTAX over the same stream) and is deliberately not conflated
- * here.
+ * returns -1 from on_readable() so the caller closes the stream; an IKE
+ * dispatch return is NEVER stream-fatal -- the IKE layer itself sends
+ * INVALID_SYNTAX (RFC 9329 s6.1) over this same stream -- and is deliberately
+ * not conflated here.
  */
 #include "config.h"
 #include <sys/types.h>
@@ -55,11 +55,12 @@ set_nonblock(int fd)
 
 /* Called for each de-framed record.  IKE messages are dispatched (marker
  * already stripped by the codec); ESP frames (ESP-in-TCP) are out of scope
- * for this slice and dropped.  A record shorter than an IKEv2 header is an
- * IKE syntax problem (RFC 9329 s6.1), not a framing error: it is dropped and
- * NEVER closes the stream, and never reaches ikev2_input (which assumes a
- * header-sized buffer).  Returns 0 always so a dispatch's decision also never
- * aborts the stream; only a hard allocation failure is fatal. */
+ * for this slice and dropped.  A record shorter than an IKEv2 header has no
+ * SPI or msgid to route a reply to, so it is dropped -- a transport rule,
+ * NOT the RFC 9329 s6.1 INVALID_SYNTAX path (the IKE layer owns that on full
+ * messages): it never reaches dispatch and NEVER closes the stream.  Returns
+ * 0 always so a dispatch's decision also never aborts the stream; only a
+ * hard allocation failure is fatal. */
 static int
 stream_frame_cb(const unsigned char *pkt, size_t len, int is_esp, void *arg)
 {
@@ -96,17 +97,28 @@ stream_new(int fd, const struct sockaddr *remote, int expect_prefix,
 		goto fail;
 	}
 	ts->obuf = malloc(TCP_STREAM_OBUF_CAP);
-	if (ts->obuf == NULL) {
+	ts->tb = malloc(sizeof(struct tcp_record));	/* heap, never stack */
+	if (ts->obuf == NULL || ts->tb == NULL) {
+		free(ts->obuf);
+		free(ts->tb);
 		free(ts);
 		errno = ENOMEM;
 		goto fail;
 	}
+#ifdef SO_NOSIGPIPE
+	/* A peer RST on a write would otherwise SIGPIPE-kill the daemon. */
+	{
+		int on = 1;
+		(void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+	}
+#endif
 	ts->fd = fd;
 	if (remote)
 		memcpy(&ts->remote, remote, sa_len(remote));
 	sl = sizeof(ts->local);
 	if (getsockname(fd, (struct sockaddr *)&ts->local, &sl) < 0) {
 		free(ts->obuf);
+		free(ts->tb);
 		free(ts);
 		goto fail;
 	}
@@ -220,21 +232,24 @@ tcp_stream_on_readable(struct tcp_stream *ts)
 int
 tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 {
-	struct tcp_record rec;
+	struct tcp_record *rec = ts->tb;
 	size_t rl;
+	int have_prefix;
 
 	/* Build the record through the codec (Prefix + Len|marker|message);
-	 * tcp_record_ike enforces the 16-bit inclusive-Length cap. */
-	memset(&rec, 0, sizeof(rec));
+	 * tcp_record_ike enforces the 16-bit inclusive-Length cap.  Encoded
+	 * into the heap record (ts->tb), never a 64KB stack array. */
+	memset(rec, 0, sizeof(*rec));
+	have_prefix = 0;
 	if (ts->prefix_sent == 0) {
 		/* We are the TCP connection originator: one-time prefix. */
-		if (tcp_stream_begin(&rec) != 0)
+		if (tcp_stream_begin(rec) != 0)
 			return -1;
-		ts->prefix_sent = 1;	/* enqueued below; a -1 closes the stream */
+		have_prefix = 1;
 	}
-	if (tcp_record_ike(&rec, ike, n) != 0)
+	if (tcp_record_ike(rec, ike, n) != 0)
 		return -1;
-	rl = rec.stream_len;
+	rl = rec->stream_len;
 
 	/* Compact any fully-sent tail before appending. */
 	if (ts->obuf_off != 0) {
@@ -247,10 +262,20 @@ tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 			ts->obuf_off = 0;
 		}
 	}
-	if (ts->obuf_len + rl > TCP_STREAM_OBUF_CAP)
-		return -1;
-	memcpy(ts->obuf + ts->obuf_len, rec.stream, rl);
+	if (ts->obuf_len + rl > TCP_STREAM_OBUF_CAP) {
+		/* Move queued bytes out first.  If still full, report "not
+		 * queued": NOTHING is lost and the caller flushes + retries. */
+		int fr = tcp_stream_flush(ts);
+
+		if (fr < 0)
+			return -1;	/* hard write error */
+		if (ts->obuf_len + rl > TCP_STREAM_OBUF_CAP)
+			return 2;	/* not queued; nothing lost */
+	}
+	memcpy(ts->obuf + ts->obuf_len, rec->stream, rl);
 	ts->obuf_len += rl;
+	if (have_prefix)
+		ts->prefix_sent = 1;	/* the prefix bytes are now in obuf */
 	return tcp_stream_flush(ts);
 }
 
@@ -258,9 +283,14 @@ int
 tcp_stream_flush(struct tcp_stream *ts)
 {
 	while (ts->obuf_off < ts->obuf_len) {
+#ifdef MSG_NOSIGNAL
+		/* A peer RST must not SIGPIPE-kill the daemon. */
+		ssize_t n = send(ts->fd, ts->obuf + ts->obuf_off,
+				 ts->obuf_len - ts->obuf_off, MSG_NOSIGNAL);
+#else
 		ssize_t n = write(ts->fd, ts->obuf + ts->obuf_off,
 				  ts->obuf_len - ts->obuf_off);
-
+#endif
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
@@ -281,6 +311,7 @@ tcp_stream_free(struct tcp_stream *ts)
 		return;
 	if (ts->fd >= 0)
 		close(ts->fd);
+	free(ts->tb);
 	free(ts->obuf);
 	free(ts);
 }
