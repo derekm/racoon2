@@ -241,6 +241,19 @@ rct2pfk_enctype(int type)
 	case RCT_ALG_AES_GCM12:
 		return SADB_X_EALG_AESGCM12;
 #endif
+	/* ESP AES-GMAC (RFC 4543, transform 21) PF_KEY leg.  Linux goes
+	 * through if_xfrm.c's aead_map -> rfc4543(gcm(aes)); this is the
+	 * NetBSD/FreeBSD leg.  Same discipline as AES-CCM above: bind when a
+	 * BSD defines SADB_X_EALG_AESGMAC, and let a missing/unsigned id be
+	 * its OWN return 0 (rcpfk_supported_enc() -> unsupported; config-check
+	 * keeps iked alive, never errx). */
+#if defined(SADB_X_EALG_AESGMAC)
+	case RCT_ALG_AES_GMAC:
+		return SADB_X_EALG_AESGMAC;
+#else
+	case RCT_ALG_AES_GMAC:
+		return 0;
+#endif
 	case RCT_ALG_TWOFISH_CBC:
 		return SADB_X_EALG_TWOFISHCBC;
 	/* ESP AES-CCM (RFC 4309 transforms 14/15/16 = ICV-8/12/16).  Linux
@@ -479,6 +492,10 @@ rct2str(int type)
 		return "AES-GCM-8";
 	case RCT_ALG_AES_GCM12:
 		return "AES-GCM-12";
+	case RCT_ALG_AES_GMAC:
+		return "AES-GMAC";
+	case RCT_ALG_AES_GMAC8:
+		return "AES-GMAC-8";
 	case RCT_ALG_AES_CCM:
 		return "AES-CCM-12";
 	case RCT_ALG_AES_CCM8:

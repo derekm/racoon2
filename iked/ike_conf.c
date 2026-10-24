@@ -3658,7 +3658,14 @@ static struct algdef ikev2_transf_encr[] = {
 	 * via SADB_X_EALG_CHACHA20POLY1305 (lib/rc_type.c).  IKE transform
 	 * id 28 / config token chacha20_poly1305. */
 	ALG_ENC(RCT_ALG_CHACHA20_POLY1305, IKEV2TRANSF_ENCR_CHACHA20_POLY1305, 32, 4, 0, &encr_chacha20poly1305),
-	/* NULL_AUTH_AES_GMAC */
+	/* NULL_AUTH_AES_GMAC (RFC 4543, transform 21): AES-GMAC ESP AEAD.
+	 * IKE-data-plane only — no IKE SA encryptor, so generator stays 0
+	 * (mirrors the ESP-only AES-GCM ICV8/12 rows above).  nonce_len 4 is
+	 * the RFC 4543 salt (same as GCM); key = AES key || 4-octet salt.
+	 * Linux rfc4543(gcm(aes)) 16-octet ICV; FreeBSD SADB_X_EALG_AESGMAC. */
+	ALG_ENC(RCT_ALG_AES_GMAC, IKEV2TRANSF_ENCR_NULL_AUTH_AES_GMAC, 16, 4, PROTO_VARIABLE_KEYLEN, 0),
+	ALG_ENC(RCT_ALG_AES_GMAC, IKEV2TRANSF_ENCR_NULL_AUTH_AES_GMAC, 24, 4, PROTO_VARIABLE_KEYLEN, 0),
+	ALG_ENC(RCT_ALG_AES_GMAC, IKEV2TRANSF_ENCR_NULL_AUTH_AES_GMAC, 32, 4, PROTO_VARIABLE_KEYLEN, 0),
 	/* IEEE_P1619_XTS_AES */
 	{ 0 }
 };
