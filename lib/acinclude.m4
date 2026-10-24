@@ -327,6 +327,33 @@ esac
 ])
 
 dnl
+dnl Locate libr2dp (installed by the r2dp project) through pkg-config.
+dnl --with-r2dp=PREFIX adds PREFIX's pkgconfig dirs (incl. multiarch libdirs).
+AC_DEFUN([RC_WITH_R2DP],
+[
+AC_ARG_WITH(r2dp,
+	[  --with-r2dp=PREFIX      prefix of an installed libr2dp (km-backend=r2dp)],
+	[r2dp_prefix=$withval], [r2dp_prefix=])
+AC_PATH_TOOL(PKG_CONFIG, pkg-config)
+test -n "$PKG_CONFIG" || AC_MSG_ERROR([pkg-config is required to find libr2dp])
+if test -n "$r2dp_prefix" && test x"$r2dp_prefix" != xyes; then
+	for d in "$r2dp_prefix"/lib/pkgconfig "$r2dp_prefix"/lib64/pkgconfig \
+	    "$r2dp_prefix"/lib/*/pkgconfig "$r2dp_prefix"/share/pkgconfig; do
+		test -d "$d" && PKG_CONFIG_PATH="$d${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+	done
+	export PKG_CONFIG_PATH
+fi
+AC_MSG_CHECKING([for libr2dp])
+if $PKG_CONFIG --exists r2dp; then
+	R2DP_CFLAGS=`$PKG_CONFIG --cflags r2dp`
+	R2DP_LIBS=`$PKG_CONFIG --libs r2dp`
+	AC_MSG_RESULT([yes ($R2DP_LIBS)])
+else
+	AC_MSG_RESULT([no])
+	AC_MSG_ERROR([libr2dp not found; build/install the r2dp project and pass --with-r2dp=PREFIX])
+fi
+])
+
 dnl SAD/SPD kernel backend: Linux NETLINK_XFRM vs BSD PF_KEY.
 dnl Same XOR source-file swap as iked RTSOCK (netlink.c vs rtsock.c).
 dnl
@@ -334,9 +361,10 @@ AC_DEFUN([RC_KM_BACKEND],
 [
 AC_MSG_CHECKING([kernel SAD/SPD backend])
 AC_ARG_WITH(km-backend,
-	[  --with-km-backend=xfrm|pfkey|userspace
+	[  --with-km-backend=xfrm|pfkey|userspace|r2dp
                           SAD/SPD interface (Linux default: xfrm;
-                          BSD default: pfkey; userspace is loopback)],
+                          BSD default: pfkey; userspace is loopback;
+                          r2dp talks to an external dataplane forwarder)],
 	[km_backend=$withval], [km_backend=auto])
 if test x"$km_backend" = xauto; then
 	case $host_os in
@@ -362,13 +390,21 @@ userspace)
 pfkey)
 	KM_IF=if_pfkeyv2.c
 	;;
+r2dp)
+	KM_IF=if_r2dp.c
+	AC_DEFINE(HAVE_R2DP_KM, 1, [r2dp external-forwarder SAD/SPD backend])
+	RC_WITH_R2DP
+	;;
 *)
-	AC_MSG_ERROR([--with-km-backend must be xfrm, pfkey, or userspace])
+	AC_MSG_ERROR([--with-km-backend must be xfrm, pfkey, userspace, or r2dp])
 	;;
 esac
 AC_SUBST(KM_IF)
 AM_CONDITIONAL([USE_XFRM], [test x"$km_backend" = xxfrm])
 AM_CONDITIONAL([USE_USERSPACE], [test x"$km_backend" = xuserspace])
+AM_CONDITIONAL([USE_R2DP], [test x"$km_backend" = xr2dp])
+AC_SUBST(R2DP_CFLAGS)
+AC_SUBST(R2DP_LIBS)
 AC_MSG_RESULT([$km_backend ($KM_IF)])
 ])
 

@@ -88,6 +88,18 @@ A userspace dataplane backend (same rcpfk_* ABI) is
 That loopbacks SA/SPD to iked and optionally mirrors to
 `RACOON2_DATAPLANE_SOCK`. There is no DPDK forwarding process in
 this tree, and the userspace backend ignores mark/if_id/offload.
+
+An external-forwarder backend (same rcpfk_* ABI, request/reply over
+a unix SEQPACKET socket) is
+
+	./configure --with-km-backend=r2dp --with-r2dp=PREFIX
+
+That is Mark Wilcox's r2dp M0: iked/spmd drive a forwarder instead of
+the kernel. Wire values are IANA IKEv2 transform IDs; GETSPI is
+allocated by the forwarder. See `contrib/r2dp/README.md` and
+`contrib/r2dp/MILESTONES.md`. Needs an installed libr2dp (`client.h`
+was not in the zip that landed this tree).
+
 On the Linux XFRM backend, XFRM mark, if_id and ESP device offload
 (`XFRMA_OFFLOAD_DEV`) are wired (config grammar and emit paths, see
 doc/xfrm-offload.md) but **experimental**: no hardware-backed matrix
