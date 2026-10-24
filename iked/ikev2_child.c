@@ -2121,6 +2121,13 @@ ikev2_child_getspi(struct ikev2_child_sa *child_sa)
 
 	p = child_sa->selector->pl;
 
+	/* Larval GETSPI SA must carry the same mark/if_id as the later ADD, or
+	 * the marked-flow injection on the larval is ENOENT/ESRCH (if_xfrm keys
+	 * the state on mark v = mark & mask). */
+	param.mark      = p->mark;
+	param.mark_mask = p->mark_mask;
+	param.if_id     = p->if_id;
+
 	/* SRC of inbound SA */
 #if 0
 	if (!LIST_EMPTY(&child_sa->lease_list)) {
@@ -2407,6 +2414,28 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa,
 	conf = child_sa->selector->pl->ips;
 	IPSEC_CONF(param->lft_hard_time, conf, ipsec_sa_lifetime_time, 0);
 	IPSEC_CONF(param->lft_hard_bytes, conf, ipsec_sa_lifetime_byte, 0);
+
+	/*
+	 * XFRM flow selector / offload (Linux NETLINK_XFRM + FreeBSD
+	 * SADB_X_EXT_IF_HW_OFFL). The mark/if_id live on the POLICY (the child
+	 * flow); offload on the ESP SA. 0 / "" remain "unset": mark is masked
+	 * (v = mark & mask) at the single emit point, and offload is requested
+	 * by if_xfrm.c iff a device name is present.
+	 */
+	{
+		struct rcf_policy *pl = child_sa->selector->pl;
+
+		param->mark      = pl->mark;
+		param->mark_mask = pl->mark_mask;
+		param->if_id     = pl->if_id;
+		if (conf && conf->sa_esp) {
+			strlcpy(param->offload_ifname, conf->sa_esp->offload_ifname,
+				sizeof(param->offload_ifname));
+			param->offload_flags = conf->sa_esp->offload_flags;
+			/* resolved from name by if_xfrm(/FreeBSD PK) at emit */
+			param->offload_ifindex = 0;
+		}
+	}
 	param->lft_soft_time = param->lft_hard_time *
 		(ikev2_lifetime_soft_factor +
 		 ikev2_lifetime_soft_jitter * ((double)eay_random_uint32() /

@@ -3,10 +3,11 @@
 Status: **structures + Linux backend encoding landed** (`daa77da`; the emit
 was spuriously compiled out until `020e027` removed the dead `#ifdef XFRMA_*`
 guards — `XFRMA_MARK`/`XFRMA_IF_ID`/`XFRMA_OFFLOAD_DEV` are enum constants,
-not macros). Config
-grammar wiring and the DGX Spark HW-offload bring-up are the next steps below.
-This extends `struct rcpfk_msg` (lib/if_pfkeyv2.h) with the three XFRM-native
-features PF_KEY cannot express, and the NETLINK_XFRM backend now emits them.
+not macros). The **config grammar** (mark/if_id on the policy, offload on the
+SA; `lib/icketest` PASS) is wired; the DGX Spark HW-offload bring-up is the
+remaining step below. This extends `struct rcpfk_msg` (lib/if_pfkeyv2.h) with
+the three XFRM-native features PF_KEY cannot express, and the NETLINK_XFRM
+backend now emits them.
 
 ## What the structures support now
 
@@ -37,27 +38,38 @@ features PF_KEY cannot express, and the NETLINK_XFRM backend now emits them.
   `offload_ifname`); `offload_flags == 0` with a named device is a valid
   outbound request and is still emitted.
 
-## Next implementation steps (not yet in tree)
+## Next implementation steps
 
-1. **Config grammar** so an operator can set these per policy / child SA.
-   Proposed (racoon2.conf, in the `policy {}` / `sa {}` blocks or a per-child
-   `ipsec {}` section):
+1. **Config grammar — DONE** (`lib/cftoken.l`/`cfparse.y`, `lib/cfsetup.{h,c}`,
+   `iked/ikev2_child.c`). An operator sets the flow selector and offload with:
    ```
    policy pol {
        action auto_ipsec;
        ...
-       mark { value 0x100; mask 0xff; }       # -> XFRMA_MARK
+       mark { value 0x100; mask 0xff; }       # -> XFRMA_MARK (v = value & mask)
        if_id 1;                                # -> XFRMA_IF_ID
    }
    sa esp_e {
-       offload { dev "ens2f0np0"; dir in; }    # -> XFRMA_OFFLOAD_DEV
-       # mark / if_id can also be set here (inherited by the child SA)
+       offload { dev "ens2f0np0"; dir in; }    # -> XFRMA_OFFLOAD_DEV (dir in=2/out=0)
    }
    ```
-   This needs `lib/cftoken.l` + `lib/cfparse.y` grammar, `ike_conf.c`
-   storage, and copying the fields onto the `rcpfk_msg` in the policy/add
-   paths (`ike_pfkey.c`). The kernels-only fields are ignored (best-effort
-   warn) on *BSD.
+   Design decisions:
+   - **mark / if_id live on the POLICY** (the child flow), read at both GETSPI
+     (larval) and `ikev2_sadb_update` (final SA) from `selector->pl`. They are
+     deliberately NOT on the `sa {}` block: each CFD_ key is decoded into a
+     single dst type, avoiding a shared fix function cast to two structs.
+   - **offload lives on the `sa {}` block** (`sa_esp`), read at
+     `ikev2_sadb_update`; `offload_ifname` is resolved to an ifindex at emit.
+     `dir in|out` maps to `XFRM_OFFLOAD_INBOUND=2` / `0` (outbound).
+   - `mark_mask` is read as a full u32 (`rcf_fix_u32`), so `0xffffffff` is
+     accepted (not clamped at INT_MAX like the int-only `rcf_fix_number`).
+   - Fail-closed: an unknown key inside the blocks / a malformed `dir` is a
+     parse error (whole config rejected); every new CFD_ has a registered
+     `rcf_tdf` fix function, and an over-long device name is rejected.
+   - Verified in `lib/icketest` (`PASS`): mark/mask/if_id decode on the policy,
+     u32 `if_id=0xffffffff`, offload `dir out|in` → flags 0|2, deep copy
+     preserves the fields, and `mark { bogus 1; }` / `offload { dir sideways; }`
+     / unterminated blocks reject.
 
 2. **HW-offload bring-up on DGX Spark** (the test target the user named).
    - **Precondition gate:** only enable offload after `ethtool -k <dev>`

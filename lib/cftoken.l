@@ -471,6 +471,15 @@ ah_auth_alg		{ DP; return(AH_AUTH_ALG); }
 ah_addke_alg		{ DP; return(AH_ADDKE_ALG); }
 ipcomp_alg		{ DP; return(IPCOMP_ALG); }
 spi			{ DP; return(SPI); }
+mark			{ DP; return(MARK); }
+if_id			{ DP; return(IF_ID); }
+offload			{ DP; return(OFFLOAD); }
+value			{ DP; return(VALUE); }
+mask			{ DP; return(MASK); }
+dev				{ DP; return(DEV); }
+dir				{ DP; return(DIR); }
+in				{ DP; return(IN); }
+out				{ DP; return(OUT); }
 	/* sa protocol */
 sa_protocol		{ DP; return(SA_PROTOCOL); }
 esp			{ DP; return(ESP); }

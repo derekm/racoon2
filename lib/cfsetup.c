@@ -309,6 +309,13 @@ static int rcf_fix_ah_auth_alg (struct cf_list *, void *);
 static int rcf_fix_ah_addke_alg (struct cf_list *, void *);
 static int rcf_fix_ipcomp_alg (struct cf_list *, void *);
 static int rcf_fix_spi (struct cf_list *, void *);
+static int rcf_fix_mark (struct cf_list *, void *);
+static int rcf_fix_mark_value (struct cf_list *, void *);
+static int rcf_fix_mark_mask (struct cf_list *, void *);
+static int rcf_fix_if_id (struct cf_list *, void *);
+static int rcf_fix_offload (struct cf_list *, void *);
+static int rcf_fix_offload_dev (struct cf_list *, void *);
+static int rcf_fix_offload_dir (struct cf_list *, void *);
 	/* default */
 static int rcf_fix_default (struct rcf_default **);
 static void rcf_clean_default_list (struct rcf_default *);
@@ -490,6 +497,13 @@ struct rcf_tdf_t {
 	{ CFD_AH_ADDKE_ALG,		rcf_fix_ah_addke_alg, },
 	{ CFD_IPCOMP_ALG,		rcf_fix_ipcomp_alg, },
 	{ CFD_SPI,			rcf_fix_spi, },
+	{ CFD_MARK,			rcf_fix_mark, },
+	{ CFD_MARK_VALUE,		rcf_fix_mark_value, },
+	{ CFD_MARK_MASK,		rcf_fix_mark_mask, },
+	{ CFD_IF_ID,			rcf_fix_if_id, },
+	{ CFD_OFFLOAD,			rcf_fix_offload, },
+	{ CFD_OFFLOAD_DEV,		rcf_fix_offload_dev, },
+	{ CFD_OFFLOAD_DIR,		rcf_fix_offload_dir, },
 };
 
 static int (*rcf_get_tdf(rcf_tdir dir))(struct cf_list *, void *)
@@ -520,6 +534,23 @@ rcf_cvt_size_t(size_t *r, const struct cf_list *n)
 		return -1;
 	*r = (size_t)n->d.num;
 	return 0;
+}
+
+static int
+rcf_cvt_u32(uint32_t *r, const struct cf_list *n)
+{
+	if (n->d.num < 0 || (uintmax_t)n->d.num > UINT32_MAX)
+		return -1;
+	*r = (uint32_t)n->d.num;
+	return 0;
+}
+
+static int
+rcf_fix_u32(struct cf_list *n, uint32_t *num)
+{
+	if (rcf_check_cft(n, CFT_NUMBER))
+		return -1;
+	return rcf_cvt_u32(num, n);
 }
 
 
@@ -2727,6 +2758,9 @@ rcf_deepcopy_policy(struct rcf_policy *src)
 	new->ipsec_mode = src->ipsec_mode;
 	new->ipsec_level = src->ipsec_level;
 	new->initial_child_ke = src->initial_child_ke;
+	new->mark = src->mark;
+	new->mark_mask = src->mark_mask;
+	new->if_id = src->if_id;
 	DEEPCOPY_VDUP(src->rm_index, new->rm_index);
 	DEEPCOPY_VDUP(src->pl_index, new->pl_index);
 	DEEPCOPY_ADDRLIST(src->my_sa_ipaddr, new->my_sa_ipaddr);
@@ -3106,6 +3140,9 @@ rcf_deepcopy_sa(struct rcf_sa *src)
 	}
 	new->sa_protocol = src->sa_protocol;
 	new->spi = src->spi;
+	memcpy(new->offload_ifname, src->offload_ifname, sizeof(new->offload_ifname));
+	new->offload_ifindex = src->offload_ifindex;
+	new->offload_flags = src->offload_flags;
 	DEEPCOPY_VDUP(src->sa_index, new->sa_index);
 	DEEPCOPY_ALGLIST(src->enc_alg, new->enc_alg);
 	DEEPCOPY_ALGLIST(src->auth_alg, new->auth_alg);
@@ -3222,6 +3259,102 @@ rcf_fix_spi(struct cf_list *head, void *dst0)
 	 */
 	dst->spi = spi;
 
+	return 0;
+}
+
+/* --- mark / if_id (flow selector on rcf_policy) and offload (rcf_sa) --- */
+
+static int
+rcf_fix_mark(struct cf_list *head, void *dst0)
+{
+	struct rcf_policy *dst = (struct rcf_policy *)dst0;
+	struct cf_list *n;
+
+	if (rcf_check_cfd(head, CFD_MARK))
+		return -1;
+	/* brace-block: walk sub-directives (value/mask) into dst */
+	for (n = head->nextp; n; n = n->nexts)
+		RCF_CALL_TDF(n, dst);
+	return 0;
+
+    err:
+	return -1;
+}
+
+static int
+rcf_fix_mark_value(struct cf_list *head, void *dst0)
+{
+	struct rcf_policy *dst = (struct rcf_policy *)dst0;
+
+	if (rcf_check_cfd(head, CFD_MARK_VALUE))
+		return -1;
+	return rcf_fix_u32(head->nextp, &dst->mark);
+}
+
+static int
+rcf_fix_mark_mask(struct cf_list *head, void *dst0)
+{
+	struct rcf_policy *dst = (struct rcf_policy *)dst0;
+
+	if (rcf_check_cfd(head, CFD_MARK_MASK))
+		return -1;
+	return rcf_fix_u32(head->nextp, &dst->mark_mask);
+}
+
+static int
+rcf_fix_if_id(struct cf_list *head, void *dst0)
+{
+	struct rcf_policy *dst = (struct rcf_policy *)dst0;
+
+	if (rcf_check_cfd(head, CFD_IF_ID))
+		return -1;
+	return rcf_fix_u32(head->nextp, &dst->if_id);
+}
+
+static int
+rcf_fix_offload(struct cf_list *head, void *dst0)
+{
+	struct rcf_sa *dst = (struct rcf_sa *)dst0;
+	struct cf_list *n;
+
+	if (rcf_check_cfd(head, CFD_OFFLOAD))
+		return -1;
+	for (n = head->nextp; n; n = n->nexts)
+		RCF_CALL_TDF(n, dst);
+	return 0;
+
+    err:
+	return -1;
+}
+
+static int
+rcf_fix_offload_dev(struct cf_list *head, void *dst0)
+{
+	struct rcf_sa *dst = (struct rcf_sa *)dst0;
+
+	if (rcf_check_cfd(head, CFD_OFFLOAD_DEV))
+		return -1;
+	if (rcf_check_cft(head->nextp, CFT_STRING))
+		return -1;
+	/* fail-closed on an over-long device name */
+	if (strlcpy(dst->offload_ifname, head->nextp->d.str,
+		   sizeof(dst->offload_ifname)) >= sizeof(dst->offload_ifname))
+		return -1;
+	return 0;
+}
+
+static int
+rcf_fix_offload_dir(struct cf_list *head, void *dst0)
+{
+	struct rcf_sa *dst = (struct rcf_sa *)dst0;
+	rc_type v;
+
+	if (rcf_check_cfd(head, CFD_OFFLOAD_DIR))
+		return -1;
+	/* dir is an MKRCFVAL value (in=2 / out=0), not a NUMBER */
+	if (rcf_fix_value(head->nextp, &v))
+		return -1;
+	dst->offload_flags = (uint8_t)v;	/* XFRM_OFFLOAD_INBOUND bit; 0 = outbound */
 	return 0;
 }
 

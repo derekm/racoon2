@@ -176,6 +176,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %token SA_INDEX
 	/* sa */
 %token SA SPI
+%token MARK IF_ID OFFLOAD VALUE MASK DEV DIR IN OUT
 %token ESP_ENC_ALG ESP_AUTH_ALG ESP_ADDKE_ALG AH_AUTH_ALG AH_ADDKE_ALG IPCOMP_ALG
 %token SA_PROTOCOL ESP AH IPCOMP
 	/* common */
@@ -232,11 +233,11 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %type <list> logmode_type id_type selector_check_type proposal_check_type
 %type <list> kmp_list_spec kmp_list kmp_spec
 %type <list> selector_list selector_spec dir_string
-%type <list> policy_list policy_spec action_string
+%type <list> policy_list policy_spec action_string mark_list mark_spec
 %type <list> ipsec_list ipsec_spec ipsec_mode_string
 %type <list> ipsec_level_string
 %type <list> initial_child_ke_string
-%type <list> sa_list sa_spec sa_proto_string
+%type <list> sa_list sa_spec sa_proto_string offload_list offload_spec offload_dir_string
 %type <list> addr_range_list addr_range
 %type <list> default_list default_spec
 %type <list> dh_group_list_spec dh_group_number_list_spec dh_group_number_list
@@ -1332,7 +1333,17 @@ policy_spec
 			MKRCFDIR($$, CFD_INITIAL_CHILD_KE);
 			$$->nextp = $2;
 		}
-	;
+	|	MARK BOC mark_list EOC
+		{
+			MKRCFDIR($$, CFD_MARK);
+			$$->nextp = $3;
+		}
+	|	IF_ID number
+		{
+			MKRCFDIR($$, CFD_IF_ID);
+			$$->nextp = $2;
+		}
+;
 initial_child_ke_string
 	:	BOOL_OFF	{ MKRCFVAL($$, RCT_ICKE_OFF); }
 	|	IMMEDIATE	{ MKRCFVAL($$, RCT_ICKE_IMMEDIATE); }
@@ -1459,11 +1470,40 @@ sa_spec
 			MKRCFDIR($$, CFD_SPI);
 			$$->nextp = $2;
 		}
-	;
+	|	OFFLOAD BOC offload_list EOC
+		{
+			MKRCFDIR($$, CFD_OFFLOAD);
+			$$->nextp = $3;
+		}
+;
 sa_proto_string
 	:	ESP		{ MKRCFVAL($$, RCT_SATYPE_ESP); }
 	|	AH		{ MKRCFVAL($$, RCT_SATYPE_AH); }
 	|	IPCOMP		{ MKRCFVAL($$, RCT_SATYPE_IPCOMP); }
+	;
+mark_list
+	:	mark_spec EOS			{ $$ = $1; }
+	|	mark_list mark_spec EOS		{ rcf_addlisttail($2, &$1); $$ = $1; }
+	;
+mark_spec
+	:	VALUE number
+		{ MKRCFDIR($$, CFD_MARK_VALUE); $$->nextp = $2; }
+	|	MASK number
+		{ MKRCFDIR($$, CFD_MARK_MASK); $$->nextp = $2; }
+	;
+offload_list
+	:	offload_spec EOS		{ $$ = $1; }
+	|	offload_list offload_spec EOS	{ rcf_addlisttail($2, &$1); $$ = $1; }
+	;
+offload_spec
+	:	DEV string
+		{ MKRCFDIR($$, CFD_OFFLOAD_DEV); $$->nextp = $2; }
+	|	DIR offload_dir_string
+		{ MKRCFDIR($$, CFD_OFFLOAD_DIR); $$->nextp = $2; }
+	;
+offload_dir_string
+	:	IN	{ MKRCFVAL($$, 2); }   /* XFRM_OFFLOAD_INBOUND */
+	|	OUT	{ MKRCFVAL($$, 0); }   /* outbound */
 	;
 
 	/* addresspool for IKE Config */

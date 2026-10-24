@@ -480,6 +480,11 @@ struct rcf_policy {
 	struct rc_addrlist *my_sa_ipaddr;	/* always a single entry */
 	struct rc_addrlist *peers_sa_ipaddr;	/* always a single entry */
 
+	/* XFRM flow selector (Linux NETLINK_XFRM); 0 = unset */
+	uint32_t mark;
+	uint32_t mark_mask;
+	uint32_t if_id;
+
 	struct rcf_ipsec *ips;
 };
 
@@ -506,6 +511,12 @@ struct rcf_sa {
 	struct rc_alglist *comp_alg;
 	struct rc_alglist *addke_alg;	/* RFC 9370 ADDKE (PQC) */
 	uint32_t spi;
+
+	/* XFRM SA offload (Linux NETLINK_XFRM + FreeBSD SADB_X_EXT_IF_HW_OFFL);
+	 * 0 / "" = unset. The flow-selector mark/if_id live on rcf_policy. */
+	char offload_ifname[16];
+	uint32_t offload_ifindex;
+	uint8_t offload_flags;	/* XFRM_OFFLOAD_* bit (INBOUND=2); 0 = outbound */
 };
 
 /* addresspool */
