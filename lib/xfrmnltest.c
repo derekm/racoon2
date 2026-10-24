@@ -1021,6 +1021,55 @@ test_nl_walk(void)
 	CHECK(cnt == 1, "nl_walk: truncated next header stopped after 1");
 }
 
+static void
+test_fill_selector(void)
+{
+	struct xfrm_selector sel;
+	struct sockaddr_in s4, d4;
+	struct sockaddr_in6 d6, d6spec;
+	int r;
+
+	/* v4-src + v6-:: wildcard must coerce to an AF_INET selector (the garble
+	 * xfrmtmpl catches on the SA path; fill_selector is shared with the
+	 * policy path, so pin it here without touching the kernel) */
+	memset(&s4, 0, sizeof(s4));
+	s4.sin_family = AF_INET;
+	((unsigned char *)&s4.sin_addr.s_addr)[0] = 192;
+	((unsigned char *)&s4.sin_addr.s_addr)[1] = 0;
+	((unsigned char *)&s4.sin_addr.s_addr)[2] = 2;
+	((unsigned char *)&s4.sin_addr.s_addr)[3] = 1;
+	memset(&d6, 0, sizeof(d6));
+	d6.sin6_family = AF_INET6;	/* :: unspecified */
+	r = fill_selector(&sel, (struct sockaddr *)&s4, (struct sockaddr *)&d6,
+	    32, 0, RC_PROTO_ANY, 0);
+	CHECK(r == 0, "fill_selector: v4-src + v6-:: returns 0");
+	CHECK(sel.family == AF_INET,
+	    "fill_selector: v4-src + v6-:: coerces to AF_INET (got %u)",
+	    sel.family);
+	CHECK(sel.daddr.a4 == 0, "fill_selector: :: coerced to v4-any");
+
+	/* a genuinely mixed SPECIFIED pair is rejected, not garbled */
+	memset(&d6spec, 0, sizeof(d6spec));
+	d6spec.sin6_family = AF_INET6;
+	d6spec.sin6_addr.s6_addr[0] = 0x20;
+	d6spec.sin6_addr.s6_addr[1] = 0x01;
+	d6spec.sin6_addr.s6_addr[2] = 0x0d;
+	d6spec.sin6_addr.s6_addr[3] = 0xb8;
+	d6spec.sin6_addr.s6_addr[15] = 0x01;	/* 2001:db8::1 */
+	r = fill_selector(&sel, (struct sockaddr *)&s4, (struct sockaddr *)&d6spec,
+	    32, 128, RC_PROTO_ANY, 0);
+	CHECK(r == -1, "fill_selector: mixed SPECIFIED pair rejected");
+
+	/* same-family v4+v4 stays AF_INET with the requested proto */
+	memset(&d4, 0, sizeof(d4));
+	d4.sin_family = AF_INET;
+	((unsigned char *)&d4.sin_addr.s_addr)[3] = 2;	/* 0.0.0.2 */
+	r = fill_selector(&sel, (struct sockaddr *)&s4, (struct sockaddr *)&d4,
+	    32, 32, IPPROTO_ESP, 0);
+	CHECK(r == 0 && sel.family == AF_INET && sel.proto == IPPROTO_ESP,
+	    "fill_selector: v4+v4 AF_INET proto esp");
+}
+
 int
 main(void)
 {
@@ -1041,6 +1090,7 @@ main(void)
 	test_short_messages();
 	test_satype_proto_mapping();
 	test_nl_walk();
+	test_fill_selector();
 	printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);
 	return fails ? 1 : 0;
 }

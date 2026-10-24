@@ -376,6 +376,33 @@ sa_to_xaddr(const struct sockaddr *sa, xfrm_address_t *xa, uint16_t *family)
 	return -1;
 }
 
+/* is the sockaddr absent or its family's unspecified/wildcard address
+ * (0.0.0.0 / ::)? Used by fill_selector to pick a deterministic selector
+ * family and coerce a family-agnostic peer side to it. */
+static int
+sa_addr_unspec(const struct sockaddr *sa)
+{
+	if (sa == NULL)
+		return 1;
+	if (sa->sa_family == AF_INET) {
+		const struct sockaddr_in *sin = (const void *)sa;
+		return sin->sin_addr.s_addr == INADDR_ANY;
+	}
+#ifdef INET6
+	if (sa->sa_family == AF_INET6) {
+		const struct sockaddr_in6 *sin6 = (const void *)sa;
+		const unsigned char *p = sin6->sin6_addr.s6_addr;
+		int i;
+
+		for (i = 0; i < 16; i++)
+			if (p[i] != 0)
+				return 0;
+		return 1;
+	}
+#endif
+	return 1;
+}
+
 static int
 xaddr_to_sa(uint16_t family, const xfrm_address_t *xa, uint16_t port,
     struct sockaddr_storage *ss)
@@ -660,19 +687,32 @@ xfrm_resend_pending(void)
 	return 0;
 }
 
-static void
+static int
 fill_selector(struct xfrm_selector *sel, const struct sockaddr *src,
     const struct sockaddr *dst, uint8_t pref_src, uint8_t pref_dst,
     uint8_t ul_proto, uint32_t flags)
 {
-	uint16_t family = AF_INET;
+	uint16_t src_fam = AF_INET, dst_fam = AF_INET;
+	uint16_t family;
 	in_port_t *sp, *dp;
+	int s_ok, d_ok, s_spec, d_spec;
 
 	memset(sel, 0, sizeof(*sel));
-	if (src)
-		sa_to_xaddr(src, &sel->saddr, &family);
-	if (dst)
-		sa_to_xaddr(dst, &sel->daddr, &family);
+	s_ok = src && sa_to_xaddr(src, &sel->saddr, &src_fam) == 0;
+	d_ok = dst && sa_to_xaddr(dst, &sel->daddr, &dst_fam) == 0;
+	s_spec = s_ok && !sa_addr_unspec(src);
+	d_spec = d_ok && !sa_addr_unspec(dst);
+	/* The selector family must come from a SPECIFIED side (src preferred),
+	 * never from whichever field was written last: a v4-local + v6-::
+	 * selector used to be emitted as AF_INET6 carrying a v4 src — the
+	 * garble the xfrm tmpl test catches. A wildcard/absent side coerces to
+	 * the specified peer (:: -> v4-any, all zeros), and both-wildcard
+	 * defaults to AF_INET. A genuinely mixed SPECIFIED pair cannot map to
+	 * one xfrm_selector: reject it (the caller turns -1 into EINVAL)
+	 * instead of emitting a garbled selector. */
+	if (s_spec && d_spec && src_fam != dst_fam)
+		return -1;
+	family = s_spec ? src_fam : (d_spec ? dst_fam : AF_INET);
 	sel->family = family;
 	sel->prefixlen_s = pref_src ? pref_src : 0;
 	sel->prefixlen_d = pref_dst ? pref_dst : 0;
@@ -692,6 +732,7 @@ fill_selector(struct xfrm_selector *sel, const struct sockaddr *src,
 			sel->dport_mask = 0xffff;
 		}
 	}
+	return 0;
 }
 
 static void
@@ -750,15 +791,23 @@ fill_usersa(struct xfrm_usersa_info *sa, struct rcpfk_msg *rc)
 	 */
 	if (rc->samode == RCT_IPSM_TUNNEL) {
 		memset(&sa->sel, 0, sizeof(sa->sel));
-		if (rc->sp_src && rc->sp_dst)
-			fill_selector(&sa->sel, rc->sp_src, rc->sp_dst,
-			    rc->pref_src, rc->pref_dst, rc->ul_proto, rc->flags);
-		else
+		if (rc->sp_src && rc->sp_dst) {
+			if (fill_selector(&sa->sel, rc->sp_src, rc->sp_dst,
+			    rc->pref_src, rc->pref_dst, rc->ul_proto,
+			    rc->flags) < 0) {
+				xfrm_seterror(rc, EINVAL,
+				    "mixed-family selector");
+				return -1;
+			}
+		} else
 			sa->sel.family = family;
 	} else {
-		fill_selector(&sa->sel, rc->sa_src, rc->sa_dst,
-		    rc->pref_src, rc->pref_dst,
-		    rc->ul_proto, rc->flags);
+		if (fill_selector(&sa->sel, rc->sa_src, rc->sa_dst,
+		    rc->pref_src, rc->pref_dst, rc->ul_proto,
+		    rc->flags) < 0) {
+			xfrm_seterror(rc, EINVAL, "mixed-family selector");
+			return -1;
+		}
 	}
 	return 0;
 }
@@ -1363,8 +1412,11 @@ xfrm_send_policy(struct rcpfk_msg *rc, uint16_t nltype)
 	memset(xp, 0, sizeof(*xp));
 	src = rc->sp_src ? rc->sp_src : rc->sa_src;
 	dst = rc->sp_dst ? rc->sp_dst : rc->sa_dst;
-	fill_selector(&xp->sel, src, dst, rc->pref_src, rc->pref_dst,
-	    rc->ul_proto, rc->flags);
+	if (fill_selector(&xp->sel, src, dst, rc->pref_src, rc->pref_dst,
+	    rc->ul_proto, rc->flags) < 0) {
+		xfrm_seterror(rc, EINVAL, "mixed-family selector");
+		return -1;
+	}
 	xp->dir = dir_to_x(rc->dir);
 	xp->index = rc->slid;
 	fill_lft(&xp->lft, rc);
@@ -1422,8 +1474,11 @@ rcpfk_send_spddelete(struct rcpfk_msg *rc)
 	memset(id, 0, sizeof(*id));
 	src = rc->sp_src ? rc->sp_src : rc->sa_src;
 	dst = rc->sp_dst ? rc->sp_dst : rc->sa_dst;
-	fill_selector(&id->sel, src, dst, rc->pref_src, rc->pref_dst,
-	    rc->ul_proto, rc->flags);
+	if (fill_selector(&id->sel, src, dst, rc->pref_src, rc->pref_dst,
+	    rc->ul_proto, rc->flags) < 0) {
+		xfrm_seterror(rc, EINVAL, "mixed-family selector");
+		return -1;
+	}
 	id->dir = dir_to_x(rc->dir);
 	pending_set(rc, XFRM_MSG_DELPOLICY, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
@@ -1701,8 +1756,11 @@ rcpfk_send_migrate(struct rcpfk_msg *rc)
 	memset(id, 0, sizeof(*id));
 	src = rc->sp_src ? rc->sp_src : rc->sa_src;
 	dst = rc->sp_dst ? rc->sp_dst : rc->sa_dst;
-	fill_selector(&id->sel, src, dst, rc->pref_src, rc->pref_dst,
-	    rc->ul_proto, rc->flags);
+	if (fill_selector(&id->sel, src, dst, rc->pref_src, rc->pref_dst,
+	    rc->ul_proto, rc->flags) < 0) {
+		xfrm_seterror(rc, EINVAL, "mixed-family selector");
+		return -1;
+	}
 	id->dir = dir_to_x(rc->dir);
 	memset(&m, 0, sizeof(m));
 	m.proto = rcpfk_satype_to_proto(rc->satype);
