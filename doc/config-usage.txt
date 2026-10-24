@@ -712,11 +712,12 @@ remote
 
 	tcp_encap (on|off) ;
 		It is valid for the ikev2 directive.
-		RFC 9329 / RFC 8229 IKE-over-TCP.  on = this remote exchanges IKE
-		over a single TCP stream on the IKE-over-TCP port (4500,
-		IKEV2_TCP_PORT) instead of UDP; framing is the IKETCP prefix plus
-		Len(including itself)|4-zero-octet-marker records.
-		off (default) = plain UDP only.
+		RFC 9329 / RFC 8229 IKE-over-TCP.  on = an IKE-over-TCP listener
+		is opened on port 4500 (IKEV2_TCP_PORT) and IKE is accepted over
+		it for this remote (responder).  Framing is the IKETCP prefix
+		plus Len(including itself)|4-zero-octet-marker records.  Sending
+		replies back over the stream is not yet wired, so responses still
+		leave over UDP.  off (default) = plain UDP only.
 
 	addke_required (on|off) ;
 		It is valid for the ikev2 directive.
