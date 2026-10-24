@@ -680,10 +680,10 @@ eay_utctime(struct timeval *t, ASN1_TIME *u)
 	int i;
 	struct tm tm;
 
-	if (u->type != V_ASN1_UTCTIME)
+	if (ASN1_STRING_type(u) != V_ASN1_UTCTIME)
 		return -1;
-	len = u->length;
-	s = (unsigned char *)u->data;
+	len = ASN1_STRING_length(u);
+	s = (unsigned char *)ASN1_STRING_get0_data(u);
 
 	/*
 	 * YYMMDDhhmmssZ
@@ -744,10 +744,10 @@ eay_generalizedtime(struct timeval *t, ASN1_TIME *g)
 	int i;
 	struct tm tm;
 
-	if (g->type != V_ASN1_GENERALIZEDTIME)
+	if (ASN1_STRING_type(g) != V_ASN1_GENERALIZEDTIME)
 		return -1;
-	len = g->length;
-	s = (unsigned char *)g->data;
+	len = ASN1_STRING_length(g);
+	s = (unsigned char *)ASN1_STRING_get0_data(g);
 
 	/*
 	 * (a) implicit localtime
@@ -807,7 +807,7 @@ eay_time(struct timeval *t, ASN1_TIME *s)
 	if (!s)
 		return -1;
 
-	switch (s->type) {
+	switch (ASN1_STRING_type(s)) {
 	case V_ASN1_UTCTIME:
 		return eay_utctime(t, s);
 		break;
@@ -1028,10 +1028,10 @@ eay_get_x509subjectipaddr(rc_vchar_t *cert, int pos)
 		ipcount++;
 		if (ipcount != pos)
 			continue;
-		fam = (gen->d.ip->length == 4) ? AF_INET :
-		    ((gen->d.ip->length == 16) ? AF_INET6 : AF_UNSPEC);
+		fam = (ASN1_STRING_length(gen->d.ip) == 4) ? AF_INET :
+		    ((ASN1_STRING_length(gen->d.ip) == 16) ? AF_INET6 : AF_UNSPEC);
 		if (fam == AF_UNSPEC ||
-		    inet_ntop(fam, gen->d.ip->data, buf,
+		    inet_ntop(fam, ASN1_STRING_get0_data(gen->d.ip), buf,
 			      sizeof(buf)) == NULL)
 			break;	/* malformed IP SAN; stop */
 		out = racoon_malloc(strlen(buf) + 1);
