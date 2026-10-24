@@ -1074,16 +1074,19 @@ test_fill_selector(void)
 }
 
 static int
-offload_rta_get(const char *buf, size_t len, int type,
+offload_rta_get(const char *buf, size_t len, size_t pay_off, int type,
     const void **data, size_t *dlen)
 {
 	const struct rtattr *rta;
-	size_t rem = len - NLMSG_ALIGN(sizeof(struct nlmsghdr));
+	size_t base = NLMSG_ALIGN(sizeof(struct nlmsghdr) + pay_off);
+	size_t rem = len - base;
 
 	/* RTA_OK/RTA_NEXT, not a hand-rolled cursor: a comma stepper that
 	 * advances by RTA_ALIGN(rta_len) never terminates once a trailing
-	 * zeroed (rta_len==0) region is reached — it hung here. */
-	for (rta = (const void *)(buf + NLMSG_ALIGN(sizeof(struct nlmsghdr)));
+	 * zeroed (rta_len==0) region is reached — it hung here. pay_off is the
+	 * fixed payload struct between the nlmsghdr and the rtattrs (0 for a
+	 * bare header). */
+	for (rta = (const void *)(buf + base);
 	     RTA_OK(rta, rem);
 	     rta = RTA_NEXT(rta, rem)) {
 		if (rta->rta_type == type) {
@@ -1125,15 +1128,15 @@ test_offload_attrs(void)
 	    "offload: offload attr appended (flags=0 outbound)");
 	len = n->nlmsg_len;
 
-	CHECK(offload_rta_get(buf, len, XFRMA_MARK, &d, &dl) == 1 &&
+	CHECK(offload_rta_get(buf, len, 0, XFRMA_MARK, &d, &dl) == 1 &&
 	    dl == sizeof(struct xfrm_mark) &&
 	    ((const struct xfrm_mark *)d)->v == 0x100 &&
 	    ((const struct xfrm_mark *)d)->m == 0xff,
 	    "offload: XFRMA_MARK v/m emitted");
-	CHECK(offload_rta_get(buf, len, XFRMA_IF_ID, &d, &dl) == 1 &&
+	CHECK(offload_rta_get(buf, len, 0, XFRMA_IF_ID, &d, &dl) == 1 &&
 	    dl == 4 && *(const unsigned int *)d == 1,
 	    "offload: XFRMA_IF_ID emitted");
-	CHECK(offload_rta_get(buf, len, XFRMA_OFFLOAD_DEV, &d, &dl) == 1 &&
+	CHECK(offload_rta_get(buf, len, 0, XFRMA_OFFLOAD_DEV, &d, &dl) == 1 &&
 	    dl == sizeof(struct xfrm_user_offload) &&
 	    ((const struct xfrm_user_offload *)d)->ifindex == 5 &&
 	    ((const struct xfrm_user_offload *)d)->flags == 0,
@@ -1150,9 +1153,9 @@ test_offload_attrs(void)
 	CHECK(add_xfrm_offload_attr(n, sizeof(buf), &rc) == 0,
 	    "offload: no offload attr when no device named");
 	len = n->nlmsg_len;
-	CHECK(offload_rta_get(buf, len, XFRMA_MARK, NULL, NULL) == 0 &&
-	    offload_rta_get(buf, len, XFRMA_IF_ID, NULL, NULL) == 0 &&
-	    offload_rta_get(buf, len, XFRMA_OFFLOAD_DEV, NULL, NULL) == 0,
+	CHECK(offload_rta_get(buf, len, 0, XFRMA_MARK, NULL, NULL) == 0 &&
+	    offload_rta_get(buf, len, 0, XFRMA_IF_ID, NULL, NULL) == 0 &&
+	    offload_rta_get(buf, len, 0, XFRMA_OFFLOAD_DEV, NULL, NULL) == 0,
 	    "offload: mask0/ifid0/no-device emits no XFRMA attrs");
 
 	/* negative: a bad device NAME -> add_xfrm_offload_attr fails (ENODEV),
@@ -1165,6 +1168,59 @@ test_offload_attrs(void)
 	    "__definitely_not_a_device__");
 	CHECK(add_xfrm_offload_attr(n, sizeof(buf), &rc) == -1,
 	    "offload: unresolvable device name -> refuse (ENODEV)");
+}
+
+static void
+test_mark_emit_live_paths(void)
+{
+	struct rcpfk_msg rc;
+	struct sockaddr_in s, d;
+	struct nlmsghdr *n;
+	const void *dd;
+	size_t dl;
+
+	/* ALLOCSPI: the larval for a marked child SA must carry XFRMA_MARK or
+	 * the later UPDSA cannot match it (larval mark 0 vs UPDSA mark). */
+	setup();
+	fill_sa_rc(&rc, &s, &d, 0x4010000, 0);
+	rc.so = rcm.so;
+	rc.mark = 0x100; rc.mark_mask = 0xff;
+	CHECK(rcpfk_send_getspi(&rc) == 0, "getspi: %s", rc.estr);
+	n = kget();
+	CHECK(n && n->nlmsg_type == XFRM_MSG_ALLOCSPI,
+	    "ALLOCSPI on req socket");
+	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
+	    sizeof(struct xfrm_userspi_info), XFRMA_MARK, &dd, &dl) == 1 &&
+	    dl == sizeof(struct xfrm_mark) &&
+	    ((const struct xfrm_mark *)dd)->v == 0x100 &&
+	    ((const struct xfrm_mark *)dd)->m == 0xff,
+	    "getspi carries XFRMA_MARK v/m");
+
+	/* DELPOLICY by index (spmd's delete path — kernel byid matches mark) */
+	setup();
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so; rc.seq = 0x4010001; rc.slid = 42;
+	rc.dir = RCT_DIR_OUTBOUND; rc.mark = 0x100; rc.mark_mask = 0xff;
+	CHECK(rcpfk_send_spddelete2(&rc) == 0, "spddelete2: %s", rc.estr);
+	n = kget();
+	CHECK(n && n->nlmsg_type == XFRM_MSG_DELPOLICY,
+	    "DELPOLICY(by-index) on req socket");
+	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
+	    sizeof(struct xfrm_userpolicy_id), XFRMA_MARK, &dd, &dl) == 1,
+	    "spddelete2 carries XFRMA_MARK");
+
+	/* GETPOLICY by index (spmd's fetch path) */
+	setup();
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so; rc.seq = 0x4010002; rc.slid = 42;
+	rc.dir = RCT_DIR_OUTBOUND; rc.mark = 0x100; rc.mark_mask = 0xff;
+	CHECK(rcpfk_send_spdget(&rc) == 0, "spdget: %s", rc.estr);
+	n = kget();
+	CHECK(n && n->nlmsg_type == XFRM_MSG_GETPOLICY,
+	    "GETPOLICY(by-index) on req socket");
+	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
+	    sizeof(struct xfrm_userpolicy_id), XFRMA_MARK, &dd, &dl) == 1,
+	    "spdget carries XFRMA_MARK");
 }
 
 int
@@ -1189,6 +1245,7 @@ main(void)
 	test_nl_walk();
 	test_fill_selector();
 	test_offload_attrs();
+	test_mark_emit_live_paths();
 	printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);
 	return fails ? 1 : 0;
 }
