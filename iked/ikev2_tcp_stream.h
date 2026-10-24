@@ -63,15 +63,18 @@ struct tcp_stream {
 	void *arg;
 };
 
+/*
+ * Accept one connection off the (non-blocking) listener into a responder
+ * stream (expect_prefix=1).  Returns NULL with errno == EAGAIN when there is
+ * simply no pending connection -- the loop must treat EAGAIN as "try later",
+ * not as a dead listener.
+ */
 struct tcp_stream *tcp_stream_accept(int lfd, tcp_stream_dispatch, void *);
 /*
  * Non-blocking outbound connect.  remote is required; local may be NULL
  * (let the kernel pick the source).  EINPROGRESS is success.  The returned
  * stream is the TCP connection originator (expect_prefix=0) and queues the
- * one-time "IKETCP" prefix before its first record.  On a non-blocking
- * LISTENER, tcp_stream_accept() returns NULL with errno == EAGAIN when there
- * is simply no pending connection -- the loop treats EAGAIN as "try later",
- * not as a dead listener.
+ * one-time "IKETCP" prefix before its first record.
  */
 struct tcp_stream *tcp_stream_connect(const struct sockaddr *remote,
 				      const struct sockaddr *local,

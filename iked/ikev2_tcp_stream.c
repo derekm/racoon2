@@ -244,11 +244,11 @@ tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 	if (ts->prefix_sent == 0) {
 		/* We are the TCP connection originator: one-time prefix. */
 		if (tcp_stream_begin(rec) != 0)
-			return -1;
+			return 2;	/* not queued; nothing lost, not fatal */
 		have_prefix = 1;
 	}
 	if (tcp_record_ike(rec, ike, n) != 0)
-		return -1;
+		return 2;	/* oversized (n > 65529): not queued, not fatal */
 	rl = rec->stream_len;
 
 	/* Compact any fully-sent tail before appending. */
