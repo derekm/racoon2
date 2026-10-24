@@ -197,11 +197,15 @@ unsigned long xfrm_stat_ops_full;
 /* The unit test (lib/xfrmnltest.c) replaces the kernel with socketpairs
  * and can make the next recv() on one fd fail with ENOBUFS. */
 int xfrm_test_enobufs_fd = -1;
+int xfrm_test_enobufs_more;	/* extra consecutive injections on that fd */
 static ssize_t
 xfrm_recv(int fd, void *buf, size_t len, int flags)
 {
 	if (fd == xfrm_test_enobufs_fd) {
-		xfrm_test_enobufs_fd = -1;
+		if (xfrm_test_enobufs_more > 0)
+			xfrm_test_enobufs_more--;
+		else
+			xfrm_test_enobufs_fd = -1;
 		errno = ENOBUFS;
 		return -1;
 	}
@@ -2767,6 +2771,7 @@ xfrm_resync(struct rcpfk_msg *rc)
 	int restart = 0;
 
 restart_resync:
+	ret = 0;
 	xfrm_need_resync = 0;
 	xfrm_stat_resync++;
 	resync_count++;
@@ -2794,14 +2799,28 @@ restart_resync:
 		}
 		memset(&tmp, 0, sizeof(tmp));
 		tmp.so = rc->so;
-		if (xfrm_read_one(xfrm_req_fd, &tmp, MSG_DONTWAIT, 1) < 0)
-			ret = -1;	/* keep going: the dump must finish */
+		if (xfrm_read_one(xfrm_req_fd, &tmp, MSG_DONTWAIT, 1) < 0 &&
+		    ret == 0) {
+			/* keep going: the dump must finish; report the
+			 * first failure once it has */
+			ret = -1;
+			rc->eno = tmp.eno;
+			memcpy(rc->estr, tmp.estr, sizeof(rc->estr));
+		}
 		if (xfrm_need_resync) {
 			/* the request socket itself overflowed mid-dump */
 			plog(PLOG_INTWARN, PLOGLOC, NULL,
 			    "xfrm: resync dump overflowed, restarting\n");
 			resync_sa_seq = resync_spd_seq = 0;
 			if (++restart > XFRM_RESYNC_MAX_RETRY) {
+				/* xfrm_need_resync stays set: the next
+				 * handler round tries again once the storm
+				 * has passed */
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				    "xfrm: SAD/SPD resync gave up after %d "
+				    "overflowed dumps; kernel state view is "
+				    "stale until a later resync succeeds\n",
+				    restart);
 				xfrm_seterror(rc, EAGAIN,
 				    "resync dump restart exceeded retry cap");
 				return -1;
@@ -2816,11 +2835,14 @@ restart_resync:
 		tmp.so = rc->so;
 		tmp.eno = ENOBUFS;
 		tmp.flags = PFK_FLAG_RESYNC;
-		if (cb->cb_resync(&tmp) < 0)
+		if (cb->cb_resync(&tmp) < 0 && ret == 0) {
 			ret = -1;
+			xfrm_seterror(rc, tmp.eno ? tmp.eno : EIO,
+			    "resync callback failed%s%s",
+			    tmp.estr[0] ? ": " : "", tmp.estr);
+		}
 	}
-	(void)ret;
-	return 0;
+	return ret;
 }
 
 int
@@ -2878,6 +2900,11 @@ rcpfk_handler(struct rcpfk_msg *rc)
 			break;
 		if (r < 0)
 			ret = -1;
+		/* the resync below re-reads this socket and dispatches
+		 * whatever is still queued on it; spinning on a socket that
+		 * just overflowed only loses more */
+		if (xfrm_need_resync)
+			break;
 	}
 	if (xfrm_need_resync) {
 		struct rcpfk_msg tmp;

@@ -1438,6 +1438,79 @@ test_op_table_full(void)
 	    op_find(0xbff) == NULL, "no outstanding op evicted");
 }
 
+/*
+ * A request socket that overflows on every read during the resync dump
+ * must not restart forever: give up past XFRM_RESYNC_MAX_RETRY with EAGAIN,
+ * and leave the resync armed for a later round, which then succeeds.
+ */
+static void
+test_resync_retry_cap(void)
+{
+	struct rcpfk_msg rc;
+	pthread_t th;
+	int r;
+
+	setup();
+	kthr_stop = 0;
+	kthr_spd = kthr_sa = 0;
+	if (pthread_create(&th, NULL, kthr, NULL) != 0)
+		exit(99);
+	xfrm_need_resync = 1;
+	xfrm_test_enobufs_fd = xfrm_req_fd;
+	/* one overflow ends the handler's read loop, MAX+1 more overflow
+	 * every resync pass */
+	xfrm_test_enobufs_more = XFRM_RESYNC_MAX_RETRY + 1;
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == -1 && rc.eno == EAGAIN, "resync gives up past the cap "
+	    "(r=%d eno=%d %s)", r, rc.eno, rc.estr);
+	CHECK(xfrm_stat_resync == XFRM_RESYNC_MAX_RETRY + 1,
+	    "exactly MAX+1 resync passes (%lu)", xfrm_stat_resync);
+	CHECK(n_resync == 0, "cb_resync not run for an incomplete resync");
+	CHECK(xfrm_need_resync == 1, "resync stays armed after giving up");
+	CHECK(xfrm_test_enobufs_fd == -1, "all injected overflows consumed");
+	/* storm over: drain stale dump replies, next round completes */
+	usleep(120000);
+	while (xfrm_read_one(xfrm_req_fd, &rc, MSG_DONTWAIT, 1) == 1)
+		;
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0, "later round resyncs: %s", rc.estr);
+	CHECK(n_resync == 1 && xfrm_need_resync == 0, "resync completed "
+	    "(n_resync %d armed %d)", n_resync, xfrm_need_resync);
+	kthr_stop = 1;
+	pthread_join(th, NULL);
+}
+
+/* cb_resync failing must surface as a handler error, not a silent 0 */
+static int cb_resync_fail(struct rcpfk_msg *r) { n_resync++; (void)r; return -1; }
+static void
+test_resync_cb_failure_reported(void)
+{
+	struct rcpfk_msg rc;
+	pthread_t th;
+	int r;
+
+	setup();
+	tcb.cb_resync = cb_resync_fail;
+	kthr_stop = 0;
+	if (pthread_create(&th, NULL, kthr, NULL) != 0)
+		exit(99);
+	xfrm_need_resync = 1;
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == -1 && n_resync == 1, "failed cb_resync reported (r=%d "
+	    "n=%d)", r, n_resync);
+	CHECK(strstr(rc.estr, "resync callback failed") != NULL,
+	    "estr names it (%s)", rc.estr);
+	kthr_stop = 1;
+	pthread_join(th, NULL);
+	tcb.cb_resync = cb_resync;
+}
+
 int
 main(void)
 {
@@ -1458,6 +1531,8 @@ main(void)
 	test_misaligned_batch();
 	test_migrate_port_only_without_migrate();
 	test_enobufs_resync();
+	test_resync_retry_cap();
+	test_resync_cb_failure_reported();
 	test_mapping_migrate_fresh();
 	test_short_messages();
 	test_satype_proto_mapping();
