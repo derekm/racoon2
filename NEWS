@@ -1,5 +1,47 @@
 $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 
+2026-10-24 Derek Moore
+
+	* Compatibility matrix (peer x feature x gate). The table is generated
+	  from samples/linux-matrix/cases.tsv by
+	  samples/linux-matrix/tools/compat-matrix.sh, so regenerate it instead
+	  of editing it.
+	  Each cell counts matrix rows by where they count as a gate:
+	  ci = Ubuntu + Fedora full matrix, addke = Fedora/OpenSSL 3.5 lane,
+	  nsim/pfkey/dpd = capability lanes, box = box-only evidence. Apple
+	  iOS/macOS interop is box evidence (samples/linux-matrix/box-evidence.sh)
+	  and is not in this table.
+
+	  | feature | iked <-> iked | iked <-> strongSwan |
+	  |---|---|---|
+	  | EAP (RADIUS) | - | 2 box |
+	  | ESP ICV lengths | 3 ci, 2 pfkey | - |
+	  | IKEv1 | - | 2 ci, 3 addke |
+	  | IPv6 | 2 addke | - |
+	  | NAT-T / UDP encapsulation | 3 ci, 5 box | - |
+	  | PPK (RFC 8784) | 2 box | 2 addke |
+	  | PQC ADDKE (RFC 9242/9370) | 23 addke, 1 box | 35 addke, 2 box |
+	  | X.509 / raw public key auth | 6 box | - |
+	  | XFRM mark / offload | 1 ci, 1 nsim | - |
+	  | childless (RFC 6023) | 5 addke | 8 addke |
+	  | config: pools, lifetimes | 1 box | 1 box |
+	  | deprecated-suite policy | 31 ci, 4 box | - |
+	  | loss, replay, collisions | 5 addke, 1 dpd, 5 box | - |
+	  | proposal shapes (ciphers, PRFs, DH) | 7 ci, 34 addke, 14 box | 16 addke |
+	  | redirect (RFC 5685) | 2 box | - |
+	  | session resumption (RFC 5723) | 4 addke | - |
+	  | unit / admin socket | 8 ci | - |
+
+	* Road-warrior sample pack: samples/roadwarrior/{psk,cert,
+	  eap-mschapv2}.conf with a client-side README. `make check` runs
+	  iked -C on every file (iked/rwsamplecheck.sh).
+	* New matrix rows i2ixfrm-mark and i2ixfrm-offload prove marked
+	  SAs/policies and netdevsim offload binding on live kernels
+	  (doc/xfrm-offload.md, "Matrix coverage").
+	* Netlink reads: an oversize datagram (MSG_TRUNC) is no longer
+	  mistaken for a complete one. XFRM resyncs, and iked's rtnetlink
+	  monitor logs the lost address events (lib/rcpfk_nl.h).
+
 2026-10-17 Derek Moore
 
 	* Session resumption (RFC 5723) ticket format change: the sealed
