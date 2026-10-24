@@ -1331,9 +1331,10 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			get_uint32(&ikehdr->message_id), ke_method);
 		if (rr < 0) {
 			if (rr == -2) {
-				/* local send failure (or ENOMEM after a KEr was
-				 * already sent): restore the inbound window so a
-				 * retransmit of this followup re-enters, and do
+				/* pre-send local send failure (nothing reached
+				 * the wire; SK/link/round uncommitted): restore
+				 * the inbound window so a retransmit of this
+				 * followup re-enters, and do
 				 * NOT emit STATE_NOT_FOUND (not a protocol
 				 * error). The SK was not appended (deferred), so
 				 * re-entry cannot double it. */

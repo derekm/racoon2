@@ -1347,10 +1347,13 @@ ikev2_rekey_abandon_parked(struct ikev2_sa *old_sa)
  * final round: the caller must ikev2_rekey_responder_addke_complete()
  * with old_sa->addke_rekey_sk (SK(1)|...|SK(n)).  Returns -1 on a
  * protocol/alloc error (the caller reports STATE_NOT_FOUND).  Returns -2 on
- * a LOCAL send failure (or ENOMEM after a KEr was already sent): the caller
- * restores the inbound window and sends NO error notify, so a retransmit of
- * this followup re-enters — this round's SK was NOT appended (deferred), so
- * re-entry cannot double it.
+ * a PRE-SEND LOCAL send failure (nothing reached the wire; this round's SK/
+ * link/round are uncommitted): the caller restores the inbound window and
+ * sends NO error notify, so a retransmit of this followup re-enters — since
+ * the SK was pre-allocated but not committed, re-entry cannot double it.
+ * -2 no longer covers any post-send failure: the SK is pre-allocated before
+ * the send, so nothing can fail after a successful transmit (an alloc
+ * failure happens pre-send and returns -1 / STATE_NOT_FOUND).
  *
  * RFC 9370 s2.2.4: every non-final IKE_FOLLOWUP_KE response MUST carry a
  * fresh ADDITIONAL_KEY_EXCHANGE link.  Completing after SK(1) and
@@ -1402,6 +1405,7 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 		struct ikev2payl_ke_h keh;
 		rc_vchar_t *ker = 0;
 		rc_vchar_t *pkt = 0;
+		rc_vchar_t *acc = NULL;
 
 		new_link = random_bytes(16);
 		if (!new_link)
@@ -1418,10 +1422,30 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ker, FALSE);
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(
-					IKEV2_NOTIFY_PROTO_NONE, 0, 0,
-					IKEV2_ADDITIONAL_KEY_EXCHANGE,
-					new_link->v, new_link->l),
+				IKEV2_NOTIFY_PROTO_NONE, 0, 0,
+				IKEV2_ADDITIONAL_KEY_EXCHANGE,
+				new_link->v, new_link->l),
 				    TRUE);
+		/* Pre-allocate this round's SK(1..n) BEFORE the send so nothing
+		 * that can fail (malloc) remains after a successful transmit.
+		 * Link + SK + round are then committed below as ONE atomic
+		 * pointer-swing, so the committed rekey state always matches
+		 * what the peer holds. This also makes -2 unambiguous: it can
+		 * only mean a PRE-SEND local send failure (window restore +
+		 * re-entry is correct there); the old post-send ENOMEM -2 is
+		 * gone, so the caller never restores the window on a round
+		 * whose KEr already reached the peer and armed the cache. */
+		acc = rc_vmalloc((old_sa->addke_rekey_sk ?
+				  old_sa->addke_rekey_sk->l : 0) + ss->l);
+		if (!acc) {
+			ikev2_payloads_destroy(&payl);
+			rc_vfree(new_link);
+			return -1;
+		}
+		if (old_sa->addke_rekey_sk)
+			memcpy(acc->v, old_sa->addke_rekey_sk->v,
+			       old_sa->addke_rekey_sk->l);
+		memcpy((uint8_t *)acc->v + acc->l - ss->l, ss->v, ss->l);
 		pkt = ikev2_packet_construct(
 			IKEV2EXCH_IKE_FOLLOWUP_KE,
 			(old_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
@@ -1431,6 +1455,7 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 		if (!pkt) {
 			ikev2_payloads_destroy(&payl);
 			rc_vfree(new_link);
+			rc_vfree(acc);
 			return -1;
 		}
 		if (ikev2_transmit_response(old_sa, pkt, ctx->local,
@@ -1438,36 +1463,21 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 			ikev2_payloads_destroy(&payl);
 			rc_vfree(pkt);	/* failure: caller owns the packet */
 			rc_vfree(new_link);
-			return -2;	/* local send failure: caller restores the
+			rc_vfree(acc);
+			return -2;	/* pre-send local send failure: caller restores the
 					 * inbound window and sends NO error notify
 					 * (a retransmit of this followup re-enters) */
 		}
 		ikev2_payloads_destroy(&payl);
-		/* append this round's SK now (transmit succeeded) */
-		{
-			rc_vchar_t *acc;
-
-			acc = rc_vmalloc((old_sa->addke_rekey_sk ?
-					  old_sa->addke_rekey_sk->l : 0) +
-					 ss->l);
-			if (!acc) {
-				rc_vfree(new_link);
-				/* ENOMEM after the KEr was already sent: do not
-				 * report STATE_NOT_FOUND (the peer got the KEr);
-				 * the parked rekey is torn down by its timeout. */
-				return -2;
-			}
-			if (old_sa->addke_rekey_sk) {
-				memcpy(acc->v, old_sa->addke_rekey_sk->v,
-				       old_sa->addke_rekey_sk->l);
-				rc_vfreez(old_sa->addke_rekey_sk);
-			}
-			memcpy((uint8_t *)acc->v + acc->l - ss->l,
-			       ss->v, ss->l);
-			old_sa->addke_rekey_sk = acc;
-		}
+		/* atomic commit after a successful transmit (no alloc here):
+		 * SK + link + round swing together. */
+		if (old_sa->addke_rekey_sk)
+			rc_vfreez(old_sa->addke_rekey_sk);
+		old_sa->addke_rekey_sk = acc;
+		acc = NULL;
 		rc_vfreez(old_sa->addke_rekey_link);
 		old_sa->addke_rekey_link = new_link;
+		new_link = NULL;
 		old_sa->addke_rekey_round = round + 1;
 		if (old_sa->addke_rekey_timer)
 			SCHED_KILL(old_sa->addke_rekey_timer);
@@ -1531,28 +1541,13 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 	}
 	old_sa->addke_rekey_pending = 0;
 
-	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir, addke_sk) != 0)
-		goto fail;
-	rc_vfreez(old_sa->addke_rekey_sk);
-	old_sa->addke_rekey_sk = NULL;
-	old_sa->addke_rekey_round = 0;
-	if (ikev2_rekey_responder_finish(ctx) != 0)
-		goto fail;
-	/* success: the rekeyed SA is complete in its own right (already in
-	 * the SA list via ikev2_create_sa); drop the deferred-rekey link so
-	 * disposing the OLD SA cannot recurse into a live ESTABLISHED SA
-	 * that owns children (ikev2_dispose_sa asserts the child list is
-	 * empty).  Mirrors the initiator tail and the ADDKE timeout/abandon
-	 * paths, which all clear old_sa->new_sa. */
-	old_sa->new_sa = NULL;
-
 	/*
-	 * Reply with the followup's KEr(1): HDR(IKE_FOLLOWUP_KE),
-	 * SK { KE } where KE = method+SK(1) ciphertext.  The SK(1)
-	 * ciphertext (ct, freshly encapsulated against the initiator's
-	 * public key) and method are carried in the KE payload; the
-	 * method equals the negotiated ADDKE id.  The shared secret
-	 * addke_sk is used only in the SKEYSEED above, never sent.
+	 * Transmit the FINAL followup KEr BEFORE the irreversible establish
+	 * (SKEYSEED + finish adopts children). A failed final send must NOT
+	 * take the establish-then-kill path (fail would DEAD a new_sa that
+	 * already owns children). On success the response cache is armed and
+	 * then we derive keys + establish; the peer's next message-id is
+	 * answered from the cache.
 	 */
 	{
 		struct ikev2_payloads payl;
@@ -1582,10 +1577,29 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 			ikev2_payloads_destroy(&payl);
 			goto fail;
 		}
-		(void)ikev2_transmit_response(old_sa, pkt, ctx->local,
-					      ctx->remote);
+		if (ikev2_transmit_response(old_sa, pkt, ctx->local,
+					    ctx->remote) != 0) {
+			rc_vfree(pkt);	/* failure: caller owns the packet */
+			ikev2_payloads_destroy(&payl);
+			goto fail;
+		}
 		ikev2_payloads_destroy(&payl);
 	}
+
+	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir, addke_sk) != 0)
+		goto fail;
+	rc_vfreez(old_sa->addke_rekey_sk);
+	old_sa->addke_rekey_sk = NULL;
+	old_sa->addke_rekey_round = 0;
+	if (ikev2_rekey_responder_finish(ctx) != 0)
+		goto fail;
+	/* success: the rekeyed SA is complete in its own right (already in
+	 * the SA list via ikev2_create_sa); drop the deferred-rekey link so
+	 * disposing the OLD SA cannot recurse into a live ESTABLISHED SA
+	 * that owns children (ikev2_dispose_sa asserts the child list is
+	 * empty).  Mirrors the initiator tail and the ADDKE timeout/abandon
+	 * paths, which all clear old_sa->new_sa. */
+	old_sa->new_sa = NULL;
 
 	ikev2_rekey_responder_ctx_free(ctx);
 	return 0;
