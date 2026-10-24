@@ -295,6 +295,23 @@ jobs:
         env:
           R2_PREFIX: /usr/local/racoon2
 
+      # Classical (no ADDKE / INTERMEDIATE) iked for the charon-responder
+      # feat rows.  The kind proves ML-KEM at run time (swanctl
+      # --list-algs) and switches to this prefix only when Fedora's charon
+      # lacks it; with ML-KEM the PQC build is used and this is idle.
+      - name: Build + install a classical iked prefix (R2_CLASSIC_PREFIX)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -rf /tmp/r2classic && mkdir /tmp/r2classic
+          git -C "$GITHUB_WORKSPACE" archive HEAD | tar -x -C /tmp/r2classic
+          cd /tmp/r2classic
+          autoreconf -fi >/dev/null
+          ./configure -q --prefix=/usr/local/racoon2-classic --disable-intermediate --disable-addke
+          make -j"$(nproc)" >/dev/null
+          make install >/dev/null
+          ! grep -aq 'ikesa-addke offer' /usr/local/racoon2-classic/sbin/iked
+          echo "classical iked: /usr/local/racoon2-classic/sbin/iked"
+
       - name: Stage test secrets/config (container has no systemd units)
         run: |
           E="$R2_PREFIX/etc/racoon2"
@@ -303,6 +320,9 @@ jobs:
           printf 'racoon2-ci-pwd\n' > "$E/spmd.pwd"
           chmod 600 "$E/psk/macos.psk" "$E/spmd.pwd"
           ls -la "$E" | head -8
+          C=/usr/local/racoon2-classic/etc/racoon2
+          mkdir -p "$C/psk"
+          cp -p "$E/psk/macos.psk" "$C/psk/"; cp -p "$E/spmd.pwd" "$C/"
         env:
           R2_PREFIX: /usr/local/racoon2
 
@@ -336,6 +356,7 @@ jobs:
           R2_PREFIX: /usr/local/racoon2
           R2_REQUIRE_LIVE: 1
           R2_LANE: fedora
+          R2_CLASSIC_PREFIX: /usr/local/racoon2-classic
 
       - name: Upload shard matrix log
         if: always()
