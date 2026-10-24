@@ -1027,6 +1027,23 @@ complete_internal_tests(void)
 	/* the fake ctx_free freed ctx; os owns only itself now */
 	free(os);
 
+	/* ops==NULL (missing install): -1, but the parked pin is LEFT in place
+	 * so the timeout / dispose path can still DEAD ctx->new_sa through it;
+	 * no ctx_free, no DEAD here. */
+	os = calloc(1, sizeof(*os)); ns = calloc(1, sizeof(*ns));
+	ctx = calloc(1, sizeof(*ctx)); ctx->old_sa = os; ctx->new_sa = ns;
+	os->new_sa = ns; os->addke_rekey_complete = ctx;
+	ar_ops_reset();
+	ikev2_addke_rekey_set_ops(NULL);
+	r = ikev2_rekey_responder_addke_complete(os, NULL, ct, 0, 0);
+	CHECK(r == -1 && os->addke_rekey_complete == ctx &&
+	      n_ar_ctxfree == 0 && n_set_state_dead == 0 &&
+	      os->new_sa == ns,
+	      "complete: ops==NULL -> -1, pin left for timeout/dispose");
+	ar_install_test_ops();	/* restore ops for the rest of this suite */
+	free(os->addke_rekey_complete);	/* we kept the pin, so free its ctx */
+	free(ns); free(os);
+
 	/* packet alloc fail -> -1 pre-send + DEAD(new_sa) */
 	os = calloc(1, sizeof(*os)); ns = calloc(1, sizeof(*ns));
 	ctx = calloc(1, sizeof(*ctx)); ctx->old_sa = os; ctx->new_sa = ns;
@@ -1667,6 +1684,20 @@ round_internal_tests(void)
 	CHECK(r == -1, "round: no negotiated_sa -> -1");
 	free(os->addke_rekey_complete);
 	free(os->new_sa); free(os); rc_vfree(ct); rc_vfree(ss);
+
+	/* ---- 6. ops==NULL (missing install): -1 before any deref; the parked
+	 * pin and negotiated state are untouched (timeout owns the DEAD) ---- */
+	ar_ops_reset(); t_transmit_ret = -999;
+	ct = rc_vnew("C", 1); ss = rc_vnew("S", 1);
+	round_fixture(&os, 2, 0);
+	ikev2_addke_rekey_set_ops(NULL);
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 5, ROUND_METHOD);
+	CHECK(r == -1 && os->addke_rekey_round == 0 &&
+	      os->addke_rekey_sk == NULL && os->addke_rekey_link == NULL &&
+	      os->addke_rekey_complete != NULL && n_rekey_complete == 0,
+	      "round: ops==NULL -> -1, nothing committed, park intact");
+	ar_install_test_ops();	/* restore ops for the rest of this suite */
+	round_cleanup(os); rc_vfree(ct); rc_vfree(ss);
 }
 
 int

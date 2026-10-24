@@ -1142,8 +1142,20 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 
 	assert(IKEV2_CHILD_LIST_EMPTY(&sa->children));
 
-	if (sa->new_sa)
-		ikev2_dispose_sa(sa->new_sa);
+	/* RFC 9370 deferred rekey: abandon it BEFORE disposing the child so
+	 * ikev2_rekey_abandon_parked DEADs ctx->new_sa (== sa->new_sa) while it
+	 * is still alive — the old order ran it after the recursive free below,
+	 * set_state-ing a freed SA.  Capture the child first: abandon clears
+	 * old_sa->new_sa, so dispose the captured (now-DEAD) child explicitly. */
+	{
+		struct ikev2_sa *child = sa->new_sa;
+#ifdef WITH_ADDKE
+		if (sa->addke_rekey_complete)
+			ikev2_rekey_abandon_parked(sa);
+#endif /* WITH_ADDKE */
+		if (child)
+			ikev2_dispose_sa(child);
+	}
 
 	if (sa->expire_timer)
 		SCHED_KILL(sa->expire_timer);
@@ -1162,11 +1174,6 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		SCHED_KILL(sa->addke_rekey_timer);
 		sa->addke_rekey_timer = NULL;
 	}
-	#ifdef WITH_ADDKE
-	if (sa->addke_rekey_complete)
-		ikev2_rekey_abandon_parked(sa);
-
-	#endif /* WITH_ADDKE */
 	if (sa->rmconf)
 		rcf_free_remote(sa->rmconf);
 
