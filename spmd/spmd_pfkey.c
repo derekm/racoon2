@@ -101,6 +101,7 @@ static int set_dir(struct rcf_selector *sl, struct rcpfk_msg *rc);
 static int set_ul_proto(struct rcf_selector *sl, struct rcpfk_msg *rc);
 static int set_tagname(struct rcf_selector *sl, struct rcpfk_msg *rc);
 static int set_reqid(struct rcf_selector *sl, struct rcpfk_msg *rc);
+static int set_mark_ifid(struct rcf_selector *sl, struct rcpfk_msg *rc);
 static int set_ipsec_level(struct rcf_selector *sl, struct rcpfk_msg *rc);
 static int set_pltype(struct rcf_selector *sl, struct rcpfk_msg *rc);
 /*int sl_to_rc_wo_addr(struct rcf_selector *sl, struct rcpfk_msg *rc);*/
@@ -701,6 +702,12 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 		goto err;
 	}
 
+	if (set_mark_ifid(sl, rc)<0) {
+		 SPMD_PLOG(SPMD_L_INTERR, "Can't set mark/if_id, check your configuration (selector=%.*s)",
+			   (int)sl->sl_index->l, sl->sl_index->s);
+		goto err;
+	}
+
 	/* at spmd starting time(== this time),
 	 * we set urgent=1
 	 * because we may send a lot of spdupdate messages to the kernel.
@@ -934,6 +941,9 @@ spmd_spd_update(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 		fwd_rc->samode = rc->samode;
 		fwd_rc->ipsec_level = rc->ipsec_level;
 		fwd_rc->reqid = rc->reqid;
+		fwd_rc->mark = rc->mark;
+		fwd_rc->mark_mask = rc->mark_mask;
+		fwd_rc->if_id = rc->if_id;
 		fwd_rc->flags = rc->flags;
 		fwd_rc->ul_proto = rc->ul_proto;
 		fwd_rc->lft_hard_time = rc->lft_hard_time;
@@ -1090,6 +1100,7 @@ spmd_spd_delete(uint32_t spid, int urgent)
 			} else
 				rc->samode = RCT_IPSM_TRANSPORT;
 			set_dir(sl, rc);
+			set_mark_ifid(sl, rc);	/* marked flow: del-by-index must match */
 			break;
 		}
 	}
@@ -1187,6 +1198,7 @@ spmd_spd_match_delete(uint32_t spid, rc_type samode,
 			} else
 				rc->samode = RCT_IPSM_TRANSPORT;
 			set_dir(sl, rc);
+			set_mark_ifid(sl, rc);	/* marked flow: del-by-index must match */
 			break;
 		}
 	}
@@ -1388,6 +1400,7 @@ spmd_migrate(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 	set_samode(sl, rc);
 	set_satype(sl, rc);
 	set_dir(sl, rc);
+	set_mark_ifid(sl, rc);
 
 	rc->seq = pfkey_seq_next();
 	rc->slid = sd->spid;
@@ -1785,6 +1798,31 @@ set_reqid(struct rcf_selector *sl, struct rcpfk_msg *rc)
 }
 
 /*
+ * Copy the XFRM flow-selector mark / if_id from the policy into rcpfk_msg.
+ * The policy (not the SA) holds them (§4.1 config grammar); every kernel
+ * policy op (SPDADD/UPDPOLICY, del-by-index, get, migrate) and the FWD
+ * snapshot must carry the same mark/if_id or xfrm_policy_byid misses the
+ * marked flow and the marked SA leaks (ESRCH / ENOENT).
+ */
+static int
+set_mark_ifid(struct rcf_selector *sl, struct rcpfk_msg *rc)
+{
+	struct rcf_policy *pl;
+
+	if (!sl || !sl->pl) {
+		SPMD_PLOG(SPMD_L_INTERR, "No policy");
+		return -1;
+	}
+
+	pl = sl->pl;
+	rc->mark = pl->mark;
+	rc->mark_mask = pl->mark_mask;
+	rc->if_id = pl->if_id;
+
+	return 0;
+}
+
+/*
  * Set tag_name in rcpfk_msg{}
  */
 static int
@@ -1897,6 +1935,14 @@ sl_to_rc_wo_addr(struct rcf_selector *sl, struct rcpfk_msg *rc)
 	if (set_reqid(sl, rc)<0) {
 		SPMD_PLOG(SPMD_L_INTERR,
 			  "Can't set reqid, check your configuration file (selector=%.*s)",
+			  (int)sl->sl_index->l, sl->sl_index->s);
+		goto err;
+	}
+
+	/*** set rc->mark / mark_mask / if_id (XFRM flow selector) ***/
+	if (set_mark_ifid(sl, rc) < 0) {
+		SPMD_PLOG(SPMD_L_INTERR,
+			  "Can't set mark/if_id, check your configuration file (selector=%.*s)",
 			  (int)sl->sl_index->l, sl->sl_index->s);
 		goto err;
 	}

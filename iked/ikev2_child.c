@@ -2326,7 +2326,7 @@ ikev2_child_getspi_done(struct ikev2_child_sa *child_sa)
 }
 
 static int
-ikev2_sadb_update(struct ikev2_child_sa *child_sa,
+ikev2_sadb_update(struct ikev2_child_sa *child_sa, int inbound,
 		  int (*update_func) (struct rcpfk_msg *),
 		  struct rcpfk_msg *param, void *data)
 {
@@ -2424,15 +2424,28 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa,
 	 */
 	{
 		struct rcf_policy *pl = child_sa->selector->pl;
+		struct rcf_sa *esa;
 
 		param->mark      = pl->mark;
 		param->mark_mask = pl->mark_mask;
 		param->if_id     = pl->if_id;
-		if (conf && conf->sa_esp) {
-			strlcpy(param->offload_ifname, conf->sa_esp->offload_ifname,
+		/*
+		 * Offload is per-SAX and only on the ESP SA: each state carries
+		 * its NATURAL direction flag (inbound -> 2 XFRM_OFFLOAD_INBOUND,
+		 * outbound -> 0). The config `dir` is a which-direction FILTER
+		 * (dir in -> inbound only, dir out -> outbound only, omitted ->
+		 * both). The device name decides whether offload is requested;
+		 * offload_ifindex is resolved from the name at emit.
+		 */
+		esa = (param->satype == RCT_SATYPE_ESP && conf) ?
+		      conf->sa_esp : NULL;
+		if (esa && esa->offload_ifname[0] &&
+		    (!esa->offload_dir_set ||
+		     (inbound ? (esa->offload_flags == 2 /* XFRM_OFFLOAD_INBOUND */)
+			      : (esa->offload_flags == 0)))) {
+			strlcpy(param->offload_ifname, esa->offload_ifname,
 				sizeof(param->offload_ifname));
-			param->offload_flags = conf->sa_esp->offload_flags;
-			/* resolved from name by if_xfrm(/FreeBSD PK) at emit */
+			param->offload_flags = inbound ? 2 /* XFRM_OFFLOAD_INBOUND */ : 0;
 			param->offload_ifindex = 0;
 		}
 	}
@@ -2623,7 +2636,7 @@ ikev2_sadb_outbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 	param->pref_src = 0;
 	param->pref_dst = 0;
 
-	return ikev2_sadb_update(child_sa,
+	return ikev2_sadb_update(child_sa, 0,		/* outbound SA */
 				 child_sa->sadb_request.method->add_outbound,
 				 param, data);
 }
@@ -2679,7 +2692,7 @@ ikev2_sadb_inbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 
 	param->seq = child_sa->sadb_request.seqno;
 
-	return ikev2_sadb_update(child_sa,
+	return ikev2_sadb_update(child_sa, 1,		/* inbound SA */
 				 child_sa->sadb_request.method->update_inbound,
 				 param, data);
 }
@@ -3639,7 +3652,9 @@ ikev2_delete_sa(struct ikev2_child_sa *child_sa, int protocol_id,
 		struct sockaddr *src, struct sockaddr *dst, uint32_t spi)
 {
 	struct rcpfk_msg param;
+	struct rcf_policy *pl;
 
+	memset(&param, 0, sizeof(param));
 	switch (protocol_id) {
 	case IKEV2PROPOSAL_ESP:
 		param.satype = RCT_SATYPE_ESP;
@@ -3652,6 +3667,14 @@ ikev2_delete_sa(struct ikev2_child_sa *child_sa, int protocol_id,
 	param.sa_dst = dst;
 	param.spi = htonl(spi);
 	param.ul_proto = child_sa->selector->upper_layer_protocol;
+	/* A marked SA must be deleted with the same mark/if_id the ADD used, or
+	 * the state lookup (mark v = mark & mask, exact-match) misses it (ESRCH
+	 * -> the SA never goes away). memset above prevents garbage mark_mask on
+	 * the stack from attaching a random mask to DELSA of unmarked SAs. */
+	pl = child_sa->selector->pl;
+	param.mark = pl->mark;
+	param.mark_mask = pl->mark_mask;
+	param.if_id = pl->if_id;
 	if (!child_sa->sadb_request.method ||
 	    !child_sa->sadb_request.method->delete_sa)
 		return;

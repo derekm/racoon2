@@ -513,10 +513,13 @@ struct rcf_sa {
 	uint32_t spi;
 
 	/* XFRM SA offload (Linux NETLINK_XFRM + FreeBSD SADB_X_EXT_IF_HW_OFFL);
-	 * 0 / "" = unset. The flow-selector mark/if_id live on rcf_policy. */
+	 * 0 / "" = unset. The flow-selector mark/if_id live on rcf_policy.
+	 * offload_dir_set distinguishes omitted dir (=offload both directions,
+	 * each SA carrying its natural flag) from dir out (=outbound only). */
 	char offload_ifname[16];
 	uint32_t offload_ifindex;
 	uint8_t offload_flags;	/* XFRM_OFFLOAD_* bit (INBOUND=2); 0 = outbound */
+	uint8_t offload_dir_set;
 };
 
 /* addresspool */

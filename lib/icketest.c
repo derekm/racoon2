@@ -197,6 +197,33 @@ offload_case(const char *path, const char *dir, const char *want_dev,
 	return bad;
 }
 
+/* offload block without a dev must be rejected fail-closed (silent no-op). */
+static int
+reject_offload_nodev(const char *path)
+{
+	FILE *fp;
+
+	if ((fp = fopen(path, "w")) == NULL)
+		return 1;
+	fprintf(fp,
+	    "selector s_off { direction outbound; src 192.0.2.1;"
+	    " dst 192.0.2.2; policy_index p_off; };\n"
+	    "policy p_off { action auto_ipsec; ipsec_mode tunnel;"
+	    " ipsec_index { ipsec_off; }; };\n"
+	    "ipsec ipsec_off { ipsec_sa_lifetime_time 3600 sec;"
+	    " sa_index esp_off; };\n"
+	    "sa esp_off { sa_protocol esp; esp_enc_alg { aes_gcm; };"
+	    " esp_auth_alg { non_auth; }; offload { dir in; }; };\n");
+	fclose(fp);
+	if (rcf_read(path, 0) == 0) {
+		printf("FAIL: offload without dev was accepted\n");
+		rcf_clean();
+		return 1;
+	}
+	printf("ok: offload without dev rejected\n");
+	return 0;
+}
+
 int
 main(void)
 {
@@ -226,11 +253,12 @@ main(void)
 	    "mark { value 0x100; mask 0xff; };", 0x100, 0xff, 0);
 	fails += expect_mark(path, "if_id 0xffffffff;", 0, 0, 0xffffffffUL);
 	fails += expect_mark(path,
-	    "mark { value 0x100; }; if_id 7;", 0x100, 0, 7);
+	    "mark { value 0x100; }; if_id 7;", 0x100, 0xffffffffUL, 7);
 	/* offload (SA) — full chain; dir out/in decode + bad dir reject */
 	fails += offload_case(path, "out", "eth0", 0);
 	fails += offload_case(path, "in", "eth0", 0);
 	fails += offload_case(path, "sideways", "", 1);
+	fails += reject_offload_nodev(path);
 	/* fail-closed grammar rejects */
 	fails += reject(path, "mark { bogus 1; }");
 	fails += reject(path, "mark { value 0x100;");

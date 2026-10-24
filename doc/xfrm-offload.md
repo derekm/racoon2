@@ -53,23 +53,29 @@ backend now emits them.
        offload { dev "ens2f0np0"; dir in; }    # -> XFRMA_OFFLOAD_DEV (dir in=2/out=0)
    }
    ```
-   Design decisions:
-   - **mark / if_id live on the POLICY** (the child flow), read at both GETSPI
-     (larval) and `ikev2_sadb_update` (final SA) from `selector->pl`. They are
-     deliberately NOT on the `sa {}` block: each CFD_ key is decoded into a
-     single dst type, avoiding a shared fix function cast to two structs.
-   - **offload lives on the `sa {}` block** (`sa_esp`), read at
-     `ikev2_sadb_update`; `offload_ifname` is resolved to an ifindex at emit.
-     `dir in|out` maps to `XFRM_OFFLOAD_INBOUND=2` / `0` (outbound).
-   - `mark_mask` is read as a full u32 (`rcf_fix_u32`), so `0xffffffff` is
-     accepted (not clamped at INT_MAX like the int-only `rcf_fix_number`).
-   - Fail-closed: an unknown key inside the blocks / a malformed `dir` is a
-     parse error (whole config rejected); every new CFD_ has a registered
-     `rcf_tdf` fix function, and an over-long device name is rejected.
-   - Verified in `lib/icketest` (`PASS`): mark/mask/if_id decode on the policy,
-     u32 `if_id=0xffffffff`, offload `dir out|in` → flags 0|2, deep copy
-     preserves the fields, and `mark { bogus 1; }` / `offload { dir sideways; }`
-     / unterminated blocks reject.
+   Design decisions (all verified in `lib/icketest`, `PASS`):
+   - **mark / if_id live on the POLICY** (the child flow), copied from
+     `selector->pl` by a single `spmd set_mark_ifid()` onto EVERY kernel
+     policy op — SPDADD/update (`spmd_nonfqdn_sp_add`, `sl_to_rc_wo_addr`),
+     delete-by-index (`spmd_spd_delete`, `spmd_spd_match_delete`), `migrate`,
+     and the FWD clone — plus the larval GETSPI and final `ikev2_sadb_update`
+     SAs. The policy and both SAs share the mark so `xfrm_policy_byid` and
+     the state lookup match the same marked flow (otherwise: blackhole or
+     ESRCH on delete). Deliberately NOT on `sa {}`: each CFD_ key decodes
+     into a single dst type.
+   - **offload lives on the `sa {}` block** (`sa_esp`, ESP only) and is
+     PER-DIRECTION: each kernel SA carries its natural flag — the inbound SA
+     gets `XFRM_OFFLOAD_INBOUND`, the outbound SA 0. Config `dir` is a
+     which-direction filter (`dir in` = inbound only, `dir out` = outbound
+     only, omitted = both); `ikev2_delete_sa` and `spmd` both carry the mark.
+   - `mark_mask` reads as a full u32 (`rcf_fix_u32`), so `0xffffffff` is
+     accepted (not INT-clamped); an omitted mark mask defaults to
+     `0xffffffff` (what `ip xfrm` shows), so `mark { value 0x100; }` is not a
+     no-op.
+   - Fail-closed: unknown block keys, bad `dir`, unterminated blocks, and an
+     **offload block without a `dev`** (silent no-op) reject the whole config;
+     every new CFD_ has a registered `rcf_tdf` fix; an over-long device name
+     is rejected.
 
 2. **HW-offload bring-up on DGX Spark** (the test target the user named).
    - **Precondition gate:** only enable offload after `ethtool -k <dev>`

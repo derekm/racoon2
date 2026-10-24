@@ -3143,6 +3143,7 @@ rcf_deepcopy_sa(struct rcf_sa *src)
 	memcpy(new->offload_ifname, src->offload_ifname, sizeof(new->offload_ifname));
 	new->offload_ifindex = src->offload_ifindex;
 	new->offload_flags = src->offload_flags;
+	new->offload_dir_set = src->offload_dir_set;
 	DEEPCOPY_VDUP(src->sa_index, new->sa_index);
 	DEEPCOPY_ALGLIST(src->enc_alg, new->enc_alg);
 	DEEPCOPY_ALGLIST(src->auth_alg, new->auth_alg);
@@ -3275,6 +3276,10 @@ rcf_fix_mark(struct cf_list *head, void *dst0)
 	/* brace-block: walk sub-directives (value/mask) into dst */
 	for (n = head->nextp; n; n = n->nexts)
 		RCF_CALL_TDF(n, dst);
+	/* omitted mask defaults to full (what `ip xfrm` prints); otherwise a
+	 * mark-only directive would be a silent no-op (emit needs mask != 0). */
+	if (dst->mark_mask == 0 && dst->mark != 0)
+		dst->mark_mask = 0xffffffff;
 	return 0;
 
     err:
@@ -3321,6 +3326,13 @@ rcf_fix_offload(struct cf_list *head, void *dst0)
 		return -1;
 	for (n = head->nextp; n; n = n->nexts)
 		RCF_CALL_TDF(n, dst);
+	/* fail-closed: offload without a device is a silent no-op (the emit is
+	 * keyed on offload_ifname); require dev. */
+	if (dst->offload_ifname[0] == '\0') {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "offload requires a dev (device) name\n");
+		return -1;
+	}
 	return 0;
 
     err:
@@ -3355,6 +3367,7 @@ rcf_fix_offload_dir(struct cf_list *head, void *dst0)
 	if (rcf_fix_value(head->nextp, &v))
 		return -1;
 	dst->offload_flags = (uint8_t)v;	/* XFRM_OFFLOAD_INBOUND bit; 0 = outbound */
+	dst->offload_dir_set = 1;		/* omitted dir = offload both */
 	return 0;
 }
 
