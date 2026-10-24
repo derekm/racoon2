@@ -1073,6 +1073,100 @@ test_fill_selector(void)
 	    "fill_selector: v4+v4 AF_INET proto esp");
 }
 
+static int
+offload_rta_get(const char *buf, size_t len, int type,
+    const void **data, size_t *dlen)
+{
+	const struct rtattr *rta;
+	size_t rem = len - NLMSG_ALIGN(sizeof(struct nlmsghdr));
+
+	/* RTA_OK/RTA_NEXT, not a hand-rolled cursor: a comma stepper that
+	 * advances by RTA_ALIGN(rta_len) never terminates once a trailing
+	 * zeroed (rta_len==0) region is reached — it hung here. */
+	for (rta = (const void *)(buf + NLMSG_ALIGN(sizeof(struct nlmsghdr)));
+	     RTA_OK(rta, rem);
+	     rta = RTA_NEXT(rta, rem)) {
+		if (rta->rta_type == type) {
+			if (data)
+				*data = RTA_DATA(rta);
+			if (dlen)
+				*dlen = RTA_PAYLOAD(rta);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void
+test_offload_attrs(void)
+{
+	char buf[512];
+	struct nlmsghdr *n;
+	struct rcpfk_msg rc;
+	const void *d;
+	size_t dl, len;
+
+	/* positive: mark + if_id + an OUTBOUND offload (flags==0, ifindex 5)
+	 * must ALL be emitted — the wire-bytes pin that proves offload is
+	 * actually on the wire (not compiled out, which is what the old
+	 * #ifdef-on-an-enum guard did) */
+	memset(buf, 0, sizeof(buf));
+	memset(&rc, 0, sizeof(rc));
+	n = (struct nlmsghdr *)buf;
+	n->nlmsg_len = NLMSG_LENGTH(0);
+	rc.mark = 0x100;
+	rc.mark_mask = 0xff;
+	rc.if_id = 1;
+	rc.offload_ifindex = 5;
+	rc.offload_flags = 0;	/* outbound — must still be emitted */
+	CHECK(add_xfrm_mark_ifid_attrs(n, sizeof(buf), &rc) == 0,
+	    "offload: mark/if_id attrs appended");
+	CHECK(add_xfrm_offload_attr(n, sizeof(buf), &rc) == 0,
+	    "offload: offload attr appended (flags=0 outbound)");
+	len = n->nlmsg_len;
+
+	CHECK(offload_rta_get(buf, len, XFRMA_MARK, &d, &dl) == 1 &&
+	    dl == sizeof(struct xfrm_mark) &&
+	    ((const struct xfrm_mark *)d)->v == 0x100 &&
+	    ((const struct xfrm_mark *)d)->m == 0xff,
+	    "offload: XFRMA_MARK v/m emitted");
+	CHECK(offload_rta_get(buf, len, XFRMA_IF_ID, &d, &dl) == 1 &&
+	    dl == 4 && *(const unsigned int *)d == 1,
+	    "offload: XFRMA_IF_ID emitted");
+	CHECK(offload_rta_get(buf, len, XFRMA_OFFLOAD_DEV, &d, &dl) == 1 &&
+	    dl == sizeof(struct xfrm_user_offload) &&
+	    ((const struct xfrm_user_offload *)d)->ifindex == 5 &&
+	    ((const struct xfrm_user_offload *)d)->flags == 0,
+	    "offload: XFRMA_OFFLOAD_DEV ifindex/flags(outbound) emitted");
+
+	/* negative: mask 0 + if_id 0 + no device -> NO attrs at all */
+	memset(buf, 0, sizeof(buf));
+	memset(&rc, 0, sizeof(rc));
+	n = (struct nlmsghdr *)buf;
+	n->nlmsg_len = NLMSG_LENGTH(0);
+	rc.mark = 0x100;	/* value set but mask 0 -> not requested */
+	CHECK(add_xfrm_mark_ifid_attrs(n, sizeof(buf), &rc) == 0,
+	    "offload: no mark/if_id when mask/if_id 0");
+	CHECK(add_xfrm_offload_attr(n, sizeof(buf), &rc) == 0,
+	    "offload: no offload attr when no device named");
+	len = n->nlmsg_len;
+	CHECK(offload_rta_get(buf, len, XFRMA_MARK, NULL, NULL) == 0 &&
+	    offload_rta_get(buf, len, XFRMA_IF_ID, NULL, NULL) == 0 &&
+	    offload_rta_get(buf, len, XFRMA_OFFLOAD_DEV, NULL, NULL) == 0,
+	    "offload: mask0/ifid0/no-device emits no XFRMA attrs");
+
+	/* negative: a bad device NAME -> add_xfrm_offload_attr fails (ENODEV),
+	 * never a silent no-offload SA */
+	memset(buf, 0, sizeof(buf));
+	memset(&rc, 0, sizeof(rc));
+	n = (struct nlmsghdr *)buf;
+	n->nlmsg_len = NLMSG_LENGTH(0);
+	snprintf(rc.offload_ifname, sizeof(rc.offload_ifname),
+	    "__definitely_not_a_device__");
+	CHECK(add_xfrm_offload_attr(n, sizeof(buf), &rc) == -1,
+	    "offload: unresolvable device name -> refuse (ENODEV)");
+}
+
 int
 main(void)
 {
@@ -1094,6 +1188,7 @@ main(void)
 	test_satype_proto_mapping();
 	test_nl_walk();
 	test_fill_selector();
+	test_offload_attrs();
 	printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);
 	return fails ? 1 : 0;
 }

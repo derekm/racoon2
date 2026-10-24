@@ -1182,34 +1182,36 @@ xfrm_send_sa(struct rcpfk_msg *rc, uint16_t nltype)
 
 /*
  * XFRM-native policy/offload attributes (mark, if_id; plus the device offload
- * on the SA path). PF_KEY has no spelling for these; only the Linux backend
- * emits them, and only when the compile-time headers know the attribute
- * (guarded so an older kernel UAPI header still compiles). The *BSD PF_KEY and
- * loopback backends ignore the rcpfk_msg fields entirely.
+ * on the SA path). PF_KEY has no spelling for mark/if_id; only the Linux
+ * backend emits those. The *BSD PF_KEY backend emits offload (as
+ * SADB_X_EXT_IF_HW_OFFL, lib/if_pfkeyv2.c); the loopback backend ignores the
+ * fields. The XFRMA_* attr constants are enum *values*, not macros, so there
+ * is deliberately no #ifdef guard here — see the note inside each function.
  */
 static int
 add_xfrm_mark_ifid_attrs(struct nlmsghdr *n, size_t maxlen,
     struct rcpfk_msg *rc)
 {
-#if defined(XFRMA_MARK) && defined(XFRMA_IF_ID)
-	if (rc->mark_mask != 0) {
-		struct xfrm_mark m;
+	struct xfrm_mark m;
 
+	/* XFRMA_MARK / XFRMA_IF_ID are enum constants in <linux/xfrm.h>
+	 * (included above), NOT preprocessor macros: an #ifdef guard on them
+	 * is always false and would compile this emit OUT on every kernel
+	 * (it did — the attrs were silently never sent). Emit unconditionally;
+	 * XFRMA_IF_ID is the newest of the three (4.19+), the floor this
+	 * backend requires — do not "restore" an #ifdef here. */
+	if (rc->mark_mask != 0) {
 		memset(&m, 0, sizeof(m));
 		m.v = rc->mark;
 		m.m = rc->mark_mask;
 		if (xfrm_addattr(n, maxlen, XFRMA_MARK, &m, sizeof(m)))
 			return -1;
 	}
-	if (rc->if_id != 0)
+	if (rc->if_id != 0) {
 		if (xfrm_addattr(n, maxlen, XFRMA_IF_ID, &rc->if_id,
 		    sizeof(rc->if_id)))
 			return -1;
-#else
-	(void)n;
-	(void)maxlen;
-	(void)rc;
-#endif
+	}
 	return 0;
 }
 
@@ -1217,15 +1219,17 @@ static int
 add_xfrm_offload_attr(struct nlmsghdr *n, size_t maxlen,
     struct rcpfk_msg *rc)
 {
-#ifdef XFRMA_OFFLOAD_DEV
 	struct xfrm_user_offload od;
 	uint32_t idx = rc->offload_ifindex;
 
-	/* offload is requested iff a device is named. offload_flags is the
-	 * kernel XFRM_OFFLOAD_* direction (<1> = INBOUND, 0 = OUTBOUND), NOT
-	 * a presence flag: flags==0 with a device is a legitimate outbound
-	 * offload request and must still be emitted (bug: gating on
-	 * flags==0 as "not requested" silently produced a software SA). */
+	/* XFRMA_OFFLOAD_DEV is an enum constant in <linux/xfrm.h>, not a
+	 * macro — do NOT gate emit behind #ifdef (that is always false and
+	 * silently compiled the offload out). Offload is requested iff a
+	 * device is named. offload_flags is the kernel XFRM_OFFLOAD_* bit
+	 * (XFRM_OFFLOAD_IPV6=1, XFRM_OFFLOAD_INBOUND=2, 0 = outbound), NOT a
+	 * presence flag: flags==0 with a device is a legitimate outbound
+	 * offload request and must still be emitted (gating on flags==0
+	 * silently produced a software SA). */
 	if (idx == 0 && rc->offload_ifname[0] != '\0')
 		idx = if_nametoindex(rc->offload_ifname);
 	if (idx == 0 && rc->offload_ifname[0] == '\0')
@@ -1239,12 +1243,6 @@ add_xfrm_offload_attr(struct nlmsghdr *n, size_t maxlen,
 	od.ifindex = (int)idx;
 	od.flags = rc->offload_flags;
 	return xfrm_addattr(n, maxlen, XFRMA_OFFLOAD_DEV, &od, sizeof(od));
-#else
-	(void)n;
-	(void)maxlen;
-	(void)rc;
-	return 0;
-#endif
 }
 
 
