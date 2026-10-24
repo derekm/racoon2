@@ -76,6 +76,12 @@ backend now emits them.
      **offload block without a `dev`** (silent no-op) reject the whole config;
      every new CFD_ has a registered `rcf_tdf` fix; an over-long device name
      is rejected.
+   - **IKEv1:** the mark/if_id flow selector is copied onto the IKEv1 larval
+     and add/update SAs too (`pk_set_mark_ifid` in `iked/ikev1/pfkey.c`), so a
+     marked/if_id policy stays binding. **Offload is IKEv2-ESP only** — the
+     IKEv1 add/update path never requests XFRMA_OFFLOAD_DEV, so `offload {}`
+     on a child used by IKEv1 is accepted config that does not offload (no
+     error; IKEv1 is out of scope and offload is a new IKEv2 feature).
 
 2. **HW-offload bring-up on DGX Spark** (the test target the user named).
    - **Precondition gate:** only enable offload after `ethtool -k <dev>`

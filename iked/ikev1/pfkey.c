@@ -610,6 +610,25 @@ rc_convertfromipsecdoi(unsigned int proto_id, unsigned int t_id, unsigned int ha
  * with destination address and source address respectively.
  * Because SPI is decided by responder.
  */
+/*
+ * Copy the XFRM flow-selector mark / if_id from the policy into the SA
+ * message. spmd installs every SPD policy with set_mark_ifid() (spmd/
+ * spmd_pfkey.c); the SA(s) this IKEv1 child installs MUST carry the same
+ * mark/if_id or a marked flow does not isolate and an if_id-named child
+ * never binds (XfrmOutNoStates / ESP-NO-CHILD). Match the larval GETSPI and
+ * the add/update SAs so the lookup hits.
+ */
+static void
+pk_set_mark_ifid(struct ph2handle *iph2, struct rcpfk_msg *param)
+{
+	if (iph2 == NULL || iph2->selector == NULL ||
+	    iph2->selector->pl == NULL)
+		return;
+	param->mark = iph2->selector->pl->mark;
+	param->mark_mask = iph2->selector->pl->mark_mask;
+	param->if_id = iph2->selector->pl->if_id;
+}
+
 int
 pk_sendgetspi(struct ph2handle *iph2)
 {
@@ -627,6 +646,7 @@ pk_sendgetspi(struct ph2handle *iph2)
 	struct rcpfk_msg param;
 
 	memset(&param, 0, sizeof(param));
+	pk_set_mark_ifid(iph2, &param);
 #if 0
 	if (iph2->side == INITIATOR) {
 		pp = iph2->proposal;
@@ -958,6 +978,7 @@ pk_sendupdate(struct ph2handle *iph2)
 	struct rcpfk_msg param;
 
 	memset(&param, 0, sizeof(param));
+	pk_set_mark_ifid(iph2, &param);
 
 	/* sanity check */
 	if (iph2->approval == NULL) {
@@ -1253,6 +1274,7 @@ pk_sendadd(struct ph2handle *iph2)
 	struct rcpfk_msg param;
 
 	memset(&param, 0, sizeof(param));
+	pk_set_mark_ifid(iph2, &param);
 	/* sanity check */
 	if (iph2->approval == NULL) {
 		plog(PLOG_INTERR, PLOGLOC, 0, "no approvaled SAs found.\n");
