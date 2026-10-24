@@ -27,6 +27,16 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
+
+/*
+ * Naming note: despite the file name and the pfkey_* identifiers
+ * (pfkey_sock, pfkey_container, pfkey_callback, pfkey_seq_next), this file
+ * no longer speaks PF_KEYv2.  It drives the portable rcpfk_* SAD/SPD ABI
+ * (lib/if_pfkeyv2.h), which is backed by NETLINK_XFRM on Linux, PF_KEYv2
+ * on the BSDs, or the userspace loopback backend.  pfkey_seq_next() hands
+ * out the request seq for whichever backend is built (never 0: netlink
+ * treats seq 0 as unsolicited).  The names are kept to limit churn.
+ */
 #include "spmd_includes.h"
 
 #ifdef SPMD_DEBUG
