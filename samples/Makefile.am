@@ -5,7 +5,10 @@ SUBDIRS = @startup_scripts@ hook
 DIST_SUBDIRS = init.d rc.d systemd none hook
 
 install-exec-hook:
-	$(INSTALL) -d -o 0 -g 0 -m 700 $(DESTDIR)/var/run/racoon2
+	$(INSTALL) -d -m 700 $(DESTDIR)/var/run/racoon2
+	@# root-owned when installing as root; an unprivileged DESTDIR
+	@# (staged/package) install cannot chown and must not fail on it
+	if [ "$$(id -u)" = 0 ]; then chown 0:0 $(DESTDIR)/var/run/racoon2; fi
 	$(INSTALL) -d $(DESTDIR)$(sysconfdir)
 	$(INSTALL) -m 600 racoon2.conf $(DESTDIR)$(sysconfdir)/racoon2.conf.sample
 	$(INSTALL) -m 600 vals.conf $(DESTDIR)$(sysconfdir)/vals.conf.sample
