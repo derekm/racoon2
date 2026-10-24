@@ -273,6 +273,7 @@ extern rc_type ikev2_cfg_ip6_dhcp(struct rcf_remote *);
 extern rc_type ikev2_cfg_mip6prefix(struct rcf_remote *);
 extern struct rc_addrlist *ikev2_dns(struct rcf_remote *);
 extern struct rc_addrlist *ikev2_nbns(struct rcf_remote *);
+extern struct rc_idlist *ikev2_multi_auth_second_id(struct rcf_remote *);
 extern struct rc_addrlist *ikev2_dhcp(struct rcf_remote *);
 extern rc_type ikev2_send_application_version(struct rcf_remote *);
 

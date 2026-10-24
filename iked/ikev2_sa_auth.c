@@ -92,6 +92,7 @@ static int responder_multi_auth_round1(struct ikev2_sa *, uint32_t,
     struct ikev2_payload_header *);
 static int ikev2_responder_eap_auth_send(struct ikev2_sa *, uint32_t,
 					 rc_vchar_t *);
+static int initiator_multi_auth_round2(struct ikev2_sa *, uint32_t);
 
 void
 initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
@@ -155,6 +156,26 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	if (!id_i)
 		goto fail;
 	ike_sa->id_i = id_i;
+
+	switch (ikev2_multi_auth_plan(
+	    ikev2_multiple_auth(ike_sa->rmconf) == RCT_BOOL_ON,
+	    ike_sa->peer_multi_auth,
+	    ikev2_multi_auth_second_id(ike_sa->rmconf) != NULL)) {
+	case IKEV2_MAI_TWO_ROUNDS:
+		ike_sa->multi_auth_round = 1;
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "multiple auth: first round, ANOTHER_AUTH_FOLLOWS\n");
+		break;
+	case IKEV2_MAI_REFUSE:
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "multiple auth: multi_auth_second_id is set but the "
+			   "responder did not send MULTIPLE_AUTH_SUPPORTED; "
+			   "aborting (RFC 4739)\n");
+		ikev2_abort(ike_sa, ECONNREFUSED);
+		goto done;
+	default:
+		break;
+	}
 
 	if (ikev2_send_peers_id(ike_sa->rmconf) == RCT_BOOL_ON) {
 		struct rc_idlist *peers_id;
@@ -278,6 +299,13 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(0, 0, 0,
 							 IKEV2_MULTIPLE_AUTH_SUPPORTED,
+							 0, 0),
+				    TRUE);
+	/* RFC 4739 s3.2: flag that a second round follows */
+	if (ike_sa->multi_auth_round == 1)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_ANOTHER_AUTH_FOLLOWS,
 							 0, 0),
 				    TRUE);
 
@@ -2900,6 +2928,16 @@ initiator_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			   ikehdr->exchange_type);
 		return;
 	}
+	if (ike_sa->multi_auth_round == 2) {
+		/* RFC 4739 s3.2: the responder authenticated itself in
+		 * round one; the final response carries SAr2/TS (or an
+		 * error notify), never a second IDr/AUTH.  The pointer
+		 * walk in _cont handles both. */
+		ikev2_set_state(ike_sa, IKEV2_STATE_INI_IKE_AUTH_RCVD);
+		initiator_ike_sa_auth_cont(ike_sa, VERIFIED_SUCCESS, msg,
+					   remote, local);
+		return;
+	}
 	p = (struct ikev2_payload_header *)(ikehdr + 1);
 	for (type = ikehdr->next_payload;
 	     type != IKEV2_NO_NEXT_PAYLOAD;
@@ -3134,6 +3172,14 @@ initiator_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	 */
 	ikev2_update_message_id(ike_sa, get_uint32(&ikehdr->message_id), TRUE);
 
+	if (ike_sa->multi_auth_round == 1) {
+		/* RFC 4739: responder AUTH verified; run round two */
+		if (initiator_multi_auth_round2(ike_sa,
+		    get_uint32(&ikehdr->message_id)) != 0)
+			goto abort;
+		goto done;
+	}
+
 	p = (struct ikev2_payload_header *)(ikehdr + 1);
 	for (type = ikehdr->next_payload;
 	     type != IKEV2_NO_NEXT_PAYLOAD;
@@ -3311,6 +3357,65 @@ initiator_state1_send_eap()
    the last two messages of the exchange.
 */
 #endif
+
+/*
+ * RFC 4739 s3.2 initiator round two: HDR, SK {IDi', AUTH'} where AUTH'
+ * is the pre-shared-key AUTH (RFC 7296 s2.15) over the same
+ * InitiatorSignedOctets with MACedIDForI computed over IDi'.  The child
+ * offered in round one is answered by the final response, so its
+ * pending request moves to this message's ID.
+ */
+static int
+initiator_multi_auth_round2(struct ikev2_sa *ike_sa, uint32_t round1_id)
+{
+	struct ikev2_payloads payl;
+	struct ikev2_child_sa *child_sa;
+	rc_vchar_t *id2 = 0, *auth = 0, *id1, *pkt = 0;
+	uint32_t msgid;
+	int ret = -1;
+
+	ikev2_payloads_init(&payl);
+	id2 = ikev2_identifier(ikev2_multi_auth_second_id(ike_sa->rmconf));
+	if (!id2)
+		goto out;
+	id1 = ike_sa->id_i;
+	ike_sa->id_i = id2;
+	auth = ikev2_auth_calculate_method(ike_sa, TRUE,
+					   IKEV2_AUTH_SHARED_KEY);
+	ike_sa->id_i = id1;
+	if (!auth)
+		goto out;
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_I, id2, FALSE);
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_AUTH, auth, FALSE);
+	msgid = ikev2_request_id(ike_sa);
+	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_AUTH, IKEV2FLAG_INITIATOR,
+				     msgid, ike_sa, &payl);
+	if (!pkt)
+		goto out;
+	child_sa = ikev2_find_request(ike_sa, round1_id);
+	if (child_sa)
+		child_sa->message_id = msgid;
+	ike_sa->multi_auth_round = 2;
+	ikev2_set_state(ike_sa, IKEV2_STATE_INI_IKE_AUTH_SENT);
+	if (ikev2_transmit(ike_sa, pkt) != 0)
+		goto out;
+	pkt = 0;
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		   "multiple auth: responder verified, second round (PSK) sent\n");
+	ret = 0;
+      out:
+	if (ret != 0)
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "multiple auth: failed to build the second round\n");
+	if (pkt)
+		rc_vfree(pkt);
+	if (id2)
+		rc_vfree(id2);
+	if (auth)
+		rc_vfree(auth);
+	ikev2_payloads_destroy(&payl);
+	return ret;
+}
 
 void
 initiator_ike_sa_auth_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,

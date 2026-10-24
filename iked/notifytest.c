@@ -938,6 +938,18 @@ main(int argc, char *argv[])
 		ck(ikev2_multi_auth_decide(1, 1, 1, 1) == IKEV2_MA_REFUSE,
 		   "decide: a third round -> refuse");
 
+		/* initiator plan (cfg_on, peer_supported, has_second) */
+		ck(ikev2_multi_auth_plan(0, 1, 1) == IKEV2_MAI_SINGLE,
+		   "plan: option off -> single round even with a second id");
+		ck(ikev2_multi_auth_plan(1, 1, 0) == IKEV2_MAI_SINGLE,
+		   "plan: on, no second id -> single round");
+		ck(ikev2_multi_auth_plan(1, 1, 1) == IKEV2_MAI_TWO_ROUNDS,
+		   "plan: on + second id + peer support -> two rounds");
+		ck(ikev2_multi_auth_plan(1, 0, 1) == IKEV2_MAI_REFUSE,
+		   "plan: second id but peer lacks support -> refuse");
+		ck(ikev2_multi_auth_plan(0, 0, 0) == IKEV2_MAI_SINGLE,
+		   "plan: all off -> single round");
+
 		/* AUTH_LIFETIME parse: exactly 4 octets */
 		{
 			size_t dl;

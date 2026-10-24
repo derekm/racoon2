@@ -238,6 +238,7 @@ static int rcf_fix_legacy_split_netmask (struct cf_list *, void *);
 static int rcf_fix_multiple_auth (struct cf_list *, void *);
 static int rcf_fix_auth_lifetime (struct cf_list *, void *);
 static int rcf_fix_honor_auth_lifetime (struct cf_list *, void *);
+static int rcf_fix_multi_auth_second_id (struct cf_list *, void *);
 static int rcf_fix_nbns (struct cf_list *, void *);
 static int rcf_fix_cert_intermediates (struct cf_list *, void *);
 static int rcf_fix_accept_dns_domain (struct cf_list *, void *);
@@ -388,6 +389,7 @@ struct rcf_tdf_t {
 	{ CFD_MULTIPLE_AUTH,		rcf_fix_multiple_auth, },
 	{ CFD_AUTH_LIFETIME,		rcf_fix_auth_lifetime, },
 	{ CFD_HONOR_AUTH_LIFETIME,	rcf_fix_honor_auth_lifetime, },
+	{ CFD_MULTI_AUTH_SECOND_ID,	rcf_fix_multi_auth_second_id, },
 	{ CFD_CERT_INTERMEDIATES,		rcf_fix_cert_intermediates, },
 	{ CFD_ACCEPT_DNS_DOMAIN,		rcf_fix_accept_dns_domain, },
 	{ CFD_REDIRECT_PERIOD,		rcf_fix_redirect_period, },
@@ -1353,6 +1355,19 @@ rcf_fix_my_id(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_MY_ID))
 		return -1;
 	if (rcf_fix_idlist(head->nextp, &dst->my_id))
+		return -1;
+
+	return 0;
+}
+
+static int
+rcf_fix_multi_auth_second_id(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_MULTI_AUTH_SECOND_ID))
+		return -1;
+	if (rcf_fix_idlist(head->nextp, &dst->multi_auth_second_id))
 		return -1;
 
 	return 0;
@@ -3931,6 +3946,7 @@ rcf_clean_kmp(struct rcf_kmp *n)
 	rcf_clean_alglist(n->kmp_dh_group);
 	rcf_clean_alglist(n->kmp_auth_method);
 	rcf_clean_alglist(n->addke_offer);
+	rcf_clean_idlist(n->multi_auth_second_id);
 	rc_vfree(n->my_gssapi_id);
 	rcf_clean_pklist(n->my_pubkey);
 	rcf_clean_pklist(n->peers_pubkey);
@@ -4050,6 +4066,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	new->config_request = src->config_request;
 	DEEPCOPY_ADDRLIST(src->cfg_dns, new->cfg_dns);
 	DEEPCOPY_ADDRLIST(src->cfg_nbns, new->cfg_nbns);
+	DEEPCOPY_IDLIST(src->multi_auth_second_id, new->multi_auth_second_id);
 	DEEPCOPY_ADDRLIST(src->cfg_dhcp, new->cfg_dhcp);
 	DEEPCOPY_VDUP(src->application_version, new->application_version);
 	DEEPCOPY_VDUP(src->dns_domain, new->dns_domain);

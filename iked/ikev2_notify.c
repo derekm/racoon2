@@ -2027,6 +2027,23 @@ ikev2_multi_auth_decide(int cfg_on, int another, int eap_configured,
 	return IKEV2_MA_SECOND_ROUND;
 }
 
+/*
+ * RFC 4739 initiator: with multiple_auth on and a multi_auth_second_id
+ * configured, run two rounds when the responder advertised
+ * MULTIPLE_AUTH_SUPPORTED.  The configured policy asks for both
+ * identities, so a responder that cannot do it is refused rather than
+ * silently authenticated with the first one only.
+ */
+int
+ikev2_multi_auth_plan(int cfg_on, int peer_supported, int has_second)
+{
+	if (!cfg_on || !has_second)
+		return IKEV2_MAI_SINGLE;
+	if (!peer_supported)
+		return IKEV2_MAI_REFUSE;
+	return IKEV2_MAI_TWO_ROUNDS;
+}
+
 /* RFC 4478 responder: push N(AUTH_LIFETIME) when auth_lifetime is set */
 void
 ikev2_push_auth_lifetime(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)

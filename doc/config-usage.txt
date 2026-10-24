@@ -916,10 +916,26 @@ remote
 		ANOTHER_AUTH_FOLLOWS on a remote without EAP is refused
 		with AUTHENTICATION_FAILED.  The round-one peer certificate
 		is bound to the round-one IDi; round two binds only the
-		EAP identity.  The initiator does not run multiple rounds.
+		EAP identity.  As initiator, multiple rounds run only when
+		multi_auth_second_id is also set (see below).
 		When off, neither notify is sent and received ones are
 		ignored.
 		default is off.
+
+	multi_auth_second_id (id-type) (identifier) ;
+		It is valid for the ikev2 directive (initiator).
+		RFC 4739 initiator second round.  With multiple_auth on and
+		a responder that sent N(MULTIPLE_AUTH_SUPPORTED), the first
+		IKE_AUTH (kmp_auth_method, e.g. rsasig with my_public_key)
+		carries N(ANOTHER_AUTH_FOLLOWS); after the responder's
+		IDr/AUTH verifies, a second IKE_AUTH sends this identity
+		with a pre-shared-key AUTH (pre_shared_key).  The child SA
+		offered in round one is answered by the final response.
+		A responder that does not advertise
+		MULTIPLE_AUTH_SUPPORTED is refused (the configured policy
+		asks for both identities); no single-round fallback.
+		    multi_auth_second_id fqdn "user@example";
+		default is unset: one round.
 
 	auth_lifetime (number) ;
 		It is valid for the ikev2 directive (responder).
@@ -933,7 +949,10 @@ remote
 		When on, a received N(AUTH_LIFETIME) caps the IKE SA's
 		hard lifetime (and that of SAs rekeyed from it) so the SA
 		expires and is re-established with a full IKE_AUTH before
-		the responder's deadline.  When off it is only logged.
+		the responder's deadline: at the capped soft lifetime the
+		IKE SA is closed instead of rekeyed (a rekey keeps the old
+		authentication) and each selector it carried is started
+		again with IKE_SA_INIT.  When off it is only logged.
 		default is off.
 
 	legacy_split_netmask (on|off) ;

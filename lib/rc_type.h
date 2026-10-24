@@ -468,6 +468,12 @@ struct rcf_kmp {
 	/* provide { nbns ADDR; }: INTERNAL_IP4_NBNS (RFC 7296 s3.15.1) for a
 	 * peer that requests it; unset = never sent. */
 	struct rc_addrlist *cfg_nbns;
+	/* RFC 4739 initiator: multi_auth_second_id ID; with multiple_auth
+	 * on and a responder that sent MULTIPLE_AUTH_SUPPORTED, the first
+	 * IKE_AUTH carries N(ANOTHER_AUTH_FOLLOWS) and a second round
+	 * authenticates this identity with the pre-shared key.  Unset = one
+	 * round only. */
+	struct rc_idlist *multi_auth_second_id;
 	};
 
 /* selector info */

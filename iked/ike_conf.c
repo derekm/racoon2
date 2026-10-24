@@ -672,6 +672,15 @@ ikev2_dns(struct rcf_remote *conf)
 	return val;
 }
 
+struct rc_idlist *
+ikev2_multi_auth_second_id(struct rcf_remote *conf)
+{
+	struct rc_idlist	*val;
+
+	IKEV2_CONF(val, conf, multi_auth_second_id, NULL);
+	return val;
+}
+
 struct rc_addrlist *
 ikev2_nbns(struct rcf_remote *conf)
 {

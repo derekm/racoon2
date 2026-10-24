@@ -60,6 +60,11 @@ void ikev2_auth_lifetime_apply(struct ikev2_sa *, uint32_t);
 #define	IKEV2_MA_SECOND_ROUND	1	/* answer IDr+AUTH, await round 2 */
 #define	IKEV2_MA_REFUSE		2	/* AUTHENTICATION_FAILED */
 int ikev2_multi_auth_decide(int, int, int, int);
+/* RFC 4739 initiator plan (ikev2_multi_auth_plan) */
+#define	IKEV2_MAI_SINGLE	0	/* one round, no ANOTHER_AUTH_FOLLOWS */
+#define	IKEV2_MAI_TWO_ROUNDS	1	/* flag round 1, then a PSK round 2 */
+#define	IKEV2_MAI_REFUSE	2	/* policy needs 2 rounds, peer can't */
+int ikev2_multi_auth_plan(int, int, int);
 struct ikev2_payloads;
 void ikev2_push_auth_lifetime(struct ikev2_sa *, struct ikev2_payloads *);
 int ikev2_process_child_notify(struct ikev2payl_notify *,
