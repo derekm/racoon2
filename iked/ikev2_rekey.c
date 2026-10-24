@@ -1361,7 +1361,6 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 	struct ikev2_sa *new_sa;
 	int nrounds, round;
 	unsigned int expect;
-	rc_vchar_t *acc;
 
 	if (!old_sa || !ss || !ct)
 		return -1;
@@ -1387,17 +1386,10 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 		return -1;
 	}
 
-	acc = rc_vmalloc((old_sa->addke_rekey_sk ?
-			  old_sa->addke_rekey_sk->l : 0) + ss->l);
-	if (!acc)
-		return -1;
-	if (old_sa->addke_rekey_sk) {
-		memcpy(acc->v, old_sa->addke_rekey_sk->v,
-		       old_sa->addke_rekey_sk->l);
-		rc_vfreez(old_sa->addke_rekey_sk);
-	}
-	memcpy((uint8_t *)acc->v + acc->l - ss->l, ss->v, ss->l);
-	old_sa->addke_rekey_sk = acc;
+	/* Note: this round's SK is appended ONLY in the two paths below, and
+	 * for the non-final path only AFTER a successful transmit — appending
+	 * up here would double-addke_rekey_sk (ss1|ss2) if a failed send is
+	 * retransmitted and this handler re-enters. */
 
 	if (round + 1 < nrounds) {
 		rc_vchar_t *new_link;
@@ -1439,10 +1431,29 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 		if (ikev2_transmit_response(old_sa, pkt, ctx->local,
 					    ctx->remote) != 0) {
 			ikev2_payloads_destroy(&payl);
+			rc_vfree(pkt);	/* failure: caller owns the packet */
 			rc_vfree(new_link);
 			return -1;
 		}
 		ikev2_payloads_destroy(&payl);
+		/* append this round's SK now (transmit succeeded) */
+		{
+			rc_vchar_t *acc;
+
+			acc = rc_vmalloc((old_sa->addke_rekey_sk ?
+					  old_sa->addke_rekey_sk->l : 0) +
+					 ss->l);
+			if (!acc)
+				return -1;
+			if (old_sa->addke_rekey_sk) {
+				memcpy(acc->v, old_sa->addke_rekey_sk->v,
+				       old_sa->addke_rekey_sk->l);
+				rc_vfreez(old_sa->addke_rekey_sk);
+			}
+			memcpy((uint8_t *)acc->v + acc->l - ss->l,
+			       ss->v, ss->l);
+			old_sa->addke_rekey_sk = acc;
+		}
 		rc_vfreez(old_sa->addke_rekey_link);
 		old_sa->addke_rekey_link = new_link;
 		old_sa->addke_rekey_round = round + 1;
@@ -1455,6 +1466,23 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 			   "followup link\n",
 			   round + 1, nrounds);
 		return 1;
+	}
+	/* final round: no response is transmitted here; append the last SK(n)
+	 * so the caller's ikev2_rekey_responder_addke_complete has SK(1..n). */
+	{
+		rc_vchar_t *acc;
+
+		acc = rc_vmalloc((old_sa->addke_rekey_sk ?
+				  old_sa->addke_rekey_sk->l : 0) + ss->l);
+		if (!acc)
+			return -1;
+		if (old_sa->addke_rekey_sk) {
+			memcpy(acc->v, old_sa->addke_rekey_sk->v,
+			       old_sa->addke_rekey_sk->l);
+			rc_vfreez(old_sa->addke_rekey_sk);
+		}
+		memcpy((uint8_t *)acc->v + acc->l - ss->l, ss->v, ss->l);
+		old_sa->addke_rekey_sk = acc;
 	}
 	return 0;
 }

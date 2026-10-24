@@ -973,14 +973,15 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			/*
 			 * RFC 9370 s2.2.4: a non-final followup response
 			 * MUST carry a FRESH ADDITIONAL_KEY_EXCHANGE link
-			 * for the next round. It is mandatory, not
-			 * optional: a missing or unusable (not 1..64 B)
-			 * link must fail the child series HERE rather than
-			 * echo the previous-round link into the next
-			 * request — a strict peer (iOS) rejects that, and
-			 * the IKE-SA rekey initiator already rejects it
-			 * (missing/oversized, see
-			 * ikev2_rekey_ikesa_init_addke_complete).
+			 * for the next round. A missing or unusable
+			 * (not 1..64 B) link: we do NOT echo the stale
+			 * previous-round link into the next request (a
+			 * strict peer, iOS, rejects that; the IKE-SA rekey
+			 * initiator similarly rejects it). We stop the round
+			 * here — the message id is not advanced, so the child
+			 * ADDKE series cannot proceed and is abandoned by the
+			 * per-child followup timeout, not continued with a
+			 * stale link.
 			 */
 			struct ikev2payl_notify *nt;
 			size_t dl;
@@ -1364,34 +1365,11 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		goto invalid;
 	}
 
-	/* append this round's shared secret to SK(1)..SK(n), in order */
-	{
-		rc_vchar_t *acc;
-
-		acc = rc_vmalloc((child_sa->addke_sk ?
-				  child_sa->addke_sk->l : 0) + ss->l);
-		if (!acc) {
-			rc_vfreez(ss);
-			ss = 0;
-			goto nomem;
-		}
-		if (child_sa->addke_sk) {
-			memcpy(acc->v, child_sa->addke_sk->v,
-			       child_sa->addke_sk->l);
-			rc_vfreez(child_sa->addke_sk);
-			child_sa->addke_sk = 0;
-		}
-		memcpy(acc->v + acc->l - ss->l, ss->v, ss->l);
-		child_sa->addke_sk = acc;
-		rc_vfreez(ss);
-		ss = 0;
-	}
-
-	/*
-	 * Reply the ciphertext BEFORE finishing: the peer needs KEr(n)
-	 * for this round before it sends the next followup, and if
-	 * more rounds remain the child must stay pending.
-	 */
+	/* The shared secret ss for this round is appended to addke_sk ONLY after
+	 * the response is successfully transmitted (below). Appending before
+	 * the send means a retransmit that re-enters this handler appends
+	 * again -> addke_sk = ss1|ss2 while the initiator decaps only the
+	 * second KEr -> key mismatch (ML-KEM encap is not replay-stable). */
 	{
 		struct ikev2_payloads payl;
 		struct ikev2payl_ke_h keh;
@@ -1461,6 +1439,7 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_INTERR, PLOGLOC,
 				   "failed sending IKE_FOLLOWUP_KE response\n");
+			rc_vfree(pkt);	/* failure path: caller owns the packet */
 			if (new_link)
 				rc_vfree(new_link);
 			ikev2_payloads_destroy(&payl);
@@ -1477,11 +1456,36 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			       child_sa->addke_link->l,
 			       child_sa->addke_round + 1,
 			       child_sa->addke_nrounds));
-		}
-	}
+			       }
+			       }
 
-	/* advance the round cursor; install only after the last round */
-	++child_sa->addke_round;
+			       /* advance the round cursor; install only after the last round */
+			       /* append this round's shared secret to SK(1)..SK(n), in order, now that
+			       * a response was actually sent — a retransmit that re-enters this
+			       * handler cannot append again (a pre-send append would double addke_sk
+			       * into ss1|ss2 and desync the key against the initiator). */
+			       {
+			       rc_vchar_t *acc;
+
+			       acc = rc_vmalloc((child_sa->addke_sk ?
+			       child_sa->addke_sk->l : 0) + ss->l);
+			       if (!acc) {
+			       rc_vfreez(ss);
+			       ss = 0;
+			       goto nomem;
+			       }
+			       if (child_sa->addke_sk) {
+			       memcpy(acc->v, child_sa->addke_sk->v,
+			       child_sa->addke_sk->l);
+			       rc_vfreez(child_sa->addke_sk);
+			       child_sa->addke_sk = 0;
+			       }
+			       memcpy(acc->v + acc->l - ss->l, ss->v, ss->l);
+			       child_sa->addke_sk = acc;
+			       rc_vfreez(ss);
+			       ss = 0;
+			       }
+			       ++child_sa->addke_round;
 	if (child_sa->addke_round < child_sa->addke_nrounds) {
 		/* more rounds: re-arm the followup-wait timeout, stay pending */
 		if (child_sa->timer)

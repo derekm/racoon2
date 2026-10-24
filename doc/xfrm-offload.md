@@ -1,7 +1,7 @@
 # XFRM-native features: mark, if_id, and hardware-accelerated offload
 
 Status: **structures + Linux backend encoding landed** (`daa77da`, emit gate
-refined in `c161725`-followups). Config
+refined in `11b5dc1`). Config
 grammar wiring and the DGX Spark HW-offload bring-up are the next steps below.
 This extends `struct rcpfk_msg` (lib/if_pfkeyv2.h) with the three XFRM-native
 features PF_KEY cannot express, and the NETLINK_XFRM backend now emits them.

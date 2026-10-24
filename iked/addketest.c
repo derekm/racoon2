@@ -227,6 +227,11 @@ sched_kill(struct sched *sc)
 	(void)sc;
 }
 
+/* when > 0, the next N ikev2_transmit_response calls FAIL (return -1). Lets
+ * tests pin the commit-after-transmit retry paths: a failed send must leave
+ * the round/SK/link uncommitted so a retransmit re-entry does not double SK. */
+static int n_transmit_fail;
+
 int
 ikev2_transmit_response(struct ikev2_sa *sa, rc_vchar_t *pkt,
 			struct sockaddr *local, struct sockaddr *remote)
@@ -235,9 +240,15 @@ ikev2_transmit_response(struct ikev2_sa *sa, rc_vchar_t *pkt,
 	 * consumed here); free so the unit test does not leak. Return 0 like
 	 * the real function does on success — a non-zero return is a
 	 * transmit FAILURE the callers now branch on (round is committed
-	 * only after a successful send), so the stub must not masquerade a
-	 * success as a failure. */
+	 * only after a successful send). Match the real contract exactly:
+	 * on SUCCESS the pkt is consumed/freed here; on FAILURE (-1) leave it
+	 * with the caller to free, or this test double-frees with the caller's
+	 * failure-path rc_vfree(pkt). */
 	(void)sa; (void)local; (void)remote;
+	if (n_transmit_fail > 0) {
+		n_transmit_fail--;
+		return -1;	/* failure: pkt stays with the caller */
+	}
 	if (pkt)
 		rc_vfree(pkt);
 	return 0;
@@ -847,6 +858,87 @@ followup_multiround_tests(void)
 	EVP_PKEY_free(kp768);
 }
 
+/* A failed transmit on a non-final responder round must NOT commit the
+ * round / addke_sk / link, so the initiator's retransmit re-enters cleanly
+ * and does NOT double addke_sk into ss1|ss2 (the key-mismatch hole the
+ * review found in the 11b5dc1 commit-after-transmit change). */
+static void
+retransmit_no_double_sk_tests(void)
+{
+	const unsigned int m512 = IKEV2TRANSF_ADDKE_MLKEM512;
+	rc_vchar_t *pub512 = NULL, *msg = NULL;
+	EVP_PKEY *kp512 = NULL;
+	struct ikev2_sa *sa;
+	struct ikev2_child_sa *c;
+	struct sockaddr_in loc, rem;
+
+	printf("--- IKE_FOLLOWUP_KE responder retransmit: no double SK ---\n");
+	memset(&loc, 0, sizeof(loc));
+	memset(&rem, 0, sizeof(rem));
+	loc.sin_family = rem.sin_family = AF_INET;
+	CHECK(ikev2_addke_mlkem_keygen(m512, &pub512, &kp512) == 0 && pub512,
+	      "retransmit: keygen ML-KEM-512");
+	if (!pub512) {
+		fail = 1;
+		return;
+	}
+	sa = calloc(1, sizeof(*sa));
+	if (!sa) {
+		fail = 1;
+		return;
+	}
+	IKEV2_CHILD_LIST_INIT(&sa->children);
+	sa->recv_message_id = 3;
+	c = calloc(1, sizeof(*c));
+	if (!c) {
+		fail = 1;
+		return;
+	}
+	c->parent = sa;
+	c->addke_pending = 1;
+	c->addke_nrounds = 2;
+	c->addke_round = 0;
+	c->addke_methods[0] = m512;
+	c->addke_methods[1] = m512;
+	c->addke_link = rc_vnew("mround", 6);
+	IKEV2_CHILD_LIST_LINK(&sa->children, c);
+
+	/* first transmit FAILS: round/SK/link must stay uncommitted */
+	followup_reset();
+	n_transmit_fail = 1;
+	msg = followup_msg(m512, pub512, "mround", 6);
+	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+			       (struct sockaddr *)&loc);
+	rc_vfree(msg);
+	CHECK(c->addke_sk == NULL,
+	      "retransmit: failed send leaves addke_sk uncommitted");
+	CHECK(c->addke_round == 0,
+	      "retransmit: failed send does not advance round");
+	CHECK(n_respond_error == 0,
+	      "retransmit: failed send is not a protocol error");
+
+	/* retransmit now succeeds: SK appended exactly once (not doubled) */
+	followup_reset();
+	n_transmit_fail = 0;
+	msg = followup_msg(m512, pub512, "mround", 6);
+	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+			       (struct sockaddr *)&loc);
+	rc_vfree(msg);
+	CHECK(c->addke_sk &&
+	      c->addke_sk->l == OSSL_ML_KEM_SHARED_SECRET_BYTES,
+	      "retransmit: addke_sk is ONE secret, not doubled");
+	CHECK(c->addke_round == 1,
+	      "retransmit: round advanced to 1 after successful send");
+
+	IKEV2_CHILD_LIST_REMOVE(&sa->children, c);
+	rc_vfree(c->addke_link);
+	rc_vfreez(c->addke_sk);
+	free(c);
+	free(sa);
+	rc_vfree(pub512);
+	EVP_PKEY_free(kp512);
+}
+
 /* Initiator-side multi-round ADDKE driver: after each IKE_FOLLOWUP_KE
  * response, ikev2_initiator_followup_complete() decapsulates that round's
  * ciphertext with the round's keypair (addke_priv), appends SK to the
@@ -1152,6 +1244,7 @@ main(void)
 	CHECK(ikev2_addke_selftest() == 0, "mlkem selftest (round-trip)");
 	followup_link_tests();
 	followup_multiround_tests();
+	retransmit_no_double_sk_tests();
 	initiator_multiround_tests();
 	initiator_classical_round_tests();
 	collect_rounds_tests();
