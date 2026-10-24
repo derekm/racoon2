@@ -72,6 +72,18 @@ backend now emits them.
      accepted (not INT-clamped); an omitted mark mask defaults to
      `0xffffffff` (what `ip xfrm` shows), so `mark { value 0x100; }` is not a
      no-op.
+     An **explicit `mask 0`** matches nothing, so it is rejected instead of
+     being silently rewritten to a full mask.
+   - **Reserved words:** the grammar adds the global tokens `mark`, `if_id`,
+     `offload`, `value`, `mask`, `dev`, `dir`, `in` and `out`. They are now
+     keywords anywhere in a config (quote them if used as a name/string).
+   - `XFRMA_OFFLOAD_DEV` is refused for non-ESP states inside the emitter
+     itself (`add_xfrm_offload_attr`), not only by the ESP-filtering caller.
+   - Selector family: a wildcard side takes the specified peer's family; a
+     mixed pair of *specified* addresses is rejected (EINVAL); a selector
+     whose both sides are wildcards defaults to **AF_INET**, so an IPv6-only
+     "any" policy must spell `::/0` on at least one side with a family-
+     specific peer, or it installs a v4-wildcard policy.
    - Fail-closed: unknown block keys, bad `dir`, unterminated blocks, and an
      **offload block without a `dev`** (silent no-op) reject the whole config;
      every new CFD_ has a registered `rcf_tdf` fix; an over-long device name
