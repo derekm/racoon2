@@ -408,6 +408,13 @@ struct rcf_kmp {
 	 * most recent authenticated packet).  Off = the event is logged and
 	 * ignored, so return traffic keeps going to the old mapping. */
 	rc_type natt_follow_mapping;
+	/* tcp_encap (on|off, default off): RFC 9329 / RFC 8229 IKE-over-TCP.
+	 * On = this remote exchanges IKE over a single TCP stream (originator
+	 * or responder per the IKE-over-TCP port 4500, IKEV2_TCP_PORT) instead
+	 * of UDP.  The transport, framing (IKETCP prefix + Len|marker records),
+	 * and stream registry are iked/ikev2_tcp{,,_stream,_srv}.c; the listener
+	 * binds IKEV2_TCP_PORT.  Off (default) = plain UDP only. */
+	rc_type tcp_encap;
 	/* RFC 5685 redirect: when redirect_to is set (a new-gateway identity:
 	 * an IPv4/IPv6 address or a hostname as configured), the responder
 	 * answers an IKE_SA_INIT whose initiator offered N(REDIRECT_SUPPORTED)

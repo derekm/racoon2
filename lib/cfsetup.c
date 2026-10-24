@@ -218,6 +218,7 @@ static int rcf_fix_use_ppk (struct cf_list *, void *);
 static int rcf_fix_ppk_mandatory (struct cf_list *, void *);
 static int rcf_fix_childless (struct cf_list *, void *);
 static int rcf_fix_natt_follow_mapping (struct cf_list *, void *);
+static int rcf_fix_tcp_encap (struct cf_list *, void *);
 static int rcf_fix_ppk_id (struct cf_list *, void *);
 static int rcf_fix_session_resumption (struct cf_list *, void *);
 static int rcf_fix_session_resume_key (struct cf_list *, void *);
@@ -439,6 +440,7 @@ struct rcf_tdf_t {
 	{ CFD_USE_PPK,			rcf_fix_use_ppk, },
 	{ CFD_CHILDLESS,			rcf_fix_childless, },
 	{ CFD_NATT_FOLLOW_MAPPING,		rcf_fix_natt_follow_mapping, },
+	{ CFD_TCP_ENCAP,			rcf_fix_tcp_encap, },
 	{ CFD_REQUIRE_CONFIG,		rcf_fix_require_config, },
 	{ CFD_PPK_MANDATORY,		rcf_fix_ppk_mandatory, },
 	{ CFD_PPK_ID,			rcf_fix_ppk_id, },
@@ -1799,6 +1801,20 @@ rcf_fix_natt_follow_mapping(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_NATT_FOLLOW_MAPPING))
 		return -1;
 	if (rcf_fix_boolean(head->nextp, &dst->natt_follow_mapping))
+		return -1;
+
+	return 0;
+}
+
+/* tcp_encap (on|off): see rc_type.h */
+static int
+rcf_fix_tcp_encap(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_TCP_ENCAP))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->tcp_encap))
 		return -1;
 
 	return 0;
@@ -4048,6 +4064,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	new->allow_nsa_deprecated = src->allow_nsa_deprecated;
 	new->allow_rfc_deprecated = src->allow_rfc_deprecated;
 	new->natt_follow_mapping = src->natt_follow_mapping;
+	new->tcp_encap = src->tcp_encap;
 	new->offer_intermediate = src->offer_intermediate;
 	new->offer_sig_hash_algorithms = src->offer_sig_hash_algorithms;
 	new->sig_hash_rsa_pss = src->sig_hash_rsa_pss;

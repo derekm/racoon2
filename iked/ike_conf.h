@@ -232,6 +232,7 @@ extern rc_type ikev2_cert_cn_fallback(struct rcf_remote *);
 extern rc_type ikev2_allow_wildcard_cert(struct rcf_remote *);
 extern rc_type ikev2_cert_trust_system(struct rcf_remote *);
 extern rc_type ikev2_natt_follow_mapping(struct rcf_remote *);
+extern rc_type ikev2_tcp_encap(struct rcf_remote *);
 extern rc_type ikev2_ppk_mandatory(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ppk_id(struct rcf_remote *);
 extern rc_vchar_t *ikev2_ppk_load(struct rcf_remote *);
