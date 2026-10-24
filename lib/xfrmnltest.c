@@ -1124,6 +1124,7 @@ test_offload_attrs(void)
 	rc.if_id = 1;
 	rc.offload_ifindex = 5;
 	rc.offload_flags = 0;	/* outbound — must still be emitted */
+	rc.satype = RCT_SATYPE_ESP;	/* device offload is ESP-only */
 	CHECK(add_xfrm_mark_ifid_attrs(n, sizeof(buf), &rc) == 0,
 	    "offload: mark/if_id attrs appended");
 	CHECK(add_xfrm_offload_attr(n, sizeof(buf), &rc) == 0,
@@ -1143,6 +1144,24 @@ test_offload_attrs(void)
 	    ((const struct xfrm_user_offload *)d)->ifindex == 5 &&
 	    ((const struct xfrm_user_offload *)d)->flags == 0,
 	    "offload: XFRMA_OFFLOAD_DEV ifindex/flags(outbound) emitted");
+
+	/* negative: an AH (or IPComp) state with a device is refused by the
+	 * emitter itself, not only by today's ESP-filtering caller */
+	memset(buf, 0, sizeof(buf));
+	memset(&rc, 0, sizeof(rc));
+	n = (struct nlmsghdr *)buf;
+	n->nlmsg_len = NLMSG_LENGTH(0);
+	rc.offload_ifindex = 5;
+	rc.satype = RCT_SATYPE_AH;
+	CHECK(add_xfrm_offload_attr(n, sizeof(buf), &rc) == -1 &&
+	    rc.eno == EINVAL, "offload: AH + device refused EINVAL (eno %d)",
+	    rc.eno);
+	CHECK(n->nlmsg_len == NLMSG_LENGTH(0), "offload: nothing appended "
+	    "for AH");
+	rc.satype = RCT_SATYPE_IPCOMP;
+	rc.eno = 0;
+	CHECK(add_xfrm_offload_attr(n, sizeof(buf), &rc) == -1 &&
+	    rc.eno == EINVAL, "offload: IPComp + device refused EINVAL");
 
 	/* negative: mask 0 + if_id 0 + no device -> NO attrs at all */
 	memset(buf, 0, sizeof(buf));
@@ -1168,8 +1187,11 @@ test_offload_attrs(void)
 	n->nlmsg_len = NLMSG_LENGTH(0);
 	snprintf(rc.offload_ifname, sizeof(rc.offload_ifname),
 	    "__definitely_not_a_device__");
-	CHECK(add_xfrm_offload_attr(n, sizeof(buf), &rc) == -1,
-	    "offload: unresolvable device name -> refuse (ENODEV)");
+	rc.satype = RCT_SATYPE_ESP;
+	CHECK(add_xfrm_offload_attr(n, sizeof(buf), &rc) == -1 &&
+	    rc.eno == ENODEV,
+	    "offload: unresolvable device name -> refuse (ENODEV, got %d)",
+	    rc.eno);
 }
 
 static void

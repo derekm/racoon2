@@ -1312,6 +1312,14 @@ add_xfrm_offload_attr(struct nlmsghdr *n, size_t maxlen,
 		idx = if_nametoindex(rc->offload_ifname);
 	if (idx == 0 && rc->offload_ifname[0] == '\0')
 		return 0;	/* no offload device specified: not requested */
+	/* Device offload exists only for ESP states; enforce it here, not
+	 * only at today's caller, so no path can emit it on AH/IPComp (the
+	 * kernel rejects that install). */
+	if (rc->satype != RCT_SATYPE_ESP) {
+		xfrm_seterror(rc, EINVAL, "device offload is ESP-only "
+		    "(satype %u)", rc->satype);
+		return -1;
+	}
 	if (idx == 0) {
 		xfrm_seterror(rc, ENODEV, "offload device %s not found",
 		    rc->offload_ifname);
