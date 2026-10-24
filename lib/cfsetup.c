@@ -3270,15 +3270,27 @@ rcf_fix_mark(struct cf_list *head, void *dst0)
 {
 	struct rcf_policy *dst = (struct rcf_policy *)dst0;
 	struct cf_list *n;
+	int has_mask = 0;
 
 	if (rcf_check_cfd(head, CFD_MARK))
 		return -1;
 	/* brace-block: walk sub-directives (value/mask) into dst */
-	for (n = head->nextp; n; n = n->nexts)
+	for (n = head->nextp; n; n = n->nexts) {
+		if (n->type == CFT_DIRECTIVE && n->d.dir == CFD_MARK_MASK)
+			has_mask = 1;
 		RCF_CALL_TDF(n, dst);
+	}
+	/* An explicit mask 0 matches nothing and is a silent no-op at emit:
+	 * reject it rather than quietly installing a mask nobody wrote. */
+	if (has_mask && dst->mark_mask == 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "%s:%d: mark mask 0 matches nothing; omit mask for a "
+		     "full mask\n", head->file, head->lineno);
+		return -1;
+	}
 	/* omitted mask defaults to full (what `ip xfrm` prints); otherwise a
 	 * mark-only directive would be a silent no-op (emit needs mask != 0). */
-	if (dst->mark_mask == 0 && dst->mark != 0)
+	if (!has_mask && dst->mark != 0)
 		dst->mark_mask = 0xffffffff;
 	return 0;
 

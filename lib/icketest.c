@@ -262,6 +262,9 @@ main(void)
 	/* fail-closed grammar rejects */
 	fails += reject(path, "mark { bogus 1; }");
 	fails += reject(path, "mark { value 0x100;");
+	/* explicit mask 0 is rejected, never rewritten to a full mask */
+	fails += reject(path, "mark { value 0x100; mask 0; };");
+	fails += reject(path, "mark { value 0; mask 0x0; };");
 
 	unlink(path);
 	printf("%s\n", fails ? "FAIL" : "PASS");
