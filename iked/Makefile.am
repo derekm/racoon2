@@ -257,3 +257,12 @@ endif
 EXTRA_DIST = fuzz/fuzz_common.h fuzz/corpus \
 	evloop.h evloop_select.c evloop_epoll.c crypto_workers.h \
 	ikedctl.c ikedctl.h ikedctl_unix.c admin.c admin.h samplecheck.sh
+
+# A per-directory `make install` used to relink against whatever libracoon
+# was already installed (a stale .so with a drifted ABI).  Install the
+# freshly built library first; the top-level install already orders lib
+# before the daemons, so this is a no-op re-install there.
+install-sbinPROGRAMS: install-libracoon-first
+install-libracoon-first:
+	cd $(top_builddir)/../lib && $(MAKE) $(AM_MAKEFLAGS) install-libLTLIBRARIES
+.PHONY: install-libracoon-first

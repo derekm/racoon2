@@ -21,3 +21,12 @@ AM_CPPFLAGS = -DSYSCONFDIR=\"${sysconfdir}\"
 #AM_CPPFLAGS += -DDEBUG_THOROUGH_FREE
 #AM_CPPFLAGS += -DMAKE_KINK_LIST_FILE
 #AM_CPPFLAGS += -DNOT_PREPEND_KINK
+
+# A per-directory `make install` used to relink against whatever libracoon
+# was already installed (a stale .so with a drifted ABI).  Install the
+# freshly built library first; the top-level install already orders lib
+# before the daemons, so this is a no-op re-install there.
+install-sbinPROGRAMS: install-libracoon-first
+install-libracoon-first:
+	cd $(top_builddir)/../lib && $(MAKE) $(AM_MAKEFLAGS) install-libLTLIBRARIES
+.PHONY: install-libracoon-first
