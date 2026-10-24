@@ -1393,7 +1393,13 @@ rcpfk_send_getspi(struct rcpfk_msg *rc)
 	/* the larval SA it returns must carry the same mark/if_id the later
 	 * UPDSA/NEWSA installs, or xfrm_state_update cannot locate it
 	 * (larval mark 0 vs UPDSA mark = ESRCH) — marked children fail to
-	 * install otherwise. */
+	 * install otherwise.
+	 * Kernel dependency: xfrm_alloc_userspi() reads XFRMA_MARK since mark
+	 * support landed (2.6.34); XFRMA_IF_ID on ALLOCSPI is a later
+	 * addition, and an older kernel ignores it on the larval state, so a
+	 * marked/if_id child on such a kernel fails at UPDSA (ESRCH), loudly.
+	 * The emitted bytes are pinned by xfrmnltest test_mark_emit_live_paths;
+	 * kernel acceptance is a live (kernel-lane) property, not unit-proven. */
 	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
 		return -1;
 	if (pending_set(rc, XFRM_MSG_ALLOCSPI, n->nlmsg_seq) < 0)
