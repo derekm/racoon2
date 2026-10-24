@@ -1007,6 +1007,18 @@ test_nl_walk(void)
 	CHECK(rcpfk_nl_walk(buf, sizeof(struct nlmsghdr) + 2, nl_walk_count,
 	    &cnt) == 0, "nl_walk: trailing padding returns 0");
 	CHECK(cnt == 1, "nl_walk: padding did not dispatch");
+
+	/* a valid message followed by a truncated next header (8 of 16 bytes
+	 * present) is malformed, NOT silent alignment padding (padding is 0-3) */
+	memset(buf, 0, sizeof(buf));
+	n = (struct nlmsghdr *)buf;
+	n->nlmsg_len = sizeof(struct nlmsghdr);
+	((struct nlmsghdr *)(buf + NLMSG_ALIGN((int)sizeof(struct nlmsghdr))))
+	    ->nlmsg_len = 8;
+	cnt = 0;
+	CHECK(rcpfk_nl_walk(buf, sizeof(struct nlmsghdr) + 8, nl_walk_count,
+	    &cnt) == -1, "nl_walk: truncated next header (8B) -> -1");
+	CHECK(cnt == 1, "nl_walk: truncated next header stopped after 1");
 }
 
 int

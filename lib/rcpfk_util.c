@@ -80,13 +80,13 @@ rcpfk_nl_walk(char *buf, size_t buflen,
 		if (fn && fn(nlh, arg) < 0)
 			return -1;
 	}
-	/* NLMSG_OK became false. If a whole header's worth (>= sizeof) is
-	 * still left, the message declared a bad nlmsg_len (a length below a
-	 * header, or a truncated body whose declared length exceeds what is
-	 * present): report it as malformed so the caller logs it. Only the
-	 * alignment padding (< sizeof) left after a real message, or the
-	 * exact-end case, returns 0. */
-	if (len >= (int)sizeof(struct nlmsghdr))
+	/* NLMSG_OK became false with `len` bytes still unread. NLMSG_NEXT has
+	 * already consumed the 4-byte alignment padding of every real message,
+	 * so a remainder of 0-3 is slack and is a normal end. A remainder of
+	 * >= NLMSG_ALIGNTO (4) is the start of a truncated next header (or a
+	 * header declaring a bad nlmsg_len), not padding: report it as
+	 * malformed so the caller logs it. */
+	if (len >= (int)NLMSG_ALIGNTO)
 		return -1;
 	return 0;
 }
