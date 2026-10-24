@@ -153,18 +153,19 @@ struct rcpfk_msg {
 	uint16_t natt_dport;
 	uint8_t natt_type;		/* 0 unset; Linux UDP_ENCAP_ESPINUDP */
 
-	/* --- XFRM-native policy/offload (Linux NETLINK_XFRM only). *BSD
-	 * PF_KEY and the loopback userspace backend have no equivalent and
-	 * ignore these; 0/"" = unset. These are the features XFRM supports
-	 * that PF_KEY has no spelling for. Set by the config/grammar layer;
-	 * emitted by the XFRM backend (lib/if_xfrm.c) as XFRMA_MARK,
-	 * XFRMA_IF_ID and XFRMA_OFFLOAD_DEV. --- */
+	/* --- XFRM-native policy/offload. mark / if_id have no PF_KEY spelling
+	 * (Linux NETLINK_XFRM only) and the *BSD PF_KEY + loopback backends
+	 * ignore them; 0/"" = unset. offload_ifname, however, IS meaningful on
+	 * both real kernels: the XFRM backend (lib/if_xfrm.c) resolves it to an
+	 * ifindex and emits XFRMA_OFFLOAD_DEV; the FreeBSD PF_KEY backend emits
+	 * SADB_X_EXT_IF_HW_OFFL from the name itself. The loopback backend
+	 * ignores all of these. --- */
 	uint32_t mark;			/* XFRMA_MARK value (honored with mark_mask) */
 	uint32_t mark_mask;		/* XFRMA_MARK mask; non-zero => emit */
 	uint32_t if_id;			/* XFRMA_IF_ID: per-SA/policy interface/VRF */
 	uint32_t offload_ifindex;	/* XFRMA_OFFLOAD_DEV: device ifindex */
 	uint8_t offload_flags;		/* XFRM_OFFLOAD_* (direction) or 0 = unset */
-	char offload_ifname[16];	/* offload device name; resolved to ifindex at send */
+	char offload_ifname[16];	/* offload device name; XFRM->ifindex, *BSD SADB_X_EXT_IF_HW_OFFL */
 
 	/* internal buffers; no need to touch from external */
 	struct sockaddr_storage sa_src_storage;

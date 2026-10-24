@@ -646,6 +646,77 @@ rcpfk_send_getspi(struct rcpfk_msg *rc)
 }
 
 /*
+ * FreeBSD IPSEC_OFFLOAD (mlx5/ConnectX inline accel, "setkey -hwif <if>"):
+ * SADB_X_EXT_IF_HW_OFFL (ext 31) narrows an SA or SPD entry to a named
+ * interface so it is delivered to that NIC's inline crypto engine.  It is
+ * the *BSD spelling of rcpfk_msg.offload_ifname -- the SAME interface name
+ * both kernels use to name offload (Linux resolves it to an ifindex for
+ * XFRMA_OFFLOAD_DEV; the *BSD kernel carries the name in the extension).
+ * offload_flags (XFRM_OFFLOAD_INBOUND) is Linux-only: FreeBSD inline offload
+ * is bidirectional and is offered to every IPsec-capable driver unless this
+ * extension narrows it, so it is ignored here (flags stays 0).  mark/if_id
+ * have no *BSD spelling and stay ignored.  Same fail-loud rule as the Linux
+ * side: an offload request the extension cannot express is an error, never a
+ * silent software SA.
+ */
+#ifdef SADB_X_EXT_IF_HW_OFFL
+static int
+rcpfk_set_sadb_x_if_hw_offl(rc_vchar_t **msg, struct rcpfk_msg *rc)
+{
+	rc_vchar_t *buf = NULL;
+	struct sadb_x_if_hw_offl *p;
+	size_t prevlen, extlen;
+
+	/* not requested unless a device is named (by name or by ifindex) */
+	if (rc->offload_ifname[0] == '\0' && rc->offload_ifindex == 0)
+		return 0;
+
+	if (rc->offload_ifname[0] == '\0') {
+		/* named by ifindex only (the Linux convenience spelling); this
+		 * extension carries a NAME, so the request is inexpressible. */
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "HW offload named by ifindex %u but FreeBSD PF_KEY offload "
+		    "(SADB_X_EXT_IF_HW_OFFL) is name-based; refusing an SA the "
+		    "backend cannot express\n", rc->offload_ifindex);
+		return -1;
+	}
+
+	extlen = sizeof(*p);	/* 40 bytes == 5 PFKEY units, 8-aligned */
+	prevlen = (*msg)->l;
+	if ((buf = rc_vrealloc(*msg, prevlen + extlen)) == NULL)
+		return -1;
+	p = (void *)((uint8_t *)buf->v + prevlen);
+	memset(p, 0, sizeof(*p));
+	p->sadb_x_if_hw_offl_len = PFKEY_UNIT64_U16(extlen);
+	p->sadb_x_if_hw_offl_exttype = SADB_X_EXT_IF_HW_OFFL;
+	/* sadb_x_if_hw_offl_flags stays 0: inline offload is bidirectional */
+	snprintf((char *)p->sadb_x_if_hw_offl_if,
+	    sizeof(p->sadb_x_if_hw_offl_if), "%s", rc->offload_ifname);
+	*msg = buf;
+	return 0;
+}
+#else
+static int
+rcpfk_set_sadb_x_if_hw_offl(rc_vchar_t **msg, struct rcpfk_msg *rc)
+{
+	/* kernel PF_KEY ABI predates SADB_X_EXT_IF_HW_OFFL: an offload request
+	 * cannot be expressed -> fail loud, never a silent software SA. */
+	if (rc->offload_ifname[0] != '\0' || rc->offload_ifindex != 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "HW offload requested but this FreeBSD PF_KEY ABI has no "
+		    "SADB_X_EXT_IF_HW_OFFL; refusing an SA the backend cannot "
+		    "express\n");
+		(void)msg;
+		(void)rc;
+		return -1;
+	}
+	(void)msg;
+	(void)rc;
+	return 0;
+}
+#endif
+
+/*
  * send a SADB_UPDATE or a SADB_ADD to kernel.
  *     <base, SA, (lifetime(HSC),) address(SD), (address(P),)
  *         key(AE), (identity(SD),) (sensitivity)>
@@ -734,6 +805,12 @@ rcpfk_send_addx(struct rcpfk_msg *rc, int type)
 				    ))
             goto err;
 	}
+#endif
+
+#ifdef SADB_X_EXT_IF_HW_OFFL
+	/* FreeBSD: restrict the SA to a named offload NIC (SADB_ADD/UPDATE). */
+	if (rcpfk_set_sadb_x_if_hw_offl(&buf, rc))
+		goto err;
 #endif
 
 	if (rcpfk_send(rc, buf)) {
@@ -920,6 +997,12 @@ rcpfk_send_spdaddx(struct rcpfk_msg *rc, int type)
 
 	if (rcpfk_set_sadbxpolicy(&buf, rc, SADB_X_SPDUPDATE))
 		goto err;
+
+#ifdef SADB_X_EXT_IF_HW_OFFL
+	/* FreeBSD: restrict the SPD entry to a named offload NIC. */
+	if (rcpfk_set_sadb_x_if_hw_offl(&buf, rc))
+		goto err;
+#endif
 
 	SADB_MSG(buf)->sadb_msg_satype = SADB_SATYPE_UNSPEC;
 

@@ -18,11 +18,16 @@ features PF_KEY cannot express, and the NETLINK_XFRM backend now emits them.
 | `if_id`           | `XFRMA_IF_ID` (u32) | per-SA/policy interface/VRF identifier          |
 | `offload_ifindex` / `offload_flags` / `offload_ifname` | `XFRMA_OFFLOAD_DEV` (struct xfrm_user_offload) | device (ifindex) + direction for crypto/stateless IPsec offload |
 
-- The *BSD PF_KEY and loopback userspace backends have no equivalents and
-  ignore these fields (they never read them).
-- The emit is guarded (`#if defined(XFRMA_MARK) && defined(XFRMA_IF_ID)` /
-  `#ifdef XFRMA_OFFLOAD_DEV`) so an older kernel UAPI header still compiles;
-  on a kernel without the attr the field is simply not emitted.
+- `mark` / `if_id` have no PF_KEY spelling and the *BSD PF_KEY and loopback
+  userspace backends ignore them (never read). `offload_ifname`, however, has
+  a real *BSD counterpart: `lib/if_pfkeyv2.c` emits `SADB_X_EXT_IF_HW_OFFL`
+  from the name on FreeBSD (see below). Only the loopback backend ignores all
+  of these.
+- The emit is NOT `#ifdef`-guarded on the XFRMA_* names: `XFRMA_MARK` /
+  `XFRMA_IF_ID` / `XFRMA_OFFLOAD_DEV` are **enum constants** in
+  `<linux/xfrm.h>`, not macros — an `#ifdef XFRMA_*` guard is always false and
+  silently compiled the offload out on every kernel (it did). `lib/if_xfrm.c`
+  includes `<linux/xfrm.h>` and emits unconditionally.
 - `offload_flags` is the XFRM_OFFLOAD_* direction bit (0 = outbound,
   `XFRM_OFFLOAD_INBOUND` for inbound), `offload_ifname` is resolved to an
   index via `if_nametoindex()` when `offload_ifindex` is 0. An offload SA is
@@ -91,15 +96,25 @@ features PF_KEY cannot express, and the NETLINK_XFRM backend now emits them.
 
 ## FreeBSD IPSEC_OFFLOAD portability (how this maps onto PF_KEY)
 
+The *BSD leg is now **wired in `lib/if_pfkeyv2.c`**: when `offload_ifname` is
+set, `rcpfk_set_sadb_x_if_hw_offl()` appends the `SADB_X_EXT_IF_HW_OFFL`
+extension to `SADB_ADD`/`SADB_UPDATE` (SA path) and `SADB_X_SPDADD` (policy
+path), under `#ifdef SADB_X_EXT_IF_HW_OFFL`. Same fail-loud rule as Linux: an
+ifindex-only offload request (no name) or a build whose PF_KEY ABI predates
+`SADB_X_EXT_IF_HW_OFFL` refuses the SA rather than silently installing a
+software one. Verified to compile against FreeBSD 15.1's real `pfkeyv2.h`.
+
 FreeBSD's inline IPsec offload (NVIDIA-sponsored, 2024 → GENERIC, mlx5/
 ConnectX-6+, IPv4 AES-GCM transport + UDP-ESP/NAT-T) is NOT a kernel-only
 property — it is driven from userspace through PF_KEY extensions, which is
 what makes it the same *class* of feature as the Linux XFRM offload this file
 describes:
 
-- `SADB_X_EXT_IF_HW_OFFL` (`struct sadb_x_if_hw_offl { char name[]; }`), set
+- `SADB_X_EXT_IF_HW_OFFL` (`struct sadb_x_if_hw_offl { u16 len; u16 exttype;
+  u32 flags; u8 if[32]; }`), set
   via `setkey -hwif ifname` on `SADB_ADD` / `SADB_X_SPDADD`, restricts SP/SA
-  offload to a named interface.
+  offload to a named interface. (2024 commit, present in 15.0+ / 16.0-CURRENT;
+  not in older branches — hence the `#ifdef` fallback.)
 - `SADB_X_EXT_LFT_CUR_SW_OFFL` / `SADB_X_EXT_LFT_CUR_HW_OFFL` report
   software-vs-hardware offload lifetime counters per SA (the FreeBSD
   analogue of "is it really on the NIC?" — cf. the `ip -s xfrm state` /
@@ -127,11 +142,12 @@ Why the rcpfk field is the right portable shape:
   (+NAT-T) only; an SA whose algorithm/mode the NIC cannot accelerate must
   fail loudly (kernel `EOPNOTSUPP`), never silently fall back to software.
 
-Wiring the *BSD PF_KEY backend to emit `SADB_X_EXT_IF_HW_OFFL` from
-`offload_ifname` is a future step; it must be guarded by the extension (kernel
-15.x has it, 14 does not) and paired with the SW/HW counter-extension decode
-for verification. None of that is buildable/testable on this Linux host, so it
-is documented, not wired.
+The *BSD PF_KEY backend emits `SADB_X_EXT_IF_HW_OFFL` from `offload_ifname`
+(`lib/if_pfkeyv2.c`, wired in `11b5dc1`+), guarded by the extension's `#ifdef`
+(same reason: 15.x/16 have it, 14 does not, and failing loud beats a silent
+software SA there). The SW/HW counter-extension decode
+(`SADB_X_EXT_LFT_CUR_SW_OFFL` / `SADB_X_EXT_LFT_CUR_HW_OFFL`) is a future
+SADB_DUMP-side step for verification.
 
 ## References
 - `lib/if_pfkeyv2.h` (struct rcpfk_msg, new fields)
