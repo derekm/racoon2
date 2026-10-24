@@ -1511,6 +1511,67 @@ test_resync_cb_failure_reported(void)
 	tcb.cb_resync = cb_resync;
 }
 
+/* Policy send path: a mixed specified pair is refused before anything is
+ * sent or an op is recorded; a wildcard v6 side coerces to the v4 peer on
+ * the wire (hermetic: decodes the request bytes, no iproute2 text). */
+static void
+test_policy_path_mixed_family(void)
+{
+	struct rcpfk_msg rc;
+	struct sockaddr_in s4;
+	struct sockaddr_in6 d6;
+	struct nlmsghdr *n;
+	struct xfrm_userpolicy_info *xp;
+
+	setup();
+	memset(&s4, 0, sizeof(s4));
+	s4.sin_family = AF_INET;
+	inet_pton(AF_INET, "192.0.2.1", &s4.sin_addr);
+	memset(&d6, 0, sizeof(d6));
+	d6.sin6_family = AF_INET6;
+	inet_pton(AF_INET6, "2001:db8::1", &d6.sin6_addr);
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	rc.seq = 0xc00;
+	rc.sp_src = (void *)&s4;
+	rc.sp_dst = (void *)&d6;
+	rc.pref_src = 32;
+	rc.pref_dst = 128;
+	rc.pltype = RCT_ACT_DISCARD;
+	rc.dir = RCT_DIR_OUTBOUND;
+	CHECK(rcpfk_send_spdadd(&rc) == -1 && rc.eno == EINVAL,
+	    "mixed spdadd refused EINVAL (eno %d)", rc.eno);
+	CHECK(kget() == NULL, "nothing sent for the mixed spdadd");
+	CHECK(xfrm_nops == 0, "no op recorded (%d)", xfrm_nops);
+	rc.eno = 0;
+	CHECK(rcpfk_send_spddelete(&rc) == -1 && rc.eno == EINVAL,
+	    "mixed spddelete refused EINVAL (eno %d)", rc.eno);
+	CHECK(kget() == NULL, "nothing sent for the mixed spddelete");
+
+	/* v6 wildcard src + v4 dst: AF_INET selector with the v4 address */
+	memset(&d6, 0, sizeof(d6));
+	d6.sin6_family = AF_INET6;
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	rc.seq = 0xc01;
+	rc.sp_src = (void *)&d6;
+	rc.sp_dst = (void *)&s4;
+	rc.pref_src = 0;
+	rc.pref_dst = 32;
+	rc.pltype = RCT_ACT_DISCARD;
+	rc.dir = RCT_DIR_OUTBOUND;
+	CHECK(rcpfk_send_spdadd(&rc) == 0, "spdadd: %s", rc.estr);
+	n = kget();
+	CHECK(n != NULL, "spdadd sent");
+	if (n) {
+		xp = NLMSG_DATA(n);
+		CHECK(xp->sel.family == AF_INET, "wire family AF_INET (%u)",
+		    xp->sel.family);
+		CHECK(xp->sel.saddr.a4 == 0 && xp->sel.daddr.a4 ==
+		    s4.sin_addr.s_addr, "wire addrs any -> 192.0.2.1");
+	}
+}
+
 int
 main(void)
 {
@@ -1538,6 +1599,7 @@ main(void)
 	test_satype_proto_mapping();
 	test_nl_walk();
 	test_fill_selector();
+	test_policy_path_mixed_family();
 	test_offload_attrs();
 	test_mark_emit_live_paths();
 	printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);
