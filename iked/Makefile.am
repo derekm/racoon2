@@ -151,6 +151,15 @@ check_PROGRAMS += tcpobjtest
 tcpobjtest_SOURCES = tcpobjtest.c ikev2_tcp_stream.c ikev2_tcp.c
 tcpobjtest_LDADD = $(LDADD)
 
+# The TCP listener + stream registry (iked/ikev2_tcp_srv.c), driven like the
+# daemon loop (fdset -> select -> process): accepts queued connections,
+# covers listener+streams in the read set, delivers client IKE to the
+# dispatch callback, and removes a stream on client FIN.
+TESTS += tcpsrvtest
+check_PROGRAMS += tcpsrvtest
+tcpsrvtest_SOURCES = tcpsrvtest.c ikev2_tcp_srv.c ikev2_tcp_stream.c ikev2_tcp.c
+tcpsrvtest_LDADD = $(LDADD)
+
 # RFC 7296 §3.15.2 split-tunnel CP attributes (13/15): drives the real
 # ikev2_create_config_reply() with a fabricated split selector.
 # Full-link (addtest_ikedsrc): unconditional, no optional-feature dep.
