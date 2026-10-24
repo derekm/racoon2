@@ -1294,7 +1294,8 @@ ikev2_addke_rekey_timeout(void *param)
 #ifdef WITH_ADDKE
 	if (old_sa->addke_rekey_init != NULL) {
 		ikev2_rekey_ikesa_init_abandon(old_sa);
-		return;
+		/* fall through: the responder pin may be set on the same SA, and
+		 * init_abandon disposed the unlisted initiator stub itself */
 	}
 #endif
 	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
@@ -1324,10 +1325,9 @@ ikev2_rekey_abandon_parked(struct ikev2_sa *old_sa)
 
 #ifdef WITH_ADDKE
 	if (old_sa->addke_rekey_pending && old_sa->addke_rekey_init) {
-		/* Initiator park: DEAD + release the init ctx (the unlisted
-		 * initiator stub is NOT freed here — ike_sa.c disposes it
-		 * separately via ikev2_rekey_init_stub).  Do NOT return: the
-		 * responder pin may be set on the same SA as well. */
+		/* Initiator park: ikev2_rekey_ikesa_init_abandon DEAD + releases
+		 * the init ctx and disposes the unlisted initiator stub itself.
+		 * Do NOT return: the responder pin may be set on the same SA. */
 		ikev2_rekey_ikesa_init_abandon(old_sa);
 	}
 #endif
@@ -1908,32 +1908,23 @@ ikev2_rekey_ikesa_init_abandon(struct ikev2_sa *old_sa)
 		old_sa->addke_rekey_timer = NULL;
 	}
 	if (ctx) {
+		struct ikev2_sa *stub = ctx->new_sa;
+
 		isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "abandoning parked ADDKE initiator IKE-SA rekey\n");
 		old_sa->new_sa = NULL;
-		if (ctx->new_sa)
-			ikev2_set_state(ctx->new_sa, IKEV2_STATE_DEAD);
+		if (stub)
+			ikev2_set_state(stub, IKEV2_STATE_DEAD);
 		ikev2_rekey_init_recv_ctx_free(ctx);
+		/* The initiator stub is ALWAYS unlisted (ikev2_allocate_sa only),
+		 * so the reaper can never collect it; dispose it here on every
+		 * abandon caller (timeout, addke-complete fail, dispose). */
+		if (stub)
+			ikev2_dispose_sa(stub);
 	}
 	old_sa->rekey_inprogress = FALSE;
 }
 #endif
-
-/* The unlisted initiator-stub SA parked on a rekey init (or NULL).  ike_sa.c
- * cannot reach the init ctx type (struct ikev2_rekey_init_recv_ctx is local),
- * so dispose uses this to free the stub.  Defined after that struct. */
-struct ikev2_sa *
-ikev2_rekey_init_stub(struct ikev2_sa *old_sa)
-{
-#ifdef WITH_ADDKE
-	struct ikev2_rekey_init_recv_ctx *ctx;
-
-	if ((ctx = (struct ikev2_rekey_init_recv_ctx *)
-	    old_sa->addke_rekey_init) != NULL)
-		return ctx->new_sa;
-#endif
-	return NULL;
-}
 
 /* runs on the IKE thread after the worker computed g^ir */
 static void

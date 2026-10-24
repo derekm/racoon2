@@ -1167,14 +1167,13 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 	 * after a free, set_state-ing a freed SA).  A list-resident child must
 	 * NOT be freed here: ikev2_sa_periodic_task saved next_sa before
 	 * calling this dispose, so freeing a later list node dangles that
-	 * saved pointer (or the predecessor's tqe_next).  Leave it LINKED and
-	 * DEAD for the reaper to unlink+dispose when it reaches it; only the
-	 * UNLISTED initiator stub is disposed here. */
+	 * saved pointer.  Leave it LINKED and DEAD for the reaper to collect;
+	 * the unlisted initiator stub is disposed by ikev2_rekey_ikesa_init_abandon
+	 * itself (the reaper can never reach an unlisted node). */
 	{
-		struct ikev2_sa *istub = ikev2_rekey_init_stub(sa);
 #ifdef WITH_ADDKE
 		if (sa->addke_rekey_complete || sa->addke_rekey_init)
-			ikev2_rekey_abandon_parked(sa);	/* DEADs both new_sas, frees neither SA */
+			ikev2_rekey_abandon_parked(sa);	/* DEADs both new_sas; frees neither listed SA */
 #endif /* WITH_ADDKE */
 		/* no-pin responder window (new_sa parked before the followup): DEAD
 		 * it so the reaper still collects it; abandon's paths clear new_sa. */
@@ -1182,8 +1181,6 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 			ikev2_set_state(sa->new_sa, IKEV2_STATE_DEAD);
 			sa->new_sa = NULL;
 		}
-		if (istub)
-			ikev2_dispose_sa(istub);
 	}
 
 	if (sa->expire_timer)
