@@ -36,6 +36,7 @@
 #define IKEV2_TCP_MAXLEN	65535	/* 16-bit Len; Len includes itself */
 #define IKEV2_TCP_NON_ESP_MARKER_LEN 4	/* zero octets preceding an IKE msg */
 #define IKEV2_TCP_KEEPALIVE_LEN	3	/* 00 03 FF: NAT keepalive record */
+#define IKEV2_TCP_PORT		4500	/* RFC 9329 default IKE-over-TCP port */
 
 /* The de-framed payload handed to tcp_decap_feed's callback. */
 enum { TCP_FRAME_IKE = 0, TCP_FRAME_ESP = 1 };
