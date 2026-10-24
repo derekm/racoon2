@@ -73,7 +73,10 @@ evloop_wait_rw(int nfds, fd_set *rfds, fd_set *wfds, struct timeval *timeout)
 	if (epfd < 0 && evloop_init() < 0)
 		return select(nfds, rfds, wfds, NULL, timeout);
 
-	want_r = *rfds;
+	if (rfds)
+		want_r = *rfds;
+	else
+		FD_ZERO(&want_r);
 	if (wfds)
 		want_w = *wfds;
 	else
@@ -128,11 +131,27 @@ evloop_wait_rw(int nfds, fd_set *rfds, fd_set *wfds, struct timeval *timeout)
 		int fd = evs[i].data.fd;
 
 		if (fd >= 0 && fd < FD_SETSIZE) {
-			if ((evs[i].events & EPOLLIN) && FD_ISSET(fd, &want_r))
+			/*
+			 * EPOLLERR/EPOLLHUP (a failed non-blocking connect,
+			 * a reset partial write, a closed peer) wake the fd
+			 * in every direction it is wanted: otherwise the
+			 * writer (or reader) sees "ready" with nothing to
+			 * do and the error goes unnoticed.
+			 */
+			if ((evs[i].events & EPOLLIN) &&
+			    FD_ISSET(fd, &want_r))
 				FD_SET(fd, rfds);
-			if (wfds && (evs[i].events & EPOLLOUT) &&
-			    FD_ISSET(fd, &want_w))
-				FD_SET(fd, wfds);
+			else if ((evs[i].events & (EPOLLERR | EPOLLHUP)) &&
+				 FD_ISSET(fd, &want_r))
+				FD_SET(fd, rfds);
+			if (wfds) {
+				if ((evs[i].events & EPOLLOUT) &&
+				    FD_ISSET(fd, &want_w))
+					FD_SET(fd, wfds);
+				else if ((evs[i].events & (EPOLLERR | EPOLLHUP)) &&
+					 FD_ISSET(fd, &want_w))
+					FD_SET(fd, wfds);
+			}
 		}
 	}
 	return n;
