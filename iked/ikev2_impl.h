@@ -755,6 +755,9 @@ extern void ikev2_createchild_initiator_recv(struct ikev2_sa *, rc_vchar_t *,
 extern int ikev2_addke_collect_rounds(struct prop_pair *, unsigned int *,
 				      int *, int *);
 
+/* defined in every build (NULL without WITH_ADDKE): dispose calls it */
+extern struct ikev2_sa *ikev2_rekey_init_stub(struct ikev2_sa *);
+
 #ifdef WITH_ADDKE
 extern void ikev2_followup_ke_recv(struct ikev2_sa *, rc_vchar_t *,
 				   struct sockaddr *, struct sockaddr *);
@@ -784,7 +787,6 @@ extern int ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *,
 						 const uint8_t *, size_t);
 extern uint32_t ikev2_rekey_ikesa_init_followup_msgid(struct ikev2_sa *);
 extern void ikev2_rekey_abandon_parked(struct ikev2_sa *);
-extern struct ikev2_sa *ikev2_rekey_init_stub(struct ikev2_sa *);
 extern int ikev2_initiator_followup_send(struct ikev2_child_sa *,
 					 rc_vchar_t *);
 extern int ikev2_initiator_followup_complete(struct ikev2_child_sa *,
