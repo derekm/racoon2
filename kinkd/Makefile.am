@@ -26,7 +26,11 @@ AM_CPPFLAGS = -DSYSCONFDIR=\"${sysconfdir}\"
 # was already installed (a stale .so with a drifted ABI).  Install the
 # freshly built library first; the top-level install already orders lib
 # before the daemons, so this is a no-op re-install there.
-install-sbinPROGRAMS: install-libracoon-first
+# Spelled through a variable: a literal 'install-sbinPROGRAMS:' rule here
+# makes automake drop its own install rule, so the programs are never
+# installed (the kernel lane caught exactly that).
+racoon_install_sbin = install-sbinPROGRAMS
+$(racoon_install_sbin): install-libracoon-first
 install-libracoon-first:
 	cd $(top_builddir)/../lib && $(MAKE) $(AM_MAKEFLAGS) install-libLTLIBRARIES
 .PHONY: install-libracoon-first

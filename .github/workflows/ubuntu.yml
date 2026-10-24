@@ -58,6 +58,22 @@ jobs:
       - name: 'Unit suite (lib: make check)'
         run: make -C lib check
 
+      - name: 'Install layout (top-level and per-directory make install)'
+        run: |
+          set -e
+          d=$(mktemp -d)
+          make install DESTDIR="$d/top" >/dev/null
+          make -C spmd install DESTDIR="$d/spmd" >/dev/null
+          make -C iked install DESTDIR="$d/iked" >/dev/null
+          p=$(sed -n 's/^prefix = //p' Makefile)
+          for f in sbin/iked sbin/ikedctl sbin/spmd sbin/spmdctl; do
+            test -x "$d/top$p/$f" || { echo "missing $f (top-level)"; exit 1; }
+          done
+          for t in spmd:sbin/spmd iked:sbin/iked; do
+            test -x "$d/${t%%:*}$p/${t#*:}" || { echo "missing ${t#*:} (per-dir)"; exit 1; }
+            ls "$d/${t%%:*}$p"/lib/libracoon.so.* >/dev/null || { echo "per-dir ${t%%:*} install skipped libracoon"; exit 1; }
+          done
+
       - name: 'Unit suite (iked: full configured TESTS, incl. resumetest fragtest cfgwalktest)'
         run: make -C iked check
 
