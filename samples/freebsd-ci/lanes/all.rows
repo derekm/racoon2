@@ -60,6 +60,9 @@ i2iinit-esp-3des
 i2iinit-esp-cbc128
 i2iinit-esp-cbc192
 i2iinit-esp-cbc256
+i2iinit-esp-ccm
+i2iinit-esp-ccm16
+i2iinit-esp-ccm8
 i2iinit-esp-chacha
 i2iinit-esp-cmac
 i2iinit-esp-ctr
