@@ -913,6 +913,36 @@ test_short_messages(void)
 	CHECK(1, "short NLMSG_ERROR did not crash");
 }
 
+static void
+test_satype_proto_mapping(void)
+{
+	/* The centralized RCT_SATYPE<->IPPROTO mapping (lib/rcpfk_util.c) must
+	 * be stable and bidirectional for every supported satype, since the
+	 * XFRM backend relies on it on both the install and the decode path. */
+	static const uint8_t cases[][2] = {
+		{ RCT_SATYPE_AH, IPPROTO_AH },
+		{ RCT_SATYPE_ESP, IPPROTO_ESP },
+		{ RCT_SATYPE_IPCOMP, IPPROTO_IPCOMP },
+	};
+	size_t i;
+	uint8_t p;
+
+	for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		p = rcpfk_satype_to_proto(cases[i][0]);
+		CHECK(p == cases[i][1], "satype %u -> proto %u (want %u)",
+		    cases[i][0], p, cases[i][1]);
+		CHECK(rcpfk_proto_to_satype(cases[i][1]) == cases[i][0],
+		    "proto %u -> satype %u (want %u)",
+		    cases[i][1], rcpfk_proto_to_satype(cases[i][1]),
+		    cases[i][0]);
+	}
+	/* unknown proto falls back to ESP, unknown satype to ESP proto */
+	CHECK(rcpfk_satype_to_proto(0xff) == IPPROTO_ESP,
+	    "unknown satype -> ESP proto");
+	CHECK(rcpfk_proto_to_satype(0xff) == RCT_SATYPE_ESP,
+	    "unknown proto -> ESP satype");
+}
+
 int
 main(void)
 {
@@ -931,6 +961,7 @@ main(void)
 	test_enobufs_resync();
 	test_mapping_migrate_fresh();
 	test_short_messages();
+	test_satype_proto_mapping();
 	printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);
 	return fails ? 1 : 0;
 }
