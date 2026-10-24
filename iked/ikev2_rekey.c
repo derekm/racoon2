@@ -1191,8 +1191,14 @@ ikev2_rekey_responder_tail(struct ikev2_rekey_responder_ctx *ctx)
 						&ctx->payl);
 			if (!ctx->pkt)
 				goto fail;
-			(void)ikev2_transmit_response(old_sa, ctx->pkt,
-						      ctx->local, ctx->remote);
+			if (ikev2_transmit_response(old_sa, ctx->pkt,
+						      ctx->local, ctx->remote) != 0) {
+				/* -1: caller owns ctx->pkt (freed by ctx_free).
+				 * Do NOT park the deferred rekey: the peer never
+				 * got the CREATE_CHILD_SA response with the
+				 * ADDKE link, so the followup could never match. */
+				goto fail;
+			}
 			ctx->pkt = NULL;
 		}
 
