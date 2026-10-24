@@ -122,7 +122,8 @@ evloop_wait_rw(int nfds, fd_set *rfds, fd_set *wfds, struct timeval *timeout)
 	} else
 		ms = -1;
 	n = epoll_wait(epfd, evs, 64, ms);
-	FD_ZERO(rfds);
+	if (rfds)
+		FD_ZERO(rfds);
 	if (wfds)
 		FD_ZERO(wfds);
 	if (n < 0)
@@ -138,10 +139,11 @@ evloop_wait_rw(int nfds, fd_set *rfds, fd_set *wfds, struct timeval *timeout)
 			 * writer (or reader) sees "ready" with nothing to
 			 * do and the error goes unnoticed.
 			 */
-			if ((evs[i].events & EPOLLIN) &&
+			if (rfds && (evs[i].events & EPOLLIN) &&
 			    FD_ISSET(fd, &want_r))
 				FD_SET(fd, rfds);
-			else if ((evs[i].events & (EPOLLERR | EPOLLHUP)) &&
+			else if (rfds &&
+				 (evs[i].events & (EPOLLERR | EPOLLHUP)) &&
 				 FD_ISSET(fd, &want_r))
 				FD_SET(fd, rfds);
 			if (wfds) {

@@ -81,6 +81,23 @@ main(void)
 		}
 	}
 
+	printf("**Test for evloop_wait_rw (NULL rfds / write-only).**\n");
+	{
+		fd_set wfds;
+
+		/* A partial-write wait passes rfds=NULL; the epoll output path
+		 * must not FD_ZERO/FD_SET a NULL pointer (epoll backend). */
+		FD_ZERO(&wfds);
+		FD_SET(p[1], &wfds);
+		tv.tv_sec = 1;
+		tv.tv_usec = 0;
+		n = evloop_wait_rw(p[1] + 1, NULL, &wfds, &tv);
+		if (n < 1 || !FD_ISSET(p[1], &wfds)) {
+			printf("null-rfds write-only n=%d\n", n);
+			return 1;
+		}
+	}
+
 	printf("**Test for evloop_wait unregister.**\n");
 	FD_ZERO(&rfds);
 	tv.tv_sec = 0;
