@@ -529,18 +529,11 @@ remote
 	Note: IKE message fragmentation is always enabled for both IKEv1
 	and IKEv2.
 
-		acceptable_kmp (ikev1|ikev2|kink) ;
-			It defines key management protocols to be used.
-			The list defines the KMPs whom the responder allows to accept.
-			The first protocol in the list defines the mode whom
-			the initiator uses.
-
-		tcp_encap (on|off) ;
-			RFC 9329 / RFC 8229 IKE-over-TCP (valid for the ikev2 directive).
-			on = this remote exchanges IKE over a single TCP stream on the
-			IKE-over-TCP port (4500, IKEV2_TCP_PORT) instead of UDP; framing is
-			the IKETCP prefix plus Len(including itself)|4-zero-octet-marker
-			records.  off (default) = plain UDP only.
+	acceptable_kmp (ikev1|ikev2|kink) ;
+		It defines key management protocols to be used.
+		The list defines the KMPs whom the responder allows to accept.
+		The first protocol in the list defines the mode whom
+		the initiator uses.
 
 	selector_index (selector_index) ;
 		IT IS NOT IMPLEMENTED YET.
@@ -716,6 +709,14 @@ remote
 		It is valid for the ikev2 directive.
 		It controls whether the responder requires the cookie.
 		default is off.
+
+	tcp_encap (on|off) ;
+		It is valid for the ikev2 directive.
+		RFC 9329 / RFC 8229 IKE-over-TCP.  on = this remote exchanges IKE
+		over a single TCP stream on the IKE-over-TCP port (4500,
+		IKEV2_TCP_PORT) instead of UDP; framing is the IKETCP prefix plus
+		Len(including itself)|4-zero-octet-marker records.
+		off (default) = plain UDP only.
 
 	addke_required (on|off) ;
 		It is valid for the ikev2 directive.
