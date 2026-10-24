@@ -986,15 +986,18 @@ test_nl_walk(void)
 	    &cnt) == -1, "nl_walk: truncated trailer -> -1");
 	CHECK(cnt == 1, "nl_walk: truncated trailer stopped after 1");
 
-	/* nlmsg_len == 0 is malformed (not a silent success) */
+	/* nlmsg_len == 0 is malformed (not a silent success, and not dispatched) */
 	memset(buf, 0, sizeof(buf));
 	cnt = 0;
 	CHECK(rcpfk_nl_walk(buf, sizeof(struct nlmsghdr), nl_walk_count,
 	    &cnt) == -1, "nl_walk: nlmsg_len==0 -> -1");
+	CHECK(cnt == 0, "nl_walk: nlmsg_len==0 did not dispatch");
 
-	/* a buffer shorter than a header is malformed */
+	/* a buffer shorter than a header is malformed, not dispatched */
+	cnt = 0;
 	CHECK(rcpfk_nl_walk(buf, sizeof(struct nlmsghdr) - 1, nl_walk_count,
 	    &cnt) == -1, "nl_walk: short buffer -> -1");
+	CHECK(cnt == 0, "nl_walk: short buffer did not dispatch");
 
 	/* alignment-only tail after a real message is a normal end (rc 0) */
 	memset(buf, 0, sizeof(buf));

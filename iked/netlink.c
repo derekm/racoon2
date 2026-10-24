@@ -115,10 +115,11 @@ rtsock_process(void)
 		     "netlink: recv: %s\n", strerror(errno));
 		return;
 	}
-	/* rcpfk_nl_walk does the shared NLMSG_OK/NLMSG_NEXT safe iteration +
-	 * per-message length validation (the same malformed-input checks the
-	 * XFRM backend makes), so a bad rtnetlink message is caught exactly
-	 * once, in one place. */
+	/* rcpfk_nl_walk does the shared NLMSG_OK/NLMSG_NEXT safe iteration and
+	 * reports a malformed message (bad nlmsg_len, truncated trailer) as -1
+	 * so we log it — the same truncated-message check this consumer used to
+	 * hand-roll. (if_xfrm.c's loops handle their own netlink reads and are
+	 * not covered by this walk.) */
 	if (rcpfk_nl_walk(buf, (size_t)len, rtnl_dispatch, NULL) < 0)
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "netlink: malformed rtnetlink message\n");

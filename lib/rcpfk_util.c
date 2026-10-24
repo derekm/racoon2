@@ -2,21 +2,26 @@
 /*
  * rcpfk_util.c — shared helpers for the rcpfk_* kernel-management ABI.
  *
- * These are the pieces that were being re-implemented in each backend and in
- * the netlink consumers. Centralizing them removes duplicated,
- * correctness-sensitive logic (the same mapping must be right in every place:
+ * These are pieces that were being re-implemented in each consumer.
+ * Centralizing them removes duplicated, correctness-sensitive logic:
  *
  *  - rcpfk_satype_to_proto / rcpfk_proto_to_satype: the portable
- *    RCT_SATYPE_{AH,ESP,IPCOMP} <-> IP protocol number mapping. Both the
- *    NETLINK_XFRM backend (sa.id.proto, xfrm tmpl proto) and the PF_KEY
- *    backend (sadb_x_ipsecrequest proto) need it. Kernel-independent; one
- *    definition to verify and test.
+ *    RCT_SATYPE_{AH,ESP,IPCOMP} <-> IP protocol number mapping used by the
+ *    NETLINK_XFRM backend (sa.id.proto, xfrm tmpl proto) on install and
+ *    decode. Kernel-independent; one definition to verify and test. NOTE:
+ *    the PF_KEY backend does NOT use this map — it keeps its own
+ *    rct2ipproto_satype() in rc_type.c, which errx(1)s on an unknown satype.
+ *    Do not retarget PF_KEY at this helper: the ESP fallback below would turn
+ *    a PF_KEY reject into an ESP install.
  *
- *  - rcpfk_nl_walk: iterate a received netlink buffer of nlmsghdrs with the
- *    kernel's NLMSG_OK/NLMSG_NEXT safe length validation, dispatching each to
- *    a handler. iked/netlink.c (rtnetlink MOBIKE) and the XFRM backend both
- *    raw-iterate nlmsghdrs; a shared walk keeps the malformed-input check in
- *    one place.
+ *  - rcpfk_nl_walk (Linux only): iterate a received netlink buffer of
+ *    nlmsghdrs with the kernel's NLMSG_OK/NLMSG_NEXT safe length validation,
+ *    dispatching each to a handler, and report a malformed message (bad
+ *    nlmsg_len / truncated trailer) as -1 so the caller can log it. Its one
+ *    consumer is iked/netlink.c (rtnetlink MOBIKE). if_xfrm.c deliberately
+ *    keeps its own loops (xfrm_read_one / xfrm_sync — alignment copies,
+ *    seq-match, resync), so this is NOT the shared malformed-input check for
+ *    the XFRM path.
  */
 #ifdef HAVE_CONFIG_H
 #include "config.h"
