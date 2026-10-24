@@ -42,6 +42,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -55,6 +56,9 @@
 
 #include "if_pfkeyv2.h"
 
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
 #ifndef SOCK_CLOEXEC
 #define SOCK_CLOEXEC 0
 #endif
@@ -77,7 +81,11 @@ uint32_t rc_spirange_max = 0x0fffffff;
 static struct rcpfk_cb *cb;
 static int reply_fd = -1;
 static int dp_fd = -1;
-static uint32_t next_spi;
+/* SPIs handed out and not yet deleted, so a random pick never repeats a
+ * live one (bounded: a loopback stub, not a dataplane) */
+#define US_SPI_LIVE_MAX	4096
+static uint32_t live_spi[US_SPI_LIVE_MAX];
+static int n_live_spi;
 
 struct us_hdr {
 	uint32_t magic;
@@ -161,8 +169,11 @@ us_pack(char *buf, size_t buflen, uint32_t type, struct rcpfk_msg *rc)
 		return -1;
 	}
 	need = sizeof(*h) + sl + dl + el + al;
-	if (need > buflen)
+	if (need > buflen) {
+		us_seterror(rc, EMSGSIZE, "userspace message too large "
+		    "(%zu > %zu)", need, buflen);
 		return -1;
+	}
 	h = (struct us_hdr *)buf;
 	memset(h, 0, sizeof(*h));
 	h->magic = US_MAGIC;
@@ -213,10 +224,8 @@ us_post(struct rcpfk_msg *rc, uint32_t type)
 	int n;
 
 	n = us_pack(buf, sizeof(buf), type, rc);
-	if (n < 0) {
-		us_seterror(rc, ENOMEM, "userspace message too large");
-		return -1;
-	}
+	if (n < 0)
+		return -1;	/* us_pack set the precise cause */
 	if (reply_fd >= 0 && write(reply_fd, buf, (size_t)n) != n) {
 		us_seterror(rc, errno, "loopback write: %s", strerror(errno));
 		return -1;
@@ -226,30 +235,72 @@ us_post(struct rcpfk_msg *rc, uint32_t type)
 	return 0;
 }
 
+/*
+ * Optional SA/SPD mirror to a dataplane consumer.  The mirror carries key
+ * material, so only connect to a socket whose listener is trusted: it must
+ * be a socket owned by root or by our effective uid, in a directory that
+ * others cannot write to (or that is sticky, like /tmp).  A configured but
+ * untrusted or unreachable socket fails rcpfk_init instead of silently
+ * running without (or worse, leaking to) the consumer.
+ */
 static int
-us_open_dataplane(void)
+us_open_dataplane(struct rcpfk_msg *rc)
 {
 	const char *path;
 	struct sockaddr_un un;
+	struct stat st;
+	char dir[sizeof(un.sun_path)], *slash;
 	int fd;
 
 	path = getenv("RACOON2_DATAPLANE_SOCK");
 	if (path == NULL || *path == '\0')
 		return 0;
-	if (strlen(path) >= sizeof(un.sun_path))
-		return 0;
+	if (strlen(path) >= sizeof(un.sun_path)) {
+		us_seterror(rc, ENAMETOOLONG, "RACOON2_DATAPLANE_SOCK too long");
+		return -1;
+	}
+	if (lstat(path, &st) < 0) {
+		us_seterror(rc, errno, "dataplane socket %s: %s", path,
+		    strerror(errno));
+		return -1;
+	}
+	if (!S_ISSOCK(st.st_mode) ||
+	    (st.st_uid != 0 && st.st_uid != geteuid())) {
+		us_seterror(rc, EPERM, "dataplane socket %s: not a socket "
+		    "owned by root or uid %u", path, (unsigned)geteuid());
+		return -1;
+	}
+	strcpy(dir, path);
+	slash = strrchr(dir, '/');
+	if (slash == NULL)
+		strcpy(dir, ".");
+	else if (slash == dir)
+		dir[1] = '\0';
+	else
+		*slash = '\0';
+	if (stat(dir, &st) < 0 ||
+	    ((st.st_mode & (S_IWGRP | S_IWOTH)) != 0 &&
+	     (st.st_mode & S_ISVTX) == 0)) {
+		us_seterror(rc, EPERM, "dataplane socket directory %s is "
+		    "writable by others", dir);
+		return -1;
+	}
 	fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 	if (fd < 0)
 		fd = socket(AF_UNIX, SOCK_DGRAM, 0);
-	if (fd < 0)
-		return 0;
+	if (fd < 0) {
+		us_seterror(rc, errno, "dataplane socket: %s", strerror(errno));
+		return -1;
+	}
 	cloexec(fd);
 	memset(&un, 0, sizeof(un));
 	un.sun_family = AF_UNIX;
 	strncpy(un.sun_path, path, sizeof(un.sun_path) - 1);
 	if (connect(fd, (struct sockaddr *)&un, sizeof(un)) < 0) {
+		us_seterror(rc, errno, "dataplane connect %s: %s", path,
+		    strerror(errno));
 		close(fd);
-		return 0;
+		return -1;
 	}
 	dp_fd = fd;
 	return 0;
@@ -264,12 +315,7 @@ rcpfk_init(struct rcpfk_msg *rc, struct rcpfk_cb *cb0)
 	cb = cb0;
 	reply_fd = -1;
 	dp_fd = -1;
-	/* Start the userspace SPI sequence at a per-process pseudo-random
-	 * offset so it is not a fixed, predictable base. Still monotonic, so
-	 * SPIs stay unique within this loopback backend for a process. */
-	next_spi = rc_spirange_min +
-	    (uint32_t)(((unsigned long)getpid() * 2654435761u) %
-	    ((uint32_t)rc_spirange_max - rc_spirange_min + 1u));
+	n_live_spi = 0;
 	rc->so = -1;
 	if (socketpair(AF_UNIX, type, 0, sp) < 0 &&
 	    socketpair(AF_UNIX, SOCK_DGRAM, 0, sp) < 0 &&
@@ -281,7 +327,12 @@ rcpfk_init(struct rcpfk_msg *rc, struct rcpfk_cb *cb0)
 	cloexec(sp[1]);
 	rc->so = sp[0];
 	reply_fd = sp[1];
-	(void)us_open_dataplane();
+	if (us_open_dataplane(rc) < 0) {
+		close(sp[0]);
+		close(sp[1]);
+		rc->so = reply_fd = -1;
+		return -1;
+	}
 	return 0;
 }
 
@@ -301,15 +352,101 @@ rcpfk_clean(struct rcpfk_msg *rc)
 	return 0;
 }
 
+/* uniformly random 32 bits from the system CSPRNG; -1 if unavailable */
+static int
+us_random(uint32_t *v)
+{
+#ifdef HAVE_ARC4RANDOM_BUF
+	arc4random_buf(v, sizeof(*v));
+	return 0;
+#else
+	int fd;
+	ssize_t n;
+
+	fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	n = read(fd, v, sizeof(*v));
+	close(fd);
+	return n == (ssize_t)sizeof(*v) ? 0 : -1;
+#endif
+}
+
+static int
+spi_live(uint32_t spi)
+{
+	int i;
+
+	for (i = 0; i < n_live_spi; i++)
+		if (live_spi[i] == spi)
+			return 1;
+	return 0;
+}
+
+static void
+spi_forget(uint32_t spi)
+{
+	int i;
+
+	for (i = 0; i < n_live_spi; i++)
+		if (live_spi[i] == spi) {
+			live_spi[i] = live_spi[--n_live_spi];
+			return;
+		}
+}
+
+/*
+ * Pick an SPI uniformly at random from [rc_spirange_min, rc_spirange_max]
+ * (like the kernel's xfrm_alloc_spi), never one still live here.  A
+ * sequential counter (even from a pid-derived base) lets anyone who saw
+ * one SPI predict the next.
+ */
+static int
+us_alloc_spi(struct rcpfk_msg *rc, uint32_t *out)
+{
+	uint32_t span, v, lim;
+	int tries;
+
+	if (rc_spirange_max < rc_spirange_min) {
+		us_seterror(rc, EINVAL, "empty SPI range");
+		return -1;
+	}
+	if (n_live_spi >= US_SPI_LIVE_MAX) {
+		us_seterror(rc, ENOSPC, "userspace SPI table full (%d)",
+		    US_SPI_LIVE_MAX);
+		return -1;
+	}
+	span = rc_spirange_max - rc_spirange_min + 1u;	/* 0 = all 2^32 */
+	/* reject the biased tail so every SPI is equally likely */
+	lim = span ? (uint32_t)(0xffffffffu - (0xffffffffu % span + 1u) % span)
+	    : 0xffffffffu;
+	for (tries = 0; tries < 64; tries++) {
+		if (us_random(&v) < 0) {
+			us_seterror(rc, EIO, "no system randomness for SPI");
+			return -1;
+		}
+		if (v > lim)
+			continue;
+		v = span ? rc_spirange_min + v % span : v;
+		if (v < 256 || spi_live(v))	/* 0-255 reserved (RFC 4303) */
+			continue;
+		live_spi[n_live_spi++] = v;
+		*out = v;
+		return 0;
+	}
+	us_seterror(rc, EAGAIN, "no free SPI found in range");
+	return -1;
+}
+
 int
 rcpfk_send_getspi(struct rcpfk_msg *rc)
 {
+	uint32_t v;
+
 	if (rc->spi == 0) {
-		if (next_spi < rc_spirange_min || next_spi > rc_spirange_max)
-			next_spi = rc_spirange_min;
-		rc->spi = htonl(next_spi++);
-		if (next_spi > rc_spirange_max)
-			next_spi = rc_spirange_min;
+		if (us_alloc_spi(rc, &v) < 0)
+			return -1;
+		rc->spi = htonl(v);
 	}
 	return us_post(rc, US_GETSPI);
 }
@@ -329,7 +466,10 @@ rcpfk_send_add(struct rcpfk_msg *rc)
 int
 rcpfk_send_delete(struct rcpfk_msg *rc)
 {
-	return us_post(rc, US_DELSA);
+	if (us_post(rc, US_DELSA) < 0)
+		return -1;
+	spi_forget(ntohl(rc->spi));
+	return 0;
 }
 
 int
