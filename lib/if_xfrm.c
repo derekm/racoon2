@@ -72,6 +72,7 @@
 #endif
 
 #include "racoon.h"
+#include "rcpfk_nl.h"
 
 /* Bounded retries for an xfrm resync dump that keeps overflowing the
  * request socket mid-dump (sustained event storm); beyond this the
@@ -192,28 +193,31 @@ unsigned long xfrm_stat_ebusy_retry;
 unsigned long xfrm_stat_stale_reply;
 unsigned long xfrm_stat_late_error;
 unsigned long xfrm_stat_ops_full;
+unsigned long xfrm_stat_trunc;	/* MSG_TRUNC datagrams (messages lost) */
 
+/* One netlink datagram read, classified by the shared rcpfk_nl_recv(). */
 #ifdef XFRM_UNITTEST
 /* The unit test (lib/xfrmnltest.c) replaces the kernel with socketpairs
- * and can make the next recv() on one fd fail with ENOBUFS. */
+ * and can make the next read on one fd report ENOBUFS. */
 int xfrm_test_enobufs_fd = -1;
 int xfrm_test_enobufs_more;	/* extra consecutive injections on that fd */
-static ssize_t
-xfrm_recv(int fd, void *buf, size_t len, int flags)
+#endif
+static int
+xfrm_recv(int fd, void *buf, size_t len, int flags, ssize_t *got)
 {
+#ifdef XFRM_UNITTEST
 	if (fd == xfrm_test_enobufs_fd) {
 		if (xfrm_test_enobufs_more > 0)
 			xfrm_test_enobufs_more--;
 		else
 			xfrm_test_enobufs_fd = -1;
+		*got = 0;
 		errno = ENOBUFS;
-		return -1;
+		return RCPFK_NLR_OVERFLOW;
 	}
-	return recv(fd, buf, len, flags);
-}
-#else
-#define xfrm_recv recv
 #endif
+	return rcpfk_nl_recv(fd, buf, len, flags, got);
+}
 
 struct xfrm_algmap {
 	int rct;
@@ -1693,73 +1697,105 @@ static int xfrm_dispatch(struct nlmsghdr *, struct rcpfk_msg *, int);
 static int xfrm_wait_req(int);
 static uint32_t xfrm_sync_seq = 0xe0000000u;
 
+struct xfrm_sync_ctx {
+	uint32_t seq;
+	int (*each_sa)(struct nlmsghdr *, void *);
+	void *arg;
+	int result;		/* 0 or a positive errno once done */
+};
+
+/* rcpfk_nl_walk callback: > 0 ends the sync (result set), 0 goes on */
+static int
+xfrm_sync_msg(struct nlmsghdr *h, void *v)
+{
+	struct xfrm_sync_ctx *c = v;
+	struct rcpfk_msg scratch;
+	uint32_t hs = h->nlmsg_seq;
+	char al[XFRM_BUFLEN];
+	struct nlmsghdr *m = h;
+	int e;
+
+	if (h->nlmsg_type == NLMSG_ERROR &&
+	    h->nlmsg_len >= NLMSG_LENGTH(sizeof(struct nlmsgerr)))
+		hs = ((struct nlmsgerr *)NLMSG_DATA(h))->msg.nlmsg_seq;
+	if (hs != c->seq) {
+		memset(&scratch, 0, sizeof(scratch));
+		(void)xfrm_dispatch(h, &scratch, 1);
+		return 0;
+	}
+	if (h->nlmsg_type == NLMSG_DONE) {
+		c->result = 0;
+		return 1;
+	}
+	if (h->nlmsg_type == NLMSG_ERROR) {
+		c->result = -((struct nlmsgerr *)NLMSG_DATA(h))->error;
+		return 1;
+	}
+	if (c->each_sa == NULL || h->nlmsg_type != XFRM_MSG_NEWSA)
+		return 0;
+	/* 4-byte netlink alignment: hand over an aligned copy */
+	if (((uintptr_t)h & 7) != 0 && h->nlmsg_len <= sizeof(al)) {
+		memcpy(al, h, h->nlmsg_len);
+		m = (struct nlmsghdr *)(void *)al;
+	}
+	if ((e = c->each_sa(m, c->arg)) != 0) {
+		c->result = e;
+		return 1;
+	}
+	return 0;
+}
+
 static int
 xfrm_sync(struct nlmsghdr *n, int (*each_sa)(struct nlmsghdr *, void *),
     void *arg)
 {
 	static char *rbuf;
-	struct rcpfk_msg scratch;
-	struct nlmsghdr *h;
-	unsigned int ulen;
+	struct xfrm_sync_ctx c;
 	ssize_t len;
-	uint32_t seq;
-	int e;
+	int r;
 
 	if (rbuf == NULL && (rbuf = malloc(XFRM_RCVBUFLEN)) == NULL)
 		return ENOMEM;
 	if (++xfrm_sync_seq < 0xe0000000u || xfrm_sync_seq >= XFRM_RESYNC_SEQ_BASE)
 		xfrm_sync_seq = 0xe0000001u;
-	n->nlmsg_seq = seq = xfrm_sync_seq;
+	memset(&c, 0, sizeof(c));
+	n->nlmsg_seq = c.seq = xfrm_sync_seq;
 	n->nlmsg_pid = (uint32_t)pid;
+	c.each_sa = each_sa;
+	c.arg = arg;
 	if (send(xfrm_req_fd, n, n->nlmsg_len, 0) != (ssize_t)n->nlmsg_len)
 		return errno ? errno : EIO;
 	for (;;) {
 		if (xfrm_wait_req(XFRM_SYNC_TIMEOUT_MS) <= 0)
 			return ETIMEDOUT;
-		len = xfrm_recv(xfrm_req_fd, rbuf, XFRM_RCVBUFLEN, 0);
-		if (len < 0) {
-			if (errno == EINTR || errno == EAGAIN)
-				continue;
-			return errno;
+		r = xfrm_recv(xfrm_req_fd, rbuf, XFRM_RCVBUFLEN, 0, &len);
+		switch (r) {
+		case RCPFK_NLR_DATA:
+			break;
+		case RCPFK_NLR_AGAIN:
+			continue;
+		case RCPFK_NLR_TRUNC:
+			/* part of the reply is gone: the result is unknown */
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			    "xfrm: sync reply datagram truncated\n");
+			return EMSGSIZE;
+		case RCPFK_NLR_CLOSED:
+			return EPIPE;
+		case RCPFK_NLR_SHORT:
+			return EINVAL;
+		default:	/* OVERFLOW / ERROR: errno is set */
+			return errno ? errno : EIO;
 		}
-		ulen = (unsigned int)len;
-		for (h = (struct nlmsghdr *)rbuf; NLMSG_OK(h, ulen);
-		     h = NLMSG_NEXT(h, ulen)) {
-			uint32_t hs = h->nlmsg_seq;
-			char al[XFRM_BUFLEN];
-			struct nlmsghdr *m = h;
-
-			if (h->nlmsg_type == NLMSG_ERROR &&
-			    h->nlmsg_len >= NLMSG_LENGTH(sizeof(struct nlmsgerr)))
-				hs = ((struct nlmsgerr *)NLMSG_DATA(h))->msg.nlmsg_seq;
-			if (hs != seq) {
-				memset(&scratch, 0, sizeof(scratch));
-				(void)xfrm_dispatch(h, &scratch, 1);
-				continue;
-			}
-			if (h->nlmsg_type == NLMSG_DONE)
-				return 0;
-			if (h->nlmsg_type == NLMSG_ERROR) {
-				e = -((struct nlmsgerr *)NLMSG_DATA(h))->error;
-				return e;
-			}
-			if (each_sa == NULL || h->nlmsg_type != XFRM_MSG_NEWSA)
-				continue;
-			/* 4-byte netlink alignment: hand over an aligned copy */
-			if (((uintptr_t)h & 7) != 0 && h->nlmsg_len <= sizeof(al)) {
-				memcpy(al, h, h->nlmsg_len);
-				m = (struct nlmsghdr *)(void *)al;
-			}
-			if ((e = each_sa(m, arg)) != 0)
-				return e;
-		}
+		r = rcpfk_nl_walk(rbuf, (size_t)len, xfrm_sync_msg, &c);
+		if (r > 0)
+			return c.result;
 		/* a 4+ byte tail is a truncated next header in this sync-dump
-		 * datagram — log it rather than silently swallowing (a later
+		 * datagram: log it rather than silently swallowing (a later
 		 * datagram may still carry the DONE). */
-		if (ulen >= (int)NLMSG_ALIGNTO)
+		if (r < 0)
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 			     "xfrm: sync dump datagram has a truncated "
-			     "netlink trailer (%u bytes)\n", ulen);
+			     "netlink trailer\n");
 	}
 }
 
@@ -2609,17 +2645,72 @@ xfrm_dispatch(struct nlmsghdr *nlh, struct rcpfk_msg *rc, int from_req)
  * zeroed container, so no pointer or field set by one message (e.g.
  * sa2_src from a MAPPING) leaks into the callback for the next.
  */
+struct xfrm_read_ctx {
+	struct rcpfk_msg *rc;
+	struct rcpfk_msg err;
+	int from_req, fresh, ret;
+	size_t alnoff;
+};
+
+/* rcpfk_nl_walk callback for one message of an xfrm_read_one datagram */
+static int
+xfrm_read_msg(struct nlmsghdr *nlh, void *v)
+{
+	struct xfrm_read_ctx *c = v;
+	struct rcpfk_msg scratch;
+	struct rcpfk_msg *t = c->rc;
+	struct nlmsghdr *m = nlh;
+
+	/*
+	 * Netlink only aligns messages to 4 bytes (NLMSG_ALIGNTO), so
+	 * the 2nd, 4th ... message of a multipart batch can sit at
+	 * 4 mod 8, and xfrm_userpolicy_info / xfrm_usersa_info hold
+	 * __u64 lifetimes: every member access through them is then
+	 * misaligned (UBSan on the live ASan rows, a SIGBUS on strict
+	 * alignment CPUs).  Copy such a message to an 8-byte aligned
+	 * slot.  The slots of one recv stay valid together, like
+	 * xfrm_rcvbuf itself, so a reply's pointers survive the
+	 * messages that follow it.
+	 */
+	if (((uintptr_t)nlh & 7) != 0 &&
+	    c->alnoff + NLMSG_ALIGN(nlh->nlmsg_len) + 8 <=
+	    2 * XFRM_RCVBUFLEN) {
+		m = (struct nlmsghdr *)(xfrm_alnbuf + c->alnoff);
+		memcpy(m, nlh, nlh->nlmsg_len);
+		c->alnoff += (NLMSG_ALIGN(nlh->nlmsg_len) + 7) & ~(size_t)7;
+	}
+
+	if (c->fresh || (xfrm_wait_seq != 0 &&
+	    xfrm_msg_seq(m) != xfrm_wait_seq)) {
+		/* a WAITREPLY caller's rc only ever receives the reply
+		 * it waits for; other ops' replies complete into their
+		 * own container */
+		memset(&scratch, 0, sizeof(scratch));
+		scratch.so = c->rc->so;
+		t = &scratch;
+	}
+	if (xfrm_dispatch(m, t, c->from_req) && c->ret == 1) {
+		c->ret = -1;
+		c->err.eno = t->eno;
+		memcpy(c->err.estr, t->estr, sizeof(c->err.estr));
+	}
+	return 0;
+}
+
+/*
+ * Read one datagram from fd and dispatch every message in it.
+ * Returns 1 if a datagram was handled, 0 on EAGAIN, -1 on error
+ * (rc->eno/estr set; remaining messages in the datagram are still
+ * dispatched).  With fresh != 0 every message is parsed into its own
+ * zeroed container, so no pointer or field set by one message (e.g.
+ * sa2_src from a MAPPING) leaks into the callback for the next.
+ */
 static int
 xfrm_read_one(int fd, struct rcpfk_msg *rc, int flags, int fresh)
 {
-	struct rcpfk_msg scratch;
-
+	struct xfrm_read_ctx c;
 	ssize_t len;
-	unsigned int ulen;
-	size_t alnoff;
-	struct nlmsghdr *nlh;
-	int ret = 1, from_req = (fd == xfrm_req_fd);
-	struct rcpfk_msg err;
+	int r, from_req = (fd == xfrm_req_fd);
 
 	if (xfrm_alnbuf == NULL) {
 		/* each copied message gains at most 4 bytes of padding */
@@ -2636,103 +2727,70 @@ xfrm_read_one(int fd, struct rcpfk_msg *rc, int flags, int fresh)
 			return -1;
 		}
 	}
-	len = xfrm_recv(fd, xfrm_rcvbuf, XFRM_RCVBUFLEN, flags);
-	if (len < 0) {
-		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-			return 0;
-		if (errno == ENOBUFS) {
+	r = xfrm_recv(fd, xfrm_rcvbuf, XFRM_RCVBUFLEN, flags, &len);
+	switch (r) {
+	case RCPFK_NLR_DATA:
+		break;
+	case RCPFK_NLR_AGAIN:
+		return 0;
+	case RCPFK_NLR_OVERFLOW:
+	case RCPFK_NLR_TRUNC:
+		/* either way kernel messages were lost */
+		if (r == RCPFK_NLR_OVERFLOW)
 			xfrm_stat_enobufs++;
-			plog(PLOG_INTWARN, PLOGLOC, NULL,
-			    "xfrm: %s socket overflowed (ENOBUFS); kernel "
-			    "messages were lost, resyncing SAD/SPD\n",
-			    from_req ? "request" : "notification");
-			if (from_req) {
-				/* replies queued on it are gone: no op can
-				 * complete any more, say which ones failed */
-				int i;
+		else
+			xfrm_stat_trunc++;
+		plog(PLOG_INTWARN, PLOGLOC, NULL,
+		    "xfrm: %s socket %s; kernel messages were lost, "
+		    "resyncing SAD/SPD\n",
+		    from_req ? "request" : "notification", rcpfk_nlr_str(r));
+		if (from_req) {
+			/* replies queued on it are gone: no op can
+			 * complete any more, say which ones failed */
+			int i;
 
-				for (i = 0; i < XFRM_OPS_MAX; i++)
-					if (xfrm_ops[i].type != 0)
-						plog(PLOG_INTERR, PLOGLOC, NULL,
-						    "xfrm: reply to op %d seq %u "
-						    "lost (ENOBUFS)\n",
-						    xfrm_ops[i].type,
-						    xfrm_ops[i].seq);
-				op_clear_all();
-				pending_dump_seq = 0;
-			}
-			xfrm_need_resync = 1;
-			return 1;
+			for (i = 0; i < XFRM_OPS_MAX; i++)
+				if (xfrm_ops[i].type != 0)
+					plog(PLOG_INTERR, PLOGLOC, NULL,
+					    "xfrm: reply to op %d seq %u "
+					    "lost (%s)\n",
+					    xfrm_ops[i].type,
+					    xfrm_ops[i].seq, rcpfk_nlr_str(r));
+			op_clear_all();
+			pending_dump_seq = 0;
 		}
+		/* a truncated datagram's surviving head is not dispatched:
+		 * the resync dump reestablishes that state completely */
+		xfrm_need_resync = 1;
+		return 1;
+	case RCPFK_NLR_CLOSED:
+		xfrm_seterror(rc, EPIPE, "netlink socket closed");
+		return -1;
+	case RCPFK_NLR_SHORT:
+		xfrm_seterror(rc, EINVAL, "short netlink read");
+		return -1;
+	default:
 		xfrm_seterror(rc, errno, "%s", strerror(errno));
 		return -1;
 	}
-	if (len == 0) {
-		xfrm_seterror(rc, EPIPE, "netlink socket closed");
-		return -1;
-	}
-	if ((size_t)len < sizeof(struct nlmsghdr)) {
-		xfrm_seterror(rc, EINVAL, "short netlink read");
-		return -1;
-	}
-	memset(&err, 0, sizeof(err));
-	ulen = (unsigned int)len;
-	alnoff = 0;
-	for (nlh = (struct nlmsghdr *)xfrm_rcvbuf;
-	     NLMSG_OK(nlh, ulen);
-	     nlh = NLMSG_NEXT(nlh, ulen)) {
-		struct rcpfk_msg *t = rc;
-		struct nlmsghdr *m = nlh;
-
-		/*
-		 * Netlink only aligns messages to 4 bytes (NLMSG_ALIGNTO), so
-		 * the 2nd, 4th ... message of a multipart batch can sit at
-		 * 4 mod 8, and xfrm_userpolicy_info / xfrm_usersa_info hold
-		 * __u64 lifetimes: every member access through them is then
-		 * misaligned (UBSan on the live ASan rows, a SIGBUS on strict
-		 * alignment CPUs).  Copy such a message to an 8-byte aligned
-		 * slot.  The slots of one recv stay valid together, like
-		 * xfrm_rcvbuf itself, so a reply's pointers survive the
-		 * messages that follow it.
-		 */
-		if (((uintptr_t)nlh & 7) != 0 &&
-		    alnoff + NLMSG_ALIGN(nlh->nlmsg_len) + 8 <=
-		    2 * XFRM_RCVBUFLEN) {
-			m = (struct nlmsghdr *)(xfrm_alnbuf + alnoff);
-			memcpy(m, nlh, nlh->nlmsg_len);
-			alnoff += (NLMSG_ALIGN(nlh->nlmsg_len) + 7) & ~(size_t)7;
-		}
-
-		if (fresh || (xfrm_wait_seq != 0 &&
-		    xfrm_msg_seq(m) != xfrm_wait_seq)) {
-			/* a WAITREPLY caller's rc only ever receives the reply
-			 * it waits for; other ops' replies complete into their
-			 * own container */
-			memset(&scratch, 0, sizeof(scratch));
-			scratch.so = rc->so;
-			t = &scratch;
-		}
-		if (xfrm_dispatch(m, t, from_req) && ret == 1) {
-			ret = -1;
-			err.eno = t->eno;
-			memcpy(err.estr, t->estr, sizeof(err.estr));
-		}
-	}
+	memset(&c, 0, sizeof(c));
+	c.rc = rc;
+	c.from_req = from_req;
+	c.fresh = fresh;
+	c.ret = 1;
 	/* a 4+ byte tail left is the start of a truncated next header (or a
 	 * message declaring a bad nlmsg_len) — netlink delivers whole datagrams,
 	 * so this is malformed kernel output. Surface it instead of silently
-	 * dropping (NLMSG_ALIGNTO boundary). Unlike rcpfk_nl_walk this single
-	 * read ONLY logs the trailer and does not reject the datagram (a later
-	 * DONE/next read may still complete the dump). */
-	if (ulen >= (int)NLMSG_ALIGNTO)
+	 * dropping. This read ONLY logs the trailer and does not reject the
+	 * datagram (a later DONE/next read may still complete the dump). */
+	if (rcpfk_nl_walk(xfrm_rcvbuf, (size_t)len, xfrm_read_msg, &c) < 0)
 		plog(PLOG_INTERR, PLOGLOC, NULL,
-		     "xfrm: read datagram has a truncated netlink trailer "
-		     "(%u bytes)\n", ulen);
-	if (ret == -1) {
-		rc->eno = err.eno;
-		memcpy(rc->estr, err.estr, sizeof(rc->estr));
+		     "xfrm: read datagram has a truncated netlink trailer\n");
+	if (c.ret == -1) {
+		rc->eno = c.err.eno;
+		memcpy(rc->estr, c.err.estr, sizeof(rc->estr));
 	}
-	return ret;
+	return c.ret;
 }
 
 static int

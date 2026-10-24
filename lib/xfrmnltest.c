@@ -132,7 +132,7 @@ setup(void)
 	k_ntf = b[1];
 	xfrm_stat_enobufs = xfrm_stat_resync = xfrm_stat_idempotent = 0;
 	xfrm_stat_ebusy_retry = xfrm_stat_stale_reply = 0;
-	xfrm_stat_late_error = 0;
+	xfrm_stat_late_error = xfrm_stat_trunc = 0;
 	reset_counts();
 }
 
@@ -955,9 +955,112 @@ nl_walk_count(struct nlmsghdr *nlh, void *arg)
 	return 0;
 }
 
-/* Shared walk from lib/rcpfk_util.c (Linux-only); declared here, not in the
- * portable header. struct nlmsghdr is in scope via the included if_xfrm.c. */
-int rcpfk_nl_walk(char *, size_t, int (*)(struct nlmsghdr *, void *), void *);
+static int
+nl_walk_stop2(struct nlmsghdr *nlh, void *arg)
+{
+	int *n = arg;
+
+	(void)nlh;
+	return ++(*n) == 2 ? 7 : 0;
+}
+
+/* rcpfk_nl_recv: every outcome a netlink consumer must tell apart */
+static void
+test_nl_recv(void)
+{
+	char big[256], small[32];
+	struct nlmsghdr *n = (struct nlmsghdr *)big;
+	ssize_t got;
+	int p[2], r;
+
+	if (socketpair(AF_UNIX, SOCK_DGRAM, 0, p))
+		exit(99);
+	fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL) | O_NONBLOCK);
+
+	r = rcpfk_nl_recv(p[0], small, sizeof(small), 0, &got);
+	CHECK(r == RCPFK_NLR_AGAIN && got == 0, "nl_recv: empty -> AGAIN (%d)",
+	    r);
+
+	memset(big, 0, sizeof(big));
+	n->nlmsg_len = NLMSG_LENGTH(0);
+	CHECK(send(p[1], big, NLMSG_LENGTH(0), 0) == NLMSG_LENGTH(0), "send");
+	r = rcpfk_nl_recv(p[0], small, sizeof(small), 0, &got);
+	CHECK(r == RCPFK_NLR_DATA && got == NLMSG_LENGTH(0),
+	    "nl_recv: whole datagram -> DATA (%d, %zd)", r, got);
+
+	/* a datagram bigger than the buffer must NOT look like a short
+	 * complete read: the tail (more messages) was dropped */
+	CHECK(send(p[1], big, sizeof(big), 0) == (ssize_t)sizeof(big), "send");
+	r = rcpfk_nl_recv(p[0], small, sizeof(small), 0, &got);
+	CHECK(r == RCPFK_NLR_TRUNC, "nl_recv: oversize datagram -> TRUNC (%d)",
+	    r);
+
+	CHECK(send(p[1], big, 4, 0) == 4, "send");
+	r = rcpfk_nl_recv(p[0], small, sizeof(small), 0, &got);
+	CHECK(r == RCPFK_NLR_SHORT && got == 4, "nl_recv: 4 bytes -> SHORT (%d)",
+	    r);
+
+	CHECK(send(p[1], big, 0, 0) == 0, "send");
+	r = rcpfk_nl_recv(p[0], small, sizeof(small), 0, &got);
+	CHECK(r == RCPFK_NLR_CLOSED, "nl_recv: zero-length -> CLOSED (%d)", r);
+
+	r = rcpfk_nl_recv(-1, small, sizeof(small), 0, &got);
+	CHECK(r == RCPFK_NLR_ERROR && errno == EBADF,
+	    "nl_recv: bad fd -> ERROR/EBADF (%d)", r);
+	close(p[0]);
+	close(p[1]);
+	CHECK(strcmp(rcpfk_nlr_str(RCPFK_NLR_TRUNC),
+	    "datagram truncated (MSG_TRUNC)") == 0, "nlr_str");
+}
+
+/* a notification datagram larger than XFRM_RCVBUFLEN lost messages: it is
+ * counted, triggers a resync and its surviving head is not delivered */
+static void
+test_trunc_resync(void)
+{
+	struct rcpfk_msg rc;
+	char *buf;
+	size_t blen = XFRM_RCVBUFLEN + 4096;
+	int r, sb = (int)(4 * blen);
+	pthread_t th;
+
+	setup();
+	if ((buf = calloc(1, blen)) == NULL)
+		exit(99);
+	(void)mk_policy(buf, XFRM_MSG_NEWPOLICY, 5, 999, "203.0.113.1",
+	    "203.0.113.0", 0);
+	(void)setsockopt(k_ntf, SOL_SOCKET, SO_SNDBUF, &sb, sizeof(sb));
+	(void)setsockopt(xfrm_ntf_fd, SOL_SOCKET, SO_RCVBUF, &sb, sizeof(sb));
+	if (send(k_ntf, buf, blen, 0) != (ssize_t)blen) {
+		/* the host caps socket buffers below one oversize datagram:
+		 * the classification itself is pinned by test_nl_recv */
+		printf("SKIP trunc_resync: cannot queue a %zu byte datagram: "
+		    "%s\n", blen, strerror(errno));
+		free(buf);
+		return;
+	}
+	free(buf);
+	kthr_stop = 0;
+	kthr_spd = kthr_sa = 0;
+	dump_flag_ok = 1;
+	if (pthread_create(&th, NULL, kthr, NULL) != 0)
+		exit(99);
+	pthread_detach(th);
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0, "handler survives a truncated datagram: %s", rc.estr);
+	CHECK(xfrm_stat_trunc == 1 && xfrm_stat_enobufs == 0,
+	    "truncation counted as truncation (%lu/%lu)", xfrm_stat_trunc,
+	    xfrm_stat_enobufs);
+	CHECK(xfrm_stat_resync == 1 && n_resync == 1,
+	    "truncation resynced (%lu, %d)", xfrm_stat_resync, n_resync);
+	CHECK(n_spdadd == 0, "truncated head not delivered (%d)", n_spdadd);
+	CHECK(n_spddump == 1, "SPD state re-established by dump (%d)",
+	    n_spddump);
+	kthr_stop = 1;
+	usleep(120000);
+}
 
 static void
 test_nl_walk(void)
@@ -1024,6 +1127,16 @@ test_nl_walk(void)
 	CHECK(rcpfk_nl_walk(buf, sizeof(struct nlmsghdr) + 8, nl_walk_count,
 	    &cnt) == -1, "nl_walk: truncated next header (8B) -> -1");
 	CHECK(cnt == 1, "nl_walk: truncated next header stopped after 1");
+
+	/* a callback's > 0 return stops the walk early with that value */
+	memset(buf, 0, sizeof(buf));
+	for (cnt = 0; cnt < 3; cnt++)
+		((struct nlmsghdr *)(buf + cnt * NLMSG_LENGTH(0)))->nlmsg_len =
+		    NLMSG_LENGTH(0);
+	cnt = 0;
+	CHECK(rcpfk_nl_walk(buf, 3 * NLMSG_LENGTH(0), nl_walk_stop2, &cnt) == 7,
+	    "nl_walk: callback stop value returned");
+	CHECK(cnt == 2, "nl_walk: stopped after the 2nd message (%d)", cnt);
 }
 
 static void
@@ -1620,6 +1733,8 @@ main(void)
 	test_short_messages();
 	test_satype_proto_mapping();
 	test_nl_walk();
+	test_nl_recv();
+	test_trunc_resync();
 	test_fill_selector();
 	test_policy_path_mixed_family();
 	test_offload_attrs();

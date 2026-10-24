@@ -68,8 +68,8 @@ int rcpfk_abi_version(void);
 /* Shared helpers (lib/rcpfk_util.c): the satype<->IPPROTO mapping is the one
  * the XFRM backend uses (the PF_KEY backend keeps its own
  * rct2ipproto_satype(), which aborts on an unknown satype — do not retarget
- * it at this helper's ESP fallback). rcpfk_nl_walk is Linux-netlink-specific
- * and is declared where it is used, not in this portable header. */
+ * it at this helper's ESP fallback). The netlink read/walk helpers are
+ * Linux-specific and live in rcpfk_nl.h, not in this portable header. */
 uint8_t rcpfk_satype_to_proto(uint8_t satype);
 uint8_t rcpfk_proto_to_satype(uint8_t proto);
 

@@ -17,11 +17,16 @@
  *  - rcpfk_nl_walk (Linux only): iterate a received netlink buffer of
  *    nlmsghdrs with the kernel's NLMSG_OK/NLMSG_NEXT safe length validation,
  *    dispatching each to a handler, and report a malformed message (bad
- *    nlmsg_len / truncated trailer) as -1 so the caller can log it. Its one
- *    consumer is iked/netlink.c (rtnetlink MOBIKE). if_xfrm.c deliberately
- *    keeps its own loops (xfrm_read_one / xfrm_sync — alignment copies,
- *    seq-match, resync), so this is NOT the shared malformed-input check for
- *    the XFRM path.
+ *    nlmsg_len / truncated trailer) as -1 so the caller can log it.
+ *
+ *  - rcpfk_nl_recv (Linux only): read one netlink datagram and classify the
+ *    outcome (data, retry, ENOBUFS overflow, MSG_TRUNC truncation, close,
+ *    short read, error).
+ *
+ *  Both netlink helpers are used by every netlink consumer: iked/netlink.c
+ *  (rtnetlink MOBIKE) and both XFRM read loops in if_xfrm.c (xfrm_read_one,
+ *  xfrm_sync), which keep only their message-level logic (alignment copies,
+ *  seq matching, resync). See rcpfk_nl.h.
  */
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -70,7 +75,58 @@ rcpfk_abi_version(void)
 }
 
 #ifdef __linux__
-#include <linux/netlink.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <errno.h>
+#include <string.h>
+#include "rcpfk_nl.h"
+
+int
+rcpfk_nl_recv(int fd, void *buf, size_t buflen, int flags, ssize_t *got)
+{
+	struct iovec iov;
+	struct msghdr mh;
+	ssize_t len;
+
+	*got = 0;
+	memset(&mh, 0, sizeof(mh));
+	iov.iov_base = buf;
+	iov.iov_len = buflen;
+	mh.msg_iov = &iov;
+	mh.msg_iovlen = 1;
+	len = recvmsg(fd, &mh, flags);
+	if (len < 0) {
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+			return RCPFK_NLR_AGAIN;
+		if (errno == ENOBUFS)
+			return RCPFK_NLR_OVERFLOW;
+		return RCPFK_NLR_ERROR;
+	}
+	*got = len;
+	/* checked before the length: a truncated datagram has lost messages
+	 * even when the part that fit parses cleanly */
+	if (mh.msg_flags & MSG_TRUNC)
+		return RCPFK_NLR_TRUNC;
+	if (len == 0)
+		return RCPFK_NLR_CLOSED;
+	if ((size_t)len < sizeof(struct nlmsghdr))
+		return RCPFK_NLR_SHORT;
+	return RCPFK_NLR_DATA;
+}
+
+const char *
+rcpfk_nlr_str(int r)
+{
+	switch (r) {
+	case RCPFK_NLR_DATA:		return "data";
+	case RCPFK_NLR_AGAIN:		return "retry";
+	case RCPFK_NLR_OVERFLOW:	return "overflow (ENOBUFS)";
+	case RCPFK_NLR_TRUNC:		return "datagram truncated (MSG_TRUNC)";
+	case RCPFK_NLR_CLOSED:		return "socket closed";
+	case RCPFK_NLR_SHORT:		return "short netlink read";
+	default:			return "recv error";
+	}
+}
 
 int
 rcpfk_nl_walk(char *buf, size_t buflen,
@@ -85,8 +141,12 @@ rcpfk_nl_walk(char *buf, size_t buflen,
 		return -1;	/* nothing parseable: not a valid netlink result */
 	for (nlh = (struct nlmsghdr *)buf; NLMSG_OK(nlh, len);
 	     nlh = NLMSG_NEXT(nlh, len)) {
-		if (fn && fn(nlh, arg) < 0)
+		int r = fn ? fn(nlh, arg) : 0;
+
+		if (r < 0)
 			return -1;
+		if (r > 0)
+			return r;	/* caller-requested early stop */
 	}
 	/* NLMSG_OK became false with `len` bytes still unread. NLMSG_NEXT has
 	 * already consumed the 4-byte alignment padding of every real message,

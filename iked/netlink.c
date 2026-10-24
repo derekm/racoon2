@@ -33,6 +33,7 @@
 
 #include <stdio.h>		/* for BUFSIZ */
 #include <errno.h>
+#include <string.h>
 #ifdef HAVE_UNISTD_H
 #  include <unistd.h>
 #endif
@@ -49,10 +50,9 @@
 
 static int rtnetlink_socket = -1;
 
-/* Shared netlink nlmsghdr walk (lib/rcpfk_util.c); declared here (Linux
- * netlink only) rather than in the portable rcpfk header. */
-int rcpfk_nl_walk(char *, size_t, int (*)(struct nlmsghdr *, void *),
-    void *);
+/* Shared netlink read/walk helpers (lib/rcpfk_util.c), the same ones the
+ * XFRM backend uses; Linux-only, so not in the portable rcpfk header. */
+#include "rcpfk_nl.h"
 
 static int
 rtnl_dispatch(struct nlmsghdr *nlh, void *arg)
@@ -104,22 +104,40 @@ rtsock_socket(void)
 void
 rtsock_process(void)
 {
-	char buf[BUFSIZ];
+	/* rtnetlink address/link notifications are small, but a burst of them
+	 * is batched into one datagram: size for a full page group, and treat
+	 * MSG_TRUNC / ENOBUFS as lost events, never as a complete read. */
+	static char buf[32768];
 	ssize_t len;
+	int r;
 
 	TRACE((PLOGLOC, "reading netlink socket\n"));
-	len = recv(rtnetlink_socket, buf, sizeof(buf), 0);
-	TRACE((PLOGLOC, "len %zd\n", len));
-	if (len == -1) {
+	r = rcpfk_nl_recv(rtnetlink_socket, buf, sizeof(buf), 0, &len);
+	TRACE((PLOGLOC, "len %zd (%s)\n", len, rcpfk_nlr_str(r)));
+	switch (r) {
+	case RCPFK_NLR_DATA:
+		break;
+	case RCPFK_NLR_AGAIN:
+		return;
+	case RCPFK_NLR_OVERFLOW:
+	case RCPFK_NLR_TRUNC:
+		/* address events were lost: MOBIKE may miss a change until
+		 * the next one arrives */
+		plog(PLOG_INTWARN, PLOGLOC, 0,
+		     "netlink: rtnetlink %s; address events lost\n",
+		     rcpfk_nlr_str(r));
+		if (r == RCPFK_NLR_OVERFLOW)
+			return;
+		break;		/* still dispatch the part that fit */
+	case RCPFK_NLR_ERROR:
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "netlink: recv: %s\n", strerror(errno));
 		return;
+	default:
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "netlink: %s\n", rcpfk_nlr_str(r));
+		return;
 	}
-	/* rcpfk_nl_walk does the shared NLMSG_OK/NLMSG_NEXT safe iteration and
-	 * reports a malformed message (bad nlmsg_len, truncated trailer) as -1
-	 * so we log it — the same truncated-message check this consumer used to
-	 * hand-roll. (if_xfrm.c's loops handle their own netlink reads and are
-	 * not covered by this walk.) */
 	if (rcpfk_nl_walk(buf, (size_t)len, rtnl_dispatch, NULL) < 0)
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "netlink: malformed rtnetlink message\n");
