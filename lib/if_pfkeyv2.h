@@ -164,7 +164,7 @@ struct rcpfk_msg {
 	uint32_t mark_mask;		/* XFRMA_MARK mask; non-zero => emit */
 	uint32_t if_id;			/* XFRMA_IF_ID: per-SA/policy interface/VRF */
 	uint32_t offload_ifindex;	/* XFRMA_OFFLOAD_DEV: device ifindex */
-	uint8_t offload_flags;		/* XFRM_OFFLOAD_* (direction) or 0 = unset */
+	uint8_t offload_flags;		/* XFRM_OFFLOAD_* bit (IPV6=1, INBOUND=2); 0 = outbound (NOT unset) */
 	char offload_ifname[16];	/* offload device name; XFRM->ifindex, *BSD SADB_X_EXT_IF_HW_OFFL */
 
 	/* internal buffers; no need to touch from external */
