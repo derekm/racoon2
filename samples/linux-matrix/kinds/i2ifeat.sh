@@ -151,7 +151,34 @@ $4
 EOF
 }
 
-kind_i2ifeat() {
+feat_charon_mlkem() {	# runtime proof: does this strongSwan list ML_KEM_768?
+	# (a string scan is not proof: Debian 6.0.1 names ML_KEM_768 in its
+	# enum tables yet refuses it).  Probed once per run in a scratch netns.
+	if [ -z "${FEAT_MLKEM:-}" ]; then
+		_pn=r2mlk$$ _pl=/tmp/r2-mlkem-probe-$$.log
+		ip netns add "$_pn" && ip netns exec "$_pn" ip link set lo up
+		i2i_charon_run "$_pn" "$_pl"
+		FEAT_MLKEM=no; _k=0
+		while [ "$_k" -lt 10 ]; do
+			if _al=$(ip netns exec "$_pn" "$I2I_SWANCTL_BIN" --list-algs 2>/dev/null) && [ -n "$_al" ]; then
+				printf '%s\n' "$_al" | grep -q 'ML_KEM_768' && FEAT_MLKEM=yes; break
+			fi
+			sleep 1; _k=$((_k+1))
+		done
+		i2i_charon_kill; ip netns del "$_pn" 2>/dev/null || true
+		log "charon ML-KEM-768 (swanctl --list-algs): $FEAT_MLKEM"
+	fi
+	[ "$FEAT_MLKEM" = yes ]
+}
+
+kind_i2ifeat() {	# restores SBIN/ETC if a row switched to the classical build
+	_fs=$SBIN _fe=$ETC
+	feat_row "$@"; _fr=$?
+	SBIN=$_fs ETC=$_fe
+	return "$_fr"
+}
+
+feat_row() {
 	name=$1
 	require_root || return 1
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
@@ -170,6 +197,15 @@ kind_i2ifeat() {
 	# Only an iked INITIATOR imposes it: an iked responder answers a
 	# classical charon offer on either build.
 	FEAT_PROPOSALS=aes256gcm16-prfsha256-ecp256
+	# ADDKE iked initiator + a charon without ML-KEM: switch to the
+	# classical build named by R2_CLASSIC_PREFIX when there is one (the
+	# box), else the row FAILs below with the proof.
+	if [ "$PEER_R" = charon ] && grep -aq 'ikesa-addke offer' "$SBIN/iked" 2>/dev/null &&
+	    ! feat_charon_mlkem && [ -n "${R2_CLASSIC_PREFIX:-}" ] && [ -x "$R2_CLASSIC_PREFIX/sbin/iked" ] &&
+	    ! grep -aq 'ikesa-addke offer' "$R2_CLASSIC_PREFIX/sbin/iked"; then
+		log "charon has no ML-KEM: using the classical iked build $R2_CLASSIC_PREFIX"
+		SBIN=$R2_CLASSIC_PREFIX/sbin ETC=$R2_CLASSIC_PREFIX/etc/racoon2
+	fi
 	if [ "$PEER_R" = charon ] && grep -aq 'ikesa-addke offer' "$SBIN/iked" 2>/dev/null; then
 		FEAT_PROPOSALS=aes256gcm16-prfsha256-ecp256-ke1_mlkem768
 		log "iked ADDKE build: charon responder must do ML-KEM-768 (ke1_mlkem768)"
