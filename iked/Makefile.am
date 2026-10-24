@@ -228,7 +228,7 @@ addtest_ikev2 = ikev2.$(OBJEXT) ikev2_intermediate.$(OBJEXT) \
 	ikev2_notify.$(OBJEXT) ikev2_packet.$(OBJEXT) ikev2_payload.$(OBJEXT) \
 	ikev2_decrypt.$(OBJEXT) ikev2_proposal.$(OBJEXT) ikev2_sa_auth.$(OBJEXT) ikev2_rekey.$(OBJEXT) ikev2_transmit.$(OBJEXT) ikev2_mobike.$(OBJEXT) \
 	ikev2_config.$(OBJEXT) ikev2_frag.$(OBJEXT) ikev2_resume.$(OBJEXT) \
-	ikev2_resume_rec.$(OBJEXT) ikev2_resume_ticket.$(OBJEXT) ikev2_sa_init.$(OBJEXT) ikev2_informational.$(OBJEXT) ikev2_session_resume.$(OBJEXT) ikev2_qcd.$(OBJEXT) ikev2_addke.$(OBJEXT) ikev2_addke_rounds.$(OBJEXT) \
+	ikev2_resume_rec.$(OBJEXT) ikev2_resume_ticket.$(OBJEXT) ikev2_sa_init.$(OBJEXT) ikev2_informational.$(OBJEXT) ikev2_session_resume.$(OBJEXT) ikev2_qcd.$(OBJEXT) ikev2_addke.$(OBJEXT) ikev2_addke_rounds.$(OBJEXT) ikev2_addke_rekey.$(OBJEXT) \
 	ikev2_eap.$(OBJEXT) ikev2_radius.$(OBJEXT) ikev2_eap_relay.$(OBJEXT) ikev2_eap_round.$(OBJEXT) ikev2_eap_drive.$(OBJEXT) ikev2_eap_emit.$(OBJEXT) \
 	ikev2_drain.$(OBJEXT) \
 	ikev2cfg_walk.$(OBJEXT) nattraversal.$(OBJEXT)
