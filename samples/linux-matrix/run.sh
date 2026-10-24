@@ -268,6 +268,14 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 		row_skip "$name" addke "ADDKE gate off: R2_ADDKE=${R2_ADDKE:-auto}"
 		continue
 	fi
+	# BLOCKLIST gate: blocklistd reporting exists only in an
+	# --enable-blocklist iked (libblocklist linked).  Skip on PROOF: the
+	# installed iked carries no reporting code.  Lanes without the
+	# library list the class; the Ubuntu blocklist job runs the rows.
+	if [ "$gate" = blocklist ] && ! grep -aq 'blocklist: reported' "$SBIN/iked" 2>/dev/null; then
+		row_skip "$name" blocklist "iked built without --enable-blocklist: no 'blocklist: reported' in $SBIN/iked"
+		continue
+	fi
 	# DPD gate: rows that need the full retransmit ladder (11 timers,
 	# ~383s at dpd_delay 60) only run when the runner opts in.  The
 	# box sets R2_DPD=yes; CI does not, so i2ike-silence stays off the

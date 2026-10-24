@@ -52,6 +52,22 @@
 #                            nbns: none received, SA up.
 #   feat-nbns-charonr        iked initiator requests ip4_nbns + an address (ip4)
 #                            from a charon pool with attr nbns.
+# blocklistd rows (gate blocklist: an --enable-blocklist iked).  The
+# responder's iked runs in a mount namespace with a private tmpfs on /run
+# and a sink bound to libblocklist's socket path, so every report is
+# counted and parsed and no real blocklistd / firewall is ever touched:
+#   feat-bl-off-i2i          bad PSK, blocklist unset: no report.
+#   feat-bl-on-i2i           bad PSK, blocklist on: one AUTH_FAIL (BL_ADD)
+#                            for the initiator's address, no SA.
+#   feat-bl-ok-i2i           good PSK, blocklist on: AUTH_OK (BL_DELETE), SA up.
+#   feat-bl-logonly-i2i      bad PSK, on + log_only: logged, nothing sent.
+#   feat-bl-prehs-off-i2i    short junk datagram, prehandshake unset: not
+#                            reported (unverified source).
+#   feat-bl-prehs-on-i2i     same, prehandshake on: reported.
+#   feat-bl-on-charon        charon initiator, wrong PSK: reported.
+#   feat-bl-init-charonr     iked INITIATOR, blocklist on, charon answers
+#                            with a wrong-PSK AUTH: no report (initiator
+#                            side never reports a peer it dialled).
 FEAT_PSK2_HEX=7365636f6e642d726f756e642d70736b		# "second-round-psk"
 
 feat_ts() {	# feat_ts <log> <ERE> <nth> -> epoch seconds of the nth match
@@ -75,6 +91,7 @@ interface {
 	ike { "$_me"; };
 	spmd { unix "$_spm"; };
 	spmd_password "$ETC/spmd.pwd";
+$( [ "$_role" = "${BL_ROLE:-r}" ] && printf '%s' "${BL_IF:-}" )
 };
 resolver { resolver off; };
 remote $_rm {
@@ -125,11 +142,47 @@ sa esp_e {
 EOF
 }
 
+feat_bl_sink() {	# feat_bl_sink <sock> <log>: count libblocklist datagrams
+	cat > "$C/blsink.py" <<'EOF'
+import os, socket, struct, sys
+path, log = sys.argv[1], sys.argv[2]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+try: os.unlink(path)
+except OSError: pass
+s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+s.bind(path); os.chmod(path, 0o666)
+with open(log, "a", buffering=1) as f:
+    f.write("SINK ready %s\n" % path)
+    while True:
+        d, anc, _, _ = s.recvmsg(4096, 256)
+        fds = sum(1 for l, t, _ in anc if l == socket.SOL_SOCKET and t == socket.SCM_RIGHTS)
+        if len(d) < 16 + 128:
+            f.write("BL short %d\n" % len(d)); continue
+        ln, ver, typ, salen = struct.unpack_from("=IIII", d, 0)
+        fam = struct.unpack_from("=H", d, 16)[0]
+        addr = socket.inet_ntop(socket.AF_INET, d[20:24]) if fam == socket.AF_INET else \
+            socket.inet_ntop(socket.AF_INET6, d[24:40]) if fam == socket.AF_INET6 else "?"
+        why = d[144:ln].split(b"\0")[0].decode("ascii", "replace")
+        f.write("BL type=%d af=%d addr=%s fds=%d why=%s\n" % (typ, fam, addr, fds, why))
+EOF
+}
+
 feat_start_iked() {	# feat_start_iked <r|i>
 	if [ "$1" = r ]; then _ns=$NSR _spm=$SPMIF_R _so=$SOCK_R _pr=$PRIVRES_R _cf=$C/responder.conf _lg=$D/resp
 	else _ns=$NSI _spm=$SPMIF_I _so=$SOCK_I _pr=$PRIVRES_I _cf=$C/initiator.conf _lg=$D/init; fi
 	( ip netns exec "$_ns" "$SBIN/spmd" -F -f "$_cf" ) >"$_lg-spmd.log" 2>&1 &
 	i=0; until [ -S "$_spm" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	if [ "$1" = "${BL_ROLE:-r}" ] && [ -n "${FEAT_BLSOCK:-}" ]; then
+		# private /run (ip netns exec already gave a slave mount ns):
+		# the sink owns libblocklist's socket path only in here
+		( ip netns exec "$_ns" sh -c 'mount -t tmpfs r2bl "$(readlink -f "$(dirname "$1")" | cut -d/ -f1-2)" &&
+		    { python3 "$2/blsink.py" "$1" "$3" & } &&
+		    i=0; until grep -q "SINK ready" "$3" 2>/dev/null || [ "$i" -ge 50 ]; do sleep 0.1; i=$((i+1)); done;
+		    exec env RACOON2_ADMIN_SOCK="$4" RACOON2_RESUME_DIR="$5" "$6" -F -f "$7" -D 0x0003 -l "$8"' \
+		    feat "$FEAT_BLSOCK" "$C" "$D/blsink.log" "$_so" "$_pr" "$SBIN/iked" "$_cf" "$_lg-iked.log" ) >"$_lg-iked.out" 2>&1 &
+		return
+	fi
 	( ip netns exec "$_ns" env RACOON2_ADMIN_SOCK="$_so" RACOON2_RESUME_DIR="$_pr" \
 	    "$SBIN/iked" -F -f "$_cf" -D 0x0003 -l "$_lg-iked.log" ) >"$_lg-iked.out" 2>&1 &
 }
@@ -238,6 +291,7 @@ feat_row() {
 	PSK_I="		kmp_auth_method { psk; };
 		pre_shared_key \"$ETC/psk/macos.psk\";"
 	I_EXTRA= R_EXTRA= I_CFG= R_CFG= I2I_CHARON_EXTRA= I2I_CHARON_PLUGINS_EXTRA= FEAT_POOLS= FEAT_LTS=
+	FEAT_BLSOCK= BL_IF= BL_ROLE=r
 	CH_AUTH="		local {
 			auth = psk
 			id = $( [ "$PEER" = charon ] && echo r2init-matrix || echo racoon2-matrix )
@@ -363,6 +417,39 @@ feat_row() {
 		;;
 	esac
 
+	case $name in
+	feat-bl-*)
+		grep -aq 'blocklist: reported' "$SBIN/iked" ||
+		    { log "FAIL: $SBIN/iked has no blocklist support (--enable-blocklist)"; return 1; }
+		_bllib=$(ldd "$SBIN/iked" 2>/dev/null | awk '/libblocklist/ { print $3; exit }')
+		FEAT_BLSOCK=$(grep -aoE '/[a-z/]*blocklistd[a-z]*\.sock' "${_bllib:-/nonexistent}" 2>/dev/null | head -1)
+		[ -n "$FEAT_BLSOCK" ] || { log "FAIL: no blocklistd socket path in libblocklist '${_bllib:-?}'"; return 1; }
+		log "libblocklist $_bllib reports to $FEAT_BLSOCK (sink in a private /run)"
+		feat_bl_sink
+		printf 'r2-wrong-psk-for-blocklist-rows' > "$C/psk-bad"; chmod 600 "$C/psk-bad"
+		BADPSK_I="		kmp_auth_method { psk; };
+		pre_shared_key \"$C/psk-bad\";"
+		case $name in
+		feat-bl-off-i2i) BL_IF= ;;
+		feat-bl-logonly-i2i) BL_IF='	blocklist on;
+	blocklist_log_only on;' ;;
+		feat-bl-prehs-on-i2i) BL_IF='	blocklist on;
+	blocklist_prehandshake on;' ;;
+		*) BL_IF='	blocklist on;' ;;
+		esac
+		case $name in
+		feat-bl-off-i2i|feat-bl-on-i2i|feat-bl-logonly-i2i) AUTH_I=$BADPSK_I ;;
+		feat-bl-on-charon) CH_SEC="	ike-a {
+		secret = 0x$(printf 'r2-wrong-psk-for-blocklist-rows' | od -An -tx1 | tr -d ' \n')
+	}" ;;
+		feat-bl-init-charonr) CH_SEC="	ike-a {
+		secret = 0x$(printf 'r2-wrong-psk-for-blocklist-rows' | od -An -tx1 | tr -d ' \n')
+	}"
+			BL_ROLE=i ;;
+		esac
+		;;
+	esac
+
 	[ "$PEER" = iked ] && feat_iked_conf "$C/initiator.conf" i "$I_EXTRA" "$AUTH_I" "$I_CFG"
 	[ "$PEER_R" = iked ] && feat_iked_conf "$C/responder.conf" r "$R_EXTRA" "$AUTH_R" "$R_CFG"
 	if [ "$PEER" = charon ]; then feat_charon_conf i "$CH_AUTH" "$CH_CONN" "$CH_SEC" || return 1; fi
@@ -414,7 +501,8 @@ feat_row() {
 	IL=$D/init-iked.log RL=$D/resp-iked.log CI=$D/charon-init.log CR=$D/charon-resp.log
 	efail=0
 	want_up=1
-	case $name in feat-mai-nosup-*|feat-mai-badpsk-*|feat-mai-off-*|feat-mai-nopeer-charon) want_up=0 ;; esac
+	case $name in feat-mai-nosup-*|feat-mai-badpsk-*|feat-mai-off-*|feat-mai-nopeer-charon) want_up=0 ;;
+	feat-bl-off-i2i|feat-bl-on-i2i|feat-bl-logonly-i2i|feat-bl-on-charon|feat-bl-init-charonr) want_up=0 ;; esac
 	if [ "$want_up" = 1 ]; then
 		[ "$up" = 1 ] || { feat_bad "SA/ESP not up"; }
 		[ "$up" = 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
@@ -565,6 +653,57 @@ feat_row() {
 		;;
 	feat-nbns-charonr)
 		need "$IL" 'INTERNAL_IP4_NBNS: 192.0.2.138' "iked received charon's NBNS server"
+		;;
+	feat-bl-*)
+		BS=$D/blsink.log BLL=$RL; [ "$BL_ROLE" = i ] && BLL=$IL
+		case $name in feat-bl-prehs-*)
+			# 8-byte datagram to 500: shorter than an ISAKMP header
+			# from a third address outside the /32 selectors, so the
+			# junk is plain UDP (the tunnel policy covers only HI<->HR)
+			ip netns exec "$NSI" ip addr add 192.0.7.3/24 dev "$VI"
+			ip netns exec "$NSI" python3 -c 'import socket,sys; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind(("192.0.7.3",40500)); s.sendto(b"\x01"*8,(sys.argv[1],500))' "$HR"
+			sleep 2
+			need "$BLL" 'packet \(8\) shorter than isakmp header' "responder classified the junk as pre-handshake (short packet)"
+		esac
+		sleep 1
+		need "$BS" '^SINK ready' "sink bound to libblocklist's socket"
+		nr=$(grep -c '^BL ' "$BS" 2>/dev/null); nf=$(grep -c "^BL type=1 af=2 addr=$HI fds=1 why=iked AUTH_FAILED\$" "$BS" 2>/dev/null)
+		nk=$(grep -c "^BL type=2 af=2 addr=$HI fds=1 why=iked AUTH_OK\$" "$BS" 2>/dev/null)
+		np=$(grep -c "^BL type=1 af=2 addr=192.0.7.3 fds=1 why=iked shortpacket\$" "$BS" 2>/dev/null)
+		log "sink: reports=$nr auth_fail=$nf auth_ok=$nk shortpacket=$np"
+		_bl_eq() { [ "$1" -eq "$2" ] && log "GATE ok: $3 ($1)" || { log "FAIL: $3: got $1, want $2"; efail=1; }; }
+		case $name in
+		feat-bl-off-i2i)
+			need "$BLL" 'blocklist: off' "iked logged blocklist off"
+			need "$BLL" 'authentication failure' "responder rejected the PSK"
+			_bl_eq "$nr" 0 "no report while blocklist is unset" ;;
+		feat-bl-on-i2i|feat-bl-on-charon)
+			need "$BLL" 'blocklist: on' "iked logged blocklist on"
+			need "$BLL" "blocklist: reported AUTH_FAIL $HI" "iked reported the failed peer"
+			_bl_eq "$nf" 1 "one AUTH_FAIL (BL_ADD) for $HI with the socket fd"
+			_bl_eq "$nr" "$nf" "nothing else reported" ;;
+		feat-bl-ok-i2i)
+			_bl_eq "$nk" 1 "one AUTH_OK (BL_DELETE) for $HI"
+			_bl_eq "$nr" 1 "nothing else reported" ;;
+		feat-bl-logonly-i2i)
+			need "$BLL" 'blocklist: log-only' "iked logged log-only"
+			need "$BLL" "blocklist\(log-only\): would report AUTH_FAIL $HI" "iked logged the would-be report"
+			_bl_eq "$nr" 0 "log-only sends nothing" ;;
+		feat-bl-prehs-off-i2i)
+			never "$BLL" 'pre-handshake reports on' "pre-handshake class off"
+			_bl_eq "$np" 0 "unverified pre-handshake source not reported"
+			_bl_eq "$nr" "$nk" "only the AUTH_OK was reported" ;;
+		feat-bl-prehs-on-i2i)
+			need "$BLL" 'blocklist: on, pre-handshake reports on' "pre-handshake class on"
+			_bl_eq "$np" 1 "short packet reported (BL_ADD, why=iked shortpacket)"
+			_bl_eq "$nr" $((nk + np)) "nothing but AUTH_OK and the short packet" ;;
+		feat-bl-init-charonr)
+			need "$BLL" 'blocklist: on' "initiator iked has blocklist on"
+			need "$CR" 'generating IKE_AUTH response 1 \[ N\(AUTH_FAILED\) \]' "charon refused the PSK (IKE_AUTH failed)"
+			need "$BLL" 'message lacks IDr payload|AUTHENTICATION_FAILED|authentication failure' "iked initiator saw the failed IKE_AUTH"
+			never "$BLL" 'blocklist: reported' "initiator reported nobody"
+			_bl_eq "$nr" 0 "no report from the initiator seat" ;;
+		esac
 		;;
 	esac
 	if grep -q 'key exchange method ML_KEM_768 not supported' "$CR" 2>/dev/null; then

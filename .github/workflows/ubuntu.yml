@@ -321,8 +321,8 @@ jobs:
 
   # Optional libblocklist compile. Default jobs stay --disable-blocklist
   # (no packaged lib). This job builds derekm/blocklist linux-port first,
-  # then iked --enable-blocklist. Compile-sanity only — no live matrix
-  # (blocklistd would ban the other netns peer under AUTH_FAIL injection).
+  # then iked --enable-blocklist, and runs the feat-bl-* rows against a
+  # socket sink (no blocklistd, so the netns peer is never banned).
   build-blocklist:
     name: 'Ubuntu --enable-blocklist (nft lib from linux-port)'
     runs-on: ubuntu-latest
@@ -377,6 +377,27 @@ jobs:
 
       - name: 'Unit suite (iked: eaytest evlooptest workerstest)'
         run: make -C iked check TESTS="eaytest evlooptest workerstest"
+
+      # Live blocklist option rows.  No blocklistd runs: each responder
+      # iked gets a private /run (mount ns) with a sink on libblocklist's
+      # socket that counts and parses every report, so nothing is banned.
+      - name: 'Live blocklist rows (feat-bl-*: off/on/ok/log-only/pre-handshake, charon both seats)'
+        run: |
+          set -o pipefail
+          sudo apt-get install -y -qq strongswan iproute2 iputils-ping xxd
+          sudo make install >/dev/null
+          E=/usr/local/racoon2/etc/racoon2
+          sudo mkdir -p "$E/psk"
+          printf 'racoon2-ci-psk-0123456789abcdef' | sudo tee "$E/psk/macos.psk" >/dev/null
+          printf 'racoon2-ci-pwd\n' | sudo tee "$E/spmd.pwd" >/dev/null
+          sudo chmod 600 "$E/psk/macos.psk" "$E/spmd.pwd"
+          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            --cases '^feat-bl-' | tee /tmp/r2-bl-matrix.log
+        env:
+          R2_PREFIX: /usr/local/racoon2
+          R2_REQUIRE_LIVE: 1
+          R2_LANE: ubuntu
+          R2_MIN_PASS: 8
 
   integration:
     name: 'Integration (live matrix, xfrm)'
