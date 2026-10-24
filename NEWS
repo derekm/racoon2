@@ -18,15 +18,15 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	  | ESP ICV lengths | 3 ci, 2 pfkey | - |
 	  | IKEv1 | - | 2 ci, 3 addke |
 	  | IPv6 | 2 addke | - |
-	  | NAT-T / UDP encapsulation | 3 ci, 5 box | - |
+	  | NAT-T / UDP encapsulation | 5 ci, 3 box | - |
 	  | PPK (RFC 8784) | 2 box | 2 addke |
 	  | PQC ADDKE (RFC 9242/9370) | 23 addke, 1 box | 35 addke, 2 box |
-	  | X.509 / raw public key auth | 6 box | - |
+	  | X.509 / raw public key auth | 6 ci | - |
 	  | XFRM mark / offload | 1 ci, 1 nsim | - |
 	  | childless (RFC 6023) | 5 addke | 8 addke |
 	  | config: pools, lifetimes | 1 box | 1 box |
 	  | deprecated-suite policy | 31 ci, 4 box | - |
-	  | loss, replay, collisions | 5 addke, 1 dpd, 5 box | - |
+	  | loss, replay, collisions | 3 ci, 5 addke, 1 dpd, 2 box | - |
 	  | proposal shapes (ciphers, PRFs, DH) | 7 ci, 34 addke, 14 box | 16 addke |
 	  | redirect (RFC 5685) | 2 box | - |
 	  | session resumption (RFC 5723) | 4 addke | - |
@@ -35,6 +35,8 @@ $Id: NEWS,v 1.26 2010/05/07 19:08:25 kamada Exp $
 	* Road-warrior sample pack: samples/roadwarrior/{psk,cert,
 	  eap-mschapv2}.conf with a client-side README. `make check` runs
 	  iked -C on every file (iked/rwsamplecheck.sh).
+	* Eleven iked<->iked rows (certificates, IPv6-over-IPv4, collisions,
+	  drain) moved from box-only to the CI matrix.
 	* New matrix rows i2ixfrm-mark and i2ixfrm-offload prove marked
 	  SAs/policies and netdevsim offload binding on live kernels
 	  (doc/xfrm-offload.md, "Matrix coverage").
