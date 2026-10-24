@@ -954,7 +954,9 @@ followup_rekey_contract_tests(void)
 /* The INTERNAL -1/-2 decision of complete() itself (which branch it takes,
  * vs the caller's reaction above): pre-send problems (no ctx / packet alloc
  * fail / transmit fail) are -1; a post-send failure (KEr cached, SKEYSEED or
- * finish failed) is -2; all well is 0.  Each failure path DEADs new_sa. */
+ * finish failed) is -2; all well is 0.  A parked-ctx failure (pkt/transmit/
+ * derive/finish) DEADs new_sa; the no-ctx pre-send abort does not (there is
+ * no new_sa to dead). */
 static void
 complete_internal_tests(void)
 {
@@ -1011,6 +1013,7 @@ complete_internal_tests(void)
 	ar_ops_reset(); t_establish_ret = -1;
 	r = ikev2_rekey_responder_addke_complete(os, NULL, ct, 0, 0);
 	CHECK(r == -2 && n_set_state_dead == 1, "complete: finish fail -> -2");
+	free(os); free(ns);
 
 	/* all ok -> 0, NO DEAD, new_sa deferred link dropped */
 	os = calloc(1, sizeof(*os)); ns = calloc(1, sizeof(*ns));

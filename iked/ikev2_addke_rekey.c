@@ -30,20 +30,9 @@ ikev2_addke_rekey_set_ops(const struct ikev2_addke_rekey_ops *ops)
 }
 
 /*
- * The responder ctx lifetime helpers are shared with ikev2_rekey.c (the
- * round) so the deferred ctx is created here and completed here.
+ * The responder ctx lifetime helper is shared with ikev2_rekey.c (the round)
+ * so the deferred ctx is completed here and freed here.
  */
-struct ikev2_rekey_responder_ctx *
-ikev2_rekey_responder_ctx_new(struct ikev2_sa *old_sa)
-{
-	struct ikev2_rekey_responder_ctx *ctx;
-
-	if ((ctx = rc_calloc(1, sizeof(*ctx))) == NULL)
-		return NULL;
-	ctx->old_sa = old_sa;
-	return ctx;
-}
-
 void
 ikev2_rekey_responder_ctx_free(struct ikev2_rekey_responder_ctx *ctx)
 {
@@ -77,17 +66,24 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 	struct ikev2_rekey_responder_ctx *ctx;
 	struct ikev2_sa *new_sa;
 
+	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
+	old_sa->addke_rekey_complete = NULL;
+
 	if (ops == NULL) {
+		/* fail-closed: no injected ops. Release a parked ctx (if any)
+		 * so a missing-ops install cannot leak it. */
+		if (ctx)
+			ikev2_rekey_responder_ctx_free(ctx);
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "addke rekey complete: ops not installed\n");
 		return -1;
 	}
-
-	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
-	old_sa->addke_rekey_complete = NULL;
 	if (!ctx || !ctx->new_sa) {
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "addke rekey complete: no parked ctx\n");
+		/* complete() owns the detached ctx; release it rather than leak */
+		if (ctx)
+			ikev2_rekey_responder_ctx_free(ctx);
 		return -1;
 	}
 	new_sa = ctx->new_sa;

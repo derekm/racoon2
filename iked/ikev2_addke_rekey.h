@@ -52,9 +52,7 @@ struct ikev2_addke_rekey_ops {
 
 void ikev2_addke_rekey_set_ops(const struct ikev2_addke_rekey_ops *);
 
-/* Responder ctx lifetime helpers (shared with ikev2_rekey.c round). */
-struct ikev2_rekey_responder_ctx *
-ikev2_rekey_responder_ctx_new(struct ikev2_sa *);
+/* Responder ctx lifetime helper (shared with ikev2_rekey.c round). */
 void ikev2_rekey_responder_ctx_free(struct ikev2_rekey_responder_ctx *);
 
 /* The final-round completion; returns 0 success, -1 pre-send failure
