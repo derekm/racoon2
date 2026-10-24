@@ -46,11 +46,11 @@ backend now emits them.
    policy pol {
        action auto_ipsec;
        ...
-       mark { value 0x100; mask 0xff; }       # -> XFRMA_MARK (v = value & mask)
+       mark { value 0x100; mask 0xff; };      # -> XFRMA_MARK (v = value & mask)
        if_id 1;                                # -> XFRMA_IF_ID
    }
    sa esp_e {
-       offload { dev "ens2f0np0"; dir in; }    # -> XFRMA_OFFLOAD_DEV (dir in=2/out=0)
+       offload { dev "ens2f0np0"; dir in; };   # -> XFRMA_OFFLOAD_DEV (dir in=2/out=0)
    }
    ```
    Design decisions (all verified in `lib/icketest`, `PASS`):
