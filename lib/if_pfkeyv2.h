@@ -52,6 +52,19 @@
 #endif
 #define RCPFK_SOCKBUFSIZE	128 * 1024
 
+/*
+ * rcpfk ABI version. Bump whenever struct rcpfk_msg / struct rcpfk_cb layout
+ * or semantics change incompatibly. RCPFK_ABI_VERSION is the value the
+ * consumer (iked/spmd, compiled fresh) expects; rcpfk_abi_version() returns
+ * the value the loaded libracoon was BUILT with. sadb_init() compares the two
+ * and fails loudly on a mismatch, so a stale libracoon.so.0 — the classic
+ * non-recursive `make install` trap that caused the kmp_auth_method enum-drift
+ * incident — is caught at startup instead of silently desyncing. */
+#define RCPFK_ABI_VERSION	1
+
+/* Shared helpers (lib/rcpfk_util.c) */
+int rcpfk_abi_version(void);
+
 /* Shared helpers (lib/rcpfk_util.c): the satype<->IPPROTO mapping is the one
  * the XFRM backend uses (the PF_KEY backend keeps its own
  * rct2ipproto_satype(), which aborts on an unknown satype — do not retarget

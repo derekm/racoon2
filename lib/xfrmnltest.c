@@ -1008,6 +1008,9 @@ test_nl_walk(void)
 	    &cnt) == 0, "nl_walk: trailing padding returns 0");
 	CHECK(cnt == 1, "nl_walk: padding did not dispatch");
 
+	CHECK(rcpfk_abi_version() == RCPFK_ABI_VERSION,
+	    "rcpfk_abi_version() matches the header RCPFK_ABI_VERSION");
+
 	/* a valid message followed by a truncated next header (8 of 16 bytes
 	 * present) is malformed, NOT silent alignment padding (padding is 0-3) */
 	memset(buf, 0, sizeof(buf));

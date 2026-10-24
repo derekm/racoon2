@@ -209,6 +209,17 @@ spmd_pfkey_init(void)
 	pfkey_callback.cb_spddump = &spmd_pfkey_spddump_cb;
 #endif
 
+	/* stale-libracoon guard: the loaded .so's ABI version must match the
+	 * header this spmd was built against (see RCPFK_ABI_VERSION). */
+	if (rcpfk_abi_version() != RCPFK_ABI_VERSION) {
+		SPMD_PLOG(SPMD_L_INTERR,
+		    "libracoon ABI mismatch: spmd expects v%d, loaded "
+		    "libracoon.so is v%d (stale install? reinstall lib "
+		    "before spmd)",
+		    RCPFK_ABI_VERSION, rcpfk_abi_version());
+		return -1;
+	}
+
 	if (rcpfk_init(&pfkey_container, &pfkey_callback) < 0) {
 		SPMD_PLOG(SPMD_L_INTERR, "%s", pfkey_container.estr);
 		return -1;

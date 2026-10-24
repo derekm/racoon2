@@ -179,6 +179,20 @@ sadb_init(void)
 	ike_rcpfk_callback.cb_sadump = sadb_sadump_callback;
 	ike_rcpfk_callback.cb_resync = sadb_resync_callback;
 
+	/* Fail loudly on a stale libracoon.so before the backend runs: the
+	 * loaded .so's compiled ABI version must match the header this iked was
+	 * built against. A non-recursive `make install` can silently leave an
+	 * old libracoon.so.0 in place (the kmp_auth_method enum-drift incident);
+	 * catching it here beats desyncing at runtime. */
+	if (rcpfk_abi_version() != RCPFK_ABI_VERSION) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "libracoon ABI mismatch: this iked expects v%d, "
+		     "loaded libracoon.so is v%d (stale install? reinstall "
+		     "lib before iked)\n",
+		     RCPFK_ABI_VERSION, rcpfk_abi_version());
+		return -1;
+	}
+
 	if (rcpfk_init(&param, &ike_rcpfk_callback) != 0)
 		return -1;
 	pfkey_socket = param.so;

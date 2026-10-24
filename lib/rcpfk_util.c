@@ -61,6 +61,14 @@ rcpfk_proto_to_satype(uint8_t proto)
 	}
 }
 
+/* returns the ABI version this libracoon was compiled with; a fresh consumer
+ * expecting RCPFK_ABI_VERSION uses it to detect a stale .so at startup. */
+int
+rcpfk_abi_version(void)
+{
+	return RCPFK_ABI_VERSION;
+}
+
 #ifdef __linux__
 #include <linux/netlink.h>
 
