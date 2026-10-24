@@ -1242,6 +1242,40 @@ test_mark_emit_live_paths(void)
 	    sizeof(struct xfrm_userpolicy_id), XFRMA_IF_ID, &dd, &dl) == 1 &&
 	    dl == 4 && *(const unsigned int *)dd == 7,
 	    "spdget carries XFRMA_IF_ID");
+
+	/* DELSA + GETSA (state key); mark is part of the state lookup key */
+	setup();
+	fill_sa_rc(&rc, &s, &d, 0x4010010, 0x1001);
+	rc.so = rcm.so; rc.mark = 0x100; rc.mark_mask = 0xff; rc.if_id = 7;
+	CHECK(rcpfk_send_delete(&rc) == 0, "delsa: %s", rc.estr);
+	n = kget();
+	CHECK(n && n->nlmsg_type == XFRM_MSG_DELSA, "DELSA on req socket");
+	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
+	    sizeof(struct xfrm_usersa_id), XFRMA_MARK, &dd, &dl) == 1 &&
+	    dl == sizeof(struct xfrm_mark) &&
+	    ((const struct xfrm_mark *)dd)->v == (0x100 & 0xff) &&
+	    ((const struct xfrm_mark *)dd)->m == 0xff,
+	    "delsa carries masked XFRMA_MARK v/m");
+	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
+	    sizeof(struct xfrm_usersa_id), XFRMA_IF_ID, &dd, &dl) == 1 &&
+	    dl == 4 && *(const unsigned int *)dd == 7,
+	    "delsa carries XFRMA_IF_ID");
+	setup();
+	fill_sa_rc(&rc, &s, &d, 0x4010011, 0x1001);
+	rc.so = rcm.so; rc.mark = 0x100; rc.mark_mask = 0xff; rc.if_id = 7;
+	CHECK(rcpfk_send_get(&rc) == 0, "getsa: %s", rc.estr);
+	n = kget();
+	CHECK(n && n->nlmsg_type == XFRM_MSG_GETSA, "GETSA on req socket");
+	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
+	    sizeof(struct xfrm_usersa_id), XFRMA_MARK, &dd, &dl) == 1 &&
+	    dl == sizeof(struct xfrm_mark) &&
+	    ((const struct xfrm_mark *)dd)->v == (0x100 & 0xff) &&
+	    ((const struct xfrm_mark *)dd)->m == 0xff,
+	    "getsa carries masked XFRMA_MARK v/m");
+	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
+	    sizeof(struct xfrm_usersa_id), XFRMA_IF_ID, &dd, &dl) == 1 &&
+	    dl == 4 && *(const unsigned int *)dd == 7,
+	    "getsa carries XFRMA_IF_ID");
 }
 
 int
