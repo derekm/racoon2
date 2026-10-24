@@ -131,10 +131,15 @@ main(void)
 	nrecv = 0;
 	CHECK(tcp_stream_send(cli1, msg, sizeof(msg)) == 0, "send: client1 IKE");
 	tv.tv_sec = 1; tv.tv_usec = 0;
-	FD_ZERO(&rfds); FD_ZERO(&wfds);
-	tcp_srv_fdset(&rfds, &wfds);
-	select(FD_SETSIZE, &rfds, NULL, NULL, &tv);
-	tcp_srv_process(&rfds, &wfds);
+	{
+		int maxfd;
+
+		FD_ZERO(&rfds); FD_ZERO(&wfds);
+		maxfd = tcp_srv_fdset(&rfds, &wfds);
+		/* like the daemon loop: wait on both directions, then drive */
+		select(maxfd < 1 ? 1 : maxfd, &rfds, &wfds, NULL, &tv);
+		tcp_srv_process(&rfds, &wfds);
+	}
 	CHECK(nrecv == 1 && capl[0] == 32 && cap[0][0] == 0x00 && cap[0][31] == 0x1f,
 	      "process: delivered client1 IKE (marker stripped)");
 	CHECK(tcp_srv_count() == 2, "process: stream count unchanged after delivery");
@@ -144,10 +149,12 @@ main(void)
 	cli1 = NULL;
 	spins = 0;
 	while (tcp_srv_count() == 2 && spins < 50) {
+		int maxfd;
+
 		FD_ZERO(&rfds); FD_ZERO(&wfds);
-		tcp_srv_fdset(&rfds, &wfds);
+		maxfd = tcp_srv_fdset(&rfds, &wfds);
 		tv.tv_sec = 0; tv.tv_usec = 200000;
-		select(FD_SETSIZE, &rfds, NULL, NULL, &tv);
+		select(maxfd < 1 ? 1 : maxfd, &rfds, &wfds, NULL, &tv);
 		tcp_srv_process(&rfds, &wfds);
 		++spins;
 	}

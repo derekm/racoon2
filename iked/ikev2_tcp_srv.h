@@ -36,19 +36,25 @@
 void tcp_srv_init(tcp_stream_dispatch dispatch, void *arg);
 void tcp_srv_fini(void);
 
-/* Create the non-blocking TCP listener on [local]addr:port (port 0 = IKE
- * default 500).  Returns fd (owned by this module) or -1. */
+/* Create the non-blocking TCP listener on [local]addr.  RFC 9329's default
+ * port is 4500 (IKEV2_TCP_PORT).  `port` is authoritative when non-zero;
+ * when zero, the port already in `local` is kept (so a caller may bind to
+ * 4500 explicitly, or pass a sockaddr already carrying the port).  Returns
+ * the fd (owned by this module) or -1. */
 int tcp_srv_open_listener(const struct sockaddr *local, int port);
 int tcp_srv_listener_fd(void);
 
 /* Accept every pending connection into a registered tcp_stream.  >=0 count. */
 int tcp_srv_accept_pending(void);
 
-/* Fill rfds (always) and wfds (streams with pending writes / unfinished
- * connects; list) then the listener.  May be NULL.  Returns max fd + 1. */
+/* Fill rfds (always) and wfds (streams with queued outbound bytes; a
+ * connecting stream is parked and driven by the initiator path, not here).
+ * May be NULL.  Returns max fd + 1. */
 int tcp_srv_fdset(fd_set *rfds, fd_set *wfds);
 
-/* Drive the registry with the ready sets from evloop_wait_rw. */
+/* Drive the registry with the ready sets from evloop_wait_rw: accept on a
+ * ready listener, drain ready streams, flush write-ready streams, and tear
+ * down a stream whose read/write returned fatal. */
 void tcp_srv_process(const fd_set *rfds, const fd_set *wfds);
 
 /* Number of live streams (for diagnostics/tests). */
