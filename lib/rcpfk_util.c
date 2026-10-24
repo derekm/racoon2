@@ -25,7 +25,6 @@
 #include <sys/types.h>
 #include <stdarg.h>
 #include <netinet/in.h>
-#include <linux/netlink.h>
 
 #include "racoon.h"
 
@@ -57,6 +56,9 @@ rcpfk_proto_to_satype(uint8_t proto)
 	}
 }
 
+#ifdef __linux__
+#include <linux/netlink.h>
+
 int
 rcpfk_nl_walk(char *buf, size_t buflen,
     int (*fn)(struct nlmsghdr *, void *), void *arg)
@@ -64,12 +66,23 @@ rcpfk_nl_walk(char *buf, size_t buflen,
 	struct nlmsghdr *nlh;
 	int len = (int)buflen;
 
-	if ((size_t)len != buflen || buflen < sizeof(struct nlmsghdr))
+	if ((size_t)len != buflen)
 		return -1;
+	if (buflen < sizeof(struct nlmsghdr))
+		return -1;	/* nothing parseable: not a valid netlink result */
 	for (nlh = (struct nlmsghdr *)buf; NLMSG_OK(nlh, len);
 	     nlh = NLMSG_NEXT(nlh, len)) {
 		if (fn && fn(nlh, arg) < 0)
 			return -1;
 	}
+	/* NLMSG_OK became false. If a whole header's worth (>= sizeof) is
+	 * still left, the message declared a bad nlmsg_len (a length below a
+	 * header, or a truncated body whose declared length exceeds what is
+	 * present): report it as malformed so the caller logs it. Only the
+	 * alignment padding (< sizeof) left after a real message, or the
+	 * exact-end case, returns 0. */
+	if (len >= (int)sizeof(struct nlmsghdr))
+		return -1;
 	return 0;
 }
+#endif /* __linux__ */

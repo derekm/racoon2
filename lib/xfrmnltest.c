@@ -943,6 +943,69 @@ test_satype_proto_mapping(void)
 	    "unknown proto -> ESP satype");
 }
 
+static int
+nl_walk_count(struct nlmsghdr *nlh, void *arg)
+{
+	int *n = arg;
+
+	(void)nlh;
+	(*n)++;
+	return 0;
+}
+
+/* Shared walk from lib/rcpfk_util.c (Linux-only); declared here, not in the
+ * portable header. struct nlmsghdr is in scope via the included if_xfrm.c. */
+int rcpfk_nl_walk(char *, size_t, int (*)(struct nlmsghdr *, void *), void *);
+
+static void
+test_nl_walk(void)
+{
+	char buf[128];
+	struct nlmsghdr *n;
+	int cnt;
+
+	/* one valid message: buflen == NLMSG_LENGTH(0), dispatched, rc 0 */
+	memset(buf, 0, sizeof(buf));
+	n = (struct nlmsghdr *)buf;
+	n->nlmsg_len = NLMSG_LENGTH(0);
+	cnt = 0;
+	CHECK(rcpfk_nl_walk(buf, (size_t)NLMSG_LENGTH(0), nl_walk_count,
+	    &cnt) == 0, "nl_walk: single valid message returns 0");
+	CHECK(cnt == 1, "nl_walk: one message dispatched");
+
+	/* a valid 16-byte message followed by a trailer whose nlmsg_len
+	 * claims 64 with only 16 bytes present: malformed, rc -1, first
+	 * message still dispatched, trailer NOT */
+	memset(buf, 0, sizeof(buf));
+	n = (struct nlmsghdr *)buf;
+	n->nlmsg_len = sizeof(struct nlmsghdr);
+	((struct nlmsghdr *)(buf + NLMSG_ALIGN((int)sizeof(struct nlmsghdr))))
+	    ->nlmsg_len = 64;
+	cnt = 0;
+	CHECK(rcpfk_nl_walk(buf, sizeof(struct nlmsghdr) * 2, nl_walk_count,
+	    &cnt) == -1, "nl_walk: truncated trailer -> -1");
+	CHECK(cnt == 1, "nl_walk: truncated trailer stopped after 1");
+
+	/* nlmsg_len == 0 is malformed (not a silent success) */
+	memset(buf, 0, sizeof(buf));
+	cnt = 0;
+	CHECK(rcpfk_nl_walk(buf, sizeof(struct nlmsghdr), nl_walk_count,
+	    &cnt) == -1, "nl_walk: nlmsg_len==0 -> -1");
+
+	/* a buffer shorter than a header is malformed */
+	CHECK(rcpfk_nl_walk(buf, sizeof(struct nlmsghdr) - 1, nl_walk_count,
+	    &cnt) == -1, "nl_walk: short buffer -> -1");
+
+	/* alignment-only tail after a real message is a normal end (rc 0) */
+	memset(buf, 0, sizeof(buf));
+	n = (struct nlmsghdr *)buf;
+	n->nlmsg_len = sizeof(struct nlmsghdr);
+	cnt = 0;
+	CHECK(rcpfk_nl_walk(buf, sizeof(struct nlmsghdr) + 2, nl_walk_count,
+	    &cnt) == 0, "nl_walk: trailing padding returns 0");
+	CHECK(cnt == 1, "nl_walk: padding did not dispatch");
+}
+
 int
 main(void)
 {
@@ -962,6 +1025,7 @@ main(void)
 	test_mapping_migrate_fresh();
 	test_short_messages();
 	test_satype_proto_mapping();
+	test_nl_walk();
 	printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);
 	return fails ? 1 : 0;
 }
