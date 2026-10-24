@@ -717,6 +717,7 @@ iked_reload(void)
 		iked_exit(IKED_EXIT_FAILURE);
 	}
 
+	iked_blocklist_init();	/* re-read blocklist policy */
 	isakmp_reopen();
 }
 

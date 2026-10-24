@@ -152,6 +152,7 @@ static int rcf_fix_if_kink (struct cf_list *, void *);
 static int rcf_fix_if_spmd (struct cf_list *, void *);
 static int rcf_fix_if_spmd_passwd (struct cf_list *, void *);
 static int rcf_fix_if_bypass (struct cf_list *, void *);
+static int rcf_fix_if_blbool (struct cf_list *, void *);
 	/* resolver */
 static int rcf_fix_resolver (struct rcf_resolver **);
 static void rcf_clean_resolver_list (struct rcf_resolver *);
@@ -365,6 +366,9 @@ struct rcf_tdf_t {
 	{ CFD_IF_KINK,			rcf_fix_if_kink, },
 	{ CFD_IF_SPMD,			rcf_fix_if_spmd, },
 	{ CFD_IF_BYPASS,		rcf_fix_if_bypass, },
+	{ CFD_IF_BLOCKLIST,		rcf_fix_if_blbool, },
+	{ CFD_IF_BL_LOGONLY,		rcf_fix_if_blbool, },
+	{ CFD_IF_BL_PREHS,		rcf_fix_if_blbool, },
 	/* spmd IF password file */
 	{ CFD_IF_SPMD_PASSWD,		rcf_fix_if_spmd_passwd, },
 	/* resolver */
@@ -855,6 +859,32 @@ rcf_fix_if_bypass(struct cf_list *head, void *dst0)
 	if (rcf_fix_boolean(head->nextp, &dst->application_bypass))
 		return -1;
 
+	return 0;
+}
+
+/* blocklist / blocklist_log_only / blocklist_prehandshake (booleans) */
+static int
+rcf_fix_if_blbool(struct cf_list *head, void *dst0)
+{
+	struct rcf_interface *dst = (struct rcf_interface *)dst0;
+	rc_type *f;
+
+	if (head->type != CFT_DIRECTIVE)
+		return -1;
+	switch (head->d.dir) {
+	case CFD_IF_BLOCKLIST:	f = &dst->blocklist; break;
+	case CFD_IF_BL_LOGONLY:	f = &dst->blocklist_log_only; break;
+	case CFD_IF_BL_PREHS:	f = &dst->blocklist_prehandshake; break;
+	default:		return -1;
+	}
+	if (*f != 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "%s:%d: duplicate blocklist directive\n",
+		    head->file, head->lineno);
+		return -1;
+	}
+	if (rcf_fix_boolean(head->nextp, f))
+		return -1;
 	return 0;
 }
 

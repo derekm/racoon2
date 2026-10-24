@@ -35,8 +35,33 @@ Guards:
   and >= 8 bytes is not reported (that is ESP leaking to userspace
   because `UDP_ENCAP_ESPINUDP` failed, i.e. a real client).
 - IPv4-mapped IPv6 sources are reported as IPv4.
-- `RACOON2_BLOCKLIST=off|log` in iked's environment disables reporting
-  or logs "would report" lines without contacting blocklistd.
+- `RACOON2_BLOCKLIST=off|log` in iked's environment can only *lower*
+  the configured mode (disable, or log "would report" lines without
+  contacting blocklistd); it never enables reporting.
+
+## Enabling (racoon2.conf)
+
+Reporting is **off by default**, even in an `--enable-blocklist` build.
+Turn it on in the `interface` section; it is re-read on reload:
+
+    interface {
+        ike { MY_IP port 500; };
+        blocklist on;                 # default off
+        # blocklist_log_only on;      # log "would report", send nothing
+        # blocklist_prehandshake on;  # default off, see below
+    };
+
+`blocklist on;` reports only post-IKE_SA_INIT results: IKEv2 responder
+AUTH failure/success, where the peer has completed a round trip from its
+source address.
+
+The pre-IKE_SA_INIT reports (shortpacket, malformed_len, IKEv1
+zero-cookie) come from a single unauthenticated datagram whose source
+address is trivially spoofed over UDP: an attacker could get a real
+peer (or the operator's own monitoring) banned. They are therefore a
+separate opt-in, `blocklist_prehandshake on;`, also default off; enable
+it only together with a `[remote]` allowlist of the peers you must
+never lose.
 
 Not hooked: `INVALID_SYNTAX` on a live rekey (iOS), QCD replay,
 window-mismatch, DPD silence. Those are protocol, not scanners.

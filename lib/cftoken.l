@@ -250,6 +250,9 @@ kink			{ DP; return(KINK); }
 spmd			{ DP; return(SPMD); }
 spmd_password		{ DP; return(SPMD_IF_PASSWD); }
 application_bypass	{ DP; return(APP_BYPASS); }
+blocklist_prehandshake	{ DP; return(IF_BL_PREHS); }
+blocklist_log_only	{ DP; return(IF_BL_LOGONLY); }
+blocklist		{ DP; return(IF_BLOCKLIST); }
 unix			{ DP; return(UNIX); }
 port			{ DP; return(PORT); }
 

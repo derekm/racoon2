@@ -7,10 +7,10 @@
  * AUTH verification results.  Never call this for INVALID_SYNTAX on a
  * live SA / rekey, QCD, window mismatch or DPD silence.
  *
- * Runtime switch (read once in iked_blocklist_init()):
- *   RACOON2_BLOCKLIST=off   never talk to blocklistd
- *   RACOON2_BLOCKLIST=log   log what would be reported, send nothing
- *   unset / anything else   report (default)
+ * Policy (iked_blocklist_decide, re-read by iked_blocklist_init() at
+ * start and on reload): racoon2.conf interface { blocklist on; } enables
+ * it (default off); blocklist_log_only and blocklist_prehandshake refine
+ * it (both default off).  RACOON2_BLOCKLIST=off|log can only lower it.
  */
 #include <config.h>
 
@@ -41,7 +41,6 @@
 #endif
 #define IKED_BL_SLOTS		256	/* per-source table, power of 2 */
 
-enum { BL_MODE_ON, BL_MODE_LOG, BL_MODE_OFF };
 
 struct bl_slot {
 	int family;
@@ -50,7 +49,8 @@ struct bl_slot {
 };
 
 static struct blocklist *blstate;
-static int bl_mode = -1;
+static struct iked_bl_cfg bl_cfg;
+static int bl_inited;
 static struct bl_slot bl_slots[IKED_BL_SLOTS];
 static time_t bl_global_sec;
 static unsigned int bl_global_cnt;
@@ -69,21 +69,24 @@ bl_now(void)
 void
 iked_blocklist_init(void)
 {
-	const char *s;
-
-	if (bl_mode == -1) {
-		s = getenv("RACOON2_BLOCKLIST");
-		if (s != NULL && strcmp(s, "off") == 0)
-			bl_mode = BL_MODE_OFF;
-		else if (s != NULL && strcmp(s, "log") == 0)
-			bl_mode = BL_MODE_LOG;
-		else
-			bl_mode = BL_MODE_ON;
-		plog(PLOG_INFO, PLOGLOC, NULL, "blocklist: mode %s\n",
-		    bl_mode == BL_MODE_OFF ? "off" :
-		    bl_mode == BL_MODE_LOG ? "log-only" : "on");
-	}
-	if (bl_mode == BL_MODE_ON && blstate == NULL)
+	bl_cfg.env = getenv("RACOON2_BLOCKLIST");
+	bl_cfg.enable = rcf_interface_head &&
+	    rcf_interface_head->blocklist == RCT_BOOL_ON;
+	bl_cfg.log_only = rcf_interface_head &&
+	    rcf_interface_head->blocklist_log_only == RCT_BOOL_ON;
+	bl_cfg.prehandshake = rcf_interface_head &&
+	    rcf_interface_head->blocklist_prehandshake == RCT_BOOL_ON;
+	bl_inited = 1;
+	plog(PLOG_INFO, PLOGLOC, NULL,
+	    "blocklist: %s%s%s\n",
+	    iked_blocklist_decide(IKED_BL_AUTH_FAIL, &bl_cfg) == IKED_BL_DROP ?
+	    "off" : iked_blocklist_decide(IKED_BL_AUTH_FAIL, &bl_cfg) ==
+	    IKED_BL_LOG ? "log-only" : "on",
+	    bl_cfg.enable && bl_cfg.prehandshake ?
+	    ", pre-handshake reports on" : "",
+	    bl_cfg.env ? " (RACOON2_BLOCKLIST set)" : "");
+	if (iked_blocklist_decide(IKED_BL_AUTH_FAIL, &bl_cfg) == IKED_BL_SEND &&
+	    blstate == NULL)
 		blstate = blocklist_open();
 }
 
@@ -177,11 +180,12 @@ iked_blocklist_peer(int action, int fd, const struct sockaddr *sa,
 	struct sockaddr_storage ss;
 	struct bl_slot key;
 	socklen_t slen;
-	int blaction;
+	int blaction, verdict;
 
-	if (bl_mode == -1)
+	if (!bl_inited)
 		iked_blocklist_init();
-	if (bl_mode == BL_MODE_OFF || sa == NULL)
+	verdict = iked_blocklist_decide(action, &bl_cfg);
+	if (verdict == IKED_BL_DROP || sa == NULL)
 		return;
 	if (bl_normalise(sa, &ss, &slen, &key) != 0)
 		return;
@@ -189,6 +193,7 @@ iked_blocklist_peer(int action, int fd, const struct sockaddr *sa,
 		why = "iked";
 
 	switch (action) {
+	case IKED_BL_PREHS_FAIL:
 	case IKED_BL_AUTH_FAIL:
 		blaction = BLOCKLIST_AUTH_FAIL;
 		if (!bl_allow(&key)) {
@@ -215,7 +220,7 @@ iked_blocklist_peer(int action, int fd, const struct sockaddr *sa,
 		return;
 	}
 
-	if (bl_mode == BL_MODE_LOG) {
+	if (verdict == IKED_BL_LOG) {
 		plog(PLOG_INFO, PLOGLOC, NULL,
 		    "blocklist(log-only): would report %s %s fd=%d (%s)\n",
 		    blaction == BLOCKLIST_AUTH_OK ? "AUTH_OK" : "AUTH_FAIL",
@@ -224,7 +229,7 @@ iked_blocklist_peer(int action, int fd, const struct sockaddr *sa,
 	}
 
 	if (blstate == NULL)
-		iked_blocklist_init();
+		blstate = blocklist_open();
 	if (blstate == NULL)
 		return;
 	if (blocklist_sa_r(blstate, blaction, fd,

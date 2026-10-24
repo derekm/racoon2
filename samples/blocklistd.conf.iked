@@ -10,8 +10,13 @@
 #    iked rate-limits AUTH_FAIL to one report per source per 10s, so
 #    a scanner is banned after ~30s of sustained garbage.
 #
+# iked reports nothing unless racoon2.conf has, in interface { }:
+#   blocklist on;                 (AUTH results; default off)
+#   blocklist_prehandshake on;    (spoofable pre-IKE_SA_INIT class;
+#                                  default off -- see doc/blocklist.md)
 # iked reports (blocklist_sa_r with the receiving UDP socket):
-#   shortpacket / malformed_len / zero-cookie / AUTH_FAILED -> AUTH_FAIL
+#   AUTH_FAILED                                             -> AUTH_FAIL
+#   shortpacket / malformed_len / zero-cookie (prehandshake) -> AUTH_FAIL
 #   AUTH_OK (IKEv2 responder auth success)                  -> AUTH_OK
 #                                                     (resets the count)
 

@@ -1126,7 +1126,7 @@ isakmp_handler(int so_isakmp)
 		     len, sizeof(isakmp), extralen);
 		if (!isakmp_bl_esp_like((struct sockaddr *)&local, len,
 		    extralen))
-			iked_blocklist_peer(IKED_BL_AUTH_FAIL, so_isakmp,
+			iked_blocklist_peer(IKED_BL_PREHS_FAIL, so_isakmp,
 			    (struct sockaddr *)&remote, "iked shortpacket");
 		++isakmpstat.shortpacket;
 	dummy_receive:
@@ -1147,7 +1147,7 @@ isakmp_handler(int so_isakmp)
 		     ntohl(isakmp.len));
 		if (!isakmp_bl_esp_like((struct sockaddr *)&local, len,
 		    extralen))
-			iked_blocklist_peer(IKED_BL_AUTH_FAIL, so_isakmp,
+			iked_blocklist_peer(IKED_BL_PREHS_FAIL, so_isakmp,
 			    (struct sockaddr *)&remote, "iked malformed_len");
 		++isakmpstat.malformed_message;
 		goto dummy_receive;
@@ -1158,7 +1158,7 @@ isakmp_handler(int so_isakmp)
 		     ntohl(isakmp.len));
 		if (!isakmp_bl_esp_like((struct sockaddr *)&local, len,
 		    extralen))
-			iked_blocklist_peer(IKED_BL_AUTH_FAIL, so_isakmp,
+			iked_blocklist_peer(IKED_BL_PREHS_FAIL, so_isakmp,
 			    (struct sockaddr *)&remote, "iked malformed_len");
 		++isakmpstat.malformed_message;
 		goto dummy_receive;

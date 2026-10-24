@@ -256,7 +256,7 @@ ikev1_main(rc_vchar_t *msg, struct sockaddr *remote, struct sockaddr *local)
 	if (memcmp(&isakmp->i_ck, r_ck0, sizeof(isakmp_cookie_t)) == 0) {
 		plog(PLOG_PROTOERR, PLOGLOC, 0,
 		     "malformed cookie received.\n");
-		iked_blocklist_peer(IKED_BL_AUTH_FAIL,
+		iked_blocklist_peer(IKED_BL_PREHS_FAIL,
 		    isakmp_find_socket_blocklist(local), remote,
 		    "iked zero-cookie");
 		++isakmpstat.invalid_ike_spi;
