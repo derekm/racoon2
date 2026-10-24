@@ -1,11 +1,16 @@
 #!/bin/sh
 
-if [ -f @prefix@/etc/racoon2/spmd.pwd ]
+# DESTDIR (from "make install DESTDIR=...") stages the secret under the
+# staging root; without it a staged install would back up and replace
+# the live system's spmd.pwd.
+D=${DESTDIR:-}
+
+if [ -f "$D@prefix@/etc/racoon2/spmd.pwd" ]
 then
-	mv @prefix@/etc/racoon2/spmd.pwd @prefix@/etc/racoon2/spmd.pwd.bak
+	mv "$D@prefix@/etc/racoon2/spmd.pwd" "$D@prefix@/etc/racoon2/spmd.pwd.bak"
 fi
 
-if [ -x @prefix@/sbin/pskgen ]
+if [ -x "$D@prefix@/sbin/pskgen" ]
 then
-	@prefix@/sbin/pskgen -r -o @prefix@/etc/racoon2/spmd.pwd
+	"$D@prefix@/sbin/pskgen" -r -o "$D@prefix@/etc/racoon2/spmd.pwd"
 fi

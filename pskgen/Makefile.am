@@ -7,5 +7,5 @@ install-exec-hook:
 	$(INSTALL) -d $(DESTDIR)$(sysconfdir)
 	tr -d '\r' < autogen.spmd.pwd > autogen.spmd.pwd.lf && mv autogen.spmd.pwd.lf autogen.spmd.pwd
 	if test -f $(DESTDIR)$(sysconfdir)/spmd.pwd; then :; else \
-		sh ./autogen.spmd.pwd; \
+		DESTDIR="$(DESTDIR)" sh ./autogen.spmd.pwd; \
 	fi
