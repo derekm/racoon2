@@ -126,9 +126,10 @@ rtsock_process(void)
 		plog(PLOG_INTWARN, PLOGLOC, 0,
 		     "netlink: rtnetlink %s; address events lost\n",
 		     rcpfk_nlr_str(r));
-		if (r == RCPFK_NLR_OVERFLOW)
-			return;
-		break;		/* still dispatch the part that fit */
+		/* a truncated datagram's head is not dispatched either: its
+		 * last message is cut off, and a partial RTM_NEWADDR must not
+		 * be acted on (same rule as the XFRM reader) */
+		return;
 	case RCPFK_NLR_ERROR:
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "netlink: recv: %s\n", strerror(errno));

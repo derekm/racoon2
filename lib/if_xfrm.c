@@ -212,7 +212,9 @@ xfrm_recv(int fd, void *buf, size_t len, int flags, ssize_t *got)
 		else
 			xfrm_test_enobufs_fd = -1;
 		*got = 0;
-		errno = ENOBUFS;
+		/* errno deliberately NOT set: callers must not depend on it
+		 * after an OVERFLOW classification */
+		errno = 0;
 		return RCPFK_NLR_OVERFLOW;
 	}
 #endif
@@ -1790,7 +1792,9 @@ xfrm_sync(struct nlmsghdr *n, int (*each_sa)(struct nlmsghdr *, void *),
 			return EPIPE;
 		case RCPFK_NLR_SHORT:
 			return EINVAL;
-		default:	/* OVERFLOW / ERROR: errno is set */
+		case RCPFK_NLR_OVERFLOW:
+			return ENOBUFS;	/* explicit: never rely on errno here */
+		default:	/* RCPFK_NLR_ERROR: errno is set by recvmsg */
 			return errno ? errno : EIO;
 		}
 		r = rcpfk_nl_walk(rbuf, (size_t)len, xfrm_sync_msg, &c);

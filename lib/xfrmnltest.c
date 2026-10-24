@@ -1013,6 +1013,29 @@ test_nl_recv(void)
 	    "datagram truncated (MSG_TRUNC)") == 0, "nlr_str");
 }
 
+/* xfrm_sync on an overflowed request socket returns ENOBUFS itself, not
+ * whatever errno happens to hold (the injector leaves errno 0) */
+static void
+test_sync_enobufs(void)
+{
+	char buf[NLMSG_SPACE(sizeof(struct xfrm_usersa_id))], junk[16];
+	struct nlmsghdr *n = (struct nlmsghdr *)buf;
+	int e;
+
+	setup();
+	memset(buf, 0, sizeof(buf));
+	n->nlmsg_len = sizeof(buf);
+	n->nlmsg_type = XFRM_MSG_GETSA;
+	n->nlmsg_flags = NLM_F_REQUEST;
+	memset(junk, 0, sizeof(junk));
+	kput(k_req, junk, sizeof(junk));	/* make the request fd readable */
+	xfrm_test_enobufs_fd = xfrm_req_fd;
+	xfrm_test_enobufs_more = 0;
+	e = xfrm_sync(n, NULL, NULL);
+	CHECK(e == ENOBUFS, "sync overflow returns ENOBUFS explicitly (%d)", e);
+	(void)kget();
+}
+
 /* a notification datagram larger than XFRM_RCVBUFLEN lost messages: it is
  * counted, triggers a resync and its surviving head is not delivered */
 static void
@@ -1735,6 +1758,7 @@ main(void)
 	test_nl_walk();
 	test_nl_recv();
 	test_trunc_resync();
+	test_sync_enobufs();
 	test_fill_selector();
 	test_policy_path_mixed_family();
 	test_offload_attrs();
