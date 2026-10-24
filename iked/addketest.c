@@ -35,9 +35,19 @@
 #include "isakmp_impl.h"
 #include "ikev2.h"
 #include "ikev2_impl.h"
+#include "ikev2_addke_rekey.h"
 #include "dhgroup.h"
 
 /* logging stubs (same rationale as fragtest.c) */
+void
+proplist_discard(struct prop_pair **p)
+{
+	/* addketest links ikev2_addke_rekey.o whose real ctx_free frees a
+	 * null/absent parsed_sa via proplist_discard, but the tests drive the
+	 * fake ops->ctx_free instead; this stub only satisfies the linker. */
+	(void)p;
+}
+
 char *
 plog(int prio, const char *loc, struct rc_log *lg, const char *fmt, ...)
 {
@@ -97,9 +107,6 @@ static unsigned int last_error_type;
 static int n_rekey_complete;
 static int n_child_install;	/* ikev2_child_addke_install() invocations */
 static int child_install_fail;	/* make ikev2_child_addke_install() fail */
-static int rekey_complete_ret = -1;	/* controllable return of the rekey
-					   complete() stub: -1 pre-send, -2
-					   post-send(KEr on wire), 0 success */
 
 void
 isakmp_log(struct ikev2_sa *ike_sa, struct sockaddr *local,
@@ -389,16 +396,6 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *sa, rc_vchar_t *ss,
 	return 0;
 }
 
-int
-ikev2_rekey_responder_addke_complete(struct ikev2_sa *sa, rc_vchar_t *sk,
-				     rc_vchar_t *ct, uint32_t followup_msgid,
-				     unsigned int ke_method)
-{
-	(void)sa; (void)sk; (void)ct; (void)followup_msgid; (void)ke_method;
-	++n_rekey_complete;
-	return rekey_complete_ret;
-}
-
 uint32_t
 ikev2_rekey_ikesa_init_followup_msgid(struct ikev2_sa *sa)
 {
@@ -661,6 +658,66 @@ followup_reset(void)
 	n_child_install = 0;
 }
 
+/* --- fake ops to drive the REAL ikev2_rekey_responder_addke_complete() ---
+ * Its deps are injected here instead of the ~100-symbol iked closure: the
+ * production ops live in ikev2_rekey.c and are installed by the daemon. */
+static int t_transmit_ret, t_pkt_null, t_derive_ret, t_establish_ret;
+static int n_set_state_dead;
+
+static int
+fk_ar_transmit(struct ikev2_sa *sa, rc_vchar_t *pkt,
+	       struct sockaddr *a, struct sockaddr *b)
+{
+	(void)sa; (void)a; (void)b;
+	++n_rekey_complete;	/* complete() reached the transmit point */
+	if (t_transmit_ret == 0)	/* success: transmit consumed pkt */
+		rc_vfree(pkt);
+	return t_transmit_ret;
+}
+static rc_vchar_t *
+fk_ar_packet(int exch, int flags, uint32_t m, struct ikev2_sa *sa,
+	     struct ikev2_payloads *p)
+{
+	(void)exch; (void)flags; (void)m; (void)sa; (void)p;
+	return t_pkt_null ? NULL : rc_vnew("P", 1);
+}
+static int
+fk_ar_derive(struct ikev2_sa *ns, struct ikev2_sa *os,
+	     rc_vchar_t *g, rc_vchar_t *sk)
+{ (void)ns; (void)os; (void)g; (void)sk; return t_derive_ret; }
+static int
+fk_ar_establish(struct ikev2_rekey_responder_ctx *c)
+{ (void)c; return t_establish_ret; }
+static void
+fk_ar_ctxfree(struct ikev2_rekey_responder_ctx *c) { free(c); }
+static void
+fk_ar_setstate(struct ikev2_sa *sa, int st)
+{ (void)sa; if (st == IKEV2_STATE_DEAD) ++n_set_state_dead; }
+static void
+fk_ar_killtimer(struct ikev2_sa *sa) { sa->addke_rekey_timer = NULL; }
+
+static void
+ar_ops_reset(void)
+{
+	t_transmit_ret = 0; t_pkt_null = 0; t_derive_ret = 0;
+	t_establish_ret = 0; n_set_state_dead = 0;
+	n_rekey_complete = 0; n_respond_error = 0; last_error_type = 0;
+}
+static void
+ar_install_test_ops(void)
+{
+	static const struct ikev2_addke_rekey_ops o = {
+		.transmit_response	= fk_ar_transmit,
+		.packet_construct	= fk_ar_packet,
+		.derive			= fk_ar_derive,
+		.establish		= fk_ar_establish,
+		.ctx_free		= fk_ar_ctxfree,
+		.set_state		= fk_ar_setstate,
+		.kill_timer		= fk_ar_killtimer,
+	};
+	ikev2_addke_rekey_set_ops(&o);
+}
+
 static int
 link_is(const struct ikev2_child_sa *c, const char *link)
 {
@@ -711,7 +768,8 @@ followup_link_tests(void)
 	rc_vfree(msg);
 
 	/* 2. a pending IKE-SA rekey is no licence for another link */
-	followup_reset();
+	ar_install_test_ops();
+	ar_ops_reset();
 	sa->addke_rekey_pending = 1;
 	sa->addke_rekey_link = rc_vnew("rekey-link", 10);
 	msg = followup_msg(m768, pub, "other-link", 10);
@@ -721,15 +779,28 @@ followup_link_tests(void)
 	      "followup: rekey pending, link mismatch -> STATE_NOT_FOUND, "
 	      "rekey not completed");
 	rc_vfree(msg);
-	/* control: the rekey's own link reaches the rekey completion */
-	followup_reset();
-	msg = followup_msg(m768, pub, "rekey-link", 10);
-	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
-			       (struct sockaddr *)&loc);
-	CHECK(n_rekey_complete == 1 &&
-	      strstr(last_log, "no pending ADDKE state") == NULL,
-	      "followup: rekey link match -> rekey completion");
-	rc_vfree(msg);
+	/* control: the rekey's own link reaches the rekey completion (the
+	 * REAL complete() now, with the fake ops; a parked ctx lets it run to
+	 * the transmit point so n_rekey_complete==1 as the old stub did) */
+	{
+		struct ikev2_sa *ns = calloc(1, sizeof(*ns));
+		struct ikev2_rekey_responder_ctx *c =
+			calloc(1, sizeof(*c));
+		c->old_sa = sa;
+		c->new_sa = ns;
+		sa->addke_rekey_complete = c;
+		ar_ops_reset();
+		msg = followup_msg(m768, pub, "rekey-link", 10);
+		ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+				       (struct sockaddr *)&loc);
+		CHECK(n_rekey_complete == 1 &&
+		      strstr(last_log, "no pending ADDKE state") == NULL,
+		      "followup: rekey link match -> rekey completion");
+		rc_vfree(msg);
+		/* complete() freed ctx (fk_ar_ctxfree); new_sa is ours */
+		sa->addke_rekey_complete = NULL;
+		free(ns);
+	}
 	sa->addke_rekey_pending = 0;
 	rc_vfree(sa->addke_rekey_link);
 	sa->addke_rekey_link = NULL;
@@ -778,10 +849,11 @@ followup_link_tests(void)
 	EVP_PKEY_free(kp);
 }
 
-/* The IKE-SA rekey responder's complete() return contract (reviewers 14/15):
- * the CALLER must answer STATE_NOT_FOUND only on a pre-send failure (-1) and
- * must NOT answer it once the final KEr is on the wire (-2); success (0) is a
- * clean complete. Pinned here at the state machine the caller exercises. */
+/* The IKE-SA rekey responder's complete() return contract (reviewers 14/15),
+ * now driven through the REAL ikev2_rekey_responder_addke_complete() with the
+ * injected fake ops. The CALLER must answer STATE_NOT_FOUND only on a pre-send
+ * failure (-1) and must NOT answer it once the final KEr is on the wire (-2);
+ * success (0) is a clean complete. */
 static void
 followup_rekey_contract_tests(void)
 {
@@ -791,7 +863,7 @@ followup_rekey_contract_tests(void)
 	struct ikev2_sa *sa;
 	struct sockaddr_in loc, rem;
 
-	printf("--- IKE_FOLLOWUP_KE rekey complete() -1/-2/0 contract ---\n");
+	printf("--- IKE_FOLLOWUP_KE rekey complete() caller contract ---\n");
 	memset(&loc, 0, sizeof(loc));
 	memset(&rem, 0, sizeof(rem));
 	loc.sin_family = rem.sin_family = AF_INET;
@@ -808,54 +880,151 @@ followup_rekey_contract_tests(void)
 	}
 	IKEV2_CHILD_LIST_INIT(&sa->children);
 	sa->recv_message_id = 3;
+	ar_install_test_ops();
 
-	/* -1: pre-send failure -> the caller may answer STATE_NOT_FOUND */
-	followup_reset();
-	rekey_complete_ret = -1;
-	sa->addke_rekey_pending = 1;
-	sa->addke_rekey_link = rc_vnew("rekey-link", 10);
-	msg = followup_msg(m768, pub, "rekey-link", 10);
-	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
-			       (struct sockaddr *)&loc);
-	CHECK(n_rekey_complete == 1 && n_respond_error == 1 &&
-	      last_error_type == IKEV2_STATE_NOT_FOUND,
-	      "rekey complete -1 (pre-send) -> STATE_NOT_FOUND answered");
-	rc_vfree(msg);
-	rc_vfree(sa->addke_rekey_link);
-	sa->addke_rekey_link = NULL;
+	/* -1 (pre-send transmit failure): the caller DOES answer STATE_NOT_FOUND */
+	ar_ops_reset(); t_transmit_ret = -1;
+	{
+		struct ikev2_rekey_responder_ctx *c;
+		struct ikev2_sa *ns = calloc(1, sizeof(*ns));
+		sa->addke_rekey_pending = 1;
+		sa->addke_rekey_link = rc_vnew("rekey-link", 10);
+		c = calloc(1, sizeof(*c)); c->old_sa = sa; c->new_sa = ns;
+		sa->addke_rekey_complete = c;
+		msg = followup_msg(m768, pub, "rekey-link", 10);
+		ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+				       (struct sockaddr *)&loc);
+		CHECK(n_rekey_complete == 1 && n_respond_error == 1 &&
+		      last_error_type == IKEV2_STATE_NOT_FOUND,
+		      "rekey complete -1 (pre-send) -> STATE_NOT_FOUND answered");
+		rc_vfree(msg);
+		rc_vfree(sa->addke_rekey_link); sa->addke_rekey_link = NULL;
+		/* complete() freed ctx (fk_ar_ctxfree) and set the pin NULL;
+		 * it does NOT free new_sa, so free it here. */
+		sa->addke_rekey_complete = NULL;
+		free(ns);
+	}
 
-	/* -2: post-send (final KEr already on the wire) -> NO STATE_NOT_FOUND */
-	followup_reset();
-	rekey_complete_ret = -2;
-	sa->addke_rekey_pending = 1;
-	sa->addke_rekey_link = rc_vnew("rekey-link", 10);
-	msg = followup_msg(m768, pub, "rekey-link", 10);
-	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
-			       (struct sockaddr *)&loc);
-	CHECK(n_rekey_complete == 1 && n_respond_error == 0,
-	      "rekey complete -2 (KEr on wire) -> NO STATE_NOT_FOUND");
-	rc_vfree(msg);
-	rc_vfree(sa->addke_rekey_link);
-	sa->addke_rekey_link = NULL;
+	/* -2 (KEr already on the wire, derive fails): NO STATE_NOT_FOUND */
+	ar_ops_reset(); t_derive_ret = -1;
+	{
+		struct ikev2_rekey_responder_ctx *c;
+		struct ikev2_sa *ns = calloc(1, sizeof(*ns));
+		sa->addke_rekey_pending = 1;
+		sa->addke_rekey_link = rc_vnew("rekey-link", 10);
+		c = calloc(1, sizeof(*c)); c->old_sa = sa; c->new_sa = ns;
+		sa->addke_rekey_complete = c;
+		msg = followup_msg(m768, pub, "rekey-link", 10);
+		ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+				       (struct sockaddr *)&loc);
+		CHECK(n_rekey_complete == 1 && n_respond_error == 0,
+		      "rekey complete -2 (KEr on wire) -> NO STATE_NOT_FOUND");
+		rc_vfree(msg);
+		rc_vfree(sa->addke_rekey_link); sa->addke_rekey_link = NULL;
+		sa->addke_rekey_complete = NULL;
+		free(ns);
+	}
 
-	/* 0: success -> no error */
-	followup_reset();
-	rekey_complete_ret = 0;
-	sa->addke_rekey_pending = 1;
-	sa->addke_rekey_link = rc_vnew("rekey-link", 10);
-	msg = followup_msg(m768, pub, "rekey-link", 10);
-	ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
-			       (struct sockaddr *)&loc);
-	CHECK(n_rekey_complete == 1 && n_respond_error == 0,
-	      "rekey complete 0 (success) -> NO error");
-	rc_vfree(msg);
-	rc_vfree(sa->addke_rekey_link);
-	sa->addke_rekey_link = NULL;
+	/* 0 (success): no error */
+	ar_ops_reset();
+	{
+		struct ikev2_rekey_responder_ctx *c;
+		struct ikev2_sa *ns = calloc(1, sizeof(*ns));
+		sa->addke_rekey_pending = 1;
+		sa->addke_rekey_link = rc_vnew("rekey-link", 10);
+		c = calloc(1, sizeof(*c)); c->old_sa = sa; c->new_sa = ns;
+		sa->addke_rekey_complete = c;
+		msg = followup_msg(m768, pub, "rekey-link", 10);
+		ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
+				       (struct sockaddr *)&loc);
+		CHECK(n_rekey_complete == 1 && n_respond_error == 0,
+		      "rekey complete 0 (success) -> NO error");
+		rc_vfree(msg);
+		rc_vfree(sa->addke_rekey_link); sa->addke_rekey_link = NULL;
+		sa->addke_rekey_complete = NULL;
+		free(ns);
+	}
 
-	rekey_complete_ret = -1;	/* restore default */
+	ikev2_addke_rekey_set_ops(NULL);	/* fail-closed default (NULL) */
 	free(sa);
 	rc_vfree(pub);
 	EVP_PKEY_free(kp);
+}
+
+/* The INTERNAL -1/-2 decision of complete() itself (which branch it takes,
+ * vs the caller's reaction above): pre-send problems (no ctx / packet alloc
+ * fail / transmit fail) are -1; a post-send failure (KEr cached, SKEYSEED or
+ * finish failed) is -2; all well is 0.  Each failure path DEADs new_sa. */
+static void
+complete_internal_tests(void)
+{
+	struct ikev2_sa *os, *ns;
+	struct ikev2_rekey_responder_ctx *ctx;
+	rc_vchar_t *ct = rc_vnew("C", 1);
+	int r;
+
+	printf("--- complete() internal -1/-2/0 decision ---\n");
+	ar_install_test_ops();
+	if (!ct) { fail = 1; return; }
+
+	/* no parked ctx -> -1 (nothing on the wire, no DEAD) */
+	os = calloc(1, sizeof(*os));
+	ar_ops_reset();
+	r = ikev2_rekey_responder_addke_complete(os, NULL, ct, 0, 0);
+	CHECK(r == -1 && n_rekey_complete == 0 && n_set_state_dead == 0,
+	      "complete: no parked ctx -> -1");
+	free(os);
+
+	/* packet alloc fail -> -1 pre-send + DEAD(new_sa) */
+	os = calloc(1, sizeof(*os)); ns = calloc(1, sizeof(*ns));
+	ctx = calloc(1, sizeof(*ctx)); ctx->old_sa = os; ctx->new_sa = ns;
+	os->addke_rekey_complete = ctx;
+	ar_ops_reset(); t_pkt_null = 1;
+	r = ikev2_rekey_responder_addke_complete(os, NULL, ct, 0, 0);
+	CHECK(r == -1 && n_set_state_dead == 1, "complete: pkt fail -> -1 + DEAD");
+	free(os); free(ns);
+
+	/* transmit fail -> -1 pre-send + DEAD */
+	os = calloc(1, sizeof(*os)); ns = calloc(1, sizeof(*ns));
+	ctx = calloc(1, sizeof(*ctx)); ctx->new_sa = ns;
+	os->addke_rekey_complete = ctx;
+	ar_ops_reset(); t_transmit_ret = -1;
+	r = ikev2_rekey_responder_addke_complete(os, NULL, ct, 0, 0);
+	CHECK(r == -1 && n_rekey_complete == 1 && n_set_state_dead == 1,
+	      "complete: transmit fail -> -1 + DEAD");
+	free(os); free(ns);
+
+	/* transmit ok + derive fail -> -2 post-send + DEAD */
+	os = calloc(1, sizeof(*os)); ns = calloc(1, sizeof(*ns));
+	ctx = calloc(1, sizeof(*ctx)); ctx->new_sa = ns;
+	os->addke_rekey_complete = ctx;
+	ar_ops_reset(); t_derive_ret = -1;
+	r = ikev2_rekey_responder_addke_complete(os, NULL, ct, 0, 0);
+	CHECK(r == -2 && n_rekey_complete == 1 && n_set_state_dead == 1,
+	      "complete: KEr sent, derive fail -> -2 + DEAD");
+	free(os); free(ns);
+
+	/* transmit ok + finish fail -> -2 post-send + DEAD */
+	os = calloc(1, sizeof(*os)); ns = calloc(1, sizeof(*ns));
+	ctx = calloc(1, sizeof(*ctx)); ctx->new_sa = ns;
+	os->addke_rekey_complete = ctx;
+	ar_ops_reset(); t_establish_ret = -1;
+	r = ikev2_rekey_responder_addke_complete(os, NULL, ct, 0, 0);
+	CHECK(r == -2 && n_set_state_dead == 1, "complete: finish fail -> -2");
+
+	/* all ok -> 0, NO DEAD, new_sa deferred link dropped */
+	os = calloc(1, sizeof(*os)); ns = calloc(1, sizeof(*ns));
+	os->new_sa = ns;
+	ctx = calloc(1, sizeof(*ctx)); ctx->old_sa = os; ctx->new_sa = ns;
+	os->addke_rekey_complete = ctx;
+	ar_ops_reset();
+	r = ikev2_rekey_responder_addke_complete(os, NULL, ct, 0, 0);
+	CHECK(r == 0 && n_set_state_dead == 0 && os->new_sa == NULL,
+	      "complete: all ok -> 0, no DEAD, link dropped");
+	free(os); free(ns);
+
+	ikev2_addke_rekey_set_ops(NULL);
+	rc_vfree(ct);
 }
 
 /* Multi-round ADDKE (RFC 9370 s2.2.1): the responder accumulates SK(1..n)
@@ -1349,6 +1518,7 @@ main(void)
 	followup_link_tests();
 	followup_multiround_tests();
 	followup_rekey_contract_tests();
+	complete_internal_tests();
 	retransmit_no_double_sk_tests();
 	initiator_multiround_tests();
 	initiator_classical_round_tests();

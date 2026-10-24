@@ -54,6 +54,7 @@
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
 #include "ikev2_notify.h"
+#include "ikev2_addke_rekey.h"
 #include "ike_conf.h"
 #include "dhgroup.h"
 #include "oakley.h"		/* for prototypes */
@@ -816,24 +817,31 @@ ikev2_rekey_init_send_tail(struct ikev2_rekey_init_ctx *ctx)
 	ikev2_rekey_init_ctx_free(ctx);
 }
 /**** async DH helpers (defined below) ****/
-struct ikev2_rekey_responder_ctx {
-	struct ikev2_sa *old_sa;
-	struct ikev2_sa *new_sa;
-	int serial;	/* old_sa->serial_number, for liveness check */
-	struct algdef *dhdef;
-	uint32_t message_id;
-	struct sockaddr *local;
-	struct sockaddr *remote;
-	struct ikev2_payloads payl;
-	int payl_inited;
-	struct prop_pair **parsed_sa;
-	rc_vchar_t *g_ir;
-	rc_vchar_t *ke_r;
-	rc_vchar_t *pkt;
-	int addke_deferred;	/* SKEYSEED pending the IKE_FOLLOWUP_KE */
-};
-static void ikev2_rekey_responder_ctx_free(struct ikev2_rekey_responder_ctx *);
 static void ikev2_rekey_ikesa_responder_dh_done(int, void *);
+
+/* Production ops for the responder completion core.  Defined here (not in
+ * ikev2_addke_rekey.c) so the iked link closure this drags in
+ * (packet_construct / transmit_response / skeyseed / finish / set_state /
+ * schedule) stays in the real daemon and out of addketest, which installs a
+ * small fake ops instead. */
+static void
+rekey_prod_kill_timer(struct ikev2_sa *sa)
+{
+	if (sa->addke_rekey_timer)
+		SCHED_KILL(sa->addke_rekey_timer);
+	sa->addke_rekey_timer = NULL;
+}
+
+static const struct ikev2_addke_rekey_ops ikev2_addke_rekey_prod_ops = {
+	.transmit_response	= ikev2_transmit_response,
+	.packet_construct	= ikev2_packet_construct,
+	.derive			= rekey_skeyseed,
+	.establish		= ikev2_rekey_responder_finish,
+	.ctx_free		= ikev2_rekey_responder_ctx_free,
+	.set_state		= ikev2_set_state,
+	.kill_timer		= rekey_prod_kill_timer,
+};
+
 void
 ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 			    struct sockaddr *remote,
@@ -861,6 +869,9 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 	struct ikev2_rekey_responder_ctx *ctx;
 
 	ikev2_payloads_init(&payl);
+
+	/* the responder completion core needs the production ops active */
+	ikev2_addke_rekey_set_ops(&ikev2_addke_rekey_prod_ops);
 
 	ikehdr = (struct ikev2_header *)request->v;
 	message_id = get_uint32(&ikehdr->message_id);
@@ -1060,32 +1071,12 @@ ikev2_rekey_ikesa_responder(rc_vchar_t *request,
 
 /* async DH for ikev2_rekey_ikesa_responder (generate+compute g^ir) */
 
-static void
-ikev2_rekey_responder_ctx_free(struct ikev2_rekey_responder_ctx *ctx)
-{
-	if (ctx->local)
-		rc_free(ctx->local);
-	if (ctx->remote)
-		rc_free(ctx->remote);
-	if (ctx->parsed_sa)
-		proplist_discard(ctx->parsed_sa);
-	if (ctx->g_ir)
-		rc_vfreez(ctx->g_ir);
-	if (ctx->ke_r)
-		rc_vfree(ctx->ke_r);
-	if (ctx->pkt)
-		rc_vfree(ctx->pkt);
-	if (ctx->payl_inited)
-		ikev2_payloads_destroy(&ctx->payl);
-	rc_free(ctx);
-}
-
 /*
  * Finish an IKE-SA rekey: derive the new SA's keys (SKEYSEED already
  * computed by the caller), move children, repin NATD, ESTABLISHED.
  * Shared by the normal tail and the ADDKE deferred completion.
  */
-static int
+int
 ikev2_rekey_responder_finish(struct ikev2_rekey_responder_ctx *ctx)
 {
 	struct ikev2_sa *old_sa = ctx->old_sa;
@@ -1513,138 +1504,6 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 		old_sa->addke_rekey_sk = acc;
 	}
 	return 0;
-}
-
-/*
- * Complete a deferred ADDKE IKE-SA rekey once the final IKE_FOLLOWUP_KE
- * supplied the last SK(n): SKEYSEED = prf(SK_d, g^ir | Ni | Nr | SK(1)|...)
- * (rfc9370 s2.2.4), then keys/adopt/establish.  Called from
- * ikev2_followup_ke_recv() on the IKE thread.  ke_method is this round's
- * KE group id (the final round is not necessarily methods[0]).
- *
- * Returns 0 on success; -1 on a PRE-SEND failure (the final KEr never left,
- * nothing cached — the caller may report STATE_NOT_FOUND); -2 on a POST-SEND
- * failure (the final KEr was transmitted and cached, but local SKEYSEED/
- * finish failed — the peer holds the success signal, so the caller MUST NOT
- * report STATE_NOT_FOUND; it abandons the rekey locally).
- */
-int
-ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
-				     rc_vchar_t *addke_sk,
-				     rc_vchar_t *ct,
-				     uint32_t followup_msgid,
-				     unsigned int ke_method)
-{
-	struct ikev2_rekey_responder_ctx *ctx;
-	struct ikev2_sa *new_sa;
-
-	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
-	old_sa->addke_rekey_complete = NULL;
-	if (!ctx || !ctx->new_sa) {
-		plog(PLOG_INTERR, PLOGLOC, 0,
-		     "addke rekey complete: no parked ctx\n");
-		return -1;
-	}
-	new_sa = ctx->new_sa;
-
-	if (old_sa->addke_rekey_timer) {
-		SCHED_KILL(old_sa->addke_rekey_timer);
-		old_sa->addke_rekey_timer = NULL;
-	}
-	old_sa->addke_rekey_pending = 0;
-
-	/*
-	 * Transmit the FINAL followup KEr BEFORE the irreversible establish
-	 * (SKEYSEED + finish adopts children). A failed final send must NOT
-	 * take the establish-then-kill path (fail would DEAD a new_sa that
-	 * already owns children). On success the response cache is armed and
-	 * then we derive keys + establish; the peer's next message-id is
-	 * answered from the cache.
-	 */
-	{
-		struct ikev2_payloads payl;
-		struct ikev2payl_ke_h keh;
-		rc_vchar_t *ker = 0;
-		rc_vchar_t *pkt = 0;
-
-		ikev2_payloads_init(&payl);
-		memset(&keh, 0, sizeof(keh));
-		keh.dh_group_id = htons((uint16_t)ke_method);
-		ker = rc_vprepend(ct, &keh, sizeof(keh));
-		if (!ker) {
-			ikev2_payloads_destroy(&payl);
-			goto fail;
-		}
-		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ker, FALSE);
-		/* rfc9370: the followup response echoes the INITIATOR's
-		 * followup REQUEST message id (the responder's rekey ctx
-		 * carries the CREATE_CHILD id, which differs once the
-		 * followup runs as its own exchange). */
-		pkt = ikev2_packet_construct(IKEV2EXCH_IKE_FOLLOWUP_KE,
-					     (old_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
-					     IKEV2FLAG_RESPONSE,
-					     followup_msgid, old_sa, &payl);
-		rc_vfree(ker);
-		if (!pkt) {
-			ikev2_payloads_destroy(&payl);
-			goto fail;
-		}
-		if (ikev2_transmit_response(old_sa, pkt, ctx->local,
-					    ctx->remote) != 0) {
-			rc_vfree(pkt);	/* failure: caller owns the packet */
-			ikev2_payloads_destroy(&payl);
-			goto fail;
-		}
-		ikev2_payloads_destroy(&payl);
-	}
-
-	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir, addke_sk) != 0)
-		goto fail_after_send;
-	rc_vfreez(old_sa->addke_rekey_sk);
-	old_sa->addke_rekey_sk = NULL;
-	old_sa->addke_rekey_round = 0;
-	if (ikev2_rekey_responder_finish(ctx) != 0)
-		goto fail_after_send;
-	/* success: the rekeyed SA is complete in its own right (already in
-	 * the SA list via ikev2_create_sa); drop the deferred-rekey link so
-	 * disposing the OLD SA cannot recurse into a live ESTABLISHED SA
-	 * that owns children (ikev2_dispose_sa asserts the child list is
-	 * empty).  Mirrors the initiator tail and the ADDKE timeout/abandon
-	 * paths, which all clear old_sa->new_sa. */
-	old_sa->new_sa = NULL;
-
-	ikev2_rekey_responder_ctx_free(ctx);
-	return 0;
-
-      fail:
-	isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-		   "failed completing ADDKE IKE-SA rekey\n");
-	if (new_sa)
-		ikev2_set_state(new_sa, IKEV2_STATE_DEAD);
-	ikev2_rekey_responder_ctx_free(ctx);
-	old_sa->new_sa = NULL;
-	old_sa->rekey_inprogress = FALSE;
-	return -1;
-
-      fail_after_send:
-	/* The final KEr was already transmitted and cached above: the peer
-	 * holds the success signal. Do NOT report it failed (the caller maps
-	 * -1 to STATE_NOT_FOUND, which would REPLACE the armed cache and tell
-	 * the initiator to abandon a rekey it already believes completed).
-	 * Tear down locally and return -2 so the caller abandons WITHOUT an
-	 * error notify. */
-	isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-		   "IKE-SA rekey KEr sent but local establish failed; "
-		   "abandoning without notification\n");
-	rc_vfreez(old_sa->addke_rekey_sk);
-	old_sa->addke_rekey_sk = NULL;
-	old_sa->addke_rekey_round = 0;
-	if (new_sa)
-		ikev2_set_state(new_sa, IKEV2_STATE_DEAD);
-	ikev2_rekey_responder_ctx_free(ctx);
-	old_sa->new_sa = NULL;
-	old_sa->rekey_inprogress = FALSE;
-	return -2;
 }
 
 static void
