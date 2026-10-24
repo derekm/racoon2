@@ -387,15 +387,6 @@ dh_value_len(struct dhgroup *dhgrp)
 	return dhgrp == &fake_dh ? FAKE_DH_PUBLEN : 0;
 }
 
-int
-ikev2_rekey_responder_addke_round(struct ikev2_sa *sa, rc_vchar_t *ss,
-				  rc_vchar_t *ct, uint32_t followup_msgid,
-				  unsigned int ke_method)
-{
-	(void)sa; (void)ss; (void)ct; (void)followup_msgid; (void)ke_method;
-	return 0;
-}
-
 uint32_t
 ikev2_rekey_ikesa_init_followup_msgid(struct ikev2_sa *sa)
 {
@@ -662,7 +653,7 @@ followup_reset(void)
  * Its deps are injected here instead of the ~100-symbol iked closure: the
  * production ops live in ikev2_rekey.c and are installed by the daemon. */
 static int t_transmit_ret, t_pkt_null, t_derive_ret, t_establish_ret;
-static int n_set_state_dead;
+static int t_random_null, n_arm_timer, n_set_state_dead;
 
 static int
 fk_ar_transmit(struct ikev2_sa *sa, rc_vchar_t *pkt,
@@ -695,12 +686,26 @@ fk_ar_setstate(struct ikev2_sa *sa, int st)
 { (void)sa; if (st == IKEV2_STATE_DEAD) ++n_set_state_dead; }
 static void
 fk_ar_killtimer(struct ikev2_sa *sa) { sa->addke_rekey_timer = NULL; }
+static void
+fk_ar_armtimer(struct ikev2_sa *sa) { (void)sa; ++n_arm_timer; }
+static rc_vchar_t *
+fk_ar_random(uint32_t n) { (void)n; return t_random_null ? NULL : rc_vnew("L", 1); }
+static rc_vchar_t *
+fk_ar_notify(int proto, uint8_t *spi, int sev, int type,
+	     uint8_t *data, size_t datalen)
+{
+	(void)proto; (void)spi; (void)sev; (void)type;
+	(void)data; (void)datalen;
+	/* ikev2_payloads_push(..., TRUE) frees this payload; fresh alloc */
+	return rc_vnew("N", 1);
+}
 
 static void
 ar_ops_reset(void)
 {
 	t_transmit_ret = 0; t_pkt_null = 0; t_derive_ret = 0;
-	t_establish_ret = 0; n_set_state_dead = 0;
+	t_establish_ret = 0; t_random_null = 0;
+	n_arm_timer = 0; n_set_state_dead = 0;
 	n_rekey_complete = 0; n_respond_error = 0; last_error_type = 0;
 }
 static void
@@ -714,6 +719,9 @@ ar_install_test_ops(void)
 		.ctx_free		= fk_ar_ctxfree,
 		.set_state		= fk_ar_setstate,
 		.kill_timer		= fk_ar_killtimer,
+		.arm_timer		= fk_ar_armtimer,
+		.random_bytes		= fk_ar_random,
+		.notify_payload		= fk_ar_notify,
 	};
 	ikev2_addke_rekey_set_ops(&o);
 }
@@ -1488,6 +1496,137 @@ collect_rounds_tests(void)
 	}
 }
 
+/* --- drive the REAL ikev2_rekey_responder_addke_round() via fake ops --- */
+#define ROUND_METHOD 33U
+
+static void
+round_fixture(struct ikev2_sa **os_out, int nrounds, int round)
+{
+	struct ikev2_sa *os = calloc(1, sizeof(*os));
+	struct ikev2_rekey_responder_ctx *ctx;
+	int i;
+
+	os->new_sa = calloc(1, sizeof(*os->new_sa));
+	os->new_sa->negotiated_sa =
+	    calloc(1, sizeof(*os->new_sa->negotiated_sa));
+	os->new_sa->negotiated_sa->addke_nrounds = nrounds;
+	os->new_sa->negotiated_sa->addke = (int)ROUND_METHOD;
+	for (i = 0; i < nrounds && i < 8; i++)
+		os->new_sa->negotiated_sa->addke_methods[i] = ROUND_METHOD;
+	os->addke_rekey_round = round;
+	ctx = calloc(1, sizeof(*ctx));
+	os->addke_rekey_complete = ctx;
+	*os_out = os;
+}
+
+static void
+round_cleanup(struct ikev2_sa *os)
+{
+	free(os->addke_rekey_complete);
+	if (os->addke_rekey_sk)
+		rc_vfree(os->addke_rekey_sk);
+	if (os->addke_rekey_link)
+		rc_vfree(os->addke_rekey_link);
+	if (os->new_sa->negotiated_sa)
+		free(os->new_sa->negotiated_sa);
+	free(os->new_sa);
+	free(os);
+}
+
+static void
+round_internal_tests(void)
+{
+	struct ikev2_sa *os;
+	rc_vchar_t *ct, *ss;
+	int r;
+
+	/* ---- 1. pre-send LOCAL transmit fail: -2, NOTHING committed ---- */
+	ar_install_test_ops();
+	ar_ops_reset();
+	t_transmit_ret = -1;
+	ct = rc_vnew("C", 1); ss = rc_vnew("S", 1);
+	round_fixture(&os, 2, 0);
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 5, ROUND_METHOD);
+	CHECK(r == -2, "round: transmit fail -> -2 (pre-send local)");
+	CHECK(os->addke_rekey_round == 0, "round: transmit fail did not advance");
+	CHECK(os->addke_rekey_sk == NULL, "round: transmit fail did not commit SK");
+	CHECK(os->addke_rekey_link == NULL, "round: transmit fail did not mint link");
+	CHECK(n_arm_timer == 0, "round: transmit fail did not re-arm timer");
+	/* retransmit re-entry now succeeds; SK appended exactly once (the
+	 * failed send's pre-allocated copy was freed, so re-entry cannot
+	 * double it). */
+	ar_ops_reset();	/* keeps round/sk/link state; clears transmit fail */
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 5, ROUND_METHOD);
+	CHECK(r == 1 && os->addke_rekey_round == 1,
+	      "round: retransmit re-entry commits the round");
+	CHECK(os->addke_rekey_sk != NULL && os->addke_rekey_sk->l == ss->l,
+	      "round: failed-send retransmit cannot double-SK");
+	round_cleanup(os); rc_vfree(ct); rc_vfree(ss);
+
+	/* ---- 2. non-final success: SK(1) appended, link minted, timer armed
+	 *        then a SECOND non-final round accumulates SK(1|2) ---- */
+	ar_ops_reset();
+	ct = rc_vnew("C", 1); ss = rc_vnew("S", 1);
+	round_fixture(&os, 3, 0);
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 5, ROUND_METHOD);
+	CHECK(r == 1 && os->addke_rekey_round == 1,
+	      "round: non-final success advances the round");
+	CHECK(os->addke_rekey_sk != NULL && os->addke_rekey_sk->l == ss->l,
+	      "round: non-final appends one SK");
+	CHECK(os->addke_rekey_link != NULL, "round: non-final mints a fresh link");
+	CHECK(n_arm_timer == 1 && os->addke_rekey_timer == NULL,
+	      "round: non-final (re)arms the followup timer");
+	ar_ops_reset();
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 6, ROUND_METHOD);
+	CHECK(r == 1 && os->addke_rekey_round == 2 &&
+	      os->addke_rekey_sk->l == 2 * ss->l,
+	      "round: second non-final accumulates SK(1|2)");
+	round_cleanup(os); rc_vfree(ct); rc_vfree(ss);
+
+	/* ---- 3. final round: SK(n) appended, NO transmit, NO arm ---- */
+	ar_ops_reset();
+	t_transmit_ret = -999;	/* a transmit here would return -2 */
+	ct = rc_vnew("C", 1); ss = rc_vnew("S", 1);
+	round_fixture(&os, 1, 0);	/* single round: round 0 IS final */
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 5, ROUND_METHOD);
+	CHECK(r == 0, "round: final round returns 0");
+	CHECK(os->addke_rekey_sk != NULL && os->addke_rekey_sk->l == ss->l,
+	      "round: final round appends the last SK");
+	CHECK(n_rekey_complete == 0 && n_arm_timer == 0,
+	      "round: final round transmits nothing");
+	round_cleanup(os); rc_vfree(ct); rc_vfree(ss);
+
+	/* ---- 4. pre-send alloc failures: -1, nothing committed ---- */
+	ar_ops_reset(); t_random_null = 1;
+	ct = rc_vnew("C", 1); ss = rc_vnew("S", 1);
+	round_fixture(&os, 2, 0);
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 5, ROUND_METHOD);
+	CHECK(r == -1 && os->addke_rekey_round == 0 && os->addke_rekey_sk == NULL,
+	      "round: random_bytes fail -> -1, nothing committed");
+	round_cleanup(os); rc_vfree(ct); rc_vfree(ss);
+
+	ar_ops_reset(); t_pkt_null = 1;
+	ct = rc_vnew("C", 1); ss = rc_vnew("S", 1);
+	round_fixture(&os, 2, 0);
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 5, ROUND_METHOD);
+	CHECK(r == -1 && os->addke_rekey_round == 0 && os->addke_rekey_sk == NULL,
+	      "round: packet construct fail -> -1, nothing committed");
+	round_cleanup(os); rc_vfree(ct); rc_vfree(ss);
+
+	/* ---- 5. no negotiated ADDKE on new_sa: -1 ---- */
+	ar_ops_reset();
+	ct = rc_vnew("C", 1); ss = rc_vnew("S", 1);
+	os = calloc(1, sizeof(*os));
+	os->new_sa = calloc(1, sizeof(*os->new_sa));	/* negotiated_sa NULL */
+	os->addke_rekey_round = 0;
+	os->addke_rekey_complete =
+	    calloc(1, sizeof(struct ikev2_rekey_responder_ctx));
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 5, ROUND_METHOD);
+	CHECK(r == -1, "round: no negotiated_sa -> -1");
+	free(os->addke_rekey_complete);
+	free(os->new_sa); free(os); rc_vfree(ct); rc_vfree(ss);
+}
+
 int
 main(void)
 {
@@ -1522,6 +1661,7 @@ main(void)
 	followup_multiround_tests();
 	followup_rekey_contract_tests();
 	complete_internal_tests();
+	round_internal_tests();
 	retransmit_no_double_sk_tests();
 	initiator_multiround_tests();
 	initiator_classical_round_tests();

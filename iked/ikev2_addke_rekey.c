@@ -184,3 +184,160 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 	old_sa->rekey_inprogress = FALSE;
 	return -2;
 }
+
+/*
+ * One IKE-FOLLOWUP-KE round of the IKE-SA rekey (RFC 9370 s2.2.4):
+ *   - non-final round: mint a fresh ADDITIONAL_KEY_EXCHANGE link, append
+ *     this round's SK(1..n), transmit the response, and ONLY after a
+ *     successful transmit atomically commit (SK + link + round advance);
+ *   - final round: append the last SK(n) so complete() has SK(1..n); no
+ *     response is transmitted here.
+ * Returns 1 (non-final committed), 0 (final), -1 (pre-send failure), or
+ * -2 (pre-send LOCAL send failure).  The SK is appended only on the
+ * non-final path AFTER a successful transmit, never up front, so a
+ * failed-send retransmit that re-enters cannot double-SK (ss1|ss2).
+ */
+int
+ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
+				  rc_vchar_t *ct, uint32_t msgid,
+				  unsigned int ke_method)
+{
+	const struct ikev2_addke_rekey_ops *ops = g_ops;
+	struct ikev2_rekey_responder_ctx *ctx;
+	struct ikev2_sa *new_sa;
+	int nrounds, round;
+	unsigned int expect;
+
+	if (!old_sa || !ss || !ct)
+		return -1;
+	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
+	new_sa = old_sa->new_sa;
+	if (!new_sa || !new_sa->negotiated_sa)
+		return -1;
+
+	nrounds = new_sa->negotiated_sa->addke_nrounds;
+	if (nrounds <= 0)
+		nrounds = new_sa->negotiated_sa->addke != 0 ? 1 : 0;
+	round = old_sa->addke_rekey_round;
+	if (round < 0 || round >= nrounds || round >= 8)
+		return -1;
+	expect = new_sa->negotiated_sa->addke_methods[round];
+	if (expect == 0)
+		expect = (unsigned int)new_sa->negotiated_sa->addke;
+	if (ke_method != expect) {
+		isakmp_log(old_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
+			   "IKE-SA rekey followup method %u != round %d "
+			   "method %u\n",
+			   ke_method, round, expect);
+		return -1;
+	}
+
+	/* Note: this round's SK is appended ONLY in the paths below, and
+	 * for the non-final path only AFTER a successful transmit —
+	 * appending up here would double-SK (ss1|ss2) if a failed send is
+	 * retransmitted and this handler re-enters. */
+
+	if (round + 1 < nrounds) {
+		rc_vchar_t *new_link;
+		struct ikev2_payloads payl;
+		struct ikev2payl_ke_h keh;
+		rc_vchar_t *ker = 0;
+		rc_vchar_t *pkt = 0;
+		rc_vchar_t *acc = NULL;
+
+		new_link = ops->random_bytes(16);
+		if (!new_link)
+			return -1;
+		ikev2_payloads_init(&payl);
+		memset(&keh, 0, sizeof(keh));
+		keh.dh_group_id = htons((uint16_t)ke_method);
+		ker = rc_vprepend(ct, &keh, sizeof(keh));
+		if (!ker) {
+			ikev2_payloads_destroy(&payl);
+			rc_vfree(new_link);
+			return -1;
+		}
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_KE, ker, FALSE);
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ops->notify_payload(
+				IKEV2_NOTIFY_PROTO_NONE, 0, 0,
+				IKEV2_ADDITIONAL_KEY_EXCHANGE,
+				new_link->v, new_link->l),
+				    TRUE);
+		/* Pre-allocate this round's SK(1..n) BEFORE the send so
+		 * nothing that can fail (malloc) remains after a successful
+		 * transmit.  Link + SK + round are then committed below as
+		 * ONE atomic pointer-swing.  -2 therefore means only a
+		 * PRE-SEND local send failure (window restore + re-entry is
+		 * correct there); the caller restores the inbound window
+		 * and sends NO error notify (a retransmit of this followup
+		 * re-enters). */
+		acc = rc_vmalloc((old_sa->addke_rekey_sk ?
+				  old_sa->addke_rekey_sk->l : 0) + ss->l);
+		if (!acc) {
+			ikev2_payloads_destroy(&payl);
+			rc_vfree(new_link);
+			return -1;
+		}
+		if (old_sa->addke_rekey_sk)
+			memcpy(acc->v, old_sa->addke_rekey_sk->v,
+			       old_sa->addke_rekey_sk->l);
+		memcpy((uint8_t *)acc->v + acc->l - ss->l, ss->v, ss->l);
+		pkt = ops->packet_construct(
+			IKEV2EXCH_IKE_FOLLOWUP_KE,
+			(old_sa->is_initiator ? IKEV2FLAG_INITIATOR : 0) |
+			IKEV2FLAG_RESPONSE,
+			msgid, old_sa, &payl);
+		rc_vfree(ker);
+		if (!pkt) {
+			ikev2_payloads_destroy(&payl);
+			rc_vfree(new_link);
+			rc_vfree(acc);
+			return -1;
+		}
+		if (ops->transmit_response(old_sa, pkt, ctx->local,
+					   ctx->remote) != 0) {
+			ikev2_payloads_destroy(&payl);
+			rc_vfree(pkt);	/* failure: caller owns the packet */
+			rc_vfree(new_link);
+			rc_vfree(acc);
+			return -2;
+		}
+		ikev2_payloads_destroy(&payl);
+		/* atomic commit after a successful transmit (no alloc here):
+		 * SK + link + round swing together. */
+		if (old_sa->addke_rekey_sk)
+			rc_vfreez(old_sa->addke_rekey_sk);
+		old_sa->addke_rekey_sk = acc;
+		acc = NULL;
+		rc_vfreez(old_sa->addke_rekey_link);
+		old_sa->addke_rekey_link = new_link;
+		new_link = NULL;
+		old_sa->addke_rekey_round = round + 1;
+		ops->kill_timer(old_sa);
+		ops->arm_timer(old_sa);
+		isakmp_log(old_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "IKE-SA rekey ADDKE round %d/%d done; minted "
+			   "followup link\n",
+			   round + 1, nrounds);
+		return 1;
+	}
+	/* final round: no response is transmitted here; append the last
+	 * SK(n) so the caller's complete() has SK(1..n). */
+	{
+		rc_vchar_t *acc;
+
+		acc = rc_vmalloc((old_sa->addke_rekey_sk ?
+				  old_sa->addke_rekey_sk->l : 0) + ss->l);
+		if (!acc)
+			return -1;
+		if (old_sa->addke_rekey_sk) {
+			memcpy(acc->v, old_sa->addke_rekey_sk->v,
+			       old_sa->addke_rekey_sk->l);
+			rc_vfreez(old_sa->addke_rekey_sk);
+		}
+		memcpy((uint8_t *)acc->v + acc->l - ss->l, ss->v, ss->l);
+		old_sa->addke_rekey_sk = acc;
+	}
+	return 0;
+}

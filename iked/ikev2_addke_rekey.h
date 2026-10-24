@@ -33,9 +33,9 @@ struct ikev2_rekey_responder_ctx {
 	int addke_deferred;	/* SKEYSEED pending the IKE_FOLLOWUP_KE */
 };
 
-/* Injectable dependencies of ikev2_rekey_responder_addke_complete.  The
- * production set_ops() wires these to the real iked functions; addketest
- * installs fakes to drive the -1 / -2 / 0 branches. */
+/* Injectable dependencies of the responder core (complete() + round()).
+ * The production set_ops() wires these to the real iked functions; the test
+ * installs fakes to drive the -1 / -2 / 0 branches and the round contract. */
 struct ikev2_addke_rekey_ops {
 	int (*transmit_response)(struct ikev2_sa *, rc_vchar_t *pkt,
 				 struct sockaddr *local, struct sockaddr *remote);
@@ -48,7 +48,24 @@ struct ikev2_addke_rekey_ops {
 	void (*ctx_free)(struct ikev2_rekey_responder_ctx *);
 	void (*set_state)(struct ikev2_sa *, int);
 	void (*kill_timer)(struct ikev2_sa *);
+	void (*arm_timer)(struct ikev2_sa *);	/* re-arm the followup timeout */
+	rc_vchar_t *(*random_bytes)(uint32_t n);	/* eay_set_random */
+	rc_vchar_t *(*notify_payload)(int proto, uint8_t *spi, int sev,
+				      int type, uint8_t *data, size_t datalen);
 };
+
+/* One non-final IKE_FOLLOWUP_KE round (RFC 9370 s2.2.4).  Returns:
+ *  1  non-final round committed (SK + fresh ADDKE link + round advanced,
+ *     all only AFTER a successful transmit);
+ *  0  final round (last SK(n) accumulated for complete(), no transmit);
+ * -1  pre-send failure (nothing on the wire — caller may send an error);
+ * -2  pre-send LOCAL send failure (nothing committed — the caller restores
+ *     the inbound window and sends NO error notify; a retransmit re-enters).
+ * The SK is appended ONLY after a successful transmit on the non-final path
+ * (never up front), so a failed-send retransmit cannot double-SK. */
+int ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
+				      rc_vchar_t *ct, uint32_t msgid,
+				      unsigned int ke_method);
 
 void ikev2_addke_rekey_set_ops(const struct ikev2_addke_rekey_ops *);
 
