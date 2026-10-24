@@ -47,6 +47,12 @@ counter (`nft dropped N datagram` in the row log) to agree with the H1
 replay marker, so a marker with zero drops, or a drop with no marker, both
 fail.
 
+Promoted 2026-10-24 (3/3 consecutive isolated passes, kernel 6.12, own
+daemons per netns): `i2ike-collide`, `i2ike-drain`, `i2ike-drain-noaccept`,
+`i2ipubkey-rsa`, `i2ipubkey-ecdsa`, `i2icert-wire*` (4) and `i2io4-*` (2)
+now run in the Ubuntu/Fedora full matrix.  A CI failure in one of them is a
+regression, not a flake: fix the code, never demote the row back to silence it.
+
 New-row staging: `gate=box` rows (`i2ike-dup`, `i2ike-reqdrop`,
 `i2iinit-charon`, `i2iinit-charonr`) run ONLY when
 `R2_BOX=yes` (the box runner sets it; CI must not).  They stay out of
