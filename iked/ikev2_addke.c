@@ -780,9 +780,19 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	int is_response;
 	int rekey_link_match = 0;	/* followup links to the pending IKE-SA rekey */
 	int type;
+	uint32_t saved_mid;
 
 	ikehdr = (struct ikev2_header *)msg->v;
 	is_response = (ikehdr->flags & IKEV2FLAG_RESPONSE) != 0;
+
+	/*
+	 * Snapshot the inbound window before the ack below. If the response we
+	 * build for this followup fails to transmit, we restore the window so a
+	 * retransmit of THIS message id passes the ordering check and re-enters
+	 * (the SK deferral makes re-entry safe); without it the window is
+	 * consumed and the retransmit is dropped, killing the round.
+	 */
+	saved_mid = ike_sa->recv_message_id;
 
 	/*
 	 * Ack the request's message id in our window (same as
@@ -1320,6 +1330,21 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		rr = ikev2_rekey_responder_addke_round(ike_sa, ss, ct,
 			get_uint32(&ikehdr->message_id), ke_method);
 		if (rr < 0) {
+			if (rr == -2) {
+				/* local send failure (or ENOMEM after a KEr was
+				 * already sent): restore the inbound window so a
+				 * retransmit of this followup re-enters, and do
+				 * NOT emit STATE_NOT_FOUND (not a protocol
+				 * error). The SK was not appended (deferred), so
+				 * re-entry cannot double it. */
+				isakmp_log(ike_sa, local, remote, msg,
+				    PLOG_INTERR, PLOGLOC,
+				    "IKE-SA rekey round response send failed\n");
+				ike_sa->recv_message_id = saved_mid;
+				rc_vfreez(ss);
+				ss = 0;
+				goto done;
+			}
 			isakmp_log(ike_sa, local, remote, msg,
 				   PLOG_INTERR, PLOGLOC,
 				   "failed ADDKE IKE-SA rekey round\n");
@@ -1443,6 +1468,11 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			if (new_link)
 				rc_vfree(new_link);
 			ikev2_payloads_destroy(&payl);
+			/* restore the inbound window so a retransmit of THIS id
+			 * passes the ordering check and re-enters; the SK/link/
+			 * round are all uncommitted, so re-entry (after the SK
+			 * deferral) cannot double them. */
+			ike_sa->recv_message_id = saved_mid;
 			goto done;	/* not sent: keep old link + round */
 		}
 		ikev2_payloads_destroy(&payl);
@@ -1456,36 +1486,36 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			       child_sa->addke_link->l,
 			       child_sa->addke_round + 1,
 			       child_sa->addke_nrounds));
-			       }
-			       }
+		}
+	}
 
-			       /* advance the round cursor; install only after the last round */
-			       /* append this round's shared secret to SK(1)..SK(n), in order, now that
-			       * a response was actually sent — a retransmit that re-enters this
-			       * handler cannot append again (a pre-send append would double addke_sk
-			       * into ss1|ss2 and desync the key against the initiator). */
-			       {
-			       rc_vchar_t *acc;
-
-			       acc = rc_vmalloc((child_sa->addke_sk ?
-			       child_sa->addke_sk->l : 0) + ss->l);
-			       if (!acc) {
-			       rc_vfreez(ss);
-			       ss = 0;
-			       goto nomem;
-			       }
-			       if (child_sa->addke_sk) {
-			       memcpy(acc->v, child_sa->addke_sk->v,
+	/* advance the round cursor; install only after the last round */
+	/* append this round's shared secret to SK(1)..SK(n), in order, now that
+	 * a response was actually sent — a retransmit that re-enters this
+	 * handler cannot append again (a pre-send append would double addke_sk
+	 * into ss1|ss2 and desync the key against the initiator). */
+	{
+		rc_vchar_t *acc;
+	
+		acc = rc_vmalloc((child_sa->addke_sk ?
+				  child_sa->addke_sk->l : 0) + ss->l);
+		if (!acc) {
+			rc_vfreez(ss);
+			ss = 0;
+			goto nomem;
+		}
+		if (child_sa->addke_sk) {
+			memcpy(acc->v, child_sa->addke_sk->v,
 			       child_sa->addke_sk->l);
-			       rc_vfreez(child_sa->addke_sk);
-			       child_sa->addke_sk = 0;
-			       }
-			       memcpy(acc->v + acc->l - ss->l, ss->v, ss->l);
-			       child_sa->addke_sk = acc;
-			       rc_vfreez(ss);
-			       ss = 0;
-			       }
-			       ++child_sa->addke_round;
+			rc_vfreez(child_sa->addke_sk);
+			child_sa->addke_sk = 0;
+		}
+		memcpy(acc->v + acc->l - ss->l, ss->v, ss->l);
+		child_sa->addke_sk = acc;
+		rc_vfreez(ss);
+		ss = 0;
+	}
+	++child_sa->addke_round;
 	if (child_sa->addke_round < child_sa->addke_nrounds) {
 		/* more rounds: re-arm the followup-wait timeout, stay pending */
 		if (child_sa->timer)

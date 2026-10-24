@@ -267,7 +267,14 @@ ikev2_transmit(struct ikev2_sa *sa, rc_vchar_t *pkt)
 void
 ikev2_update_message_id(struct ikev2_sa *sa, uint32_t id, int is_response)
 {
-	(void)sa; (void)id; (void)is_response;
+	/* mirror the real request path (ikev2_transmit.c:266-287): advance
+	 * recv_message_id only when id matches the current window. This lets
+	 * tests observe the window-restore on a failed transmit (defect 1:
+	 * a failed response must NOT leave the window consumed or the
+	 * retransmit is dropped by the ordering check). */
+	if (sa && !is_response && sa->recv_message_id == id &&
+	    sa->recv_message_id != 0xFFFFFFFF)
+		++sa->recv_message_id;
 }
 
 /* ikev2_followup_wakeup_next() (after the IKE_FOLLOWUP_KE window commit)
@@ -916,6 +923,11 @@ retransmit_no_double_sk_tests(void)
 	      "retransmit: failed send does not advance round");
 	CHECK(n_respond_error == 0,
 	      "retransmit: failed send is not a protocol error");
+	/* defect 1: a failed send must restore the inbound window (back to
+	 * the followup's id) so the initiator's retransmit is NOT dropped by
+	 * the ordering check and CAN re-enter. */
+	CHECK(sa->recv_message_id == 3,
+	      "retransmit: failed send restores the inbound window");
 
 	/* retransmit now succeeds: SK appended exactly once (not doubled) */
 	followup_reset();

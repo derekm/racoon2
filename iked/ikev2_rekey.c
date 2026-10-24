@@ -1345,7 +1345,12 @@ ikev2_rekey_abandon_parked(struct ikev2_sa *old_sa)
  * Returns 1 if a non-final reply (KEr + a fresh 16441) was sent and the
  * rekey stays parked for the next followup.  Returns 0 if this was the
  * final round: the caller must ikev2_rekey_responder_addke_complete()
- * with old_sa->addke_rekey_sk (SK(1)|...|SK(n)).  Returns -1 on error.
+ * with old_sa->addke_rekey_sk (SK(1)|...|SK(n)).  Returns -1 on a
+ * protocol/alloc error (the caller reports STATE_NOT_FOUND).  Returns -2 on
+ * a LOCAL send failure (or ENOMEM after a KEr was already sent): the caller
+ * restores the inbound window and sends NO error notify, so a retransmit of
+ * this followup re-enters — this round's SK was NOT appended (deferred), so
+ * re-entry cannot double it.
  *
  * RFC 9370 s2.2.4: every non-final IKE_FOLLOWUP_KE response MUST carry a
  * fresh ADDITIONAL_KEY_EXCHANGE link.  Completing after SK(1) and
@@ -1433,7 +1438,9 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 			ikev2_payloads_destroy(&payl);
 			rc_vfree(pkt);	/* failure: caller owns the packet */
 			rc_vfree(new_link);
-			return -1;
+			return -2;	/* local send failure: caller restores the
+					 * inbound window and sends NO error notify
+					 * (a retransmit of this followup re-enters) */
 		}
 		ikev2_payloads_destroy(&payl);
 		/* append this round's SK now (transmit succeeded) */
@@ -1443,8 +1450,13 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 			acc = rc_vmalloc((old_sa->addke_rekey_sk ?
 					  old_sa->addke_rekey_sk->l : 0) +
 					 ss->l);
-			if (!acc)
-				return -1;
+			if (!acc) {
+				rc_vfree(new_link);
+				/* ENOMEM after the KEr was already sent: do not
+				 * report STATE_NOT_FOUND (the peer got the KEr);
+				 * the parked rekey is torn down by its timeout. */
+				return -2;
+			}
 			if (old_sa->addke_rekey_sk) {
 				memcpy(acc->v, old_sa->addke_rekey_sk->v,
 				       old_sa->addke_rekey_sk->l);
