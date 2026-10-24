@@ -1324,18 +1324,21 @@ ikev2_rekey_abandon_parked(struct ikev2_sa *old_sa)
 
 #ifdef WITH_ADDKE
 	if (old_sa->addke_rekey_pending && old_sa->addke_rekey_init) {
+		/* Initiator park: DEAD + release the init ctx (the unlisted
+		 * initiator stub is NOT freed here — ike_sa.c disposes it
+		 * separately via ikev2_rekey_init_stub).  Do NOT return: the
+		 * responder pin may be set on the same SA as well. */
 		ikev2_rekey_ikesa_init_abandon(old_sa);
-		return;
 	}
 #endif
 	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
-	old_sa->addke_rekey_complete = NULL;
-	old_sa->addke_rekey_pending = 0;
-	if (old_sa->addke_rekey_timer) {
-		SCHED_KILL(old_sa->addke_rekey_timer);
-		old_sa->addke_rekey_timer = NULL;
-	}
 	if (ctx) {
+		old_sa->addke_rekey_complete = NULL;
+		old_sa->addke_rekey_pending = 0;
+		if (old_sa->addke_rekey_timer) {
+			SCHED_KILL(old_sa->addke_rekey_timer);
+			old_sa->addke_rekey_timer = NULL;
+		}
 		isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "abandoning parked ADDKE IKE-SA rekey\n");
 		if (ctx->new_sa)
@@ -1915,6 +1918,22 @@ ikev2_rekey_ikesa_init_abandon(struct ikev2_sa *old_sa)
 	old_sa->rekey_inprogress = FALSE;
 }
 #endif
+
+/* The unlisted initiator-stub SA parked on a rekey init (or NULL).  ike_sa.c
+ * cannot reach the init ctx type (struct ikev2_rekey_init_recv_ctx is local),
+ * so dispose uses this to free the stub.  Defined after that struct. */
+struct ikev2_sa *
+ikev2_rekey_init_stub(struct ikev2_sa *old_sa)
+{
+#ifdef WITH_ADDKE
+	struct ikev2_rekey_init_recv_ctx *ctx;
+
+	if ((ctx = (struct ikev2_rekey_init_recv_ctx *)
+	    old_sa->addke_rekey_init) != NULL)
+		return ctx->new_sa;
+#endif
+	return NULL;
+}
 
 /* runs on the IKE thread after the worker computed g^ir */
 static void
