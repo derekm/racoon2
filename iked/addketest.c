@@ -653,7 +653,7 @@ followup_reset(void)
  * Its deps are injected here instead of the ~100-symbol iked closure: the
  * production ops live in ikev2_rekey.c and are installed by the daemon. */
 static int t_transmit_ret, t_pkt_null, t_derive_ret, t_establish_ret;
-static int t_random_null, n_arm_timer, n_set_state_dead;
+static int t_random_null, n_arm_timer, n_set_state_dead, n_ar_ctxfree;
 
 static int
 fk_ar_transmit(struct ikev2_sa *sa, rc_vchar_t *pkt,
@@ -680,7 +680,7 @@ static int
 fk_ar_establish(struct ikev2_rekey_responder_ctx *c)
 { (void)c; return t_establish_ret; }
 static void
-fk_ar_ctxfree(struct ikev2_rekey_responder_ctx *c) { free(c); }
+fk_ar_ctxfree(struct ikev2_rekey_responder_ctx *c) { free(c); ++n_ar_ctxfree; }
 static void
 fk_ar_setstate(struct ikev2_sa *sa, int st)
 { (void)sa; if (st == IKEV2_STATE_DEAD) ++n_set_state_dead; }
@@ -705,7 +705,7 @@ ar_ops_reset(void)
 {
 	t_transmit_ret = 0; t_pkt_null = 0; t_derive_ret = 0;
 	t_establish_ret = 0; t_random_null = 0;
-	n_arm_timer = 0; n_set_state_dead = 0;
+	n_arm_timer = 0; n_set_state_dead = 0; n_ar_ctxfree = 0;
 	n_rekey_complete = 0; n_respond_error = 0; last_error_type = 0;
 }
 static void
@@ -1011,6 +1011,20 @@ complete_internal_tests(void)
 	r = ikev2_rekey_responder_addke_complete(os, NULL, ct, 0, 0);
 	CHECK(r == -1 && n_rekey_complete == 0 && n_set_state_dead == 0,
 	      "complete: no parked ctx -> -1");
+	free(os);
+
+	/* parked ctx with NO new_sa -> -1; the detached ctx is released via the
+	 * injected ops->ctx_free (fake count == 1), the pin is cleared, and
+	 * there is no DEAD (no new_sa to dead). */
+	os = calloc(1, sizeof(*os));
+	ctx = calloc(1, sizeof(*ctx)); ctx->old_sa = os; ctx->new_sa = NULL;
+	os->addke_rekey_complete = ctx;
+	ar_ops_reset();
+	r = ikev2_rekey_responder_addke_complete(os, NULL, ct, 0, 0);
+	CHECK(r == -1 && n_ar_ctxfree == 1 && os->addke_rekey_complete == NULL &&
+	      n_set_state_dead == 0,
+	      "complete: parked ctx w/o new_sa -> -1, ctx freed via ops, no DEAD");
+	/* the fake ctx_free freed ctx; os owns only itself now */
 	free(os);
 
 	/* packet alloc fail -> -1 pre-send + DEAD(new_sa) */

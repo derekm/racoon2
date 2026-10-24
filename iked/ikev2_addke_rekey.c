@@ -66,24 +66,28 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 	struct ikev2_rekey_responder_ctx *ctx;
 	struct ikev2_sa *new_sa;
 
-	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
-	old_sa->addke_rekey_complete = NULL;
-
 	if (ops == NULL) {
-		/* fail-closed: no injected ops. Release a parked ctx (if any)
-		 * so a missing-ops install cannot leak it. */
-		if (ctx)
-			ikev2_rekey_responder_ctx_free(ctx);
+		/* Missing-ops install is NOT an abort: don't touch the parked
+		 * pin.  ikev2_rekey_abandon_parked and the followup timeout
+		 * DEAD ctx->new_sa THROUGH that pin and clear it via dispose;
+		 * detaching (or freeing) the ctx here would orphan new_sa in
+		 * the SA list instead of failing closed. */
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "addke rekey complete: ops not installed\n");
 		return -1;
 	}
+
+	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
+	old_sa->addke_rekey_complete = NULL;
+
 	if (!ctx || !ctx->new_sa) {
 		plog(PLOG_INTERR, PLOGLOC, 0,
 		     "addke rekey complete: no parked ctx\n");
-		/* complete() owns the detached ctx; release it rather than leak */
+		/* complete() detached the ctx; release it via the injected
+		 * ctx_free (production free, or the test's counting fake)
+		 * rather than leaking it.  Timeout never sees a detached ctx. */
 		if (ctx)
-			ikev2_rekey_responder_ctx_free(ctx);
+			ops->ctx_free(ctx);
 		return -1;
 	}
 	new_sa = ctx->new_sa;
@@ -211,6 +215,8 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 	int nrounds, round;
 	unsigned int expect;
 
+	if (ops == NULL)
+		return -1;	/* missing-ops install; nothing to do */
 	if (!old_sa || !ss || !ct)
 		return -1;
 	ctx = (struct ikev2_rekey_responder_ctx *)old_sa->addke_rekey_complete;
