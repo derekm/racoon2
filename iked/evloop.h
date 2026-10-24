@@ -22,11 +22,13 @@ void evloop_fini(void);
 /* Drop-in for select(nfds, rfds, NULL, NULL, timeout). */
 int evloop_wait(int nfds, fd_set *rfds, struct timeval *timeout);
 /*
- * select(nfds, rfds, wfds, NULL, timeout).  wfds may be NULL.  A fd set in
- * BOTH rfds and wfds is waited on for read AND write; on return each set is
- * overwritten with the fds actually ready in that direction.  This is what
- * a non-blocking TCP connect/partial-write (IKE-over-TCP, RFC 8229) needs;
- * the read-only evloop_wait() is evloop_wait_rw(nfds, rfds, NULL, timeout).
+ * select(nfds, rfds, wfds, NULL, timeout).  EITHER of rfds and wfds may be
+ * NULL (a write-only partial-write wait passes rfds=NULL, a read-only wait
+ * passes wfds=NULL), but not both.  A fd set in BOTH rfds and wfds is waited
+ * on for read AND write; on return each set is overwritten with the fds
+ * actually ready in that direction.  This is what a non-blocking TCP
+ * connect/partial-write (IKE-over-TCP, RFC 8229) needs; the read-only
+ * evloop_wait() is evloop_wait_rw(nfds, rfds, NULL, timeout).
  */
 int evloop_wait_rw(int nfds, fd_set *rfds, fd_set *wfds,
 		   struct timeval *timeout);
