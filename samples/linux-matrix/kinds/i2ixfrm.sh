@@ -27,19 +27,25 @@
 # iff the kernel accepts and reports an offloaded SA.
 nsim_offload_probe() {
 	_pns=nsimprobe-$$
-	_pid=$((700 + $$ % 200))
 	_ok=1
-	if ! modprobe netdevsim 2>/tmp/nsim-probe.err && [ ! -d /sys/bus/netdevsim ]; then
-		echo "modprobe netdevsim: $(tr '\n' ' ' </tmp/nsim-probe.err) (kernel $(uname -r))"
+	_perr=$(mktemp "${TMPDIR:-/tmp}/nsim-probe.XXXXXX") || { echo "mktemp failed"; return 1; }
+	if ! modprobe netdevsim 2>"$_perr" && [ ! -d /sys/bus/netdevsim ]; then
+		echo "modprobe netdevsim: $(tr '\n' ' ' <"$_perr") (kernel $(uname -r))"
+		rm -f "$_perr"
 		return 1
+	fi
+	if ! _pid=$(nsim_free_id 700); then
+		echo "no free netdevsim id"; rm -f "$_perr"; return 1
 	fi
 	modprobe esp4_offload 2>/dev/null || true
 	ip netns add "$_pns" || { echo "cannot create netns"; return 1; }
-	if ! echo "$_pid 1" >/sys/bus/netdevsim/new_device 2>/tmp/nsim-probe.err; then
-		echo "netdevsim new_device: $(tr '\n' ' ' </tmp/nsim-probe.err)"
+	if ! echo "$_pid 1" >/sys/bus/netdevsim/new_device 2>"$_perr"; then
+		echo "netdevsim new_device: $(tr '\n' ' ' <"$_perr")"
 		ip netns del "$_pns"
+		rm -f "$_perr"
 		return 1
 	fi
+	rm -f "$_perr"
 	sleep 1
 	_dev=$(ls /sys/bus/netdevsim/devices/netdevsim$_pid/net 2>/dev/null | head -1)
 	if [ -z "$_dev" ]; then
@@ -62,6 +68,32 @@ nsim_offload_probe() {
 	ip netns del "$_pns" 2>/dev/null
 	echo "$_pid" >/sys/bus/netdevsim/del_device 2>/dev/null
 	return $_ok
+}
+
+# nsim_free_id BASE: first netdevsim id >= BASE (BASE..BASE+199) with no
+# device; netdevsim ids are host-global, so parallel shards must not reuse one
+nsim_free_id() {
+	_i=$1
+	while [ "$_i" -lt $(($1 + 200)) ]; do
+		[ -e "/sys/bus/netdevsim/devices/netdevsim$_i" ] || { echo "$_i"; return 0; }
+		_i=$((_i + 1))
+	done
+	return 1
+}
+
+# x_teardown: idempotent cleanup of everything a row created, run on every
+# exit path (including early FAIL returns): daemons, netns, veth, nsim device
+x_teardown() {
+	pkill -9 -f "$C/" 2>/dev/null || true
+	sleep 1
+	ip netns del "$NSR" 2>/dev/null || true
+	ip netns del "$NSI" 2>/dev/null || true
+	ip link del "$VR" 2>/dev/null || true
+	if [ -n "${NSIM_ID:-}" ]; then
+		echo "$NSIM_ID" >/sys/bus/netdevsim/del_device 2>/dev/null || true
+		NSIM_ID=
+	fi
+	rm -rf "$PRIVRES_R" "$PRIVRES_I"
 }
 
 # x_mark_esp NS: mark arriving ESP so the marked inbound SA matches it
@@ -143,7 +175,7 @@ ipsec ipsec_e {
 };
 sa esp_e {
 	sa_protocol esp;
-	esp_enc_alg { aes_gcm; };
+	esp_enc_alg { $X_ESP_ENC; };
 	esp_auth_alg { non_auth; };
 	$8
 };
@@ -180,23 +212,29 @@ kind_i2ixfrm() {
 	case "$name" in
 	*-mark)
 		POLX='mark { value 0x42; mask 0xff; };'
-		x_mark_esp "$NSR" && x_mark_esp "$NSI" || { log "FAIL: cannot mark inbound ESP"; return 1; }
+		x_mark_esp "$NSR" && x_mark_esp "$NSI" || { log "FAIL: cannot mark inbound ESP"; x_teardown; return 1; }
 		;;
 	*-offload)
-		NSIM_ID=$((800 + $(printf '%s' "$name" | cksum | cut -c1-3) % 150))
 		modprobe netdevsim 2>/dev/null || true
 		modprobe esp4_offload 2>/dev/null || true
-		echo "$NSIM_ID 1" >/sys/bus/netdevsim/new_device || { log "FAIL: netdevsim new_device"; return 1; }
+		_id=$(nsim_free_id 900) || { log "FAIL: no free netdevsim id"; x_teardown; return 1; }
+		echo "$_id 1" >/sys/bus/netdevsim/new_device || { log "FAIL: netdevsim new_device"; x_teardown; return 1; }
+		NSIM_ID=$_id	# owned by this row from here on: x_teardown deletes it
 		sleep 1
 		NSIM_DEV=$(ls /sys/bus/netdevsim/devices/netdevsim$NSIM_ID/net | head -1)
 		ip link set "$NSIM_DEV" netns "$NSR" && ip -n "$NSR" link set "$NSIM_DEV" up ||
-			{ log "FAIL: cannot move netdevsim port into $NSR"; return 1; }
+			{ log "FAIL: cannot move netdevsim port into $NSR"; x_teardown; return 1; }
 		log "offload device: netdevsim$NSIM_ID port $NSIM_DEV in $NSR"
 		SAX="offload { dev \"$NSIM_DEV\"; };"
 		;;
-	*) log "FAIL: unknown i2ixfrm arm $name"; return 1 ;;
+	*) log "FAIL: unknown i2ixfrm arm $name"; x_teardown; return 1 ;;
 	esac
 
+	# netdevsim offloads only rfc4106 with a 128-bit key (+32-bit salt):
+	# pin the key length on both seats rather than rely on the default
+	# aes_gcm key length, which the offload gate then proves (160-bit
+	# keymat in the SAD, the exact shape nsim_offload_probe installed)
+	X_ESP_ENC="aes_gcm, 128"
 	X_SPMIF=$SPMIF_R x_conf "$C/responder.conf" "$HR" "$HI" on racoon2-matrix r2init-matrix "$POLX" "$SAX"
 	X_SPMIF=$SPMIF_I x_conf "$C/initiator.conf" "$HI" "$HR" off r2init-matrix racoon2-matrix "$POLX" ""
 
@@ -278,6 +316,12 @@ kind_i2ixfrm() {
 		fi
 		;;
 	*-offload)
+		if grep -q 'aead rfc4106(gcm(aes)) 0x[0-9a-f]\{40\} ' "$D/$NSR-sad.txt"; then
+			r2_gate offload.alg PASS "responder ESP is rfc4106 AES-128-GCM (the netdevsim-offloadable shape)"
+		else
+			r2_gate offload.alg FAIL "responder ESP is not rfc4106 AES-128-GCM: $(grep -m1 aead "$D/$NSR-sad.txt")"
+			ok=0
+		fi
 		for dir in in out; do
 			if grep -A12 'proto esp' "$D/$NSR-sad.txt" | grep -q "crypto offload parameters: dev $NSIM_DEV dir $dir"; then
 				r2_gate "offload.bound.$dir" PASS "responder ESP state offloaded to $NSIM_DEV dir $dir"
@@ -308,13 +352,7 @@ kind_i2ixfrm() {
 		;;
 	esac
 
-	pkill -9 -f "$C/" 2>/dev/null || true
-	sleep 1
-	ip netns del "$NSR" 2>/dev/null || true
-	ip netns del "$NSI" 2>/dev/null || true
-	ip link del "$VR" 2>/dev/null || true
-	[ -n "$NSIM_ID" ] && echo "$NSIM_ID" >/sys/bus/netdevsim/del_device 2>/dev/null
-	rm -rf "$PRIVRES_R" "$PRIVRES_I"
+	x_teardown
 	if [ "$ok" -ne 1 ]; then
 		log "FAIL: $name (up=$up)"
 		for f in resp-iked init-iked; do
