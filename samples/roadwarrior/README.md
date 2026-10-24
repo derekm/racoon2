@@ -12,6 +12,11 @@ the gateway. `make check` runs `iked -C` on each file
 | `cert.conf` | X.509 certificate signed by `ca.crt` | `gw.crt` / `gw.key` | a CA; one client cert per device |
 | `eap-mschapv2.conf` | EAP-MSCHAPv2 user name and password (checked by RADIUS) | `gw.crt` / `gw.key` | a RADIUS server, e.g. FreeRADIUS with `default_eap_type = mschapv2` |
 
+> **EAP-MSCHAPv2 caveat:** MSCHAPv2 is a weak password method. It is only
+> acceptable inside IKEv2, where it runs in the encrypted IKE_AUTH after the
+> gateway has authenticated with its certificate. Clients must verify that
+> certificate. Prefer EAP-TLS, or `cert.conf`, where clients support it.
+
 ## Steps
 
 1. Copy one file to `/usr/local/racoon2/etc/racoon2/racoon2.conf`, or
