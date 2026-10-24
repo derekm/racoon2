@@ -1098,6 +1098,7 @@ ikev2_proppair_to_isakmpsa(struct prop_pair *prop)
 				case IKEV2TRANSF_ENCR_AES_CCM_8:
 				case IKEV2TRANSF_ENCR_AES_CCM_12:
 				case IKEV2TRANSF_ENCR_AES_CCM_16:
+				case IKEV2TRANSF_ENCR_NULL_AUTH_AES_GMAC:
 					s->encrklen = keylen;
 					break;
 				default:

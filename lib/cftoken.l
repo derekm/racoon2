@@ -174,9 +174,10 @@ aes_ctr			{ DP; return(AES_CTR); }
 aes_gcm			{ DP; return(AES_GCM); }
 aes_gcm8		{ DP; return(AES_GCM8); }
 aes_gcm12		{ DP; return(AES_GCM12); }
-aes_ccm		{ DP; return(AES_CCM); }
+aes_ccm			{ DP; return(AES_CCM); }
 aes_ccm8		{ DP; return(AES_CCM8); }
 aes_ccm16		{ DP; return(AES_CCM16); }
+aes_gmac		{ DP; return(AES_GMAC); }
 chacha20_poly1305	{ DP; return(CHACHA20_POLY1305); }
 twofish_cbc		{ DP; return(TWOFISH_CBC); }
 non_auth		{ DP; return(NON_AUTH); }

@@ -344,39 +344,15 @@ ikev2_process_config_request(struct ikev2_sa *ike_sa,
 		TRACE((PLOGLOC, "unexpected CFG_REPLY, ignored\n"));
 		return 0;
 		break;
-	case IKEV2_CFG_SET: {
-		/* RFC 7296 §2.19: the RESPONDER pushes configuration with a
-		 * CFG_SET; we (as initiator) apply it (same parser as a
-		 * CFG_REPLY) and MUST reply with a CFG_ACK.  Send the ACK in
-		 * an INFORMATIONAL exchange. */
-		int r;
-
-		TRACE((PLOGLOC, "CFG_SET: applying pushed config\n"));
-		r = ikev2_process_cfg_reply_attribs(ike_sa, child_sa, cfg);
-		{
-			struct ikev2_payloads payl;
-			struct ikev2payl_config acfg;
-			rc_vchar_t *cp;
-
-			memset(&acfg, 0, sizeof(acfg));
-			acfg.header.next_payload = IKEV2_NO_NEXT_PAYLOAD;
-			acfg.header.payload_length = htons((uint16_t)sizeof(acfg));
-			acfg.cfgh.cfg_type = IKEV2_CFG_ACK;
-			cp = rc_vnew((char *)&acfg, sizeof(acfg));
-			if (cp == NULL) {
-				TRACE((PLOGLOC, "CFG_ACK alloc failed\n"));
-				return 0;
-			}
-			ikev2_payloads_init(&payl);
-			ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CONFIG, cp, TRUE);
-			/* request_initiator_start takes ownership of payl */
-			ikev2_informational_initiator_notify(ike_sa, &payl);
-		}
-		return r;	/* propagate apply result (0 on success) */
-	}
+	case IKEV2_CFG_SET:
+		/* A pushed CFG_SET belongs on the INFORMATIONAL exchange
+		 * (ikev2_process_config_informational), not CREATE_CHILD; treat
+		 * it as unrecognised here (never an ACK from this path). */
+		TRACE((PLOGLOC, "CFG_SET ignored\n"));
+		return 0;
+		break;
 	case IKEV2_CFG_ACK:
-		/* ACK to a CFG_SET we pushed; accept and continue. */
-		TRACE((PLOGLOC, "CFG_ACK received\n"));
+		TRACE((PLOGLOC, "CFG_ACK ignored\n"));
 		return 0;
 		break;
 	default:
@@ -1096,11 +1072,10 @@ ikev2_process_config_reply(struct ikev2_sa *ike_sa,
 		return ikev2_process_cfg_reply_attribs(ike_sa, child_sa, cfg);
 		break;
 	case IKEV2_CFG_SET:
-		TRACE((PLOGLOC, "CFG_SET in a reply, ignored\n"));
+		TRACE((PLOGLOC, "CFG_SET ignored\n"));
 		break;
 	case IKEV2_CFG_ACK:
-		/* ACK to a CFG_SET we pushed; accept. */
-		TRACE((PLOGLOC, "CFG_ACK\n"));
+		TRACE((PLOGLOC, "CFG_ACK ignored\n"));
 		break;
 	default:
 		TRACE((PLOGLOC,

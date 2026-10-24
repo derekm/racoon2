@@ -269,13 +269,11 @@ static const struct xfrm_aeadmap aead_map[] = {
 	{ RCT_ALG_AES_CCM,	"rfc4309(ccm(aes))",	96 },
 	{ RCT_ALG_AES_CCM8,	"rfc4309(ccm(aes))",	64 },
 	{ RCT_ALG_AES_CCM16,	"rfc4309(ccm(aes))",	128 },
-	/* AES-GMAC (RFC 4543, transform 21): rfc4543(gcm(aes)) template.
-	 * 16-octet ICV is the RFC 4543 default; 8-octet for the GMAC-64
-	 * variant.  Key is AES key || 4-octet salt; module autoloads via
-	 * cryptomgr on first SA install (a missing kernel template is
-	 * rejected at runtime by rcpfk_supported_enc, keeping iked alive). */
+	/* AES-GMAC (RFC 4543, transform 21): rfc4543(gcm(aes)) template, 16-octet
+	 * (128-bit) ICV — RFC 4543 has no 8-octet ICV variant.  Key is AES key ||
+	 * 4-octet salt; module autoloads via cryptomgr on first SA install (a
+	 * missing kernel template is rejected at runtime by rcpfk_supported_enc). */
 	{ RCT_ALG_AES_GMAC,	"rfc4543(gcm(aes))",	128 },
-	{ RCT_ALG_AES_GMAC8,	"rfc4543(gcm(aes))",	64 },
 	/* ChaCha20-Poly1305 (RFC 7634).  The kernel name is the rfc7539esp
 	 * template with a COMMA (rfc7539esp(chacha20,poly1305)); the
 	 * chacha20poly1305 base name binds in AF_ALG but XFRM only resolves

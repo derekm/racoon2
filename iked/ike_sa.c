@@ -1162,27 +1162,27 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 
 	assert(IKEV2_CHILD_LIST_EMPTY(&sa->children));
 
-	/* RFC 9370 deferred rekey: abandon it BEFORE disposing the child so
-	 * abandon DEADs the parked new_sa(s) while still alive (the old order
-	 * ran it after the recursive free below, set_state-ing a freed SA).
-	 * Capture the child + the unlisted initiator stub first (abandon clears
-	 * sa->new_sa).  A list-resident child (the responder new_sa, inserted at
-	 * birth) is unlinked before dispose — the reaper always unlinks before
-	 * dispose, so freeing a still-linked node here would leave the TAILQ
-	 * dangled.  The unlisted initiator stub is NOT necessarily sa->new_sa;
-	 * dispose it separately. */
+	/* RFC 9370 deferred rekey: abandon it BEFORE any teardown so abandon
+	 * DEADs the parked new_sa(s) while still alive (the old order ran it
+	 * after a free, set_state-ing a freed SA).  A list-resident child must
+	 * NOT be freed here: ikev2_sa_periodic_task saved next_sa before
+	 * calling this dispose, so freeing a later list node dangles that
+	 * saved pointer (or the predecessor's tqe_next).  Leave it LINKED and
+	 * DEAD for the reaper to unlink+dispose when it reaches it; only the
+	 * UNLISTED initiator stub is disposed here. */
 	{
-		struct ikev2_sa *child = sa->new_sa;
 		struct ikev2_sa *istub = ikev2_rekey_init_stub(sa);
 #ifdef WITH_ADDKE
 		if (sa->addke_rekey_complete || sa->addke_rekey_init)
-			ikev2_rekey_abandon_parked(sa);
+			ikev2_rekey_abandon_parked(sa);	/* DEADs both new_sas, frees neither SA */
 #endif /* WITH_ADDKE */
-		if (child && child->link.tqe_prev != NULL)
-			ikev2_sa_remove(child);
-		if (child)
-			ikev2_dispose_sa(child);
-		if (istub && istub != child)
+		/* no-pin responder window (new_sa parked before the followup): DEAD
+		 * it so the reaper still collects it; abandon's paths clear new_sa. */
+		if (sa->new_sa) {
+			ikev2_set_state(sa->new_sa, IKEV2_STATE_DEAD);
+			sa->new_sa = NULL;
+		}
+		if (istub)
 			ikev2_dispose_sa(istub);
 	}
 
