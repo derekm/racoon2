@@ -318,3 +318,13 @@ the following tree.
 		  manual pages of the programs
 
 4. See doc/USAGE for the next step.
+
+Operational notes
+=================
+
+Install only with the top-level `make install` (it installs libracoon
+before the daemons; a per-directory install now installs the library
+first too, and iked/spmd refuse to start on a libracoon whose rcpfk ABI
+version differs).  Keep verification builds in their own prefix, never the
+live one.  The full runbook (deploy, restart, matrix-vs-live rules) is
+doc/OPERATIONS.md.
