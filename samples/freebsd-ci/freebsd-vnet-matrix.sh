@@ -982,6 +982,11 @@ run_row() {
 	*-clresp*)           FB_IKE_R="		childless on;"; FB_POL_R="	initial_child_ke immediate;"; FB_IKE_I="		childless on;"; FB_DBG3=1 ;;
 	*-childless-init*)   FB_IKE_I="		childless on;"; FB_IKE_R="		childless on;"; FB_DBG3=1 ;;
 	*-ikerekey*)         FB_IKE_I="		kmp_sa_lifetime_time 30 sec;" ;;
+	# opt-in feature rows (mirror linux kinds/i2ifeat.sh)
+	feat-nbns-i2i)       FB_IKE_I="		request { ip4_nbns; };"; FB_IKE_R="		provide { nbns \"192.0.2.137\"; };" ;;
+	feat-nbns-off-i2i)   FB_IKE_I="		request { ip4_nbns; };" ;;
+	feat-al-i2i)         FB_IKE_I="		honor_auth_lifetime on;"; FB_IKE_R="		auth_lifetime 30 sec;"; FB_DBG3=1 ;;
+	feat-al-nohonor-i2i) FB_IKE_I="		honor_auth_lifetime off;"; FB_IKE_R="		auth_lifetime 30 sec;"; FB_DBG3=1 ;;
 	esac
 	# allow_nsa_deprecated / allow_rfc_deprecated default OFF: rows whose
 	# suite carries an NSA- or RFC-deprecated transform enable exactly the
@@ -1846,6 +1851,9 @@ echo "=== verdict (row $_name) ==="
 		return 0
 	fi
 	if [ "$up" -eq 1 ] && [ "$TUN_OK" -eq 1 ]; then
+		if ! fb_feat_gates "$_name"; then
+			diag; echo "$SEP"; jails_teardown; return 1
+		fi
 		lines=$(grep -cE 'esp mode=tunnel' /tmp/freeb/resp-sadb.txt /tmp/freeb/init-sadb.txt 2>/dev/null | awk -F: '{s+=$2} END{print s}')
 		echo "PASS freebsd-vnet $_name (pfkey KM: $lines ESP tunnel SAs + data-plane $ji->${s6r:-$hr})"
 		echo "CPL B1: PASS $_name (pfkey KM ESP child up AND transiting, per-jail setkey -D + tunnel ping)"
@@ -2308,6 +2316,47 @@ REOF
 	return 1
 }
 
+# fb_feat_gates <row> — the feature assertions of the feat-* rows (same
+# markers as linux kinds/i2ifeat.sh); 0 for every other row.
+fb_feat_gates() {
+	_fl=/tmp/freeb/init-iked.log
+	case "$1" in
+	feat-nbns-i2i)
+		grep -aq 'INTERNAL_IP4_NBNS: 192.0.2.137' $_fl ||
+		    { echo "FAIL: initiator did not receive INTERNAL_IP4_NBNS 192.0.2.137"; return 1; }
+		echo "GATE ok: initiator received INTERNAL_IP4_NBNS 192.0.2.137" ;;
+	feat-nbns-off-i2i)
+		if grep -aq 'INTERNAL_IP4_NBNS: ' $_fl; then
+			echo "FAIL: NBNS received from a responder without provide nbns"; return 1
+		fi
+		echo "GATE ok: no NBNS server received" ;;
+	feat-al-i2i|feat-al-nohonor-i2i)
+		_k=0
+		while [ "$_k" -lt 40 ]; do
+			[ "$(grep -ac 'INI_IKE_AUTH_RCVD -> ESTABLISHED' $_fl)" -ge 2 ] && break
+			sleep 1; _k=$((_k + 1))
+		done
+		_n=$(grep -ac 'IDLING -> INI_IKE_SA_INIT_SENT' $_fl)
+		_e=$(grep -ac 'INI_IKE_AUTH_RCVD -> ESTABLISHED' $_fl)
+		echo "measured: IKE_SA_INIT initiations=$_n full IKE_AUTHs=$_e after ${_k}s more"
+		if [ "$1" = feat-al-i2i ]; then
+			grep -aqE 'AUTH_LIFETIME: IKE SA lifetime capped to ([12][0-9]|30)s' $_fl ||
+			    { echo "FAIL: no AUTH_LIFETIME cap <=30 s"; return 1; }
+			grep -aq 'AUTH_LIFETIME: reauthenticating' $_fl ||
+			    { echo "FAIL: no reauthentication (closed SA) logged"; return 1; }
+			[ "$_n" -ge 2 ] && [ "$_e" -ge 2 ] ||
+			    { echo "FAIL: no fresh IKE_SA_INIT + IKE_AUTH after the cap"; return 1; }
+			echo "GATE ok: capped, reauthenticated with a fresh IKE_SA_INIT"
+		else
+			if grep -aq 'AUTH_LIFETIME: IKE SA lifetime capped' $_fl || [ "$_n" -ne 1 ]; then
+				echo "FAIL: honor off but capped or re-initiated (initiations=$_n)"; return 1
+			fi
+			echo "GATE ok: honor off: no cap, one IKE_SA_INIT"
+		fi ;;
+	esac
+	return 0
+}
+
 fail=0
 run() {
 	# 0-based dispatcher index, matching linux run.sh --shard K M
@@ -2345,6 +2394,11 @@ case "$ROW" in
 	#     (setkey -D renders the ESN SA as 'flags=0x00000400 state=mature',
 	#     asserted by the i2iinit-esn SAD-shape gate below).
 	run i2iinit-esn         inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 300 300 0 a ""
+	# --- opt-in features (mirror linux feat-* i2i rows) ---
+	run feat-nbns-i2i       inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 300 300 0 a ""
+	run feat-nbns-off-i2i   inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 300 300 0 a ""
+	run feat-al-i2i         inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 300 300 0 a ""
+	run feat-al-nohonor-i2i inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes_gcm non_auth 300 300 0 a ""
 	# --- ChaCha20-Poly1305 ESP (RFC 7634): lib/rc_type.c maps
 	#     RCT_ALG_CHACHA20_POLY1305 -> SADB_X_EALG_CHACHA20POLY1305 (15)
 	#     on headers that define it.  Whether the FreeBSD kernel

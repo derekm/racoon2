@@ -131,3 +131,7 @@ i2iresume-resume
 i2iresume-reuse
 i2iv6-esp
 i2iv6-esp-cbc128
+feat-nbns-i2i
+feat-nbns-off-i2i
+feat-al-i2i
+feat-al-nohonor-i2i
