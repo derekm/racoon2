@@ -41,9 +41,11 @@ jobs:
             sh samples/linux-kernel-ci/kernel-lane.sh ${{ matrix.image }} --shard ${{ matrix.shard }} 3
           else
             # quick lane: data-plane audit self-test, NAT-T (MAPPING,
-            # ENOBUFS resync), classical IKE with SHA2 ICVs, IKEv1
+            # ENOBUFS resync), classical IKE with SHA2 ICVs, IKEv1, and the
+            # XFRM-native rows (marked SAs, netdevsim offload) whose kernel
+            # acceptance differs most across versions
             sh samples/linux-kernel-ci/kernel-lane.sh ${{ matrix.image }} --shard 0 1 \
-              --cases '^(icvaudit-[a-z0-9]+|i2inatt-[a-z-]+|i2iinit-ike-cbc128(-esp-sha(384|512))?|ikev1-[a-z0-9-]+) '
+              --cases '^(icvaudit-[a-z0-9]+|i2inatt-[a-z-]+|i2iinit-ike-cbc128(-esp-sha(384|512))?|ikev1-[a-z0-9-]+|i2ixfrm-[a-z]+) '
           fi
 
       - name: Upload kernel lane log

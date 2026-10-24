@@ -38,6 +38,30 @@ backend now emits them.
   `offload_ifname`); `offload_flags == 0` with a named device is a valid
   outbound request and is still emitted.
 
+## Matrix coverage (live kernels)
+
+Two `samples/linux-matrix` rows (`kinds/i2ixfrm.sh`) exercise these features
+against real kernels, iked<->iked in private netns with their own daemons. Both
+run on the Ubuntu and Fedora lanes and in the kernel-version lane's quick
+shard (5.15, 6.1, newest):
+
+- `i2ixfrm-mark`: policy `mark { value 0x42; mask 0xff; }` on both seats. The
+  row checks that every ESP state and ESP policy carries `mark 0x42/0xff`. That
+  makes the kernel accept XFRMA_MARK on ALLOCSPI and NEWSA/UPDSA on that kernel,
+  instead of leaving it to the unit-pinned bytes. Marked echos (`ping -m`, with
+  inbound ESP marked by nft/iptables because an inbound SA lookup matches
+  skb->mark) have to move both seats' SA counters, and unmarked echos must not.
+- `i2ixfrm-offload`: the responder's `offload {}` names a **netdevsim** port
+  (the kernel's xfrmdev_ops test device). Both responder ESP states must
+  report `crypto offload parameters: dev <port> dir in|out`, and netdevsim's
+  ipsec debugfs must count them. netdevsim does not encrypt on the wire, so this
+  proves the XFRMA_OFFLOAD_DEV binding, not a real NIC fast path. The row
+  is `gate=nsim`. run.sh skips it only when a hand-installed offload SA is
+  refused, and the SKIP line prints that refusal (module absent, or the kernel
+  drops the binding). Anywhere the probe succeeds, the row must pass.
+
+Real hardware (the DGX Spark bring-up below) is still a box-only step.
+
 ## Next implementation steps
 
 1. **Config grammar — DONE** (`lib/cftoken.l`/`cfparse.y`, `lib/cfsetup.{h,c}`,

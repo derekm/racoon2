@@ -18,6 +18,7 @@ CASES_FILE=${R2_CASES:-$HERE/cases.tsv}
 . "$HERE/kinds/ikev2.sh"
 . "$HERE/kinds/ikev1.sh"
 . "$HERE/kinds/i2ike.sh"
+. "$HERE/kinds/i2ixfrm.sh"
 . "$HERE/kinds/i2i_peer.sh"
 . "$HERE/kinds/i2ike_drop.sh"
 . "$HERE/kinds/i2ike_drop576.sh"
@@ -278,6 +279,18 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 		fi
 		;;
 	esac
+	# NSIM capability: crypto offload rows need netdevsim + ESP offload.
+	# Skip only on PROOF (a hand-installed offload SA is refused or the
+	# module is absent), printed in the SKIP line; lanes list the class
+	# (gate nsim) so R2_REQUIRE_LIVE accepts it.  Where the kernel accepts
+	# offload the row runs and must pass.
+	if [ "$gate" = nsim ]; then
+		if ! _np=$(nsim_offload_probe); then
+			row_skip "$name" nsim "no netdevsim ESP offload: $_np"
+			continue
+		fi
+		log "nsim probe: $_np"
+	fi
 	if [ "$gate" = box ] && [ "${R2_BOX:-no}" != "yes" ]; then
 		row_skip "$name" box "BOX gate off: R2_BOX=${R2_BOX:-no}"
 		continue
