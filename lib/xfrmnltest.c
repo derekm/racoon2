@@ -1130,9 +1130,9 @@ test_offload_attrs(void)
 
 	CHECK(offload_rta_get(buf, len, 0, XFRMA_MARK, &d, &dl) == 1 &&
 	    dl == sizeof(struct xfrm_mark) &&
-	    ((const struct xfrm_mark *)d)->v == 0x100 &&
+	    ((const struct xfrm_mark *)d)->v == (0x100 & 0xff) &&
 	    ((const struct xfrm_mark *)d)->m == 0xff,
-	    "offload: XFRMA_MARK v/m emitted");
+	    "offload: XFRMA_MARK v/m emitted (v masked by m)");
 	CHECK(offload_rta_get(buf, len, 0, XFRMA_IF_ID, &d, &dl) == 1 &&
 	    dl == 4 && *(const unsigned int *)d == 1,
 	    "offload: XFRMA_IF_ID emitted");
@@ -1185,6 +1185,7 @@ test_mark_emit_live_paths(void)
 	fill_sa_rc(&rc, &s, &d, 0x4010000, 0);
 	rc.so = rcm.so;
 	rc.mark = 0x100; rc.mark_mask = 0xff;
+	rc.if_id = 7;
 	CHECK(rcpfk_send_getspi(&rc) == 0, "getspi: %s", rc.estr);
 	n = kget();
 	CHECK(n && n->nlmsg_type == XFRM_MSG_ALLOCSPI,
@@ -1192,35 +1193,55 @@ test_mark_emit_live_paths(void)
 	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
 	    sizeof(struct xfrm_userspi_info), XFRMA_MARK, &dd, &dl) == 1 &&
 	    dl == sizeof(struct xfrm_mark) &&
-	    ((const struct xfrm_mark *)dd)->v == 0x100 &&
+	    ((const struct xfrm_mark *)dd)->v == (0x100 & 0xff) &&
 	    ((const struct xfrm_mark *)dd)->m == 0xff,
-	    "getspi carries XFRMA_MARK v/m");
+	    "getspi carries masked XFRMA_MARK v/m");
+	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
+	    sizeof(struct xfrm_userspi_info), XFRMA_IF_ID, &dd, &dl) == 1 &&
+	    dl == 4 && *(const unsigned int *)dd == 7,
+	    "getspi carries XFRMA_IF_ID");
 
 	/* DELPOLICY by index (spmd's delete path — kernel byid matches mark) */
 	setup();
 	memset(&rc, 0, sizeof(rc));
 	rc.so = rcm.so; rc.seq = 0x4010001; rc.slid = 42;
 	rc.dir = RCT_DIR_OUTBOUND; rc.mark = 0x100; rc.mark_mask = 0xff;
+	rc.if_id = 7;
 	CHECK(rcpfk_send_spddelete2(&rc) == 0, "spddelete2: %s", rc.estr);
 	n = kget();
 	CHECK(n && n->nlmsg_type == XFRM_MSG_DELPOLICY,
 	    "DELPOLICY(by-index) on req socket");
 	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
-	    sizeof(struct xfrm_userpolicy_id), XFRMA_MARK, &dd, &dl) == 1,
-	    "spddelete2 carries XFRMA_MARK");
+	    sizeof(struct xfrm_userpolicy_id), XFRMA_MARK, &dd, &dl) == 1 &&
+	    dl == sizeof(struct xfrm_mark) &&
+	    ((const struct xfrm_mark *)dd)->v == (0x100 & 0xff) &&
+	    ((const struct xfrm_mark *)dd)->m == 0xff,
+	    "spddelete2 carries masked XFRMA_MARK v/m");
+	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
+	    sizeof(struct xfrm_userpolicy_id), XFRMA_IF_ID, &dd, &dl) == 1 &&
+	    dl == 4 && *(const unsigned int *)dd == 7,
+	    "spddelete2 carries XFRMA_IF_ID");
 
 	/* GETPOLICY by index (spmd's fetch path) */
 	setup();
 	memset(&rc, 0, sizeof(rc));
 	rc.so = rcm.so; rc.seq = 0x4010002; rc.slid = 42;
 	rc.dir = RCT_DIR_OUTBOUND; rc.mark = 0x100; rc.mark_mask = 0xff;
+	rc.if_id = 7;
 	CHECK(rcpfk_send_spdget(&rc) == 0, "spdget: %s", rc.estr);
 	n = kget();
 	CHECK(n && n->nlmsg_type == XFRM_MSG_GETPOLICY,
 	    "GETPOLICY(by-index) on req socket");
 	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
-	    sizeof(struct xfrm_userpolicy_id), XFRMA_MARK, &dd, &dl) == 1,
-	    "spdget carries XFRMA_MARK");
+	    sizeof(struct xfrm_userpolicy_id), XFRMA_MARK, &dd, &dl) == 1 &&
+	    dl == sizeof(struct xfrm_mark) &&
+	    ((const struct xfrm_mark *)dd)->v == (0x100 & 0xff) &&
+	    ((const struct xfrm_mark *)dd)->m == 0xff,
+	    "spdget carries masked XFRMA_MARK v/m");
+	CHECK(n && offload_rta_get((const char *)n, n->nlmsg_len,
+	    sizeof(struct xfrm_userpolicy_id), XFRMA_IF_ID, &dd, &dl) == 1 &&
+	    dl == 4 && *(const unsigned int *)dd == 7,
+	    "spdget carries XFRMA_IF_ID");
 }
 
 int

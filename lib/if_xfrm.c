@@ -1202,7 +1202,14 @@ add_xfrm_mark_ifid_attrs(struct nlmsghdr *n, size_t maxlen,
 	 * backend requires — do not "restore" an #ifdef here. */
 	if (rc->mark_mask != 0) {
 		memset(&m, 0, sizeof(m));
-		m.v = rc->mark;
+		/* Emit the MASKED value: the kernel canonicalizes
+		 * policy/state mark.v &= mark.m on insert and then exact-matches
+		 * it (xfrm_policy_byid requires mark->v == pol->mark.v, state
+		 * lookup masks the *request*). Emitting a raw v with bits outside
+		 * m makes a NEW/ADD store a different v than a later DEL/GET/
+		 * GETSPI-then-UPDSA sends -> -ENOENT/ESRCH. Sanitize here, the
+		 * single point every send path shares. */
+		m.v = rc->mark & rc->mark_mask;
 		m.m = rc->mark_mask;
 		if (xfrm_addattr(n, maxlen, XFRMA_MARK, &m, sizeof(m)))
 			return -1;

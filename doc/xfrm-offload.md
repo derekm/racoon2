@@ -145,7 +145,7 @@ Why the rcpfk field is the right portable shape:
   fail loudly (kernel `EOPNOTSUPP`), never silently fall back to software.
 
 The *BSD PF_KEY backend emits `SADB_X_EXT_IF_HW_OFFL` from `offload_ifname`
-(`lib/if_pfkeyv2.c`, wired in `11b5dc1`+), guarded by the extension's `#ifdef`
+(`lib/if_pfkeyv2.c`, first wired in `9c241ab`), guarded by the extension's `#ifdef`
 (same reason: 15.x/16 have it, 14 does not, and failing loud beats a silent
 software SA there). The SW/HW counter-extension decode
 (`SADB_X_EXT_LFT_CUR_SW_OFFL` / `SADB_X_EXT_LFT_CUR_HW_OFFL`) is a future
