@@ -1282,6 +1282,16 @@ ikev2_process_cfg_reply_attribs(struct ikev2_sa *ike_sa,
 				TRACE((PLOGLOC, "failed processing INTERNAL_IP4_NBNS\n"));
 				goto out;
 			}
+			{
+				char nbuf[INET_ADDRSTRLEN];
+
+				if (inet_ntop(AF_INET, value, nbuf,
+					      sizeof(nbuf)) != NULL)
+					isakmp_log(ike_sa, 0, 0, 0,
+						   PLOG_INFO, PLOGLOC,
+						   "INTERNAL_IP4_NBNS: %s\n",
+						   nbuf);
+			}
 			break;
 		case IKEV2_CFG_INTERNAL_ADDRESS_EXPIRY:
 			child_sa->internal_address_expiry =

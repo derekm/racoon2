@@ -488,6 +488,21 @@ EOC
 		;;
 	esac
 
+	# -nbns rows: initiator request { ip4_nbns; } (attr 4 in CFG_REQUEST),
+	# responder provide { nbns ...; } -> CFG_REPLY; the initiator must log
+	# the exact server it received.  Both knobs are opt-in (default off).
+	I2I_NBNS=0
+	I2I_NBNS_ADDR=192.0.2.137
+	case "$name" in
+	*-nbns*)
+		I2I_NBNS=1
+		CFG_REQ_TXT_I='		request { ip4_nbns; };
+'
+		CFG_PROV_TXT_R='		provide { nbns "'"$I2I_NBNS_ADDR"'"; };
+'
+		;;
+	esac
+
 	# Auth method + any PSK line: RSA rows emit kmp_auth_method { rsa; } +
 	# my_pubkey/peers_pubkey; every other row keeps the PSK pair.  Emit the
 	# method and psk together so a row can never carry both or neither.
@@ -1535,6 +1550,15 @@ fi
 			grep -E 'RFC 7427: sign|abort|AUTH' "$D/init-iked.log" 2>/dev/null | tail -4
 			grep -iE 'authentication|AUTHENTICATION_FAILED|signature|abort' \
 			    "$D/charon-resp.log" 2>/dev/null | tail -4
+		fi
+	fi
+
+	if [ "$I2I_NBNS" = 1 ]; then
+		if grep -qF "INTERNAL_IP4_NBNS: $I2I_NBNS_ADDR" "$D/init-iked.log" 2>/dev/null; then
+			log "NBNS OK: initiator received INTERNAL_IP4_NBNS $I2I_NBNS_ADDR"
+		else
+			log "FAIL: initiator did not receive INTERNAL_IP4_NBNS $I2I_NBNS_ADDR"
+			sig_ok=0
 		fi
 	fi
 
