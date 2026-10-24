@@ -16,11 +16,13 @@
  *     backpressure (partial-write buffering).  The TCP path must NOT go
  *     through isakmp_transmit_noretry (that adds the UDP NAT-T marker).
  *
- * Framing-fatal (bad prefix, Len 0/1, malformed) returns -1 from
- * on_readable() and the caller MUST close the stream.  A non-zero return
- * from the dispatch callback is the IKE layer's decision (e.g. RFC 9329
- * s6.1 INVALID_SYNTAX tears down the IKE SA) and is NOT itself fatal to the
- * TCP stream -- so the two are deliberately separated here.
+ * Framing-fatal (bad prefix, Len 0/1, malformed, peer FIN, hard I/O error)
+ * returns -1 from on_readable()/send()/flush() and the caller MUST close the
+ * stream -- once any returns -1 the stream is dead and must not be retried.
+ * A short IKE record (fewer bytes than an IKEv2 header) is an IKE syntax
+ * problem (RFC 9329 s6.1 -> INVALID_SYNTAX over the same stream), not a
+ * framing error, and is DROPPED by the stream: it never reaches dispatch and
+ * never closes the stream.
  *
  * All buffers are heap-allocated (they are 64KB); destroy with
  * tcp_stream_free().
@@ -60,18 +62,35 @@ struct tcp_stream {
 };
 
 struct tcp_stream *tcp_stream_accept(int lfd, tcp_stream_dispatch, void *);
+/*
+ * Non-blocking outbound connect.  remote is required; local may be NULL
+ * (let the kernel pick the source).  EINPROGRESS is success.  The returned
+ * stream is the TCP connection originator (expect_prefix=0) and queues the
+ * one-time "IKETCP" prefix before its first record.  On a non-blocking
+ * LISTENER, tcp_stream_accept() returns NULL with errno == EAGAIN when there
+ * is simply no pending connection -- the loop treats EAGAIN as "try later",
+ * not as a dead listener.
+ */
 struct tcp_stream *tcp_stream_connect(const struct sockaddr *remote,
 				      const struct sockaddr *local,
-				      int nonblock_port, tcp_stream_dispatch,
-				      void *);
-/* True once an outbound connect() has completed (checked on write/ERR). */
+				      tcp_stream_dispatch, void *);
+/*
+ * Ask whether a non-blocking connect finished.  MUST be called only after
+ * the fd was reported writable (or EPOLLERR/EPOLLHUP) by evloop_wait_rw:
+ * SO_ERROR is 0 both before the handshake completes and after it succeeds,
+ * so blind polling cannot distinguish "in progress" from "done".  Returns 0
+ * once connected, -1 on a refused/reset connect (errno set from SO_ERROR)
+ * or any socket error.
+ */
 int tcp_stream_connect_done(struct tcp_stream *);
 
-/* Returns >0 activity, 0 nothing ready (EAGAIN), -1 fatal (close the stream); */
+/* Returns >0 activity, 0 nothing ready (EAGAIN), -1 FATAL (close the stream). */
 int tcp_stream_on_readable(struct tcp_stream *);
-/* Queue + flush an IKE message on the stream (takes a copy of ike,n). */
+/* Queue + flush an IKE message on the stream (takes a copy of ike,n).
+ * Returns 0 sent, 1 still pending (want EPOLLOUT and call flush() again),
+ * -1 FATAL (close the stream; the stream is dead, do not retry). */
 int tcp_stream_send(struct tcp_stream *, const unsigned char *ike, size_t n);
-/* Write more of any queued partial record; returns 1 if still pending. */
+/* Write more of any queued partial record; 1 if still pending, -1 fatal. */
 int tcp_stream_flush(struct tcp_stream *);
 
 void tcp_stream_free(struct tcp_stream *);

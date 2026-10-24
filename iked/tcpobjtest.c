@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <errno.h>
+#include <poll.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -47,14 +48,21 @@ capture(rc_vchar_t *pkt, struct sockaddr *remote, struct sockaddr *local,
 	return 0;
 }
 
+/* Wait for the non-blocking connect to complete: poll the fd for
+ * writability (or ERR/HUP), THEN ask SO_ERROR.  A blind SO_ERROR poll
+ * returns 0 both before the handshake and after it, so it cannot be used
+ * as the wait itself. */
 static int
-wait_done(struct tcp_stream *ts, int tries)
+wait_done(struct tcp_stream *ts, int ms)
 {
-	while (tries-- > 0) {
-		if (tcp_stream_connect_done(ts) == 0)
-			return 0;
-		usleep(2000);
-	}
+	struct pollfd pfd;
+
+	pfd.fd = ts->fd;
+	pfd.events = POLLOUT;
+	pfd.revents = 0;
+	if (poll(&pfd, 1, ms) > 0 &&
+	    (pfd.revents & (POLLOUT | POLLERR | POLLHUP)))
+		return tcp_stream_connect_done(ts);
 	return -1;
 }
 
@@ -71,7 +79,11 @@ main(void)
 	struct tcp_stream *origin = NULL, *resp = NULL;
 	int lfd = -1, on = 1, tries;
 	socklen_t sl = sizeof(la);
-	const unsigned char msg[] = { 0x01, 0x02, 0x03, 0x04 };
+	const unsigned char msg[32] = {	/* >= sizeof(ikev2_header): dispatches */
+		0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+		0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,
+		0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,
+		0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f,0x20 };
 
 	memset(&la, 0, sizeof(la));
 	la.sin_family = AF_INET;
@@ -92,7 +104,7 @@ main(void)
 	lr.sin_family = AF_INET;
 	lr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	lr.sin_port = la.sin_port;
-	origin = tcp_stream_connect((struct sockaddr *)&lr, NULL, 0, capture, NULL);
+	origin = tcp_stream_connect((struct sockaddr *)&lr, NULL, capture, NULL);
 	CHECK(origin != NULL, "connect: stream created (EINPROGRESS)");
 	if (origin == NULL) {
 		printf("FAIL: connect: %s\n", strerror(errno));
@@ -114,7 +126,7 @@ main(void)
 	for (tries = 5000; tries > 0 && nrecv == 0; tries--)
 		if (tcp_stream_on_readable(resp) < 0)
 			break;
-	CHECK(nrecv == 1 && capl[0] == 4 && cap[0][0] == 0x01 && cap[0][3] == 0x04,
+	CHECK(nrecv == 1 && capl[0] == 32 && cap[0][0] == 0x01 && cap[0][31] == 0x20,
 	      "recv: responder dispatch got the IKE message (marker stripped)");
 
 	/* responder replies with no prefix; originator must decode it */
@@ -123,8 +135,65 @@ main(void)
 	for (tries = 5000; tries > 0 && nrecv == 0; tries--)
 		if (tcp_stream_on_readable(origin) < 0)
 			break;
-	CHECK(nrecv == 1 && capl[0] == 4 && cap[0][0] == 0x01,
+	CHECK(nrecv == 1 && capl[0] == 32 && cap[0][0] == 0x01,
 	      "recv: originator dispatch got the no-prefix reply");
+
+	/* --- short IKE record is DROPPED (IKE syntax, not framing-fatal) --- */
+	nrecv = 0;
+	{
+		const unsigned char tiny[] = { 0x42 };	/* < sizeof(ikev2_header) */
+		CHECK(tcp_stream_send(origin, tiny, sizeof(tiny)) == 0,
+		      "send: short (1-byte) IKE message");
+		for (tries = 5000; tries > 0 && nrecv == 0; tries--)
+			if (tcp_stream_on_readable(resp) < 0)
+				break;
+		CHECK(nrecv == 0, "recv: short IKE dropped, stream NOT closed");
+	}
+	/* the same stream still works after the short-IKE drop */
+	nrecv = 0;
+	CHECK(tcp_stream_send(origin, msg, sizeof(msg)) == 0,
+	      "send: normal IKE after short drop");
+	{
+		struct pollfd pf;
+		int waitms = 0, dead = 0;
+
+		pf.fd = resp->fd;
+		pf.events = POLLIN;
+		while (nrecv == 0 && waitms < 2000 && !dead) {
+			int r = poll(&pf, 1, 100);
+			if (r > 0) {
+				int ar = tcp_stream_on_readable(resp);
+				if (ar < 0) {
+					dead = 1;
+					printf("DEBUG on_readable -1 errno=%d (%s)\n",
+					       errno, strerror(errno));
+				}
+			} else if (r < 0) {
+				dead = 1;
+			}
+			waitms += 100;
+		}
+		CHECK(!dead && nrecv == 1 && capl[0] == 32,
+		      "recv: stream alive after short-IKE drop");
+	}
+
+	/* --- refused connect: poll writable/ERR, then SO_ERROR != 0 --- */
+	{
+		struct sockaddr_in cr;
+		struct tcp_stream *c;
+
+		memset(&cr, 0, sizeof(cr));
+		cr.sin_family = AF_INET;
+		cr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		cr.sin_port = htons(1);		/* nothing listening on port 1 */
+		c = tcp_stream_connect((struct sockaddr *)&cr, NULL, capture, NULL);
+		CHECK(c != NULL, "refused: stream created");
+		if (c) {
+			CHECK(wait_done(c, 3000) != 0,
+			      "refused: connect_done (after ERR/HUP wake) reports failure");
+			tcp_stream_free(c);
+		}
+	}
 
 	tcp_stream_free(origin);
 	tcp_stream_free(resp);

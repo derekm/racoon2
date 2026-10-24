@@ -23,6 +23,8 @@
 
 #include "racoon.h"
 #include "vmbuf.h"
+#include "isakmp.h"		/* isakmp_cookie_t */
+#include "ikev2.h"		/* struct ikev2_header */
 
 #include "ikev2_tcp_stream.h"
 
@@ -53,8 +55,11 @@ set_nonblock(int fd)
 
 /* Called for each de-framed record.  IKE messages are dispatched (marker
  * already stripped by the codec); ESP frames (ESP-in-TCP) are out of scope
- * for this slice and dropped.  Returns 0 always so a dispatch's decision
- * never aborts the stream; only a hard allocation failure is fatal. */
+ * for this slice and dropped.  A record shorter than an IKEv2 header is an
+ * IKE syntax problem (RFC 9329 s6.1), not a framing error: it is dropped and
+ * NEVER closes the stream, and never reaches ikev2_input (which assumes a
+ * header-sized buffer).  Returns 0 always so a dispatch's decision also never
+ * aborts the stream; only a hard allocation failure is fatal. */
 static int
 stream_frame_cb(const unsigned char *pkt, size_t len, int is_esp, void *arg)
 {
@@ -64,6 +69,8 @@ stream_frame_cb(const unsigned char *pkt, size_t len, int is_esp, void *arg)
 
 	if (is_esp != TCP_FRAME_IKE)
 		return 0;	/* ESP-in-TCP: not this slice */
+	if (len < sizeof(struct ikev2_header))
+		return 0;	/* short IKE: drop, keep the stream open */
 	v = rc_vnew(pkt, len);
 	if (v == NULL)
 		return -1;
@@ -135,7 +142,7 @@ tcp_stream_accept(int lfd, tcp_stream_dispatch dispatch, void *arg)
 
 struct tcp_stream *
 tcp_stream_connect(const struct sockaddr *remote, const struct sockaddr *local,
-		   int nonblock_port, tcp_stream_dispatch dispatch, void *arg)
+		   tcp_stream_dispatch dispatch, void *arg)
 {
 	int fd = -1;
 	int len;
@@ -156,10 +163,8 @@ tcp_stream_connect(const struct sockaddr *remote, const struct sockaddr *local,
 		goto fail;
 	/*
 	 * We originated the TCP connection: send the one-time "IKETCP"
-	 * prefix; our peer does not.  `nonblock_port` is a placeholder for a
-	 * future SO_REUSEPORT knob and is otherwise unused.
+	 * prefix; our peer does not.
 	 */
-	(void)nonblock_port;
 	return stream_new(fd, remote, 0, dispatch, arg);
       fail:
 	if (fd >= 0)
@@ -170,6 +175,11 @@ tcp_stream_connect(const struct sockaddr *remote, const struct sockaddr *local,
 int
 tcp_stream_connect_done(struct tcp_stream *ts)
 {
+	/*
+	 * Must only be called once the fd was reported writable (or
+	 * EPOLLERR/EPOLLHUP): SO_ERROR is 0 both before the handshake
+	 * completes and after it succeeds.
+	 */
 	int err = 0;
 	socklen_t elen = sizeof(err);
 
@@ -210,12 +220,22 @@ tcp_stream_on_readable(struct tcp_stream *ts)
 int
 tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 {
-	size_t add, at;
-	uint32_t len;
-	unsigned char *p;
+	struct tcp_record rec;
+	size_t rl;
 
-	if (n > IKEV2_TCP_MAXLEN - IKEV2_TCP_NON_ESP_MARKER_LEN - 2)
-		return -1;	/* Len = 2 + 4 + n would not fit 16 bits */
+	/* Build the record through the codec (Prefix + Len|marker|message);
+	 * tcp_record_ike enforces the 16-bit inclusive-Length cap. */
+	memset(&rec, 0, sizeof(rec));
+	if (ts->prefix_sent == 0) {
+		/* We are the TCP connection originator: one-time prefix. */
+		if (tcp_stream_begin(&rec) != 0)
+			return -1;
+		ts->prefix_sent = 1;	/* enqueued below; a -1 closes the stream */
+	}
+	if (tcp_record_ike(&rec, ike, n) != 0)
+		return -1;
+	rl = rec.stream_len;
+
 	/* Compact any fully-sent tail before appending. */
 	if (ts->obuf_off != 0) {
 		if (ts->obuf_off == ts->obuf_len) {
@@ -227,24 +247,10 @@ tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 			ts->obuf_off = 0;
 		}
 	}
-	add = 6 + n;			/* Len + marker + message */
-	if (ts->prefix_sent == 0)
-		add += IKEV2_TCP_PREFIX_LEN;
-	if (ts->obuf_len + add > TCP_STREAM_OBUF_CAP)
+	if (ts->obuf_len + rl > TCP_STREAM_OBUF_CAP)
 		return -1;
-	at = ts->obuf_len;
-	if (ts->prefix_sent == 0) {
-		memcpy(ts->obuf + at, IKEV2_TCP_PREFIX, IKEV2_TCP_PREFIX_LEN);
-		at += IKEV2_TCP_PREFIX_LEN;
-		ts->prefix_sent = 1;
-	}
-	len = (uint32_t)n + IKEV2_TCP_NON_ESP_MARKER_LEN + 2;	/* includes Len */
-	p = ts->obuf + at;
-	p[0] = (uint8_t)(len >> 8);
-	p[1] = (uint8_t)(len & 0xff);
-	p[2] = p[3] = p[4] = p[5] = 0;
-	memcpy(p + 6, ike, n);
-	ts->obuf_len += add;
+	memcpy(ts->obuf + ts->obuf_len, rec.stream, rl);
+	ts->obuf_len += rl;
 	return tcp_stream_flush(ts);
 }
 
