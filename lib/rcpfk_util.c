@@ -120,7 +120,7 @@ rcpfk_nlr_str(int r)
 	switch (r) {
 	case RCPFK_NLR_DATA:		return "data";
 	case RCPFK_NLR_AGAIN:		return "retry";
-	case RCPFK_NLR_OVERFLOW:	return "overflow (ENOBUFS)";
+	case RCPFK_NLR_OVERFLOW:	return "overflowed (ENOBUFS)";
 	case RCPFK_NLR_TRUNC:		return "datagram truncated (MSG_TRUNC)";
 	case RCPFK_NLR_CLOSED:		return "socket closed";
 	case RCPFK_NLR_SHORT:		return "short netlink read";
