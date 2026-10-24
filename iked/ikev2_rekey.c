@@ -1515,6 +1515,12 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
  * (rfc9370 s2.2.4), then keys/adopt/establish.  Called from
  * ikev2_followup_ke_recv() on the IKE thread.  ke_method is this round's
  * KE group id (the final round is not necessarily methods[0]).
+ *
+ * Returns 0 on success; -1 on a PRE-SEND failure (the final KEr never left,
+ * nothing cached — the caller may report STATE_NOT_FOUND); -2 on a POST-SEND
+ * failure (the final KEr was transmitted and cached, but local SKEYSEED/
+ * finish failed — the peer holds the success signal, so the caller MUST NOT
+ * report STATE_NOT_FOUND; it abandons the rekey locally).
  */
 int
 ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
@@ -1587,12 +1593,12 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 	}
 
 	if (rekey_skeyseed(new_sa, old_sa, ctx->g_ir, addke_sk) != 0)
-		goto fail;
+		goto fail_after_send;
 	rc_vfreez(old_sa->addke_rekey_sk);
 	old_sa->addke_rekey_sk = NULL;
 	old_sa->addke_rekey_round = 0;
 	if (ikev2_rekey_responder_finish(ctx) != 0)
-		goto fail;
+		goto fail_after_send;
 	/* success: the rekeyed SA is complete in its own right (already in
 	 * the SA list via ikev2_create_sa); drop the deferred-rekey link so
 	 * disposing the OLD SA cannot recurse into a live ESTABLISHED SA
@@ -1613,6 +1619,26 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 	old_sa->new_sa = NULL;
 	old_sa->rekey_inprogress = FALSE;
 	return -1;
+
+      fail_after_send:
+	/* The final KEr was already transmitted and cached above: the peer
+	 * holds the success signal. Do NOT report it failed (the caller maps
+	 * -1 to STATE_NOT_FOUND, which would REPLACE the armed cache and tell
+	 * the initiator to abandon a rekey it already believes completed).
+	 * Tear down locally and return -2 so the caller abandons WITHOUT an
+	 * error notify. */
+	isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		   "IKE-SA rekey KEr sent but local establish failed; "
+		   "abandoning without notification\n");
+	rc_vfreez(old_sa->addke_rekey_sk);
+	old_sa->addke_rekey_sk = NULL;
+	old_sa->addke_rekey_round = 0;
+	if (new_sa)
+		ikev2_set_state(new_sa, IKEV2_STATE_DEAD);
+	ikev2_rekey_responder_ctx_free(ctx);
+	old_sa->new_sa = NULL;
+	old_sa->rekey_inprogress = FALSE;
+	return -2;
 }
 
 static void

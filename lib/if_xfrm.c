@@ -2574,7 +2574,9 @@ xfrm_read_one(int fd, struct rcpfk_msg *rc, int flags, int fresh)
 	/* a 4+ byte tail left is the start of a truncated next header (or a
 	 * message declaring a bad nlmsg_len) — netlink delivers whole datagrams,
 	 * so this is malformed kernel output. Surface it instead of silently
-	 * dropping (NLMSG_ALIGNTO boundary, matching rcpfk_nl_walk). */
+	 * dropping (NLMSG_ALIGNTO boundary). Unlike rcpfk_nl_walk this single
+	 * read ONLY logs the trailer and does not reject the datagram (a later
+	 * DONE/next read may still complete the dump). */
 	if (ulen >= (int)NLMSG_ALIGNTO)
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "xfrm: read datagram has a truncated netlink trailer "

@@ -300,7 +300,8 @@ workstream and never conflict with the "Do not" list.
   `unsupported kmp_auth_method (PresharedKey)` and spmd login `550` (enum/ABI
   mismatch, not a code regression).
 - That deploy line is the 2026-09-28 snapshot of the then-live prod box; it is a
-  historical record, not current. Branch HEAD is `5e6c331`; do not treat `c2a8380` as current.
+  historical record, not current. Do not treat `c2a8380` as current — this journal's
+  HEAD advances with every commit; see `git log` for the live tip.
 - **NIAP Functional Package for IPsec v1.0 (2022-03-29) validation gaps**
   (`https://commoncriteria.github.io/pp/ipsec/ipsec.html`). The suite's
   `FCS_IPSEC_EXT.1` element map (cases.tsv A-cells) is directly comparable

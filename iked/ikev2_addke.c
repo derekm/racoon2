@@ -1358,16 +1358,32 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			ss = 0;
 			goto done;
 		}
-		if (ikev2_rekey_responder_addke_complete(ike_sa,
-				ike_sa->addke_rekey_sk, ct,
-				get_uint32(&ikehdr->message_id),
-				ke_method) < 0) {
-			isakmp_log(ike_sa, local, remote, msg,
-				   PLOG_INTERR, PLOGLOC,
-				   "failed to complete ADDKE IKE-SA rekey\n");
-			rc_vfreez(ss);
-			ss = 0;
-			goto invalid;
+		{
+			int cr = ikev2_rekey_responder_addke_complete(ike_sa,
+					ike_sa->addke_rekey_sk, ct,
+					get_uint32(&ikehdr->message_id),
+					ke_method);
+			if (cr < 0) {
+				if (cr == -2) {
+					/* final KEr already sent: the peer holds
+					 * the success signal. Abandon WITHOUT
+					 * STATE_NOT_FOUND (it would replace the
+					 * armed cache and desync the rekey). */
+					isakmp_log(ike_sa, local, remote, msg,
+						   PLOG_INTERR, PLOGLOC,
+						   "ADDKE IKE-SA rekey local "
+						   "establish failed after KEr sent\n");
+					rc_vfreez(ss);
+					ss = 0;
+					goto done;
+				}
+				isakmp_log(ike_sa, local, remote, msg,
+					   PLOG_INTERR, PLOGLOC,
+					   "failed to complete ADDKE IKE-SA rekey\n");
+				rc_vfreez(ss);
+				ss = 0;
+				goto invalid;
+			}
 		}
 		rc_vfreez(ss);
 		ss = 0;
@@ -1544,7 +1560,12 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			   "failed to install ADDKE child\n");
 		rc_vfreez(child_sa->addke_sk);
 		child_sa->addke_sk = 0;
-		goto invalid;
+		/* The final KEr for this followup was already transmitted and
+		 * cached above; the peer holds the success signal. Do NOT goto
+		 * invalid: STATE_NOT_FOUND here would REPLACE the armed cache
+		 * and tell the initiator to abandon a child it already believes
+		 * is up. Log and abandon locally only. */
+		goto done;
 	}
 	goto done;
 
