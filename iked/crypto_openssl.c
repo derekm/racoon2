@@ -95,7 +95,7 @@ static OSSL_PROVIDER *eay_prov_extra;
 static OSSL_PROVIDER *eay_prov_legacy;
 static int eay_initialized;
 #endif
-#ifdef WITH_OPENSSL_ENGINE
+#if defined(WITH_OPENSSL_ENGINE) && OPENSSL_VERSION_NUMBER < 0x30000000L
 static ENGINE *eay_engine;
 #endif
 
@@ -188,7 +188,10 @@ eay_init(void)
 	ERR_load_crypto_strings();
 	OpenSSL_add_all_algorithms();
 #endif
-#ifdef WITH_OPENSSL_ENGINE
+#if defined(WITH_OPENSSL_ENGINE) && OPENSSL_VERSION_NUMBER < 0x30000000L
+	/* Legacy ENGINE setup is OpenSSL < 3.0 only: on 3.x the provider path
+	 * above replaces it, and OpenSSL 3.5 (Fedora 45) removed ENGINE
+	 * entirely, so the ENGINE_* symbols no longer link. */
 	ENGINE_load_builtin_engines();
 	if (eay_engine_id && *eay_engine_id) {
 		eay_engine = ENGINE_by_id(eay_engine_id);
@@ -243,7 +246,7 @@ eay_cleanup(void)
 	}
 	eay_initialized = 0;
 #endif
-#ifdef WITH_OPENSSL_ENGINE
+#if defined(WITH_OPENSSL_ENGINE) && OPENSSL_VERSION_NUMBER < 0x30000000L
 	if (eay_engine) {
 		ENGINE_finish(eay_engine);
 		ENGINE_free(eay_engine);
