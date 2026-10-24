@@ -72,6 +72,19 @@
 #endif
 #include "evloop.h"
 #include "crypto_workers.h"
+#include "ikev2_tcp_srv.h"
+
+/* RFC 9329 IKE-over-TCP dispatch seam: a de-framed IKE message reaches the
+ * same engine the UDP path uses.  ikev2_input owns and frees pkt.  Its
+ * return is IKE-layer bookkeeping only -- it never closes the stream (a
+ * framing-fatal error is the only thing that does, via the stream object). */
+static int
+iked_tcp_dispatch(rc_vchar_t *pkt, struct sockaddr *remote,
+		  struct sockaddr *local, void *arg)
+{
+	(void)arg;
+	return ikev2_input(pkt, remote, local);
+}
 
 const char *racoon_config_path = RACOON_CONF;
 int opt_foreground = FALSE;
@@ -539,6 +552,7 @@ iked_mainloop(void)
 	int nfds;
 	int spmif_fd;
 	fd_set fdset;
+	fd_set wfdset;			/* RFC 9329 write readiness (streams) */
 	struct timeval *timeout;
 	int isakmp_sock, sadbsock_fd;
 #ifdef WITH_RTSOCK
@@ -552,6 +566,18 @@ iked_mainloop(void)
 #endif
 	int cryptofd;
 
+	/* RFC 9329: the TCP listener + stream registry.  With no listener
+	 * configured (tcp_encap off) it is empty and every call is a no-op,
+	 * so the UDP path is untouched. */
+	{
+		static int tcp_reg_inited;
+
+		if (!tcp_reg_inited) {
+			tcp_reg_inited = 1;
+			tcp_srv_init(iked_tcp_dispatch, NULL);
+		}
+	}
+
 	for (;;) {
 		if (reload) {
 			reload = FALSE;
@@ -559,7 +585,14 @@ iked_mainloop(void)
 		}
 
 		FD_ZERO(&fdset);
+		FD_ZERO(&wfdset);
 		nfds = isakmp_fdset(&fdset);
+		{
+			int tmax = tcp_srv_fdset(&fdset, &wfdset);
+
+			if (tmax > nfds)
+				nfds = tmax;
+		}
 
 		if (!debug_pfkey) {
 			monitor_fd(sadbsock_fd = sadb_socket(), &fdset, &nfds);
@@ -583,10 +616,10 @@ iked_mainloop(void)
 		cryptofd = crypto_workers_fd();
 		monitor_fd(cryptofd, &fdset, &nfds);
 		timeout = scheduler();
-		num_fds = evloop_wait(nfds, &fdset, timeout);
+		num_fds = evloop_wait_rw(nfds, &fdset, &wfdset, timeout);
 		if (num_fds == -1) {
 			plog(PLOG_INTERR, PLOGLOC, 0,
-			     "evloop_wait: %s\n", strerror(errno));
+			     "evloop_wait_rw: %s\n", strerror(errno));
 			continue;
 		}
 
@@ -615,6 +648,9 @@ iked_mainloop(void)
 		while ((isakmp_sock = isakmp_isset(&fdset)) >= 0) {
 			isakmp_handler(isakmp_sock);
 		}
+		/* RFC 9329: accept/drain/teardown the TCP listener + streams
+		 * (no-op while no listener is configured). */
+		tcp_srv_process(&fdset, &wfdset);
 		if (cryptofd >= 0 && FD_ISSET(cryptofd, &fdset))
 			crypto_workers_drain();
 	}
