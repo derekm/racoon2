@@ -122,9 +122,11 @@ check_PROGRAMS += notifytest
 notifytest_SOURCES = notifytest.c
 notifytest_LDADD = $(addtest_ikedsrc) $(LDADD)
 
-# RFC 8229 / RFC 9329 IKE-over-TCP framing codec (iked/ikev2_tcp.c): prefix
-# validation, 16-bit length bounds, ESP/IKE separator routing, partial-read
-# resistance, multi-record coalescing, build/decap round-trip.
+# RFC 8229 / RFC 9329 IKE-over-TCP framing codec (iked/ikev2_tcp.c): the
+# 16-bit Len (including itself) + 4-octet non-ESP marker wire format, prefix
+# validation, Len 0/1 fatal vs Len 2 and keepalive silent-ignore, ESP/IKE
+# classification by the non-ESP marker, partial-read resistance,
+# multi-record coalescing, build/decap round-trip.
 TESTS += tcpframetest
 check_PROGRAMS += tcpframetest
 tcpframetest_SOURCES = tcpframetest.c ikev2_tcp.c

@@ -125,7 +125,7 @@ tcp_decap_feed(struct tcp_decap_state *s, const unsigned char *p, size_t n,
 			if (s->reclen == 0 || s->reclen == 1)
 				return -1;	/* RFC 9329 s3.1: fatal, close */
 			if (s->reclen == 2) {
-				/* Silent-ignore record: no data (RFC 9329 s3.2). */
+				/* Silent-ignore record: no data (RFC 9329 s3). */
 				s->pos = 0;
 				s->phase = TCAP_LEN;
 				continue;

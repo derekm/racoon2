@@ -97,7 +97,7 @@ main(void)
 		CHECK(feed_all(&s, l1, sizeof(l1)) == -1, "len: 1 is fatal");
 	}
 
-	/* --- 5. Len 2 is silently ignored (RFC 9329 s3.2) --- */
+	/* --- 5. Len 2 is silently ignored (RFC 9329 s3) --- */
 	{
 		const unsigned char stream[] = { 0, 2,     /* ignore */
 						0, 7, 0, 0, 0, 0, 0x42 }; /* IKE */
