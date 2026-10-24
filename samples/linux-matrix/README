@@ -18,7 +18,8 @@ the case. `0` = inline; `1` = pool. IKE_SA DH is `crypto_job_submit`
 Add a case: a row in `cases.tsv` + a `kind_*` in `kinds/<kind>.sh`.
 
 Structured results: run.sh writes one TSV line per row to `$R2_RESULTS`
-(default `/tmp/r2-results.tsv`, collected with the `/tmp/r2-*` row logs).
+(default: a fresh `/tmp/r2-results.XXXXXX` per run, so parallel shards do
+not clobber each other; collected with the `/tmp/r2-*` row logs).
 Each line holds the row, kind, expect, verdict (PASS, FAIL, SKIP, XFAIL or
 XPASS), gate class, seconds, and the counts of structured gates. Kinds report
 their evidence with `r2_gate KEY PASS|FAIL "evidence"` (lib.sh), which prints

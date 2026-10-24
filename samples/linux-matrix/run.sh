@@ -178,7 +178,12 @@ LANE_SKIP=$HERE/lanes/${R2_LANE:-none}.skip
 # Structured results: one TSV line per row (verdict, gate class, seconds,
 # structured GATE counts from r2_gate) so CI and reports parse verdicts
 # instead of grepping log text.  Swept up with the /tmp/r2-* row logs.
-R2_RESULTS=${R2_RESULTS:-/tmp/r2-results.tsv}
+# Default: a fresh per-run file (parallel shards/lanes on one host must not
+# truncate each other's results); an explicit R2_RESULTS is used as given.
+if [ -z "${R2_RESULTS:-}" ]; then
+	R2_RESULTS=$(mktemp /tmp/r2-results.XXXXXX) || { echo "mktemp failed" >&2; exit 1; }
+fi
+log "results file: $R2_RESULTS"
 printf '# row\tkind\texpect\tverdict\tgate\tseconds\tgates_pass\tgates_fail\tdetail\n' >"$R2_RESULTS"
 r2_result() {	# r2_result <row> <kind> <expect> <verdict> <gate> <secs> <detail>
 	_gp=0; _gf=0
