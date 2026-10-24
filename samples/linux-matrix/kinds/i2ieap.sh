@@ -20,7 +20,11 @@ kind_i2ieap() {
 	require_root || return 1
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
-	command -v /usr/sbin/radiusd >/dev/null 2>&1 || { log "FAIL: no FreeRADIUS (radiusd)"; return 1; }
+	# FreeRADIUS: Fedora radiusd + /etc/raddb, Debian freeradius + /etc/freeradius/3.0
+	RADCMD=; RADSRC=
+	for _c in /usr/sbin/radiusd /usr/sbin/freeradius; do [ -x "$_c" ] && { RADCMD=$_c; break; }; done
+	for _d in /etc/raddb /etc/freeradius/3.0; do [ -d "$_d" ] && { RADSRC=$_d; break; }; done
+	[ -n "$RADCMD" ] && [ -n "$RADSRC" ] || { log "FAIL: no FreeRADIUS (radiusd/freeradius + raddb)"; return 1; }
 	command -v openssl >/dev/null 2>&1 || { log "FAIL: no openssl"; return 1; }
 	command -v "$I2I_CHARON_BIN" >/dev/null 2>&1 || { log "FAIL: no charon $I2I_CHARON_BIN"; return 1; }
 	command -v "$I2I_SWANCTL_BIN" >/dev/null 2>&1 || { log "FAIL: no $I2I_SWANCTL_BIN"; return 1; }
@@ -49,7 +53,14 @@ kind_i2ieap() {
 	# module (which uses certdir/server.pem).  Both signed by the same CA.
 	I2IEAP_TLS=0
 	case $name in *-tls) I2IEAP_TLS=1 ;; esac
-	if [ "$I2IEAP_TLS" -eq 1 ]; then
+	# RFC 4739 variant (row name *-multi): charon authenticates TWICE,
+	# round one with its client certificate (pubkey, SAN DNS:eaptest)
+	# flagged N(ANOTHER_AUTH_FOLLOWS), round two with EAP-MSCHAPv2.  The
+	# responder runs multiple_auth on with cert_validate + ca_file so the
+	# round-one signature is checked against the wire cert chain.
+	I2IEAP_MULTI=0
+	case $name in *-multi) I2IEAP_MULTI=1 ;; esac
+	if [ "$I2IEAP_TLS" -eq 1 ] || [ "$I2IEAP_MULTI" -eq 1 ]; then
 		# client cert for charon (EAP-TLS client auth).  The EAP identity
 		# is the bare FQDN 'eaptest', so the cert must carry a
 		# subjectAltName DNS:eaptest — otherwise charon (which matches
@@ -68,10 +79,9 @@ kind_i2ieap() {
 	fi
 
 	# --- FreeRADIUS clone (MSCHAPv2) + test account, netns-local ---
-	RADCMD=/usr/sbin/radiusd
 	RADD=/tmp/raddb-eap-$name
 	rm -rf "$RADD"
-	cp -r /etc/raddb "$RADD" 2>/dev/null || { log "FAIL: cp raddb"; return 1; }
+	cp -r "$RADSRC" "$RADD" 2>/dev/null || { log "FAIL: cp raddb"; return 1; }
 	chmod -R a+rX "$RADD"
 	# load a local account and force MSCHAPv2's default EAP type
 	sed -i 's/^[[:space:]]*default_eap_type[[:space:]]*=.*/	default_eap_type = mschapv2/' "$RADD/mods-enabled/eap" 2>/dev/null
@@ -105,8 +115,10 @@ kind_i2ieap() {
 		# require the client cert (mutual TLS).
 		sed -i 's|^[[:space:]]*private_key_password = .*|private_key_password = ""|' "$RADD/mods-enabled/eap" 2>/dev/null
 		sed -i 's|^[[:space:]]*private_key_file = .*|private_key_file = ${certdir}/server.key|' "$RADD/mods-enabled/eap" 2>/dev/null
-		# certificate_file already defaults to ${certdir}/server.pem,
-		# which is where we placed our server.pem — leave it as-is;
+		# Debian's eap module points certificate_file at the snakeoil
+		# cert (Fedora's at ${certdir}/server.pem); pin it so the key
+		# and cert always pair.
+		sed -i 's|^[[:space:]]*certificate_file = .*|certificate_file = ${certdir}/server.pem|' "$RADD/mods-enabled/eap" 2>/dev/null
 		# ca_file + verify_client enforce mutual TLS.
 		sed -i 's|^[[:space:]]*#\?[[:space:]]*ca_file = .*|ca_file = ${certdir}/ca.pem|' "$RADD/mods-enabled/eap" 2>/dev/null
 		sed -i 's|^[[:space:]]*#\?[[:space:]]*verify_client = .*|verify_client = yes|' "$RADD/mods-enabled/eap" 2>/dev/null
@@ -149,6 +161,7 @@ remote matrix_resp {
 		kmp_hash_alg { hmac_sha2_256; };
 		kmp_dh_group { modp2048; };
 		kmp_auth_method { eap; rsasig; };
+$( [ "$I2IEAP_MULTI" -eq 1 ] && printf '\t\tmultiple_auth on;\n\t\tcert_validate on;\n\t\tca_file "%s";\n' "$C/certs/ca.pem" )
 		my_public_key x509pem "$C/certs/server.pem" "$C/certs/server.key";
 		radius_server "127.0.0.1";
 		radius_port 1812;
@@ -203,7 +216,7 @@ EOF
 	# charon needs both to present the cert as its EAP-TLS identity.
 	# Drop STALE client creds for this row first (a leftover mismatched
 	# cert/key pair makes charon report "no usable TLS client cert").
-	if [ "$I2IEAP_TLS" -eq 1 ]; then
+	if [ "$I2IEAP_TLS" -eq 1 ] || [ "$I2IEAP_MULTI" -eq 1 ]; then
 		mkdir -p "${I2I_CHARON_VDIR%/conf.d}"/private
 		rm -f "${I2I_CHARON_VDIR%/conf.d}"/x509/r2-${name}-client*.pem \
 		      "${I2I_CHARON_VDIR%/conf.d}"/private/r2-${name}-client*.pem 2>/dev/null || true
@@ -217,7 +230,21 @@ EOF
 	# from the loaded key store for EAP-TLS mutual auth).  There is NO
 	# `key=` option in a swanctl local{} block (invalid -> config
 	# discarded).
-	if [ "$I2IEAP_TLS" -eq 1 ]; then
+	I2IEAP_LOCAL2=
+	I2IEAP_CONNOPT=
+	if [ "$I2IEAP_MULTI" -eq 1 ]; then
+		# round one: client cert; round two (local-2): EAP-MSCHAPv2
+		I2IEAP_LOCALAUTH='auth = pubkey
+		certs = r2-'"$name"'-client-cert.pem'
+		# iked sends no CERTREQ in IKE_SA_INIT, so charon would omit
+		# its CERT (send_cert=ifasked) and round one could not verify
+		I2IEAP_CONNOPT='send_cert = always'
+		I2IEAP_LOCAL2='local-2 {
+			auth = eap
+			eap_id = eaptest
+			id = eaptest
+		}'
+	elif [ "$I2IEAP_TLS" -eq 1 ]; then
 		I2IEAP_LOCALAUTH='auth = eap-tls
 		certs = r2-'"$name"'-client-cert.pem'
 	else
@@ -237,10 +264,12 @@ connections {
 		proposals = aes256-sha256-modp2048
 		local_addrs = $HI
 		remote_addrs = $HR
+		$I2IEAP_CONNOPT
 		local {
 			$I2IEAP_LOCALAUTH
 			id = eaptest
 		}
+		$I2IEAP_LOCAL2
 		remote {
 			auth = pubkey
 			id = racoon2-eap
@@ -266,7 +295,7 @@ EOF
 
 	# --- cleanup + netns + veth + UDP-allow ---
 	pkill -9 -f "$C/" 2>/dev/null || true
-	pkill -9 -f "radiusd -d $RADD" 2>/dev/null || true
+	pkill -9 -f -- "-d $RADD" 2>/dev/null || true
 	rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
 	ip netns del "$NSR" 2>/dev/null || true
 	ip netns del "$NSI" 2>/dev/null || true
@@ -336,10 +365,13 @@ EOF
 	done
 	[ "$up" -eq 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 
-	fail=0
+	# not "fail": that is run.sh's global row counter (this kind runs
+	# in the runner's shell), and clobbering it hid FAIL rows from the
+	# summary and exit status.
+	efail=0
 	if [ "${up:-0}" -ne 1 ]; then
 		log "FAIL: not ESTABLISHED (charon=${ce:-0} iked=${se:-0})"
-		fail=1
+		efail=1
 	fi
 	# MSK + EAP-Success on the responder (the milestone-1 core).  charon
 	# logs the EAP success with the method name (MSCHAPv2 vs TLS), so
@@ -348,13 +380,13 @@ EOF
 	auth=$(grep -cE "with (EAP|EAP-TLS) successful" "$D/charon-init.log" 2>/dev/null)
 	[ "${msk:-0}" -ge 1 ] && [ "${auth:-0}" -ge 1 ] || {
 		log "FAIL: MSK/AUTH evidence missing (msk=${msk:-0} auth=${auth:-0})"
-		fail=1
+		efail=1
 	}
 	# ESP child up proves keymat matched
 	re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 	if [ "${re:-0}" -lt 2 ]; then
 		log "FAIL: responder ESP states <2 ($re)"
-		fail=1
+		efail=1
 	fi
 	# Pool-enabled proof: with a numeric workers cell the daemon must have
 	# started its crypto worker pool (non-inline EAP round). This is what
@@ -362,23 +394,37 @@ EOF
 	if [ -n "${R2_WORKERS:-}" ] && [ "${R2_WORKERS:-0}" -gt 0 ]; then
 		if ! grep -q "crypto workers: $R2_WORKERS" "$D/resp-iked.log"; then
 			log "FAIL: responder iked did not start crypto workers=$R2_WORKERS (EAP round would block the loop)"
-			fail=1
+			efail=1
 		elif grep -q "crypto workers: 0" "$D/resp-iked.log"; then
 			log "FAIL: responder iked fell back to workers=0"
-			fail=1
+			efail=1
 		else
 			log "EAP pooled: responder iked crypto workers=$R2_WORKERS (non-inline RADIUS round)"
 		fi
 	fi
 
-	method=MSCHAPv2; [ "$I2IEAP_TLS" -eq 1 ] && method=EAP-TLS
-	[ "$fail" -eq 0 ] && log "PASS $name (EAP-$method + responder cert -> ESTABLISHED, ESP up)"
+	if [ "$I2IEAP_MULTI" -eq 1 ]; then
+		# RFC 4739 evidence on both sides: iked ran the two rounds,
+		# charon authenticated with its key (round one) AND with EAP
+		# (round two), and the responder advertised 16404
+		grep -q "multiple auth: first round verified" "$D/resp-iked.log" || {
+			log "FAIL: iked did not run a multiple-auth first round"; efail=1; }
+		grep -q "advertising MULTIPLE_AUTH_SUPPORTED" "$D/resp-iked.log" || {
+			log "FAIL: iked did not advertise MULTIPLE_AUTH_SUPPORTED"; efail=1; }
+		grep -qE "authentication of 'eaptest' \(myself\) with (RSA|ECDSA|RSASSA)" "$D/charon-init.log" || {
+			log "FAIL: charon round one (pubkey) not seen"; efail=1; }
+		grep -q "ANOTHER_AUTH_FOLLOWS\|N(AUTH_FOLLOWS)" "$D/charon-init.log" || {
+			log "FAIL: charon did not send ANOTHER_AUTH_FOLLOWS"; efail=1; }
+	fi
+	method=EAP-MSCHAPv2; [ "$I2IEAP_TLS" -eq 1 ] && method=EAP-TLS
+	[ "$I2IEAP_MULTI" -eq 1 ] && method="pubkey+EAP-MSCHAPv2 (RFC 4739)"
+	[ "$efail" -eq 0 ] && log "PASS $name ($method + responder cert -> ESTABLISHED, ESP up)"
 	# cleanup on EVERY exit path (this row's daemons/sockets/netns): the
 	# old kind only pkilled at START, so a finished row left its daemons
 	# running as live orphan load for the whole sweep.
 	pkill -9 -f "$C/" 2>/dev/null || true              # row's iked/spmd (-f $C/conf)
-	pkill -9 -f "radiusd -d $RADD" 2>/dev/null || true # row's radiusd
+	pkill -9 -f -- "-d $RADD" 2>/dev/null || true # row's radiusd
 	i2i_charon_kill                                    # row's charon (argv carries the charon conf/socket paths, not $C/)
 	for _ns in "$NSR" "$NSI"; do ip netns del "$_ns" 2>/dev/null || true; done
-	return "$fail"
+	return "$efail"
 }
