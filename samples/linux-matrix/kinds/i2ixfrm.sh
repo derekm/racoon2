@@ -245,8 +245,10 @@ kind_i2ixfrm() {
 			np=$(awk '/^src /{if(t&&!m)bad++; t=0; m=0} /proto esp/{t=1} /mark 0x42\/0xff/{m=1} END{if(t&&!m)bad++; print bad+0}' "$D/$S-spd.txt")
 			log "$S: esp states=$nesp marked=$nmk; ESP policies without the mark=$np"
 			if [ "$nesp" -lt 2 ] || [ "$nmk" -ne "$nesp" ] || [ "$np" -ne 0 ]; then
-				log "FAIL: $S SAD/SPD does not carry mark 0x42/0xff on every ESP state/policy"
+				r2_gate "mark.sadspd.$S" FAIL "esp=$nesp marked=$nmk unmarked_policies=$np"
 				ok=0
+			else
+				r2_gate "mark.sadspd.$S" PASS "esp=$nesp marked=$nmk"
 			fi
 		done
 		if [ "$up" -eq 1 ]; then
@@ -254,41 +256,51 @@ kind_i2ixfrm() {
 			ip netns exec "$NSI" ping -c 3 -i 0.2 -W 2 "$HR" >/dev/null 2>&1
 			oi1=$(x_out_pkts "$NSI" "$HI" "$HR"); or1=$(x_out_pkts "$NSR" "$HR" "$HI")
 			if ip netns exec "$NSI" ping -m 66 -c 3 -i 0.2 -W 2 "$HR" >/dev/null 2>&1; then
-				log "data plane: marked ICMP echo answered"
+				r2_gate mark.echo PASS "marked ICMP echo answered"
 			else
-				log "FAIL: data plane: marked ICMP echo not answered across the marked child"
+				r2_gate mark.echo FAIL "marked ICMP echo not answered across the marked child"
 				ok=0
 			fi
 			oi2=$(x_out_pkts "$NSI" "$HI" "$HR"); or2=$(x_out_pkts "$NSR" "$HR" "$HI")
 			log "outbound ESP packets init ${oi0:-?}->${oi1:-?}->${oi2:-?} resp ${or0:-?}->${or1:-?}->${or2:-?} (unmarked, then marked)"
 			if [ "${oi1:-x}" != "${oi0:-y}" ] || [ "${or1:-x}" != "${or0:-y}" ]; then
-				log "FAIL: unmarked echos used the marked SA"
+				r2_gate mark.unmarked_bypass FAIL "unmarked echos used the marked SA"
 				ok=0
+			else
+				r2_gate mark.unmarked_bypass PASS "SA counters flat for unmarked echos"
 			fi
 			if [ "$((${oi2:-0} - ${oi1:-0}))" -lt 3 ] || [ "$((${or2:-0} - ${or1:-0}))" -lt 3 ]; then
-				log "FAIL: marked echos did not traverse both seats' marked SAs"
+				r2_gate mark.marked_via_sa FAIL "marked echos did not traverse both seats' marked SAs"
 				ok=0
+			else
+				r2_gate mark.marked_via_sa PASS "init +$((oi2 - oi1)) resp +$((or2 - or1)) packets"
 			fi
 		fi
 		;;
 	*-offload)
 		for dir in in out; do
 			if grep -A12 'proto esp' "$D/$NSR-sad.txt" | grep -q "crypto offload parameters: dev $NSIM_DEV dir $dir"; then
-				log "responder SAD: ESP state offloaded to $NSIM_DEV dir $dir"
+				r2_gate "offload.bound.$dir" PASS "responder ESP state offloaded to $NSIM_DEV dir $dir"
 			else
-				log "FAIL: responder SAD lacks an ESP state offloaded to $NSIM_DEV dir $dir"
+				r2_gate "offload.bound.$dir" FAIL "responder SAD lacks an ESP state offloaded to $NSIM_DEV dir $dir"
 				ok=0
 			fi
 		done
 		if grep -q 'crypto offload' "$D/$NSI-sad.txt"; then
-			log "FAIL: initiator (no offload config) has an offloaded SA"
+			r2_gate offload.initiator_none FAIL "initiator (no offload config) has an offloaded SA"
 			ok=0
+		else
+			r2_gate offload.initiator_none PASS "initiator SAs not offloaded"
 		fi
 		dbg=$(find /sys/kernel/debug/netdevsim -path "*netdevsim$NSIM_ID*" -name ipsec 2>/dev/null | head -1)
 		if [ -n "$dbg" ]; then
 			cnt=$(sed -n 's/.*SA count=\([0-9]*\).*/\1/p' "$dbg" | head -1)
 			log "netdevsim ipsec debugfs: SA count=${cnt:-?}"
-			[ "${cnt:-0}" -ge 2 ] || { log "FAIL: netdevsim holds ${cnt:-0} SAs, want >= 2"; ok=0; }
+			if [ "${cnt:-0}" -ge 2 ]; then
+				r2_gate offload.nsim_count PASS "netdevsim holds $cnt SAs"
+			else
+				r2_gate offload.nsim_count FAIL "netdevsim holds ${cnt:-0} SAs, want >= 2"; ok=0
+			fi
 		else
 			log "netdevsim ipsec debugfs not mounted; SAD binding is the proof"
 		fi

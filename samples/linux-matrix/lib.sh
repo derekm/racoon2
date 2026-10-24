@@ -16,6 +16,16 @@ SPMD_UNIT="${R2_SPMD_UNIT:-spmd}"
 
 log() { printf '%s\n' "$*"; }
 
+# r2_gate KEY PASS|FAIL EVIDENCE: a structured gate verdict.  Prints one
+# machine-readable line, "GATE <row> <key> <PASS|FAIL> <evidence>", which
+# run.sh counts into the results TSV ($R2_RESULTS), so a row's evidence
+# can be read without grepping free-form log text.  FAIL also fails the row
+# (R2_CASE_FAIL=1).  KEY is one word ([a-z0-9_.-]).
+r2_gate() {
+	printf 'GATE %s %s %s %s\n' "${name:-?}" "$1" "$2" "$3"
+	[ "$2" = PASS ] || R2_CASE_FAIL=1
+}
+
 # netem's own dropped-datagram counter, read from `tc -s qdisc show`.
 # A replay marker alone can pass with zero measured loss; this counter
 # makes "replayed" and "actually dropped" agree (counted-drop gate).

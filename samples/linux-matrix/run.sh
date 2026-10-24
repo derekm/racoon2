@@ -175,6 +175,20 @@ xfail=0
 xpass=0
 uskip=0
 LANE_SKIP=$HERE/lanes/${R2_LANE:-none}.skip
+# Structured results: one TSV line per row (verdict, gate class, seconds,
+# structured GATE counts from r2_gate) so CI and reports parse verdicts
+# instead of grepping log text.  Swept up with the /tmp/r2-* row logs.
+R2_RESULTS=${R2_RESULTS:-/tmp/r2-results.tsv}
+printf '# row\tkind\texpect\tverdict\tgate\tseconds\tgates_pass\tgates_fail\tdetail\n' >"$R2_RESULTS"
+r2_result() {	# r2_result <row> <kind> <expect> <verdict> <gate> <secs> <detail>
+	_gp=0; _gf=0
+	if [ -n "${ROW_OUT:-}" ] && [ -f "$ROW_OUT" ] && [ "$4" != SKIP ]; then
+		_gp=$(grep -c "^GATE $1 [^ ]* PASS" "$ROW_OUT")
+		_gf=$(grep -c "^GATE $1 [^ ]* FAIL" "$ROW_OUT")
+	fi
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" \
+	    "${5:--}" "$6" "$_gp" "$_gf" "$(printf '%s' "$7" | tr '\t\n' '  ')" >>"$R2_RESULTS"
+}
 # charon_ikev1_absent: succeed (printing the proof) only when the installed
 # strongSwan libcharon demonstrably has no IKEv1 (no main_mode/quick_mode
 # task strings).  Fails when charon is missing or still speaks IKEv1.
@@ -203,10 +217,12 @@ row_skip() {
 	if [ "${R2_REQUIRE_LIVE:-0}" = 1 ] && ! lane_expects_skip "$1" "$2"; then
 		log "FAIL $1 (R2_REQUIRE_LIVE=1: unexpected SKIP: $3; not in ${LANE_SKIP#$HERE/})"
 		fail=$((fail + 1)); uskip=$((uskip + 1))
+		r2_result "$1" "${kind:-?}" "${expect:-?}" FAIL "$2" 0 "unexpected skip: $3"
 		return
 	fi
 	log "SKIP $1 ($3)"
 	skip=$((skip + 1))
+	r2_result "$1" "${kind:-?}" "${expect:-?}" SKIP "$2" 0 "$3"
 }
 SHARD_IDX=0
 trap iked_restore EXIT
@@ -234,6 +250,7 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 		if [ $((SHARD_IDX % SHARD_M)) -ne "${SHARD_K:-0}" ]; then
 			log "SKIP $name (shard $SHARD_K/$SHARD_M, idx $SHARD_IDX)"
 			skip=$((skip + 1))
+			r2_result "$name" "$kind" "$expect" SKIP shard 0 "shard $SHARD_K/$SHARD_M"
 			continue
 		fi
 	fi
@@ -305,6 +322,7 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 	log "=== $name ($kind) workers=${R2_WORKERS:-live} ==="
 	R2_CASE_FAIL=0
 	ROW_OUT=/tmp/r2-row-$name.out
+	ROW_T0=$(date +%s)
 	xa_start "$name"
 	# Brace group, not a pipe: the kind runs in THIS shell so its globals
 	# (R2_CASE_FAIL, R2_IKED_*) survive; the output is replayed below and
@@ -321,6 +339,7 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 		fi
 	} > "$ROW_OUT" 2>&1
 	cat "$ROW_OUT"
+	ROW_SECS=$(( $(date +%s) - ROW_T0 ))
 	if [ "$R2_CASE_FAIL" != 0 ] || [ "$st" -ne 0 ]; then
 		row_ok=0
 	else
@@ -331,25 +350,36 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 			log "XPASS $name (declared defect /$defect/ is gone: change expect to pass)"
 			log "FAIL $name"
 			fail=$((fail + 1)); xpass=$((xpass + 1))
+			r2_result "$name" "$kind" "$expect" XPASS "$gate" "$ROW_SECS" "declared defect gone: $defect"
 		elif grep -E -- "$defect" "$ROW_OUT" | grep -Eq ' FAIL |^FAIL '; then
 			log "XFAIL $name (known defect at its exact value: $(grep -E -- "$defect" "$ROW_OUT" | grep -E ' FAIL |^FAIL ' | head -1))"
 			xfail=$((xfail + 1))
+			r2_result "$name" "$kind" "$expect" XFAIL "$gate" "$ROW_SECS" "$defect"
 		else
 			log "FAIL $name (xfail row failed WITHOUT its declared defect /$defect/)"
 			fail=$((fail + 1))
+			r2_result "$name" "$kind" "$expect" FAIL "$gate" "$ROW_SECS" "xfail without its declared defect"
 		fi
 	elif [ "$row_ok" = 0 ]; then
 		log "FAIL $name"
 		fail=$((fail + 1))
+		r2_result "$name" "$kind" "$expect" FAIL "$gate" "$ROW_SECS" "$(grep -E '^FAIL|^GATE .* FAIL' "$ROW_OUT" | head -1)"
+	elif [ "$(grep -c "^GATE $name [^ ]* FAIL" "$ROW_OUT")" -ne 0 ]; then
+		# a structured FAIL cannot be outvoted by a zero exit status
+		log "FAIL $name (structured GATE FAIL with a zero kind status)"
+		fail=$((fail + 1))
+		r2_result "$name" "$kind" "$expect" FAIL "$gate" "$ROW_SECS" "GATE FAIL"
 	else
 		log "PASS $name"
 		pass=$((pass + 1))
+		r2_result "$name" "$kind" "$expect" PASS "$gate" "$ROW_SECS" ""
 	fi
 	iked_restore
 	name=
 done < "$CASES_FILE"
 
 log "pass=$pass fail=$fail skip=$skip xfail=$xfail xpass=$xpass unexpected_skip=$uskip"
+log "results: $R2_RESULTS ($(grep -vc '^#' "$R2_RESULTS") rows)"
 rc=0
 [ "$fail" -eq 0 ] || rc=1
 # empty-run guards: a filter/shard/gate that selects nothing, or a matrix

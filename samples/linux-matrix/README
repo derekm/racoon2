@@ -16,6 +16,16 @@ the case. `0` = inline; `1` = pool. IKE_SA DH is `crypto_job_submit`
 (N=0 inlines).
 
 Add a case: a row in `cases.tsv` + a `kind_*` in `kinds/<kind>.sh`.
+
+Structured results: run.sh writes one TSV line per row to `$R2_RESULTS`
+(default `/tmp/r2-results.tsv`, collected with the `/tmp/r2-*` row logs).
+Each line holds the row, kind, expect, verdict (PASS, FAIL, SKIP, XFAIL or
+XPASS), gate class, seconds, and the counts of structured gates. Kinds report
+their evidence with `r2_gate KEY PASS|FAIL "evidence"` (lib.sh), which prints
+`GATE <row> <key> <verdict> <evidence>`. A `GATE ... FAIL` fails the row even
+when the kind returns 0, so a forgotten `ok=0` cannot turn evidence into a
+PASS. New and converted kinds use r2_gate instead of free-form `log "FAIL:
+..."` lines (first user: kinds/i2ixfrm.sh).
 Add a build: a row in `builds.tsv`.
 
 Skip on purpose: `ikev1-strongswan` (msg5 vs 5.9.13). `lib/sample`.
