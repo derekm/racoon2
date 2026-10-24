@@ -130,6 +130,16 @@ check_PROGRAMS += tcpframetest
 tcpframetest_SOURCES = tcpframetest.c ikev2_tcp.c
 tcpframetest_LDADD = $(LDADD)
 
+# RFC 9329 s4 bidirectional interop over a real TCP socketpair: the connection
+# originator sends the one-time prefix + records, the responder (expect_prefix=1)
+# decodes them; the responder replies with no prefix and the originator
+# (expect_prefix=0) decodes that; plus real byte-at-a-time writes forcing a
+# split inside every field.
+TESTS += tcpstreamtest
+check_PROGRAMS += tcpstreamtest
+tcpstreamtest_SOURCES = tcpstreamtest.c ikev2_tcp.c
+tcpstreamtest_LDADD = $(LDADD)
+
 # RFC 7296 §3.15.2 split-tunnel CP attributes (13/15): drives the real
 # ikev2_create_config_reply() with a fabricated split selector.
 # Full-link (addtest_ikedsrc): unconditional, no optional-feature dep.
