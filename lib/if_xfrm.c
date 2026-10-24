@@ -147,14 +147,32 @@ static struct rcpfk_cb *cb;
 static pid_t pid;
 static int f_noharm;
 static uint32_t xfrm_seq;
-static int pending_type;	/* XFRM_MSG_* we last sent, or 0 */
-static uint32_t pending_seq;
+/*
+ * Outstanding request table, keyed by netlink seq.  Each op sent on the
+ * request socket owns a slot until its reply (ACK, NLMSG_ERROR or body)
+ * arrives, so a second request issued before the first one's reply no
+ * longer overwrites it: the first op's reply still finds its slot and
+ * fires its callback (or surfaces its error).  The table is bounded; a
+ * submit that finds it full fails with EAGAIN instead of evicting.
+ */
+#define XFRM_OPS_MAX	16
+struct xfrm_op {
+	int type;		/* XFRM_MSG_* sent, 0 = free slot */
+	uint32_t seq;
+	uint32_t spi;
+	uint8_t satype;
+	uint8_t samode;
+	int has_addrs;
+	struct sockaddr_storage src, dst;
+	char msg[XFRM_BUFLEN];	/* the request, for EBUSY resend */
+	size_t msglen;
+	int retries;
+};
+static struct xfrm_op xfrm_ops[XFRM_OPS_MAX];
+static int xfrm_nops;			/* slots in use */
+static uint32_t xfrm_last_seq;		/* seq of the newest op */
+static uint32_t xfrm_wait_seq;		/* op a WAITREPLY caller awaits */
 static uint32_t pending_dump_seq;	/* seq of in-flight SPD dump, or 0 */
-static uint32_t pending_spi;
-static uint8_t pending_satype;
-static uint8_t pending_samode;
-static struct sockaddr_storage pending_src, pending_dst;
-static int pending_has_addrs;
 static char *xfrm_rcvbuf;
 /* 8-byte aligned copies of the messages of one recv (see xfrm_read_one) */
 static char *xfrm_alnbuf;
@@ -164,9 +182,6 @@ static int xfrm_ep_fd = -1;
 static uint32_t resync_spd_seq;		/* in-flight resync dumps, or 0 */
 static uint32_t resync_sa_seq;
 static uint32_t resync_count;
-static char pending_msg[XFRM_BUFLEN];	/* last request, for EBUSY retry */
-static size_t pending_msglen;
-static int pending_retries;
 static int xfrm_need_resync;
 
 /* counters, exported for the unit test and for debugging */
@@ -176,6 +191,7 @@ unsigned long xfrm_stat_idempotent;
 unsigned long xfrm_stat_ebusy_retry;
 unsigned long xfrm_stat_stale_reply;
 unsigned long xfrm_stat_late_error;
+unsigned long xfrm_stat_ops_full;
 
 #ifdef XFRM_UNITTEST
 /* The unit test (lib/xfrmnltest.c) replaces the kernel with socketpairs
@@ -299,60 +315,105 @@ xfrm_seterror(struct rcpfk_msg *rc, int eno, const char *fmt, ...)
 	va_end(ap);
 }
 
-static void
-pending_clear(void)
+static struct xfrm_op *
+op_find(uint32_t seq)
 {
-	pending_type = 0;
-	pending_seq = 0;
-	pending_has_addrs = 0;
-	pending_msglen = 0;
-	pending_retries = 0;
+	int i;
+
+	if (seq == 0 || xfrm_nops == 0)
+		return NULL;
+	for (i = 0; i < XFRM_OPS_MAX; i++)
+		if (xfrm_ops[i].type != 0 && xfrm_ops[i].seq == seq)
+			return &xfrm_ops[i];
+	return NULL;
 }
 
 static void
+op_free(struct xfrm_op *op)
+{
+	if (op == NULL || op->type == 0)
+		return;
+	op->type = 0;
+	op->seq = 0;
+	op->msglen = 0;
+	op->retries = 0;
+	op->has_addrs = 0;
+	xfrm_nops--;
+}
+
+static void
+op_free_seq(uint32_t seq)
+{
+	op_free(op_find(seq));
+}
+
+/* forget every outstanding op (init/clean, or their replies are gone) */
+static void
+op_clear_all(void)
+{
+	int i;
+
+	for (i = 0; i < XFRM_OPS_MAX; i++)
+		op_free(&xfrm_ops[i]);
+	xfrm_nops = 0;
+	xfrm_last_seq = 0;
+}
+
+static int
 pending_set(struct rcpfk_msg *rc, int type, uint32_t seq)
 {
-	/* NOTE: overlapping ops DO occur (the xfrmnltest harness proves a
-	 * second pending_set can fire while one op is outstanding). A hard
-	 * assert here crashes on that. The real defect is that a second op
-	 * overwrites the single pending slot and the first op's reply is
-	 * then not "ours", silently dropping its callback. Tracked: needs an
-	 * outstanding-op queue keyed by seq (see plan 2026-10-23_xfrm-review-
-	 * followups KR-9) instead of one slot. Until that lands, make the
-	 * overwrite loud at submit time so a future concurrent (threaded)
-	 * submitter cannot clobber silently. */
-	if (pending_type != 0) {
-		plog(PLOG_INTERR, PLOGLOC, NULL,
-		     "XFRM: overlapping op: new %d(seq %u) while %d(seq %u) "
-		     "pending; first op's callback will be dropped (needs "
-		     "seq-keyed op queue, KR-9)\n",
-		     type, seq, pending_type, pending_seq);
+	struct xfrm_op *op;
+	int i;
+
+	op = op_find(seq);
+	if (op == NULL) {
+		for (i = 0; i < XFRM_OPS_MAX; i++)
+			if (xfrm_ops[i].type == 0) {
+				op = &xfrm_ops[i];
+				break;
+			}
+		if (op == NULL) {
+			/* never evict: an evicted op's reply would be dropped
+			 * as stale and its callback lost */
+			xfrm_stat_ops_full++;
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			    "XFRM: %d requests outstanding, refusing op %d "
+			    "(seq %u)\n", XFRM_OPS_MAX, type, seq);
+			xfrm_seterror(rc, EAGAIN,
+			    "too many outstanding xfrm requests");
+			return -1;
+		}
+		xfrm_nops++;
 	}
-	pending_type = type;
-	pending_seq = seq;
-	pending_spi = rc->spi;
-	pending_satype = rc->satype;
-	pending_samode = rc->samode;
-	pending_has_addrs = 0;
+	op->type = type;
+	op->seq = seq;
+	op->spi = rc->spi;
+	op->satype = rc->satype;
+	op->samode = rc->samode;
+	op->msglen = 0;
+	op->retries = 0;
+	op->has_addrs = 0;
 	if (rc->sa_src && rc->sa_dst) {
-		memset(&pending_src, 0, sizeof(pending_src));
-		memset(&pending_dst, 0, sizeof(pending_dst));
-		memcpy(&pending_src, rc->sa_src, (size_t)rcs_getsalen(rc->sa_src));
-		memcpy(&pending_dst, rc->sa_dst, (size_t)rcs_getsalen(rc->sa_dst));
-		pending_has_addrs = 1;
+		memset(&op->src, 0, sizeof(op->src));
+		memset(&op->dst, 0, sizeof(op->dst));
+		memcpy(&op->src, rc->sa_src, (size_t)rcs_getsalen(rc->sa_src));
+		memcpy(&op->dst, rc->sa_dst, (size_t)rcs_getsalen(rc->sa_dst));
+		op->has_addrs = 1;
 	}
+	xfrm_last_seq = seq;
+	return 0;
 }
 
 static void
-pending_fill_rc(struct rcpfk_msg *rc)
+op_fill_rc(const struct xfrm_op *op, struct rcpfk_msg *rc)
 {
-	rc->seq = pending_seq;
-	rc->spi = pending_spi;
-	rc->satype = pending_satype;
-	rc->samode = pending_samode;
-	if (pending_has_addrs) {
-		memcpy(&rc->sa_src_storage, &pending_src, sizeof(pending_src));
-		memcpy(&rc->sa_dst_storage, &pending_dst, sizeof(pending_dst));
+	rc->seq = op->seq;
+	rc->spi = op->spi;
+	rc->satype = op->satype;
+	rc->samode = op->samode;
+	if (op->has_addrs) {
+		memcpy(&rc->sa_src_storage, &op->src, sizeof(op->src));
+		memcpy(&rc->sa_dst_storage, &op->dst, sizeof(op->dst));
 		rc->sa_src = (void *)&rc->sa_src_storage;
 		rc->sa_dst = (void *)&rc->sa_dst_storage;
 	}
@@ -654,7 +715,7 @@ xfrm_test_open(struct rcpfk_msg *rc, struct rcpfk_cb *cb0, int reqfd,
 	xfrm_ntf_fd = ntffd;
 	pid = (pid_t)portid;
 	cb = cb0;
-	pending_clear();
+	op_clear_all();
 	pending_dump_seq = resync_spd_seq = resync_sa_seq = 0;
 	resync_count = 0;
 	xfrm_need_resync = 0;
@@ -672,26 +733,31 @@ xfrm_nl_send(struct rcpfk_msg *rc, struct nlmsghdr *n)
 	nsent = send(xfrm_req_fd, n, n->nlmsg_len, 0);
 	if (nsent < 0 || (size_t)nsent != n->nlmsg_len) {
 		xfrm_seterror(rc, errno, "%s", strerror(errno));
-		if (pending_type != 0 && pending_seq == n->nlmsg_seq)
-			pending_clear();
+		if (n->nlmsg_seq == pending_dump_seq)
+			pending_dump_seq = 0;
+		op_free_seq(n->nlmsg_seq);
 		return -1;
 	}
-	/* keep a copy of the pending op so an EBUSY reply can resend it */
-	if (pending_type != 0 && pending_seq == n->nlmsg_seq &&
-	    n->nlmsg_len <= sizeof(pending_msg) && (void *)n != pending_msg) {
-		memcpy(pending_msg, n, n->nlmsg_len);
-		pending_msglen = n->nlmsg_len;
+	/* keep a copy of the op's request so an EBUSY reply can resend it */
+	{
+		struct xfrm_op *op = op_find(n->nlmsg_seq);
+
+		if (op != NULL && n->nlmsg_len <= sizeof(op->msg) &&
+		    (void *)n != op->msg) {
+			memcpy(op->msg, n, n->nlmsg_len);
+			op->msglen = n->nlmsg_len;
+		}
 	}
 	return 0;
 }
 
 static int
-xfrm_resend_pending(void)
+xfrm_resend_op(const struct xfrm_op *op)
 {
-	if (pending_msglen == 0)
+	if (op->msglen == 0)
 		return -1;
-	if (send(xfrm_req_fd, pending_msg, pending_msglen, 0) !=
-	    (ssize_t)pending_msglen)
+	if (send(xfrm_req_fd, op->msg, op->msglen, 0) !=
+	    (ssize_t)op->msglen)
 		return -1;
 	return 0;
 }
@@ -1176,7 +1242,8 @@ xfrm_send_sa(struct rcpfk_msg *rc, uint16_t nltype)
 	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc) ||
 	    add_xfrm_offload_attr(n, sizeof(buf), rc))
 		return -1;
-	pending_set(rc, nltype, n->nlmsg_seq);
+	if (pending_set(rc, nltype, n->nlmsg_seq) < 0)
+		return -1;
 	return xfrm_nl_send(rc, n);
 }
 
@@ -1262,7 +1329,7 @@ rcpfk_init(struct rcpfk_msg *rc, struct rcpfk_cb *cb0)
 	if (xfrm_open(rc))
 		return -1;
 	cb = cb0;
-	pending_clear();
+	op_clear_all();
 	pending_dump_seq = resync_spd_seq = resync_sa_seq = 0;
 	xfrm_need_resync = 0;
 	return 0;
@@ -1272,7 +1339,7 @@ int
 rcpfk_clean(struct rcpfk_msg *rc)
 {
 	cb = NULL;
-	pending_clear();
+	op_clear_all();
 	if (xfrm_rcvbuf) {
 		free(xfrm_rcvbuf);
 		xfrm_rcvbuf = NULL;
@@ -1317,7 +1384,8 @@ rcpfk_send_getspi(struct rcpfk_msg *rc)
 	 * install otherwise. */
 	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
 		return -1;
-	pending_set(rc, XFRM_MSG_ALLOCSPI, n->nlmsg_seq);
+	if (pending_set(rc, XFRM_MSG_ALLOCSPI, n->nlmsg_seq) < 0)
+		return -1;
 	return xfrm_nl_send(rc, n);
 }
 
@@ -1374,7 +1442,8 @@ rcpfk_send_delete(struct rcpfk_msg *rc)
 	 * it here is harmless and keeps DEL identical to ADD.) */
 	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
 		return -1;
-	pending_set(rc, XFRM_MSG_DELSA, n->nlmsg_seq);
+	if (pending_set(rc, XFRM_MSG_DELSA, n->nlmsg_seq) < 0)
+		return -1;
 	return xfrm_nl_send(rc, n);
 }
 
@@ -1404,7 +1473,8 @@ rcpfk_send_get(struct rcpfk_msg *rc)
 	/* GET by id must also carry the SA's mark, or a marked SA is invisible. */
 	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
 		return -1;
-	pending_set(rc, XFRM_MSG_GETSA, n->nlmsg_seq);
+	if (pending_set(rc, XFRM_MSG_GETSA, n->nlmsg_seq) < 0)
+		return -1;
 	return xfrm_nl_send(rc, n);
 }
 
@@ -1469,7 +1539,8 @@ xfrm_send_policy(struct rcpfk_msg *rc, uint16_t nltype)
 	/* XFRM-native: mark / if_id on the policy (offload is SA-only). */
 	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
 		return -1;
-	pending_set(rc, nltype, n->nlmsg_seq);
+	if (pending_set(rc, nltype, n->nlmsg_seq) < 0)
+		return -1;
 	return xfrm_nl_send(rc, n);
 }
 
@@ -1514,7 +1585,8 @@ rcpfk_send_spddelete(struct rcpfk_msg *rc)
 	 * carry them or a marked policy cannot be deleted. */
 	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
 		return -1;
-	pending_set(rc, XFRM_MSG_DELPOLICY, n->nlmsg_seq);
+	if (pending_set(rc, XFRM_MSG_DELPOLICY, n->nlmsg_seq) < 0)
+		return -1;
 	return xfrm_nl_send(rc, n);
 }
 
@@ -1540,7 +1612,8 @@ rcpfk_send_spddelete2(struct rcpfk_msg *rc)
 	 * marked policy is -ENOENT without these attrs. */
 	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
 		return -1;
-	pending_set(rc, XFRM_MSG_DELPOLICY, n->nlmsg_seq);
+	if (pending_set(rc, XFRM_MSG_DELPOLICY, n->nlmsg_seq) < 0)
+		return -1;
 	return xfrm_nl_send(rc, n);
 }
 
@@ -1565,7 +1638,8 @@ rcpfk_send_spdget(struct rcpfk_msg *rc)
 	 * policy is visible to spmd's by-index fetch. */
 	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
 		return -1;
-	pending_set(rc, XFRM_MSG_GETPOLICY, n->nlmsg_seq);
+	if (pending_set(rc, XFRM_MSG_GETPOLICY, n->nlmsg_seq) < 0)
+		return -1;
 	return xfrm_nl_send(rc, n);
 }
 
@@ -1581,7 +1655,8 @@ rcpfk_send_spddump(struct rcpfk_msg *rc)
 		xfrm_seterror(rc, ENOMEM, "netlink buffer");
 		return -1;
 	}
-	pending_set(rc, XFRM_MSG_GETPOLICY, n->nlmsg_seq);
+	if (pending_set(rc, XFRM_MSG_GETPOLICY, n->nlmsg_seq) < 0)
+		return -1;
 	pending_dump_seq = n->nlmsg_seq;
 	return xfrm_nl_send(rc, n);
 }
@@ -1941,6 +2016,7 @@ static int
 handle_newsa(struct xfrm_usersa_info *sa, struct rcpfk_msg *rc, uint32_t seq)
 {
 	int (*fn)(struct rcpfk_msg *) = NULL;
+	struct xfrm_op *op;
 	int ours;
 
 	usersa_to_rc(sa, rc);
@@ -1951,21 +2027,22 @@ handle_newsa(struct xfrm_usersa_info *sa, struct rcpfk_msg *rc, uint32_t seq)
 			return cb->cb_sadump(rc) < 0 ? -1 : 0;
 		return 0;
 	}
-	ours = pending_type != 0 && seq == pending_seq;
-	if (ours && pending_type == XFRM_MSG_ALLOCSPI)
+	op = op_find(seq);
+	ours = op != NULL;
+	if (ours && op->type == XFRM_MSG_ALLOCSPI)
 		fn = cb && cb->cb_getspi ? cb->cb_getspi : NULL;
-	else if (ours && pending_type == XFRM_MSG_UPDSA)
+	else if (ours && op->type == XFRM_MSG_UPDSA)
 		fn = cb && cb->cb_update ? cb->cb_update : NULL;
-	else if (ours && pending_type == XFRM_MSG_GETSA)
+	else if (ours && op->type == XFRM_MSG_GETSA)
 		fn = cb && cb->cb_get ? cb->cb_get : NULL;
-	else if (ours && pending_type == XFRM_MSG_NEWSA)
+	else if (ours && op->type == XFRM_MSG_NEWSA)
 		fn = cb && cb->cb_add ? cb->cb_add : NULL;
 	else if (rc->flags & PFK_FLAG_SEEADD)
 		fn = cb && cb->cb_add ? cb->cb_add : NULL;
 	else
 		return 0;
 	if (ours)
-		pending_clear();
+		op_free(op);
 	if (f_noharm && fn != (cb ? cb->cb_getspi : NULL))
 		return 0;
 	if (fn && fn(rc) < 0)
@@ -2058,7 +2135,7 @@ handle_policy(struct xfrm_userpolicy_info *xp, struct rcpfk_msg *rc, int dumped,
 		return 0;
 	/*
 	 * Undumped arrivals are multicast EVENTS, not replies to our ops —
-	 * route by the message type, never by a stale pending_type (an
+	 * route by the message type, never by a stale op slot (an
 	 * earlier op would misroute foreign events into the update
 	 * callback and spid_data misses). Flag them so consumers can skip
 	 * seq bookkeeping for other processes' policies.
@@ -2205,10 +2282,13 @@ xfrm_classify_error(int e, int ptype)
 	return e;
 }
 
+static int xfrm_is_echo(const struct nlmsghdr *);
+
 static int
 handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 {
 	struct nlmsgerr *err;
+	struct xfrm_op *aop;
 	int ptype;
 
 	rc->seq = nlh->nlmsg_seq;
@@ -2230,10 +2310,10 @@ handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 		 * the op-pending slot if it still belongs to the dump —
 		 * a live op issued mid-dump owns it now (M2).
 		 */
-		if (pending_type == XFRM_MSG_GETPOLICY
-		    && pending_seq == pending_dump_seq)
-			pending_clear();
-		pending_dump_seq = 0;
+		if (pending_dump_seq != 0 && nlh->nlmsg_seq == pending_dump_seq) {
+			op_free_seq(pending_dump_seq);
+			pending_dump_seq = 0;
+		}
 		return 0;
 	case NLMSG_ERROR:
 		if (nlh->nlmsg_len < NLMSG_LENGTH(sizeof(*err)))
@@ -2249,78 +2329,93 @@ handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 			return 0;
 		}
 		if (err->error != 0) {
-			int ours = pending_type != 0 && pending_seq == rc->seq;
+			struct xfrm_op *eop = op_find(rc->seq);
 			int e = -err->error;
 
-			if (ours && e == EBUSY &&
-			    pending_retries < XFRM_EBUSY_RETRIES) {
-				pending_retries++;
+			if (eop && e == EBUSY &&
+			    eop->retries < XFRM_EBUSY_RETRIES) {
+				eop->retries++;
 				xfrm_stat_ebusy_retry++;
 				plog(PLOG_DEBUG, PLOGLOC, NULL,
 				    "xfrm: EBUSY on seq %u, retry %d\n",
-				    rc->seq, pending_retries);
-				if (xfrm_resend_pending() == 0)
+				    rc->seq, eop->retries);
+				if (xfrm_resend_op(eop) == 0)
 					return 0;
 			}
-			if (ours && xfrm_classify_error(e, pending_type) == 0) {
+			if (eop && xfrm_classify_error(e, eop->type) == 0) {
 				xfrm_stat_idempotent++;
 				plog(PLOG_DEBUG, PLOGLOC, NULL,
 				    "xfrm: %s on seq %u type %d treated as "
 				    "success\n", strerror(e), rc->seq,
-				    pending_type);
+				    eop->type);
 				goto ack_ok;
 			}
 			if (rc->seq == pending_dump_seq)
 				pending_dump_seq = 0;
-			if (ours || pending_type == 0)
-				pending_clear();
+			op_free(eop);
+			if (eop && xfrm_wait_seq != 0 &&
+			    rc->seq != xfrm_wait_seq) {
+				/*
+				 * The failure of another outstanding op met
+				 * while a WAITREPLY caller waits for its own
+				 * reply: it cannot be returned through that
+				 * caller's rc, so log it loudly and count it;
+				 * never let it complete or abort the wait.
+				 */
+				xfrm_stat_late_error++;
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				    "xfrm netlink: request seq %u failed: %s\n",
+				    rc->seq, strerror(e));
+				return 0;
+			}
 			xfrm_seterror(rc, e, "xfrm netlink: %s", strerror(e));
 			return -1;
 		}
 	ack_ok:
 		/* success ACK: ALLOCSPI/GETSA still need the NEWSA body. */
-		if (pending_type == 0 || pending_seq != rc->seq)
+		aop = op_find(rc->seq);
+		if (aop == NULL)
 			return 0;
-		ptype = pending_type;
+		ptype = aop->type;
 		switch (ptype) {
 		case XFRM_MSG_ALLOCSPI:
 		case XFRM_MSG_GETSA:
 			return 0;
 		case XFRM_MSG_UPDSA:
-			pending_fill_rc(rc);
-			pending_clear();
+			op_fill_rc(aop, rc);
+			op_free(aop);
 			if (cb && cb->cb_update)
 				return cb->cb_update(rc);
 			return 0;
 		case XFRM_MSG_NEWSA:
-			pending_fill_rc(rc);
-			pending_clear();
+			op_fill_rc(aop, rc);
+			op_free(aop);
 			if (cb && cb->cb_add)
 				return cb->cb_add(rc);
 			return 0;
 		case XFRM_MSG_DELSA:
-			pending_fill_rc(rc);
-			pending_clear();
+			op_fill_rc(aop, rc);
+			op_free(aop);
 			if (cb && cb->cb_delete)
 				return cb->cb_delete(rc);
 			return 0;
 		case XFRM_MSG_DELPOLICY:
-			pending_clear();
+			op_free(aop);
 			if (cb && cb->cb_spddelete)
 				return cb->cb_spddelete(rc);
 			return 0;
 		case XFRM_MSG_NEWPOLICY:
-			pending_clear();
+			op_free(aop);
 			if (cb && cb->cb_spdadd)
 				return cb->cb_spdadd(rc);
 			return 0;
 		case XFRM_MSG_UPDPOLICY:
-			pending_clear();
+			op_free(aop);
 			if (cb && cb->cb_spdupdate)
 				return cb->cb_spdupdate(rc);
 			return 0;
 		default:
-			pending_clear();
+			op_free(aop);
 			return 0;
 		}
 	case XFRM_MSG_NEWSA:
@@ -2328,10 +2423,18 @@ handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 			goto shortmsg;
 		return handle_newsa(NLMSG_DATA(nlh), rc, nlh->nlmsg_seq);
 	case XFRM_MSG_DELSA:
-		if (pending_type == XFRM_MSG_DELSA &&
-		    nlh->nlmsg_seq == pending_seq)
-			pending_fill_rc(rc);
-		pending_clear();
+		/* only OUR delete's echo completes an op; a kernel or foreign
+		 * DELSA event (expiry, other daemon) must not touch any
+		 * outstanding op, or that op's reply is later dropped */
+		{
+			struct xfrm_op *dop = op_find(nlh->nlmsg_seq);
+
+			if (dop && dop->type == XFRM_MSG_DELSA &&
+			    xfrm_is_echo(nlh)) {
+				op_fill_rc(dop, rc);
+				op_free(dop);
+			}
+		}
 		if (cb && cb->cb_delete)
 			return cb->cb_delete(rc);
 		return 0;
@@ -2354,8 +2457,7 @@ handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 		    (pending_dump_seq != 0 &&
 		     nlh->nlmsg_seq == pending_dump_seq) ||
 		    (resync_spd_seq != 0 && nlh->nlmsg_seq == resync_spd_seq),
-		    pending_type != 0 && pending_seq == nlh->nlmsg_seq,
-		    nlh->nlmsg_type);
+		    op_find(nlh->nlmsg_seq) != NULL, nlh->nlmsg_type);
 	case XFRM_MSG_POLEXPIRE:
 		if (nlh->nlmsg_len < NLMSG_LENGTH(sizeof(struct xfrm_user_polexpire)))
 			goto shortmsg;
@@ -2368,7 +2470,8 @@ handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 		}
 		return 0;
 	case XFRM_MSG_DELPOLICY:
-		pending_clear();
+		/* an event: the ACK on the request socket completes our own
+		 * delete, so never release an outstanding op here */
 		if (cb && cb->cb_spddelete)
 			return cb->cb_spddelete(rc);
 		return 0;
@@ -2402,6 +2505,16 @@ xfrm_is_echo(const struct nlmsghdr *nlh)
 	return nlh->nlmsg_pid != 0 && nlh->nlmsg_pid == (uint32_t)pid;
 }
 
+/* the request seq a message answers (an error carries it inside) */
+static uint32_t
+xfrm_msg_seq(const struct nlmsghdr *nlh)
+{
+	if (nlh->nlmsg_type == NLMSG_ERROR &&
+	    nlh->nlmsg_len >= NLMSG_LENGTH(sizeof(struct nlmsgerr)))
+		return ((const struct nlmsgerr *)NLMSG_DATA(nlh))->msg.nlmsg_seq;
+	return nlh->nlmsg_seq;
+}
+
 static int
 xfrm_dispatch(struct nlmsghdr *nlh, struct rcpfk_msg *rc, int from_req)
 {
@@ -2415,7 +2528,7 @@ xfrm_dispatch(struct nlmsghdr *nlh, struct rcpfk_msg *rc, int from_req)
 			seq = ((struct nlmsgerr *)NLMSG_DATA(nlh))->msg.nlmsg_seq;
 		if ((nlh->nlmsg_pid != 0 && nlh->nlmsg_pid != (uint32_t)pid) ||
 		    seq == 0 ||
-		    !((pending_type != 0 && seq == pending_seq) ||
+		    !(op_find(seq) != NULL ||
 		      (pending_dump_seq != 0 && seq == pending_dump_seq) ||
 		      (resync_spd_seq != 0 && seq == resync_spd_seq) ||
 		      (resync_sa_seq != 0 && seq == resync_sa_seq))) {
@@ -2427,13 +2540,12 @@ xfrm_dispatch(struct nlmsghdr *nlh, struct rcpfk_msg *rc, int from_req)
 			if (e != 0 && (nlh->nlmsg_pid == 0 ||
 			    nlh->nlmsg_pid == (uint32_t)pid)) {
 				/*
-				 * A failure for one of OUR requests that is no
-				 * longer the awaited one (a second request was
-				 * sent before its reply came back).  Before the
-				 * reply matching such an error reached sadb_poll
-				 * as "xfrm netlink: ..."; never let it vanish at
-				 * DEBUG level.  It cannot complete the current
-				 * wait, so it is logged and counted, not returned.
+				 * A failure for one of OUR requests that no
+				 * longer holds an op slot (its wait timed out,
+				 * or the slot was released after an ENOBUFS).
+				 * Never let it vanish at DEBUG level; nothing
+				 * waits for it any more, so it is logged and
+				 * counted, not returned.
 				 */
 				xfrm_stat_late_error++;
 				plog(PLOG_INTERR, PLOGLOC, NULL,
@@ -2461,7 +2573,7 @@ xfrm_dispatch(struct nlmsghdr *nlh, struct rcpfk_msg *rc, int from_req)
 		case XFRM_MSG_NEWSA:
 		case XFRM_MSG_UPDSA:
 		case XFRM_MSG_DELSA:
-			if (pending_type != 0 && nlh->nlmsg_seq == pending_seq)
+			if (op_find(nlh->nlmsg_seq) != NULL)
 				return handle_nlmsg(nlh, rc);
 			return 0;
 		default:
@@ -2516,8 +2628,21 @@ xfrm_read_one(int fd, struct rcpfk_msg *rc, int flags, int fresh)
 			    "xfrm: %s socket overflowed (ENOBUFS); kernel "
 			    "messages were lost, resyncing SAD/SPD\n",
 			    from_req ? "request" : "notification");
-			if (from_req)
-				pending_clear();	/* its reply is gone */
+			if (from_req) {
+				/* replies queued on it are gone: no op can
+				 * complete any more, say which ones failed */
+				int i;
+
+				for (i = 0; i < XFRM_OPS_MAX; i++)
+					if (xfrm_ops[i].type != 0)
+						plog(PLOG_INTERR, PLOGLOC, NULL,
+						    "xfrm: reply to op %d seq %u "
+						    "lost (ENOBUFS)\n",
+						    xfrm_ops[i].type,
+						    xfrm_ops[i].seq);
+				op_clear_all();
+				pending_dump_seq = 0;
+			}
 			xfrm_need_resync = 1;
 			return 1;
 		}
@@ -2560,7 +2685,11 @@ xfrm_read_one(int fd, struct rcpfk_msg *rc, int flags, int fresh)
 			alnoff += (NLMSG_ALIGN(nlh->nlmsg_len) + 7) & ~(size_t)7;
 		}
 
-		if (fresh) {
+		if (fresh || (xfrm_wait_seq != 0 &&
+		    xfrm_msg_seq(m) != xfrm_wait_seq)) {
+			/* a WAITREPLY caller's rc only ever receives the reply
+			 * it waits for; other ops' replies complete into their
+			 * own container */
 			memset(&scratch, 0, sizeof(scratch));
 			scratch.so = rc->so;
 			t = &scratch;
@@ -2711,18 +2840,20 @@ rcpfk_handler(struct rcpfk_msg *rc)
 		 * rc as if it were the answer (the old single-socket spmd
 		 * SPDGET bug).  Events wait for the next select() round.
 		 */
-		want = pending_seq;
-		if (pending_type == 0)
+		want = xfrm_last_seq;
+		if (op_find(want) == NULL)
 			return 0;	/* already completed (or failed) */
-		while (pending_type != 0 && pending_seq == want) {
+		while (op_find(want) != NULL) {
 			r = xfrm_wait_req(XFRM_REPLY_TIMEOUT_MS);
 			if (r <= 0) {
 				xfrm_seterror(rc, r == 0 ? ETIMEDOUT : errno,
 				    "no reply to xfrm request seq %u", want);
-				pending_clear();
+				op_free_seq(want);
 				return -1;
 			}
+			xfrm_wait_seq = want;
 			r = xfrm_read_one(xfrm_req_fd, rc, MSG_DONTWAIT, 0);
+			xfrm_wait_seq = 0;
 			if (r < 0)
 				return -1;
 			if (xfrm_need_resync) {

@@ -332,7 +332,7 @@ idem(uint16_t optype, int err, int expect_ok, int *counter, const char *what)
 		    "eno=%d)", what, strerror(err), r, rc.eno);
 		CHECK(*counter == before, "%s: no success callback", what);
 	}
-	CHECK(pending_type == 0, "%s: pending op cleared", what);
+	CHECK(xfrm_nops == 0, "%s: pending op cleared", what);
 }
 
 static void
@@ -754,7 +754,8 @@ test_enobufs_resync(void)
 	(void)n;
 	CHECK(saw_spd == 1 && saw_sa == 1, "dump requests sent on the request "
 	    "socket (spd %d sa %d)", saw_spd, saw_sa);
-	CHECK(pending_type == XFRM_MSG_ALLOCSPI,
+	CHECK(xfrm_nops == 1 && op_find(0x4000700) != NULL &&
+	    op_find(0x4000700)->type == XFRM_MSG_ALLOCSPI,
 	    "notify overflow leaves the request-socket op pending");
 
 	/* now the request socket overflows: its pending op is dropped */
@@ -763,7 +764,8 @@ test_enobufs_resync(void)
 	rc.so = rcm.so;
 	r = rcpfk_handler(&rc);
 	CHECK(r == 0, "request-socket ENOBUFS handled: %s", rc.estr);
-	CHECK(pending_type == 0, "stranded pending op dropped");
+	CHECK(xfrm_nops == 0 && op_find(0x4000700) == NULL,
+	    "stranded pending op dropped");
 	CHECK(xfrm_stat_resync == 2 && n_resync == 2, "second resync (%lu)",
 	    xfrm_stat_resync);
 	kthr_stop = 1;
@@ -1278,6 +1280,164 @@ test_mark_emit_live_paths(void)
 	    "getsa carries XFRMA_IF_ID");
 }
 
+/*
+ * Two ops in flight (seq-keyed op table): the reply to the FIRST arrives
+ * after the second was sent.  Both callbacks must fire, in reply order,
+ * and nothing may be dropped as stale.  With one pending slot the first
+ * op's ALLOCSPI body was dropped and cb_getspi never ran.
+ */
+static void
+test_overlapping_ops_both_complete(void)
+{
+	struct rcpfk_msg rc;
+	struct sockaddr_in s, d;
+	char buf[512];
+	int r;
+
+	setup();
+	fill_sa_rc(&rc, &s, &d, 0x4000800, 0);
+	CHECK(rcpfk_send_getspi(&rc) == 0, "getspi: %s", rc.estr);
+	(void)kget();
+	fill_sa_rc(&rc, &s, &d, 0x4000801, 0x5005);
+	rc.enctype = RCT_ALG_AES_GCM; rc.enckeylen = 20;
+	rc.enckey = (caddr_t)"0123456789abcdefghij";
+	CHECK(rcpfk_send_update(&rc) == 0, "update: %s", rc.estr);
+	(void)kget();
+	CHECK(xfrm_nops == 2, "two ops outstanding (%d)", xfrm_nops);
+	/* second op's ACK first, then the first op's ALLOCSPI reply */
+	kput(k_req, buf, mk_err(buf, 0x4000801, PORTID, 0, XFRM_MSG_UPDSA));
+	kput(k_req, buf, mk_sa(buf, XFRM_MSG_NEWSA, 0x4000800, PORTID,
+	    0x6006, 0));
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0, "handler: %s", rc.estr);
+	CHECK(n_upd == 1, "second op (UPDSA) callback fired (%d)", n_upd);
+	CHECK(n_getspi == 1, "first op (ALLOCSPI) callback fired (%d)",
+	    n_getspi);
+	CHECK(n_getspi == 1 && ntohl(last.spi) == 0x6006 &&
+	    last.seq == 0x4000800, "getspi got its own reply (spi %x seq %x)",
+	    ntohl(last.spi), last.seq);
+	CHECK(xfrm_stat_stale_reply == 0 && xfrm_stat_late_error == 0,
+	    "nothing dropped (stale %lu late %lu)", xfrm_stat_stale_reply,
+	    xfrm_stat_late_error);
+	CHECK(xfrm_nops == 0, "op table empty (%d)", xfrm_nops);
+}
+
+/*
+ * Outside WAITREPLY, the failure of a non-newest op is returned with ITS
+ * seq, so the caller can attribute it; the newer op stays outstanding and
+ * still completes.
+ */
+static void
+test_overlapping_error_attributed(void)
+{
+	struct rcpfk_msg rc;
+	struct sockaddr_in s, d;
+	char buf[256];
+	int r;
+
+	setup();
+	fill_sa_rc(&rc, &s, &d, 0x4000900, 0x7007);
+	rc.enctype = RCT_ALG_AES_GCM; rc.enckeylen = 20;
+	rc.enckey = (caddr_t)"0123456789abcdefghij";
+	CHECK(rcpfk_send_add(&rc) == 0, "add: %s", rc.estr);
+	(void)kget();
+	fill_sa_rc(&rc, &s, &d, 0x4000901, 0x7008);
+	rc.enctype = RCT_ALG_AES_GCM; rc.enckeylen = 20;
+	rc.enckey = (caddr_t)"0123456789abcdefghij";
+	CHECK(rcpfk_send_add(&rc) == 0, "add 2: %s", rc.estr);
+	(void)kget();
+	kput(k_req, buf, mk_err(buf, 0x4000900, PORTID, EINVAL,
+	    XFRM_MSG_NEWSA));
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == -1 && rc.eno == EINVAL, "first op's EINVAL returned (r=%d "
+	    "eno=%d)", r, rc.eno);
+	CHECK(xfrm_nops == 1 && op_find(0x4000901) != NULL &&
+	    op_find(0x4000900) == NULL, "only the failed op released");
+	CHECK(n_add == 0, "no success callback for the failed op");
+	kput(k_req, buf, mk_err(buf, 0x4000901, PORTID, 0, XFRM_MSG_NEWSA));
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0 && n_add == 1 && last.seq == 0x4000901,
+	    "second op still completes (r=%d n_add=%d seq %x)", r, n_add,
+	    last.seq);
+	CHECK(xfrm_nops == 0, "op table empty (%d)", xfrm_nops);
+}
+
+/*
+ * A kernel DELSA/DELPOLICY event (expiry, other daemon: pid 0 / foreign)
+ * must not release an outstanding op of ours: that op's reply would then
+ * be dropped as stale and its callback never run.
+ */
+static void
+test_foreign_delete_event_keeps_op(void)
+{
+	struct rcpfk_msg rc;
+	struct sockaddr_in s, d;
+	char buf[512];
+	int r;
+
+	setup();
+	fill_sa_rc(&rc, &s, &d, 0x4000a00, 0x8008);
+	rc.enctype = RCT_ALG_AES_GCM; rc.enckeylen = 20;
+	rc.enckey = (caddr_t)"0123456789abcdefghij";
+	CHECK(rcpfk_send_add(&rc) == 0, "add: %s", rc.estr);
+	(void)kget();
+	kput(k_ntf, buf, mk_sa(buf, XFRM_MSG_DELSA, 0, 0, 0x9999, 0));
+	kput(k_ntf, buf, mk_policy(buf, XFRM_MSG_DELPOLICY, 0, 0,
+	    "203.0.113.1", "203.0.113.0", 0));
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0, "events: %s", rc.estr);
+	CHECK(n_del == 1 && n_spddel == 1, "both events delivered (%d/%d)",
+	    n_del, n_spddel);
+	CHECK(op_find(0x4000a00) != NULL, "outstanding NEWSA survives the "
+	    "events");
+	kput(k_req, buf, mk_err(buf, 0x4000a00, PORTID, 0, XFRM_MSG_NEWSA));
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0 && n_add == 1, "its ACK still fires cb_add (r=%d n=%d)",
+	    r, n_add);
+	CHECK(xfrm_stat_stale_reply == 0, "ACK not dropped as stale (%lu)",
+	    xfrm_stat_stale_reply);
+}
+
+/* The op table is bounded: a submit that finds it full fails EAGAIN,
+ * sends nothing, and never evicts an outstanding op. */
+static void
+test_op_table_full(void)
+{
+	struct rcpfk_msg rc;
+	int i;
+
+	setup();
+	for (i = 0; i < XFRM_OPS_MAX; i++) {
+		memset(&rc, 0, sizeof(rc));
+		rc.so = rcm.so;
+		rc.seq = 0xb00 + (uint32_t)i;
+		rc.slid = (uint32_t)i + 1;
+		CHECK(rcpfk_send_spdget(&rc) == 0, "spdget %d: %s", i, rc.estr);
+		CHECK(kget() != NULL, "spdget %d sent", i);
+	}
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	rc.seq = 0xbff;
+	rc.slid = 99;
+	CHECK(rcpfk_send_spdget(&rc) == -1 && rc.eno == EAGAIN,
+	    "op beyond the table fails EAGAIN (eno %d)", rc.eno);
+	CHECK(kget() == NULL, "nothing sent for the refused op");
+	CHECK(xfrm_stat_ops_full == 1, "refusal counted (%lu)",
+	    xfrm_stat_ops_full);
+	CHECK(xfrm_nops == XFRM_OPS_MAX && op_find(0xb00) != NULL &&
+	    op_find(0xbff) == NULL, "no outstanding op evicted");
+}
+
 int
 main(void)
 {
@@ -1291,6 +1451,10 @@ main(void)
 	test_interleaved_waitreply();
 	test_waitreply_error();
 	test_late_error_not_lost();
+	test_overlapping_ops_both_complete();
+	test_overlapping_error_attributed();
+	test_foreign_delete_event_keeps_op();
+	test_op_table_full();
 	test_misaligned_batch();
 	test_migrate_port_only_without_migrate();
 	test_enobufs_resync();
