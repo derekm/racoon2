@@ -53,10 +53,10 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
 
 ## Proven by the 2026-09-14/15 13h session (journal-verified)
 
-Phone (67.37.10.151, LTE) ESTABLISHED 19:32:21 → 08:29:07 (13h), across
+Phone (peer address redacted to 198.51.100.151, LTE) ESTABLISHED 19:32:21 → 08:29:07 (13h), across
 **four iked restarts** (21:17 maintenance bounce + 3 rebounces, 01:03):
 every restart was a clean SIGTERM with resume save/restore of the same
-IKE_SA (`restore_one ... 67.37.10.151[6688]`, declining ike_remain); only
+IKE_SA (`restore_one ... 198.51.100.151[6688]`, declining ike_remain); only
 **2 INITIAL_CONTACT** in 13h = iOS never re-authenticated, tunnel stayed
 continuous through daemon restarts. **110 IKE_SA rekeys + 110 ESP rekey
 pairs** (3600s hard cycle + iOS-initiated ~1440s cadence) ran repeatedly
