@@ -70,8 +70,13 @@ stream_frame_cb(const unsigned char *pkt, size_t len, int is_esp, void *arg)
 
 	if (is_esp != TCP_FRAME_IKE)
 		return 0;	/* ESP-in-TCP: not this slice */
-	if (len < sizeof(struct ikev2_header))
-		return 0;	/* short IKE: drop, keep the stream open */
+	if (len < sizeof(struct ikev2_header)) {
+		/* Sub-header record: no SPI/msgid to route a reply to.  Count
+		 * it so the IKE layer can send INVALID_SYNTAX (RFC 9329 s6.1)
+		 * -- never closing the stream. */
+		++ts->short_drops;
+		return 0;
+	}
 	v = rc_vnew(pkt, len);
 	if (v == NULL)
 		return -1;

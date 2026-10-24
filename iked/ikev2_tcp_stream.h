@@ -20,10 +20,10 @@
  * returns -1 from on_readable()/send()/flush() and the caller MUST close the
  * stream -- once any returns -1 the stream is dead and must not be retried.
  * A record shorter than an IKEv2 header has no SPI or msgid to route a
- * response to, so it is DROPPED by the stream: it never reaches dispatch and
- * never closes the stream.  (The RFC 9329 s6.1 INVALID_SYNTAX MUST is the IKE
- * layer's responsibility on full messages that pass this gate; a sub-header
- * drop is a transport rule, not that path.)
+ * response to: it is DROPPED (never reaches dispatch, never closes the
+ * stream) and counted in st->short_drops, so the IKE layer can later emit
+ * INVALID_SYNTAX (RFC 9329 s6.1) on this same stream.  The counter is the
+ * distinct signal the daemon path uses for that.
  *
  * All buffers are heap-allocated (they are 64KB); destroy with
  * tcp_stream_free().
@@ -58,6 +58,8 @@ struct tcp_stream {
 	size_t obuf_len;		/* bytes queued in obuf */
 	size_t obuf_off;		/* bytes of obuf already written */
 	int prefix_sent;		/* originator's one-time "IKETCP" done */
+	unsigned long short_drops;	/* sub-IKEv2-header records dropped (for
+					   the IKE layer to emit INVALID_SYNTAX) */
 	struct tcp_record *tb;		/* heap-encoded outbound record (not stack) */
 	tcp_stream_dispatch dispatch;	/* the IKE receive entry (ikev2_input) */
 	void *arg;
