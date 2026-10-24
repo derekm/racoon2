@@ -240,6 +240,14 @@ ikev2_create_config_request(struct ikev2_child_sa *child_sa)
 		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)))
 			goto err;
 	}
+	if (ikev2_cfg_ip4_nbns(ike_sa->rmconf) == RCT_BOOL_ON) {
+		/* request { ip4_nbns; } (opt-in): RFC 7296 s3.15.1 attr 4 */
+		TRACE((PLOGLOC, "INTERNAL_IP4_NBNS\n"));
+		need_cfg = TRUE;
+		cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_IP4_NBNS, 0);
+		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)))
+			goto err;
+	}
 	if (ikev2_cfg_ip4_dhcp(ike_sa->rmconf) == RCT_BOOL_ON) {
 		TRACE((PLOGLOC, "INTERNAL_IP4_DHCP\n"));
 		need_cfg = TRUE;
@@ -552,6 +560,9 @@ ikev2_process_cfg_request_attribs(struct ikev2_sa *ike_sa,
 		case IKEV2_CFG_INTERNAL_IP6_DNS:
 			++param->cfg_ip6_dns;
 			break;
+		case IKEV2_CFG_INTERNAL_IP4_NBNS:
+			++param->cfg_ip4_nbns;
+			break;
 		case IKEV2_CFG_INTERNAL_IP4_DHCP:
 			++param->cfg_ip4_dhcp;
 			break;
@@ -748,6 +759,23 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 		/* RFC 8598 §3.2: a DNS_DOMAIN/TA may only ride a reply that
 		 * also carries >=1 DNS address.  Record whether any was. */
 		emitted_dns = (cfg_payload->l > before);
+	}
+
+	if (param->cfg_ip4_nbns && ikev2_nbns(ike_sa->rmconf)) {
+		/* provide { nbns ...; } only: an unconfigured responder sends
+		 * nothing (RFC 7296 s3.15.1: the responder MAY omit
+		 * attributes it does not support).  No IPv6 NBNS exists (attr
+		 * 11 was never defined for use), so v6 entries are skipped. */
+		struct rc_addrlist	*nbnslist;
+		int err;
+
+		TRACE((PLOGLOC, "INTERNAL_IP4_NBNS:\n"));
+		err = rcs_extend_addrlist(ikev2_nbns(ike_sa->rmconf), &nbnslist);
+		if (err)
+			goto err;
+		ikev2_cfg_add_addrlist(cfg_payload, nbnslist,
+		    param->cfg_ip4_nbns, IKEV2_CFG_INTERNAL_IP4_NBNS, 0, 0);
+		rcs_free_addrlist(nbnslist);
 	}
 
 	if ((param->cfg_ip4_dhcp || param->cfg_ip6_dhcp) &&
@@ -1020,9 +1048,18 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 			for (i = 0; i < (int)ARRAYLEN(attribs); ++i)
 				TRACE((PLOGLOC, "%d\n", ntohs(attribs[i])));
 		});
-		cfg_attrib_set(&hdr, IKEV2_CFG_SUPPORTED_ATTRIBUTES, sizeof(attribs));
+		/* INTERNAL_IP4_NBNS is listed only when provide { nbns } is
+		 * configured: advertising it otherwise would be false */
+		static uint16_t nbns_attr =
+			const_HTONS(IKEV2_CFG_INTERNAL_IP4_NBNS);
+		int with_nbns = ikev2_nbns(ike_sa->rmconf) != NULL;
+
+		cfg_attrib_set(&hdr, IKEV2_CFG_SUPPORTED_ATTRIBUTES,
+		    sizeof(attribs) + (with_nbns ? sizeof(nbns_attr) : 0));
 		if (! rc_vconcat(cfg_payload, &hdr, sizeof(hdr)) ||
-		    ! rc_vconcat(cfg_payload, attribs, sizeof(attribs)))
+		    ! rc_vconcat(cfg_payload, attribs, sizeof(attribs)) ||
+		    (with_nbns &&
+		     ! rc_vconcat(cfg_payload, &nbns_attr, sizeof(nbns_attr))))
 			goto err;
 	}
 

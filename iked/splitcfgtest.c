@@ -2580,6 +2580,153 @@ rcs_free_addrlist(sel4.dst);
 		if (pname) rc_vfree(pname);
 	}
 
+	/* INTERNAL_IP4_NBNS (4), RFC 7296 s3.15.1: opt-in both ways.
+	 * Responder: provide { nbns } AND a peer request -> exactly the
+	 * requested count of v4 entries (v6 entries skipped); either alone ->
+	 * none; SUPPORTED_ATTRIBUTES lists 4 only when configured.
+	 * Initiator: request { ip4_nbns; } -> one zero-length attr 4. */
+	{
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa isa;
+		struct ikev2_child_sa c;
+		struct ikev2_child_param p;
+		struct in_addr v[4];
+		struct rc_addrlist *l4, *l6;
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		rm.ikev2 = &ikm;
+		l6 = mk_addrlist(AF_INET6, "2001:db8::53", 128);
+		l4 = mk_addrlist(AF_INET, "10.9.0.53", 32);
+		l6->next = l4;		/* v6 first: must be skipped */
+		ikm.cfg_nbns = l6;
+		memset(&isa, 0, sizeof(isa));
+		isa.rmconf = &rm;
+		memset(&c, 0, sizeof(c));
+
+		ikev2_child_param_init(&p);
+		p.cfg_ip4_nbns = 1;
+		CK(ikev2_create_config_reply(&isa, &c, &p) == 0,
+		   "nbns: reply rc==0 (requested+configured)");
+		memset(v, 0, sizeof(v));
+		CK(count_cfg_attr(p.cfg_payload, IKEV2_CFG_INTERNAL_IP4_NBNS,
+		   v, 4) == 1, "nbns: exactly one attr 4 for one request");
+		CK(v[0].s_addr == inet_addr("10.9.0.53"),
+		   "nbns: attr 4 carries the configured v4 address");
+		CK(count_cfg_attr(p.cfg_payload, IKEV2_CFG_INTERNAL_IP6_NBNS,
+		   NULL, 0) == 0, "nbns: no attr 11 ever");
+		if (p.cfg_payload) rc_vfree(p.cfg_payload);
+
+		/* configured, not requested */
+		ikev2_child_param_init(&p);
+		CK(ikev2_create_config_reply(&isa, &c, &p) == 0,
+		   "nbns: reply rc==0 (configured only)");
+		CK(count_cfg_attr(p.cfg_payload, IKEV2_CFG_INTERNAL_IP4_NBNS,
+		   NULL, 0) == 0, "nbns: none without a request");
+		if (p.cfg_payload) rc_vfree(p.cfg_payload);
+
+		/* SUPPORTED_ATTRIBUTES advertises 4 when configured */
+		ikev2_child_param_init(&p);
+		p.cfg_supported_attributes = 1;
+		CK(ikev2_create_config_reply(&isa, &c, &p) == 0,
+		   "nbns: reply rc==0 (supported_attributes)");
+		{
+			int has4 = 0;
+			if (p.cfg_payload) {
+				uint8_t *b = (uint8_t *)p.cfg_payload->v +
+				    sizeof(struct ikev2payl_config_h);
+				size_t left = p.cfg_payload->l -
+				    sizeof(struct ikev2payl_config_h);
+				while (left >= sizeof(struct ikev2cfg_attrib)) {
+					struct ikev2cfg_attrib *a =
+					    (struct ikev2cfg_attrib *)b;
+					unsigned t = IKEV2CFG_ATTR_TYPE(a);
+					unsigned l = IKEV2CFG_ATTR_LENGTH(a);
+					unsigned k;
+					if (sizeof(*a) + l > left)
+						break;
+					if (t == IKEV2_CFG_SUPPORTED_ATTRIBUTES)
+						for (k = 0; k + 2 <= l; k += 2) {
+							uint16_t x;
+							memcpy(&x, (uint8_t *)IKEV2CFG_ATTR_VALUE(a) + k, 2);
+							if (ntohs(x) == IKEV2_CFG_INTERNAL_IP4_NBNS)
+								has4++;
+						}
+					b += sizeof(*a) + l;
+					left -= sizeof(*a) + l;
+				}
+				rc_vfree(p.cfg_payload);
+			}
+			CK(has4 == 1, "nbns: SUPPORTED_ATTRIBUTES lists 4 once when configured");
+		}
+
+		/* requested, not configured */
+		ikm.cfg_nbns = NULL;
+		ikev2_child_param_init(&p);
+		p.cfg_ip4_nbns = 1;
+		CK(ikev2_create_config_reply(&isa, &c, &p) == 0,
+		   "nbns: reply rc==0 (requested only)");
+		CK(count_cfg_attr(p.cfg_payload, IKEV2_CFG_INTERNAL_IP4_NBNS,
+		   NULL, 0) == 0, "nbns: none when not configured");
+		if (p.cfg_payload) rc_vfree(p.cfg_payload);
+		ikev2_child_param_init(&p);
+		p.cfg_supported_attributes = 1;
+		(void)ikev2_create_config_reply(&isa, &c, &p);
+		{
+			int ok = 1;
+			if (p.cfg_payload) {
+				uint8_t *b = (uint8_t *)p.cfg_payload->v +
+				    sizeof(struct ikev2payl_config_h);
+				size_t left = p.cfg_payload->l -
+				    sizeof(struct ikev2payl_config_h);
+				while (left >= sizeof(struct ikev2cfg_attrib)) {
+					struct ikev2cfg_attrib *a =
+					    (struct ikev2cfg_attrib *)b;
+					unsigned l = IKEV2CFG_ATTR_LENGTH(a), k;
+					if (sizeof(*a) + l > left)
+						break;
+					if (IKEV2CFG_ATTR_TYPE(a) == IKEV2_CFG_SUPPORTED_ATTRIBUTES)
+						for (k = 0; k + 2 <= l; k += 2) {
+							uint16_t x;
+							memcpy(&x, (uint8_t *)IKEV2CFG_ATTR_VALUE(a) + k, 2);
+							if (ntohs(x) == IKEV2_CFG_INTERNAL_IP4_NBNS)
+								ok = 0;
+						}
+					b += sizeof(*a) + l;
+					left -= sizeof(*a) + l;
+				}
+				rc_vfree(p.cfg_payload);
+			}
+			CK(ok, "nbns: SUPPORTED_ATTRIBUTES omits 4 when unconfigured");
+		}
+
+		/* initiator request */
+		{
+			struct ikev2_child_sa ic;
+			memset(&ic, 0, sizeof(ic));
+			ic.parent = &isa;
+			ikev2_child_param_init(&ic.child_param);
+			ikm.config_request = RCF_REQ_IP4_NBNS;
+			ikev2_create_config_request(&ic);
+			CK(ic.child_param.cfg_payload != NULL,
+			   "nbns: request { ip4_nbns; } builds a CFG_REQUEST");
+			CK(count_cfg_attr(ic.child_param.cfg_payload,
+			   IKEV2_CFG_INTERNAL_IP4_NBNS, NULL, 0) == 1,
+			   "nbns: CFG_REQUEST carries one attr 4");
+			if (ic.child_param.cfg_payload)
+				rc_vfree(ic.child_param.cfg_payload);
+			ikev2_child_param_init(&ic.child_param);
+			ikm.config_request = RCF_REQ_IP4_DNS;
+			ikev2_create_config_request(&ic);
+			CK(count_cfg_attr(ic.child_param.cfg_payload,
+			   IKEV2_CFG_INTERNAL_IP4_NBNS, NULL, 0) == 0,
+			   "nbns: no attr 4 unless requested");
+			if (ic.child_param.cfg_payload)
+				rc_vfree(ic.child_param.cfg_payload);
+		}
+	}
+
 	printf("splitcfgtest: %d checks, %d failure(s)\n", checks, fails);
 	return fails ? 1 : 0;
 }

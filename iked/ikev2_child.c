@@ -318,6 +318,7 @@ ikev2_child_param_init(struct ikev2_child_param *p)
 	p->cfg_application_version = 0;
 	p->cfg_ip4_dns = 0;
 	p->cfg_ip6_dns = 0;
+	p->cfg_ip4_nbns = 0;
 	p->cfg_ip4_dhcp = 0;
 	p->cfg_ip6_dhcp = 0;
 	p->cfg_supported_attributes = 0;
