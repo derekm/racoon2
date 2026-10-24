@@ -1626,6 +1626,13 @@ xfrm_sync(struct nlmsghdr *n, int (*each_sa)(struct nlmsghdr *, void *),
 			if ((e = each_sa(m, arg)) != 0)
 				return e;
 		}
+		/* a 4+ byte tail is a truncated next header in this sync-dump
+		 * datagram — log it rather than silently swallowing (a later
+		 * datagram may still carry the DONE). */
+		if (ulen >= (int)NLMSG_ALIGNTO)
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "xfrm: sync dump datagram has a truncated "
+			     "netlink trailer (%u bytes)\n", ulen);
 	}
 }
 
@@ -2530,6 +2537,14 @@ xfrm_read_one(int fd, struct rcpfk_msg *rc, int flags, int fresh)
 			memcpy(err.estr, t->estr, sizeof(err.estr));
 		}
 	}
+	/* a 4+ byte tail left is the start of a truncated next header (or a
+	 * message declaring a bad nlmsg_len) — netlink delivers whole datagrams,
+	 * so this is malformed kernel output. Surface it instead of silently
+	 * dropping (NLMSG_ALIGNTO boundary, matching rcpfk_nl_walk). */
+	if (ulen >= (int)NLMSG_ALIGNTO)
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "xfrm: read datagram has a truncated netlink trailer "
+		     "(%u bytes)\n", ulen);
 	if (ret == -1) {
 		rc->eno = err.eno;
 		memcpy(rc->estr, err.estr, sizeof(rc->estr));

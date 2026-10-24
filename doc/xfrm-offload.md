@@ -89,6 +89,50 @@ features PF_KEY cannot express, and the NETLINK_XFRM backend now emits them.
      the child SA consistently or the kernel won't match the flow.
    - These are XFRM-only; never pretend a *BSD build honored them.
 
+## FreeBSD IPSEC_OFFLOAD portability (how this maps onto PF_KEY)
+
+FreeBSD's inline IPsec offload (NVIDIA-sponsored, 2024 → GENERIC, mlx5/
+ConnectX-6+, IPv4 AES-GCM transport + UDP-ESP/NAT-T) is NOT a kernel-only
+property — it is driven from userspace through PF_KEY extensions, which is
+what makes it the same *class* of feature as the Linux XFRM offload this file
+describes:
+
+- `SADB_X_EXT_IF_HW_OFFL` (`struct sadb_x_if_hw_offl { char name[]; }`), set
+  via `setkey -hwif ifname` on `SADB_ADD` / `SADB_X_SPDADD`, restricts SP/SA
+  offload to a named interface.
+- `SADB_X_EXT_LFT_CUR_SW_OFFL` / `SADB_X_EXT_LFT_CUR_HW_OFFL` report
+  software-vs-hardware offload lifetime counters per SA (the FreeBSD
+  analogue of "is it really on the NIC?" — cf. the `ip -s xfrm state` /
+  `ethtool -S` evidence this file's DGX-Spark step wants).
+
+Why the rcpfk field is the right portable shape:
+
+- **`offload_ifname` maps directly onto FreeBSD's name-based extension.**
+  FreeBSD's wire format proves the interface is selected by NAME, not
+  ifindex; on Linux we resolve that name via `if_nametoindex()` into
+  `XFRMA_OFFLOAD_DEV.ifindex`. So keeping `offload_ifname` as the portable
+  carrier (with `offload_ifindex` a Linux-resolved convenience) was the
+  correct call, not an accident.
+- **Direction is Linux-meaningful only.** XFRM offload is opt-in and each SA
+  carries an explicit direction bit (`XFRM_OFFLOAD_INBOUND`, 0 = outbound).
+  FreeBSD inline offload is bidirectional on the named NIC and is OFFERED to
+  every capable driver by default unless `-hwif` restricts it — an SA can be
+  hw-offloaded without any userspace request. So `offload_flags` (direction)
+  and the "offload only when a device is named" gate are Linux semantics;
+  the *BSD backend must not read offload_flags and cannot suppress FreeBSD's
+  automatic offer.
+- **mark / if_id have no FreeBSD PF_KEY counterpart** (no FW_MARK / VRF-like
+  per-SP id) — permanently Linux-native, ignored on *BSD.
+- **Same failure rule both sides:** FreeBSD mlx5 offload is AES-GCM transport
+  (+NAT-T) only; an SA whose algorithm/mode the NIC cannot accelerate must
+  fail loudly (kernel `EOPNOTSUPP`), never silently fall back to software.
+
+Wiring the *BSD PF_KEY backend to emit `SADB_X_EXT_IF_HW_OFFL` from
+`offload_ifname` is a future step; it must be guarded by the extension (kernel
+15.x has it, 14 does not) and paired with the SW/HW counter-extension decode
+for verification. None of that is buildable/testable on this Linux host, so it
+is documented, not wired.
+
 ## References
 - `lib/if_pfkeyv2.h` (struct rcpfk_msg, new fields)
 - `lib/if_xfrm.c` (`add_xfrm_mark_ifid_attrs`, `add_xfrm_offload_attr`)
