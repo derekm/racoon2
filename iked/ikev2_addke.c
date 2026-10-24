@@ -1564,7 +1564,16 @@ ikev2_followup_ke_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * cached above; the peer holds the success signal. Do NOT goto
 		 * invalid: STATE_NOT_FOUND here would REPLACE the armed cache
 		 * and tell the initiator to abandon a child it already believes
-		 * is up. Log and abandon locally only. */
+		 * is up. But the child must be FULLY abandoned (kill the followup
+		 * timer, clear pending, abort), or the followup-wait timeout
+		 * (responder-driven, addke_peer_offer==0) will DOWNGRADE it to
+		 * plain ESP and mature it over the peer's ADDKE keymat -> key
+		 * mismatch; and for a rekey, ikev2_child_abort is what clears the
+		 * predecessor's rekey_inprogress so it can expire. */
+		if (child_sa->timer)
+			SCHED_KILL(child_sa->timer);
+		child_sa->addke_pending = 0;
+		ikev2_child_abort(child_sa, ECONNREFUSED);
 		goto done;
 	}
 	goto done;

@@ -417,6 +417,15 @@ ikev2_rekey_abandon_parked(struct ikev2_sa *sa)
 	(void)sa;
 }
 
+void
+ikev2_child_abort(struct ikev2_child_sa *child_sa, int err)
+{
+	/* addketest only needs to satisfy the linker (real impl in ike_sa.c);
+	 * the child-path install-failure tests assert state, not this. */
+	(void)child_sa;
+	(void)err;
+}
+
 static int fail;
 
 #define CHECK(cond, what)						\
