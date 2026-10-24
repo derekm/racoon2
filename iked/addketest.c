@@ -726,6 +726,26 @@ ar_install_test_ops(void)
 	ikev2_addke_rekey_set_ops(&o);
 }
 
+/* A single-round (nrounds==1) responder rekey so the REAL round() sees a
+ * FINAL round (returns 0) and the caller falls through to complete().  The
+ * negotiated ADDKE method must equal what ikev2_followup_ke_recv extracts as
+ * ke_method = get_uint16(ke->dh_group_id); the rekey messages are built with
+ * m768 = IKEV2TRANSF_ADDKE_MLKEM768 in these tests. */
+static void
+rekey_fixture_final(struct ikev2_sa *sa, struct ikev2_sa *ns)
+{
+	struct ikev2_isakmpsa *np;
+	uint16_t meth = (uint16_t)IKEV2TRANSF_ADDKE_MLKEM768;
+
+	np = calloc(1, sizeof(*np));
+	np->addke_nrounds = 1;
+	np->addke = (int)meth;
+	np->addke_methods[0] = meth;
+	ns->negotiated_sa = np;
+	sa->new_sa = ns;
+	sa->addke_rekey_round = 0;
+}
+
 static int
 link_is(const struct ikev2_child_sa *c, const char *link)
 {
@@ -797,6 +817,7 @@ followup_link_tests(void)
 		c->old_sa = sa;
 		c->new_sa = ns;
 		sa->addke_rekey_complete = c;
+		rekey_fixture_final(sa, ns);
 		ar_ops_reset();
 		msg = followup_msg(m768, pub, "rekey-link", 10);
 		ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
@@ -807,6 +828,7 @@ followup_link_tests(void)
 		rc_vfree(msg);
 		/* complete() freed ctx (fk_ar_ctxfree); new_sa is ours */
 		sa->addke_rekey_complete = NULL;
+		free(ns->negotiated_sa);
 		free(ns);
 	}
 	sa->addke_rekey_pending = 0;
@@ -899,6 +921,7 @@ followup_rekey_contract_tests(void)
 		sa->addke_rekey_link = rc_vnew("rekey-link", 10);
 		c = calloc(1, sizeof(*c)); c->old_sa = sa; c->new_sa = ns;
 		sa->addke_rekey_complete = c;
+		rekey_fixture_final(sa, ns);
 		msg = followup_msg(m768, pub, "rekey-link", 10);
 		ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
 				       (struct sockaddr *)&loc);
@@ -910,6 +933,7 @@ followup_rekey_contract_tests(void)
 		/* complete() freed ctx (fk_ar_ctxfree) and set the pin NULL;
 		 * it does NOT free new_sa, so free it here. */
 		sa->addke_rekey_complete = NULL;
+		free(ns->negotiated_sa);
 		free(ns);
 	}
 
@@ -922,6 +946,7 @@ followup_rekey_contract_tests(void)
 		sa->addke_rekey_link = rc_vnew("rekey-link", 10);
 		c = calloc(1, sizeof(*c)); c->old_sa = sa; c->new_sa = ns;
 		sa->addke_rekey_complete = c;
+		rekey_fixture_final(sa, ns);
 		msg = followup_msg(m768, pub, "rekey-link", 10);
 		ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
 				       (struct sockaddr *)&loc);
@@ -930,6 +955,7 @@ followup_rekey_contract_tests(void)
 		rc_vfree(msg);
 		rc_vfree(sa->addke_rekey_link); sa->addke_rekey_link = NULL;
 		sa->addke_rekey_complete = NULL;
+		free(ns->negotiated_sa);
 		free(ns);
 	}
 
@@ -942,6 +968,7 @@ followup_rekey_contract_tests(void)
 		sa->addke_rekey_link = rc_vnew("rekey-link", 10);
 		c = calloc(1, sizeof(*c)); c->old_sa = sa; c->new_sa = ns;
 		sa->addke_rekey_complete = c;
+		rekey_fixture_final(sa, ns);
 		msg = followup_msg(m768, pub, "rekey-link", 10);
 		ikev2_followup_ke_recv(sa, msg, (struct sockaddr *)&rem,
 				       (struct sockaddr *)&loc);
@@ -950,6 +977,7 @@ followup_rekey_contract_tests(void)
 		rc_vfree(msg);
 		rc_vfree(sa->addke_rekey_link); sa->addke_rekey_link = NULL;
 		sa->addke_rekey_complete = NULL;
+		free(ns->negotiated_sa);
 		free(ns);
 	}
 

@@ -160,6 +160,9 @@ ikev2_rekey_responder_addke_complete(struct ikev2_sa *old_sa,
 	if (new_sa)
 		ops->set_state(new_sa, IKEV2_STATE_DEAD);
 	ops->ctx_free(ctx);
+	/* round() earned this SK (final round) before complete(); drop it. */
+	rc_vfreez(old_sa->addke_rekey_sk);
+	old_sa->addke_rekey_sk = NULL;
 	old_sa->new_sa = NULL;
 	old_sa->rekey_inprogress = FALSE;
 	return -1;
