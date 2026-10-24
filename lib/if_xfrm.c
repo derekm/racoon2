@@ -318,7 +318,16 @@ pending_set(struct rcpfk_msg *rc, int type, uint32_t seq)
 	 * overwrites the single pending slot and the first op's reply is
 	 * then not "ours", silently dropping its callback. Tracked: needs an
 	 * outstanding-op queue keyed by seq (see plan 2026-10-23_xfrm-review-
-	 * followups KR-9) instead of one slot. */
+	 * followups KR-9) instead of one slot. Until that lands, make the
+	 * overwrite loud at submit time so a future concurrent (threaded)
+	 * submitter cannot clobber silently. */
+	if (pending_type != 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "XFRM: overlapping op: new %d(seq %u) while %d(seq %u) "
+		     "pending; first op's callback will be dropped (needs "
+		     "seq-keyed op queue, KR-9)\n",
+		     type, seq, pending_type, pending_seq);
+	}
 	pending_type = type;
 	pending_seq = seq;
 	pending_spi = rc->spi;
