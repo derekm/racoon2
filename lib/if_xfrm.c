@@ -1354,6 +1354,11 @@ rcpfk_send_delete(struct rcpfk_msg *rc)
 		    sizeof(saddr)))
 			return -1;
 	}
+	/* XFRM-native: mark/if_id are part of the SA key, so DEL must carry the
+	 * same XFRMA_MARK / XFRMA_IF_ID the SA was added with, or the kernel
+	 * cannot select the marked tunnel to delete. */
+	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
+		return -1;
 	pending_set(rc, XFRM_MSG_DELSA, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
 }
@@ -1381,6 +1386,9 @@ rcpfk_send_get(struct rcpfk_msg *rc)
 	id->spi = rc->spi;
 	id->family = family;
 	id->proto = rcpfk_satype_to_proto(rc->satype);
+	/* GET by id must also carry the SA's mark, or a marked SA is invisible. */
+	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
+		return -1;
 	pending_set(rc, XFRM_MSG_GETSA, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
 }
@@ -1487,6 +1495,10 @@ rcpfk_send_spddelete(struct rcpfk_msg *rc)
 		return -1;
 	}
 	id->dir = dir_to_x(rc->dir);
+	/* mark/if_id are part of the policy key; DELPOLICY by selector must
+	 * carry them or a marked policy cannot be deleted. */
+	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
+		return -1;
 	pending_set(rc, XFRM_MSG_DELPOLICY, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
 }
