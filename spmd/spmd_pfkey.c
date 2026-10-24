@@ -1400,7 +1400,13 @@ spmd_migrate(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 	set_samode(sl, rc);
 	set_satype(sl, rc);
 	set_dir(sl, rc);
-	set_mark_ifid(sl, rc);
+	/* an unmarked MIGRATE after a marked ADD would leave the kernel state
+	 * and policy keyed differently; fail closed if the selector has no
+	 * policy to carry the mark from. */
+	if (set_mark_ifid(sl, rc) < 0) {
+		ret = -1;
+		goto fin;
+	}
 
 	rc->seq = pfkey_seq_next();
 	rc->slid = sd->spid;
