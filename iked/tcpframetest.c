@@ -1,7 +1,8 @@
 /* $Id$ */
 /*
- * Tests for the RFC 8229 IKE-over-TCP framing codec (iked/ikev2_tcp.c).
- * Standalone main() like the other iked test binaries: printf + exit status.
+ * Tests for the RFC 9329 (obsoletes RFC 8229) IKE-over-TCP framing codec
+ * (iked/ikev2_tcp.c).  Byte-exact on-wire vectors.  Standalone main() like
+ * the other iked test binaries: printf + exit status.
  */
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -9,24 +10,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "ikev2_tcp.h"
 
-static int n_frames;
-static unsigned char got[16][65535];
-static unsigned int got_len[16];
-static int got_sep[16];
+static int n_frame;
+static unsigned char got[8][65535];
+static uint32_t glen[8];
+static int        gesp[8];
 
 static int
-collect(const unsigned char *pkt, size_t len, unsigned char sep, void *arg)
+collect(const unsigned char *pkt, size_t len, int is_esp, void *arg)
 {
 	(void)arg;
-	if (n_frames < 16) {
-		got_len[n_frames] = (unsigned int)len;
-		got_sep[n_frames] = sep;
-		memcpy(got[n_frames], pkt, len);
+	if (n_frame < 8) {
+		glen[n_frame] = (uint32_t)len;
+		gesp[n_frame] = is_esp;
+		memcpy(got[n_frame], pkt, len);
 	}
-	++n_frames;
+	++n_frame;
 	return 0;
 }
 
@@ -46,115 +48,153 @@ main(void)
 {
 	struct tcp_decap_state s;
 	struct tcp_record r;
-	unsigned char buf[32];
-	unsigned char badprefix[] = "IKETCQ";
-	size_t i;
+	unsigned char m, esp[5];
+	const unsigned char *w;
+	size_t wlen, k;
 
-	memset(&r, 0, sizeof(r));	/* tcp_record_build validates stream_len */
+	/* --- 1. originator round-trip: IKETCP | Len(=7) | 00000000 | 42 --- */
+	m = 0x42;
+	memset(&r, 0, sizeof(r));
+	tcp_decap_init(&s, 1);			/* expect prefix */
+	CHECK(tcp_stream_begin(&r) == 0, "begin: originator prefix written");
+	CHECK(tcp_record_ike(&r, &m, 1) == 0, "build: 1-byte IKE message");
+	CHECK(r.stream_len == 13 &&
+	      memcmp(r.stream, "IKETCP", 6) == 0 && r.stream[6] == 0 &&
+	      r.stream[7] == 7 && r.stream[8] == 0 && r.stream[9] == 0 &&
+	      r.stream[10] == 0 && r.stream[11] == 0 && r.stream[12] == 0x42,
+	      "wire: IKETCP + Len=7 + 4-zero marker + 0x42");
+	n_frame = 0;
+	CHECK(feed_all(&s, r.stream, r.stream_len) == 0 && n_frame == 1,
+	      "round-trip: one IKE frame decoded");
+	CHECK(n_frame == 1 && gesp[0] == TCP_FRAME_IKE && glen[0] == 1 &&
+	      got[0][0] == 0x42, "round-trip: marker stripped, payload+type right");
 
-	/* --- 1. prefix must be exactly "IKETCP" --- */
-	tcp_decap_init(&s);
-	CHECK(feed_all(&s, (const unsigned char *)"IKET", 4) == 0,
-	      "prefix: partial 'IKET' accepted");
-	CHECK(feed_all(&s, (const unsigned char *)"CP", 2) == 0,
-	      "prefix: 'IKETCP' completed across feeds");
-	CHECK(s.phase == TCAP_HEADER, "prefix: state is TCAP_HEADER after it");
-	tcp_decap_init(&s);
-	CHECK(feed_all(&s, (const unsigned char *)"IKETCP" "\0\0" "\x01" "\x00",
-		       6) == 0, "prefix: exact 'IKETCP' ok");
-
-	/* --- 2. bad prefix rejected --- */
-	tcp_decap_init(&s);
-	CHECK(feed_all(&s, badprefix, 6) == -1, "prefix: bad prefix rejected");
-
-	/* --- 3. a single IKE record (len=1, sep=0x01) round-trips --- */
-	n_frames = 0;
-	tcp_decap_init(&s);
-	tcp_stream_begin(&r);
+	/* --- 2. responder reply has NO prefix (expect_prefix=0) --- */
 	{
-		unsigned char m = 0x42;
-		CHECK(tcp_record_build(&r, &m, 1) == 0, "build: 1-byte record");
-	}
-	CHECK(r.stream_len == IKEV2_TCP_PREFIX_LEN + 3 + 1,
-	      "build: stream length 10");
-	CHECK(feed_all(&s, r.stream, r.stream_len) == 0 && n_frames == 1,
-	      "round-trip: one frame decoded");
-	CHECK(n_frames == 1 && got_len[0] == 1 && got_sep[0] == IKEV2_TCP_SEP_IKE &&
-	      got[0][0] == 0x42, "round-trip: payload+sep correct");
-
-	/* --- 4. length bound: zero-length record rejected --- */
-	tcp_decap_init(&s);
-	{
-		unsigned char rec[] = "IKETCP" "\0\0" "\x01";
-		CHECK(feed_all(&s, rec, sizeof(rec) - 1) == -1,
-		      "length: zero-length record rejected");
+		const unsigned char reply[] = { 0, 7, 0, 0, 0, 0, 0x42 };
+		n_frame = 0;
+		tcp_decap_init(&s, 0);
+		CHECK(feed_all(&s, reply, sizeof(reply)) == 0 && n_frame == 1 &&
+		      gesp[0] == TCP_FRAME_IKE && glen[0] == 1 && got[0][0] == 0x42,
+		      "reply: no-prefix stream decodes one IKE frame");
 	}
 
-	/* --- 5. length bound: >65535 rejected (0xffff allowed) --- */
-	tcp_decap_init(&s);
+	/* --- 3. bad prefix is fatal --- */
 	{
-		unsigned char rec1[] = "IKETCP" "\xff\xff" "\x01";
-		CHECK(feed_all(&s, rec1, sizeof(rec1) - 1) == 0,
-		      "length: 65535 header accepted (waits for payload)");
-	}
-	{
-		unsigned char rec2[] = "IKETCP" "\x01\x00" "\x01";
-		tcp_decap_init(&s);
-		CHECK(feed_all(&s, rec2, sizeof(rec2) - 1) == 0 &&
-		      s.phase == TCAP_PAYLOAD && s.reclen == 256,
-		      "length: 256 header with no payload yet is a wait, not malformed");
+		const unsigned char bad[] = "IKETCQ\0\7\0\0\0\0\x42";
+		tcp_decap_init(&s, 1);
+		CHECK(feed_all(&s, bad, sizeof(bad) - 1) == -1,
+		      "prefix: 'IKETCQ' is a fatal protocol error");
 	}
 
-	/* --- 6. separators: ESP (0x00) and IKE (0x01) routed; 0x02 rejected --- */
-	n_frames = 0;
-	tcp_decap_init(&s);
+	/* --- 4. Len 0 and Len 1 are fatal (RFC 9329 s3.1) --- */
 	{
-		unsigned char rec[] = "IKETCP" "\0\1" "\x00" "\xaa" "\0\1" "\x01" "\xbb";
-		CHECK(feed_all(&s, rec, sizeof(rec) - 1) == 0 && n_frames == 2,
-		      "sep: ESP + IKE both decoded");
-		CHECK(n_frames == 2 && got_sep[0] == IKEV2_TCP_SEP_ESP &&
-		      got_sep[1] == IKEV2_TCP_SEP_IKE, "sep: sep values recorded");
-	}
-	tcp_decap_init(&s);
-	{
-		unsigned char rec[] = "IKETCP" "\0\1" "\x02" "\xaa";
-		CHECK(feed_all(&s, rec, sizeof(rec) - 1) == -1,
-		      "sep: separator 0x02 rejected");
+		const unsigned char l0[] = { 0, 0 };
+		const unsigned char l1[] = { 0, 1 };
+		tcp_decap_init(&s, 0);
+		CHECK(feed_all(&s, l0, sizeof(l0)) == -1, "len: 0 is fatal");
+		tcp_decap_init(&s, 0);
+		CHECK(feed_all(&s, l1, sizeof(l1)) == -1, "len: 1 is fatal");
 	}
 
-	/* --- 7. partial feed at every byte boundary still decodes --- */
+	/* --- 5. Len 2 is silently ignored (RFC 9329 s3.2) --- */
 	{
-		int ok = 1, k;
-		unsigned char pkt[16];
-		for (k = 0; k < 16; k++)
-			pkt[k] = (unsigned char)k;
-		for (i = 0; i < 16; i++) {
-			n_frames = 0;
-			tcp_decap_init(&s);
-			feed_all(&s, (const unsigned char *)"IKETCP", 6);
-			feed_all(&s, (const unsigned char*)"\x00\x10" "\x01", 3);
-			if (i > 0) feed_all(&s, pkt, i);
-			if (i < 16) feed_all(&s, pkt + i, 16 - i);
-			if (n_frames != 1 || got_len[0] != 16 || got[0][i] != i) {
-				ok = 0;
-				break;
+		const unsigned char stream[] = { 0, 2,     /* ignore */
+						0, 7, 0, 0, 0, 0, 0x42 }; /* IKE */
+		n_frame = 0;
+		tcp_decap_init(&s, 0);
+		CHECK(feed_all(&s, stream, sizeof(stream)) == 0 && n_frame == 1 &&
+		      got[0][0] == 0x42,
+		      "len: 2 silently ignored, following IKE record delivered");
+	}
+
+	/* --- 6. NAT keepalive 00 03 FF is silently dropped --- */
+	{
+		const unsigned char stream[] = { 0, 3, 0xff,   /* keepalive */
+						0, 7, 0, 0, 0, 0, 0x42 };
+		n_frame = 0;
+		tcp_decap_init(&s, 0);
+		CHECK(feed_all(&s, stream, sizeof(stream)) == 0 && n_frame == 1,
+		      "keepalive: 00 03 FF dropped, following IKE delivered");
+	}
+
+	/* --- 7. ESP record: Len=2+n, non-zero first 32 bits, delivered whole --- */
+	{
+		const unsigned char esprec[] = { 0, 7, 0x11, 0x22, 0x33,
+						  0x44, 0x55 };
+		n_frame = 0;
+		tcp_decap_init(&s, 0);
+		CHECK(feed_all(&s, esprec, sizeof(esprec)) == 0 && n_frame == 1 &&
+		      gesp[0] == TCP_FRAME_ESP && glen[0] == 5 &&
+		      got[0][4] == 0x55, "esp: packet delivered after Len");
+	}
+
+	/* --- 8. mixed IKE + ESP in one originator stream --- */
+	{
+		unsigned char ike1 = 0x99, ike2 = 0x7a;
+		memset(&r, 0, sizeof(r));
+		esp[0] = 0x01; esp[1] = 0x00; esp[2] = 0x00; esp[3] = 0x00; esp[4] = 0x02;
+		tcp_stream_begin(&r);
+		tcp_record_ike(&r, &ike1, 1);
+		/* build ESP by hand: Len=7 | esp(5 bytes) */
+		r.stream[r.stream_len++] = 0; r.stream[r.stream_len++] = 7;
+		memcpy(r.stream + r.stream_len, esp, 5); r.stream_len += 5;
+		tcp_record_ike(&r, &ike2, 1);
+		n_frame = 0;
+		tcp_decap_init(&s, 1);
+		CHECK(feed_all(&s, r.stream, r.stream_len) == 0 && n_frame == 3 &&
+		      gesp[0] == TCP_FRAME_IKE && gesp[1] == TCP_FRAME_ESP &&
+		      gesp[2] == TCP_FRAME_IKE && glen[1] == 5,
+		      "coalesce: IKE + ESP + IKE decoded in order");
+	}
+
+	/* --- 9. split at EVERY byte boundary (incl. inside Len and marker) --- */
+	{
+		unsigned char ike1 = 0x11, ike2 = 0x22;
+		memset(&r, 0, sizeof(r));
+		tcp_stream_begin(&r);
+		tcp_record_ike(&r, &ike1, 1);
+		tcp_record_ike(&r, &ike2, 1);
+		wlen = r.stream_len; w = r.stream;
+	}
+	{
+		int ok = 1;
+		for (k = 0; k < wlen; k++) {
+			n_frame = 0;
+			tcp_decap_init(&s, 1);
+			if (feed_all(&s, w, k) != 0 || feed_all(&s, w + k, wlen - k) != 0 ||
+			    n_frame != 2 || glen[0] != 1 || glen[1] != 1) {
+				ok = 0; break;
 			}
 		}
-		CHECK(ok, "partial: split at every boundary decodes");
+		CHECK(ok, "split: every byte boundary (Len+marker+payload) decodes");
 	}
 
-	/* --- 8. multi-record coalescing in one feed --- */
-	n_frames = 0;
-	tcp_decap_init(&s);
-	r.stream_len = 0;	/* fresh stream */
-	tcp_stream_begin(&r);
+	/* --- 10. malformed payload (< 4 discriminator, not keepalive) fatal --- */
 	{
-		unsigned char m1 = 0x01, m2 = 0x02;
-		tcp_record_build(&r, &m1, 1);
-		tcp_record_build(&r, &m2, 1);
+		const unsigned char bad[] = { 0, 3, 0xaa };
+		tcp_decap_init(&s, 0);
+		CHECK(feed_all(&s, bad, sizeof(bad)) == -1,
+		      "malformed: 1-byte non-FF payload is fatal");
 	}
-	CHECK(feed_all(&s, r.stream, r.stream_len) == 0 && n_frames == 2,
-	      "coalesce: two records in one stream feed");
+
+	/* --- 11. encoder caps IKE message at 65529 octets --- */
+	{
+		struct tcp_record bs;
+		unsigned char big[65530];
+
+		memset(&bs, 0, sizeof(bs));
+		CHECK(tcp_record_ike(&bs, big, 65529) == 0,
+		      "encode: 65529-octet IKE message accepted (Len=65535)");
+		memset(&bs, 0, sizeof(bs));
+		CHECK(tcp_record_ike(&bs, big, 65530) == -1,
+		      "encode: 65530-octet IKE message rejected (Len would overflow)");
+	}
+
+	/* --- 12. empty prefix-only stream: no frames, header state --- */
+	tcp_decap_init(&s, 1);
+	CHECK(feed_all(&s, (const unsigned char *)"IKETCP", 6) == 0 &&
+	      s.phase == TCAP_LEN, "prefix: exact 'IKETCP' alone, awaiting Len");
 
 	if (!fails)
 		printf("all tcp-framing checks passed\n");
