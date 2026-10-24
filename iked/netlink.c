@@ -49,6 +49,30 @@
 
 static int rtnetlink_socket = -1;
 
+/* Shared netlink nlmsghdr walk (lib/rcpfk_util.c); declared here (Linux
+ * netlink only) rather than in the portable rcpfk header. */
+int rcpfk_nl_walk(char *, size_t, int (*)(struct nlmsghdr *, void *),
+    void *);
+
+static int
+rtnl_dispatch(struct nlmsghdr *nlh, void *arg)
+{
+	(void)arg;
+	TRACE((PLOGLOC, "netlink type %d\n", nlh->nlmsg_type));
+	switch (nlh->nlmsg_type) {
+	case RTM_NEWADDR:
+	case RTM_DELADDR:
+	case RTM_NEWLINK:
+	case RTM_DELLINK:
+		isakmp_reopen();
+		break;
+	default:
+		TRACE((PLOGLOC, "ignoring\n"));
+		break;
+	}
+	return 0;
+}
+
 int
 rtsock_init(void)
 {
@@ -82,7 +106,6 @@ rtsock_process(void)
 {
 	char buf[BUFSIZ];
 	ssize_t len;
-	struct nlmsghdr *nlh;
 
 	TRACE((PLOGLOC, "reading netlink socket\n"));
 	len = recv(rtnetlink_socket, buf, sizeof(buf), 0);
@@ -92,33 +115,11 @@ rtsock_process(void)
 		     "netlink: recv: %s\n", strerror(errno));
 		return;
 	}
-	if (len < sizeof(struct nlmsghdr)) {
+	/* rcpfk_nl_walk does the shared NLMSG_OK/NLMSG_NEXT safe iteration +
+	 * per-message length validation (the same malformed-input checks the
+	 * XFRM backend makes), so a bad rtnetlink message is caught exactly
+	 * once, in one place. */
+	if (rcpfk_nl_walk(buf, (size_t)len, rtnl_dispatch, NULL) < 0)
 		plog(PLOG_INTERR, PLOGLOC, 0,
-		     "format error (%ld < %lu)\n",
-		     (long)len, (unsigned long)sizeof(struct nlmsghdr));
-		return;
-	}
-
-	for (nlh = (struct nlmsghdr *)buf;
-	     len >= sizeof(struct nlmsghdr);
-	     nlh = NLMSG_NEXT(nlh, len)) {
-		if (nlh->nlmsg_len > len) {
-			plog(PLOG_INTERR, PLOGLOC, 0,
-			     "format error (%u > %ld)\n",
-			     (unsigned int)nlh->nlmsg_len, (long)len);
-			return;
-		}
-		TRACE((PLOGLOC, "type %d\n", nlh->nlmsg_type));
-		switch (nlh->nlmsg_type) {
-		case RTM_NEWADDR:
-		case RTM_DELADDR:
-		case RTM_NEWLINK:
-		case RTM_DELLINK:
-			isakmp_reopen();
-			break;
-		default:
-			TRACE((PLOGLOC, "ignoring\n"));
-			break;
-		}
-	}
+		     "netlink: malformed rtnetlink message\n");
 }

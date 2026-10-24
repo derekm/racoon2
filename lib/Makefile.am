@@ -11,7 +11,8 @@ lib_LTLIBRARIES = libracoon.la
 libracoon_la_SOURCES =vmbuf.c rc_type.c rc_net.c rc_str.c \
 	if_spmd.c \
 	cfsetup.c rc_pcap.c cftoken.l cfparse.y \
-	pidfile.c sd_listenfds.c plog.c safefile.c version.c rbuf.c addresspool.c
+	pidfile.c sd_listenfds.c plog.c safefile.c version.c rbuf.c addresspool.c \
+	rcpfk_util.c
 if USE_XFRM
 libracoon_la_SOURCES += if_xfrm.c
 else
@@ -61,7 +62,7 @@ xfrmnltest_SOURCES = xfrmnltest.c
 # if_xfrm.c global twice (ASan odr-violation under the sanitizer builds).
 xfrmnltest_LDADD = vmbuf.lo rc_type.lo rc_net.lo rc_str.lo if_spmd.lo \
 	cfsetup.lo rc_pcap.lo cftoken.lo cfparse.lo pidfile.lo sd_listenfds.lo \
-	plog.lo safefile.lo version.lo rbuf.lo addresspool.lo \
+	plog.lo safefile.lo version.lo rbuf.lo addresspool.lo rcpfk_util.lo \
 	$(LTLIBOBJS) -lpcap -lpthread
 xfrmnatt_SOURCES = xfrmnatt.c
 xfrmnatt_LDADD = libracoon.la

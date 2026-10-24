@@ -409,34 +409,6 @@ xaddr_to_sa(uint16_t family, const xfrm_address_t *xa, uint16_t port,
 }
 
 static uint8_t
-satype_to_proto(uint8_t satype)
-{
-	switch (satype) {
-	case RCT_SATYPE_AH:
-		return IPPROTO_AH;
-	case RCT_SATYPE_IPCOMP:
-		return IPPROTO_IPCOMP;
-	case RCT_SATYPE_ESP:
-	default:
-		return IPPROTO_ESP;
-	}
-}
-
-static uint8_t
-proto_to_satype(uint8_t proto)
-{
-	switch (proto) {
-	case IPPROTO_AH:
-		return RCT_SATYPE_AH;
-	case IPPROTO_IPCOMP:
-		return RCT_SATYPE_IPCOMP;
-	case IPPROTO_ESP:
-	default:
-		return RCT_SATYPE_ESP;
-	}
-}
-
-static uint8_t
 dir_to_x(uint8_t dir)
 {
 	switch (dir) {
@@ -755,7 +727,7 @@ fill_usersa(struct xfrm_usersa_info *sa, struct rcpfk_msg *rc)
 	}
 	sa->family = family;
 	sa->id.spi = rc->spi;
-	sa->id.proto = satype_to_proto(rc->satype);
+	sa->id.proto = rcpfk_satype_to_proto(rc->satype);
 	sa->mode = mode_to_x(rc->samode);
 	sa->reqid = rc->reqid;
 	sa->replay_window = rc->wsize;
@@ -1012,7 +984,7 @@ append_tmpl(struct xfrm_user_tmpl *t, int *n, uint8_t satype,
 	if (*n >= 3)
 		return -1;
 	memset(&t[*n], 0, sizeof(t[0]));
-	t[*n].id.proto = satype_to_proto(satype);
+	t[*n].id.proto = rcpfk_satype_to_proto(satype);
 	t[*n].mode = mode_to_x(rc->samode);
 	t[*n].reqid = rc->reqid;
 	t[*n].optional = (rc->ipsec_level == RCT_IPSL_USE);
@@ -1267,7 +1239,7 @@ rcpfk_send_getspi(struct rcpfk_msg *rc)
 		return -1;
 	}
 	spi->info.family = family;
-	spi->info.id.proto = satype_to_proto(rc->satype);
+	spi->info.id.proto = rcpfk_satype_to_proto(rc->satype);
 	spi->info.mode = mode_to_x(rc->samode);
 	spi->info.reqid = rc->reqid;
 	spi->min = rc_spirange_min;
@@ -1316,7 +1288,7 @@ rcpfk_send_delete(struct rcpfk_msg *rc)
 	}
 	id->spi = rc->spi;
 	id->family = family;
-	id->proto = satype_to_proto(rc->satype);
+	id->proto = rcpfk_satype_to_proto(rc->satype);
 	if (rc->sa_src && sa_to_xaddr(rc->sa_src, &saddr, NULL) == 0) {
 		if (xfrm_addattr(n, sizeof(buf), XFRMA_SRCADDR, &saddr,
 		    sizeof(saddr)))
@@ -1348,7 +1320,7 @@ rcpfk_send_get(struct rcpfk_msg *rc)
 	}
 	id->spi = rc->spi;
 	id->family = family;
-	id->proto = satype_to_proto(rc->satype);
+	id->proto = rcpfk_satype_to_proto(rc->satype);
 	pending_set(rc, XFRM_MSG_GETSA, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
 }
@@ -1611,7 +1583,7 @@ xfrm_encap_collect(struct nlmsghdr *h, void *arg)
 	if (h->nlmsg_len < NLMSG_LENGTH(sizeof(*sa)))
 		return 0;
 	if (sa->family != j->family ||
-	    sa->id.proto != satype_to_proto(j->rc->satype) ||
+	    sa->id.proto != rcpfk_satype_to_proto(j->rc->satype) ||
 	    memcmp(&sa->saddr, &j->s, sizeof(j->s)) != 0 ||
 	    memcmp(&sa->id.daddr, &j->d, sizeof(j->d)) != 0 ||
 	    (want != 0 && sa->reqid != want))
@@ -1729,7 +1701,7 @@ rcpfk_send_migrate(struct rcpfk_msg *rc)
 	    rc->ul_proto, rc->flags);
 	id->dir = dir_to_x(rc->dir);
 	memset(&m, 0, sizeof(m));
-	m.proto = satype_to_proto(rc->satype);
+	m.proto = rcpfk_satype_to_proto(rc->satype);
 	m.mode = mode_to_x(rc->samode);
 	m.reqid = rc->reqid;
 	if (rc->sa_src)
@@ -1812,7 +1784,7 @@ static void
 usersa_to_rc(const struct xfrm_usersa_info *sa, struct rcpfk_msg *rc)
 {
 	rc->spi = sa->id.spi;
-	rc->satype = proto_to_satype(sa->id.proto);
+	rc->satype = rcpfk_proto_to_satype(sa->id.proto);
 	rc->samode = x_to_mode(sa->mode);
 	rc->reqid = sa->reqid;
 	rc->wsize = (uint8_t)sa->replay_window;
@@ -1911,7 +1883,7 @@ handle_acquire(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 	int attrlen;
 
 	ac = NLMSG_DATA(nlh);
-	rc->satype = proto_to_satype(ac->id.proto);
+	rc->satype = rcpfk_proto_to_satype(ac->id.proto);
 	rc->dir = x_to_dir(ac->policy.dir);
 	rc->slid = ac->policy.index;
 	rc->reqid = 0;
@@ -1939,7 +1911,7 @@ handle_acquire(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 
 			rc->reqid = t->reqid;
 			if (t->id.proto)
-				rc->satype = proto_to_satype(t->id.proto);
+				rc->satype = rcpfk_proto_to_satype(t->id.proto);
 			rc->samode = x_to_mode(t->mode);
 			if (xaddr_to_sa(fam, &t->saddr, 0,
 			    &rc->sa_src_storage) < 0 ||
@@ -2012,7 +1984,7 @@ static int
 handle_mapping(struct xfrm_user_mapping *um, struct rcpfk_msg *rc)
 {
 	rc->spi = um->id.spi;
-	rc->satype = proto_to_satype(um->id.proto);
+	rc->satype = rcpfk_proto_to_satype(um->id.proto);
 	rc->reqid = um->reqid;
 	rc->sa_src = (void *)&rc->sa_src_storage;
 	rc->sa_dst = (void *)&rc->sa_dst_storage;
@@ -2061,7 +2033,7 @@ handle_migrate(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 		    RTA_PAYLOAD(rta) >= sizeof(struct xfrm_user_migrate)) {
 			struct xfrm_user_migrate *m = RTA_DATA(rta);
 
-			rc->satype = proto_to_satype(m->proto);
+			rc->satype = rcpfk_proto_to_satype(m->proto);
 			rc->samode = x_to_mode(m->mode);
 			rc->reqid = m->reqid;
 			rc->sa_src = (void *)&rc->sa_src_storage;
