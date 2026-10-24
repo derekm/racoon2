@@ -87,8 +87,12 @@ A userspace dataplane backend (same rcpfk_* ABI) is
 
 That loopbacks SA/SPD to iked and optionally mirrors to
 `RACOON2_DATAPLANE_SOCK`. There is no DPDK forwarding process in
-this tree. Hardware offload (`XFRMA_OFFLOAD_DEV`, xfrmi) is not
-wired.
+this tree, and the userspace backend ignores mark/if_id/offload.
+On the Linux XFRM backend, XFRM mark, if_id and ESP device offload
+(`XFRMA_OFFLOAD_DEV`) are wired (config grammar and emit paths, see
+doc/xfrm-offload.md) but **experimental**: no hardware-backed matrix
+row has proven offload yet. xfrmi interface creation is not done by
+racoon2.
 
 IKEv2 v4-in-v4 (NAT-mode) has lived: SAD+SPD from iked+spmd, ping
 through ESP. Apple NAT-T is live-proven: an iPhone over LTE comes up
@@ -239,8 +243,9 @@ Currently, the system supports the following specifications:
 	          for Internet Key Exchange (IKE)
 	RFC 2367, PF_KEY Key Management API, Version 2
 
-	Not in this tree: IKEv1 XAuth/mode-config (ENABLE_HYBRID scaffolding only),
-	ADDKE rounds 2+.
+	Not in this tree: IKEv1 XAuth/mode-config (ENABLE_HYBRID scaffolding only).
+	Multi-round RFC 9370 ADDKE (ADDKE1..ADDKE7, initial IKE_SA and rekey)
+	is in tree (iked/ikev2_addke_rounds.c). Module map: doc/iked-modules.md.
 
 	RFC 5723 (IKEv2 Session Resumption) is implemented: responder
 	ticket-by-value codec, the s5.1 resumed key derivation, the
