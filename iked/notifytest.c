@@ -44,6 +44,8 @@
 #include "ikev2_impl.h"
 #include "ikev2_notify.h"
 #include "ikev2_drain.h"
+#include "ike_conf.h"
+#include <sys/time.h>
 
 #include "test_util.h"
 
@@ -873,7 +875,174 @@ main(int argc, char *argv[])
 			   "ikev2_send_invalid_message_id: rate-limited -> 0, no initiate");
 		}
 
-		if (fails) {
+		/*
+	 * RFC 4739 multiple authentication + RFC 4478 AUTH_LIFETIME.
+	 * Both default off: with multiple_auth off neither 16404 nor 16405
+	 * changes SA state; AUTH_LIFETIME is parsed strictly (4 octets) and
+	 * caps the SA only for an initiator with honor_auth_lifetime on.
+	 */
+	{
+		struct rcf_kmp ikm;
+		struct rcf_remote rm;
+		struct ikev2_sa sa;
+		struct timeval now;
+		uint32_t secs;
+
+		memset(&ikm, 0, sizeof(ikm));
+		memset(&rm, 0, sizeof(rm));
+		rm.ikev2 = &ikm;
+		memset(&sa, 0, sizeof(sa));
+		sa.rmconf = &rm;
+
+		/* off (explicit) */
+		ikm.multiple_auth = RCT_BOOL_OFF;
+		p = mk_notify(IKEV2_MULTIPLE_AUTH_SUPPORTED, &len);
+		ck(ikev2_process_notify(&sa, p, 1) == 0 && !sa.peer_multi_auth,
+		   "16404 ignored with multiple_auth off");
+		free(p);
+		p = mk_notify(IKEV2_ANOTHER_AUTH_FOLLOWS, &len);
+		ck(ikev2_process_notify(&sa, p, 1) == 0 && !sa.peer_another_auth,
+		   "16405 ignored with multiple_auth off");
+		free(p);
+		/* on, but unauthenticated: ignored */
+		ikm.multiple_auth = RCT_BOOL_ON;
+		p = mk_notify(IKEV2_ANOTHER_AUTH_FOLLOWS, &len);
+		ck(ikev2_process_notify(&sa, p, 0) == 0 && !sa.peer_another_auth,
+		   "16405 ignored when not cryptographically protected");
+		free(p);
+		/* on + protected */
+		p = mk_notify(IKEV2_MULTIPLE_AUTH_SUPPORTED, &len);
+		ck(ikev2_process_notify(&sa, p, 1) == 0 && sa.peer_multi_auth == 1,
+		   "16404 recorded with multiple_auth on");
+		free(p);
+		p = mk_notify(IKEV2_ANOTHER_AUTH_FOLLOWS, &len);
+		ck(ikev2_process_notify(&sa, p, 1) == 0 && sa.peer_another_auth == 1,
+		   "16405 recorded with multiple_auth on");
+		free(p);
+		ck(strcmp(ikev2_notify_type_str(IKEV2_MULTIPLE_AUTH_SUPPORTED),
+		   "MULTIPLE_AUTH_SUPPORTED") == 0, "16404 named");
+		ck(strcmp(ikev2_notify_type_str(IKEV2_ANOTHER_AUTH_FOLLOWS),
+		   "ANOTHER_AUTH_FOLLOWS") == 0, "16405 named");
+
+		/* decision table */
+		ck(ikev2_multi_auth_decide(1, 0, 1, 0) == IKEV2_MA_SINGLE,
+		   "decide: no ANOTHER_AUTH_FOLLOWS -> single round");
+		ck(ikev2_multi_auth_decide(0, 0, 0, 0) == IKEV2_MA_SINGLE,
+		   "decide: off, nothing flagged -> single round");
+		ck(ikev2_multi_auth_decide(1, 1, 1, 0) == IKEV2_MA_SECOND_ROUND,
+		   "decide: on + flagged + eap -> second round");
+		ck(ikev2_multi_auth_decide(1, 1, 0, 0) == IKEV2_MA_REFUSE,
+		   "decide: flagged but no EAP second method -> refuse");
+		ck(ikev2_multi_auth_decide(0, 1, 1, 0) == IKEV2_MA_REFUSE,
+		   "decide: flagged while off -> refuse");
+		ck(ikev2_multi_auth_decide(1, 1, 1, 1) == IKEV2_MA_REFUSE,
+		   "decide: a third round -> refuse");
+
+		/* AUTH_LIFETIME parse: exactly 4 octets */
+		{
+			size_t dl;
+			for (dl = 0; dl <= 6; dl++) {
+				struct ikev2payl_notify *n;
+				size_t l = sizeof(*n) + dl;
+				char what[80];
+
+				n = calloc(1, l);
+				set_payload_header(&n->header, IKEV2_NO_NEXT_PAYLOAD, l);
+				put_uint16(&n->nh.notify_message_type,
+				    IKEV2_AUTH_LIFETIME);
+				if (dl >= 4) {
+					uint8_t *d = (uint8_t *)(n + 1);
+					d[0] = 0; d[1] = 0; d[2] = 0x0e; d[3] = 0x10;
+				}
+				secs = 0;
+				rc = ikev2_auth_lifetime_parse(n, &secs);
+				snprintf(what, sizeof(what),
+				    "AUTH_LIFETIME %zu-octet data %s", dl,
+				    dl == 4 ? "-> 3600" : "rejected");
+				ck(dl == 4 ? (rc == 0 && secs == 3600) : rc != 0,
+				   what);
+				free(n);
+			}
+		}
+
+		/* AUTH_LIFETIME action */
+		{
+			struct ikev2payl_notify *n;
+			size_t l = sizeof(*n) + 4;
+			uint8_t *d;
+
+			n = calloc(1, l);
+			set_payload_header(&n->header, IKEV2_NO_NEXT_PAYLOAD, l);
+			put_uint16(&n->nh.notify_message_type, IKEV2_AUTH_LIFETIME);
+			d = (uint8_t *)(n + 1);
+			d[0] = 0; d[1] = 0; d[2] = 0x0e; d[3] = 0x10;	/* 3600 */
+
+			sa.is_initiator = 1;
+			ikm.honor_auth_lifetime = RCT_BOOL_OFF;
+			ck(ikev2_process_notify(&sa, (void *)n, 1) == 0 &&
+			   sa.auth_due.tv_sec == 0,
+			   "AUTH_LIFETIME not honoured with honor_auth_lifetime off");
+			ikm.honor_auth_lifetime = RCT_BOOL_ON;
+			sa.is_initiator = 0;
+			ck(ikev2_process_notify(&sa, (void *)n, 1) == 0 &&
+			   sa.auth_due.tv_sec == 0,
+			   "AUTH_LIFETIME ignored by a responder");
+			sa.is_initiator = 1;
+			ck(ikev2_process_notify(&sa, (void *)n, 0) == 0 &&
+			   sa.auth_due.tv_sec == 0,
+			   "AUTH_LIFETIME ignored when unprotected");
+			gettimeofday(&now, 0);
+			ck(ikev2_process_notify(&sa, (void *)n, 1) == 0 &&
+			   sa.auth_due.tv_sec >= now.tv_sec + 3599 &&
+			   sa.auth_due.tv_sec <= now.tv_sec + 3601,
+			   "AUTH_LIFETIME 3600 caps the initiator SA at now+3600");
+			d[2] = 0; d[3] = 60;
+			ck(ikev2_process_notify(&sa, (void *)n, 1) == 0 &&
+			   sa.auth_due.tv_sec <= now.tv_sec + 61,
+			   "a shorter AUTH_LIFETIME lowers the cap");
+			d[2] = 0x0e; d[3] = 0x10;
+			ck(ikev2_process_notify(&sa, (void *)n, 1) == 0 &&
+			   sa.auth_due.tv_sec <= now.tv_sec + 61,
+			   "a longer AUTH_LIFETIME never extends the cap");
+			free(n);
+		}
+
+		/* responder emission */
+		{
+			struct ikev2_payloads pl;
+			struct ikev2_payload_info *e;
+			int nn = 0, ok = 0;
+
+			ikev2_payloads_init(&pl);
+			ikm.auth_lifetime = 0;
+			ikev2_push_auth_lifetime(&sa, &pl);
+			ck(pl.num == 0, "no AUTH_LIFETIME pushed when unset");
+			ikev2_payloads_destroy(&pl);
+
+			ikev2_payloads_init(&pl);
+			ikm.auth_lifetime = 7200;
+			ikev2_push_auth_lifetime(&sa, &pl);
+			for (nn = 0; nn < pl.num; nn++) {
+				e = &pl.payloads[nn];
+				if (e->type == IKEV2_PAYLOAD_NOTIFY && e->data &&
+				    e->data->l == sizeof(struct ikev2payl_notify_h) + 4) {
+					struct ikev2payl_notify_h *h =
+					    (struct ikev2payl_notify_h *)e->data->v;
+					uint8_t *v = (uint8_t *)(h + 1);
+					if (get_uint16(&h->notify_message_type) ==
+					    IKEV2_AUTH_LIFETIME &&
+					    v[0] == 0 && v[1] == 0 &&
+					    v[2] == 0x1c && v[3] == 0x20)
+						ok = 1;
+				}
+			}
+			ck(pl.num == 1 && ok,
+			   "auth_lifetime 7200 pushes one N(AUTH_LIFETIME, 7200)");
+			ikev2_payloads_destroy(&pl);
+		}
+	}
+
+	if (fails) {
 		printf("notifytest: %d FAILURE(S)\n", fails);
 		return 1;
 	}

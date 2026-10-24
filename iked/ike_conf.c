@@ -508,6 +508,9 @@ IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
 IKEV2_CONF_ATTR(rc_type, cert_validate)
 IKEV2_CONF_ATTR(rc_vchar_t *, ca_file)
 IKEV2_CONF_ATTR(rc_type, legacy_split_netmask)
+IKEV2_CONF_ATTR(rc_type, multiple_auth)
+IKEV2_CONF_ATTR(int, auth_lifetime)
+IKEV2_CONF_ATTR(rc_type, honor_auth_lifetime)
 IKEV2_CONF_ATTR(rc_type, cert_intermediates)
 IKEV2_CONF_ATTR(rc_vchar_t *, accept_dns_domain)
 IKEV2_CONF_ATTR(int, redirect_period)
@@ -651,6 +654,7 @@ IKEV2_CFG(ikev2_cfg_dns_domain, RCF_REQ_DNS_DOMAIN)
 IKEV2_CFG(ikev2_cfg_dnssec_ta, RCF_REQ_DNSSEC_TA)
 IKEV2_CFG(ikev2_cfg_ip4_dns, RCF_REQ_IP4_DNS)
 IKEV2_CFG(ikev2_cfg_ip6_dns, RCF_REQ_IP6_DNS)
+IKEV2_CFG(ikev2_cfg_ip4_nbns, RCF_REQ_IP4_NBNS)
 IKEV2_CFG(ikev2_cfg_ip4_dhcp, RCF_REQ_IP4_DHCP)
 IKEV2_CFG(ikev2_cfg_ip6_dhcp, RCF_REQ_IP6_DHCP)
 IKEV2_CFG(ikev2_cfg_mip6prefix, RCF_REQ_MIP6_HOME_PREFIX)
@@ -665,6 +669,15 @@ ikev2_dns(struct rcf_remote *conf)
 	struct rc_addrlist	*val;
 
 	IKEV2_CONF(val, conf, cfg_dns, ikev2_default_values.cfg_dns);
+	return val;
+}
+
+struct rc_addrlist *
+ikev2_nbns(struct rcf_remote *conf)
+{
+	struct rc_addrlist	*val;
+
+	IKEV2_CONF(val, conf, cfg_nbns, ikev2_default_values.cfg_nbns);
 	return val;
 }
 

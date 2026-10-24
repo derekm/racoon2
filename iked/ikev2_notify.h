@@ -54,6 +54,14 @@ int createchild_resp_recv_notify(struct ikev2_sa *, rc_vchar_t *,
 				 uint32_t *);
 
 int ikev2_process_notify(struct ikev2_sa *, struct ikev2_payload_header *, int);
+int ikev2_auth_lifetime_parse(const struct ikev2payl_notify *, uint32_t *);
+void ikev2_auth_lifetime_apply(struct ikev2_sa *, uint32_t);
+#define	IKEV2_MA_SINGLE		0	/* normal single-round IKE_AUTH */
+#define	IKEV2_MA_SECOND_ROUND	1	/* answer IDr+AUTH, await round 2 */
+#define	IKEV2_MA_REFUSE		2	/* AUTHENTICATION_FAILED */
+int ikev2_multi_auth_decide(int, int, int, int);
+struct ikev2_payloads;
+void ikev2_push_auth_lifetime(struct ikev2_sa *, struct ikev2_payloads *);
 int ikev2_process_child_notify(struct ikev2payl_notify *,
 		       struct ikev2_child_param *);
 

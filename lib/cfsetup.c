@@ -235,6 +235,10 @@ static int rcf_fix_redirect_to (struct cf_list *, void *);
 static int rcf_fix_cert_validate (struct cf_list *, void *);
 static int rcf_fix_ca_file (struct cf_list *, void *);
 static int rcf_fix_legacy_split_netmask (struct cf_list *, void *);
+static int rcf_fix_multiple_auth (struct cf_list *, void *);
+static int rcf_fix_auth_lifetime (struct cf_list *, void *);
+static int rcf_fix_honor_auth_lifetime (struct cf_list *, void *);
+static int rcf_fix_nbns (struct cf_list *, void *);
 static int rcf_fix_cert_intermediates (struct cf_list *, void *);
 static int rcf_fix_accept_dns_domain (struct cf_list *, void *);
 static int rcf_fix_redirect_period (struct cf_list *, void *);
@@ -381,6 +385,9 @@ struct rcf_tdf_t {
 	{ CFD_CERT_VALIDATE,		rcf_fix_cert_validate, },
 	{ CFD_CA_FILE,			rcf_fix_ca_file, },
 	{ CFD_LEGACY_SPLIT_NETMASK,		rcf_fix_legacy_split_netmask, },
+	{ CFD_MULTIPLE_AUTH,		rcf_fix_multiple_auth, },
+	{ CFD_AUTH_LIFETIME,		rcf_fix_auth_lifetime, },
+	{ CFD_HONOR_AUTH_LIFETIME,	rcf_fix_honor_auth_lifetime, },
 	{ CFD_CERT_INTERMEDIATES,		rcf_fix_cert_intermediates, },
 	{ CFD_ACCEPT_DNS_DOMAIN,		rcf_fix_accept_dns_domain, },
 	{ CFD_REDIRECT_PERIOD,		rcf_fix_redirect_period, },
@@ -459,6 +466,7 @@ struct rcf_tdf_t {
 	{ CFD_REQUEST,			rcf_fix_request },
 	{ CFD_DNS,			rcf_fix_dns },
 	{ CFD_DHCP,			rcf_fix_dhcp },
+	{ CFD_NBNS,			rcf_fix_nbns },
 	{ CFD_APPLICATION_VERSION,	rcf_fix_application_version },
 	{ CFD_DNS_DOMAIN,		rcf_fix_dns_domain },
 	{ CFD_DNSSEC_TA,		rcf_fix_dnssec_ta },
@@ -2121,6 +2129,50 @@ rcf_fix_legacy_split_netmask(struct cf_list *head, void *dst0)
 }
 
 static int
+rcf_fix_multiple_auth(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_MULTIPLE_AUTH))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->multiple_auth))
+		return -1;
+	return 0;
+}
+
+static int
+rcf_fix_auth_lifetime(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_AUTH_LIFETIME))
+		return -1;
+	if (rcf_fix_number(head->nextp, &dst->auth_lifetime))
+		return -1;
+	/* RFC 4478 s3: a 4-octet unsigned seconds value; 0 would ask the
+	 * peer to reauthenticate immediately, which is never meant */
+	if (dst->auth_lifetime <= 0) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "%s:%d: auth_lifetime must be > 0\n",
+		    head->file, head->lineno);
+		return -1;
+	}
+	return 0;
+}
+
+static int
+rcf_fix_honor_auth_lifetime(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_HONOR_AUTH_LIFETIME))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->honor_auth_lifetime))
+		return -1;
+	return 0;
+}
+
+static int
 rcf_fix_radius_server(struct cf_list *head, void *dst0)
 {
 	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
@@ -2317,6 +2369,18 @@ rcf_fix_dns(struct cf_list *head, void *dst0)
 	if (rcf_check_cfd(head, CFD_DNS))
 		return -1;
 	if (rcf_fix_addrlist(head->nextp, &dst->cfg_dns, 0, 0))
+		return -1;
+	return 0;
+}
+
+static int
+rcf_fix_nbns(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp	*dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_NBNS))
+		return -1;
+	if (rcf_fix_addrlist(head->nextp, &dst->cfg_nbns, 0, 0))
 		return -1;
 	return 0;
 }
@@ -3939,6 +4003,9 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	new->cert_validate = src->cert_validate;
 	DEEPCOPY_VDUP(src->ca_file, new->ca_file);
 	new->legacy_split_netmask = src->legacy_split_netmask;
+	new->multiple_auth = src->multiple_auth;
+	new->auth_lifetime = src->auth_lifetime;
+	new->honor_auth_lifetime = src->honor_auth_lifetime;
 	new->cert_intermediates = src->cert_intermediates;
 	DEEPCOPY_VDUP(src->accept_dns_domain, new->accept_dns_domain);
 	new->redirect_period = src->redirect_period;
@@ -3982,6 +4049,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	DEEPCOPY_VDUP(src->addresspool, new->addresspool);
 	new->config_request = src->config_request;
 	DEEPCOPY_ADDRLIST(src->cfg_dns, new->cfg_dns);
+	DEEPCOPY_ADDRLIST(src->cfg_nbns, new->cfg_nbns);
 	DEEPCOPY_ADDRLIST(src->cfg_dhcp, new->cfg_dhcp);
 	DEEPCOPY_VDUP(src->application_version, new->application_version);
 	DEEPCOPY_VDUP(src->dns_domain, new->dns_domain);

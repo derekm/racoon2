@@ -207,6 +207,15 @@ C=$T/lsn-off.conf; base "$C"; v2dns lf 127.0.0.7 'legacy_split_netmask off;' >> 
 check "legacy_split_netmask off parses" ok "$C"
 C=$T/lsn-bad.conf; base "$C"; v2dns lb 127.0.0.8 'legacy_split_netmask maybe;' >> "$C"
 check "legacy_split_netmask refuses a non-boolean" fail "$C"
+# RFC 4739 / RFC 4478 / INTERNAL_IP4_NBNS knobs
+C=$T/ma-on.conf; base "$C"; v2dns ma 127.0.0.9 'multiple_auth on; auth_lifetime 3600; honor_auth_lifetime on;' >> "$C"
+check "multiple_auth / auth_lifetime / honor_auth_lifetime parse" ok "$C"
+C=$T/ma-bad.conf; base "$C"; v2dns mb 127.0.0.10 'multiple_auth maybe;' >> "$C"
+check "multiple_auth refuses a non-boolean" fail "$C"
+C=$T/al-zero.conf; base "$C"; v2dns az 127.0.0.11 'auth_lifetime 0;' >> "$C"
+check "auth_lifetime 0 is refused" fail "$C" 'auth_lifetime must be > 0'
+C=$T/nbns.conf; base "$C"; v2dns nb 127.0.0.12 'request { ip4_nbns; }; provide { nbns 192.0.2.53; };' >> "$C"
+check "request ip4_nbns / provide nbns parse" ok "$C"
 
 echo "samplecheck: $n checks, $fail failures"
 [ $fail -eq 0 ]

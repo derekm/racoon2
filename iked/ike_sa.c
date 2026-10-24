@@ -625,6 +625,7 @@ ikev2_sa_copy_negotiated_state(struct ikev2_sa *to, struct ikev2_sa *from)
 	 * (ikev2_sa_start_lifetime_timer) would not stop at notAfter and
 	 * could outlive the peer's certificate. */
 	to->due_time = from->due_time;
+	to->auth_due = from->auth_due;
 }
 
 /* Re-pin the RFC 4555 §3.8 NATD binding-report digests.  They are a
@@ -711,7 +712,8 @@ ikev2_sa_start_lifetime_timer(struct ikev2_sa *sa)
 				   PLOG_INTERR, PLOGLOC,
 				   "certificate expired already\n");
 			ikev2_sa_expire(sa, TRUE);
-			time_limit = 0;
+			ikev2_sa_arm_lifetime(sa, 0);
+			return;
 		} else {
 			timersub(&sa->due_time, &now, &diff);
 			if (time_limit == 0 || diff.tv_sec < time_limit) {
@@ -720,6 +722,24 @@ ikev2_sa_start_lifetime_timer(struct ikev2_sa *sa)
 					   "certificate expiration is earlier than life time\n");
 				time_limit = diff.tv_sec;
 			}
+		}
+	}
+	if (sa->auth_due.tv_sec > 0) {
+		/* RFC 4478: the responder asked us to reauthenticate by
+		 * auth_due; expire then so the SA is re-established with a
+		 * full IKE_AUTH (a rekey would not reauthenticate). */
+		struct timeval now;
+		long left;
+
+		gettimeofday(&now, 0);
+		left = (long)(sa->auth_due.tv_sec - now.tv_sec);
+		if (left < 1)
+			left = 1;
+		if (time_limit == 0 || left < time_limit) {
+			isakmp_log(sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+				   "AUTH_LIFETIME: IKE SA lifetime capped to "
+				   "%lds for reauthentication\n", left);
+			time_limit = (int)left;
 		}
 	}
 	ikev2_sa_arm_lifetime(sa, time_limit);

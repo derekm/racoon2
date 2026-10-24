@@ -169,6 +169,16 @@ resp_state0_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		TRACE((PLOGLOC, "peer supports MOBIKE\n"));
 		break;
 
+	case IKEV2_MULTIPLE_AUTH_SUPPORTED:
+		/* RFC 4739 s3: honoured only with multiple_auth on */
+		if (ike_sa->rmconf &&
+		    ikev2_multiple_auth(ike_sa->rmconf) == RCT_BOOL_ON) {
+			ike_sa->peer_multi_auth = 1;
+			TRACE((PLOGLOC, "peer supports multiple auth (16404)\n"));
+		}
+		break;
+
+
 	default:
 		/* else, unexpected unauthenticated notify */
 #if 1
@@ -340,6 +350,16 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		ike_sa->mobike_supported = 1;
 		TRACE((PLOGLOC, "peer supports MOBIKE\n"));
 		break;
+
+	case IKEV2_MULTIPLE_AUTH_SUPPORTED:
+		/* RFC 4739 s3: honoured only with multiple_auth on */
+		if (ike_sa->rmconf &&
+		    ikev2_multiple_auth(ike_sa->rmconf) == RCT_BOOL_ON) {
+			ike_sa->peer_multi_auth = 1;
+			TRACE((PLOGLOC, "peer supports multiple auth (16404)\n"));
+		}
+		break;
+
 
 	case IKEV2_CHILDLESS_IKEV2_SUPPORTED:
 		/* RFC 6023 s3: the initiator MAY send a modified (SA-less)
@@ -1074,6 +1094,49 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 		TRACE((PLOGLOC, "peer supports MOBIKE\n"));
 		return 0;
 
+	case IKEV2_MULTIPLE_AUTH_SUPPORTED:
+		/* RFC 4739 s3.1: the initiator's half of the capability
+		 * exchange, sent in its first IKE_AUTH request. */
+		if (is_safe && ike_sa && ike_sa->rmconf &&
+		    ikev2_multiple_auth(ike_sa->rmconf) == RCT_BOOL_ON)
+			ike_sa->peer_multi_auth = 1;
+		return 0;
+
+	case IKEV2_ANOTHER_AUTH_FOLLOWS:
+		/* RFC 4739 s3.2: this IKE_AUTH is the first of several
+		 * authentication rounds.  Recorded only with multiple_auth
+		 * on; responder_ike_sa_auth_cont decides (see
+		 * ikev2_multi_auth_decide).  With it off the notify is
+		 * ignored, matching a non-supporting responder. */
+		if (is_safe && ike_sa && ike_sa->rmconf &&
+		    ikev2_multiple_auth(ike_sa->rmconf) == RCT_BOOL_ON)
+			ike_sa->peer_another_auth = 1;
+		else
+			TRACE((PLOGLOC, "ANOTHER_AUTH_FOLLOWS ignored "
+			       "(multiple_auth off)\n"));
+		return 0;
+
+	case IKEV2_AUTH_LIFETIME: {
+		uint32_t secs;
+
+		if (!is_safe || !ike_sa)
+			return 0;
+		if (ikev2_auth_lifetime_parse(n, &secs) != 0) {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOWARN, PLOGLOC,
+				   "malformed AUTH_LIFETIME notify ignored\n");
+			return 0;
+		}
+		if (!ike_sa->is_initiator || !ike_sa->rmconf ||
+		    ikev2_honor_auth_lifetime(ike_sa->rmconf) != RCT_BOOL_ON) {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+				   "peer AUTH_LIFETIME %us (not honoured: "
+				   "responder, or honor_auth_lifetime off)\n", secs);
+			return 0;
+		}
+		ikev2_auth_lifetime_apply(ike_sa, secs);
+		return 0;
+	}
+
 	case IKEV2_UPDATE_SA_ADDRESSES:
 		if (!is_safe)
 			return 0;
@@ -1766,6 +1829,8 @@ ikev2_notify_type_str(int type)
 		S(COOKIE2);
 		S(NO_NATS_ALLOWED);
 		S(AUTH_LIFETIME);
+		S(MULTIPLE_AUTH_SUPPORTED);
+		S(ANOTHER_AUTH_FOLLOWS);
 		S(QCD_TOKEN);
 		S(USE_PPK);
 		S(PPK_IDENTITY);
@@ -1900,4 +1965,84 @@ ikev2_redirect_loop_check(int *count, time_t *window, time_t now,
 		return -1;
 	++*count;
 	return 0;
+}
+
+/*
+ * RFC 4478 s3: AUTH_LIFETIME notification data is a 4-octet unsigned
+ * number of seconds.  Returns 0 and stores it, -1 if malformed.
+ */
+int
+ikev2_auth_lifetime_parse(const struct ikev2payl_notify *n, uint32_t *secs)
+{
+	size_t tot, hdr;
+	const uint8_t *d;
+
+	if (!n || !secs)
+		return -1;
+	tot = get_payload_length(&n->header);
+	hdr = sizeof(struct ikev2payl_notify) + n->nh.spi_size;
+	if (tot < hdr || tot - hdr != 4)
+		return -1;
+	d = (const uint8_t *)n + hdr;
+	*secs = ((uint32_t)d[0] << 24) | ((uint32_t)d[1] << 16) |
+	    ((uint32_t)d[2] << 8) | d[3];
+	return 0;
+}
+
+/* initiator: cap this SA (and its rekeyed successors) at now + secs */
+void
+ikev2_auth_lifetime_apply(struct ikev2_sa *ike_sa, uint32_t secs)
+{
+	struct timeval now;
+	time_t due;
+
+	gettimeofday(&now, 0);
+	due = now.tv_sec + (secs ? (time_t)secs : 1);
+	if (ike_sa->auth_due.tv_sec == 0 || due < ike_sa->auth_due.tv_sec) {
+		ike_sa->auth_due.tv_sec = due;
+		ike_sa->auth_due.tv_usec = 0;
+	}
+	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		   "peer AUTH_LIFETIME %us: will reauthenticate\n", secs);
+	if (ike_sa->state == IKEV2_STATE_ESTABLISHED)
+		ikev2_sa_start_lifetime_timer(ike_sa);
+}
+
+/*
+ * RFC 4739 responder decision after a successfully verified IKE_AUTH
+ * round.  another = the request carried N(ANOTHER_AUTH_FOLLOWS) (only
+ * recorded with multiple_auth on); eap_configured = this remote can run
+ * an EAP second round; round = rounds already completed.
+ */
+int
+ikev2_multi_auth_decide(int cfg_on, int another, int eap_configured,
+			int round)
+{
+	if (!another)
+		return IKEV2_MA_SINGLE;
+	if (!cfg_on || round != 0)
+		return IKEV2_MA_REFUSE;	/* never advertised / a 3rd round */
+	if (!eap_configured)
+		return IKEV2_MA_REFUSE;	/* no second method to run */
+	return IKEV2_MA_SECOND_ROUND;
+}
+
+/* RFC 4478 responder: push N(AUTH_LIFETIME) when auth_lifetime is set */
+void
+ikev2_push_auth_lifetime(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl)
+{
+	int secs;
+	uint8_t d[4];
+
+	if (!ike_sa || !ike_sa->rmconf)
+		return;
+	secs = ikev2_auth_lifetime(ike_sa->rmconf);
+	if (secs <= 0)
+		return;
+	d[0] = (uint32_t)secs >> 24; d[1] = (uint32_t)secs >> 16;
+	d[2] = (uint32_t)secs >> 8; d[3] = (uint32_t)secs;
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0, IKEV2_AUTH_LIFETIME,
+						 d, sizeof(d)), TRUE);
+	TRACE((PLOGLOC, "sending AUTH_LIFETIME %d\n", secs));
 }

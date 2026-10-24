@@ -376,6 +376,15 @@ struct ikev2_sa {
 				   eap_round_pending reason in ikev2_eap_round.c) */
 	int frag_supported;		/* IKEv2 fragmentation (RFC7383) */
 	int mobike_supported;		/* RFC 4555 */
+	/* RFC 4739 multiple authentication (only with multiple_auth on) */
+	int peer_multi_auth;		/* peer sent MULTIPLE_AUTH_SUPPORTED */
+	int peer_another_auth;		/* its IKE_AUTH had ANOTHER_AUTH_FOLLOWS */
+	int multi_auth_round;		/* responder: 1 = first round done,
+					 * the next IKE_AUTH starts round 2 */
+	/* RFC 4478: absolute deadline from a received N(AUTH_LIFETIME)
+	 * (initiator, honor_auth_lifetime on); 0 = none.  Inherited by SAs
+	 * rekeyed from this one, so rekeying cannot outlive it. */
+	struct timeval auth_due;
 	int mobike_update;		/* UPDATE_SA_ADDRESSES seen */
 	int peer_sent_redirect;		/* RFC 5685: initiator offered N(16406)
 					 * in IKE_SA_INIT; responder MAY answer
@@ -549,6 +558,7 @@ struct ikev2_child_param {
 	int cfg_application_version;
 	int cfg_ip4_dns;
 	int cfg_ip6_dns;
+	int cfg_ip4_nbns;		/* peer wants INTERNAL_IP4_NBNS (4) */
 	int cfg_ip4_dhcp;
 	int cfg_ip6_dhcp;
 	int cfg_mip6_home_prefix;

@@ -294,6 +294,8 @@ ip6			{ DP; return(IP6); }
 ip			{ DP; return(IP); }
 ip4_dns			{ DP; return(IP4_DNS); }
 ip6_dns			{ DP; return(IP6_DNS); }
+ip4_nbns		{ DP; return(IP4_NBNS); }
+nbns			{ DP; return(NBNS); }
 ip4_dhcp		{ DP; return(IP4_DHCP); }
 ip6_dhcp		{ DP; return(IP6_DHCP); }
 dns			{ DP; return(DNS); }
@@ -396,6 +398,9 @@ redirect_to		{ DP; return(REDIRECT_TO); }
 cert_validate		{ DP; return(CERT_VALIDATE); }
 ca_file			{ DP; return(CA_FILE); }
 legacy_split_netmask		{ DP; return(LEGACY_SPLIT_NETMASK); }
+multiple_auth		{ DP; return(MULTIPLE_AUTH); }
+honor_auth_lifetime	{ DP; return(HONOR_AUTH_LIFETIME); }
+auth_lifetime		{ DP; return(AUTH_LIFETIME); }
 cert_intermediates		{ DP; return(CERT_INTERMEDIATES); }
 accept_dns_domain		{ DP; return(ACCEPT_DNS_DOMAIN); }
 redirect_period		{ DP; return(REDIRECT_PERIOD); }

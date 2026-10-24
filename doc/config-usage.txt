@@ -901,6 +901,41 @@ remote
 		accepted from an earlier reply is kept.
 		default is unset: no pushed domain is accepted.
 
+	multiple_auth (on|off) ;
+		It is valid for the ikev2 directive.
+		RFC 4739 multiple authentication.  When on, the responder
+		advertises N(MULTIPLE_AUTH_SUPPORTED) in IKE_SA_INIT and the
+		initiator in its first IKE_AUTH.  As responder, a verified
+		first round (signature or PSK) that carries
+		N(ANOTHER_AUTH_FOLLOWS) is answered with IDr, [CERT] and AUTH
+		only, and the next IKE_AUTH (IDi, no AUTH) runs an EAP second
+		round as configured for this remote (kmp_auth_method must
+		include eap, with its RADIUS server).  The child SA is
+		created after the second round from the first round's offer.
+		A second round that is not EAP, a third round, or
+		ANOTHER_AUTH_FOLLOWS on a remote without EAP is refused
+		with AUTHENTICATION_FAILED.  The round-one peer certificate
+		is bound to the round-one IDi; round two binds only the
+		EAP identity.  The initiator does not run multiple rounds.
+		When off, neither notify is sent and received ones are
+		ignored.
+		default is off.
+
+	auth_lifetime (number) ;
+		It is valid for the ikev2 directive (responder).
+		RFC 4478: seconds sent as N(AUTH_LIFETIME) in the final
+		IKE_AUTH response, asking the initiator to
+		reauthenticate before they pass.  Must be > 0.
+		default is unset: not sent.
+
+	honor_auth_lifetime (on|off) ;
+		It is valid for the ikev2 directive (initiator).
+		When on, a received N(AUTH_LIFETIME) caps the IKE SA's
+		hard lifetime (and that of SAs rekeyed from it) so the SA
+		expires and is re-established with a full IKE_AUTH before
+		the responder's deadline.  When off it is only logged.
+		default is off.
+
 	legacy_split_netmask (on|off) ;
 		It is valid for the ikev2 directive (responder / CP server).
 		Interoperability option for old clients that expect one
@@ -971,7 +1006,10 @@ remote
 		  dhcp;
 		  ip4_dhcp;
 		  ip6_dhcp;
+		  ip4_nbns;
 		  application_version;
+		ip4_nbns requests INTERNAL_IP4_NBNS (RFC 7296 s3.15.1);
+		it is never requested unless listed.
 		dns is equivalent to specifying both ip4_dns and
 		ip6_dns; dhcp is equivalent to specifying both
 		ip4_dhcp and ip6_dhcp;
@@ -983,7 +1021,12 @@ remote
 		  addresspool (addresspool_index) ;
 		  dhcp (address) ;
 		  dns (address) ;
+		  nbns (address) ;
 		  application_version (string) ;
+		nbns sends INTERNAL_IP4_NBNS (WINS) servers to a peer that
+		requests them (IPv4 entries only; one per request), and
+		lists attribute 4 in SUPPORTED_ATTRIBUTES.  Unset (the
+		default) never sends it.
 
 	dpd (boolean) ;
 		(available with IKEv1 only)

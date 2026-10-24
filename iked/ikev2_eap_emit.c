@@ -52,6 +52,14 @@ ikev2_eap_emit_request(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 	if (!ike_sa || !payl || !eap_req || !eap_req->v)
 		return -1;
 
+	/* RFC 4739 s2: in a second authentication round the responder has
+	 * already sent (and authenticated) IDr in round one; its EAP
+	 * responses carry the EAP payload only. */
+	if (ike_sa->multi_auth_round) {
+		ikev2_payloads_push(payl, IKEV2_PAYLOAD_EAP, eap_req, FALSE);
+		return 0;
+	}
+
 	if (ike_sa->id_r) {
 		id_r = ike_sa->id_r;
 	} else {

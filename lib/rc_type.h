@@ -158,6 +158,7 @@ typedef enum {
 #define	RCF_REQ_IP6_ADDRESS	0x0080
 #define	RCF_REQ_DNS_DOMAIN	0x0100
 #define	RCF_REQ_DNSSEC_TA	0x0200
+#define	RCF_REQ_IP4_NBNS	0x0400
 
 /*
  * structures for global use
@@ -451,6 +452,22 @@ struct rcf_kmp {
 	 * offer.  Max 7 methods, distinct per RFC 9370 s2.2.1 (a repeated
 	 * Transform ID over the selection, except NONE, is refused). */
 	struct rc_alglist *addke_offer;
+	/* RFC 4739 multiple authentication (on|off, default off): on =
+	 * exchange N(MULTIPLE_AUTH_SUPPORTED) in IKE_SA_INIT and, as
+	 * responder, accept a signature first round flagged with
+	 * N(ANOTHER_AUTH_FOLLOWS) followed by an EAP second round (needs eap
+	 * in kmp_auth_method).  Off = neither notify is sent or honoured. */
+	rc_type multiple_auth;
+	/* RFC 4478 responder: seconds sent as N(AUTH_LIFETIME) in the final
+	 * IKE_AUTH response; 0/unset = do not send. */
+	int auth_lifetime;
+	/* RFC 4478 initiator (on|off, default off): on = a received
+	 * N(AUTH_LIFETIME) caps this IKE SA (and SAs rekeyed from it), so it
+	 * expires and is re-established with full authentication in time. */
+	rc_type honor_auth_lifetime;
+	/* provide { nbns ADDR; }: INTERNAL_IP4_NBNS (RFC 7296 s3.15.1) for a
+	 * peer that requests it; unset = never sent. */
+	struct rc_addrlist *cfg_nbns;
 	};
 
 /* selector info */

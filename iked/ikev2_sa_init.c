@@ -1105,6 +1105,17 @@ responder_state0_after_gen(int rc, void *arg)
 				    TRUE);
 	}
 
+	/* RFC 4739 s3.1: the responder advertises multiple authentication
+	 * in its IKE_SA_INIT response (multiple_auth on only). */
+	if (ikev2_multiple_auth(ike_sa->rmconf) == RCT_BOOL_ON) {
+		TRACE((PLOGLOC, "advertising MULTIPLE_AUTH_SUPPORTED (16404)\n"));
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_MULTIPLE_AUTH_SUPPORTED,
+							 0, 0),
+				    TRUE);
+	}
+
 	pkt = ikev2_packet_construct(IKEV2EXCH_IKE_SA_INIT, IKEV2FLAG_RESPONSE,
 				     0, ike_sa, &ctx->payl);
 	if (!pkt) {
