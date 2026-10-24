@@ -385,6 +385,8 @@ struct ikev2_sa {
 	 * (initiator, honor_auth_lifetime on); 0 = none.  Inherited by SAs
 	 * rekeyed from this one, so rekeying cannot outlive it. */
 	struct timeval auth_due;
+	int reauth_expired;		/* auth_due reached: expire deletes,
+					 * never rekeys (RFC 4478) */
 	int mobike_update;		/* UPDATE_SA_ADDRESSES seen */
 	int peer_sent_redirect;		/* RFC 5685: initiator offered N(16406)
 					 * in IKE_SA_INIT; responder MAY answer

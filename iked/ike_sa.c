@@ -37,6 +37,7 @@
 #include <sys/types.h>
 #include <limits.h>
 #include <inttypes.h>
+#include <netdb.h>
 
 #include "gcmalloc.h"
 #include "racoon.h"
@@ -782,10 +783,56 @@ ikev2_sa_lifetime_callback(void *param)
 	ike_sa = (struct ikev2_sa *)param;
 	TRACE((PLOGLOC, "lifetime expired %p\n", ike_sa));
 	SCHED_KILL(ike_sa->expire_timer);
+	if (ike_sa->auth_due.tv_sec > 0)
+		ike_sa->reauth_expired = 1;
 	ikev2_sa_expire(ike_sa, TRUE);
 	child_sa = ikev2_choose_pending_child(ike_sa, TRUE);
 	if (child_sa)
 		ikev2_wakeup_child_sa(child_sa);
+}
+
+/*
+ * RFC 4478 reauthentication by the initiator: close the IKE SA (and its
+ * children) and start a fresh IKE_SA_INIT + IKE_AUTH for each selector
+ * that had a mature child.  The old SA goes first so the new child cannot
+ * ride it as a CREATE_CHILD_SA.
+ */
+#define	REAUTH_MAX_SEL	8
+static void
+ikev2_sa_reauth(struct ikev2_sa *ike_sa)
+{
+	struct ikev2_child_sa *c;
+	char sel[REAUTH_MAX_SEL][128];
+	char host[NI_MAXHOST];
+	int n = 0, i, have_host = 0;
+
+	if (ike_sa->is_initiator && ike_sa->remote &&
+	    getnameinfo(ike_sa->remote, SA_LEN(ike_sa->remote), host,
+			sizeof(host), NULL, 0, NI_NUMERICHOST) == 0)
+		have_host = 1;
+	for (c = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+	     have_host && !IKEV2_CHILD_LIST_END(c) && n < REAUTH_MAX_SEL;
+	     c = IKEV2_CHILD_LIST_NEXT(c)) {
+		if (c->state != IKEV2_CHILD_STATE_MATURE || !c->is_initiator ||
+		    !c->selector || !c->selector->sl_index ||
+		    c->selector->sl_index->l >= sizeof(sel[0]))
+			continue;
+		memcpy(sel[n], c->selector->sl_index->v,
+		       c->selector->sl_index->l);
+		sel[n][c->selector->sl_index->l] = '\0';
+		for (i = 0; i < n; i++)
+			if (strcmp(sel[i], sel[n]) == 0)
+				break;
+		if (i == n)
+			n++;
+	}
+	ikev2_sa_expire(ike_sa, TRUE);
+	for (i = 0; i < n; i++) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "AUTH_LIFETIME: re-establishing selector %s with a "
+			   "full IKE_SA_INIT\n", sel[i]);
+		(void)isakmp_force_initiate(sel[i], host);
+	}
 }
 
 static void
@@ -798,6 +845,19 @@ ikev2_sa_lifetime_soft_callback(void *param)
 	TRACE((PLOGLOC, "soft lifetime expired %p\n", ike_sa));
 	SCHED_KILL(ike_sa->soft_expire_timer);
 	ike_sa->soft_expired = TRUE;
+	if (ike_sa->auth_due.tv_sec > 0 &&
+	    ike_sa->state == IKEV2_STATE_ESTABLISHED) {
+		/* RFC 4478 s2: a rekey keeps the old authentication, so it
+		 * cannot satisfy AUTH_LIFETIME.  Close this IKE SA and its
+		 * children before the deadline; the next packet on the
+		 * policy re-establishes it with IKE_SA_INIT + IKE_AUTH. */
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
+			   "AUTH_LIFETIME: reauthenticating (closing the IKE SA "
+			   "instead of rekeying)\n");
+		ike_sa->reauth_expired = 1;
+		ikev2_sa_reauth(ike_sa);
+		return;
+	}
 	/* RFC 6023: a childless IKE SA is a legitimate SA with zero
 	 * children and is rekeyed like any other (child_created counts
 	 * only children this side allocated, 0 on a childless responder) */
@@ -871,8 +931,10 @@ ikev2_sa_expire(struct ikev2_sa *ike_sa, int send_delete)
 		ikev2_abort(ike_sa, ETIMEDOUT);
 		break;
 	case IKEV2_STATE_ESTABLISHED:
-		if (ike_sa->child_created > 0 ||
-		    (ike_sa->childless_established && !ike_sa->grace_expired)) {
+		if (!ike_sa->reauth_expired &&
+		    (ike_sa->child_created > 0 ||
+		     (ike_sa->childless_established &&
+		      !ike_sa->grace_expired))) {
 			if (!ike_sa->rekey_inprogress)
 				ikev2_rekey_ikesa_initiate(ike_sa);
 		} else {
