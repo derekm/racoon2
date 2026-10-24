@@ -65,6 +65,22 @@ main(void)
 		return 1;
 	}
 
+	printf("**Test for evloop_wait_rw (write readiness).**\n");
+	FD_ZERO(&rfds);
+	{
+		fd_set wfds;
+
+		FD_ZERO(&wfds);
+		FD_SET(p[1], &wfds);	/* the pipe write end is writable */
+		tv.tv_sec = 1;
+		tv.tv_usec = 0;
+		n = evloop_wait_rw(p[1] + 1, &rfds, &wfds, &tv);
+		if (n < 1 || !FD_ISSET(p[1], &wfds) || FD_ISSET(p[1], &rfds)) {
+			printf("write-readiness n=%d\n", n);
+			return 1;
+		}
+	}
+
 	printf("**Test for evloop_wait unregister.**\n");
 	FD_ZERO(&rfds);
 	tv.tv_sec = 0;

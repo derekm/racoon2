@@ -60,20 +60,31 @@ ctl_add(int fd, struct epoll_event *ev)
 int
 evloop_wait(int nfds, fd_set *rfds, struct timeval *timeout)
 {
+	return evloop_wait_rw(nfds, rfds, NULL, timeout);
+}
+
+int
+evloop_wait_rw(int nfds, fd_set *rfds, fd_set *wfds, struct timeval *timeout)
+{
 	struct epoll_event ev, evs[64];
 	int i, n, ms, max;
-	fd_set want;
+	fd_set want_r, want_w;
 
 	if (epfd < 0 && evloop_init() < 0)
-		return select(nfds, rfds, NULL, NULL, timeout);
+		return select(nfds, rfds, wfds, NULL, timeout);
 
-	want = *rfds;
+	want_r = *rfds;
+	if (wfds)
+		want_w = *wfds;
+	else
+		FD_ZERO(&want_w);
 	max = nfds < FD_SETSIZE ? nfds : FD_SETSIZE;
 	for (i = 0; i < max; i++) {
-		int need = FD_ISSET(i, &want);
+		int need = FD_ISSET(i, &want_r) || FD_ISSET(i, &want_w);
 		int have = live_inited && FD_ISSET(i, &live);
 
-		ev.events = EPOLLIN;
+		ev.events = (FD_ISSET(i, &want_r) ? EPOLLIN : 0) |
+			    (FD_ISSET(i, &want_w) ? EPOLLOUT : 0);
 		ev.data.fd = i;
 		if (need) {
 			/*
@@ -109,13 +120,20 @@ evloop_wait(int nfds, fd_set *rfds, struct timeval *timeout)
 		ms = -1;
 	n = epoll_wait(epfd, evs, 64, ms);
 	FD_ZERO(rfds);
+	if (wfds)
+		FD_ZERO(wfds);
 	if (n < 0)
 		return n;
 	for (i = 0; i < n; i++) {
 		int fd = evs[i].data.fd;
 
-		if (fd >= 0 && fd < FD_SETSIZE)
-			FD_SET(fd, rfds);
+		if (fd >= 0 && fd < FD_SETSIZE) {
+			if ((evs[i].events & EPOLLIN) && FD_ISSET(fd, &want_r))
+				FD_SET(fd, rfds);
+			if (wfds && (evs[i].events & EPOLLOUT) &&
+			    FD_ISSET(fd, &want_w))
+				FD_SET(fd, wfds);
+		}
 	}
 	return n;
 }
