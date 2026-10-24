@@ -87,7 +87,10 @@ iked_tcp_dispatch(rc_vchar_t *pkt, struct sockaddr *remote,
 	return ikev2_input(pkt, remote, local);
 }
 
-/* RFC 9329: is any configured remote transporting IKE over TCP? */
+/* RFC 9329: is any configured remote transporting IKE over TCP?  Walks both
+ * the named-remote list and the `default` block's remote -- a config like
+ * `default { remote { ikev2 { tcp_encap on } } }` (the stock shape) holds the
+ * knob at rcf_default_head->remote, not in the named list. */
 static int
 iked_tcp_encap_enabled(void)
 {
@@ -96,6 +99,9 @@ iked_tcp_encap_enabled(void)
 	for (r = rcf_remote_head; r; r = r->next)
 		if (ikev2_tcp_encap(r) == RCT_BOOL_ON)
 			return 1;
+	if (rcf_default_head != NULL && rcf_default_head->remote != NULL &&
+	    ikev2_tcp_encap(rcf_default_head->remote) == RCT_BOOL_ON)
+		return 1;
 	return 0;
 }
 
