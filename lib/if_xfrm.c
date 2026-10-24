@@ -1304,6 +1304,12 @@ rcpfk_send_getspi(struct rcpfk_msg *rc)
 	spi->info.reqid = rc->reqid;
 	spi->min = rc_spirange_min;
 	spi->max = rc_spirange_max;
+	/* the larval SA it returns must carry the same mark/if_id the later
+	 * UPDSA/NEWSA installs, or xfrm_state_update cannot locate it
+	 * (larval mark 0 vs UPDSA mark = ESRCH) — marked children fail to
+	 * install otherwise. */
+	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
+		return -1;
 	pending_set(rc, XFRM_MSG_ALLOCSPI, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
 }
@@ -1354,9 +1360,11 @@ rcpfk_send_delete(struct rcpfk_msg *rc)
 		    sizeof(saddr)))
 			return -1;
 	}
-	/* XFRM-native: mark/if_id are part of the SA key, so DEL must carry the
-	 * same XFRMA_MARK / XFRMA_IF_ID the SA was added with, or the kernel
-	 * cannot select the marked tunnel to delete. */
+	/* XFRM-native: mark is part of the SA state lookup key (xfrm_state_lookup
+	 * matches mark + spi + daddr + proto + family), so DEL must carry the
+	 * XFRMA_MARK the SA was added with, or the kernel cannot select the
+	 * marked tunnel to delete. (if_id is NOT part of state lookup; emitting
+	 * it here is harmless and keeps DEL identical to ADD.) */
 	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
 		return -1;
 	pending_set(rc, XFRM_MSG_DELSA, n->nlmsg_seq);
@@ -1520,6 +1528,11 @@ rcpfk_send_spddelete2(struct rcpfk_msg *rc)
 	memset(id, 0, sizeof(*id));
 	id->index = rc->slid;
 	id->dir = dir_to_x(rc->dir);
+	/* the kernel deletes a policy by index AND mark/if_id (xfrm_policy_byid
+	 * matches pol->index && if_id && mark); spmd deletes by index, so a
+	 * marked policy is -ENOENT without these attrs. */
+	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
+		return -1;
 	pending_set(rc, XFRM_MSG_DELPOLICY, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
 }
@@ -1541,6 +1554,10 @@ rcpfk_send_spdget(struct rcpfk_msg *rc)
 	memset(id, 0, sizeof(*id));
 	id->index = rc->slid;
 	id->dir = dir_to_x(rc->dir);
+	/* GETPOLICY by index also matches mark/if_id; carry them so a marked
+	 * policy is visible to spmd's by-index fetch. */
+	if (add_xfrm_mark_ifid_attrs(n, sizeof(buf), rc))
+		return -1;
 	pending_set(rc, XFRM_MSG_GETPOLICY, n->nlmsg_seq);
 	return xfrm_nl_send(rc, n);
 }
