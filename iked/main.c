@@ -51,6 +51,7 @@
 #  endif
 #endif
 #include <sys/stat.h>
+#include <netinet/in.h>
 
 #include <inttypes.h>
 
@@ -84,6 +85,18 @@ iked_tcp_dispatch(rc_vchar_t *pkt, struct sockaddr *remote,
 {
 	(void)arg;
 	return ikev2_input(pkt, remote, local);
+}
+
+/* RFC 9329: is any configured remote transporting IKE over TCP? */
+static int
+iked_tcp_encap_enabled(void)
+{
+	struct rcf_remote *r;
+
+	for (r = rcf_remote_head; r; r = r->next)
+		if (ikev2_tcp_encap(r) == RCT_BOOL_ON)
+			return 1;
+	return 0;
 }
 
 const char *racoon_config_path = RACOON_CONF;
@@ -575,6 +588,27 @@ iked_mainloop(void)
 		if (!tcp_reg_inited) {
 			tcp_reg_inited = 1;
 			tcp_srv_init(iked_tcp_dispatch, NULL);
+			if (iked_tcp_encap_enabled()) {
+				/* Open the IKE-over-TCP listener.  Non-fatal on
+				 * failure so a bind problem never stops iked
+				 * (the UDP path stays authoritative). */
+				struct sockaddr_in a;
+
+				memset(&a, 0, sizeof(a));
+				a.sin_family = AF_INET;
+				a.sin_addr.s_addr = htonl(INADDR_ANY);
+				if (tcp_srv_open_listener(
+					(struct sockaddr *)&a,
+					IKEV2_TCP_PORT) < 0)
+					plog(PLOG_INTERR, PLOGLOC, 0,
+					     "failed to open IKE-over-TCP "
+					     "listener on port %d: %s\n",
+					     IKEV2_TCP_PORT, strerror(errno));
+				else
+					plog(PLOG_INFO, PLOGLOC, 0,
+					     "IKE-over-TCP listener on port %d\n",
+					     IKEV2_TCP_PORT);
+			}
 		}
 	}
 
