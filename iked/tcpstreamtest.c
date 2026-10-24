@@ -157,18 +157,27 @@ main(void)
 		int k;
 
 		/* originator writes a fresh prefix+record stream one byte at a
-		 * time; the responder's read() will observe arbitrary splits,
-		 * including inside the Len and the 4-octet marker. */
+		 * time AND reads each byte back individually, so every field
+		 * byte arrives as its own read(): a split falls inside the Len
+		 * and the 4-octet marker, not just between records. */
 		memset(&ob, 0, sizeof(ob)); tcp_stream_begin(&ob);
 		tcp_record_ike(&ob, payload, sizeof(payload));
-		for (k = 0; k < (int)ob.stream_len; k++)
-			if (write(sv[0], ob.stream + k, 1) != 1) {
-				printf("FAIL: byte-at-a-time write\n");
-				++fails; break;
-			}
 		tcp_decap_init(&d, 1); n_frame = 0;
-		if (drain(&d, sv[1], 0) != 0 || n_frame != 1 ||
-		    glen[0] != 4 || gesp[0] != TCP_FRAME_IKE || got[0][3] != 0xef)
+		for (k = 0; k < (int)ob.stream_len && !fails; k++) {
+			unsigned char b;
+
+			if (write(sv[0], ob.stream + k, 1) != 1) {
+				printf("FAIL: byte-at-a-time write\n"); ++fails; break;
+			}
+			if (read(sv[1], &b, 1) != 1) {
+				printf("FAIL: byte-at-a-time read\n"); ++fails; break;
+			}
+			if (tcp_decap_feed(&d, &b, 1, collect, NULL) != 0) {
+				printf("FAIL: byte-at-a-time feed\n"); ++fails; break;
+			}
+		}
+		if (!fails && (n_frame != 1 || glen[0] != 4 ||
+			       gesp[0] != TCP_FRAME_IKE || got[0][3] != 0xef))
 			{ printf("FAIL: byte-at-a-time decode\n"); ++fails; }
 		if (!fails)
 			printf("ok: byte-at-a-time stream decoded (split in every field)\n");
