@@ -94,6 +94,8 @@
 # endif
 #include "crypto_impl.h"
 
+#include "ikev2_tcp_srv.h"
+#include "ikev2_tcp_stream.h"
 #include "ike_conf.h"
 #include "ratelimit.h"
 
@@ -2339,6 +2341,22 @@ isakmp_transmit_noretry(struct transmit_info *info, rc_vchar_t *pkt,
 	int len;
 
 	TRACE((PLOGLOC, "transmit %p\n", info));
+
+	/* RFC 9329: if this IKE message belongs to a TCP stream, reply on
+	 * that stream.  The codec adds the framing (Len|marker|message), so
+	 * do NOT run the UDP NAT-T marker path (natt_set_non_esp_marker)
+	 * below. */
+	{
+		struct tcp_stream *ts = tcp_srv_find(dest, src);
+
+		if (ts != NULL) {
+			if (tcp_stream_send(ts, pkt->v, pkt->l) < 0)
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				     "IKE-over-TCP reply failed: %s\n",
+				     strerror(errno));
+			return;
+		}
+	}
 
 	sock = isakmp_find_socket(src);
 	if (sock == -1) {

@@ -114,6 +114,28 @@ main(void)
 	CHECK(tcp_srv_accept_pending() == 2 && tcp_srv_count() == 2,
 	      "accept: 2 streams registered");
 
+	/* find: the registered stream resolves by (client src, listener local) */
+	{
+		struct sockaddr_storage csrc;
+		struct sockaddr_in bogus;
+		struct tcp_stream *f;
+		socklen_t cl = sizeof(csrc);
+
+		memset(&csrc, 0, sizeof(csrc));
+		CHECK(getsockname(cli1->fd, (struct sockaddr *)&csrc, &cl) == 0,
+		      "find: got client source addr");
+		f = tcp_srv_find((struct sockaddr *)&csrc,
+				 (struct sockaddr *)&la);
+		CHECK(f != NULL, "find: stream found by (client src, listener local)");
+		memset(&bogus, 0, sizeof(bogus));
+		bogus.sin_family = AF_INET;
+		bogus.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		bogus.sin_port = htons(9999);
+		CHECK(tcp_srv_find((struct sockaddr *)&csrc,
+				   (struct sockaddr *)&bogus) == NULL,
+		      "find: no match on wrong local addr");
+	}
+
 	FD_ZERO(&rfds); FD_ZERO(&wfds);
 	CHECK(tcp_srv_fdset(&rfds, &wfds) > lfd &&
 	      FD_ISSET(lfd, &rfds), "fdset: listener is readable");

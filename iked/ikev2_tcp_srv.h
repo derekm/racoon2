@@ -60,4 +60,10 @@ void tcp_srv_process(const fd_set *rfds, const fd_set *wfds);
 /* Number of live streams (for diagnostics/tests). */
 int tcp_srv_count(void);
 
+/* Find the registered stream whose peer == remote and local source == local
+ * (address+port, family-exact).  NULL if none.  This is how the transmit path
+ * routes a reply back onto the same TCP stream an IKE message arrived on. */
+struct tcp_stream *tcp_srv_find(const struct sockaddr *remote,
+				const struct sockaddr *local);
+
 #endif /* _IKEV2_TCP_SRV_H_ */

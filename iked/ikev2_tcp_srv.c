@@ -231,3 +231,46 @@ tcp_srv_count(void)
 		++n;
 	return n;
 }
+
+/* Family-exact address+port equality (the stream's stored sockaddr_storage
+ * vs a transmit-path src/dest sockaddr). */
+static int
+sa_addr_equal(const struct sockaddr *a, const struct sockaddr *b)
+{
+	if (a->sa_family != b->sa_family)
+		return 0;
+	switch (a->sa_family) {
+	case AF_INET:
+	{
+		const struct sockaddr_in *x = (const struct sockaddr_in *)a;
+		const struct sockaddr_in *y = (const struct sockaddr_in *)b;
+
+		return x->sin_addr.s_addr == y->sin_addr.s_addr &&
+		    x->sin_port == y->sin_port;
+	}
+	case AF_INET6:
+	{
+		const struct sockaddr_in6 *x = (const struct sockaddr_in6 *)a;
+		const struct sockaddr_in6 *y = (const struct sockaddr_in6 *)b;
+
+		return memcmp(&x->sin6_addr, &y->sin6_addr,
+			      sizeof(x->sin6_addr)) == 0 &&
+		    x->sin6_port == y->sin6_port;
+	}
+	}
+	return 0;
+}
+
+struct tcp_stream *
+tcp_srv_find(const struct sockaddr *remote, const struct sockaddr *local)
+{
+	struct tcp_conn *c;
+
+	for (c = conns; c; c = c->next)
+		if (sa_addr_equal((const struct sockaddr *)&c->st->remote,
+				  remote) &&
+		    sa_addr_equal((const struct sockaddr *)&c->st->local,
+				  local))
+			return c->st;
+	return NULL;
+}
