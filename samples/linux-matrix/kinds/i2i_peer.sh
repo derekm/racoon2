@@ -176,10 +176,12 @@ i2i_charon_run() {
 		[ -f "$_sys" ] && echo "include $_sys"
 		cat <<SCEOF
 charon {
+${I2I_CHARON_EXTRA:-}
 	plugins {
 		vici {
 			socket = $I2I_VICI_URI
 		}
+${I2I_CHARON_PLUGINS_EXTRA:-}
 	}
 	filelog {
 		r2row {

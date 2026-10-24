@@ -20,6 +20,7 @@ CASES_FILE=${R2_CASES:-$HERE/cases.tsv}
 . "$HERE/kinds/i2ike.sh"
 . "$HERE/kinds/i2ixfrm.sh"
 . "$HERE/kinds/i2i_peer.sh"
+. "$HERE/kinds/i2ifeat.sh"
 . "$HERE/kinds/i2ike_drop.sh"
 . "$HERE/kinds/i2ike_drop576.sh"
 . "$HERE/kinds/i2ike_dup.sh"
