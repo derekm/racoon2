@@ -243,6 +243,7 @@ addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
 	ike_spmif.$(OBJEXT) schedule.$(OBJEXT) ratelimit.$(OBJEXT) \
 	script.$(OBJEXT) rtsock.$(OBJEXT) \
+	ikev2_tcp.$(OBJEXT) ikev2_tcp_stream.$(OBJEXT) ikev2_tcp_srv.$(OBJEXT) \
 	$(addtest_ikev1) $(addtest_ikev2) evloop_epoll.$(OBJEXT) \
 	$(addtest_admin)
 else
@@ -253,6 +254,7 @@ addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
 	ike_spmif.$(OBJEXT) schedule.$(OBJEXT) ratelimit.$(OBJEXT) \
 	script.$(OBJEXT) rtsock.$(OBJEXT) \
+	ikev2_tcp.$(OBJEXT) ikev2_tcp_stream.$(OBJEXT) ikev2_tcp_srv.$(OBJEXT) \
 	$(addtest_ikev1) $(addtest_ikev2) evloop_select.$(OBJEXT) \
 	$(addtest_admin)
 endif
