@@ -2012,18 +2012,27 @@ ikev2_auth_lifetime_apply(struct ikev2_sa *ike_sa, uint32_t secs)
 /*
  * RFC 4739 responder decision after a successfully verified IKE_AUTH
  * round.  another = the request carried N(ANOTHER_AUTH_FOLLOWS) (only
- * recorded with multiple_auth on); eap_configured = this remote can run
- * an EAP second round; round = rounds already completed.
+ * recorded with multiple_auth on); peer_supported = the initiator sent
+ * MULTIPLE_AUTH_SUPPORTED in IKE_SA_INIT (s2.1: both peers signal, so a
+ * flag without it is refused, as the initiator refuses the mirror case);
+ * can_second = this remote can run a second round (EAP, or a PSK round
+ * for its multi_auth_second_id); required = policy names a second
+ * identity (multi_auth_second_id), so a single round is not enough --
+ * the mirror of the initiator refusing a peer without support; round =
+ * rounds already completed.
  */
 int
-ikev2_multi_auth_decide(int cfg_on, int another, int eap_configured,
-			int round)
+ikev2_multi_auth_decide(int cfg_on, int peer_supported, int another,
+			int can_second, int required, int round)
 {
 	if (!another)
-		return IKEV2_MA_SINGLE;
+		return (cfg_on && required && round == 0) ?
+		    IKEV2_MA_REFUSE : IKEV2_MA_SINGLE;
 	if (!cfg_on || round != 0)
 		return IKEV2_MA_REFUSE;	/* never advertised / a 3rd round */
-	if (!eap_configured)
+	if (!peer_supported)
+		return IKEV2_MA_REFUSE;	/* s2.1: peer never signalled */
+	if (!can_second)
 		return IKEV2_MA_REFUSE;	/* no second method to run */
 	return IKEV2_MA_SECOND_ROUND;
 }

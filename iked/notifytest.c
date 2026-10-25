@@ -926,18 +926,27 @@ main(int argc, char *argv[])
 		   "ANOTHER_AUTH_FOLLOWS") == 0, "16405 named");
 
 		/* decision table */
-		ck(ikev2_multi_auth_decide(1, 0, 1, 0) == IKEV2_MA_SINGLE,
+		/* (cfg_on, peer_supported, another, can_second, required, round) */
+		ck(ikev2_multi_auth_decide(1, 0, 0, 1, 1, 0) == IKEV2_MA_REFUSE,
+		   "decide: second id required, peer ran a single round -> refuse");
+		ck(ikev2_multi_auth_decide(0, 0, 0, 1, 1, 0) == IKEV2_MA_SINGLE,
+		   "decide: option off ignores a configured second id");
+		ck(ikev2_multi_auth_decide(1, 1, 1, 1, 1, 0) == IKEV2_MA_SECOND_ROUND,
+		   "decide: required + flagged -> second round");
+		ck(ikev2_multi_auth_decide(1, 1, 0, 1, 0, 0) == IKEV2_MA_SINGLE,
 		   "decide: no ANOTHER_AUTH_FOLLOWS -> single round");
-		ck(ikev2_multi_auth_decide(0, 0, 0, 0) == IKEV2_MA_SINGLE,
+		ck(ikev2_multi_auth_decide(0, 0, 0, 0, 0, 0) == IKEV2_MA_SINGLE,
 		   "decide: off, nothing flagged -> single round");
-		ck(ikev2_multi_auth_decide(1, 1, 1, 0) == IKEV2_MA_SECOND_ROUND,
-		   "decide: on + flagged + eap -> second round");
-		ck(ikev2_multi_auth_decide(1, 1, 0, 0) == IKEV2_MA_REFUSE,
-		   "decide: flagged but no EAP second method -> refuse");
-		ck(ikev2_multi_auth_decide(0, 1, 1, 0) == IKEV2_MA_REFUSE,
+		ck(ikev2_multi_auth_decide(1, 1, 1, 1, 0, 0) == IKEV2_MA_SECOND_ROUND,
+		   "decide: on + peer support + flagged + second method -> second round");
+		ck(ikev2_multi_auth_decide(1, 1, 1, 0, 0, 0) == IKEV2_MA_REFUSE,
+		   "decide: flagged but no second method -> refuse");
+		ck(ikev2_multi_auth_decide(0, 1, 1, 1, 0, 0) == IKEV2_MA_REFUSE,
 		   "decide: flagged while off -> refuse");
-		ck(ikev2_multi_auth_decide(1, 1, 1, 1) == IKEV2_MA_REFUSE,
+		ck(ikev2_multi_auth_decide(1, 1, 1, 1, 0, 1) == IKEV2_MA_REFUSE,
 		   "decide: a third round -> refuse");
+		ck(ikev2_multi_auth_decide(1, 0, 1, 1, 0, 0) == IKEV2_MA_REFUSE,
+		   "decide: flagged without the peer's MULTIPLE_AUTH_SUPPORTED -> refuse");
 
 		/* initiator plan (cfg_on, peer_supported, has_second) */
 		ck(ikev2_multi_auth_plan(0, 1, 1) == IKEV2_MAI_SINGLE,

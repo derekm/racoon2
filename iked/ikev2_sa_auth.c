@@ -93,6 +93,10 @@ static int responder_multi_auth_round1(struct ikev2_sa *, uint32_t,
 static int ikev2_responder_eap_auth_send(struct ikev2_sa *, uint32_t,
 					 rc_vchar_t *);
 static int initiator_multi_auth_round2(struct ikev2_sa *, uint32_t);
+static void responder_multi_auth_round2(struct ikev2_sa *, rc_vchar_t *,
+					struct sockaddr *, struct sockaddr *,
+					uint32_t, struct ikev2_payload_header *,
+					struct ikev2payl_auth *);
 
 void
 initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
@@ -829,11 +833,18 @@ responder_ike_sa_auth_recv0(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 	}
 	if (ike_sa->multi_auth_round && auth) {
-		/* RFC 4739 round two: only an EAP second round (IDi, no AUTH)
-		 * is supported; a second signature/PSK round is refused. */
+		/* RFC 4739 s3.2 round two with an AUTH payload: a PSK round
+		 * for the configured multi_auth_second_id (multiple_auth on
+		 * was already required to get here).  Without a second id
+		 * only an EAP second round (IDi, no AUTH) is possible. */
+		if (id_i && ikev2_multi_auth_second_id(ike_sa->rmconf)) {
+			responder_multi_auth_round2(ike_sa, msg, remote, local,
+						    message_id, id_i, auth);
+			return;
+		}
 		isakmp_log(ike_sa, local, remote, msg, PLOG_PROTOERR, PLOGLOC,
 			   "multiple auth: second round with an AUTH payload "
-			   "(non-EAP) is not supported\n");
+			   "but no multi_auth_second_id configured\n");
 		++isakmpstat.authentication_failed;
 		error = IKEV2_AUTHENTICATION_FAILED;
 		goto notify;
@@ -1805,7 +1816,10 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	/* RFC 4739: a first round flagged N(ANOTHER_AUTH_FOLLOWS) */
 	switch (ikev2_multi_auth_decide(
 	    ikev2_multiple_auth(ike_sa->rmconf) == RCT_BOOL_ON,
-	    ike_sa->peer_another_auth, ikev2_eap_remote(ike_sa) ? 1 : 0,
+	    ike_sa->peer_multi_auth, ike_sa->peer_another_auth,
+	    (ikev2_eap_remote(ike_sa) ||
+	     ikev2_multi_auth_second_id(ike_sa->rmconf)) ? 1 : 0,
+	    ikev2_multi_auth_second_id(ike_sa->rmconf) ? 1 : 0,
 	    ike_sa->multi_auth_round)) {
 	case IKEV2_MA_SINGLE:
 		break;
@@ -1819,8 +1833,14 @@ responder_ike_sa_auth_cont(struct ikev2_sa *ike_sa, int result, rc_vchar_t *msg,
 	case IKEV2_MA_REFUSE:
 	default:
 		isakmp_log(ike_sa, local, remote, msg, PLOG_PROTOERR, PLOGLOC,
-			   "multiple auth: ANOTHER_AUTH_FOLLOWS but no EAP "
-			   "second round is configured for this remote\n");
+			   "multiple auth: refused (%s)\n",
+			   !ike_sa->peer_another_auth ?
+			   "multi_auth_second_id requires a second round, "
+			   "peer ran one" :
+			   !ike_sa->peer_multi_auth ?
+			   "peer sent no MULTIPLE_AUTH_SUPPORTED" :
+			   "no EAP or multi_auth_second_id second round "
+			   "configured for this remote");
 		++isakmpstat.authentication_failed;
 		error = IKEV2_AUTHENTICATION_FAILED;
 		goto notify;
@@ -2161,11 +2181,99 @@ responder_multi_auth_round1(struct ikev2_sa *ike_sa, uint32_t message_id,
 	ike_sa->multi_auth_round = 1;
 	ike_sa->peer_another_auth = 0;
 	isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-		   "multiple auth: first round verified, awaiting EAP "
+		   "multiple auth: first round verified, awaiting the "
 		   "second round\n");
 	ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_SA_INIT_SENT);
 	ikev2_update_message_id(ike_sa, message_id, FALSE);
 	return 0;
+}
+
+/*
+ * RFC 4739 s3.2 responder round two without EAP: HDR, SK {IDi', AUTH'}.
+ * IDi' must be exactly the configured multi_auth_second_id and AUTH' the
+ * pre-shared-key AUTH (RFC 7296 s2.15) over the same InitiatorSignedOctets
+ * with MACedIDForI over IDi' -- the octets the initiator side computes.
+ * Only then is the child retained from round one built; the final
+ * response carries SAr2/TSi/TSr and no second IDr/AUTH.
+ */
+static void
+responder_multi_auth_round2(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
+			    struct sockaddr *remote, struct sockaddr *local,
+			    uint32_t message_id,
+			    struct ikev2_payload_header *id_i,
+			    struct ikev2payl_auth *auth)
+{
+	struct ikev2_child_param child_param;
+	rc_vchar_t *want = 0, *got = 0, *id1;
+	int error = IKEV2_AUTHENTICATION_FAILED, result;
+
+	if (auth->ah.auth_method !=
+	    IKEV2_AUTH_SHARED_KEY) {
+		isakmp_log(ike_sa, local, remote, msg, PLOG_PROTOERR, PLOGLOC,
+			   "multiple auth: second round method %d refused "
+			   "(only a pre-shared-key second round)\n",
+			   auth->ah.auth_method);
+		goto fail;
+	}
+	want = ikev2_identifier(ikev2_multi_auth_second_id(ike_sa->rmconf));
+	got = rc_vnew((uint8_t *)(id_i + 1), get_payload_data_length(id_i));
+	if (!want || !got)
+		goto fail;
+	if (want->l != got->l || memcmp(want->v, got->v, want->l) != 0) {
+		isakmp_log(ike_sa, local, remote, msg, PLOG_PROTOERR, PLOGLOC,
+			   "multiple auth: second-round IDi is not the "
+			   "configured multi_auth_second_id\n");
+		goto fail;
+	}
+	if (!ike_sa->eap_sa_i2 || !ike_sa->eap_ts_i || !ike_sa->eap_ts_r) {
+		isakmp_log(ike_sa, local, remote, msg, PLOG_INTERR, PLOGLOC,
+			   "multiple auth: no retained child offer\n");
+		goto fail;
+	}
+	id1 = ike_sa->id_i;
+	ike_sa->id_i = got;
+	result = ikev2_auth_verify(ike_sa, TRUE, auth);
+	ike_sa->id_i = id1;
+	if (result != VERIFIED_SUCCESS) {
+		isakmp_log(ike_sa, local, remote, msg, PLOG_PROTOERR, PLOGLOC,
+			   "multiple auth: second round (PSK) verification "
+			   "failed\n");
+		goto fail;
+	}
+	isakmp_log(ike_sa, local, remote, msg, PLOG_INFO, PLOGLOC,
+		   "multiple auth: second round (PSK) verified\n");
+	ike_sa->multi_auth_round = 2;
+
+	ikev2_child_param_init(&child_param);
+	ikev2_set_state(ike_sa, IKEV2_STATE_RES_IKE_AUTH_RCVD);
+	error = ikev2_create_child_responder(ike_sa, local, remote, message_id,
+	    (struct ikev2_payload_header *)ike_sa->eap_sa_i2->v,
+	    (struct ikev2_payload_header *)ike_sa->eap_ts_i->v,
+	    (struct ikev2_payload_header *)ike_sa->eap_ts_r->v,
+	    0, 0, 0, &child_param, FALSE, 0, 0);
+	ikev2_child_param_destroy(&child_param);
+	rc_vfreez(ike_sa->eap_sa_i2); ike_sa->eap_sa_i2 = NULL;
+	rc_vfreez(ike_sa->eap_ts_i); ike_sa->eap_ts_i = NULL;
+	rc_vfreez(ike_sa->eap_ts_r); ike_sa->eap_ts_r = NULL;
+	if (error) {
+		++isakmpstat.fail_process_packet;
+		goto notify;
+	}
+	ikev2_update_message_id(ike_sa, message_id, FALSE);
+	rc_vfree(want);
+	rc_vfree(got);
+	return;
+
+      fail:
+	++isakmpstat.authentication_failed;
+	error = IKEV2_AUTHENTICATION_FAILED;
+      notify:
+	if (want) rc_vfree(want);
+	if (got) rc_vfree(got);
+	if (ikev2_respond_error(ike_sa, msg, remote, local,
+				0, 0, 0, error, 0, 0) == 0)
+		ikev2_update_message_id(ike_sa, message_id, FALSE);
+	ikev2_abort(ike_sa, ECONNREFUSED);
 }
 
 static int
@@ -2540,14 +2648,17 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 #endif
 
 	/*
-	 * IDi
+	 * IDi -- RFC 4739 s3.2: after a non-EAP second round the
+	 * responder already authenticated itself in round one, so the
+	 * final response is SAr2/TSi/TSr without IDr/CERT/AUTH.
 	 */
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_R, id_r, FALSE);
+	if (ike_sa->multi_auth_round != 2)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_ID_R, id_r, FALSE);
 
 	/*
 	 * [CERT+]
 	 */
-	if (my_cert)
+	if (my_cert && ike_sa->multi_auth_round != 2)
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_CERT, my_cert, FALSE);
 
 #if 1
@@ -2563,7 +2674,8 @@ ikev2_responder_state1_send(struct ikev2_sa *ike_sa,
 	/*
 	 * AUTH
 	 */
-	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_AUTH, auth, FALSE);
+	if (ike_sa->multi_auth_round != 2)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_AUTH, auth, FALSE);
 
 	/*
 	 * [CP(CFG_REPLY)]
