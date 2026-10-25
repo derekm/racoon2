@@ -64,6 +64,19 @@ jobs:
             libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \
             libsystemd-dev iputils-ping xxd iptables conntrack
 
+      # Ubuntu ships enforcing AppArmor profiles for charon and swanctl
+      # that only allow /etc/swanctl, /etc/strongswan* and /run paths; the
+      # charon-seat rows run charon from a per-row strongswan.conf and
+      # private socket under /tmp, so the profiles deny it and no SA can
+      # form.  This runner is ephemeral: unload just those two profiles.
+      - name: Unload strongSwan AppArmor profiles (charon rows use /tmp configs)
+        run: |
+          for p in /etc/apparmor.d/usr.lib.ipsec.charon /etc/apparmor.d/usr.sbin.swanctl; do
+            [ -f "$p" ] || { echo "no $p"; continue; }
+            sudo apparmor_parser -R "$p" && echo "unloaded $p" || echo "not loaded: $p"
+          done
+          sudo cat /sys/kernel/security/apparmor/profiles 2>/dev/null | grep -Ei 'charon|swanctl' || echo "no charon/swanctl profile loaded"
+
       - name: Matrix harness self-test (root-free)
         if: matrix.shard == 0
         run: sh samples/linux-matrix/tools/selftest.sh
