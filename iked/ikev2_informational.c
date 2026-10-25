@@ -106,9 +106,22 @@ ikev2_established_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	 * kernel ESP stays pinned to the dead mapping while IKE is alive.
 	 * ikev2_mobike_apply no-ops when the endpoints are unchanged and
 	 * refuses DYING/DEAD SAs.
+	 *
+	 * RFC 9329 IKE-over-TCP: a tcp_encap SA's IKE rides a single TCP
+	 * stream whose local port is 4500, so every message arrives with
+	 * endpoint [peer]:4500 vs the SA's [peer]:500 -- the same address,
+	 * merely the TCP transport port.  That must NOT be read as an
+	 * implicit mobility event, or iked would MOBIKE-migrate the ESP
+	 * data plane onto the TCP-source/4500 ports every time a child or
+	 * informational exchange arrives after establishment (observed as
+	 * SADB_MIGRATE + a derailed child rekey).  Skip the implicit check
+	 * for tcp_encap SAs -- the stream endpoint is the IKE transport,
+	 * not a peer mobility change.
 	 */
 	if (ike_sa->state == IKEV2_STATE_ESTABLISHED &&
 	    ike_sa->mobike_supported && remote && ike_sa->remote &&
+	    !(ike_sa->rmconf &&
+	      ikev2_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON) &&
 	    rcs_cmpsa(remote, ike_sa->remote) != 0) {
 		ikev2_mobike_apply(ike_sa, remote, local);
 	}
