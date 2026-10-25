@@ -294,7 +294,8 @@ sa_addr_equal(const struct sockaddr *a, const struct sockaddr *b)
 		const struct sockaddr_in6 *y = (const struct sockaddr_in6 *)b;
 
 		return memcmp(&x->sin6_addr, &y->sin6_addr,
-			      sizeof(x->sin6_addr)) == 0;
+			      sizeof(x->sin6_addr)) == 0 &&
+		    x->sin6_scope_id == y->sin6_scope_id;
 	}
 	}
 	return 0;
