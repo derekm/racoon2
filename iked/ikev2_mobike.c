@@ -48,11 +48,22 @@
 #endif
 
 static void
-ikev2_mobike_natt(struct rcpfk_msg *rc, struct sockaddr *n_src,
-    struct sockaddr *n_dst)
+ikev2_mobike_natt(struct ikev2_sa *ike_sa, struct rcpfk_msg *rc,
+    struct sockaddr *n_src, struct sockaddr *n_dst)
 {
 	in_port_t *sp, *dp;
 
+	/* RFC 9329: over TCP the child's ESP always rides UDP-encap 4500/4500
+	 * (see ikev2_sadb_natt_tcp_pin); a MOBIKE address update must not
+	 * re-derive natt_dport from the (TCP stream) peer port, or it would
+	 * un-pin ESP from 4500. */
+	if (ike_sa->rmconf != NULL &&
+	    ikev2_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON) {
+		rc->natt_type = UDP_ENCAP_ESPINUDP;
+		rc->natt_sport = htons(IKEV2_UDP_PORT_NATT);
+		rc->natt_dport = htons(IKEV2_UDP_PORT_NATT);
+		return;
+	}
 	sp = rcs_getsaport(n_src);
 	dp = rcs_getsaport(n_dst);
 	if (!sp || !dp)
@@ -86,7 +97,7 @@ ikev2_mobike_migrate_dir(struct ikev2_sa *ike_sa, rc_type dir,
 	rc.reqid = reqid;
 	rc.dir = dir;
 	rc.ul_proto = RC_PROTO_ANY;
-	ikev2_mobike_natt(&rc, new_s, new_d);
+	ikev2_mobike_natt(ike_sa, &rc, new_s, new_d);
 	if (sadb_migrate(&rc) != 0) {
 		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 			   "MOBIKE migrate failed: %s\n", rc.estr);
