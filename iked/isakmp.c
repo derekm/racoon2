@@ -2397,12 +2397,19 @@ isakmp_schedule_retransmit_frags(struct transmit_info *info,
  *
  */
 /* RFC 9329: route a whole IKE message over the peer's IKE-over-TCP stream
- * when one is registered for (dest,src).  Returns 1 if it was sent over the
- * stream (queued/written), 0 if no stream matched (caller may then fall back
- * to UDP -- but only a non-tcp_encap peer has no stream).  Every IKE send
- * path funnels here so a tcp_encap exchange stays exclusively on TCP,
- * including retransmits (isakmp_retransmit/force_retransmit) and
- * notifications (isakmp_sendto). */
+ * when one is registered for (dest,src).  Returns 1 whenever a stream
+ * matched -- once one is found the peer's IKE is TCP-bound and we do NOT
+ * fall back to UDP (the caller returns, so a tcp_encap exchange stays
+ * exclusively on TCP; this is what makes retransmits, notifications and
+ * DELETEs ride the stream too).  Returns 0 only when no stream matched
+ * (only a non-tcp_encap peer has none).  If tcp_stream_send reports r<0
+ * (hard write error / stream dying) or r==2 (stream buffer full or message
+ * > 65529 B, nothing queued), the message cannot be delivered and is DROPPED
+ * -- it is logged at PLOG_INTERR, never silently lost -- while r==0/1 is
+ * queued+flushed / queued+pending.  For a timer retransmit a dropped copy is
+ * healed by the next retransmit; for a one-shot notification/DELETE the peer
+ * simply never sees it, which is inherent to a dead/full TCP stream (no UDP
+ * side-channel for a tcp_encap peer). */
 static int
 isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt)
 {
