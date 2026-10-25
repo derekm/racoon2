@@ -236,6 +236,18 @@ EOF
 		done
 	done
 
+	# RFC 9329 wire gate (-tcp rows): capture the initiator's veth from
+	# before any daemon starts, so the gate below judges packets on the
+	# wire rather than log lines.
+	WIREPID=
+	if echo "$name" | grep -q -- '-tcp'; then
+		rm -f "$D/wire.pcap"
+		ip netns exec "$NSI" tcpdump -n -U -s 128 -i "$VI" -w "$D/wire.pcap" \
+		    'tcp port 4500 or udp port 500 or udp port 4500' >"$D/wire.log" 2>&1 &
+		WIREPID=$!
+		sleep 1
+	fi
+
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
 	RSPMD=$!
 	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
@@ -357,6 +369,7 @@ EOF
 	# a pkill on the conf-internal remote name matches nothing and leaks
 	# up to 4 daemons holding the netns.
 	pkill -9 -f "$C/" 2>/dev/null || true
+	[ -n "$WIREPID" ] && { kill "$WIREPID" 2>/dev/null; wait "$WIREPID" 2>/dev/null; } || true
 	sleep 1
 	ip netns del "$NSR" 2>/dev/null || true
 	ip netns del "$NSI" 2>/dev/null || true
@@ -409,6 +422,24 @@ EOF
 			log "FAIL: no IKE frame sent over the TCP stream on both seats (no 'routed over stream'); exchange rode UDP"
 			return 1
 		fi
+		# Wire-level proof (strict): zero IKE datagrams on UDP.  That
+		# means nothing on UDP 500, and nothing on UDP 4500 that carries
+		# the non-ESP marker (udp[8:4]=0) beyond a 1-byte NAT keepalive.
+		# UDP-encap ESP on 4500 is expected.  The TCP 4500 handshake
+		# must also be seen in both directions.
+		if [ ! -s "$D/wire.pcap" ]; then
+			log "FAIL: RFC 9329 wire gate: no capture (tcpdump missing or failed: $(head -c 200 "$D/wire.log" 2>/dev/null))"
+			return 1
+		fi
+		udpike=$(tcpdump -n -r "$D/wire.pcap" 'udp port 500 or (udp port 4500 and udp[4:2] > 9 and udp[8:4] = 0)' 2>/dev/null | wc -l)
+		syn=$(tcpdump -n -r "$D/wire.pcap" "src $HI and dst $HR and tcp dst port 4500 and tcp[tcpflags] & (tcp-syn|tcp-ack) = tcp-syn" 2>/dev/null | wc -l)
+		synack=$(tcpdump -n -r "$D/wire.pcap" "src $HR and tcp src port 4500 and tcp[tcpflags] & (tcp-syn|tcp-ack) = (tcp-syn|tcp-ack)" 2>/dev/null | wc -l)
+		if [ "$udpike" -ne 0 ] || [ "$syn" -lt 1 ] || [ "$synack" -lt 1 ]; then
+			log "FAIL: RFC 9329 wire gate (udp_ike=$udpike tcp_syn=$syn tcp_synack=$synack; want 0/>=1/>=1)"
+			tcpdump -n -r "$D/wire.pcap" 'udp port 500 or (udp port 4500 and udp[4:2] > 9 and udp[8:4] = 0)' 2>/dev/null | head -5 | sed 's/^/  wire: /'
+			return 1
+		fi
+		log "wire gate: udp_ike=0 tcp_syn=$syn tcp_synack=$synack"
 		log "PASS: IKE frames routed over the TCP stream + ESP child + dataplane (RFC 9329)"
 		return 0
 	fi
