@@ -253,6 +253,34 @@ tcp_srv_count(void)
 	return n;
 }
 
+/* RFC 9329 (M5): forcibly remove a stream from the registry and free it.
+ * Used to tear down a stream that hit a fatal send error (r<0 from
+ * tcp_stream_send/tcp_stream_flush), whose contract says the caller MUST
+ * close a stream once it returns -1.  Plain tcp_stream_free() would leave a
+ * dangling conns entry (use-after-free on the next loop pass), so unlink the
+ * conn first, exactly as tcp_srv_process does.  Safe from the send path: the
+ * event loop is single-threaded and never iterates conns concurrently.  If
+ * the stream is already gone from the registry (double teardown) this is a
+ * no-op -- never free it twice. */
+void
+tcp_srv_teardown(struct tcp_stream *ts)
+{
+	struct tcp_conn **pp;
+
+	if (ts == NULL)
+		return;
+	for (pp = &conns; *pp; pp = &(*pp)->next) {
+		if ((*pp)->st == ts) {
+			struct tcp_conn *c = *pp;
+
+			*pp = c->next;
+			tcp_stream_free(c->st);
+			free(c);
+			return;
+		}
+	}
+}
+
 /* Append an OUTBOUND (initiator) stream to the registry.  It is still
  * connecting until the loop observes a writable/ERR wake; the initiator path
  * calls this right after tcp_stream_connect() returns EINPROGRESS, then the

@@ -343,6 +343,29 @@ main(void)
 	tcp_stream_sock_hook = NULL;
 
 	tcp_stream_free(cli2);
+
+	/* RFC 9329 (M5): tcp_srv_teardown removes a registry stream and frees it
+	 * (the fatal-send-error path), so it no longer resolves.  The initiator
+	 * path registers a connecting stream right after tcp_stream_connect
+	 * returns EINPROGRESS; do the same here so tmp is a registry member. */
+	{
+		struct tcp_stream *tmp;
+		struct sockaddr_in tca;
+		int before;
+
+		memset(&tca, 0, sizeof(tca));
+		tca.sin_family = AF_INET;
+		tca.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		tca.sin_port = la.sin_port;
+		tmp = tcp_stream_connect((struct sockaddr *)&tca, NULL, capture, NULL);
+		CHECK(tmp != NULL, "teardown: temp stream created");
+		CHECK(tcp_srv_register_connecting(tmp) == 0,
+		      "teardown: temp stream registered");
+		before = tcp_srv_count();
+		tcp_srv_teardown(tmp);
+		CHECK(tcp_srv_count() == before - 1,
+		      "teardown: stream removed from registry");
+	}
 	tcp_srv_fini();
 	if (!fails)
 		printf("all tcp-srv checks passed\n");

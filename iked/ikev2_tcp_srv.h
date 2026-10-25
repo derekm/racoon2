@@ -73,5 +73,6 @@ struct tcp_stream *tcp_srv_find(const struct sockaddr *remote,
 				const struct sockaddr *local);
 struct tcp_stream *tcp_srv_find_bound(const struct sockaddr *remote,
 				      const struct sockaddr *local);
+void tcp_srv_teardown(struct tcp_stream *);
 
 #endif /* _IKEV2_TCP_SRV_H_ */

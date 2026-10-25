@@ -2438,10 +2438,17 @@ isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt
 	if (ts == NULL)
 		return 0;
 	r = tcp_stream_send(ts, pkt->v, pkt->l);
-	if (r < 0)
+	if (r < 0) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "IKE-over-TCP send failed: %s\n", strerror(errno));
-	else if (r == 2)
+		/* RFC 9329 (M5): r<0 is the stream's fatal-error contract -- the
+		 * stream is dead and must be closed.  Tear it down so the
+		 * registry stops routing to a zombie socket; the owning IKE_SA
+		 * then times out via its retransmit instead of being left
+		 * silently mute on a dead stream.  r==2 below is NOT fatal
+		 * (buffer full / message too big -- retriable later). */
+		tcp_srv_teardown(ts);
+	} else if (r == 2)
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "IKE-over-TCP: %u-byte IKE message not queued "
 		     "(stream buffer full or message > 65529 bytes)\n",
