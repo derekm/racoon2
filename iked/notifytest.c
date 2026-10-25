@@ -46,6 +46,7 @@
 #include "ikev2_drain.h"
 #include "ike_conf.h"
 #include <sys/time.h>
+#include <time.h>
 
 #include "test_util.h"
 
