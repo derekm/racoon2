@@ -322,6 +322,17 @@ initiator_start_after_gen(int rc, void *arg)
 						 IKEV2_FRAGMENTATION_SUPPORTED,
 						 0, 0),
 			    TRUE);
+	/* RFC 9329 s7.2: advertise TCP encapsulation support when this remote
+	 * is configured to use it (tcp_encap on).  Config-driven (not a
+	 * negotiated fallback), so this is a pure capability advertisement
+	 * like FRAGMENTATION_SUPPORTED above -- it tells the peer we are
+	 * willing to run IKE over TCP (and, later, ESP-in-TCP). */
+	if (ikev2_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON)
+		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+						IKEV2_TCP_ENCAPSULATION_SUPPORTED,
+						0, 0),
+				    TRUE);
 	/* RFC 5685 s3: an initiator willing to be redirected advertises
 	 * REDIRECT_SUPPORTED (16406) in its IKE_SA_INIT.  Without it a
 	 * responder that is draining/overloaded MUST NOT redirect us (the
