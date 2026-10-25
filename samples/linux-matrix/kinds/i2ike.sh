@@ -391,6 +391,30 @@ EOF
 		fi ;;
 	esac
 
+	if echo "$name" | grep -q -- '-tcp'; then
+		# transport-priority gate for RFC 9329: the kind's PQC/ADDKE and
+		# initial_child_ke-immediate assertions don't apply to a transport row,
+		# so gate on the TCP proof itself -- listener opened on both seats, the
+		# 16725 TCP_ENCAPSULATION_SUPPORTED notify on the wire, and an ESP child
+		# + dataplane up (up/cpl are computed above).
+		if [ "$up" -ne 1 ] || [ "$cpl" -ne 0 ]; then
+			log "FAIL: TCP-encap IKE_SA/child not established (up=${up:-0} cpl=$cpl)"
+			return 1
+		fi
+		if ! grep -q 'IKE-over-TCP listener on port 4500' "$D/init-iked.log" \
+		   || ! grep -q 'IKE-over-TCP listener on port 4500' "$D/resp-iked.log"; then
+			log "FAIL: IKE-over-TCP listener not opened on both seats; IKE did not ride TCP"
+			return 1
+		fi
+		if ! grep -q 'TCP_ENCAPSULATION_SUPPORTED' "$D/init-iked.log" \
+		   && ! grep -q 'TCP_ENCAPSULATION_SUPPORTED' "$D/resp-iked.log"; then
+			log "FAIL: notify 16725 (TCP_ENCAPSULATION_SUPPORTED) not on the wire"
+			return 1
+		fi
+		log "PASS: TCP-encap IKE_SA ESTABLISHED + ESP child + dataplane over the TCP stream (RFC 9329)"
+		return 0
+	fi
+
 	if [ "$up" -ne 1 ] || [ "${rekeyed:-0}" -ne 1 ] || [ "${pqc:-0}" -ne 1 ] || [ "$cpl" -ne 0 ] || [ "$icke" -ne 1 ]; then
 		log "FAIL: PQC init-SA + child-SA rekey incomplete (up=${up:-0} rekeyed=${rekeyed:-0} pqc=${pqc:-0} cpl=$cpl icke=$icke)"
 		log "--- init-iked.log (followup/ESTABLISHED) ---"
