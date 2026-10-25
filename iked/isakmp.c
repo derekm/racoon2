@@ -63,6 +63,7 @@
 #include <unistd.h>
 #endif
 #include <assert.h>
+#include <poll.h>
 
 #if !defined(HAVE_GETADDRINFO) || !defined(HAVE_GETNAMEINFO)
 #include "addrinfo.h"
@@ -94,7 +95,6 @@
 # endif
 #include "crypto_impl.h"
 
-#include <poll.h>
 #include "ikev2_tcp_srv.h"
 #include "ikev2_tcp_stream.h"
 #include "ike_conf.h"
