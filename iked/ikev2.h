@@ -236,6 +236,11 @@ struct ikev2transform {
 /* RFC 9370: Additional Key Exchange.  Transform IDs share the
  * Transform Type 4 (Key Exchange Method) IANA registry (rfc9370 s1.3). */
 #define	IKEV2TRANSFORM_TYPE_ADDKE	6
+/* Internal encoding: an ADDKE round's transform_type is stored as
+ * IKEV2TRANSFORM_TYPE_ADDKE + round.  IKEV2_ADDKE_MAX_ROUND is the highest
+ * round index that encoding reserves (types 6 .. 6+6); keep the range checks
+ * in ike_conf.c in terms of it rather than a bare +6. */
+#define	IKEV2_ADDKE_MAX_ROUND		6
 /*	Reserved to IANA		7-240 */
 #define	IKEV2TRANSFORM_TYPE_PRIVATE	241
 /* 	Private use			241-255 */

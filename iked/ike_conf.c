@@ -4521,7 +4521,7 @@ ikev2_ipsec_conf_to_proplist(struct ikev2_child_sa *child_sa,
 						unsigned int ty = ((struct ikev2transform *)
 						    chk->trns)->transform_type;
 						if (ty >= IKEV2TRANSFORM_TYPE_ADDKE &&
-						    ty <= IKEV2TRANSFORM_TYPE_ADDKE + 6) {
+						    ty <= IKEV2TRANSFORM_TYPE_ADDKE + IKEV2_ADDKE_MAX_ROUND) {
 							has_addke = 1;
 							break;
 						}
@@ -4607,7 +4607,7 @@ ikev2_child_maybe_reoffer_addke(struct ikev2_child_sa *child_sa)
 		    ((struct ikev2transform *)p->trns)->transform_type >=
 			IKEV2TRANSFORM_TYPE_ADDKE &&
 		    ((struct ikev2transform *)p->trns)->transform_type <=
-			IKEV2TRANSFORM_TYPE_ADDKE + 6)
+			IKEV2TRANSFORM_TYPE_ADDKE + IKEV2_ADDKE_MAX_ROUND)
 			return;
 	/* find the sa block's esp_addke_alg and append it (multi-round) */
 	for (conf = (child_sa->selector && child_sa->selector->pl)
@@ -4766,7 +4766,7 @@ ikev2_maybe_offer_ikesa_addke(struct rcf_remote *conf,
 		if (tail->trns && ((struct ikev2transform *)tail->trns)->
 		    transform_type >= IKEV2TRANSFORM_TYPE_ADDKE &&
 		    ((struct ikev2transform *)tail->trns)->transform_type <=
-		    IKEV2TRANSFORM_TYPE_ADDKE + 6)
+		    IKEV2TRANSFORM_TYPE_ADDKE + IKEV2_ADDKE_MAX_ROUND)
 			return 1;
 
 	offer = ikev2_addke_offer(conf);
