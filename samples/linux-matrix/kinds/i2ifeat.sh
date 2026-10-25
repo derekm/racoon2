@@ -497,7 +497,7 @@ feat_row() {
 		# AUTH_LIFETIME: it reauthenticates itself (becomes initiator of
 		# a fresh IKE_SA).  Prove that, that iked honours nothing it was
 		# not sent, and that iked answers charon's reauthentication.
-		never "$CR" 'generating IKE_AUTH response 1 .*N\(AUTH_LFT\)' "charon responder sent no AUTH_LIFETIME"
+		never "$CR" 'generating IKE_AUTH response [0-9]+ .*N\(AUTH_LFT\)' "charon responder sent no AUTH_LIFETIME"
 		k=0; while [ "$k" -lt 40 ]; do
 			grep -q 'reauthenticating IKE_SA' "$CR" 2>/dev/null && break
 			ip netns exec "$NSI" ping -c1 -W1 "$HR" >/dev/null 2>&1; sleep 1; k=$((k+1))
