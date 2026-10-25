@@ -153,6 +153,36 @@ main(void)
 		      "find: same-peer different-port still resolves (address-only)");
 	}
 
+	/* RFC 9329 / H3: two clients behind one NAT present the same address
+	 * and differ only by TCP source port.  The SA-bound lookup matches on
+	 * the stream's remote ADDRESS:PORT, so it must tell them apart where
+	 * the address-only tcp_srv_find() cannot. */
+	{
+		struct sockaddr_storage csrc1, csrc2;
+		struct sockaddr_in wrongport;
+		struct tcp_stream *fb1, *fb2;
+		socklen_t l1 = sizeof(csrc1), l2 = sizeof(csrc2);
+
+		CHECK(getsockname(cli1->fd, (struct sockaddr *)&csrc1, &l1) == 0 &&
+		      getsockname(cli2->fd, (struct sockaddr *)&csrc2, &l2) == 0,
+		      "bound: got both client source addrs");
+		fb1 = tcp_srv_find_bound((struct sockaddr *)&csrc1,
+					 (struct sockaddr *)&la);
+		fb2 = tcp_srv_find_bound((struct sockaddr *)&csrc2,
+					 (struct sockaddr *)&la);
+		CHECK(fb1 != NULL && fb2 != NULL,
+		      "bound: each client resolves a stream");
+		CHECK(fb1 != fb2,
+		      "bound: distinct streams for distinct source ports");
+		memset(&wrongport, 0, sizeof(wrongport));
+		wrongport.sin_family = AF_INET;
+		wrongport.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		wrongport.sin_port = htons(39999);	/* matches no client */
+		CHECK(tcp_srv_find_bound((struct sockaddr *)&wrongport,
+					 (struct sockaddr *)&la) == NULL,
+		      "bound: no stream for an unknown source port");
+	}
+
 	FD_ZERO(&rfds); FD_ZERO(&wfds);
 	CHECK(tcp_srv_fdset(&rfds, &wfds) > lfd &&
 	      FD_ISSET(lfd, &rfds), "fdset: listener is readable");
