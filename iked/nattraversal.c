@@ -336,8 +336,28 @@ natt_natk_callback(void *param)
 		return;
 	}
 
-	len = sendfromto(sock, keepalive_packet, sizeof(keepalive_packet),
-			 sa->local, sa->remote, 1);
+	{
+		/* RFC 9329: over TCP the IKE SA's remote port is the TCP
+		 * stream's source port (500 or ephemeral).  The keepalive
+		 * only serves the UDP-encap ESP mapping, which is 4500/4500,
+		 * so aim it there instead of at the TCP port. */
+		struct sockaddr_storage ka;
+		struct sockaddr *dst = sa->remote;
+
+		if (sa->rmconf != NULL &&
+		    ikev2_tcp_encap(sa->rmconf) == RCT_BOOL_ON &&
+		    SOCKADDR_LEN(sa->remote) <= sizeof(ka)) {
+			in_port_t *pp;
+
+			memcpy(&ka, sa->remote, SOCKADDR_LEN(sa->remote));
+			pp = rcs_getsaport((struct sockaddr *)&ka);
+			if (pp)
+				*pp = htons(PORT_ISAKMP_NATT);
+			dst = (struct sockaddr *)&ka;
+		}
+		len = sendfromto(sock, keepalive_packet,
+				 sizeof(keepalive_packet), sa->local, dst, 1);
+	}
 	if (len == -1) {
 		plog(PLOG_INTERR, PLOGLOC, NULL, "natk transmit error: %s\n",
 		     strerror(errno));
