@@ -185,9 +185,18 @@ ikev2_payloads_init(struct ikev2_payloads *p)
 
 void
 ikev2_payloads_push(struct ikev2_payloads *p, int type, rc_vchar_t *v,
-		    int critical)
+	    int critical)
 {
-	(void)p; (void)type; (void)v; (void)critical;
+	/* Production ikev2_payloads_push stores v and ikev2_payloads_destroy
+	 * frees it when the need_free/critical flag is TRUE.  This unit-test
+	 * stub discards the payload instead, so it must free v in that case
+	 * to match -- otherwise a fixture that pushes a freshly rc_vnew()'d
+	 * buffer with need_free=TRUE (addketest fk_ar_notify) leaks: the
+	 * Fedora 44 ASan lane caught 85 B / 10 allocs.  Payloads pushed with
+	 * need_free=FALSE stay owned by the caller and are untouched here. */
+	(void)p; (void)type;
+	if (critical && v)
+		rc_vfree(v);
 }
 
 void
