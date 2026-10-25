@@ -664,16 +664,26 @@ unpack_sp(struct rcpfk_msg *rc, const struct r2dp_sp *sp)
 		return -1;
 	}
 	rc->pltype = (uint8_t)v;
-	if ((v = mode_from_wire(sp->mode)) < 0) {
-		km_seterror(rc, EINVAL, "r2dp: unknown mode %u", sp->mode);
-		return -1;
+	/* mode/protos are only meaningful for a PROTECT policy; send_sp packs
+	 * them as 0 for BYPASS/DISCARD (memset at send_sp), so demanding a
+	 * translation for every action would EINVAL every non-PROTECT SP the
+	 * forwarder echoes back (SP_DUMP / SP_ADD / SP_DEL completions), broken
+	 * SPD sync.  Only translate when PROTECT. */
+	if (sp->action == R2DP_ACT_PROTECT) {
+		if ((v = mode_from_wire(sp->mode)) < 0) {
+			km_seterror(rc, EINVAL, "r2dp: unknown mode %u", sp->mode);
+			return -1;
+		}
+		rc->samode = (uint8_t)v;
+		if ((v = protos_from_wire(sp->protos)) < 0) {
+			km_seterror(rc, EINVAL, "r2dp: unknown protos %u", sp->protos);
+			return -1;
+		}
+		rc->satype = (uint8_t)v;
+	} else {
+		rc->samode = 0;
+		rc->satype = 0;
 	}
-	rc->samode = (uint8_t)v;
-	if ((v = protos_from_wire(sp->protos)) < 0) {
-		km_seterror(rc, EINVAL, "r2dp: unknown protos %u", sp->protos);
-		return -1;
-	}
-	rc->satype = (uint8_t)v;
 	if ((v = level_from_wire(sp->level)) < 0) {
 		km_seterror(rc, EINVAL, "r2dp: unknown level %u", sp->level);
 		return -1;
