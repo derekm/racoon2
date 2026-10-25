@@ -35,6 +35,34 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
   `samples/linux-matrix/kinds/i2i_compliance.sh` and
   `references/ndcpp-ipsec.md`.
 
+## IKE-over-TCP (RFC 9329 / RFC 8229)
+
+Status: **implemented & live-verified** (row `i2ike-tcp`, box-tier only).
+
+- Carries the IKEv2 control plane over a single TCP stream on port 4500 instead
+  of UDP, with RFC 9329 §3 framing (`Len(16-bit self-inclusive) | 4-octet zero
+  non-ESP marker | IKE`).  Per-remote knob `tcp_encap (on|off)`, **default off**
+  (documented in `doc/config-usage.txt`); new behaviour is config-gated only.
+- **IKE-over-TCP only, not ESP-in-TCP** (`espintcp`): the ESP data plane stays
+  UDP-encap on 4500/4500 for a `tcp_encap on` SA (the child's NAT-T ports are
+  pinned to 4500; a MOBIKE update keeps them pinned).
+- **Linux SPD/bypass:** a `tcp_encap` TCP socket needs the same per-socket IPsec
+  bypass the UDP IKE sockets get (`application_bypass`), or an explicit SPD
+  exemption for tcp/4500; otherwise the SYN matches the tunnel SPD, is parked on
+  an ACQUIRE and the stream never establishes.
+- **No RFC 7383 IKE fragmentation over TCP:** `ikev2_frag_allowed()` disables
+  the SKF path for `tcp_encap` SAs so whole messages (up to 65529 B, incl. an
+  ML-KEM IKE_FOLLOWUP_KE) ride the stream.
+- **Notify 40960:** iked advertises `TCP_ENCAPSULATION_SUPPORTED = 40960`, in
+  the RFC 7296 private-use range.  IANA assigns IKEv2 Notify Status types only
+  to 16447, and RFC 9329 preconfigures TCP (it is not negotiated), so no IANA
+  TCP-encap type exists; 40960 is a config-gated informational advertisement,
+  never required for interop.
+- Verified: `i2ike-tcp` (box-gated, `R2_BOX`) passes a wire-level gate
+  (tcpdump from before daemon start: zero IKE datagrams on UDP 500/4500, a TCP
+  SYN to :4500, and a SYN-ACK back) plus the ESP/dataplane gates.
+  See `samples/linux-matrix/kinds/i2ike.sh`.
+
 ## Build & deploy
 - Top-level `make install` (after `./configure && make`) is the only
   documented path: it recurses through `SUBDIRS = lib spmd kinkd iked

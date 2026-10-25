@@ -61,6 +61,14 @@ Landed (do not re-open these as gaps):
   when RFC 7383 fragmentation is negotiated (`ike_sa->frag_supported`, set on
   the FRAGMENTATION_SUPPORTED (16430) notify).  A fragmented followup over a
   small MTU is already handled.  Removed as a gap on 2026-09-18 after code check.
+  **RFC 9329 / IKE-over-TCP exception:** a `tcp_encap on` IKE SA never uses RFC
+  7383 fragmentation — `ikev2_frag_allowed()` disables the SKF path so the whole
+  message (up to 65529 B) rides the TCP stream, `sendfromto()` is never used on
+  its behalf, and the peer answers over the same stream.  The pre-TCP behaviour
+  (fragmented IKE_FOLLOWUP_KE leaking onto UDP 4500, peer replying to the TCP
+  source port, rekey window never retiring) was the root cause of the
+  ADDKE-over-TCP child-rekey stall; the wire gate on `i2ike-tcp` asserts it stays
+  off (udp_ike=0).
 - **IKE_INTERMEDIATE** (RFC 9242) and INIT-time PQC carry the single pre-AUTH
   ML-KEM round on the initial IKE_SA (exch 43 + N(16438)); matrix row
   `i2iinit-addke` proves the same intermediate SKEYSEED on both sides.
