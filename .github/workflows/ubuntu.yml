@@ -274,7 +274,7 @@ jobs:
       - name: 'Live rows against the ASan/UBSan daemons'
         run: |
           set -o pipefail
-          sudo apt-get install -y -qq strongswan iproute2 iputils-ping xxd iptables conntrack
+          sudo apt-get install -y -qq strongswan strongswan-swanctl iproute2 iputils-ping xxd iptables conntrack
           sudo make install >/dev/null
           # the rows' shared PSK / spmd password (no live daemon config)
           E=/usr/local/racoon2/etc/racoon2
