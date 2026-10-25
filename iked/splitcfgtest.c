@@ -2663,6 +2663,7 @@ rcs_free_addrlist(sel4.dst);
 
 		/* requested, not configured */
 		ikm.cfg_nbns = NULL;
+		rcs_free_addrlist(l6);	/* frees l4 through ->next */
 		ikev2_child_param_init(&p);
 		p.cfg_ip4_nbns = 1;
 		CK(ikev2_create_config_reply(&isa, &c, &p) == 0,
