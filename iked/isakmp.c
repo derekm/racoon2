@@ -1653,8 +1653,12 @@ isakmp_check_proposal_syntax(struct isakmp_domain *doi,
 	int err;
 
 	if (payload_length <= 0) {
-		/* no proposal exist */
-		return 0;
+		/* An SA payload with no proposals is malformed (RFC 7296
+		 * s3.3: SA contains >= 1 proposal).  Refusing here also stops
+		 * isakmp_parse_proposal() from reading a proposal header off
+		 * the empty region into the following payload (pre-auth heap
+		 * OOB read). */
+		return ISAKMP_NTYPE_PAYLOAD_MALFORMED;
 	}
 
 	last_proposal_number = -1;
@@ -1830,11 +1834,28 @@ isakmp_parse_proposal(struct isakmp_domain *doi, uint8_t *payload_ptr,
 	if (!prop_array)
 		return 0;
 
+	/* Defense-in-depth: never parse a zero-length proposal region, and
+	 * never read a proposal header or walk past the SA payload's proposal
+	 * region, even if the syntax pre-pass was bypassed.  The proposal
+	 * header (incl. its 16-bit length) is attacker-controlled; an empty SA
+	 * (payload_length 0) previously let this loop read a fake proposal off
+	 * the following payload (pre-auth heap OOB read). */
+	if (payload_length <= 0)
+		goto fail;
+
 	p = payload_ptr;
 	type = ISAKMP_NPTYPE_P;
 	while (type != ISAKMP_NPTYPE_NONE) {
+		if ((size_t)(p - payload_ptr) + sizeof(struct isakmp_pl_p) >
+		    (size_t)payload_length)
+			goto fail;
 		prop = (struct isakmp_pl_p *)p;
 		proplen = get_payload_length(p);
+		if (proplen <
+			(int)(sizeof(struct isakmp_pl_p) + prop->spi_size) ||
+		    (size_t)(p - payload_ptr) + (size_t)proplen >
+		    (size_t)payload_length)
+			goto fail;
 
 		plog(PLOG_DEBUG, PLOGLOC, NULL,
 		     "proposal #%u len=%d\n", prop->p_no, proplen);

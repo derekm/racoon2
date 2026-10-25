@@ -421,14 +421,14 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 	 * exchange on a worker could not recover the MSK from an Accept. */
 	memcpy(resp->req_auth, req_auth, IKEV2_RADIUS_AUTH_LEN);
 
-	/* parse attributes MUST happen before MA check (locate needs them) */
-	if (radius_parse_attrs(resp, v + IKEV2_RADIUS_HEADER_LEN,
-			       len - IKEV2_RADIUS_HEADER_LEN) < 0) {
-		ikev2_radius_response_free(resp);
-		return NULL;
-	}
-
-	/* Response-Authenticator = MD5(Code+ID+Len+ReqAuth+Attrs+Secret) */
+	/* Verify the Response-Authenticator BEFORE parsing any attribute
+	 * body.  It is MD5(Code+ID+Len+ReqAuth+Attrs+Secret) over the whole
+	 * reply (RFC 2865 s3), so a passing check authenticates the raw
+	 * attribute bytes; parsing then copies only authenticated data
+	 * (defense-in-depth: attributes were previously parsed+allocated
+	 * before any MAC was verified).  The Message-Authenticator
+	 * (RFC 3579), whose HMAC computation needs the parsed attr list to
+	 * locate and zero its own attribute, is checked after the parse. */
 	{
 		size_t attrl = len - IKEV2_RADIUS_HEADER_LEN;
 		size_t blen = 4 + IKEV2_RADIUS_AUTH_LEN + attrl + secret->l;
@@ -439,7 +439,7 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 			ikev2_radius_response_free(resp);
 			return NULL;
 		}
-		memcpy(b + bo, v, 4);				   bo += 4;
+		memcpy(b + bo, v, 4);			   bo += 4;
 		memcpy(b + bo, req_auth, IKEV2_RADIUS_AUTH_LEN);   bo += IKEV2_RADIUS_AUTH_LEN;
 		memcpy(b + bo, v + IKEV2_RADIUS_HEADER_LEN, attrl); bo += attrl;
 		memcpy(b + bo, secret->v, secret->l);		   bo += secret->l;
@@ -460,6 +460,13 @@ ikev2_radius_verify_response(uint8_t id, const uint8_t *req_auth,
 			ikev2_radius_response_free(resp);
 			return NULL;
 		}
+	}
+
+	/* now parse the (authenticated) attributes */
+	if (radius_parse_attrs(resp, v + IKEV2_RADIUS_HEADER_LEN,
+			       len - IKEV2_RADIUS_HEADER_LEN) < 0) {
+		ikev2_radius_response_free(resp);
+		return NULL;
 	}
 
 	/* Message-Authenticator (RFC 3579): required on every EAP reply. */

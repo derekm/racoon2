@@ -136,6 +136,13 @@ tcp_srv_listener_fd(void)
 	return listener_fd;
 }
 
+/* Cap on concurrently-accepted RFC 9329 streams.  Each accepted stream
+ * costs ~196 KB (embedded decap buf[65535] + 64 KB obuf + 64 KB record)
+ * plus one fd, and the listener is reachable pre-auth from any peer, so
+ * an accept flood must be bounded.  At the cap we stop draining the
+ * kernel backlog; the listen queue fills and further SYNs are dropped. */
+#define TCP_SRV_MAX_CONNS	256
+
 int
 tcp_srv_accept_pending(void)
 {
@@ -146,6 +153,9 @@ tcp_srv_accept_pending(void)
 	for (;;) {
 		struct tcp_stream *st;
 		struct tcp_conn *c;
+
+		if (tcp_srv_count() >= TCP_SRV_MAX_CONNS)
+			break;
 
 		st = tcp_stream_accept(listener_fd, g_dispatch, g_arg);
 		if (st == NULL) {
