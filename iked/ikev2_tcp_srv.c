@@ -268,8 +268,13 @@ tcp_srv_register_connecting(struct tcp_stream *st)
 	return 0;
 }
 
-/* Family-exact address+port equality (the stream's stored sockaddr_storage
- * vs a transmit-path src/dest sockaddr). */
+/* RFC 9329: the TCP transport is keyed per peer ADDRESS, not per port.
+ * The stream's remote endpoint is the peer's IKE-over-TCP socket (:4500)
+ * while the SA's IKE destination carries the normal IKE port (:500); the
+ * local side differs likewise (TCP ephemeral src vs :500).  Comparing
+ * addresses only lets tcp_srv_find() route any IKE message for that peer
+ * over its stream -- both the initiator's outbound stream (remote=peer,
+ * local=us) and the responder's accepted stream (remote=peer, local=us). */
 static int
 sa_addr_equal(const struct sockaddr *a, const struct sockaddr *b)
 {
@@ -281,8 +286,7 @@ sa_addr_equal(const struct sockaddr *a, const struct sockaddr *b)
 		const struct sockaddr_in *x = (const struct sockaddr_in *)a;
 		const struct sockaddr_in *y = (const struct sockaddr_in *)b;
 
-		return x->sin_addr.s_addr == y->sin_addr.s_addr &&
-		    x->sin_port == y->sin_port;
+		return x->sin_addr.s_addr == y->sin_addr.s_addr;
 	}
 	case AF_INET6:
 	{
@@ -290,8 +294,7 @@ sa_addr_equal(const struct sockaddr *a, const struct sockaddr *b)
 		const struct sockaddr_in6 *y = (const struct sockaddr_in6 *)b;
 
 		return memcmp(&x->sin6_addr, &y->sin6_addr,
-			      sizeof(x->sin6_addr)) == 0 &&
-		    x->sin6_port == y->sin6_port;
+			      sizeof(x->sin6_addr)) == 0;
 	}
 	}
 	return 0;

@@ -392,26 +392,24 @@ EOF
 	esac
 
 	if echo "$name" | grep -q -- '-tcp'; then
-		# transport-priority gate for RFC 9329: the kind's PQC/ADDKE and
-		# initial_child_ke-immediate assertions don't apply to a transport row,
-		# so gate on the TCP proof itself -- listener opened on both seats, the
-		# 16725 TCP_ENCAPSULATION_SUPPORTED notify on the wire, and an ESP child
-		# + dataplane up (up/cpl are computed above).
+		# transport-priority gate for RFC 9329: prove IKE bytes actually
+		# rode the TCP stream.  The send-swap logs every message it
+		# routes over a stream ("IKE-over-TCP: %u-byte IKE message
+		# routed over stream"), and that line is ONLY emitted on the
+		# TCP send path.  The earlier "listener on port 4500" and
+		# 16725-notify-name checks are NOT transport proof (both print
+		# on a plain-UDP run), so require the stream-send line on BOTH
+		# seats plus an established ESP child.
 		if [ "$up" -ne 1 ] || [ "$cpl" -ne 0 ]; then
 			log "FAIL: TCP-encap IKE_SA/child not established (up=${up:-0} cpl=$cpl)"
 			return 1
 		fi
-		if ! grep -q 'IKE-over-TCP listener on port 4500' "$D/init-iked.log" \
-		   || ! grep -q 'IKE-over-TCP listener on port 4500' "$D/resp-iked.log"; then
-			log "FAIL: IKE-over-TCP listener not opened on both seats; IKE did not ride TCP"
+		if ! grep -q 'routed over stream' "$D/init-iked.log" \
+		   || ! grep -q 'routed over stream' "$D/resp-iked.log"; then
+			log "FAIL: no IKE frame sent over the TCP stream on both seats (no 'routed over stream'); exchange rode UDP"
 			return 1
 		fi
-		if ! grep -q 'TCP_ENCAPSULATION_SUPPORTED' "$D/init-iked.log" \
-		   && ! grep -q 'TCP_ENCAPSULATION_SUPPORTED' "$D/resp-iked.log"; then
-			log "FAIL: notify 16725 (TCP_ENCAPSULATION_SUPPORTED) not on the wire"
-			return 1
-		fi
-		log "PASS: TCP-encap IKE_SA ESTABLISHED + ESP child + dataplane over the TCP stream (RFC 9329)"
+		log "PASS: IKE frames routed over the TCP stream + ESP child + dataplane (RFC 9329)"
 		return 0
 	fi
 

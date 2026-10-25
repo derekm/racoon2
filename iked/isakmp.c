@@ -2429,6 +2429,11 @@ isakmp_transmit_noretry(struct transmit_info *info, rc_vchar_t *pkt,
 				     "IKE-over-TCP reply not queued "
 				     "(stream buffer full or message "
 				     "> 65529 bytes)\n");
+			else
+				plog(PLOG_DEBUG, PLOGLOC, NULL,
+				     "IKE-over-TCP: %u-byte IKE message "
+				     "routed over stream to %s\n",
+				     (unsigned)pkt->l, rcs_sa2str(dest));
 			return;
 		}
 	}
