@@ -2396,6 +2396,41 @@ isakmp_schedule_retransmit_frags(struct transmit_info *info,
  * transmit a packet
  *
  */
+/* RFC 9329: route a whole IKE message over the peer's IKE-over-TCP stream
+ * when one is registered for (dest,src).  Returns 1 if it was sent over the
+ * stream (queued/written), 0 if no stream matched (caller may then fall back
+ * to UDP -- but only a non-tcp_encap peer has no stream).  Every IKE send
+ * path funnels here so a tcp_encap exchange stays exclusively on TCP,
+ * including retransmits (isakmp_retransmit/force_retransmit) and
+ * notifications (isakmp_sendto). */
+static int
+isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt)
+{
+	struct tcp_stream *ts;
+	int r;
+
+	if (pkt == NULL)
+		return 0;
+	ts = tcp_srv_find(dest, src);
+	if (ts == NULL)
+		return 0;
+	r = tcp_stream_send(ts, pkt->v, pkt->l);
+	if (r < 0)
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "IKE-over-TCP send failed: %s\n", strerror(errno));
+	else if (r == 2)
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		     "IKE-over-TCP: %u-byte IKE message not queued "
+		     "(stream buffer full or message > 65529 bytes)\n",
+		     (unsigned)pkt->l);
+	else
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		     "IKE-over-TCP: %u-byte IKE message "
+		     "routed over stream to %s\n",
+		     (unsigned)pkt->l, rcs_sa2str(dest));
+	return 1;
+}
+
 void
 isakmp_transmit_noretry(struct transmit_info *info, rc_vchar_t *pkt,
 			struct sockaddr *src, struct sockaddr *dest)
@@ -2409,34 +2444,8 @@ isakmp_transmit_noretry(struct transmit_info *info, rc_vchar_t *pkt,
 	 * that stream.  The codec adds the framing (Len|marker|message), so
 	 * do NOT run the UDP NAT-T marker path (natt_set_non_esp_marker)
 	 * below. */
-	{
-		struct tcp_stream *ts = tcp_srv_find(dest, src);
-
-		if (ts != NULL) {
-			/* r==0 queued+flushed, r==1 queued+pending (loop flushes
-			 * on the write wake), r==2 NOT queued (stream buffer
-			 * full or message >65529 B -- nothing sent, nothing
-			 * lost but the peer waits), r<0 hard error.  r==2 would
-			 * otherwise be a silent reply drop in the matrix. */
-			int r = tcp_stream_send(ts, pkt->v, pkt->l);
-
-			if (r < 0)
-				plog(PLOG_INTERR, PLOGLOC, NULL,
-				     "IKE-over-TCP reply failed: %s\n",
-				     strerror(errno));
-			else if (r == 2)
-				plog(PLOG_INTERR, PLOGLOC, NULL,
-				     "IKE-over-TCP reply not queued "
-				     "(stream buffer full or message "
-				     "> 65529 bytes)\n");
-			else
-				plog(PLOG_DEBUG, PLOGLOC, NULL,
-				     "IKE-over-TCP: %u-byte IKE message "
-				     "routed over stream to %s\n",
-				     (unsigned)pkt->l, rcs_sa2str(dest));
-			return;
-		}
-	}
+	if (isakmp_try_tcp_send(dest, src, pkt))
+		return;
 
 	sock = isakmp_find_socket(src);
 	if (sock == -1) {
@@ -2518,6 +2527,11 @@ isakmp_force_retransmit(struct transmit_info *info)
 		return;
 	}
 
+	/* RFC 9329: a tcp_encap peer's retransmits ride the same stream (the
+	 * codec re-frames the message). */
+	if (isakmp_try_tcp_send(info->dest, info->src, info->packet))
+		return;
+
 	gettimeofday(&info->sent_time, 0);
 	TRACE((PLOGLOC, "count %d\n", info->retry_count));
 	++info->retry_count;
@@ -2582,6 +2596,12 @@ isakmp_retransmit(struct transmit_info *info)
 
 	gettimeofday(&info->sent_time, 0);
 	++info->retry_count;
+
+	/* RFC 9329: the periodic retransmit of a tcp_encap message rides the
+	 * stream too (codec re-frames), so an SA that is mid-handshake over
+	 * TCP never leaks a copy onto UDP. */
+	if (isakmp_try_tcp_send(info->dest, info->src, info->packet))
+		return;
 
 	if ((size_t)info->retry_count < ARRAYLEN(retransmit_interval))
 		next_interval = retransmit_interval[info->retry_count];
@@ -2650,6 +2670,11 @@ isakmp_sendto(rc_vchar_t *pkt, struct sockaddr *remote, struct sockaddr *local)
 {
 	int sock;
 	int len;
+
+	/* RFC 9329: notifications/other one-shot sends for a tcp_encap peer
+	 * ride its stream (codec re-frames). */
+	if (isakmp_try_tcp_send(remote, local, pkt))
+		return;
 
 	sock = isakmp_find_socket(local);
 	if (sock == -1) {
