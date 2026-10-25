@@ -571,7 +571,7 @@ ikev2_allocate_sa(isakmp_cookie_t *initiator_spi, struct sockaddr *local,
 	sa->transmit_info.callback_param = (void *)sa;
 
 	sa->response_info.timeout_callback = 0;
-	sa->response_info.callback_param = (void *)0;
+	sa->response_info.callback_param = (void *)sa;
 	sa->response_info.times_per_send = 1;
 
 	sa->lifetime_byte = 0;

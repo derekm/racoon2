@@ -2432,10 +2432,12 @@ isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt
 	 * stream it was built over.  tcp_srv_find_bound() matches the stream
 	 * on the SA's remote endpoint (addr + the SA's remote port, which
 	 * for a responder distinguishes several clients behind one NAT) --
-	 * an address-only match would cross-wire their replies.  Only before
-	 * the SA exists -- the pre-SA IKE_SA_INIT, whose dst is the IKE port
-	 * (:500) while the outbound stream's remote is :4500 -- or when no
-	 * per-SA stream matches does it fall back to the address-only lookup. */
+	 * an address-only match would cross-wire their replies.  When the
+	 * bound lookup misses -- the pre-SA IKE_SA_INIT (dst is the IKE port
+	 * :500 while the outbound stream's remote is :4500) or an established
+	 * tcp_encap SA whose own remote still carries the IKE port :500 rather
+	 * than the stream port :4500 -- fall back to the address-only lookup,
+	 * which is unambiguous for the single-stream-per-peer case. */
 	ts = ike_sa != NULL
 		? tcp_srv_find_bound((const struct sockaddr *)&ike_sa->remote,
 				     (const struct sockaddr *)&ike_sa->local)
