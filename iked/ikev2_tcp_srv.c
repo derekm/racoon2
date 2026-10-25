@@ -25,6 +25,7 @@
 struct tcp_conn {
 	struct tcp_conn *next;
 	struct tcp_stream *st;
+	int connecting;		/* outbound (initiator) stream, not yet connected */
 };
 
 static struct tcp_conn *conns;
@@ -175,12 +176,17 @@ tcp_srv_fdset(fd_set *rfds, fd_set *wfds)
 		int fd = c->st->fd;
 
 		if (fd >= 0 && fd < FD_SETSIZE) {
-			if (rfds)
-				FD_SET(fd, rfds);
-			/* Write readiness only when outbound bytes are queued
-			 * (an accepted stream is already fully connected). */
-			if (wfds && c->st->obuf_off < c->st->obuf_len)
-				FD_SET(fd, wfds);
+			if (c->connecting) {
+				/* Not yet connected: wait on write/ERR only (a
+				 * read on an unfinished socket errors). */
+				if (wfds)
+					FD_SET(fd, wfds);
+			} else {
+				if (rfds)
+					FD_SET(fd, rfds);
+				if (wfds && c->st->obuf_off < c->st->obuf_len)
+					FD_SET(fd, wfds);
+			}
 			if (fd > max)
 				max = fd;
 		}
@@ -202,12 +208,22 @@ tcp_srv_process(const fd_set *rfds, const fd_set *wfds)
 		struct tcp_stream *st = c->st;
 		int dead = 0;
 
-		if (rfds && st->fd >= 0 && FD_ISSET(st->fd, rfds)) {
+		/* A connecting (initiator) stream completes on a write/ERR
+		 * wake: ask SO_ERROR only then. */
+		if (c->connecting && wfds && st->fd >= 0 &&
+		    FD_ISSET(st->fd, wfds)) {
+			if (tcp_stream_connect_done(st) < 0)
+				dead = 1;	/* refused/reset connect */
+			else
+				c->connecting = 0;
+		}
+		if (!dead && !c->connecting && rfds && st->fd >= 0 &&
+		    FD_ISSET(st->fd, rfds)) {
 			if (tcp_stream_on_readable(st) < 0)
 				dead = 1;	/* framing-fatal / FIN / error */
 		}
-		if (!dead && wfds && st->fd >= 0 && FD_ISSET(st->fd, wfds) &&
-		    st->obuf_off < st->obuf_len) {
+		if (!dead && !c->connecting && wfds && st->fd >= 0 &&
+		    FD_ISSET(st->fd, wfds) && st->obuf_off < st->obuf_len) {
 			if (tcp_stream_flush(st) < 0)
 				dead = 1;
 		}
@@ -230,6 +246,26 @@ tcp_srv_count(void)
 	for (c = conns; c; c = c->next)
 		++n;
 	return n;
+}
+
+/* Append an OUTBOUND (initiator) stream to the registry.  It is still
+ * connecting until the loop observes a writable/ERR wake; the initiator path
+ * calls this right after tcp_stream_connect() returns EINPROGRESS, then the
+ * registry drives connect completion and (via tcp_srv_find) routes replies
+ * back over it. */
+int
+tcp_srv_register_connecting(struct tcp_stream *st)
+{
+	struct tcp_conn *c;
+
+	c = calloc(1, sizeof(*c));
+	if (c == NULL)
+		return -1;
+	c->st = st;
+	c->connecting = 1;
+	c->next = conns;
+	conns = c;
+	return 0;
 }
 
 /* Family-exact address+port equality (the stream's stored sockaddr_storage

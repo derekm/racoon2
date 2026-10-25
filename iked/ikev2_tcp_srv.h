@@ -47,9 +47,15 @@ int tcp_srv_listener_fd(void);
 /* Accept every pending connection into a registered tcp_stream.  >=0 count. */
 int tcp_srv_accept_pending(void);
 
-/* Fill rfds (always) and wfds (streams with queued outbound bytes; a
- * connecting stream is parked and driven by the initiator path, not here).
- * May be NULL.  Returns max fd + 1. */
+/* Append an OUTBOUND (initiator) stream that tcp_stream_connect() is still
+ * completing (EINPROGRESS).  The loop drives connect completion (write/ERR
+ * wake -> SO_ERROR) and then normal read/flush; tcp_srv_find routes replies
+ * back over it.  Returns 0, or -1 on allocation failure. */
+int tcp_srv_register_connecting(struct tcp_stream *st);
+
+/* Fill rfds (always) and wfds.  An accepted stream is in rfds (and wfds only
+ * while it has queued bytes); a connecting (initiator) stream is in wfds only
+ * (connect completion is a write/ERR wake).  May be NULL.  Returns max+1. */
 int tcp_srv_fdset(fd_set *rfds, fd_set *wfds);
 
 /* Drive the registry with the ready sets from evloop_wait_rw: accept on a
