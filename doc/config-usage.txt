@@ -726,6 +726,22 @@ remote
 		exemption for tcp/4500, or the SYN is captured by the tunnel SPD.
 		off (default) = plain UDP only.
 
+	offer_intermediate (on|off) ;
+		It is valid for the ikev2 directive.
+		RFC 9242.  When on (default), iked advertises the
+		IKE_INTERMEDIATE_SUPPORTED (16438) capability notify in
+		IKE_SA_INIT, enabling the IKE_INTERMEDIATE exchange.  The
+		initial-IKE_SA ML-KEM ADDKE path runs over IKE_INTERMEDIATE, so
+		this is on by default.  A peer that does not support 16438
+		ignores it and no negotiation is affected.
+
+	offer_sig_hash_algorithms (on|off) ;
+		It is valid for the ikev2 directive.
+		RFC 7427.  When on (default), iked advertises the
+		SIGNATURE_HASH_ALGORITHMS (16431) notify so the peer knows which
+		signature hash algorithms this side accepts.  A peer that does
+		not support 16431 ignores it.
+
 	addke_required (on|off) ;
 		It is valid for the ikev2 directive.
 		It is the RFC 9370 Additional Key Exchange (ADDKE) downgrade
