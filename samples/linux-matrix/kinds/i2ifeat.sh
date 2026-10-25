@@ -570,6 +570,13 @@ feat_row() {
 	if grep -q 'key exchange method ML_KEM_768 not supported' "$CR" 2>/dev/null; then
 		feat_bad "this strongSwan has no ML-KEM-768 but the ADDKE iked initiator offers it as mandatory; run -charonr rows against an ML-KEM strongSwan or a classical iked build"
 	fi
+	if [ "$efail" -ne 0 ]; then	# evidence for a failed row in the job log
+		for _f in "$CI" "$CR" "$D/swanctl-load.log" "$D/swanctl-init.log"; do
+			[ -s "$_f" ] || continue
+			log "--- tail ${_f##*/}"; tail -25 "$_f" | sed 's/^/    /'
+		done
+		dmesg 2>/dev/null | grep -i 'apparmor.*DENIED' | tail -5 | sed 's/^/    /'
+	fi
 	if [ "$PEER" = charon ] || [ "$PEER_R" = charon ]; then i2i_charon_kill; fi
 	pkill -9 -f "$C/" 2>/dev/null || true
 	[ "$efail" -eq 0 ] && log "PASS $name"
