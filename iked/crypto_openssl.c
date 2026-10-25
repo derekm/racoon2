@@ -5692,8 +5692,18 @@ brainpool_group(size_t field_len)
 		EC_GROUP_free(grp);
 	if (ctx)
 		BN_CTX_free(ctx);
-	if (p) BN_free(p); if (a) BN_free(a); if (b) BN_free(b);
-	if (gx) BN_free(gx); if (gy) BN_free(gy); if (n) BN_free(n);
+	if (p)
+		BN_free(p);
+	if (a)
+		BN_free(a);
+	if (b)
+		BN_free(b);
+	if (gx)
+		BN_free(gx);
+	if (gy)
+		BN_free(gy);
+	if (n)
+		BN_free(n);
 	return NULL;
 }
 

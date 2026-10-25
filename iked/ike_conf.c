@@ -4914,8 +4914,8 @@ ikev2_ipsec_sa_to_proplist(struct ikev2_child_sa *child_sa,
 	    child_sa->parent->state == IKEV2_STATE_ESTABLISHED &&
 	    (child_sa->is_initiator ||
 	     child_sa->addke_nrounds > 0 ||
-	     child_sa->parent->rmconf &&
-	     ikev2_addke_unrequested(child_sa->parent->rmconf) == RCT_BOOL_ON)) {
+	     (child_sa->parent->rmconf &&
+	      ikev2_addke_unrequested(child_sa->parent->rmconf) == RCT_BOOL_ON))) {
 		*tail = alglist_to_addke_proppair(proto_info->addke_alg);
 		if (!*tail) {
 			isakmp_log(0, 0, 0, 0,

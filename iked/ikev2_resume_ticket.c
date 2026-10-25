@@ -162,7 +162,10 @@ r2tick_unpack(const uint8_t *p, size_t len, struct r2ticket_state *st)
 	if (o + 8 > len) goto err;
 	for (int i = 0; i < 8; i++) st->spi_r = (st->spi_r << 8) | p[o++];
 
-	if (o + 2 > len) goto err; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
+	if (o + 2 > len)
+		goto err;
+	v16 = ((uint16_t)p[o]<<8)|p[o+1];
+	o += 2;
 	if (o + v16 > len) goto err;
 	if (v16) {
 		st->sa = rc_vnew(p + o, v16);
@@ -170,7 +173,10 @@ r2tick_unpack(const uint8_t *p, size_t len, struct r2ticket_state *st)
 	}
 	o += v16;
 
-	if (o + 2 > len) goto err; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
+	if (o + 2 > len)
+		goto err;
+	v16 = ((uint16_t)p[o]<<8)|p[o+1];
+	o += 2;
 	if (o + v16 > len) goto err;
 	if (v16) {
 		st->idi = rc_vnew(p + o, v16);
@@ -178,7 +184,10 @@ r2tick_unpack(const uint8_t *p, size_t len, struct r2ticket_state *st)
 	}
 	o += v16;
 
-	if (o + 2 > len) goto err; v16 = ((uint16_t)p[o]<<8)|p[o+1]; o+=2;
+	if (o + 2 > len)
+		goto err;
+	v16 = ((uint16_t)p[o]<<8)|p[o+1];
+	o += 2;
 	if (o + v16 > len) goto err;
 	if (v16) {
 		st->idr = rc_vnew(p + o, v16);
