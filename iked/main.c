@@ -74,6 +74,8 @@
 #include "evloop.h"
 #include "crypto_workers.h"
 #include "ikev2_tcp_srv.h"
+#include "sockmisc.h"
+#include "ikev2_tcp_stream.h"
 
 /* RFC 9329 IKE-over-TCP dispatch seam: a de-framed IKE message reaches the
  * same engine the UDP path uses.  ikev2_input owns and frees pkt.  Its
@@ -594,6 +596,10 @@ iked_mainloop(void)
 		if (!tcp_reg_inited) {
 			tcp_reg_inited = 1;
 			tcp_srv_init(iked_tcp_dispatch, NULL);
+			/* Same per-socket IPsec bypass the UDP IKE sockets get
+			 * (isakmp_open_address); IKE over TCP is IKE too. */
+			if (rcf_interface_head->application_bypass != RCT_BOOL_OFF)
+				tcp_stream_sock_hook = setsockopt_bypass;
 			if (iked_tcp_encap_enabled()) {
 				/* Open the IKE-over-TCP listener.  Non-fatal on
 				 * failure so a bind problem never stops iked

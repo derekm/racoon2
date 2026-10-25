@@ -62,6 +62,36 @@ wait_connect(struct tcp_stream *ts, int ms)
 }
 
 static int fails;
+
+/* Socket-hook probe: iked installs setsockopt_bypass() here.  The hook has
+ * to run on a fresh socket, before bind/listen/connect; otherwise the
+ * kernel has already done the SYN's policy lookup and the bypass comes
+ * too late. */
+static int hook_calls, hook_fresh = 1, hook_fail;
+static int
+probe_hook(int fd, int family)
+{
+	struct sockaddr_storage ss;
+	socklen_t l = sizeof(ss);
+	int acc = 0;
+	socklen_t al = sizeof(acc);
+
+	++hook_calls;
+	if (family != AF_INET)
+		hook_fresh = 0;
+	if (getsockname(fd, (struct sockaddr *)&ss, &l) == 0 &&
+	    ((struct sockaddr_in *)&ss)->sin_port != 0)
+		hook_fresh = 0;		/* already bound */
+	if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &acc, &al) == 0 && acc)
+		hook_fresh = 0;		/* already listening */
+	if (getpeername(fd, (struct sockaddr *)&ss, &l) == 0)
+		hook_fresh = 0;		/* already connected */
+	if (hook_fail) {
+		errno = EPERM;
+		return -1;
+	}
+	return 0;
+}
 #define CHECK(cond, why) do { if (!(cond)) { \
 	printf("FAIL: %s\n", why); ++fails; } else { \
 	printf("ok: %s\n", why); } } while (0)
@@ -87,6 +117,7 @@ main(void)
 	la.sin_port = 0;
 
 	tcp_srv_init(capture, NULL);
+	tcp_stream_sock_hook = probe_hook;
 	lfd = tcp_srv_open_listener((struct sockaddr *)&la, 0);
 	CHECK(lfd >= 0 && tcp_srv_listener_fd() == lfd, "listener: opened");
 	if (lfd < 0) {
@@ -106,6 +137,8 @@ main(void)
 	cli1 = tcp_stream_connect((struct sockaddr *)&ca, NULL, capture, NULL);
 	cli2 = tcp_stream_connect((struct sockaddr *)&ca, NULL, capture, NULL);
 	CHECK(cli1 && cli2, "connect: two clients");
+	CHECK(hook_calls == 3 && hook_fresh,
+	      "hook: run once per listener/connect socket, before bind/listen/connect");
 	if (!cli1 || !cli2)
 		return 1;
 	CHECK(wait_connect(cli1, 3000) == 0 && wait_connect(cli2, 3000) == 0,
@@ -228,6 +261,12 @@ main(void)
 		++spins;
 	}
 	CHECK(tcp_srv_count() == 1, "teardown: client1 FIN removed its stream");
+
+	hook_fail = 1;
+	CHECK(tcp_stream_connect((struct sockaddr *)&ca, NULL, capture, NULL) == NULL,
+	      "hook: a failing socket hook fails the connect (no unprotected SYN)");
+	hook_fail = 0;
+	tcp_stream_sock_hook = NULL;
 
 	tcp_stream_free(cli2);
 	tcp_srv_fini();

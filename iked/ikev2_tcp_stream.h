@@ -103,4 +103,16 @@ int tcp_stream_flush(struct tcp_stream *);
 
 void tcp_stream_free(struct tcp_stream *);
 
+/*
+ * Per-socket hook run on every IKE-over-TCP socket (outbound connect and the
+ * listener; accepted sockets inherit the listener's socket policy) right
+ * after socket() and BEFORE bind/connect/listen.  iked installs
+ * setsockopt_bypass() here, exactly as for its UDP IKE sockets: without a
+ * per-socket IPsec bypass the TCP SYN to the peer's :4500 matches the
+ * tunnel SPD (selectors covering the IKE endpoints), the kernel parks it on
+ * an ACQUIRE and the stream never leaves SYN-SENT.  NULL = no hook (unit
+ * tests).  A hook failure fails the socket.
+ */
+extern int (*tcp_stream_sock_hook)(int fd, int family);
+
 #endif /* _IKEV2_TCP_STREAM_H_ */

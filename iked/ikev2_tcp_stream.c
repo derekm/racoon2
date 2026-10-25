@@ -157,6 +157,8 @@ tcp_stream_accept(int lfd, tcp_stream_dispatch dispatch, void *arg)
 	return stream_new(fd, (struct sockaddr *)&remote, 1, dispatch, arg);
 }
 
+int (*tcp_stream_sock_hook)(int fd, int family) = NULL;
+
 struct tcp_stream *
 tcp_stream_connect(const struct sockaddr *remote, const struct sockaddr *local,
 		   tcp_stream_dispatch dispatch, void *arg)
@@ -172,6 +174,9 @@ tcp_stream_connect(const struct sockaddr *remote, const struct sockaddr *local,
 	fd = socket(remote->sa_family, SOCK_STREAM, 0);
 	if (fd < 0)
 		return NULL;
+	/* Must precede connect(): the SYN's policy lookup happens there. */
+	if (tcp_stream_sock_hook && tcp_stream_sock_hook(fd, remote->sa_family) < 0)
+		goto fail;
 	if (local && bind(fd, local, sa_len(local)) < 0)
 		goto fail;
 	if (set_nonblock(fd) < 0)

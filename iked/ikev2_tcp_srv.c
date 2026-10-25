@@ -109,6 +109,11 @@ tcp_srv_open_listener(const struct sockaddr *local, int port)
 	fd = socket(la.ss_family, SOCK_STREAM, 0);
 	if (fd < 0)
 		return -1;
+	/* IPsec bypass on the listener: accepted sockets inherit it, so the
+	 * responder's SYN-ACK and stream bytes are not captured by the tunnel
+	 * SPD either. */
+	if (tcp_stream_sock_hook && tcp_stream_sock_hook(fd, la.ss_family) < 0)
+		goto fail;
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0)
 		goto fail;
 	if (set_nonblock(fd) < 0)
