@@ -4479,13 +4479,36 @@ ikev2_ipsec_conf_to_proplist(struct ikev2_child_sa *child_sa,
 		}
 		if (conf->sa_esp) {
 			*prop_tail = ikev2_ipsec_sa_to_proplist(child_sa,
-								proposal_number,
-								conf->sa_esp,
-								IKEV2PROPOSAL_ESP,
-								need_pfs,
-								ext_sequence);
+							proposal_number,
+							conf->sa_esp,
+							IKEV2PROPOSAL_ESP,
+							need_pfs,
+							ext_sequence);
 			if (!*prop_tail)
 				goto fail;
+			/* RFC 9370 ADDKE on a CREATE_CHILD rekey: put the configured
+			 * esp_addke_alg ADDKE transform(s) into OUR offer so the
+			 * matcher can echo/select the peer's type-6 and the rekey
+			 * actually runs the ML-KEM rounds.  Type-6 is CREATE_CHILD-
+			 * only (never the IKE_AUTH child).  The initiator appends it
+			 * via ikev2_child_maybe_reoffer_addke(); the responder had no
+			 * path to OFFER ADDKE, so a matching peer's type-6 was dropped
+			 * during selection (my_proposal held no ADDKE), addke_nrounds
+			 * stayed 0 and the rekey fell back to a plain DH exchange --
+			 * the ADDKE child-rekey rounds never ran on either seat. */
+			if (is_createchild && !child_sa->is_initiator &&
+			    conf->sa_esp) {
+				struct rc_alglist *ka;
+				struct prop_pair *pp = *prop_tail;
+				struct prop_pair **tt = &pp->tnext;
+
+				SA_CONF(ka, conf->sa_esp, addke_alg, 0);
+				if (ka) {
+					while (*tt)
+						tt = &(*tt)->next;
+					*tt = alglist_to_addke_proppair(ka);
+				}
+			}
 			prop_tail = &(*prop_tail)->next;
 		}
 	}
