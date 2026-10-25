@@ -17,14 +17,28 @@
 #                            sends neither MULTIPLE_AUTH_SUPPORTED nor
 #                            ANOTHER_AUTH_FOLLOWS; charon's remote-2 is
 #                            unmet, no SA.
-#   feat-mai-i2i             iked initiator two rounds vs an iked responder
-#                            (its second round is EAP only): refused, no SA.
+#   feat-mai-i2i             iked<->iked two rounds: RSA, then PSK as
+#                            r2second verified by the responder's
+#                            multi_auth_second_id.  SA + ESP up.
+#   feat-mai-badpsk-i2i      responder holds a different round-2 PSK:
+#                            round two rejected, no SA.
+#   feat-mai-nosup-i2i       responder multiple_auth off: no
+#                            MULTIPLE_AUTH_SUPPORTED, initiator refuses.
+#   feat-mai-charon          charon initiator (local + local-2 psk) vs the
+#                            iked responder's PSK second round.  SA up.
+#   feat-mai-nopeer-charon   charon multiple_authentication = no: no
+#                            MULTIPLE_AUTH_SUPPORTED, one round only; the
+#                            iked responder requires its second identity
+#                            and refuses.  No SA.  (The flag-without-
+#                            support case is pinned by notifytest: no
+#                            stock peer sends it.)
 #   feat-al-i2i              responder auth_lifetime 30, initiator
-#                            honor_auth_lifetime on: cap logged <=30 s and
-#                            a fresh IKE_SA_INIT (full reauth) measured
-#                            20..60 s after the first.
-#   feat-al-nohonor-i2i      same, honor off: no cap, no second IKE_SA_INIT
-#                            within 60 s.
+#                            honor_auth_lifetime on: cap logged in 15..30 s
+#                            and a fresh IKE_SA_INIT (full reauth) measured
+#                            10..34 s after the first; the new SA reaches
+#                            ESTABLISHED with ESP and ping.
+#   feat-al-nohonor-i2i      same, honor off: no cap, exactly one
+#                            IKE_SA_INIT in the 35 s window.
 #   feat-al-charon           charon initiator vs iked auth_lifetime 30:
 #                            charon schedules reauth and reauthenticates.
 #   feat-al-off-charon       iked responder without auth_lifetime: charon
@@ -151,6 +165,11 @@ $4
 EOF
 }
 
+# every gate also lands as a structured "GATE <row> <label> PASS|FAIL"
+# line, which run.sh counts into the results TSV (gates_pass/gates_fail)
+feat_ok() { log "GATE ok: $1"; r2_gate "g$((_fg=${_fg:-0}+1))" PASS "$1"; }
+feat_bad() { log "FAIL: $1"; r2_gate "g$((_fg=${_fg:-0}+1))" FAIL "$1"; efail=1; }
+
 feat_charon_mlkem() {	# runtime proof: does this strongSwan list ML_KEM_768?
 	# (a string scan is not proof: Debian 6.0.1 names ML_KEM_768 in its
 	# enum tables yet refuses it).  Probed once per run in a scratch netns.
@@ -258,8 +277,22 @@ feat_row() {
 		multi_auth_second_id fqdn "r2second";' ;;
 		esac
 		R_EXTRA='		multiple_auth on;'
+		# iked responder: a PSK second round for r2second (RFC 4739 s3.2)
+		case $name in
+		feat-mai-i2i|feat-mai-badpsk-i2i|feat-mai-charon|feat-mai-nopeer-charon)
+			R_EXTRA='		multiple_auth on;
+		multi_auth_second_id fqdn "r2second";' ;;
+		feat-mai-nosup-i2i) R_EXTRA='		multiple_auth off;' ;;
+		esac
+		if [ "$name" = feat-mai-badpsk-i2i ]; then
+			printf 'wrong-round-psk!' > "$C/psk2-r"; chmod 600 "$C/psk2-r"
+			AUTH_R=$(printf '%s' "$AUTH_R" | sed "s|$C/psk2|$C/psk2-r|")
+		fi
 		mkdir -p "${I2I_CHARON_VDIR%/conf.d}/private"
 		cp "$C/key-r.pem" "${I2I_CHARON_VDIR%/conf.d}/private/r2-$name-key-r.pem"
+		cp "$C/key-i.pem" "${I2I_CHARON_VDIR%/conf.d}/private/r2-$name-key-i.pem"
+		openssl x509 -in "$C/cert-r.pem" -pubkey -noout > "$C/pub-r.pem" 2>/dev/null
+		chmod 644 "$C"/*.pem
 		CH_AUTH="		local {
 			auth = pubkey
 			id = racoon2-matrix
@@ -280,7 +313,24 @@ feat_row() {
 		id = r2second
 		secret = 0x$_s2
 	}"
-		case $name in *-nosup-*) I2I_CHARON_EXTRA='	multiple_authentication = no' ;; esac
+		case $name in *-nosup-*|feat-mai-nopeer-charon) I2I_CHARON_EXTRA='	multiple_authentication = no' ;; esac
+		if [ "$PEER" = charon ]; then
+			# charon initiator: round 1 RSA (cert-i), round 2 PSK as r2second
+			CH_AUTH="		local {
+			auth = pubkey
+			id = r2init-matrix
+			certs = $C/cert-i.pem
+		}
+		local-2 {
+			auth = psk
+			id = r2second
+		}
+		remote {
+			auth = pubkey
+			id = racoon2-matrix
+			pubkeys = $C/pub-r.pem
+		}"
+		fi
 		;;
 	feat-al-*)
 		case $name in
@@ -364,22 +414,22 @@ feat_row() {
 	IL=$D/init-iked.log RL=$D/resp-iked.log CI=$D/charon-init.log CR=$D/charon-resp.log
 	efail=0
 	want_up=1
-	case $name in feat-mai-nosup-*|feat-mai-badpsk-*|feat-mai-off-*|feat-mai-i2i) want_up=0 ;; esac
+	case $name in feat-mai-nosup-*|feat-mai-badpsk-*|feat-mai-off-*|feat-mai-nopeer-charon) want_up=0 ;; esac
 	if [ "$want_up" = 1 ]; then
-		[ "$up" = 1 ] || { log "FAIL: SA/ESP not up"; efail=1; }
+		[ "$up" = 1 ] || { feat_bad "SA/ESP not up"; }
 		[ "$up" = 1 ] && i2i_dataplane "$NSI" "$HR" "$name"
 	else
 		[ "$up" = 0 ] && [ "${re:-0}" = 0 ] && [ "${ie:-0}" = 0 ] ||
-		    { log "FAIL: an ESP SA landed on a row that must refuse (resp=$re init=$ie)"; efail=1; }
+		    { feat_bad "an ESP SA landed on a row that must refuse (resp=$re init=$ie)"; }
 	fi
 	need() {	# need <file> <ERE> <what>
-		if grep -qE -- "$2" "$1" 2>/dev/null; then log "GATE ok: $3"
-		else log "FAIL: $3 (/$2/ not in ${1##*/})"; efail=1; fi
+		if grep -qE -- "$2" "$1" 2>/dev/null; then feat_ok "$3"
+		else feat_bad "$3 (/$2/ not in ${1##*/})"; fi
 	}
 	never() {	# never <file> <ERE> <what>
 		if grep -qE -- "$2" "$1" 2>/dev/null; then
-			log "FAIL: $3 ($(grep -E -- "$2" "$1" | head -1))"; efail=1
-		else log "GATE ok: $3"; fi
+			feat_bad "$3 ($(grep -E -- "$2" "$1" | head -1))"
+		else feat_ok "$3"; fi
 	}
 
 	case $name in
@@ -410,8 +460,37 @@ feat_row() {
 	feat-mai-i2i)
 		need "$RL" 'advertising MULTIPLE_AUTH_SUPPORTED' "responder advertised"
 		need "$IL" 'multiple auth: first round, ANOTHER_AUTH_FOLLOWS' "initiator flagged round one"
-		need "$RL" 'AUTHENTICATION_FAILED|authentication fail|multiple auth.*(refus|no EAP)' "responder refused a non-EAP second round"
+		need "$RL" 'multiple auth: first round verified, awaiting the second round' "responder verified round one (RSA)"
+		need "$IL" 'multiple auth: responder verified, second round \(PSK\) sent' "initiator sent round two"
+		need "$RL" 'multiple auth: second round \(PSK\) verified' "responder verified round two (PSK as r2second)"
+		need "$IL" 'INI_IKE_AUTH_RCVD -> ESTABLISHED' "initiator ESTABLISHED"
+		need "$RL" '-> ESTABLISHED' "responder ESTABLISHED"
+		;;
+	feat-mai-badpsk-i2i)
+		need "$IL" 'second round \(PSK\) sent' "initiator ran round two"
+		need "$RL" 'multiple auth: second round \(PSK\) verification failed' "responder rejected the round-two PSK"
+		never "$RL" 'second round \(PSK\) verified' "no round-two success"
 		never "$IL" 'ESTABLISHED' "initiator never ESTABLISHED"
+		;;
+	feat-mai-nosup-i2i)
+		never "$RL" 'advertising MULTIPLE_AUTH_SUPPORTED' "responder (multiple_auth off) did not advertise"
+		need "$IL" 'did not send MULTIPLE_AUTH_SUPPORTED; aborting' "initiator refused the single-round fallback"
+		never "$IL" 'ESTABLISHED' "initiator never ESTABLISHED"
+		;;
+	feat-mai-charon)
+		need "$CI" 'generating IKE_AUTH request 1 .*N\(AUTH_FOLLOWS\)' "charon flagged round one"
+		need "$RL" 'multiple auth: first round verified, awaiting the second round' "iked verified round one (RSA)"
+		need "$RL" 'multiple auth: second round \(PSK\) verified' "iked verified charon's PSK round as r2second"
+		need "$CI" 'IKE_SA r2feat\[[0-9]+\] established' "charon ESTABLISHED"
+		;;
+	feat-mai-nopeer-charon)
+		never "$CI" 'generating IKE_SA_INIT request 0 .*N\(MULT_AUTH\)' "charon sent no MULTIPLE_AUTH_SUPPORTED"
+		# strongSwan without multiple_authentication does not flag
+		# AUTH_FOLLOWS either: it runs one round.  The iked responder
+		# names a second identity, so one round must not establish.
+		never "$CI" 'generating IKE_AUTH request 1 .*N\(AUTH_FOLLOWS\)' "charon ran a single round"
+		need "$RL" 'multiple auth: refused \(multi_auth_second_id requires a second round, peer ran one\)' "iked refused the single-round peer"
+		never "$RL" 'second round \(PSK\) verified' "no second round ran"
 		;;
 	feat-al-charonr)
 		# strongSwan as RESPONDER with reauth_time never sends
@@ -443,23 +522,23 @@ feat_row() {
 		log "measured: IKE_SA_INIT initiations=$n first=${t1:-?} second=${t2:-?}"
 		if [ "$name" = feat-al-nohonor-i2i ]; then
 			never "$IL" 'AUTH_LIFETIME: IKE SA lifetime capped' "honor off: no cap"
-			[ "$n" -eq 1 ] && log "GATE ok: honor off: one IKE_SA_INIT in 35 s" ||
-			    { log "FAIL: honor off but $n IKE_SA_INIT initiations"; efail=1; }
+			[ "$n" -eq 1 ] && feat_ok "honor off: one IKE_SA_INIT in 35 s" ||
+			    { feat_bad "honor off but $n IKE_SA_INIT initiations"; }
 		else
 			cap=$(grep -oE 'AUTH_LIFETIME: IKE SA lifetime capped to [0-9]+s' "$IL" | head -1 | grep -oE '[0-9]+s$' | tr -d s)
-			if [ -n "$cap" ] && [ "$cap" -ge 15 ] && [ "$cap" -le 30 ]; then log "GATE ok: cap ${cap}s (<=30)"
-			else log "FAIL: no AUTH_LIFETIME cap in 15..30 s (got '${cap:-none}')"; efail=1; fi
+			if [ -n "$cap" ] && [ "$cap" -ge 15 ] && [ "$cap" -le 30 ]; then feat_ok "cap ${cap}s (<=30)"
+			else feat_bad "no AUTH_LIFETIME cap in 15..30 s (got '${cap:-none}')"; fi
 			if [ -n "$t2" ] && [ $((t2 - t1)) -ge 10 ] && [ $((t2 - t1)) -le 34 ]; then
-				log "GATE ok: reauth (fresh IKE_SA_INIT) $((t2 - t1)) s after the first"
-			else log "FAIL: no fresh IKE_SA_INIT 10..34 s after the first (n=$n)"; efail=1; fi
+				feat_ok "reauth (fresh IKE_SA_INIT) $((t2 - t1)) s after the first"
+			else feat_bad "no fresh IKE_SA_INIT 10..34 s after the first (n=$n)"; fi
 			k=0; while [ "$k" -lt 15 ]; do
 				[ "$(grep -c 'INI_IKE_AUTH_RCVD -> ESTABLISHED' "$IL")" -ge 2 ] && break; sleep 1; k=$((k+1))
 			done
 			ne=$(grep -c 'INI_IKE_AUTH_RCVD -> ESTABLISHED' "$IL")
 			ie=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 			if [ "$ne" -ge 2 ] && [ "${ie:-0}" -ge 2 ] && ip netns exec "$NSI" ping -c2 -W2 "$HR" >/dev/null 2>&1; then
-				log "GATE ok: reauthenticated SA ESTABLISHED ($ne full IKE_AUTHs), ESP $ie, ping ok"
-			else log "FAIL: reauthenticated SA not up (IKE_AUTH established=$ne esp=$ie)"; efail=1; fi
+				feat_ok "reauthenticated SA ESTABLISHED ($ne full IKE_AUTHs), ESP $ie, ping ok"
+			else feat_bad "reauthenticated SA not up (IKE_AUTH established=$ne esp=$ie)"; fi
 		fi
 		;;
 	feat-al-charon|feat-al-off-charon)
@@ -473,8 +552,8 @@ feat_row() {
 			done
 			t1=$(feat_ts "$CI" 'received AUTH_LIFETIME' 1); t2=$(feat_ts "$CI" 'reauthenticating IKE_SA' 1)
 			if [ -n "$t2" ] && [ $((t2 - t1)) -le 31 ]; then
-				log "GATE ok: charon reauthenticated $((t2 - t1)) s after AUTH_LIFETIME 30"
-			else log "FAIL: charon did not reauthenticate within 31 s"; efail=1; fi
+				feat_ok "charon reauthenticated $((t2 - t1)) s after AUTH_LIFETIME 30"
+			else feat_bad "charon did not reauthenticate within 31 s"; fi
 		fi
 		;;
 	feat-nbns-i2i)
@@ -489,8 +568,7 @@ feat_row() {
 		;;
 	esac
 	if grep -q 'key exchange method ML_KEM_768 not supported' "$CR" 2>/dev/null; then
-		log "FAIL: this strongSwan has no ML-KEM-768 but the ADDKE iked initiator offers it as mandatory; run -charonr rows against an ML-KEM strongSwan or a classical iked build"
-		efail=1
+		feat_bad "this strongSwan has no ML-KEM-768 but the ADDKE iked initiator offers it as mandatory; run -charonr rows against an ML-KEM strongSwan or a classical iked build"
 	fi
 	if [ "$PEER" = charon ] || [ "$PEER_R" = charon ]; then i2i_charon_kill; fi
 	pkill -9 -f "$C/" 2>/dev/null || true
