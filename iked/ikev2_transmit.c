@@ -298,13 +298,30 @@ ikev2_update_message_id(struct ikev2_sa *ike_sa, uint32_t message_id,
 #define IPV6_MAX_FRAGMENT_SIZE 1280
 
 
+/* RFC 9329: an IKE SA carried over TCP never uses RFC 7383 fragmentation.
+ * The stream already carries messages up to 65529 bytes, and the SKF path
+ * writes each fragment with sendfromto() on the UDP socket.  That bypasses
+ * isakmp_try_tcp_send(), so a large message (an ML-KEM IKE_FOLLOWUP_KE)
+ * leaked onto UDP 4500 and the peer answered over UDP to the TCP source
+ * port. */
+static int
+ikev2_frag_allowed(struct ikev2_sa *ike_sa)
+{
+	if (!ike_sa->frag_supported)
+		return 0;
+	if (ike_sa->rmconf != NULL &&
+	    ikev2_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON)
+		return 0;
+	return 1;
+}
+
 int
 ikev2_transmit(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 {
 	TRACE((PLOGLOC, "ikev2_transmit(%p, %p) len %d\n",
 	       ike_sa, packet, (int)packet->l));
 
-	if (ike_sa != NULL && ike_sa->frag_supported)
+	if (ike_sa != NULL && ikev2_frag_allowed(ike_sa))
 	{
 	    int want_frag;
 	    if (SOCKADDR_FAMILY(ike_sa->remote) == AF_INET)
@@ -380,7 +397,7 @@ ikev2_transmit_response(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	 * advanced recv_message_id. */
 	msgid = get_uint32(&((struct ikev2_header *)packet->v)->message_id);
 
-	if (ike_sa->frag_supported) {
+	if (ikev2_frag_allowed(ike_sa)) {
 	    int over;
 	    rc_vchar_t **frags = NULL;
 	    int nfrags = 0;
