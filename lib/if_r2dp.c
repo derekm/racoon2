@@ -109,6 +109,7 @@ static int
 enc_from_wire(int w)
 {
 	switch (w) {
+	case 0:					/* no encryption (AH) */ return 0;
 	case R2DP_ENCR_3DES:		return RCT_ALG_DES3_CBC;
 	case R2DP_ENCR_NULL:		return RCT_ALG_NULL_ENC;
 	case R2DP_ENCR_AES_CBC:		return RCT_ALG_RIJNDAEL_CBC;
@@ -121,13 +122,14 @@ enc_from_wire(int w)
 	case R2DP_ENCR_AES_GCM_16:	return RCT_ALG_AES_GCM;
 	case R2DP_ENCR_CHACHA20_POLY1305: return RCT_ALG_CHACHA20_POLY1305;
 	}
-	return 0;
+	return -1;
 }
 
 static int
 integ_from_wire(int w)
 {
 	switch (w) {
+	case R2DP_INTEG_NONE:		return RCT_ALG_NON_AUTH;
 	case R2DP_INTEG_HMAC_MD5_96:	return RCT_ALG_HMAC_MD5;
 	case R2DP_INTEG_HMAC_SHA1_96:	return RCT_ALG_HMAC_SHA1;
 	case R2DP_INTEG_AES_XCBC_96:	return RCT_ALG_AES_XCBC;
@@ -136,7 +138,7 @@ integ_from_wire(int w)
 	case R2DP_INTEG_HMAC_SHA2_384_192: return RCT_ALG_HMAC_SHA2_384;
 	case R2DP_INTEG_HMAC_SHA2_512_256: return RCT_ALG_HMAC_SHA2_512;
 	}
-	return RCT_ALG_NON_AUTH;
+	return -1;
 }
 
 static int
@@ -158,7 +160,7 @@ proto_from_wire(int p)
 	case R2DP_PROTO_AH:	return RCT_SATYPE_AH;
 	case R2DP_PROTO_IPCOMP:	return RCT_SATYPE_IPCOMP;
 	}
-	return 0;
+	return -1;
 }
 
 static int
@@ -172,7 +174,7 @@ static int
 mode_from_wire(int m)
 {
 	return m == R2DP_MODE_TRANSPORT ? RCT_IPSM_TRANSPORT :
-	       m == R2DP_MODE_TUNNEL ? RCT_IPSM_TUNNEL : 0;
+	       m == R2DP_MODE_TUNNEL ? RCT_IPSM_TUNNEL : -1;
 }
 
 static int
@@ -188,7 +190,7 @@ dir_from_wire(int d)
 {
 	return d == R2DP_DIR_IN ? RCT_DIR_INBOUND :
 	       d == R2DP_DIR_OUT ? RCT_DIR_OUTBOUND :
-	       d == R2DP_DIR_FWD ? RCT_DIR_FWD : 0;
+	       d == R2DP_DIR_FWD ? RCT_DIR_FWD : -1;
 }
 
 static int
@@ -207,7 +209,7 @@ act_from_wire(int a)
 {
 	return a == R2DP_ACT_PROTECT ? RCT_ACT_AUTO_IPSEC :
 	       a == R2DP_ACT_DISCARD ? RCT_ACT_DISCARD :
-	       a == R2DP_ACT_BYPASS ? RCT_ACT_NONE : 0;
+	       a == R2DP_ACT_BYPASS ? RCT_ACT_NONE : -1;
 }
 
 static int
@@ -221,7 +223,8 @@ static int
 level_from_wire(int l)
 {
 	return l == R2DP_LVL_USE ? RCT_IPSL_USE :
-	       l == R2DP_LVL_UNIQUE ? RCT_IPSL_UNIQUE : RCT_IPSL_REQUIRE;
+	       l == R2DP_LVL_UNIQUE ? RCT_IPSL_UNIQUE :
+	       l == R2DP_LVL_REQUIRE ? RCT_IPSL_REQUIRE : -1;
 }
 
 static int
@@ -251,7 +254,7 @@ protos_from_wire(int m)
 	case R2DP_SPP_ESP | R2DP_SPP_IPCOMP: return RCT_SATYPE_ESP_IPCOMP;
 	case R2DP_SPP_AH | R2DP_SPP_ESP | R2DP_SPP_IPCOMP: return RCT_SATYPE_AH_ESP_IPCOMP;
 	}
-	return 0;
+	return -1;
 }
 
 /* ------------------------------------------------------------ lifecycle */
@@ -300,7 +303,7 @@ rcpfk_supported_enc(int algtype)
 
 	if (w < 0)
 		return 0;
-	return have_caps ? r2dp_cap(caps.enc_caps, w) : 1;
+	return have_caps ? r2dp_cap(caps.enc_caps, w) : 0;
 }
 
 int
@@ -310,7 +313,7 @@ rcpfk_supported_auth(int algtype)
 
 	if (w < 0)
 		return 0;
-	return have_caps ? r2dp_cap(caps.integ_caps, w) : 1;
+	return have_caps ? r2dp_cap(caps.integ_caps, w) : 0;
 }
 
 /* ----------------------------------------------------------------- send */
@@ -360,13 +363,55 @@ km_send(struct rcpfk_msg *rc, unsigned type, uint32_t flags,
 static int
 pack_addr(struct rcpfk_msg *rc, struct r2dp_addr *a, struct sockaddr *sa)
 {
-	int r = r2dp_addr_from_sa(a, sa);
+	int r;
+
+	if (sa != NULL && sa->sa_family == AF_INET6) {
+		km_seterror(rc, EOPNOTSUPP, "IPv6 not supported by r2dp backend");
+		return -1;
+	}
+	r = r2dp_addr_from_sa(a, sa);
 
 	if (r < 0) {
 		km_seterror(rc, -r, "unsupported address family");
 		return -1;
 	}
 	return 0;
+}
+
+/* Per-tunnel egress reqid.  racoon2 passes reqid=0 (XFRM treats 0 as a
+ * wildcard and ignores it for SA selection), but the forwarder links SP->SA
+ * by reqid, so all-zero reqids would collapse every tunnel onto one egress
+ * SA.  When the caller has not set one, derive a stable, nonzero per-tunnel
+ * reqid from the tunnel endpoints + protocol so the SP_ADD and its
+ * SA_ADD/UPDATE always agree.  Any real rc->reqid is passed through
+ * untouched. */
+static size_t
+sa_byte_len(const struct sockaddr *sa)
+{
+	switch (sa ? sa->sa_family : 0) {
+	case AF_INET:  return sizeof(struct sockaddr_in);
+	case AF_INET6: return sizeof(struct sockaddr_in6);
+	default:       return 0;
+	}
+}
+
+static uint32_t
+tunnel_reqid(const struct sockaddr *src, const struct sockaddr *dst, int satype)
+{
+	const struct sockaddr *a[2] = { src, dst };
+	uint32_t h = 2166136261u;
+	size_t n;
+	int i, j;
+
+	for (i = 0; i < 2; i++) {
+		if (a[i] == NULL)
+			continue;
+		n = sa_byte_len(a[i]);
+		for (j = 0; j < (int)n; j++)
+			h = (h ^ ((const unsigned char *)a[i])[j]) * 16777619u;
+	}
+	h = (h ^ (uint8_t)satype) * 16777619u;
+	return h ? h : 0x1234ABCDu;
 }
 
 /*
@@ -387,6 +432,13 @@ pack_sa(struct rcpfk_msg *rc, struct r2dp_sa *sa, int strict)
 		km_seterror(rc, EOPNOTSUPP, "IPComp not supported by r2dp");
 		return -1;
 	}
+	/* Fail closed: the forwarder has no NAT-T support, so a NAT-T SA would
+	 * silently ride the (untested) exception path in the other direction.
+	 * Refuse instead of accepting and misbehaving. */
+	if (rc->natt_type) {
+		km_seterror(rc, EOPNOTSUPP, "NAT-T not supported by r2dp backend");
+		return -1;
+	}
 	m = mode_to_wire(rc->samode);
 	e = enc_to_wire(rc->enctype);
 	i = integ_to_wire(rc->authtype);
@@ -405,7 +457,8 @@ pack_sa(struct rcpfk_msg *rc, struct r2dp_sa *sa, int strict)
 	sa->enc = e < 0 ? 0 : (uint8_t)e;
 	sa->integ = i < 0 ? 0 : (uint8_t)i;
 	sa->spi = rc->spi;
-	sa->reqid = rc->reqid;
+	sa->reqid = rc->reqid ? rc->reqid :
+	    tunnel_reqid(rc->sa_src, rc->sa_dst, rc->satype);
 	sa->saflags = (rc->saflags & SADB_X_SAFLAGS_ESN) ? R2DP_SAF_ESN : 0;
 	sa->wsize = rc->wsize;
 	sa->spi_min = rc_spirange_min;
@@ -497,7 +550,8 @@ send_sp(struct rcpfk_msg *rc, unsigned type, uint32_t spflags, int strict)
 			return -1;
 	}
 	sp.slid = rc->slid;
-	sp.reqid = rc->reqid;
+	sp.reqid = rc->reqid ? rc->reqid :
+	    tunnel_reqid(rc->sa_src, rc->sa_dst, rc->satype);
 	sp.flags = spflags;
 	sp.ul_proto = rc->ul_proto;
 	sp.pref_src = rc->pref_src;
@@ -538,15 +592,33 @@ unpack_addr(const struct r2dp_addr *a, struct sockaddr_storage *st,
 	*out = (r2dp_addr_to_sa(a, st) == 0) ? (struct sockaddr *)st : NULL;
 }
 
-static void
+static int
 unpack_sa(struct rcpfk_msg *rc, const struct r2dp_sa *sa)
 {
+	int v;
+
 	rc->spi = sa->spi;
 	rc->reqid = sa->reqid;
-	rc->satype = (uint8_t)proto_from_wire(sa->proto);
-	rc->samode = (uint8_t)mode_from_wire(sa->mode);
-	rc->enctype = (uint8_t)enc_from_wire(sa->enc);
-	rc->authtype = (uint8_t)integ_from_wire(sa->integ);
+	if ((v = proto_from_wire(sa->proto)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown satype %u", sa->proto);
+		return -1;
+	}
+	rc->satype = (uint8_t)v;
+	if ((v = mode_from_wire(sa->mode)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown mode %u", sa->mode);
+		return -1;
+	}
+	rc->samode = (uint8_t)v;
+	if ((v = enc_from_wire(sa->enc)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown enc alg %u", sa->enc);
+		return -1;
+	}
+	rc->enctype = (uint8_t)v;
+	if ((v = integ_from_wire(sa->integ)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown integ alg %u", sa->integ);
+		return -1;
+	}
+	rc->authtype = (uint8_t)v;
 	rc->saflags = (sa->saflags & R2DP_SAF_ESN) ? SADB_X_SAFLAGS_ESN : 0;
 	rc->wsize = sa->wsize;
 	rc->natt_type = sa->natt_type ? UDP_ENCAP_ESPINUDP : 0;
@@ -571,18 +643,41 @@ unpack_sa(struct rcpfk_msg *rc, const struct r2dp_sa *sa)
 	unpack_addr(&sa->dst, &rc->sa_dst_storage, &rc->sa_dst);
 	unpack_addr(&sa->natoa_src, &rc->sa_natoa_src_storage, &rc->sa_natoa_src);
 	unpack_addr(&sa->natoa_dst, &rc->sa_natoa_dst_storage, &rc->sa_natoa_dst);
+	return 0;
 }
 
-static void
+static int
 unpack_sp(struct rcpfk_msg *rc, const struct r2dp_sp *sp)
 {
+	int v;
+
 	rc->slid = sp->slid;
 	rc->reqid = sp->reqid;
-	rc->dir = (uint8_t)dir_from_wire(sp->dir);
-	rc->pltype = (uint8_t)act_from_wire(sp->action);
-	rc->samode = (uint8_t)mode_from_wire(sp->mode);
-	rc->satype = (uint8_t)protos_from_wire(sp->protos);
-	rc->ipsec_level = (uint8_t)level_from_wire(sp->level);
+	if ((v = dir_from_wire(sp->dir)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown dir %u", sp->dir);
+		return -1;
+	}
+	rc->dir = (uint8_t)v;
+	if ((v = act_from_wire(sp->action)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown action %u", sp->action);
+		return -1;
+	}
+	rc->pltype = (uint8_t)v;
+	if ((v = mode_from_wire(sp->mode)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown mode %u", sp->mode);
+		return -1;
+	}
+	rc->samode = (uint8_t)v;
+	if ((v = protos_from_wire(sp->protos)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown protos %u", sp->protos);
+		return -1;
+	}
+	rc->satype = (uint8_t)v;
+	if ((v = level_from_wire(sp->level)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown level %u", sp->level);
+		return -1;
+	}
+	rc->ipsec_level = (uint8_t)v;
 	rc->ul_proto = sp->ul_proto;
 	rc->pref_src = sp->pref_src;
 	rc->pref_dst = sp->pref_dst;
@@ -596,6 +691,7 @@ unpack_sp(struct rcpfk_msg *rc, const struct r2dp_sp *sp)
 	unpack_addr(&sp->sel_dst, &rc->sp_dst_storage, &rc->sp_dst);
 	unpack_addr(&sp->tun_src, &rc->sa_src_storage, &rc->sa_src);
 	unpack_addr(&sp->tun_dst, &rc->sa_dst_storage, &rc->sa_dst);
+	return 0;
 }
 
 /* Parse one validated message into rc and run the matching callback. */
@@ -613,10 +709,12 @@ dispatch(struct rcpfk_msg *rc, const struct r2dp_msg *m)
 	switch (m->h.type) {
 	case R2DP_GETSPI: case R2DP_SA_ADD: case R2DP_SA_UPDATE:
 	case R2DP_SA_DEL: case R2DP_SA_GET: case R2DP_EXPIRE: case R2DP_ACQUIRE:
-		unpack_sa(rc, r2dp_msg_sa(m));
+		if (unpack_sa(rc, r2dp_msg_sa(m)) < 0)
+			return -1;
 		break;
 	case R2DP_SP_ADD: case R2DP_SP_DEL: case R2DP_SP_GET: case R2DP_SP_DUMP:
-		unpack_sp(rc, r2dp_msg_sp(m));
+		if (unpack_sp(rc, r2dp_msg_sp(m)) < 0)
+			return -1;
 		break;
 	default:
 		return 0;	/* HELLO_ACK etc.: nothing for iked/spmd */
