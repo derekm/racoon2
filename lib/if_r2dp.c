@@ -432,11 +432,12 @@ pack_sa(struct rcpfk_msg *rc, struct r2dp_sa *sa, int strict)
 		km_seterror(rc, EOPNOTSUPP, "IPComp not supported by r2dp");
 		return -1;
 	}
-	/* Fail closed: the forwarder has no NAT-T support, so a NAT-T SA would
-	 * silently ride the (untested) exception path in the other direction.
-	 * Refuse instead of accepting and misbehaving. */
-	if (rc->natt_type) {
-		km_seterror(rc, EOPNOTSUPP, "NAT-T not supported by r2dp backend");
+	/* NAT-T (ESP-in-UDP 4500) is supported by the forwarder (advertised via
+	 * the R2DP_FEAT_NATT HELLO bit) for both directions; the forwarder's
+	 * outer-tap demux handles it.  Only an unknown encapsulation is refused. */
+	if (rc->natt_type && rc->natt_type != UDP_ENCAP_ESPINUDP) {
+		km_seterror(rc, EOPNOTSUPP, "unknown NAT-T encapsulation %d",
+		    rc->natt_type);
 		return -1;
 	}
 	m = mode_to_wire(rc->samode);
