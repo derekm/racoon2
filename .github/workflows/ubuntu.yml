@@ -385,6 +385,11 @@ jobs:
         run: |
           set -o pipefail
           sudo apt-get install -y -qq strongswan iproute2 iputils-ping xxd
+          # Ubuntu's enforcing charon/swanctl AppArmor profiles deny the
+          # per-row /tmp strongswan.conf and socket (ephemeral runner)
+          for p in /etc/apparmor.d/usr.lib.ipsec.charon /etc/apparmor.d/usr.sbin.swanctl; do
+            [ -f "$p" ] && { sudo apparmor_parser -R "$p" && echo "unloaded $p" || echo "not loaded: $p"; }
+          done
           sudo make install >/dev/null
           E=/usr/local/racoon2/etc/racoon2
           sudo mkdir -p "$E/psk"
