@@ -2604,12 +2604,6 @@ isakmp_retransmit(struct transmit_info *info)
 	gettimeofday(&info->sent_time, 0);
 	++info->retry_count;
 
-	/* RFC 9329: the periodic retransmit of a tcp_encap message rides the
-	 * stream too (codec re-frames), so an SA that is mid-handshake over
-	 * TCP never leaks a copy onto UDP. */
-	if (isakmp_try_tcp_send(info->dest, info->src, info->packet))
-		return;
-
 	if ((size_t)info->retry_count < ARRAYLEN(retransmit_interval))
 		next_interval = retransmit_interval[info->retry_count];
 	else
@@ -2625,6 +2619,15 @@ isakmp_retransmit(struct transmit_info *info)
 		     "failed allocating memory\n");
 		return;
 	}
+
+	/* RFC 9329: a tcp_encap peer's retransmit rides the stream too (the
+	 * codec re-frames the message, so it never leaks a copy onto UDP).
+	 * This sits AFTER sched_new() so the periodic retransmit/timeout
+	 * timer stays armed on the TCP path -- routing over the stream before
+	 * arming the next interval meant a half-open tcp_encap SA could never
+	 * retransmit again and never hit timeout_callback (reviewer H2). */
+	if (isakmp_try_tcp_send(info->dest, info->src, info->packet))
+		return;
 
 	sock = isakmp_retransmit_socket(info);
 	if (sock == -1) {
