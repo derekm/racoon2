@@ -96,9 +96,10 @@ a unix SEQPACKET socket) is
 
 That is Mark Wilcox's r2dp M0: iked/spmd drive a forwarder instead of
 the kernel. Wire values are IANA IKEv2 transform IDs; GETSPI is
-allocated by the forwarder. See `contrib/r2dp/README.md` and
-`contrib/r2dp/MILESTONES.md`. Needs an installed libr2dp (`client.h`
-was not in the zip that landed this tree).
+allocated by the forwarder. Needs an installed `libr2dp` from the
+stand-alone project: **https://github.com/derekm/r2dp** (proto.h,
+`client.h`, `libr2dp/`, mock forwarder, M0 tests + CI). The r2dp
+`--with-r2dp=PREFIX` config resolves it via pkg-config (`r2dp.pc`).
 
 On the Linux XFRM backend, XFRM mark, if_id and ESP device offload
 (`XFRMA_OFFLOAD_DEV`) are wired (config grammar and emit paths, see
