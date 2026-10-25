@@ -97,6 +97,7 @@
 
 #include "ikev2_tcp_srv.h"
 #include "ikev2_tcp_stream.h"
+#include "ikev2_tcp_route.h"
 #include "ike_conf.h"
 #include "ratelimit.h"
 
@@ -2425,24 +2426,15 @@ isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt
 	 * into the stream codec.  The pre-SA IKE_SA_INIT (ike_sa == NULL) is
 	 * exempt; that is exactly the window a new outbound TCP connection
 	 * serves, so it falls through to the address-only registry lookup. */
-	if (ike_sa != NULL && ike_sa->rmconf != NULL &&
-	    ikev2_tcp_encap(ike_sa->rmconf) != RCT_BOOL_ON)
-		return 0;
 	/* RFC 9329 (H3): an established IKE_SA must ride the specific TCP
-	 * stream it was built over.  tcp_srv_find_bound() matches the stream
-	 * on the SA's remote endpoint (addr + the SA's remote port, which
-	 * for a responder distinguishes several clients behind one NAT) --
-	 * an address-only match would cross-wire their replies.  When the
-	 * bound lookup misses -- the pre-SA IKE_SA_INIT (dst is the IKE port
-	 * :500 while the outbound stream's remote is :4500) or an established
-	 * tcp_encap SA whose own remote still carries the IKE port :500 rather
-	 * than the stream port :4500 -- fall back to the address-only lookup,
-	 * which is unambiguous for the single-stream-per-peer case. */
-	ts = (ike_sa != NULL && ike_sa->remote != NULL && ike_sa->local != NULL)
-		? tcp_srv_find_bound(ike_sa->remote, ike_sa->local)
-		: NULL;
-	if (ts == NULL)
-		ts = tcp_srv_find(dest, src);
+	 * stream it was built over (matched on the SA's remote addr + port,
+	 * which for a responder distinguishes several clients behind one NAT),
+	 * falling back to the address-only lookup when that misses.  See
+	 * ikev2_tcp_route(). */
+	ts = ikev2_tcp_route(ike_sa,
+	    !(ike_sa != NULL && ike_sa->rmconf != NULL &&
+	      ikev2_tcp_encap(ike_sa->rmconf) != RCT_BOOL_ON),
+	    dest, src);
 	if (ts == NULL)
 		return 0;
 	r = tcp_stream_send(ts, pkt->v, pkt->l);

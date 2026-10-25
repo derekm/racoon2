@@ -28,6 +28,12 @@
 #include "vmbuf.h"
 #include "ikev2_tcp_stream.h"
 #include "ikev2_tcp_srv.h"
+#include <sys/queue.h>
+#include "isakmp.h"
+#include "ikev2.h"
+#include "isakmp_impl.h"
+#include "ikev2_impl.h"
+#include "ikev2_tcp_route.h"
 
 static int nrecv;
 static unsigned char cap[8][256];
@@ -214,6 +220,74 @@ main(void)
 		CHECK(tcp_srv_find_bound((struct sockaddr *)&wrongport,
 					 (struct sockaddr *)&la) == NULL,
 		      "bound: no stream for an unknown source port");
+	}
+
+	/* RFC 9329 / H3 through the production send selection
+	 * (ikev2_tcp_route, used by isakmp_try_tcp_send): two IKE_SAs whose
+	 * peers share one address (same NAT) and differ by port and SPI.  Each
+	 * SA's message must go out on its own bound stream and arrive at its
+	 * own client; a UDP SA to a peer that has a stream stays on UDP. */
+	{
+		struct sockaddr_storage r1, r2, ikeport;
+		socklen_t l1 = sizeof(r1), l2 = sizeof(r2);
+		struct ikev2_sa sa1, sa2, sau;
+		struct tcp_stream *t1, *t2;
+		static const uint8_t m1[16] = { 0xa1 }, m2[16] = { 0xb2 };
+		uint8_t buf[64];
+
+		getsockname(cli1->fd, (struct sockaddr *)&r1, &l1);
+		getsockname(cli2->fd, (struct sockaddr *)&r2, &l2);
+		/* the IKE dest an SA would hand the send path: same peer
+		 * address, IKE port, so only the SA binding can disambiguate */
+		memcpy(&ikeport, &r1, sizeof(ikeport));
+		((struct sockaddr_in *)&ikeport)->sin_port = htons(500);
+		memset(&sa1, 0, sizeof(sa1));
+		memset(&sa2, 0, sizeof(sa2));
+		sa1.remote = (struct sockaddr *)&r1;
+		sa1.local = (struct sockaddr *)&la;
+		memset(sa1.index.i_ck, 0x11, sizeof(sa1.index.i_ck));
+		sa2.remote = (struct sockaddr *)&r2;
+		sa2.local = (struct sockaddr *)&la;
+		memset(sa2.index.i_ck, 0x22, sizeof(sa2.index.i_ck));
+		t1 = ikev2_tcp_route(&sa1, 1, (struct sockaddr *)&ikeport,
+				     (struct sockaddr *)&la);
+		t2 = ikev2_tcp_route(&sa2, 1, (struct sockaddr *)&ikeport,
+				     (struct sockaddr *)&la);
+		CHECK(t1 != NULL && t2 != NULL && t1 != t2,
+		      "route: same-NAT SAs pick distinct streams");
+		CHECK(t1 == tcp_srv_find_bound((struct sockaddr *)&r1,
+					       (struct sockaddr *)&la) &&
+		      t2 == tcp_srv_find_bound((struct sockaddr *)&r2,
+					       (struct sockaddr *)&la),
+		      "route: each SA picks the stream bound to its own port");
+		if (t1 && t2 && t1 != t2) {
+			struct pollfd pf;
+			ssize_t n1, n2;
+
+			tcp_stream_send(t1, m1, sizeof(m1));
+			tcp_stream_send(t2, m2, sizeof(m2));
+			pf.fd = cli1->fd; pf.events = POLLIN; pf.revents = 0;
+			poll(&pf, 1, 1000);
+			pf.fd = cli2->fd; pf.revents = 0;
+			poll(&pf, 1, 1000);
+			/* RFC 9329 frame: 2-byte length, then the IKE bytes
+			 * (non-ESP marker included); last byte of m1/m2 is 0 */
+			n1 = recv(cli1->fd, buf, sizeof(buf), MSG_DONTWAIT);
+			CHECK(n1 > 0 && memchr(buf, 0xa1, n1) &&
+			      !memchr(buf, 0xb2, n1),
+			      "route: SA1's message reached client1 only");
+			n2 = recv(cli2->fd, buf, sizeof(buf), MSG_DONTWAIT);
+			CHECK(n2 > 0 && memchr(buf, 0xb2, n2) &&
+			      !memchr(buf, 0xa1, n2),
+			      "route: SA2's message reached client2 only");
+		}
+		sau = sa1;
+		CHECK(ikev2_tcp_route(&sau, 0, (struct sockaddr *)&r1,
+				      (struct sockaddr *)&la) == NULL,
+		      "route: a UDP SA stays on UDP despite a stream to its peer");
+		CHECK(ikev2_tcp_route(NULL, 1, (struct sockaddr *)&r1,
+				      (struct sockaddr *)&la) != NULL,
+		      "route: pre-SA IKE_SA_INIT uses the address-only lookup");
 	}
 
 	FD_ZERO(&rfds); FD_ZERO(&wfds);

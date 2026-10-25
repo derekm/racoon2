@@ -25,7 +25,7 @@ endif
 IKEV2_NATT_SRC = nattraversal.c
 
 IKEV2_SRC = ikev2.c ikev2_sa_auth.c ikev2_transmit.c ikev2_mobike.c ikev2_sa_init.c ikev2_informational.c ikev2_session_resume.c ikev2_intermediate.c ikev2_auth.c ikev2_child.c ikev2_cookie.c ikev2_notify.c ikev2_packet.c ikev2_payload.c ikev2_decrypt.c ikev2_proposal.c ikev2_rekey.c ikev2_config.c ikev2_frag.c ikev2_resume.c ikev2_resume_rec.c ikev2_resume_ticket.c ikev2_qcd.c ikev2_addke.c ikev2_addke_rounds.c ikev2_addke_rekey.c ikev2_eap.c ikev2_radius.c ikev2_eap_relay.c ikev2_eap_round.c ikev2_eap_drive.c ikev2_eap_emit.c ikev2_drain.c ikev2cfg_walk.c
-IKED_COMMON = main.c dh.c hashcmp.c ike_sa.c ike_conf.c ike_deprecated.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC} ikev2_tcp.c ikev2_tcp_stream.c ikev2_tcp_srv.c
+IKED_COMMON = main.c dh.c hashcmp.c ike_sa.c ike_conf.c ike_deprecated.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC} ikev2_tcp.c ikev2_tcp_stream.c ikev2_tcp_srv.c ikev2_tcp_route.c
 
 if USE_EPOLL
 evlooptest_SOURCES = evlooptest.c evloop_epoll.c
@@ -157,7 +157,7 @@ tcpobjtest_LDADD = $(LDADD)
 # dispatch callback, and removes a stream on client FIN.
 TESTS += tcpsrvtest
 check_PROGRAMS += tcpsrvtest
-tcpsrvtest_SOURCES = tcpsrvtest.c ikev2_tcp_srv.c ikev2_tcp_stream.c ikev2_tcp.c
+tcpsrvtest_SOURCES = tcpsrvtest.c ikev2_tcp_srv.c ikev2_tcp_stream.c ikev2_tcp.c ikev2_tcp_route.c
 tcpsrvtest_LDADD = $(LDADD)
 
 # RFC 7296 §3.15.2 split-tunnel CP attributes (13/15): drives the real
@@ -243,7 +243,7 @@ addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
 	ike_spmif.$(OBJEXT) schedule.$(OBJEXT) ratelimit.$(OBJEXT) \
 	script.$(OBJEXT) rtsock.$(OBJEXT) \
-	ikev2_tcp.$(OBJEXT) ikev2_tcp_stream.$(OBJEXT) ikev2_tcp_srv.$(OBJEXT) \
+	ikev2_tcp.$(OBJEXT) ikev2_tcp_stream.$(OBJEXT) ikev2_tcp_srv.$(OBJEXT) ikev2_tcp_route.$(OBJEXT) \
 	$(addtest_ikev1) $(addtest_ikev2) evloop_epoll.$(OBJEXT) \
 	$(addtest_admin)
 else
@@ -254,7 +254,7 @@ addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
 	ike_spmif.$(OBJEXT) schedule.$(OBJEXT) ratelimit.$(OBJEXT) \
 	script.$(OBJEXT) rtsock.$(OBJEXT) \
-	ikev2_tcp.$(OBJEXT) ikev2_tcp_stream.$(OBJEXT) ikev2_tcp_srv.$(OBJEXT) \
+	ikev2_tcp.$(OBJEXT) ikev2_tcp_stream.$(OBJEXT) ikev2_tcp_srv.$(OBJEXT) ikev2_tcp_route.$(OBJEXT) \
 	$(addtest_ikev1) $(addtest_ikev2) evloop_select.$(OBJEXT) \
 	$(addtest_admin)
 endif
