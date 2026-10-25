@@ -144,6 +144,7 @@ main(void)
 		      "find: no match on wrong local addr");
 		/* and the port-agnostic contract: a different IKE port on the SAME
 		 * loopback address still resolves to the stream. */
+		memset(&bogus2, 0, sizeof(bogus2));
 		bogus2.sin_family = AF_INET;
 		bogus2.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 		bogus2.sin_port = htons(4500);

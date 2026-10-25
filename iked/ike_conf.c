@@ -4498,12 +4498,37 @@ ikev2_ipsec_conf_to_proplist(struct ikev2_child_sa *child_sa,
 			 * the ADDKE child-rekey rounds never ran on either seat. */
 			if (is_createchild && !child_sa->is_initiator &&
 			    conf->sa_esp) {
-				struct rc_alglist *ka;
+				struct rc_alglist *ka = NULL;
 				struct prop_pair *pp = *prop_tail;
+				struct prop_pair *chk;
 				struct prop_pair **tt = &pp->tnext;
+				int has_addke = 0;
 
+				/* De-dup: ikev2_ipsec_sa_to_proplist already has
+				 * its own gated ADDKE emit (is_initiator ||
+				 * addke_nrounds > 0 || addke_unrequested on,
+				 * ESTABLISHED only), and ikev2_child_maybe_reoffer_addke
+				 * appends type-6 on the rekey path.  If this
+				 * proposal already carries an ADDKE transform,
+				 * do NOT add a second one -- with
+				 * addke_unrequested on a responder could emit a
+				 * duplicate type-6 to an ADDKE peer, which
+				 * RFC 9370 s2.2.2 treats as a protocol error. */
+				for (chk = pp->tnext; chk; chk = chk->next) {
+					if (!chk->trns)
+						continue;
+					{
+						unsigned int ty = ((struct ikev2transform *)
+						    chk->trns)->transform_type;
+						if (ty >= IKEV2TRANSFORM_TYPE_ADDKE &&
+						    ty <= IKEV2TRANSFORM_TYPE_ADDKE + 6) {
+							has_addke = 1;
+							break;
+						}
+					}
+				}
 				SA_CONF(ka, conf->sa_esp, addke_alg, 0);
-				if (ka) {
+				if (ka && !has_addke) {
 					while (*tt)
 						tt = &(*tt)->next;
 					*tt = alglist_to_addke_proppair(ka);
