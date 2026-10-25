@@ -2497,6 +2497,25 @@ ikev2_sadb_natt_snapshot(struct rcpfk_msg *param,
 }
 #endif
 
+#ifdef ENABLE_NATT
+/* IKE over TCP (RFC 9329): the IKE SA's endpoints carry the TCP stream's
+ * ports (the initiator's connect source port, the responder's 4500
+ * listener), but this child's ESP rides the kernel's UDP-encap socket on
+ * 4500/4500.  Snapshotting the TCP peer port as natt_dport made the
+ * responder send ESP-in-UDP to the initiator's TCP source port (500 when
+ * it bound the IKE source, else an ephemeral port), so inbound ESP never
+ * reached the initiator's encap socket.  Pin both encap ports to 4500. */
+static void
+ikev2_sadb_natt_tcp_pin(struct rcpfk_msg *param, struct ikev2_child_sa *child_sa)
+{
+	if (child_sa->parent && child_sa->parent->rmconf &&
+	    ikev2_tcp_encap(child_sa->parent->rmconf) == RCT_BOOL_ON) {
+		param->natt_sport = htons(IKEV2_UDP_PORT_NATT);
+		param->natt_dport = htons(IKEV2_UDP_PORT_NATT);
+	}
+}
+#endif
+
 /*
  * ike_determine_sa_endpoint may return actual_addr in place (NULL
  * config or IP_RW). Copy before snapshot/zero so transport port-0
@@ -2602,6 +2621,7 @@ ikev2_sadb_outbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 
 #ifdef ENABLE_NATT
 	ikev2_sadb_natt_snapshot(param, my_addr, peer_addr);
+	ikev2_sadb_natt_tcp_pin(param, child_sa);
 	ikev2_sadb_natt_oa(param, child_sa, 1);
 #endif
 	ikev2_sadb_zero_transport_ports(my_addr, peer_addr,
@@ -2669,6 +2689,7 @@ ikev2_sadb_inbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 
 #ifdef ENABLE_NATT
 	ikev2_sadb_natt_snapshot(param, peer_addr, my_addr);
+	ikev2_sadb_natt_tcp_pin(param, child_sa);
 	ikev2_sadb_natt_oa(param, child_sa, 0);
 #endif
 	ikev2_sadb_zero_transport_ports(peer_addr, my_addr,
