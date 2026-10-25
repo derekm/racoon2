@@ -117,7 +117,7 @@ main(void)
 	/* find: the registered stream resolves by (client src, listener local) */
 	{
 		struct sockaddr_storage csrc;
-		struct sockaddr_in bogus;
+		struct sockaddr_in bogus, bogus2;
 		struct tcp_stream *f;
 		socklen_t cl = sizeof(csrc);
 
@@ -127,13 +127,29 @@ main(void)
 		f = tcp_srv_find((struct sockaddr *)&csrc,
 				 (struct sockaddr *)&la);
 		CHECK(f != NULL, "find: stream found by (client src, listener local)");
+		/* RFC 9329 address-only keying: the transport is matched on the peer
+		 * ADDRESS, not its port (the stream's remote is :4500 while the SA's
+		 * IKE dest is :500; the local side differs likewise).  A bogus PORT on
+		 * the same loopback address is therefore NOT a mismatch under
+		 * address-only semantics -- it must still resolve.  The negative case
+		 * has to differ by ADDRESS (a non-loopback local), which address-only
+		 * correctly rejects.  One stream per peer-address pair is the design
+		 * (RFC 9329 keeps a single IKE-over-TCP connection per peer). */
 		memset(&bogus, 0, sizeof(bogus));
 		bogus.sin_family = AF_INET;
-		bogus.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		bogus.sin_addr.s_addr = htonl(0xc0000201); /* 192.0.2.1, not loopback */
 		bogus.sin_port = htons(9999);
 		CHECK(tcp_srv_find((struct sockaddr *)&csrc,
 				   (struct sockaddr *)&bogus) == NULL,
 		      "find: no match on wrong local addr");
+		/* and the port-agnostic contract: a different IKE port on the SAME
+		 * loopback address still resolves to the stream. */
+		bogus2.sin_family = AF_INET;
+		bogus2.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		bogus2.sin_port = htons(4500);
+		CHECK(tcp_srv_find((struct sockaddr *)&csrc,
+				   (struct sockaddr *)&bogus2) != NULL,
+		      "find: same-peer different-port still resolves (address-only)");
 	}
 
 	FD_ZERO(&rfds); FD_ZERO(&wfds);
