@@ -81,6 +81,15 @@ kind_i2ike() {
 	case "$name" in
 	*-immediate*) ICKE_TXT='	initial_child_ke immediate;' ;;
 	esac
+	# -tcp: transport IKE over a single TCP stream (RFC 9329): both seats
+	# set tcp_encap on.  The gate asserts (a) the responder opened the
+	# IKE-over-TCP listener, (b) initiator+responder iked both logged
+	# receiving/sending on the TCP stream, and (c) the usual ESP child +
+	# ICMP/TCP flow still comes up over the netns.
+	TCP_TXT=""
+	case "$name" in
+	*-tcp*) TCP_TXT='	tcp_encap on;' ;;
+	esac
 
 	row_ns "$name"
 	HR=192.0.4.1; HI=192.0.4.2
@@ -107,6 +116,7 @@ remote matrix_resp {
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
+		$TCP_TXT
 	};
 	selector_index sel_in;
 };
@@ -161,6 +171,7 @@ remote matrix_init {
 		kmp_auth_method { psk; };
 		pre_shared_key "$ETC/psk/macos.psk";
 		dpd_delay 60 sec;
+		$TCP_TXT
 	};
 	selector_index sel_in;
 };
