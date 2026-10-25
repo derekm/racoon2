@@ -91,36 +91,39 @@ kind_i2ieap() {
 	sed -i 's|ntlm_auth.*|# ntlm_auth disabled (test local account)|' "$RADD/mods-available/mschap" "$RADD/mods-enabled/mschap" 2>/dev/null
 	# ensure a local user
 	printf 'eaptest        Cleartext-Password := "eaptest-pass"\n' > "$RADD/users"
-	# --- EAP-TLS variant: FreeRADIUS terminates TLS, mutual-auth with the
-	# client cert, trusting the shared CA.  The module's tls-common reads
-	# ${certdir}/server.pem (certdir = ${confdir}/certs where confdir =
-	# $RADD => $RADD/certs); place a server cert+key there, use the same
-	# PEM file for cert+key so private_key_file=server.pem without a
-	# separate cipher password works, require client cert (ca_file), and
-	# switch default_eap_type to tls.
+	# FreeRADIUS's eap module instantiates the tls submodule at startup
+	# even for MSCHAPv2 rows; if its server cert is missing, rlm_eap_tls
+	# fails to init and the WHOLE rlm_eap module fails to load, so every
+	# EAP request gets Access-Reject and the iked responder sends
+	# EAP/FAIL (seen on i2ieap-mschapv2 / i2ieap-multi).  tls-common reads
+	# ${certdir}/server.pem (certdir = $RADD/certs); place server
+	# cert+key+CA there and pin the key/cert/ca files for every row.
+	# 'cp -r /etc/raddb' de-referenced mods-enabled/eap into a regular
+	# FILE, so edit THAT (not mods-available) -- radiusd reads
+	# mods-enabled/eap.
+	mkdir -p "$RADD/certs"
+	cp "$C/certs/server.pem" "$RADD/certs/server.pem"
+	cp "$C/certs/server.key"  "$RADD/certs/server.key"
+	cp "$C/certs/ca.pem"      "$RADD/certs/ca.pem"
+	# radiusd drops privileges after bind, so the certs must be
+	# world-readable (both for the FreeRADIUS TLS half and the
+	# via-loopback RADIUS client).
+	chmod 644 "$RADD/certs/server.pem" "$RADD/certs/server.key" "$RADD/certs/ca.pem"
+	# tls-common (within mods-enabled/eap): plain key (empty password),
+	# certificate = server.pem.  Pin both so the key and cert always pair
+	# (Fedora's default private_key_file=$(certdir)/server.key; Debian
+	# points certificate_file at snakeoil).
+	sed -i 's|^[[:space:]]*private_key_password = .*|private_key_password = ""|' "$RADD/mods-enabled/eap" 2>/dev/null
+	sed -i 's|^[[:space:]]*private_key_file = .*|private_key_file = ${certdir}/server.key|' "$RADD/mods-enabled/eap" 2>/dev/null
+	sed -i 's|^[[:space:]]*certificate_file = .*|certificate_file = ${certdir}/server.pem|' "$RADD/mods-enabled/eap" 2>/dev/null
+	# Point ca_file at the (now present) CA; harmless for MSCHAPv2 (no
+	# client cert presented), required for the mutual-TLS variant.
+	sed -i 's|^[[:space:]]*#\?[[:space:]]*ca_file = .*|ca_file = ${certdir}/ca.pem|' "$RADD/mods-enabled/eap" 2>/dev/null
+	# --- EAP-TLS variant: FreeRADIUS terminates TLS and mutual-auths with
+	# the client cert, trusting the shared CA; multi keeps MSCHAPv2 as the
+	# round-two EAP (default_eap_type already set to mschapv2 above). ---
 	if [ "$I2IEAP_TLS" -eq 1 ]; then
-		mkdir -p "$RADD/certs"
-		cp "$C/certs/server.pem" "$RADD/certs/server.pem"
-		cp "$C/certs/server.key"  "$RADD/certs/server.key"
-		cp "$C/certs/ca.pem"      "$RADD/certs/ca.pem"
-		# radiusd drops privileges after bind, so the certs must be
-		# world-readable (both for the FreeRADIUS TLS half and the
-		# via-loopback RADIUS client).  'cp -r /etc/raddb' de-referenced
-		# mods-enabled/eap into a regular FILE, so edit THAT (not
-		# mods-available) — radiusd reads mods-enabled/eap.
-		chmod 644 "$RADD/certs/server.pem" "$RADD/certs/server.key" "$RADD/certs/ca.pem"
 		sed -i 's/^[[:space:]]*default_eap_type[[:space:]]*=.*/	default_eap_type = tls/' "$RADD/mods-enabled/eap" 2>/dev/null
-		# tls-common (within mods-enabled/eap): plain key (empty
-		# password), certificate = server.pem, trust the shared CA and
-		# require the client cert (mutual TLS).
-		sed -i 's|^[[:space:]]*private_key_password = .*|private_key_password = ""|' "$RADD/mods-enabled/eap" 2>/dev/null
-		sed -i 's|^[[:space:]]*private_key_file = .*|private_key_file = ${certdir}/server.key|' "$RADD/mods-enabled/eap" 2>/dev/null
-		# Debian's eap module points certificate_file at the snakeoil
-		# cert (Fedora's at ${certdir}/server.pem); pin it so the key
-		# and cert always pair.
-		sed -i 's|^[[:space:]]*certificate_file = .*|certificate_file = ${certdir}/server.pem|' "$RADD/mods-enabled/eap" 2>/dev/null
-		# ca_file + verify_client enforce mutual TLS.
-		sed -i 's|^[[:space:]]*#\?[[:space:]]*ca_file = .*|ca_file = ${certdir}/ca.pem|' "$RADD/mods-enabled/eap" 2>/dev/null
 		sed -i 's|^[[:space:]]*#\?[[:space:]]*verify_client = .*|verify_client = yes|' "$RADD/mods-enabled/eap" 2>/dev/null
 		echo "EAP-TLS: FreeRADIUS default_eap_type=tls, plain key + cert, ca_file + verify_client=yes (mods-enabled/eap)"
 	fi
