@@ -94,6 +94,7 @@
 # endif
 #include "crypto_impl.h"
 
+#include <poll.h>
 #include "ikev2_tcp_srv.h"
 #include "ikev2_tcp_stream.h"
 #include "ike_conf.h"
@@ -1335,6 +1336,17 @@ isakmp_handler(int so_isakmp)
  * if it fails to initiate negotiation, it will call
  * callback_method->acquire_error() with error code
  */
+/* RFC 9329: hand a de-framed IKE message (from either an accepted or an
+ * outbound stream) to the same engine the UDP path uses.  ikev2_input owns
+ * and frees pkt; its return is IKE bookkeeping, never stream-fatal. */
+static int
+isakmp_tcp_dispatch(rc_vchar_t *pkt, struct sockaddr *remote,
+		    struct sockaddr *local, void *arg)
+{
+	(void)arg;
+	return ikev2_input(pkt, remote, local);
+}
+
 void
 isakmp_initiate(struct sadb_request_method *callback_method,
 		uint32_t spid,
@@ -1518,6 +1530,57 @@ isakmp_initiate_cont(void *tag, const char *selector_index)
 			   "can't find remote info (%.*s)\n",
 			   (int)policy->rm_index->l, policy->rm_index->s);
 		goto fail;
+	}
+
+	/* RFC 9329: for a tcp_encap remote, first bring up the IKE-over-TCP
+	 * stream so the IKE_SA_INIT below is sent on it.  Non-blocking connect
+	 * to the peer's IKE-over-TCP port, then a short synchronous completion
+	 * wait -- the very first message must not race the connect, and the
+	 * send-swap (isakmp_transmit_noretry -> tcp_srv_find) then routes the
+	 * SA_INIT over the registered stream. */
+	if (ikev2_tcp_encap(rm_info) == RCT_BOOL_ON) {
+		struct sockaddr_storage tdst;
+		struct sockaddr *rd = req->dst;
+		size_t dlen;
+		struct tcp_stream *ts;
+		struct pollfd pf;
+		int i;
+
+		dlen = (rd->sa_family == AF_INET)
+			? sizeof(struct sockaddr_in)
+			: sizeof(struct sockaddr_in6);
+		memcpy(&tdst, rd, dlen);
+		if (rd->sa_family == AF_INET)
+			((struct sockaddr_in *)&tdst)->sin_port =
+				htons(IKEV2_TCP_PORT);
+		else
+			((struct sockaddr_in6 *)&tdst)->sin6_port =
+				htons(IKEV2_TCP_PORT);
+		ts = tcp_stream_connect((struct sockaddr *)&tdst, req->src,
+					isakmp_tcp_dispatch, NULL);
+		if (ts != NULL) {
+			pf.fd = ts->fd;
+			pf.events = POLLOUT;
+			pf.revents = 0;
+			for (i = 0; i < 2500; i++) {	/* up to ~5 s */
+				if (poll(&pf, 1, 2) > 0 &&
+				    (pf.revents & (POLLOUT | POLLERR | POLLHUP)))
+					break;
+			}
+			if (tcp_stream_connect_done(ts) == 0)
+				tcp_srv_register_connecting(ts);
+			else {
+				plog(PLOG_INTERR, PLOGLOC, 0,
+				     "IKE-over-TCP initiation to %s failed "
+				     "in connect: %s\n",
+				     rcs_sa2str(rd), strerror(errno));
+				tcp_stream_free(ts);
+			}
+		} else {
+			plog(PLOG_INTERR, PLOGLOC, 0,
+			     "IKE-over-TCP initiation to %s failed: %s\n",
+			     rcs_sa2str(rd), strerror(errno));
+		}
 	}
 
 	switch (ike_initiate_kmp(rm_info)) {
