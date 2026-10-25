@@ -223,6 +223,13 @@ struct rcf_interface {
 	struct rc_addrlist *spmd;
 	rc_vchar_t *spmd_if_passwd;
 	rc_type application_bypass;
+	/* blocklistd reporting (iked --enable-blocklist builds); 0 = unset =
+	 * off.  blocklist_prehandshake additionally allows reports for
+	 * pre-IKE_SA_INIT datagrams, whose source address is unverified
+	 * (spoofable), so it is a separate, default-off opt-in. */
+	rc_type blocklist;
+	rc_type blocklist_log_only;
+	rc_type blocklist_prehandshake;
 };
 
 /* resolver info */

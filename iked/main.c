@@ -73,6 +73,7 @@
 #endif
 #include "evloop.h"
 #include "crypto_workers.h"
+#include "blocklist_peer.h"
 #include "ikev2_tcp_srv.h"
 
 /* RFC 9329 IKE-over-TCP dispatch seam: a de-framed IKE message reaches the
@@ -483,6 +484,7 @@ main(int argc, char **argv)
 		     "failed initializing isakmp handling\n");
 		iked_exit(IKED_EXIT_FAILURE);
 	}
+	iked_blocklist_init();
 	ikev2_resume_load();
 
 	if (!opt_foreground) {
@@ -715,6 +717,7 @@ iked_reload(void)
 		iked_exit(IKED_EXIT_FAILURE);
 	}
 
+	iked_blocklist_init();	/* re-read blocklist policy */
 	isakmp_reopen();
 }
 

@@ -1,2 +1,3 @@
 # Linux pfkey-backend lane (--with-km-backend=pfkey, af_key loaded).  It
 # runs an explicit --cases subset, so no skip is expected.
+gate blocklist iked built without --enable-blocklist (no packaged libblocklist); rows run in the Ubuntu --enable-blocklist job

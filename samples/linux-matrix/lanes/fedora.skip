@@ -3,3 +3,4 @@ gate dpd   11-timer DPD ladder (~16 min) is box-only
 gate box   new rows are box-verified before CI admits them
 gate pfkey  Linux pfkey-backend rows run in the pfkey lane only
 gate nsim  netdevsim ESP offload absent from this kernel build; skipped only on the printed refusal (run.sh nsim_offload_probe)
+gate blocklist iked built without --enable-blocklist (no packaged libblocklist); rows run in the Ubuntu --enable-blocklist job

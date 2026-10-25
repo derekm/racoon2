@@ -43,6 +43,7 @@ typedef enum {
 
 		/* interface */
 	CFD_IF_IKE, CFD_IF_KINK, CFD_IF_SPMD, CFD_IF_BYPASS,
+	CFD_IF_BLOCKLIST, CFD_IF_BL_LOGONLY, CFD_IF_BL_PREHS,
 
 		/* spmd interface password file */
 	CFD_IF_SPMD_PASSWD,

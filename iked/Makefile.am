@@ -25,7 +25,7 @@ endif
 IKEV2_NATT_SRC = nattraversal.c
 
 IKEV2_SRC = ikev2.c ikev2_sa_auth.c ikev2_transmit.c ikev2_mobike.c ikev2_sa_init.c ikev2_informational.c ikev2_session_resume.c ikev2_intermediate.c ikev2_auth.c ikev2_child.c ikev2_cookie.c ikev2_notify.c ikev2_packet.c ikev2_payload.c ikev2_decrypt.c ikev2_proposal.c ikev2_rekey.c ikev2_config.c ikev2_frag.c ikev2_resume.c ikev2_resume_rec.c ikev2_resume_ticket.c ikev2_qcd.c ikev2_addke.c ikev2_addke_rounds.c ikev2_addke_rekey.c ikev2_eap.c ikev2_radius.c ikev2_eap_relay.c ikev2_eap_round.c ikev2_eap_drive.c ikev2_eap_emit.c ikev2_drain.c ikev2cfg_walk.c
-IKED_COMMON = main.c dh.c hashcmp.c ike_sa.c ike_conf.c ike_deprecated.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC} ikev2_tcp.c ikev2_tcp_stream.c ikev2_tcp_srv.c
+IKED_COMMON = main.c blocklist_peer.c blocklist_policy.c dh.c hashcmp.c ike_sa.c ike_conf.c ike_deprecated.c isakmp.c authenticator.c encryptor.c crypto_openssl.c crypto_workers.c str2val.c keyed_hash.c sockmisc.c ike_pfkey.c ike_spmif.c schedule.c ratelimit.c script.c rtsock.c ${IKEV1_SRC} ${IKEV2_SRC} ${IKEV1_NATT_SRC} ${IKEV2_NATT_SRC} ikev2_tcp.c ikev2_tcp_stream.c ikev2_tcp_srv.c
 
 if USE_EPOLL
 evlooptest_SOURCES = evlooptest.c evloop_epoll.c
@@ -60,6 +60,11 @@ TESTS += rwsamplecheck.sh
 # RFC 8247 / RFC 8221 / RFC 9395 codepoint maps to the right class, level
 # and citation, per protocol context.  Pure table, links standalone.
 deprtest_SOURCES = deprtest.c ike_deprecated.c
+# blocklistd reporting policy (blocklist_policy.c): default off, pre-
+# handshake opt-in, env can only lower.  Pure, links standalone.
+TESTS += blocklisttest
+check_PROGRAMS += blocklisttest
+blocklisttest_SOURCES = blocklisttest.c blocklist_policy.c
 eaytest_SOURCES = eaytest.c crypto_openssl.c str2val.c encryptor.c
 # RFC 5723 ticket-layer KAT: the s5.1 resumed-SKEYSEED derivation pinned
 # against a python hmac/sha256 vector and the ticket-by-value codec
@@ -237,7 +242,7 @@ endif
 
 if USE_EPOLL
 addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
-	ike_deprecated.$(OBJEXT) \
+	ike_deprecated.$(OBJEXT) blocklist_peer.$(OBJEXT) blocklist_policy.$(OBJEXT) \
 	isakmp.$(OBJEXT) authenticator.$(OBJEXT) encryptor.$(OBJEXT) \
 	crypto_openssl.$(OBJEXT) crypto_workers.$(OBJEXT) str2val.$(OBJEXT) \
 	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \
@@ -248,7 +253,7 @@ addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	$(addtest_admin)
 else
 addtest_ikedsrc = dh.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
-	ike_deprecated.$(OBJEXT) \
+	ike_deprecated.$(OBJEXT) blocklist_peer.$(OBJEXT) blocklist_policy.$(OBJEXT) \
 	isakmp.$(OBJEXT) authenticator.$(OBJEXT) encryptor.$(OBJEXT) \
 	crypto_openssl.$(OBJEXT) crypto_workers.$(OBJEXT) str2val.$(OBJEXT) \
 	keyed_hash.$(OBJEXT) hashcmp.$(OBJEXT) sockmisc.$(OBJEXT) ike_pfkey.$(OBJEXT) \

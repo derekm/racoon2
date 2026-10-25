@@ -217,5 +217,18 @@ check "auth_lifetime 0 is refused" fail "$C" 'auth_lifetime must be > 0'
 C=$T/nbns.conf; base "$C"; v2dns nb 127.0.0.12 'request { ip4_nbns; }; provide { nbns 192.0.2.53; };' >> "$C"
 check "request ip4_nbns / provide nbns parse" ok "$C"
 
+# blocklistd options in interface { } (default off; booleans, no dups)
+blconf() {	# blconf OUT "directives"
+	sed "/^interface\$/{n;s|^{|{ $2|;}" "$E/racoon2.conf" > "$1"
+	grep -qF "$2" "$1" || { echo "samplecheck: blconf inject failed"; exit 1; }
+}
+C=$E/bl-on.conf; blconf "$C" 'blocklist on; blocklist_log_only off; blocklist_prehandshake on;'
+check "blocklist options parse" ok "$C"
+C=$E/bl-bad.conf; blconf "$C" 'blocklist maybe;'
+check "blocklist refuses a non-boolean" fail "$C"
+C=$E/bl-dup.conf; blconf "$C" 'blocklist on; blocklist off;'
+check "blocklist refuses a duplicate directive" fail "$C" \
+    'duplicate blocklist directive'
+
 echo "samplecheck: $n checks, $fail failures"
 [ $fail -eq 0 ]

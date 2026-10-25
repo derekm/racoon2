@@ -126,6 +126,7 @@ static struct cf_list *rcf_concat (struct cf_list *, struct cf_list *);
 %token INCLUDE SETVAL DEFAULT INTERFACE
 %token RESOLVER NAMESERVER DNS_QUERY
 %token IKE KINK SPMD APP_BYPASS UNIX PORT SPMD_IF_PASSWD
+%token IF_BLOCKLIST IF_BL_LOGONLY IF_BL_PREHS
 	/* remote */
 %token REMOTE ACCEPTABLE_KMP IKEV1 IKEV2
 %token LOGMODE LOGMODE_DEBUG LOGMODE_NORMAL RCLOGFILE SELECTOR_INDEX
@@ -370,6 +371,21 @@ interface_spec
 	|	APP_BYPASS boolean
 		{
 			MKRCFDIR($$, CFD_IF_BYPASS);
+			$$->nextp = $2;
+		}
+	|	IF_BLOCKLIST boolean
+		{
+			MKRCFDIR($$, CFD_IF_BLOCKLIST);
+			$$->nextp = $2;
+		}
+	|	IF_BL_LOGONLY boolean
+		{
+			MKRCFDIR($$, CFD_IF_BL_LOGONLY);
+			$$->nextp = $2;
+		}
+	|	IF_BL_PREHS boolean
+		{
+			MKRCFDIR($$, CFD_IF_BL_PREHS);
 			$$->nextp = $2;
 		}
 	;

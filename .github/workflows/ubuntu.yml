@@ -319,6 +319,91 @@ jobs:
             if [ -f "$f" ]; then echo "== $f =="; cat "$f"; fi
           done
 
+  # Optional libblocklist compile. Default jobs stay --disable-blocklist
+  # (no packaged lib). This job builds derekm/blocklist linux-port first,
+  # then iked --enable-blocklist, and runs the feat-bl-* rows against a
+  # socket sink (no blocklistd, so the netns peer is never banned).
+  build-blocklist:
+    name: 'Ubuntu --enable-blocklist (nft lib from linux-port)'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout racoon2
+        uses: actions/checkout@v4
+
+      - name: Checkout derekm/blocklist linux-port
+        uses: actions/checkout@v4
+        with:
+          repository: derekm/blocklist
+          ref: linux-port
+          path: _blocklist
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
+            libssl-dev libkrb5-dev libpcap-dev bison flex libdb-dev
+
+      - name: Build and install libblocklist (nft backend)
+        run: |
+          cd _blocklist/port
+          autoreconf -fi
+          ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
+                      --runstatedir=/run/blocklistd --with-pf-backend=nft
+          make -j2
+          sudo make install
+          test -f /usr/include/blocklist.h
+          test -f /usr/lib/libblocklist.so -o -f /usr/lib/libblocklist.a \
+            -o -f /usr/lib/x86_64-linux-gnu/libblocklist.so \
+            -o -f /usr/lib/x86_64-linux-gnu/libblocklist.a
+
+      - name: Bootstrap racoon2
+        run: autoreconf -fi
+
+      - name: Configure with --enable-blocklist
+        run: ./configure --prefix=/usr/local/racoon2 --enable-blocklist
+
+      - name: Assert HAVE_BLOCKLIST
+        run: |
+          grep -E '^#define HAVE_BLOCKLIST 1' iked/config.h
+
+      - name: Assert libblocklist socket path matches blocklistd.socket
+        run: |
+          lib=$(ls /usr/lib/libblocklist.so.* /usr/lib/x86_64-linux-gnu/libblocklist.so.* 2>/dev/null | head -1)
+          strings "$lib" | grep -qx '/run/blocklistd/blocklistd.sock'
+
+      - name: Build
+        run: make -j2
+
+      - name: 'Unit suite (iked: eaytest evlooptest workerstest)'
+        run: make -C iked check TESTS="eaytest evlooptest workerstest"
+
+      # Live blocklist option rows.  No blocklistd runs: each responder
+      # iked gets a private /run (mount ns) with a sink on libblocklist's
+      # socket that counts and parses every report, so nothing is banned.
+      - name: 'Live blocklist rows (feat-bl-*: off/on/ok/log-only/pre-handshake, charon both seats)'
+        run: |
+          set -o pipefail
+          sudo apt-get install -y -qq strongswan iproute2 iputils-ping xxd
+          # Ubuntu's enforcing charon/swanctl AppArmor profiles deny the
+          # per-row /tmp strongswan.conf and socket (ephemeral runner)
+          for p in /etc/apparmor.d/usr.lib.ipsec.charon /etc/apparmor.d/usr.sbin.swanctl; do
+            [ -f "$p" ] && { sudo apparmor_parser -R "$p" && echo "unloaded $p" || echo "not loaded: $p"; }
+          done
+          sudo make install >/dev/null
+          E=/usr/local/racoon2/etc/racoon2
+          sudo mkdir -p "$E/psk"
+          printf 'racoon2-ci-psk-0123456789abcdef' | sudo tee "$E/psk/macos.psk" >/dev/null
+          printf 'racoon2-ci-pwd\n' | sudo tee "$E/spmd.pwd" >/dev/null
+          sudo chmod 600 "$E/psk/macos.psk" "$E/spmd.pwd"
+          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            --cases '^feat-bl-' | tee /tmp/r2-bl-matrix.log
+        env:
+          R2_PREFIX: /usr/local/racoon2
+          R2_REQUIRE_LIVE: 1
+          R2_LANE: ubuntu
+          R2_MIN_PASS: 8
+
   integration:
     name: 'Integration (live matrix, xfrm)'
     needs: build-xfrm
