@@ -945,6 +945,15 @@ remote
 		asks for both identities); no single-round fallback.
 		    multi_auth_second_id fqdn "user@example";
 		default is unset: one round.
+		As a responder (multiple_auth on) the same directive names
+		the identity the initiator must present in a non-EAP second
+		round: IDi' must equal it and AUTH' must be the
+		pre-shared-key AUTH (pre_shared_key) over the round-one
+		octets with IDi'.  The responder then also refuses a peer
+		that runs only one round, or that flags
+		N(ANOTHER_AUTH_FOLLOWS) without having sent
+		N(MULTIPLE_AUTH_SUPPORTED) (RFC 4739 s2.1).  Only a PSK
+		second round is accepted; other second rounds need EAP.
 
 	auth_lifetime (number) ;
 		It is valid for the ikev2 directive (responder).
