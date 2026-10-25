@@ -259,6 +259,12 @@ EOF
 		done
 		grep -q '1 received' "$D/ping.txt" || \
 			_bad="${_bad:+$_bad; }ICMP did not cross NAT-T transport"
+		# L1: the TCP NAT-T probe below needs `nc`; without it the listener
+		# never starts and the row fails with the misleading
+		# 'TCP payload did not cross'.  Say 'nc missing' instead.
+		if ! command -v nc >/dev/null 2>&1; then
+			_bad="${_bad:+$_bad; }nc not installed (the TCP NAT-T probe needs it)"
+		else
 		rm -f "$D/tcp-recv.txt"
 		# TCP across the NAT-T transport.  Ncat 7.92's nested
 		# `ip netns exec sh -c "nc -l ... &"` exits the inner shell
@@ -290,6 +296,7 @@ EOF
 		done
 		grep -q "racoon2-natt-tcp-$$" "$D/tcp-recv.txt" 2>/dev/null || \
 			_bad="${_bad:+$_bad; }TCP payload did not cross NAT-T transport"
+		fi
 	fi
 
 	if [ "$_natk" = 1 ] && [ -z "$_bad" ]; then
