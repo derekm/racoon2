@@ -110,20 +110,24 @@ ikev2_established_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	 * RFC 9329 IKE-over-TCP: a tcp_encap SA's IKE rides a single TCP
 	 * stream whose local port is 4500, so every message arrives with
 	 * endpoint [peer]:4500 vs the SA's [peer]:500 -- the same address,
-	 * merely the TCP transport port.  That must NOT be read as an
-	 * implicit mobility event, or iked would MOBIKE-migrate the ESP
-	 * data plane onto the TCP-source/4500 ports every time a child or
-	 * informational exchange arrives after establishment (observed as
-	 * SADB_MIGRATE + a derailed child rekey).  Skip the implicit check
-	 * for tcp_encap SAs -- the stream endpoint is the IKE transport,
-	 * not a peer mobility change.
+	 * merely the TCP transport port.  That must not be read as an
+	 * implicit mobility event (or iked would MOBIKE-migrate the ESP data
+	 * plane onto the TCP-source/4500 ports on every exchange).  So for a
+	 * tcp_encap SA compare ADDRESS-only (rcs_cmpsa_wop): the 4500-vs-500
+	 * port is ignored, but a genuine peer ADDRESS change still triggers
+	 * the implicit MOBIKE update.  A non-tcp_encap SA keeps the full
+	 * address+port compare (rcs_cmpsa).
 	 */
 	if (ike_sa->state == IKEV2_STATE_ESTABLISHED &&
-	    ike_sa->mobike_supported && remote && ike_sa->remote &&
-	    !(ike_sa->rmconf &&
-	      ikev2_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON) &&
-	    rcs_cmpsa(remote, ike_sa->remote) != 0) {
-		ikev2_mobike_apply(ike_sa, remote, local);
+	    ike_sa->mobike_supported && remote && ike_sa->remote) {
+		int tcpencap = ike_sa->rmconf &&
+		    ikev2_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON;
+		int changed = (tcpencap
+		    ? rcs_cmpsa_wop(remote, ike_sa->remote)
+		    : rcs_cmpsa(remote, ike_sa->remote));
+
+		if (changed != 0)
+			ikev2_mobike_apply(ike_sa, remote, local);
 	}
 
 	TRACE((PLOGLOC, "%s exch type %d\n",
