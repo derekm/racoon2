@@ -2438,9 +2438,8 @@ isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt
 	 * tcp_encap SA whose own remote still carries the IKE port :500 rather
 	 * than the stream port :4500 -- fall back to the address-only lookup,
 	 * which is unambiguous for the single-stream-per-peer case. */
-	ts = ike_sa != NULL
-		? tcp_srv_find_bound((const struct sockaddr *)&ike_sa->remote,
-				     (const struct sockaddr *)&ike_sa->local)
+	ts = (ike_sa != NULL && ike_sa->remote != NULL && ike_sa->local != NULL)
+		? tcp_srv_find_bound(ike_sa->remote, ike_sa->local)
 		: NULL;
 	if (ts == NULL)
 		ts = tcp_srv_find(dest, src);
