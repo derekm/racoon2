@@ -2350,10 +2350,22 @@ isakmp_transmit_noretry(struct transmit_info *info, rc_vchar_t *pkt,
 		struct tcp_stream *ts = tcp_srv_find(dest, src);
 
 		if (ts != NULL) {
-			if (tcp_stream_send(ts, pkt->v, pkt->l) < 0)
+			/* r==0 queued+flushed, r==1 queued+pending (loop flushes
+			 * on the write wake), r==2 NOT queued (stream buffer
+			 * full or message >65529 B -- nothing sent, nothing
+			 * lost but the peer waits), r<0 hard error.  r==2 would
+			 * otherwise be a silent reply drop in the matrix. */
+			int r = tcp_stream_send(ts, pkt->v, pkt->l);
+
+			if (r < 0)
 				plog(PLOG_INTERR, PLOGLOC, NULL,
 				     "IKE-over-TCP reply failed: %s\n",
 				     strerror(errno));
+			else if (r == 2)
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				     "IKE-over-TCP reply not queued "
+				     "(stream buffer full or message "
+				     "> 65529 bytes)\n");
 			return;
 		}
 	}
