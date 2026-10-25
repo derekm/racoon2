@@ -611,13 +611,15 @@ struct ikev2payl_notify {
 #define	IKEV2_PPK_IDENTITY		16436	/* (RFC8784) */
 #define	IKEV2_NO_PPK_AUTH		16437	/* (RFC8784) */
 #define	IKEV2_CHILDLESS_IKEV2_SUPPORTED	16418	/* (RFC6023) */
-/* RFC 9329 (obsoletes RFC 8229) s7.2: TCP encapsulation of IKE and ESP.
- * A peer advertises TCP_ENCAPSULATION_SUPPORTED (IANA type 16725) when it is
- * willing to move an IKE SA (and, via ESP-in-TCP, its Child SAs) onto a TCP
- * connection.  With the per-remote tcp_encap on|off knob the transport choice
- * is config-driven; this names the codepoint so the notify can be recognized
- * and advertised. */
-#define	IKEV2_TCP_ENCAPSULATION_SUPPORTED 16725	/* (RFC9329) */
+/* RFC 9329 (obsoletes RFC 8229): TCP encapsulation of IKE.  RFC 9329 s2
+ * requires a peer to be *preconfigured* for TCP encapsulation -- it is NOT
+ * negotiated, and IANA defines no TCP_ENCAPSULATION_SUPPORTED notify type
+ * (the IKEv2 Notify Status registry assigns only up to 16447; 16448-40959 is
+ * unassigned, 40960-65535 is Private Use, RFC 7296).  iked therefore does not
+ * advertise or negotiate TCP-encap on the wire; this constant is a
+ * deliberately-marked PRIVATE-USE (40960) informational value, reachable only
+ * when tcp_encap is preconfigured on, and is never required for interop. */
+#define	IKEV2_TCP_ENCAPSULATION_SUPPORTED 40960	/* private-use, not IANA */
 #define	IKEV2_STATE_NOT_FOUND		47
 /* RESERVED TO IANA - STATUS TYPES      16431 - 40959 */
 /* Private Use - STATUS TYPES           40960 - 65535 */

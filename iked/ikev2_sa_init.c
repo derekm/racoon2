@@ -322,11 +322,12 @@ initiator_start_after_gen(int rc, void *arg)
 						 IKEV2_FRAGMENTATION_SUPPORTED,
 						 0, 0),
 			    TRUE);
-	/* RFC 9329 s7.2: advertise TCP encapsulation support when this remote
-	 * is configured to use it (tcp_encap on).  Config-driven (not a
-	 * negotiated fallback), so this is a pure capability advertisement
-	 * like FRAGMENTATION_SUPPORTED above -- it tells the peer we are
-	 * willing to run IKE over TCP (and, later, ESP-in-TCP). */
+	/* RFC 9329 s2: TCP encapsulation is preconfigured, not negotiated, and
+	 * IANA defines no TCP-encap notify (IKEV2_TCP_ENCAPSULATION_SUPPORTED
+	 * is a private-use (40960) informational value only).  When this remote
+	 * is configured tcp_encap on, carry it as an informational hint like
+	 * FRAGMENTATION_SUPPORTED above; it is never a negotiation and never
+	 * required for interop. */
 	if (ikev2_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON)
 		ikev2_payloads_push(&ctx->payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(0, 0, 0,

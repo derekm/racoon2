@@ -151,7 +151,8 @@ main(int argc, char *argv[])
 	   "notify_type_str(43) == TEMPORARY_FAILURE");
 	ck(strcmp(ikev2_notify_type_str(IKEV2_TCP_ENCAPSULATION_SUPPORTED),
 		  "TCP_ENCAPSULATION_SUPPORTED") == 0,
-	   "notify_type_str(16725) == TCP_ENCAPSULATION_SUPPORTED (RFC 9329)");
+	   "notify_type_str(TCP_ENCAPSULATION_SUPPORTED) == name "
+	   "(private-use 40960, not an IANA-assigned type)");
 	ck(strcmp(ikev2_notify_type_str(IKEV2_INVALID_SPI),
 		  "INVALID_SPI") == 0,
 	   "notify_type_str(11) == INVALID_SPI");
