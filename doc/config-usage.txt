@@ -712,12 +712,19 @@ remote
 
 	tcp_encap (on|off) ;
 		It is valid for the ikev2 directive.
-		RFC 9329 / RFC 8229 IKE-over-TCP.  on = an IKE-over-TCP listener
-		is opened on port 4500 (IKEV2_TCP_PORT) and IKE is accepted over
-		it for this remote (responder).  Framing is the IKETCP prefix
-		plus Len(including itself)|4-zero-octet-marker records.  Sending
-		replies back over the stream is not yet wired, so responses still
-		leave over UDP.  off (default) = plain UDP only.
+		RFC 9329 / RFC 8229 IKE-over-TCP.  on = IKE for this remote is
+		carried over a TCP stream on port 4500 instead of UDP: an
+		IKE-over-TCP listener is opened on 4500 for inbound (responder)
+		and an outbound stream is brought up toward the peer for the
+		initiator, and both requests and replies ride the same stream
+		(the SA-bound stream lookup routes a reply back on the stream it
+		arrived on).  Framing is the IKETCP prefix plus
+		Len(including itself)|4-zero-octet-marker records.  IKE messages
+		are never RFC 7383-fragmented over TCP: whole messages (up to
+		65529 B) ride the stream.  On Linux the TCP sockets need the
+		per-socket IPsec bypass (application_bypass) or an explicit SPD
+		exemption for tcp/4500, or the SYN is captured by the tunnel SPD.
+		off (default) = plain UDP only.
 
 	addke_required (on|off) ;
 		It is valid for the ikev2 directive.
