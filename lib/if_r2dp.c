@@ -419,9 +419,14 @@ pack_sa(struct rcpfk_msg *rc, struct r2dp_sa *sa, int strict)
 	sa->lft_hard_bytes = rc->lft_hard_bytes;
 	sa->lft_soft_time = rc->lft_soft_time;
 	sa->lft_soft_bytes = rc->lft_soft_bytes;
-	if (pack_addr(rc, &sa->src, rc->sa_src) || pack_addr(rc, &sa->dst, rc->sa_dst) ||
-	    pack_addr(rc, &sa->natoa_src, rc->sa_natoa_src) ||
-	    pack_addr(rc, &sa->natoa_dst, rc->sa_natoa_dst))
+	if (pack_addr(rc, &sa->src, rc->sa_src) || pack_addr(rc, &sa->dst, rc->sa_dst))
+		return -1;
+	/* NAT-OA addresses are only present when NAT-T is negotiated; absent
+	 * sockaddrs stay as AF_UNSET (memzero'd above) and must not fail the
+	 * pack (r2dp_addr_from_sa(NULL) returns EAFNOSUPPORT). */
+	if (rc->sa_natoa_src && pack_addr(rc, &sa->natoa_src, rc->sa_natoa_src))
+		return -1;
+	if (rc->sa_natoa_dst && pack_addr(rc, &sa->natoa_dst, rc->sa_natoa_dst))
 		return -1;
 	return 0;
 }
