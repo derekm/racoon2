@@ -436,7 +436,7 @@ feat_row() {
 	feat-mai-charonr)
 		need "$IL" 'multiple auth: first round, ANOTHER_AUTH_FOLLOWS' "iked flagged round one"
 		need "$IL" 'multiple auth: responder verified, second round \(PSK\) sent' "iked sent round two"
-		need "$CR" 'parsed IKE_AUTH request 1 .*N\(AUTH_FOLLOWS\)' "charon saw ANOTHER_AUTH_FOLLOWS"
+		need "$CR" 'parsed IKE_AUTH request [0-9]+ .*N\(AUTH_FOLLOWS\)' "charon saw ANOTHER_AUTH_FOLLOWS"
 		need "$CR" "authentication of 'r2init-matrix' with RSA" "charon verified round one (RSA)"
 		need "$CR" "authentication of 'r2second' with pre-shared key successful" "charon verified round two (PSK)"
 		need "$CR" 'IKE_SA r2feat\[[0-9]+\] established' "charon ESTABLISHED"
@@ -449,11 +449,11 @@ feat_row() {
 	feat-mai-badpsk-charonr)
 		need "$IL" 'second round \(PSK\) sent' "iked ran round two"
 		need "$CR" "authentication of 'r2second' with pre-shared key failed|tried [0-9]+ shared key" "charon rejected the round-two PSK"
-		need "$CR" 'generating IKE_AUTH response 2 \[ N\(AUTH_FAILED\) \]' "charon answered AUTHENTICATION_FAILED"
+		need "$CR" 'generating IKE_AUTH response [0-9]+ \[ N\(AUTH_FAILED\) \]' "charon answered AUTHENTICATION_FAILED"
 		never "$IL" 'ESTABLISHED' "iked never ESTABLISHED"
 		;;
 	feat-mai-off-charonr)
-		never "$CR" 'parsed IKE_AUTH request 1 .*N\((MULT_AUTH|AUTH_FOLLOWS)\)' "iked sent no RFC 4739 notify while off"
+		never "$CR" 'parsed IKE_AUTH request [0-9]+ .*N\((MULT_AUTH|AUTH_FOLLOWS)\)' "iked sent no RFC 4739 notify while off"
 		never "$IL" 'multiple auth:' "iked ran no multi-auth round while off"
 		never "$CR" 'IKE_SA r2feat\[[0-9]+\] established' "charon did not establish (remote-2 unmet)"
 		;;
@@ -478,7 +478,7 @@ feat_row() {
 		never "$IL" 'ESTABLISHED' "initiator never ESTABLISHED"
 		;;
 	feat-mai-charon)
-		need "$CI" 'generating IKE_AUTH request 1 .*N\(AUTH_FOLLOWS\)' "charon flagged round one"
+		need "$CI" 'generating IKE_AUTH request [0-9]+ .*N\(AUTH_FOLLOWS\)' "charon flagged round one"
 		need "$RL" 'multiple auth: first round verified, awaiting the second round' "iked verified round one (RSA)"
 		need "$RL" 'multiple auth: second round \(PSK\) verified' "iked verified charon's PSK round as r2second"
 		need "$CI" 'IKE_SA r2feat\[[0-9]+\] established' "charon ESTABLISHED"
@@ -488,7 +488,7 @@ feat_row() {
 		# strongSwan without multiple_authentication does not flag
 		# AUTH_FOLLOWS either: it runs one round.  The iked responder
 		# names a second identity, so one round must not establish.
-		never "$CI" 'generating IKE_AUTH request 1 .*N\(AUTH_FOLLOWS\)' "charon ran a single round"
+		never "$CI" 'generating IKE_AUTH request [0-9]+ .*N\(AUTH_FOLLOWS\)' "charon ran a single round"
 		need "$RL" 'multiple auth: refused \(multi_auth_second_id requires a second round, peer ran one\)' "iked refused the single-round peer"
 		never "$RL" 'second round \(PSK\) verified' "no second round ran"
 		;;

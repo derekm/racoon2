@@ -29,7 +29,14 @@ if [ -z "${I2I_SWANCTL_BIN:-}" ]; then
 	[ -n "$I2I_SWANCTL_BIN" ] || for _c in /usr/bin/swanctl /usr/sbin/swanctl; do
 		[ -x "$_c" ] && { I2I_SWANCTL_BIN=$_c; break; }
 	done
-	I2I_SWANCTL_BIN=${I2I_SWANCTL_BIN:-/usr/bin/swanctl}
+fi
+# Fail fast: silently defaulting to a non-existent /usr/bin/swanctl made the
+# charon rows hang until timeout ("SA/ESP not up") on hosts that only install
+# `strongswan`, not `strongswan-swanctl`.  This seat needs swanctl, so say so
+# up front instead of defaulting to a path that cannot work.
+if [ -z "$I2I_SWANCTL_BIN" ] || [ ! -x "$I2I_SWANCTL_BIN" ]; then
+	echo "FATAL: swanctl not found (install strongswan-swanctl); charon rows need it" >&2
+	exit 2
 fi
 # Libreswan initiator seat (RFC 5723 session resumption interop, kinds/i2ilw.sh):
 # pluto + whack live under /usr/libexec/ipsec on Fedora/libreswan 5.x, and can
