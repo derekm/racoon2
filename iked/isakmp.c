@@ -2411,14 +2411,37 @@ isakmp_schedule_retransmit_frags(struct transmit_info *info,
  * simply never sees it, which is inherent to a dead/full TCP stream (no UDP
  * side-channel for a tcp_encap peer). */
 static int
-isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt)
+isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt,
+		    struct ikev2_sa *ike_sa)
 {
 	struct tcp_stream *ts;
 	int r;
 
 	if (pkt == NULL)
 		return 0;
-	ts = tcp_srv_find(dest, src);
+	/* A non-tcp_encap IKE_SA rides only UDP: even if a stream happens to
+	 * match (e.g. a peer address that also took a TCP connection), never
+	 * pull its traffic onto TCP -- that would leak a UDP SA's messages
+	 * into the stream codec.  The pre-SA IKE_SA_INIT (ike_sa == NULL) is
+	 * exempt; that is exactly the window a new outbound TCP connection
+	 * serves, so it falls through to the address-only registry lookup. */
+	if (ike_sa != NULL && ike_sa->rmconf != NULL &&
+	    ikev2_tcp_encap(ike_sa->rmconf) != RCT_BOOL_ON)
+		return 0;
+	/* RFC 9329 (H3): an established IKE_SA must ride the specific TCP
+	 * stream it was built over.  tcp_srv_find_bound() matches the stream
+	 * on the SA's remote endpoint (addr + the SA's remote port, which
+	 * for a responder distinguishes several clients behind one NAT) --
+	 * an address-only match would cross-wire their replies.  Only before
+	 * the SA exists -- the pre-SA IKE_SA_INIT, whose dst is the IKE port
+	 * (:500) while the outbound stream's remote is :4500 -- or when no
+	 * per-SA stream matches does it fall back to the address-only lookup. */
+	ts = ike_sa != NULL
+		? tcp_srv_find_bound((const struct sockaddr *)&ike_sa->remote,
+				     (const struct sockaddr *)&ike_sa->local)
+		: NULL;
+	if (ts == NULL)
+		ts = tcp_srv_find(dest, src);
 	if (ts == NULL)
 		return 0;
 	r = tcp_stream_send(ts, pkt->v, pkt->l);
@@ -2451,7 +2474,8 @@ isakmp_transmit_noretry(struct transmit_info *info, rc_vchar_t *pkt,
 	 * that stream.  The codec adds the framing (Len|marker|message), so
 	 * do NOT run the UDP NAT-T marker path (natt_set_non_esp_marker)
 	 * below. */
-	if (isakmp_try_tcp_send(dest, src, pkt))
+	if (isakmp_try_tcp_send(dest, src, pkt,
+				(struct ikev2_sa *)info->callback_param))
 		return;
 
 	sock = isakmp_find_socket(src);
@@ -2536,7 +2560,8 @@ isakmp_force_retransmit(struct transmit_info *info)
 
 	/* RFC 9329: a tcp_encap peer's retransmits ride the same stream (the
 	 * codec re-frames the message). */
-	if (isakmp_try_tcp_send(info->dest, info->src, info->packet))
+	if (isakmp_try_tcp_send(info->dest, info->src, info->packet,
+				(struct ikev2_sa *)info->callback_param))
 		return;
 
 	gettimeofday(&info->sent_time, 0);
@@ -2626,7 +2651,8 @@ isakmp_retransmit(struct transmit_info *info)
 	 * timer stays armed on the TCP path -- routing over the stream before
 	 * arming the next interval meant a half-open tcp_encap SA could never
 	 * retransmit again and never hit timeout_callback (reviewer H2). */
-	if (isakmp_try_tcp_send(info->dest, info->src, info->packet))
+	if (isakmp_try_tcp_send(info->dest, info->src, info->packet,
+				(struct ikev2_sa *)info->callback_param))
 		return;
 
 	sock = isakmp_retransmit_socket(info);
@@ -2683,7 +2709,7 @@ isakmp_sendto(rc_vchar_t *pkt, struct sockaddr *remote, struct sockaddr *local)
 
 	/* RFC 9329: notifications/other one-shot sends for a tcp_encap peer
 	 * ride its stream (codec re-frames). */
-	if (isakmp_try_tcp_send(remote, local, pkt))
+	if (isakmp_try_tcp_send(remote, local, pkt, NULL))
 		return;
 
 	sock = isakmp_find_socket(local);

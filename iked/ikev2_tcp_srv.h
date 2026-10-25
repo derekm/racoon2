@@ -71,5 +71,7 @@ int tcp_srv_count(void);
  * routes a reply back onto the same TCP stream an IKE message arrived on. */
 struct tcp_stream *tcp_srv_find(const struct sockaddr *remote,
 				const struct sockaddr *local);
+struct tcp_stream *tcp_srv_find_bound(const struct sockaddr *remote,
+				      const struct sockaddr *local);
 
 #endif /* _IKEV2_TCP_SRV_H_ */

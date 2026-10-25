@@ -276,7 +276,7 @@ tcp_srv_register_connecting(struct tcp_stream *st)
  * over its stream -- both the initiator's outbound stream (remote=peer,
  * local=us) and the responder's accepted stream (remote=peer, local=us). */
 static int
-sa_addr_equal(const struct sockaddr *a, const struct sockaddr *b)
+sa_addr_only_equal(const struct sockaddr *a, const struct sockaddr *b)
 {
 	if (a->sa_family != b->sa_family)
 		return 0;
@@ -307,10 +307,52 @@ tcp_srv_find(const struct sockaddr *remote, const struct sockaddr *local)
 	struct tcp_conn *c;
 
 	for (c = conns; c; c = c->next)
-		if (sa_addr_equal((const struct sockaddr *)&c->st->remote,
-				  remote) &&
-		    sa_addr_equal((const struct sockaddr *)&c->st->local,
-				  local))
+		if (sa_addr_only_equal((const struct sockaddr *)&c->st->remote,
+				       remote) &&
+		    sa_addr_only_equal((const struct sockaddr *)&c->st->local,
+				       local))
+			return c->st;
+	return NULL;
+}
+
+static int
+sa_same_port(const struct sockaddr *a, const struct sockaddr *b)
+{
+	if (a->sa_family != b->sa_family)
+		return 0;
+	switch (a->sa_family) {
+	case AF_INET:
+		return ((const struct sockaddr_in *)a)->sin_port ==
+		       ((const struct sockaddr_in *)b)->sin_port;
+	case AF_INET6:
+		return ((const struct sockaddr_in6 *)a)->sin6_port ==
+		       ((const struct sockaddr_in6 *)b)->sin6_port;
+	}
+	return 0;
+}
+
+/* RFC 9329 (H3): the SA-bound stream lookup.  Once an IKE_SA is established
+ * it must ride the specific TCP stream it was built over.  For a responder,
+ * several RFC 9329 clients behind one NAT each present the same public
+ * address on :4500 and differ only by their TCP source port; the SA's live
+ * remote carries that source port.  Match the stream on the remote
+ * ADDRESS:PORT plus the local ADDRESS -- an address-only match here would
+ * cross-wire two such clients' replies over each other's streams for want
+ * of the SPI, which only the remote port (per-peer client source) can tell
+ * apart.  The local port is intentionally ignored: an SA's local may be the
+ * IKE port (:500) rather than the stream's TCP port. */
+struct tcp_stream *
+tcp_srv_find_bound(const struct sockaddr *remote, const struct sockaddr *local)
+{
+	struct tcp_conn *c;
+
+	for (c = conns; c; c = c->next)
+		if (sa_addr_only_equal((const struct sockaddr *)&c->st->remote,
+				       remote) &&
+		    sa_same_port((const struct sockaddr *)&c->st->remote,
+				 remote) &&
+		    sa_addr_only_equal((const struct sockaddr *)&c->st->local,
+				       local))
 			return c->st;
 	return NULL;
 }
