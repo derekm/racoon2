@@ -329,13 +329,14 @@ esac
 dnl
 dnl Locate libr2dp (installed by the r2dp project) through pkg-config.
 dnl --with-r2dp=PREFIX adds PREFIX's pkgconfig dirs (incl. multiarch libdirs).
+dnl An rpath to libr2dp's libdir is added so libracoon.so (and the daemons
+dnl linked against it) resolve libr2dp.so from a non-system prefix at both
+dnl link and run time.
 AC_DEFUN([RC_WITH_R2DP],
 [
 AC_ARG_WITH(r2dp,
 	[  --with-r2dp=PREFIX      prefix of an installed libr2dp (km-backend=r2dp)],
 	[r2dp_prefix=$withval], [r2dp_prefix=])
-AC_PATH_TOOL(PKG_CONFIG, pkg-config)
-test -n "$PKG_CONFIG" || AC_MSG_ERROR([pkg-config is required to find libr2dp])
 if test -n "$r2dp_prefix" && test x"$r2dp_prefix" != xyes; then
 	for d in "$r2dp_prefix"/lib/pkgconfig "$r2dp_prefix"/lib64/pkgconfig \
 	    "$r2dp_prefix"/lib/*/pkgconfig "$r2dp_prefix"/share/pkgconfig; do
@@ -343,14 +344,12 @@ if test -n "$r2dp_prefix" && test x"$r2dp_prefix" != xyes; then
 	done
 	export PKG_CONFIG_PATH
 fi
-AC_MSG_CHECKING([for libr2dp])
-if $PKG_CONFIG --exists r2dp; then
-	R2DP_CFLAGS=`$PKG_CONFIG --cflags r2dp`
-	R2DP_LIBS=`$PKG_CONFIG --libs r2dp`
-	AC_MSG_RESULT([yes ($R2DP_LIBS)])
-else
-	AC_MSG_RESULT([no])
-	AC_MSG_ERROR([libr2dp not found; build/install the r2dp project and pass --with-r2dp=PREFIX])
+PKG_PROG_PKG_CONFIG
+PKG_CHECK_MODULES([R2DP], [r2dp], [],
+	[AC_MSG_ERROR([libr2dp not found; build/install the r2dp project and pass --with-r2dp=PREFIX])])
+r2dp_libdir=`$PKG_CONFIG --variable=libdir r2dp`
+if test -n "$r2dp_libdir"; then
+	R2DP_LIBS="$R2DP_LIBS -Wl,-rpath,$r2dp_libdir"
 fi
 ])
 
@@ -393,7 +392,6 @@ pfkey)
 r2dp)
 	KM_IF=if_r2dp.c
 	AC_DEFINE(HAVE_R2DP_KM, 1, [r2dp external-forwarder SAD/SPD backend])
-	RC_WITH_R2DP
 	;;
 *)
 	AC_MSG_ERROR([--with-km-backend must be xfrm, pfkey, userspace, or r2dp])
@@ -406,6 +404,10 @@ AM_CONDITIONAL([USE_R2DP], [test x"$km_backend" = xr2dp])
 AC_SUBST(R2DP_CFLAGS)
 AC_SUBST(R2DP_LIBS)
 AC_MSG_RESULT([$km_backend ($KM_IF)])
+dnl Looked up after the backend result so configure output is not nested.
+if test x"$km_backend" = xr2dp; then
+	RC_WITH_R2DP
+fi
 ])
 
 dnl
