@@ -510,6 +510,14 @@ send_sa(struct rcpfk_msg *rc, unsigned type, int with_keys)
 
 	if (pack_sa(rc, &sa, with_keys))
 		return -1;
+	/* v2: say which direction the SA is instead of making the forwarder
+	 * guess.  GETSPI reserves, and UPDATE completes, an SPI we receive on
+	 * (inbound); ADD installs the SA we send with (outbound).  DEL/GET
+	 * are lookups by (spi, dst, proto) and leave it 0. */
+	if (type == R2DP_GETSPI || type == R2DP_SA_UPDATE)
+		sa.dir = R2DP_DIR_IN;
+	else if (type == R2DP_SA_ADD)
+		sa.dir = R2DP_DIR_OUT;
 	if (with_keys) {
 		if ((rc->enckeylen && !rc->enckey) || (rc->authkeylen && !rc->authkey)) {
 			km_seterror(rc, EINVAL, "missing key material");
