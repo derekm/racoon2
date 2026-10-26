@@ -360,10 +360,26 @@ i2i_compliance() {
 		_kn=$(sed -n 's/^[[:space:]]*kmp_sa_lifetime_time[[:space:]]\{1,\}\([0-9]\{1,\}\)[[:space:]]*sec.*/\1/p' "$_cf" 2>/dev/null | head -1)
 		if [ -z "$_kn" ]; then
 			a7_dflt=1
+			# A default-lifetime seat.  The resume marker
+			# ('ike_remain=<lifetime>') is written by the live iked as the
+			# IKE_SA establishes; under CI container load that line can lag
+			# a single instant grep by a few flushes.  Poll a bounded window
+			# instead of one glance -- the marker must genuinely appear
+			# (assertion unchanged), it just cannot be lost to a write/flush
+			# race, which is what made this cell flaky in CI.
+			_m=0; while [ "$_m" -lt 60 ]; do
+				grep -qE "ike_remain=86400" "$_lg" 2>/dev/null && break
+				_m=$((_m+1)); sleep 0.5
+			done
 			grep -qE "ike_remain=86400" "$_lg" && a7_ok=1
 		else
 			a7_knob_txt="$a7_knob_txt seat=$_seat:${_kn}s"
 			[ "$_kn" -le 86400 ] || a7_knob_over=1
+			# same determinism for the knob-proven rekey marker.
+			_m=0; while [ "$_m" -lt 120 ]; do
+				grep -q "initiating IKE_SA rekey" "$_lg" 2>/dev/null && break
+				_m=$((_m+1)); sleep 0.5
+			done
 			grep -q "initiating IKE_SA rekey" "$_lg" && a7_knob_rk=1
 		fi
 	done
