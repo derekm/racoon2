@@ -384,6 +384,7 @@ ppk_id			{ DP; return(PPK_ID); }
 childless		{ DP; return(CHILDLESS); }
 natt_follow_mapping	{ DP; return(NATT_FOLLOW_MAPPING); }
 tcp_encap		{ DP; return(TCP_ENCAP); }
+esp_tcp_encap		{ DP; return(ESP_TCP_ENCAP); }
 send_peers_id		{ DP; return(SEND_PEERS_ID); }
 	/* valid for kink */
 my_principal		{ DP; return(MY_PRINCIPAL); }

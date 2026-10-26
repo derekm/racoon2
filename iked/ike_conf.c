@@ -240,6 +240,7 @@ struct rcf_kmp ikev2_default_values = {
 	RCT_BOOL_OFF,		/* allow_rfc_deprecated: refused unless on */
 	RCT_BOOL_OFF,		/* natt_follow_mapping (XFRM_MSG_MAPPING) */
 	RCT_BOOL_OFF,		/* tcp_encap (RFC 9329 IKE-over-TCP, off=UDP only) */
+	RCT_BOOL_OFF,		/* esp_tcp_encap (ESP-in-TCP espintcp, off=UDP-encap/plain) */
 	NULL,			/* redirect_to (RFC 5685; NULL = never redirect) */
 	RCT_BOOL_OFF,		/* cert_validate (X.509-from-wire off by default) */
 	NULL,			/* ca_file (trust anchor; NULL = default paths) */
@@ -506,6 +507,7 @@ IKEV2_CONF_ATTR(rc_type, use_ppk)
 IKEV2_CONF_ATTR(rc_type, childless)
 IKEV2_CONF_ATTR(rc_type, natt_follow_mapping)
 IKEV2_CONF_ATTR(rc_type, tcp_encap)
+IKEV2_CONF_ATTR(rc_type, esp_tcp_encap)
 IKEV2_CONF_ATTR(rc_vchar_t *, redirect_to)
 IKEV2_CONF_ATTR(rc_type, cert_validate)
 IKEV2_CONF_ATTR(rc_vchar_t *, ca_file)

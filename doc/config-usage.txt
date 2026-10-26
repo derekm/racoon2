@@ -726,6 +726,15 @@ remote
 		exemption for tcp/4500, or the SYN is captured by the tunnel SPD.
 		off (default) = plain UDP only.
 
+	esp_tcp_encap (on|off) ;
+		It is valid for the ikev2 directive.
+		ESP-in-TCP (espintcp) for the child data plane, independent of
+		the IKE transport knob (tcp_encap).  on = install the child
+		SAs with the espintcp XFRM encap and ride ESP inside the same
+		TCP stream as IKE (RFC 8229 full transport — the libreswan
+		enable-tcp model); requires tcp_encap on.  off (default) =
+		child ESP is UDP-encap on 4500 (or plain ESP-in-IP).
+
 	offer_intermediate (on|off) ;
 		It is valid for the ikev2 directive.
 		RFC 9242.  When on (default), iked advertises the

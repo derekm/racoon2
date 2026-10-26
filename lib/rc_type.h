@@ -417,6 +417,14 @@ struct rcf_kmp {
 	 * stream is not yet wired, so replies still leave over UDP.  Off
 	 * (default) = plain UDP only. */
 	rc_type tcp_encap;
+	/* esp_tcp_encap (on|off, default off): ESP-in-TCP (espintcp) for the
+	 * child data plane, independent of the IKE transport knob (tcp_encap).
+	 * On = install the child SAs with the espintcp XFRM encap (type 3) and
+	 * hand the IKE-over-TCP stream socket to xfrm via XFRMA_ENCAP_TCP, so
+	 * ESP rides the same TCP stream as IKE (RFC 8229 full transport; this
+	 * is the libreswan enable-tcp model).  Off (default) = child ESP is
+	 * UDP-encap on 4500 (or plain ESP-in-IP). */
+	rc_type esp_tcp_encap;
 	/* RFC 5685 redirect: when redirect_to is set (a new-gateway identity:
 	 * an IPv4/IPv6 address or a hostname as configured), the responder
 	 * answers an IKE_SA_INIT whose initiator offered N(REDIRECT_SUPPORTED)
