@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "vmbuf.h"
@@ -52,6 +53,10 @@ uint32_t rc_spirange_max = 0x0fffffff;
 static struct rcpfk_cb *cb;
 static struct r2dp_hello_ack caps;
 static int have_caps;
+
+/* Overall budget for a WAITREPLY exchange (replaces a fixed message count,
+ * which a busy forwarder's unrelated traffic could exhaust). */
+#define R2DP_REPLY_DEADLINE_MS 30000
 
 static void
 km_seterror(struct rcpfk_msg *rc, int eno, const char *fmt, ...)
@@ -794,7 +799,8 @@ rcpfk_handler(struct rcpfk_msg *rc)
 	struct r2dp_msg m;
 	struct rcpfk_msg scratch;
 	struct pollfd pfd;
-	int n, r, wait = (rc->flags & PFK_FLAG_WAITREPLY) != 0;
+	struct timespec t0, now;
+	int r, wait = (rc->flags & PFK_FLAG_WAITREPLY) != 0;
 
 	if (rc->so < 0) {
 		km_seterror(rc, EBADF, "r2dp not connected");
@@ -813,12 +819,21 @@ rcpfk_handler(struct rcpfk_msg *rc)
 	 * (R2DP_HF_MORE) is consumed to its last message.
 	 */
 	rc->flags &= ~PFK_FLAG_WAITREPLY;
-	for (n = 0; n < 256; n++) {
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	for (;;) {
+		long left;
+
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		left = R2DP_REPLY_DEADLINE_MS -
+		    ((now.tv_sec - t0.tv_sec) * 1000L +
+		     (now.tv_nsec - t0.tv_nsec) / 1000000L);
+		if (left <= 0)
+			break;
 		pfd.fd = rc->so;
 		pfd.events = POLLIN;
 		pfd.revents = 0;
 		do {
-			r = poll(&pfd, 1, 5000);
+			r = poll(&pfd, 1, left > 5000 ? 5000 : (int)left);
 		} while (r < 0 && errno == EINTR);
 		if (r <= 0) {
 			km_seterror(rc, r == 0 ? ETIMEDOUT : errno,
