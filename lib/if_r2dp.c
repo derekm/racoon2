@@ -385,32 +385,48 @@ pack_addr(struct rcpfk_msg *rc, struct r2dp_addr *a, struct sockaddr *sa)
  * reqid from the tunnel endpoints + protocol so the SP_ADD and its
  * SA_ADD/UPDATE always agree.  Any real rc->reqid is passed through
  * untouched. */
-static size_t
-sa_byte_len(const struct sockaddr *sa)
+/* Hash only the address family and raw address bytes: the SP carries the
+ * tunnel endpoints with port 0 while iked's SA sockaddrs carry the IKE port
+ * (500/4500), and sin_zero / sin6_flowinfo may be uninitialised, so hashing
+ * the whole sockaddr made SP and SA reqids disagree. */
+static uint32_t
+fnv1a(uint32_t h, const void *p, size_t n)
 {
-	switch (sa ? sa->sa_family : 0) {
-	case AF_INET:  return sizeof(struct sockaddr_in);
-	case AF_INET6: return sizeof(struct sockaddr_in6);
-	default:       return 0;
+	const unsigned char *b = p;
+
+	while (n--)
+		h = (h ^ *b++) * 16777619u;
+	return h;
+}
+
+static uint32_t
+reqid_addr(uint32_t h, const struct sockaddr *sa)
+{
+	unsigned char af;
+
+	if (sa == NULL)
+		return fnv1a(h, "", 1);
+	af = (unsigned char)sa->sa_family;
+	h = fnv1a(h, &af, 1);
+	switch (sa->sa_family) {
+	case AF_INET:
+		return fnv1a(h, &((const struct sockaddr_in *)(const void *)sa)->sin_addr, 4);
+	case AF_INET6:
+		return fnv1a(h, &((const struct sockaddr_in6 *)(const void *)sa)->sin6_addr, 16);
+	default:
+		return h;
 	}
 }
 
 static uint32_t
 tunnel_reqid(const struct sockaddr *src, const struct sockaddr *dst, int satype)
 {
-	const struct sockaddr *a[2] = { src, dst };
 	uint32_t h = 2166136261u;
-	size_t n;
-	int i, j;
+	unsigned char p = (unsigned char)satype;
 
-	for (i = 0; i < 2; i++) {
-		if (a[i] == NULL)
-			continue;
-		n = sa_byte_len(a[i]);
-		for (j = 0; j < (int)n; j++)
-			h = (h ^ ((const unsigned char *)a[i])[j]) * 16777619u;
-	}
-	h = (h ^ (uint8_t)satype) * 16777619u;
+	h = reqid_addr(h, src);
+	h = reqid_addr(h, dst);
+	h = fnv1a(h, &p, 1);
 	return h ? h : 0x1234ABCDu;
 }
 
