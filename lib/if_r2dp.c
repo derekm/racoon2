@@ -39,6 +39,7 @@
 #include "vmbuf.h"
 #include "rc_type.h"
 #include "if_pfkeyv2.h"
+#include "plog.h"
 
 #include <r2dp/proto.h>
 #include <r2dp/client.h>
@@ -53,6 +54,7 @@ uint32_t rc_spirange_max = 0x0fffffff;
 static struct rcpfk_cb *cb;
 static struct r2dp_hello_ack caps;
 static int have_caps;
+static uint32_t hello_role = R2DP_ROLE_UNSPEC;
 
 /* Overall budget for a WAITREPLY exchange (replaces a fixed message count,
  * which a busy forwarder's unrelated traffic could exhaust). */
@@ -276,6 +278,7 @@ rcpfk_init(struct rcpfk_msg *rc, struct rcpfk_cb *cb0)
 	if (role)
 		r = strcmp(role, "iked") == 0 ? R2DP_ROLE_IKED :
 		    strcmp(role, "spmd") == 0 ? R2DP_ROLE_SPMD : R2DP_ROLE_UNSPEC;
+	hello_role = r;
 	if ((fd = r2dp_connect(NULL)) < 0) {
 		km_seterror(rc, -fd, "r2dp connect: %s", strerror(-fd));
 		return -1;
@@ -344,6 +347,68 @@ reject_xfrm_native(struct rcpfk_msg *rc)
 	return 0;
 }
 
+/*
+ * The forwarder connection dropped (EOF/ECONNRESET/EPIPE).  Reconnect and
+ * re-HELLO.  The new fd is dup2()'d onto rc->so so the daemon's event loop,
+ * which registered that fd number, keeps working.
+ *
+ * Same epoch: the forwarder (and its SAD/SPD) survived -- only our
+ * connection was lost -- so carry on.  Different epoch, or no forwarder:
+ * the forwarder restarted with empty tables.  The shim holds no keys and
+ * cannot reinstall SAs/SPs, so exit and let the supervisor restart the
+ * daemons, which renegotiate and reinstall everything.  Never run on
+ * against a forwarder whose state silently vanished.
+ */
+static int
+km_reconnect(struct rcpfk_msg *rc)
+{
+	struct r2dp_hello_ack nc;
+	int fd, e = 0, tries;
+
+	for (tries = 0; tries < 5; tries++) {
+		if ((fd = r2dp_connect(NULL)) >= 0) {
+			if ((e = r2dp_hello(fd, hello_role, &nc)) == 0)
+				break;
+			close(fd);
+		} else
+			e = fd;
+		fd = -1;
+		usleep(200000);
+	}
+	if (fd < 0 || !have_caps || nc.epoch != caps.epoch) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "r2dp: forwarder connection lost and %s; exiting so the "
+		    "supervisor restarts and resyncs SAs/SPs\n",
+		    fd < 0 ? "reconnect failed" : "forwarder restarted (epoch changed)");
+		fprintf(stderr, "r2dp: forwarder %s (%s); exiting for resync\n",
+		    fd < 0 ? "unreachable" : "restarted",
+		    fd < 0 ? strerror(-e) : "epoch changed");
+		if (fd >= 0)
+			close(fd);
+		exit(EXIT_FAILURE);
+	}
+	if (rc->so >= 0 && fd != rc->so) {
+		if (dup2(fd, rc->so) < 0) {
+			e = errno;
+			close(fd);
+			km_seterror(rc, e, "r2dp reconnect dup2: %s", strerror(e));
+			return -1;
+		}
+		close(fd);
+	} else
+		rc->so = fd;
+	caps = nc;
+	plog(PLOG_INFO, PLOGLOC, NULL,
+	    "r2dp: reconnected to forwarder (same epoch, state intact)\n");
+	return 0;
+}
+
+static int
+conn_lost(int r)
+{
+	return r == -ENOTCONN || r == -ECONNRESET || r == -EPIPE;
+}
+
 static int
 km_send(struct rcpfk_msg *rc, unsigned type, uint32_t flags,
     const void *body, size_t blen, const void *tail, size_t tlen)
@@ -356,8 +421,11 @@ km_send(struct rcpfk_msg *rc, unsigned type, uint32_t flags,
 	}
 	if (reject_xfrm_native(rc))
 		return -1;
-	if ((r = r2dp_send(rc->so, type, rc->seq, 0, flags, body, blen,
-	    tail, tlen)) < 0) {
+	r = r2dp_send(rc->so, type, rc->seq, 0, flags, body, blen, tail, tlen);
+	if (conn_lost(r) && km_reconnect(rc) == 0)
+		r = r2dp_send(rc->so, type, rc->seq, 0, flags, body, blen,
+		    tail, tlen);
+	if (r < 0) {
 		km_seterror(rc, -r, "r2dp send %s: %s", r2dp_msg_name(type),
 		    strerror(-r));
 		return -1;
@@ -786,6 +854,13 @@ recv_one(struct rcpfk_msg *rc, struct r2dp_msg *m)
 
 	if (r == -ENOSYS)
 		return 1;	/* unknown type from a newer forwarder: skip */
+	if (conn_lost(r)) {
+		/* nothing to dispatch; a request in flight on the old
+		 * connection got no reply and its caller times out/retries */
+		if (km_reconnect(rc) == 0)
+			return 2;
+		return -1;
+	}
 	if (r < 0) {
 		km_seterror(rc, -r, "r2dp recv: %s", strerror(-r));
 		return -1;
@@ -842,6 +917,11 @@ rcpfk_handler(struct rcpfk_msg *rc)
 		}
 		if ((r = recv_one(rc, &m)) < 0)
 			return -1;
+		if (r == 2) {
+			km_seterror(rc, ECONNRESET,
+			    "r2dp connection reset; seq %u not answered", rc->seq);
+			return -1;
+		}
 		if (r > 0)
 			continue;
 		if (m.h.seq == rc->seq && m.h.type != R2DP_EXPIRE &&
