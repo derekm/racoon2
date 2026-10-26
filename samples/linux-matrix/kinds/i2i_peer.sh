@@ -32,11 +32,15 @@ if [ -z "${I2I_SWANCTL_BIN:-}" ]; then
 fi
 # Fail fast: silently defaulting to a non-existent /usr/bin/swanctl made the
 # charon rows hang until timeout ("SA/ESP not up") on hosts that only install
-# `strongswan`, not `strongswan-swanctl`.  This seat needs swanctl, so say so
-# up front instead of defaulting to a path that cannot work.
+# `strongswan`, not `strongswan-swanctl`.  This seat needs swanctl.  Defer the
+# failure to the point a charon seat actually launches (i2i_charon_run): run.sh
+# must keep working -- the harness selftest and every non-charon row -- on a
+# host without swanctl, which the source-time kill previously broke (run.sh
+# exited 2, taking the whole matrix + selftest with it).
 if [ -z "$I2I_SWANCTL_BIN" ] || [ ! -x "$I2I_SWANCTL_BIN" ]; then
-	echo "FATAL: swanctl not found (install strongswan-swanctl); charon rows need it" >&2
-	exit 2
+	I2I_SWANCTL_FATAL="swanctl not found (install strongswan-swanctl); charon rows need it"
+else
+	I2I_SWANCTL_FATAL=
 fi
 # Libreswan initiator seat (RFC 5723 session resumption interop, kinds/i2ilw.sh):
 # pluto + whack live under /usr/libexec/ipsec on Fedora/libreswan 5.x, and can
@@ -172,6 +176,10 @@ I2I_CHARON_INIT_IKE=${I2I_CHARON_INIT_IKE:-0}
 # one, so plugins and every other setting stay the distribution's.
 i2i_charon_run() {
 	_ns=$1 _log=$2
+	if [ -n "$I2I_SWANCTL_FATAL" ]; then
+		echo "FATAL: $I2I_SWANCTL_FATAL" >&2
+		return 1
+	fi
 	_sb=""
 	# stdbuf only when it works (sid: libstdbuf.so not where stdbuf looks)
 	command -v stdbuf >/dev/null 2>&1 && [ -z "$(stdbuf -oL true 2>&1)" ] &&
