@@ -51,6 +51,9 @@ typedef int (*tcp_stream_dispatch)(rc_vchar_t *pkt, struct sockaddr *remote,
 
 struct tcp_stream {
 	int fd;				/* non-blocking stream socket */
+	int connecting;			/* outbound connect in flight (async):
+					   write()/flush() defer until
+					   tcp_stream_connect_done() clears it */
 	struct sockaddr_storage local;	/* our bound address */
 	struct sockaddr_storage remote;	/* peer address */
 	struct tcp_decap_state decap;	/* inbound de-framer */

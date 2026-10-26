@@ -165,6 +165,7 @@ tcp_stream_connect(const struct sockaddr *remote, const struct sockaddr *local,
 {
 	int fd = -1;
 	int len;
+	struct tcp_stream *st;
 
 	len = sa_len(remote);
 	if (len == 0) {
@@ -187,7 +188,10 @@ tcp_stream_connect(const struct sockaddr *remote, const struct sockaddr *local,
 	 * We originated the TCP connection: send the one-time "IKETCP"
 	 * prefix; our peer does not.
 	 */
-	return stream_new(fd, remote, 0, dispatch, arg);
+	st = stream_new(fd, remote, 0, dispatch, arg);
+	if (st != NULL)
+		st->connecting = 1;	/* connect in flight (may be async) */
+	return st;
       fail:
 	if (fd >= 0)
 		close(fd);
@@ -211,6 +215,7 @@ tcp_stream_connect_done(struct tcp_stream *ts)
 		errno = err;
 		return -1;
 	}
+	ts->connecting = 0;	/* connected; queued writes may now flush */
 	return 0;
 }
 
@@ -292,6 +297,12 @@ tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 int
 tcp_stream_flush(struct tcp_stream *ts)
 {
+	/* While an outbound connect is in flight the socket is not yet
+	 * established: sending now would fail with ENOTCONN.  Defer -- the
+	 * event loop completes the connect (tcp_stream_connect_done clears
+	 * ts->connecting) and then flushes the queued obuf. */
+	if (ts->connecting)
+		return 1;
 	while (ts->obuf_off < ts->obuf_len) {
 #ifdef MSG_NOSIGNAL
 		/* A peer RST must not SIGPIPE-kill the daemon. */
@@ -306,6 +317,8 @@ tcp_stream_flush(struct tcp_stream *ts)
 				continue;
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				return 1;	/* still pending -> want EPOLLOUT */
+			if (errno == ENOTCONN && ts->connecting)
+				return 1;	/* connecting: defer the write */
 			return -1;
 		}
 		ts->obuf_off += (size_t)n;

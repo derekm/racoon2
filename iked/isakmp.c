@@ -1543,9 +1543,8 @@ isakmp_initiate_cont(void *tag, const char *selector_index)
 		struct sockaddr_storage tdst;
 		struct sockaddr *rd = req->dst;
 		size_t dlen;
+		struct sockaddr_storage lsrc;
 		struct tcp_stream *ts;
-		struct pollfd pf;
-		int i;
 
 		dlen = (rd->sa_family == AF_INET)
 			? sizeof(struct sockaddr_in)
@@ -1557,30 +1556,37 @@ isakmp_initiate_cont(void *tag, const char *selector_index)
 		else
 			((struct sockaddr_in6 *)&tdst)->sin6_port =
 				htons(IKEV2_TCP_PORT);
-		ts = tcp_stream_connect((struct sockaddr *)&tdst, req->src,
-					isakmp_tcp_dispatch, NULL);
+
+		/* Bind to the source ADDRESS only, not the IKE source PORT
+		 * (req->src carries :500): a fixed TCP source port would
+		 * EADDRINUSE on a second simultaneous initiation to another
+		 * peer, and TCP must not squat on the IKE port.  The RFC 9329
+		 * stream is found by the SA's remote address when routing. */
+		memcpy(&lsrc, req->src, dlen);
+		if (rd->sa_family == AF_INET)
+			((struct sockaddr_in *)&lsrc)->sin_port = 0;
+		else
+			((struct sockaddr_in6 *)&lsrc)->sin6_port = 0;
+
+		/* Async connect (M1): reuse a connecting/established stream to
+		 * this peer (dedupe), else start the non-blocking connect and
+		 * hand it to the event loop -- do NOT block the daemon polling
+		 * for POLLOUT.  The first IKE_SA_INIT is queued on the stream
+		 * and flushed once it is established. */
+		ts = tcp_srv_find((struct sockaddr *)&tdst,
+				  (struct sockaddr *)&lsrc);
 		if (ts != NULL) {
-			pf.fd = ts->fd;
-			pf.events = POLLOUT;
-			pf.revents = 0;
-			for (i = 0; i < 2500; i++) {	/* up to ~5 s */
-				if (poll(&pf, 1, 2) > 0 &&
-				    (pf.revents & (POLLOUT | POLLERR | POLLHUP)))
-					break;
-			}
-			if (tcp_stream_connect_done(ts) == 0)
-				tcp_srv_register_connecting(ts);
-			else {
-				plog(PLOG_INTERR, PLOGLOC, 0,
-				     "IKE-over-TCP initiation to %s failed "
-				     "in connect: %s\n",
-				     rcs_sa2str(rd), strerror(errno));
-				tcp_stream_free(ts);
-			}
+			/* reuse the in-flight or established stream */
 		} else {
-			plog(PLOG_INTERR, PLOGLOC, 0,
-			     "IKE-over-TCP initiation to %s failed: %s\n",
-			     rcs_sa2str(rd), strerror(errno));
+			ts = tcp_stream_connect((struct sockaddr *)&tdst,
+						(struct sockaddr *)&lsrc,
+						isakmp_tcp_dispatch, NULL);
+			if (ts != NULL)
+				tcp_srv_register_connecting(ts);
+			else
+				plog(PLOG_INTERR, PLOGLOC, 0,
+				     "IKE-over-TCP initiation to %s failed: %s\n",
+				     rcs_sa2str(rd), strerror(errno));
 		}
 	}
 
@@ -2474,6 +2480,11 @@ isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt
 		     "IKE-over-TCP: %u-byte IKE message not queued "
 		     "(stream buffer full or message > 65529 bytes)\n",
 		     (unsigned)pkt->l);
+	else if (r == 1 && ts->connecting)
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		     "IKE-over-TCP: %u-byte IKE message queued on "
+		     "connecting stream to %s (flushed once established)\n",
+		     (unsigned)pkt->l, rcs_sa2str(dest));
 	else
 		plog(PLOG_DEBUG, PLOGLOC, NULL,
 		     "IKE-over-TCP: %u-byte IKE message "
