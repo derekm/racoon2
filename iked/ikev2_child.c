@@ -2377,7 +2377,18 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa, int inbound,
 	if (child_sa->parent &&
 	    (child_sa->parent->behind_nat ||
 	     child_sa->parent->peer_behind_nat ||
-	     ikev2_nat_traversal(child_sa->parent->rmconf) == RCT_NATT_FORCE)) {
+	     ikev2_nat_traversal(child_sa->parent->rmconf) == RCT_NATT_FORCE ||
+	     /* RFC 9329 IKE-over-TCP: the child ESP MUST be UDP-encapsulated
+	      * on 4500.  A TCP-carried IKE_SA never sets behind_nat (NAT
+	      * detection only runs on the UDP IKE path), so without this the
+	      * child would install as plain ESP-in-IP while an interoperating
+	      * peer (e.g. libreswan enable-tcp) sends ESP-in-UDP 4500, and
+	      * the kernel's encap check (XfrmInStateMismatch) silently drops
+	      * every inbound frame -> one-way data plane.  Key off the
+	      * configured tcp_encap knob exactly like ikev2_sadb_natt_tcp_pin
+	      * pins the 4500 sport/dport below. */
+	     (child_sa->parent->rmconf &&
+	      ikev2_tcp_encap(child_sa->parent->rmconf) == RCT_BOOL_ON))) {
 #ifndef UDP_ENCAP_ESPINUDP
 #define UDP_ENCAP_ESPINUDP 2
 #endif
