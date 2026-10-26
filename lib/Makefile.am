@@ -19,11 +19,16 @@ else
 if USE_USERSPACE
 libracoon_la_SOURCES += if_userspace.c
 else
+if USE_R2DP
+libracoon_la_SOURCES += if_r2dp.c
+else
 libracoon_la_SOURCES += if_pfkeyv2.c
 endif
 endif
-EXTRA_DIST = rcpfk_nl.h if_xfrm.c if_pfkeyv2.c if_userspace.c xfrmnatt.c xfrmtmpl.c xfrmnltest.c
-libracoon_la_LIBADD = $(LTLIBOBJS) -lpcap
+endif
+EXTRA_DIST = rcpfk_nl.h if_xfrm.c if_pfkeyv2.c if_userspace.c if_r2dp.c xfrmnatt.c xfrmtmpl.c xfrmnltest.c r2dptest.c
+AM_CPPFLAGS +=$(R2DP_CFLAGS)
+libracoon_la_LIBADD = $(LTLIBOBJS) -lpcap $(R2DP_LIBS)
 # NOTE: keep the libtool version-info at the default 0:0:0 (soname
 # libracoon.so.0). Bumping it to 1:0:0 (libracoon.so.1) IS the right ABI-drift
 # guard, but it is a coordinated deploy: every consumer (iked/spmd/kinkd) must
@@ -68,6 +73,18 @@ xfrmnatt_SOURCES = xfrmnatt.c
 xfrmnatt_LDADD = libracoon.la
 xfrmtmpl_SOURCES = xfrmtmpl.c
 xfrmtmpl_LDADD = libracoon.la
+endif
+if USE_R2DP
+# Hermetic r2dp backend test: #includes if_r2dp.c and talks to a fake
+# forwarder thread on a private socket (reqid, v2 dir, reconnect/epoch).
+# Link the objects, not libracoon.la, so if_r2dp.c is not defined twice.
+TESTS += r2dptest
+check_PROGRAMS += r2dptest
+r2dptest_SOURCES = r2dptest.c
+r2dptest_LDADD = vmbuf.lo rc_type.lo rc_net.lo rc_str.lo if_spmd.lo \
+	cfsetup.lo rc_pcap.lo cftoken.lo cfparse.lo pidfile.lo sd_listenfds.lo \
+	plog.lo safefile.lo version.lo rbuf.lo addresspool.lo rcpfk_util.lo \
+	$(LTLIBOBJS) -lpcap -lpthread $(R2DP_LIBS)
 endif
 
 BUILT_SOURCES = cfparse.h

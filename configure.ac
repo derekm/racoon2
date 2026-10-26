@@ -23,11 +23,12 @@ AC_ARG_ENABLE([kinkd],
 AM_CONDITIONAL([BUILD_KINKD], [test x"$enable_kinkd" = xyes])
 AS_IF([test x"$enable_kinkd" = xyes], [AC_CONFIG_SUBDIRS([kinkd])])
 
-dnl Documented here; lib/configure.ac selects if_xfrm.c / if_pfkeyv2.c / if_userspace.c.
+dnl Documented here; lib/configure.ac selects if_xfrm.c / if_pfkeyv2.c / if_userspace.c / if_r2dp.c.
 AC_ARG_WITH(km-backend,
-	[  --with-km-backend=xfrm|pfkey|userspace
+	[  --with-km-backend=xfrm|pfkey|userspace|r2dp
                           SAD/SPD interface (Linux default xfrm;
-                          BSD default pfkey; userspace is loopback)])
+                          BSD default pfkey; userspace is loopback;
+                          r2dp = external forwarder, needs --with-r2dp)])
 
 dnl Set the debug option by default for now.
 AC_MSG_CHECKING(if --enable-debug option is specified)

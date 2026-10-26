@@ -1,0 +1,940 @@
+/*
+ * lib/if_r2dp.c -- racoon2 SAD/SPD backend that speaks the r2dp control
+ * protocol to an external forwarder (e.g. the DPDK dataplane).
+ *
+ * Select with:  ./configure --with-km-backend=r2dp --with-r2dp=<prefix>
+ *
+ * This file is a pure translation layer: struct rcpfk_msg <-> struct
+ * r2dp_sa/r2dp_sp.  racoon's rc_type enums are converted to IANA IKEv2
+ * transform ids / IP protocol numbers on the way out and back on the way
+ * in, so the forwarder never sees racoon2 internals.
+ *
+ * Semantics deliberately match if_pfkeyv2.c: requests complete
+ * asynchronously on rc->so (the forwarder's reply is what fires the
+ * rcpfk_cb callbacks), PFK_FLAG_WAITREPLY is honoured with a scratch
+ * container for unrelated messages, and error replies surface as
+ * rcpfk_handler() == -1 with rc->eno set.  Keys are never copied back
+ * into rc.
+ *
+ * Distributed under the same terms as racoon2 (see COPYRIGHT).
+ */
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#include <errno.h>
+#include <poll.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "vmbuf.h"
+#include "rc_type.h"
+#include "if_pfkeyv2.h"
+#include "plog.h"
+
+#include <r2dp/proto.h>
+#include <r2dp/client.h>
+
+#ifndef UDP_ENCAP_ESPINUDP
+#define UDP_ENCAP_ESPINUDP 2
+#endif
+
+uint32_t rc_spirange_min = 0x00000100;
+uint32_t rc_spirange_max = 0x0fffffff;
+
+static struct rcpfk_cb *cb;
+static struct r2dp_hello_ack caps;
+static int have_caps;
+static uint32_t hello_role = R2DP_ROLE_UNSPEC;
+
+/* Overall budget for a WAITREPLY exchange (replaces a fixed message count,
+ * which a busy forwarder's unrelated traffic could exhaust). */
+#define R2DP_REPLY_DEADLINE_MS 30000
+
+static void
+km_seterror(struct rcpfk_msg *rc, int eno, const char *fmt, ...)
+{
+	va_list ap;
+
+	rc->eno = eno;
+	va_start(ap, fmt);
+	vsnprintf(rc->estr, sizeof(rc->estr), fmt, ap);
+	va_end(ap);
+}
+
+/* ------------------------------------------------ racoon <-> wire enums */
+static int
+enc_to_wire(int t)
+{
+	switch (t) {
+	case 0:				return 0;	/* AH: none */
+	case RCT_ALG_DES3_CBC:		return R2DP_ENCR_3DES;
+	case RCT_ALG_NULL_ENC:		return R2DP_ENCR_NULL;
+	case RCT_ALG_RIJNDAEL_CBC:
+	case RCT_ALG_AES128_CBC:
+	case RCT_ALG_AES192_CBC:
+	case RCT_ALG_AES256_CBC:	return R2DP_ENCR_AES_CBC;
+	case RCT_ALG_AES_CTR:		return R2DP_ENCR_AES_CTR;
+	case RCT_ALG_AES_CCM8:		return R2DP_ENCR_AES_CCM_8;
+	case RCT_ALG_AES_CCM:		return R2DP_ENCR_AES_CCM_12;
+	case RCT_ALG_AES_CCM16:		return R2DP_ENCR_AES_CCM_16;
+	case RCT_ALG_AES_GCM8:		return R2DP_ENCR_AES_GCM_8;
+	case RCT_ALG_AES_GCM12:		return R2DP_ENCR_AES_GCM_12;
+	case RCT_ALG_AES_GCM:		return R2DP_ENCR_AES_GCM_16;
+	case RCT_ALG_CHACHA20_POLY1305:	return R2DP_ENCR_CHACHA20_POLY1305;
+	}
+	return -1;
+}
+
+static int
+integ_to_wire(int t)
+{
+	switch (t) {
+	case 0:
+	case RCT_ALG_NON_AUTH:		return R2DP_INTEG_NONE;
+	case RCT_ALG_HMAC_MD5:		return R2DP_INTEG_HMAC_MD5_96;
+	case RCT_ALG_HMAC_SHA1:		return R2DP_INTEG_HMAC_SHA1_96;
+	case RCT_ALG_AES_XCBC:		return R2DP_INTEG_AES_XCBC_96;
+	case RCT_ALG_AES_CMAC:		return R2DP_INTEG_AES_CMAC_96;
+	case RCT_ALG_HMAC_SHA2_256:	return R2DP_INTEG_HMAC_SHA2_256_128;
+	case RCT_ALG_HMAC_SHA2_384:	return R2DP_INTEG_HMAC_SHA2_384_192;
+	case RCT_ALG_HMAC_SHA2_512:	return R2DP_INTEG_HMAC_SHA2_512_256;
+	}
+	return -1;
+}
+
+static int
+enc_from_wire(int w)
+{
+	switch (w) {
+	case 0:					/* no encryption (AH) */ return 0;
+	case R2DP_ENCR_3DES:		return RCT_ALG_DES3_CBC;
+	case R2DP_ENCR_NULL:		return RCT_ALG_NULL_ENC;
+	case R2DP_ENCR_AES_CBC:		return RCT_ALG_RIJNDAEL_CBC;
+	case R2DP_ENCR_AES_CTR:		return RCT_ALG_AES_CTR;
+	case R2DP_ENCR_AES_CCM_8:	return RCT_ALG_AES_CCM8;
+	case R2DP_ENCR_AES_CCM_12:	return RCT_ALG_AES_CCM;
+	case R2DP_ENCR_AES_CCM_16:	return RCT_ALG_AES_CCM16;
+	case R2DP_ENCR_AES_GCM_8:	return RCT_ALG_AES_GCM8;
+	case R2DP_ENCR_AES_GCM_12:	return RCT_ALG_AES_GCM12;
+	case R2DP_ENCR_AES_GCM_16:	return RCT_ALG_AES_GCM;
+	case R2DP_ENCR_CHACHA20_POLY1305: return RCT_ALG_CHACHA20_POLY1305;
+	}
+	return -1;
+}
+
+static int
+integ_from_wire(int w)
+{
+	switch (w) {
+	case R2DP_INTEG_NONE:		return RCT_ALG_NON_AUTH;
+	case R2DP_INTEG_HMAC_MD5_96:	return RCT_ALG_HMAC_MD5;
+	case R2DP_INTEG_HMAC_SHA1_96:	return RCT_ALG_HMAC_SHA1;
+	case R2DP_INTEG_AES_XCBC_96:	return RCT_ALG_AES_XCBC;
+	case R2DP_INTEG_AES_CMAC_96:	return RCT_ALG_AES_CMAC;
+	case R2DP_INTEG_HMAC_SHA2_256_128: return RCT_ALG_HMAC_SHA2_256;
+	case R2DP_INTEG_HMAC_SHA2_384_192: return RCT_ALG_HMAC_SHA2_384;
+	case R2DP_INTEG_HMAC_SHA2_512_256: return RCT_ALG_HMAC_SHA2_512;
+	}
+	return -1;
+}
+
+static int
+proto_to_wire(int satype)
+{
+	switch (satype) {
+	case RCT_SATYPE_ESP:	return R2DP_PROTO_ESP;
+	case RCT_SATYPE_AH:	return R2DP_PROTO_AH;
+	case RCT_SATYPE_IPCOMP:	return R2DP_PROTO_IPCOMP;
+	}
+	return -1;
+}
+
+static int
+proto_from_wire(int p)
+{
+	switch (p) {
+	case R2DP_PROTO_ESP:	return RCT_SATYPE_ESP;
+	case R2DP_PROTO_AH:	return RCT_SATYPE_AH;
+	case R2DP_PROTO_IPCOMP:	return RCT_SATYPE_IPCOMP;
+	}
+	return -1;
+}
+
+static int
+mode_to_wire(int m)
+{
+	return m == RCT_IPSM_TRANSPORT ? R2DP_MODE_TRANSPORT :
+	       m == RCT_IPSM_TUNNEL ? R2DP_MODE_TUNNEL : -1;
+}
+
+static int
+mode_from_wire(int m)
+{
+	return m == R2DP_MODE_TRANSPORT ? RCT_IPSM_TRANSPORT :
+	       m == R2DP_MODE_TUNNEL ? RCT_IPSM_TUNNEL : -1;
+}
+
+static int
+dir_to_wire(int d)
+{
+	return d == RCT_DIR_INBOUND ? R2DP_DIR_IN :
+	       d == RCT_DIR_OUTBOUND ? R2DP_DIR_OUT :
+	       d == RCT_DIR_FWD ? R2DP_DIR_FWD : -1;
+}
+
+static int
+dir_from_wire(int d)
+{
+	return d == R2DP_DIR_IN ? RCT_DIR_INBOUND :
+	       d == R2DP_DIR_OUT ? RCT_DIR_OUTBOUND :
+	       d == R2DP_DIR_FWD ? RCT_DIR_FWD : -1;
+}
+
+static int
+act_to_wire(int a)
+{
+	switch (a) {
+	case RCT_ACT_AUTO_IPSEC:	return R2DP_ACT_PROTECT;
+	case RCT_ACT_DISCARD:		return R2DP_ACT_DISCARD;
+	case RCT_ACT_NONE:		return R2DP_ACT_BYPASS;
+	}
+	return -1;	/* incl. RCT_ACT_STATIC_IPSEC, as if_pfkeyv2.c */
+}
+
+static int
+act_from_wire(int a)
+{
+	return a == R2DP_ACT_PROTECT ? RCT_ACT_AUTO_IPSEC :
+	       a == R2DP_ACT_DISCARD ? RCT_ACT_DISCARD :
+	       a == R2DP_ACT_BYPASS ? RCT_ACT_NONE : -1;
+}
+
+static int
+level_to_wire(int l)
+{
+	return l == RCT_IPSL_USE ? R2DP_LVL_USE :
+	       l == RCT_IPSL_UNIQUE ? R2DP_LVL_UNIQUE : R2DP_LVL_REQUIRE;
+}
+
+static int
+level_from_wire(int l)
+{
+	return l == R2DP_LVL_USE ? RCT_IPSL_USE :
+	       l == R2DP_LVL_UNIQUE ? RCT_IPSL_UNIQUE :
+	       l == R2DP_LVL_REQUIRE ? RCT_IPSL_REQUIRE : -1;
+}
+
+static int
+protos_to_wire(int satype)
+{
+	switch (satype) {
+	case RCT_SATYPE_ESP:		return R2DP_SPP_ESP;
+	case RCT_SATYPE_AH:		return R2DP_SPP_AH;
+	case RCT_SATYPE_IPCOMP:		return R2DP_SPP_IPCOMP;
+	case RCT_SATYPE_AH_ESP:		return R2DP_SPP_AH | R2DP_SPP_ESP;
+	case RCT_SATYPE_AH_IPCOMP:	return R2DP_SPP_AH | R2DP_SPP_IPCOMP;
+	case RCT_SATYPE_ESP_IPCOMP:	return R2DP_SPP_ESP | R2DP_SPP_IPCOMP;
+	case RCT_SATYPE_AH_ESP_IPCOMP:	return R2DP_SPP_AH | R2DP_SPP_ESP | R2DP_SPP_IPCOMP;
+	}
+	return -1;
+}
+
+static int
+protos_from_wire(int m)
+{
+	switch (m) {
+	case R2DP_SPP_ESP:		return RCT_SATYPE_ESP;
+	case R2DP_SPP_AH:		return RCT_SATYPE_AH;
+	case R2DP_SPP_IPCOMP:		return RCT_SATYPE_IPCOMP;
+	case R2DP_SPP_AH | R2DP_SPP_ESP: return RCT_SATYPE_AH_ESP;
+	case R2DP_SPP_AH | R2DP_SPP_IPCOMP: return RCT_SATYPE_AH_IPCOMP;
+	case R2DP_SPP_ESP | R2DP_SPP_IPCOMP: return RCT_SATYPE_ESP_IPCOMP;
+	case R2DP_SPP_AH | R2DP_SPP_ESP | R2DP_SPP_IPCOMP: return RCT_SATYPE_AH_ESP_IPCOMP;
+	}
+	return -1;
+}
+
+/* ------------------------------------------------------------ lifecycle */
+int
+rcpfk_init(struct rcpfk_msg *rc, struct rcpfk_cb *cb0)
+{
+	const char *role = getenv("R2DP_ROLE");	/* "iked" | "spmd" | unset */
+	uint32_t r = R2DP_ROLE_UNSPEC;
+	int fd, e;
+
+	cb = cb0;
+	have_caps = 0;
+	rc->so = -1;
+	if (role)
+		r = strcmp(role, "iked") == 0 ? R2DP_ROLE_IKED :
+		    strcmp(role, "spmd") == 0 ? R2DP_ROLE_SPMD : R2DP_ROLE_UNSPEC;
+	hello_role = r;
+	if ((fd = r2dp_connect(NULL)) < 0) {
+		km_seterror(rc, -fd, "r2dp connect: %s", strerror(-fd));
+		return -1;
+	}
+	if ((e = r2dp_hello(fd, r, &caps)) < 0) {
+		km_seterror(rc, -e, "r2dp hello: %s", strerror(-e));
+		close(fd);
+		return -1;
+	}
+	have_caps = 1;
+	rc->so = fd;
+	return 0;
+}
+
+int
+rcpfk_clean(struct rcpfk_msg *rc)
+{
+	cb = NULL;
+	have_caps = 0;
+	if (rc->so >= 0)
+		close(rc->so);
+	rc->so = -1;
+	return 0;
+}
+
+int
+rcpfk_supported_enc(int algtype)
+{
+	int w = enc_to_wire(algtype);
+
+	if (w < 0)
+		return 0;
+	return have_caps ? r2dp_cap(caps.enc_caps, w) : 0;
+}
+
+int
+rcpfk_supported_auth(int algtype)
+{
+	int w = integ_to_wire(algtype);
+
+	if (w < 0)
+		return 0;
+	return have_caps ? r2dp_cap(caps.integ_caps, w) : 0;
+}
+
+/* ----------------------------------------------------------------- send */
+/*
+ * XFRM-native flow selectors.  mark/if_id restrict which traffic a state or
+ * policy applies to; a forwarder that ignored them would apply the policy to
+ * MORE traffic than configured, so refuse instead of dropping them silently.
+ * (offload_ifname/ifindex/flags are only an optimisation hint -- the loopback
+ * backend ignores them too -- so they are deliberately not an error.)
+ */
+static int
+reject_xfrm_native(struct rcpfk_msg *rc)
+{
+#ifdef RCPFK_ABI_VERSION
+	if (rc->mark || rc->mark_mask || rc->if_id) {
+		km_seterror(rc, EOPNOTSUPP,
+		    "mark/if_id selectors are not supported by the r2dp backend");
+		return -1;
+	}
+#else
+	(void)rc;
+#endif
+	return 0;
+}
+
+/*
+ * The forwarder connection dropped (EOF/ECONNRESET/EPIPE).  Reconnect and
+ * re-HELLO.  The new fd is dup2()'d onto rc->so so the daemon's event loop,
+ * which registered that fd number, keeps working.
+ *
+ * Same epoch: the forwarder (and its SAD/SPD) survived -- only our
+ * connection was lost -- so carry on.  Different epoch, or no forwarder:
+ * the forwarder restarted with empty tables.  The shim holds no keys and
+ * cannot reinstall SAs/SPs, so exit and let the supervisor restart the
+ * daemons, which renegotiate and reinstall everything.  Never run on
+ * against a forwarder whose state silently vanished.
+ */
+static int
+km_reconnect(struct rcpfk_msg *rc)
+{
+	struct r2dp_hello_ack nc;
+	int fd, e = 0, tries;
+
+	for (tries = 0; tries < 5; tries++) {
+		if ((fd = r2dp_connect(NULL)) >= 0) {
+			if ((e = r2dp_hello(fd, hello_role, &nc)) == 0)
+				break;
+			close(fd);
+		} else
+			e = fd;
+		fd = -1;
+		usleep(200000);
+	}
+	if (fd < 0 || !have_caps || nc.epoch != caps.epoch) {
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "r2dp: forwarder connection lost and %s; exiting so the "
+		    "supervisor restarts and resyncs SAs/SPs\n",
+		    fd < 0 ? "reconnect failed" : "forwarder restarted (epoch changed)");
+		fprintf(stderr, "r2dp: forwarder %s (%s); exiting for resync\n",
+		    fd < 0 ? "unreachable" : "restarted",
+		    fd < 0 ? strerror(-e) : "epoch changed");
+		if (fd >= 0)
+			close(fd);
+		exit(EXIT_FAILURE);
+	}
+	if (rc->so >= 0 && fd != rc->so) {
+		if (dup2(fd, rc->so) < 0) {
+			e = errno;
+			close(fd);
+			km_seterror(rc, e, "r2dp reconnect dup2: %s", strerror(e));
+			return -1;
+		}
+		close(fd);
+	} else
+		rc->so = fd;
+	caps = nc;
+	plog(PLOG_INFO, PLOGLOC, NULL,
+	    "r2dp: reconnected to forwarder (same epoch, state intact)\n");
+	return 0;
+}
+
+static int
+conn_lost(int r)
+{
+	return r == -ENOTCONN || r == -ECONNRESET || r == -EPIPE;
+}
+
+static int
+km_send(struct rcpfk_msg *rc, unsigned type, uint32_t flags,
+    const void *body, size_t blen, const void *tail, size_t tlen)
+{
+	int r;
+
+	if (rc->so < 0) {
+		km_seterror(rc, EBADF, "r2dp not connected");
+		return -1;
+	}
+	if (reject_xfrm_native(rc))
+		return -1;
+	r = r2dp_send(rc->so, type, rc->seq, 0, flags, body, blen, tail, tlen);
+	if (conn_lost(r) && km_reconnect(rc) == 0)
+		r = r2dp_send(rc->so, type, rc->seq, 0, flags, body, blen,
+		    tail, tlen);
+	if (r < 0) {
+		km_seterror(rc, -r, "r2dp send %s: %s", r2dp_msg_name(type),
+		    strerror(-r));
+		return -1;
+	}
+	return 0;
+}
+
+static int
+pack_addr(struct rcpfk_msg *rc, struct r2dp_addr *a, struct sockaddr *sa)
+{
+	int r;
+
+	if (sa != NULL && sa->sa_family == AF_INET6) {
+		km_seterror(rc, EOPNOTSUPP, "IPv6 not supported by r2dp backend");
+		return -1;
+	}
+	r = r2dp_addr_from_sa(a, sa);
+
+	if (r < 0) {
+		km_seterror(rc, -r, "unsupported address family");
+		return -1;
+	}
+	return 0;
+}
+
+/* Per-tunnel egress reqid.  racoon2 passes reqid=0 (XFRM treats 0 as a
+ * wildcard and ignores it for SA selection), but the forwarder links SP->SA
+ * by reqid, so all-zero reqids would collapse every tunnel onto one egress
+ * SA.  When the caller has not set one, derive a stable, nonzero per-tunnel
+ * reqid from the tunnel endpoints + protocol so the SP_ADD and its
+ * SA_ADD/UPDATE always agree.  Any real rc->reqid is passed through
+ * untouched. */
+/* Hash only the address family and raw address bytes: the SP carries the
+ * tunnel endpoints with port 0 while iked's SA sockaddrs carry the IKE port
+ * (500/4500), and sin_zero / sin6_flowinfo may be uninitialised, so hashing
+ * the whole sockaddr made SP and SA reqids disagree. */
+static uint32_t
+fnv1a(uint32_t h, const void *p, size_t n)
+{
+	const unsigned char *b = p;
+
+	while (n--)
+		h = (h ^ *b++) * 16777619u;
+	return h;
+}
+
+static uint32_t
+reqid_addr(uint32_t h, const struct sockaddr *sa)
+{
+	unsigned char af;
+
+	if (sa == NULL)
+		return fnv1a(h, "", 1);
+	af = (unsigned char)sa->sa_family;
+	h = fnv1a(h, &af, 1);
+	switch (sa->sa_family) {
+	case AF_INET:
+		return fnv1a(h, &((const struct sockaddr_in *)(const void *)sa)->sin_addr, 4);
+	case AF_INET6:
+		return fnv1a(h, &((const struct sockaddr_in6 *)(const void *)sa)->sin6_addr, 16);
+	default:
+		return h;
+	}
+}
+
+static uint32_t
+tunnel_reqid(const struct sockaddr *src, const struct sockaddr *dst, int satype)
+{
+	uint32_t h = 2166136261u;
+	unsigned char p = (unsigned char)satype;
+
+	h = reqid_addr(h, src);
+	h = reqid_addr(h, dst);
+	h = fnv1a(h, &p, 1);
+	return h ? h : 0x1234ABCDu;
+}
+
+/*
+ * Build the wire SA from rc.  strict != 0 (ADD/UPDATE) requires every
+ * algorithm to translate; lookups (GETSPI/DEL/GET) only need the key.
+ */
+static int
+pack_sa(struct rcpfk_msg *rc, struct r2dp_sa *sa, int strict)
+{
+	int p, m, e, i;
+
+	memset(sa, 0, sizeof(*sa));
+	if ((p = proto_to_wire(rc->satype)) < 0) {
+		km_seterror(rc, EINVAL, "invalid satype=%d", rc->satype);
+		return -1;
+	}
+	if (p == R2DP_PROTO_IPCOMP) {
+		km_seterror(rc, EOPNOTSUPP, "IPComp not supported by r2dp");
+		return -1;
+	}
+	/* NAT-T (ESP-in-UDP 4500) is supported by the forwarder (advertised via
+	 * the R2DP_FEAT_NATT HELLO bit) for both directions; the forwarder's
+	 * outer-tap demux handles it.  Only an unknown encapsulation is refused. */
+	if (rc->natt_type && rc->natt_type != UDP_ENCAP_ESPINUDP) {
+		km_seterror(rc, EOPNOTSUPP, "unknown NAT-T encapsulation %d",
+		    rc->natt_type);
+		return -1;
+	}
+	m = mode_to_wire(rc->samode);
+	e = enc_to_wire(rc->enctype);
+	i = integ_to_wire(rc->authtype);
+	if (strict && (m < 0 || e < 0 || i < 0)) {
+		km_seterror(rc, EINVAL, "unsupported samode=%d enctype=%d authtype=%d",
+		    rc->samode, rc->enctype, rc->authtype);
+		return -1;
+	}
+	if (rc->enckeylen > R2DP_MAX_KEY || rc->authkeylen > R2DP_MAX_KEY) {
+		km_seterror(rc, EINVAL, "key too long (%zu/%zu)", rc->enckeylen,
+		    rc->authkeylen);
+		return -1;
+	}
+	sa->proto = (uint8_t)p;
+	sa->mode = m < 0 ? 0 : (uint8_t)m;
+	sa->enc = e < 0 ? 0 : (uint8_t)e;
+	sa->integ = i < 0 ? 0 : (uint8_t)i;
+	sa->spi = rc->spi;
+	sa->reqid = rc->reqid ? rc->reqid :
+	    tunnel_reqid(rc->sa_src, rc->sa_dst, rc->satype);
+	sa->saflags = (rc->saflags & SADB_X_SAFLAGS_ESN) ? R2DP_SAF_ESN : 0;
+	sa->wsize = rc->wsize;
+	sa->spi_min = rc_spirange_min;
+	sa->spi_max = rc_spirange_max;
+	sa->natt_type = rc->natt_type ? R2DP_NATT_ESPINUDP : R2DP_NATT_NONE;
+	sa->natt_sport = rc->natt_sport;
+	sa->natt_dport = rc->natt_dport;
+	sa->enckeylen = (uint16_t)rc->enckeylen;
+	sa->authkeylen = (uint16_t)rc->authkeylen;
+	sa->lft_hard_time = rc->lft_hard_time;
+	sa->lft_hard_bytes = rc->lft_hard_bytes;
+	sa->lft_soft_time = rc->lft_soft_time;
+	sa->lft_soft_bytes = rc->lft_soft_bytes;
+	if (pack_addr(rc, &sa->src, rc->sa_src) || pack_addr(rc, &sa->dst, rc->sa_dst))
+		return -1;
+	/* NAT-OA addresses are only present when NAT-T is negotiated; absent
+	 * sockaddrs stay as AF_UNSET (memzero'd above) and must not fail the
+	 * pack (r2dp_addr_from_sa(NULL) returns EAFNOSUPPORT). */
+	if (rc->sa_natoa_src && pack_addr(rc, &sa->natoa_src, rc->sa_natoa_src))
+		return -1;
+	if (rc->sa_natoa_dst && pack_addr(rc, &sa->natoa_dst, rc->sa_natoa_dst))
+		return -1;
+	return 0;
+}
+
+static int
+send_sa(struct rcpfk_msg *rc, unsigned type, int with_keys)
+{
+	struct r2dp_sa sa;
+	uint8_t tail[2 * R2DP_MAX_KEY];
+	size_t tl = 0;
+
+	if (pack_sa(rc, &sa, with_keys))
+		return -1;
+	/* v2: say which direction the SA is instead of making the forwarder
+	 * guess.  GETSPI reserves, and UPDATE completes, an SPI we receive on
+	 * (inbound); ADD installs the SA we send with (outbound).  DEL/GET
+	 * are lookups by (spi, dst, proto) and leave it 0. */
+	if (type == R2DP_GETSPI || type == R2DP_SA_UPDATE)
+		sa.dir = R2DP_DIR_IN;
+	else if (type == R2DP_SA_ADD)
+		sa.dir = R2DP_DIR_OUT;
+	if (with_keys) {
+		if ((rc->enckeylen && !rc->enckey) || (rc->authkeylen && !rc->authkey)) {
+			km_seterror(rc, EINVAL, "missing key material");
+			return -1;
+		}
+		if (rc->enckeylen)
+			memcpy(tail, rc->enckey, rc->enckeylen);
+		if (rc->authkeylen)
+			memcpy(tail + rc->enckeylen, rc->authkey, rc->authkeylen);
+		tl = rc->enckeylen + rc->authkeylen;
+	}
+	{
+		int r = km_send(rc, type, with_keys ? 0 : R2DP_HF_NOKEYS,
+		    &sa, sizeof(sa), tail, tl);
+		memset(tail, 0, sizeof(tail));	/* don't leave keys on the stack */
+		return r;
+	}
+}
+
+int rcpfk_send_getspi(struct rcpfk_msg *rc) { return send_sa(rc, R2DP_GETSPI, 0); }
+int rcpfk_send_update(struct rcpfk_msg *rc) { return send_sa(rc, R2DP_SA_UPDATE, 1); }
+int rcpfk_send_add(struct rcpfk_msg *rc)    { return send_sa(rc, R2DP_SA_ADD, 1); }
+int rcpfk_send_delete(struct rcpfk_msg *rc) { return send_sa(rc, R2DP_SA_DEL, 0); }
+int rcpfk_send_get(struct rcpfk_msg *rc)    { return send_sa(rc, R2DP_SA_GET, 0); }
+
+/* SPD ------------------------------------------------------------------ */
+static int
+send_sp(struct rcpfk_msg *rc, unsigned type, uint32_t spflags, int strict)
+{
+	struct r2dp_sp sp;
+	int d, a, pr;
+
+	memset(&sp, 0, sizeof(sp));
+	d = dir_to_wire(rc->dir);
+	a = act_to_wire(rc->pltype);
+	if (strict && (d < 0 || a < 0)) {
+		km_seterror(rc, EINVAL, "invalid dir=%d pltype=%d", rc->dir, rc->pltype);
+		return -1;
+	}
+	sp.dir = d < 0 ? 0 : (uint8_t)d;
+	sp.action = a < 0 ? 0 : (uint8_t)a;
+	if (a == R2DP_ACT_PROTECT) {
+		int m = mode_to_wire(rc->samode);
+
+		pr = protos_to_wire(rc->satype);
+		if (strict && (m < 0 || pr < 0)) {
+			km_seterror(rc, EINVAL, "invalid samode=%d satype=%d",
+			    rc->samode, rc->satype);
+			return -1;
+		}
+		sp.mode = m < 0 ? 0 : (uint8_t)m;
+		sp.protos = pr < 0 ? 0 : (uint8_t)pr;
+		if (pack_addr(rc, &sp.tun_src, rc->sa_src) ||
+		    pack_addr(rc, &sp.tun_dst, rc->sa_dst))
+			return -1;
+	}
+	sp.slid = rc->slid;
+	sp.reqid = rc->reqid ? rc->reqid :
+	    tunnel_reqid(rc->sa_src, rc->sa_dst, rc->satype);
+	sp.flags = spflags;
+	sp.ul_proto = rc->ul_proto;
+	sp.pref_src = rc->pref_src;
+	sp.pref_dst = rc->pref_dst;
+	sp.level = (uint8_t)level_to_wire(rc->ipsec_level);
+	sp.lft_hard_time = rc->lft_hard_time;
+	sp.lft_hard_bytes = rc->lft_hard_bytes;
+	memcpy(sp.tag, rc->tag_name, sizeof(sp.tag) < sizeof(rc->tag_name) ?
+	    sizeof(sp.tag) : sizeof(rc->tag_name));
+	sp.tag[sizeof(sp.tag) - 1] = '\0';
+	if (pack_addr(rc, &sp.sel_src, rc->sp_src) || pack_addr(rc, &sp.sel_dst, rc->sp_dst))
+		return -1;
+	return km_send(rc, type, 0, &sp, sizeof(sp), NULL, 0);
+}
+
+int rcpfk_send_spdadd(struct rcpfk_msg *rc)    { return send_sp(rc, R2DP_SP_ADD, 0, 1); }
+int rcpfk_send_spdupdate(struct rcpfk_msg *rc) { return send_sp(rc, R2DP_SP_ADD, R2DP_SPF_UPDATE, 1); }
+int rcpfk_send_spddelete(struct rcpfk_msg *rc) { return send_sp(rc, R2DP_SP_DEL, 0, 0); }
+int rcpfk_send_spddelete2(struct rcpfk_msg *rc){ return send_sp(rc, R2DP_SP_DEL, 0, 0); }
+int rcpfk_send_spdget(struct rcpfk_msg *rc)    { return send_sp(rc, R2DP_SP_GET, 0, 0); }
+int rcpfk_send_spddump(struct rcpfk_msg *rc)   { return send_sp(rc, R2DP_SP_DUMP, 0, 0); }
+
+/* No-ops / unsupported, mirroring the loopback backend where applicable. */
+int rcpfk_send_register(struct rcpfk_msg *rc)  { (void)rc; return 0; }	/* HELLO replaces it */
+int rcpfk_send_acquire(struct rcpfk_msg *rc)   { (void)rc; return 0; }	/* M4 */
+int
+rcpfk_send_migrate(struct rcpfk_msg *rc)
+{
+	km_seterror(rc, EOPNOTSUPP, "migrate not supported by r2dp");
+	return -1;
+}
+
+/* -------------------------------------------------------------- receive */
+static void
+unpack_addr(const struct r2dp_addr *a, struct sockaddr_storage *st,
+    struct sockaddr **out)
+{
+	*out = (r2dp_addr_to_sa(a, st) == 0) ? (struct sockaddr *)st : NULL;
+}
+
+static int
+unpack_sa(struct rcpfk_msg *rc, const struct r2dp_sa *sa)
+{
+	int v;
+
+	rc->spi = sa->spi;
+	rc->reqid = sa->reqid;
+	if ((v = proto_from_wire(sa->proto)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown satype %u", sa->proto);
+		return -1;
+	}
+	rc->satype = (uint8_t)v;
+	if ((v = mode_from_wire(sa->mode)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown mode %u", sa->mode);
+		return -1;
+	}
+	rc->samode = (uint8_t)v;
+	if ((v = enc_from_wire(sa->enc)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown enc alg %u", sa->enc);
+		return -1;
+	}
+	rc->enctype = (uint8_t)v;
+	if ((v = integ_from_wire(sa->integ)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown integ alg %u", sa->integ);
+		return -1;
+	}
+	rc->authtype = (uint8_t)v;
+	rc->saflags = (sa->saflags & R2DP_SAF_ESN) ? SADB_X_SAFLAGS_ESN : 0;
+	rc->wsize = sa->wsize;
+	rc->natt_type = sa->natt_type ? UDP_ENCAP_ESPINUDP : 0;
+	rc->natt_sport = sa->natt_sport;
+	rc->natt_dport = sa->natt_dport;
+	rc->lft_hard_time = sa->lft_hard_time;
+	rc->lft_hard_bytes = sa->lft_hard_bytes;
+	rc->lft_soft_time = sa->lft_soft_time;
+	rc->lft_soft_bytes = sa->lft_soft_bytes;
+	rc->lft_current_alloc = sa->cur_alloc;
+	rc->lft_current_add = sa->cur_add;
+	rc->lft_current_use = sa->cur_use;
+	rc->lft_current_bytes = sa->cur_bytes;
+	rc->expired = sa->expired;
+	/*
+	 * Key material is never copied out of the forwarder, and the caller's
+	 * own enckey/authkey fields are left alone: a send-then-WAITREPLY
+	 * caller reuses rc, and wiping its key pointers here would break its
+	 * next ADD/UPDATE.
+	 */
+	unpack_addr(&sa->src, &rc->sa_src_storage, &rc->sa_src);
+	unpack_addr(&sa->dst, &rc->sa_dst_storage, &rc->sa_dst);
+	unpack_addr(&sa->natoa_src, &rc->sa_natoa_src_storage, &rc->sa_natoa_src);
+	unpack_addr(&sa->natoa_dst, &rc->sa_natoa_dst_storage, &rc->sa_natoa_dst);
+	return 0;
+}
+
+static int
+unpack_sp(struct rcpfk_msg *rc, const struct r2dp_sp *sp)
+{
+	int v;
+
+	rc->slid = sp->slid;
+	rc->reqid = sp->reqid;
+	if ((v = dir_from_wire(sp->dir)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown dir %u", sp->dir);
+		return -1;
+	}
+	rc->dir = (uint8_t)v;
+	if ((v = act_from_wire(sp->action)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown action %u", sp->action);
+		return -1;
+	}
+	rc->pltype = (uint8_t)v;
+	/* mode/protos are only meaningful for a PROTECT policy; send_sp packs
+	 * them as 0 for BYPASS/DISCARD (memset at send_sp), so demanding a
+	 * translation for every action would EINVAL every non-PROTECT SP the
+	 * forwarder echoes back (SP_DUMP / SP_ADD / SP_DEL completions), broken
+	 * SPD sync.  Only translate when PROTECT. */
+	if (sp->action == R2DP_ACT_PROTECT) {
+		if ((v = mode_from_wire(sp->mode)) < 0) {
+			km_seterror(rc, EINVAL, "r2dp: unknown mode %u", sp->mode);
+			return -1;
+		}
+		rc->samode = (uint8_t)v;
+		if ((v = protos_from_wire(sp->protos)) < 0) {
+			km_seterror(rc, EINVAL, "r2dp: unknown protos %u", sp->protos);
+			return -1;
+		}
+		rc->satype = (uint8_t)v;
+	} else {
+		rc->samode = 0;
+		rc->satype = 0;
+	}
+	if ((v = level_from_wire(sp->level)) < 0) {
+		km_seterror(rc, EINVAL, "r2dp: unknown level %u", sp->level);
+		return -1;
+	}
+	rc->ipsec_level = (uint8_t)v;
+	rc->ul_proto = sp->ul_proto;
+	rc->pref_src = sp->pref_src;
+	rc->pref_dst = sp->pref_dst;
+	rc->lft_hard_time = sp->lft_hard_time;
+	rc->lft_hard_bytes = sp->lft_hard_bytes;
+	memset(rc->tag_name, 0, sizeof(rc->tag_name));
+	memcpy(rc->tag_name, sp->tag, sizeof(rc->tag_name) < sizeof(sp->tag) ?
+	    sizeof(rc->tag_name) : sizeof(sp->tag));
+	rc->tag_name[sizeof(rc->tag_name) - 1] = '\0';
+	unpack_addr(&sp->sel_src, &rc->sp_src_storage, &rc->sp_src);
+	unpack_addr(&sp->sel_dst, &rc->sp_dst_storage, &rc->sp_dst);
+	unpack_addr(&sp->tun_src, &rc->sa_src_storage, &rc->sa_src);
+	unpack_addr(&sp->tun_dst, &rc->sa_dst_storage, &rc->sa_dst);
+	return 0;
+}
+
+/* Parse one validated message into rc and run the matching callback. */
+static int
+dispatch(struct rcpfk_msg *rc, const struct r2dp_msg *m)
+{
+	int (*fn)(struct rcpfk_msg *) = NULL;
+
+	if (m->h.status != 0) {
+		km_seterror(rc, (int)m->h.status, "r2dp %s: %s",
+		    r2dp_msg_name(m->h.type), strerror((int)m->h.status));
+		return -1;
+	}
+	rc->seq = m->h.seq;
+	switch (m->h.type) {
+	case R2DP_GETSPI: case R2DP_SA_ADD: case R2DP_SA_UPDATE:
+	case R2DP_SA_DEL: case R2DP_SA_GET: case R2DP_EXPIRE: case R2DP_ACQUIRE:
+		if (unpack_sa(rc, r2dp_msg_sa(m)) < 0)
+			return -1;
+		break;
+	case R2DP_SP_ADD: case R2DP_SP_DEL: case R2DP_SP_GET: case R2DP_SP_DUMP:
+		if (unpack_sp(rc, r2dp_msg_sp(m)) < 0)
+			return -1;
+		break;
+	default:
+		return 0;	/* HELLO_ACK etc.: nothing for iked/spmd */
+	}
+	if (cb == NULL)
+		return 0;
+	switch (m->h.type) {
+	case R2DP_GETSPI:    fn = cb->cb_getspi; break;
+	case R2DP_SA_ADD:    fn = cb->cb_add; break;
+	case R2DP_SA_UPDATE: fn = cb->cb_update; break;
+	case R2DP_SA_DEL:    fn = cb->cb_delete; break;
+	case R2DP_SA_GET:    fn = cb->cb_get; break;
+	case R2DP_EXPIRE:    fn = cb->cb_expire; break;
+	case R2DP_ACQUIRE:   fn = cb->cb_acquire; break;
+	case R2DP_SP_ADD:    fn = cb->cb_spdadd ? cb->cb_spdadd : cb->cb_spdupdate; break;
+	case R2DP_SP_DEL:    fn = rc->slid ? cb->cb_spddelete2 : cb->cb_spddelete;
+	                     if (!fn) fn = cb->cb_spddelete2 ? cb->cb_spddelete2 : cb->cb_spddelete;
+	                     break;
+	case R2DP_SP_GET:    fn = cb->cb_spdget; break;
+	case R2DP_SP_DUMP:   fn = cb->cb_spddump; break;
+	}
+	return fn ? fn(rc) : 0;
+}
+
+static int
+recv_one(struct rcpfk_msg *rc, struct r2dp_msg *m)
+{
+	int r = r2dp_recv(rc->so, m);
+
+	if (r == -ENOSYS)
+		return 1;	/* unknown type from a newer forwarder: skip */
+	if (conn_lost(r)) {
+		/* nothing to dispatch; a request in flight on the old
+		 * connection got no reply and its caller times out/retries */
+		if (km_reconnect(rc) == 0)
+			return 2;
+		return -1;
+	}
+	if (r < 0) {
+		km_seterror(rc, -r, "r2dp recv: %s", strerror(-r));
+		return -1;
+	}
+	return 0;
+}
+
+int
+rcpfk_handler(struct rcpfk_msg *rc)
+{
+	struct r2dp_msg m;
+	struct rcpfk_msg scratch;
+	struct pollfd pfd;
+	struct timespec t0, now;
+	int r, wait = (rc->flags & PFK_FLAG_WAITREPLY) != 0;
+
+	if (rc->so < 0) {
+		km_seterror(rc, EBADF, "r2dp not connected");
+		return -1;
+	}
+	if (!wait) {
+		if ((r = recv_one(rc, &m)) != 0)
+			return r < 0 ? -1 : 0;
+		return dispatch(rc, &m);
+	}
+
+	/*
+	 * Send-then-read caller: consume until the reply carrying rc->seq,
+	 * dispatching anything else (events, other requests' replies) with
+	 * a scratch container so it is never parsed into rc.  A dump reply
+	 * (R2DP_HF_MORE) is consumed to its last message.
+	 */
+	rc->flags &= ~PFK_FLAG_WAITREPLY;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	for (;;) {
+		long left;
+
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		left = R2DP_REPLY_DEADLINE_MS -
+		    ((now.tv_sec - t0.tv_sec) * 1000L +
+		     (now.tv_nsec - t0.tv_nsec) / 1000000L);
+		if (left <= 0)
+			break;
+		pfd.fd = rc->so;
+		pfd.events = POLLIN;
+		pfd.revents = 0;
+		do {
+			r = poll(&pfd, 1, left > 5000 ? 5000 : (int)left);
+		} while (r < 0 && errno == EINTR);
+		if (r <= 0) {
+			km_seterror(rc, r == 0 ? ETIMEDOUT : errno,
+			    "no r2dp reply to seq %u", rc->seq);
+			return -1;
+		}
+		if ((r = recv_one(rc, &m)) < 0)
+			return -1;
+		if (r == 2) {
+			km_seterror(rc, ECONNRESET,
+			    "r2dp connection reset; seq %u not answered", rc->seq);
+			return -1;
+		}
+		if (r > 0)
+			continue;
+		if (m.h.seq == rc->seq && m.h.type != R2DP_EXPIRE &&
+		    m.h.type != R2DP_ACQUIRE) {
+			r = dispatch(rc, &m);
+			if (r != 0 || !(m.h.flags & R2DP_HF_MORE))
+				return r;
+			continue;
+		}
+		memset(&scratch, 0, sizeof(scratch));
+		scratch.so = rc->so;
+		(void)dispatch(&scratch, &m);
+	}
+	km_seterror(rc, ETIMEDOUT, "no r2dp reply to seq %u", rc->seq);
+	return -1;
+}

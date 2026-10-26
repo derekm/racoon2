@@ -131,6 +131,24 @@ AC_MSG_RESULT($libracoon_path)
 dnl --with-openssl-libdir
 RC_WITH_OPENSSL_LIB
 
+dnl km-backend=r2dp: libracoon needs libr2dp; link it explicitly too so the
+dnl daemons do not rely on transitive DT_NEEDED resolution.
+if test x"$with_km_backend" = xr2dp; then
+	if test -n "$with_r2dp" && test x"$with_r2dp" != xyes; then
+		for d in "$with_r2dp"/lib/pkgconfig "$with_r2dp"/lib64/pkgconfig \
+		    "$with_r2dp"/lib/*/pkgconfig "$with_r2dp"/share/pkgconfig; do
+			test -d "$d" && PKG_CONFIG_PATH="$d${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+		done
+		export PKG_CONFIG_PATH
+	fi
+	PKG_PROG_PKG_CONFIG
+	PKG_CHECK_MODULES([R2DP], [r2dp], [],
+		[AC_MSG_ERROR([libr2dp not found; pass --with-r2dp=PREFIX])])
+	r2dp_libdir=`$PKG_CONFIG --variable=libdir r2dp`
+	LIBS="$LIBS $R2DP_LIBS${r2dp_libdir:+ -Wl,-rpath,$r2dp_libdir}"
+fi
+
+
 AC_CHECK_HEADER(openssl/evp.h)
 
 RC_CHECK_MAKE
