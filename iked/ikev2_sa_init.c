@@ -58,6 +58,8 @@
 #include "oakley.h"		/* for prototypes */
 #include "crypto_impl.h"
 #include "ike_conf.h"
+#include "ikev2_tcp_route.h"
+#include "ikev2_tcp_stream.h"
 #include "ratelimit.h"
 #include "debug.h"
 #ifdef WITH_PARSECOA
@@ -334,6 +336,19 @@ initiator_start_after_gen(int rc, void *arg)
 						IKEV2_TCP_ENCAPSULATION_SUPPORTED,
 						0, 0),
 				    TRUE);
+	/* RFC 8229 ESP-in-TCP: an esp_tcp_encap remote rides the child ESP
+	 * inside the IKE TCP stream.  Load the kernel espintcp ULP on the
+	 * SA's stream NOW, before this first message (the IKE_SA_INIT response
+	 * for a responder, or the trigger send for an initiator) goes out, so
+	 * the kernel owns the framing for the whole exchange -- the libreswan
+	 * enable-tcp model.  tcp_stream_enable_espintcp defers the setsockopt
+	 * for an initiator until its "IKETCP" prefix is flushed, and applies
+	 * it immediately for the responder (which already read the prefix). */
+	if (ikev2_esp_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON) {
+		struct tcp_stream *es = ikev2_tcp_route(ike_sa, 1, NULL, NULL);
+		if (es != NULL)
+			(void)tcp_stream_enable_espintcp(es);
+	}
 	/* RFC 5685 s3: an initiator willing to be redirected advertises
 	 * REDIRECT_SUPPORTED (16406) in its IKE_SA_INIT.  Without it a
 	 * responder that is draining/overloaded MUST NOT redirect us (the

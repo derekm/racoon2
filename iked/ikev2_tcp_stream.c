@@ -384,11 +384,7 @@ tcp_stream_flush(struct tcp_stream *ts)
 	 * never wrap the prefix). */
 	if (ts->espintcp && ts->prefix_pending && !ts->espintcp_ulp) {
 		ssize_t pw = send(ts->fd, IKEV2_TCP_PREFIX, IKEV2_TCP_PREFIX_LEN,
-#ifdef MSG_NOSIGNAL
-				  MSG_NOSIGNAL);
-#else
 				  0);
-#endif
 		if (pw < 0) {
 			if (errno == EINTR)
 				return 1;
@@ -403,13 +399,17 @@ tcp_stream_flush(struct tcp_stream *ts)
 		ts->prefix_pending = 0;
 	}
 	while (ts->obuf_off < ts->obuf_len) {
-#ifdef MSG_NOSIGNAL
-		/* A peer RST must not SIGPIPE-kill the daemon. */
+		/* An espintcp ULP socket rejects MSG_NOSIGNAL with EOPNOTSUPP,
+		 * so plain send(2) must be used there; SIGPIPE is globally
+		 * ignored in iked (see main()).  Manual RFC 9329 streams keep
+		 * MSG_NOSIGNAL for extra safety. */
 		ssize_t n = send(ts->fd, ts->obuf + ts->obuf_off,
-				 ts->obuf_len - ts->obuf_off, MSG_NOSIGNAL);
+				 ts->obuf_len - ts->obuf_off,
+				 ts->espintcp ? 0 : MSG_NOSIGNAL
+#ifdef MSG_NOSIGNAL
+				 ); /* just the flag above */
 #else
-		ssize_t n = write(ts->fd, ts->obuf + ts->obuf_off,
-				  ts->obuf_len - ts->obuf_off);
+				 );
 #endif
 		if (n < 0) {
 			if (errno == EINTR)

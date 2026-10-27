@@ -225,6 +225,20 @@ main(int argc, char **argv)
 
 	setprogname(argv[0]);
 
+	/* Network daemon: a write to a peer that RSTs the TCP stream must
+	 * not SIGPIPE-kill us.  SIGPIPE is ignored globally; per-send
+	 * suppression (MSG_NOSIGNAL) is impossible on an espintcp ULP
+	 * socket -- the kernel espintcp sendmsg rejects MSG_NOSIGNAL with
+	 * EOPNOTSUPP -- so ESP-in-TCP streams write with plain send(2). */
+	{
+		struct sigaction sa;
+
+		memset(&sa, 0, sizeof(sa));
+		sa.sa_handler = SIG_IGN;
+		sigemptyset(&sa.sa_mask);
+		(void)sigaction(SIGPIPE, &sa, NULL);
+	}
+
 	for (;;) {
 		opt = next_opt(argc, argv);
 		if (opt == EOF)
