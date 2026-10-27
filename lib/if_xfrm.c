@@ -95,6 +95,15 @@
 #ifndef UDP_ENCAP_ESPINUDP
 #define UDP_ENCAP_ESPINUDP 2
 #endif
+#ifndef UDP_ENCAP_ESPINTCP
+#define UDP_ENCAP_ESPINTCP 3
+#endif
+/* XFRMA_ENCAP_TCP (nft: hand an espintcp TCP socket fd to xfrm via
+ * SCM_RIGHTS).  Available in the kernel since 6.5; the userspace
+ * <linux/xfrm.h> on older distros may not define it yet. */
+#ifndef XFRMA_ENCAP_TCP
+#define XFRMA_ENCAP_TCP 21
+#endif
 #ifndef XFRM_INF
 #define XFRM_INF (~(__u64)0)
 #endif
@@ -738,6 +747,35 @@ xfrm_test_open(struct rcpfk_msg *rc, struct rcpfk_cb *cb0, int reqfd,
 }
 #endif
 
+/* Send the netlink message, passing the espintcp stream socket fd (if any)
+ * as SCM_RIGHTS so the kernel xfrm can attach it to the XFRMA_ENCAP_TCP
+ * attribute. */
+static ssize_t
+xfrm_nl_sendmsg(struct rcpfk_msg *rc, struct nlmsghdr *n)
+{
+	if (rc == NULL || rc->tcp_sock <= 0)
+		return send(xfrm_req_fd, n, n->nlmsg_len, 0);
+
+	struct iovec iov = { n, n->nlmsg_len };
+	char cbuf[CMSG_SPACE(sizeof(int))];
+	struct msghdr mh;
+	struct cmsghdr *c;
+
+	memset(&mh, 0, sizeof(mh));
+	memset(cbuf, 0, sizeof(cbuf));
+	mh.msg_iov = &iov;
+	mh.msg_iovlen = 1;
+	mh.msg_control = cbuf;
+	mh.msg_controllen = sizeof(cbuf);
+	c = CMSG_FIRSTHDR(&mh);
+	c->cmsg_level = SOL_SOCKET;
+	c->cmsg_type = SCM_RIGHTS;
+	c->cmsg_len = CMSG_LEN(sizeof(int));
+	memcpy(CMSG_DATA(c), &rc->tcp_sock, sizeof(int));
+	mh.msg_controllen = c->cmsg_len;
+	return sendmsg(xfrm_req_fd, &mh, 0);
+}
+
 static int
 xfrm_nl_send(struct rcpfk_msg *rc, struct nlmsghdr *n)
 {
@@ -745,7 +783,7 @@ xfrm_nl_send(struct rcpfk_msg *rc, struct nlmsghdr *n)
 
 	/* no address: an unconnected netlink socket sends to the kernel
 	 * (nl_pid 0) by default, and the unit test's socketpair accepts it */
-	nsent = send(xfrm_req_fd, n, n->nlmsg_len, 0);
+	nsent = xfrm_nl_sendmsg(rc, n);
 	if (nsent < 0 || (size_t)nsent != n->nlmsg_len) {
 		xfrm_seterror(rc, errno, "%s", strerror(errno));
 		if (n->nlmsg_seq == pending_dump_seq)
@@ -1051,7 +1089,18 @@ add_encap_attr(struct nlmsghdr *n, size_t maxlen, struct rcpfk_msg *rc)
 		if (oa)
 			(void)sa_to_xaddr(oa, &enc.encap_oa, NULL);
 	}
-	return xfrm_addattr(n, maxlen, XFRMA_ENCAP, &enc, sizeof(enc));
+	if (xfrm_addattr(n, maxlen, XFRMA_ENCAP, &enc, sizeof(enc)) != 0)
+		return -1;
+	/* RFC 8229 ESP-in-TCP: hand the stream socket fd to xfrm.  The
+	 * XFRMA_ENCAP_TCP attribute's PRESENCE tells the kernel to take the
+	 * fd from the netlink message's SCM_RIGHTS control data (sent by
+	 * xfrm_nl_send when rc->tcp_sock is set). */
+	if (rc->natt_type == UDP_ENCAP_ESPINTCP && rc->tcp_sock > 0) {
+		int fd = rc->tcp_sock;
+		if (xfrm_addattr(n, maxlen, XFRMA_ENCAP_TCP, &fd, sizeof(fd)) != 0)
+			return -1;
+	}
+	return 0;
 #else
 	(void)n;
 	(void)maxlen;

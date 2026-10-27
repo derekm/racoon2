@@ -152,6 +152,9 @@ struct rcpfk_msg {
 	uint16_t natt_sport;
 	uint16_t natt_dport;
 	uint8_t natt_type;		/* 0 unset; Linux UDP_ENCAP_ESPINUDP */
+	int tcp_sock;			/* espintcp (RFC 8229): the IKE-over-TCP
+					   stream socket fd to hand xfrm via
+					   XFRMA_ENCAP_TCP (SCM_RIGHTS); -1 unset */
 
 	/* --- XFRM-native policy/offload. mark / if_id have no PF_KEY spelling
 	 * (Linux NETLINK_XFRM only) and the *BSD PF_KEY + loopback backends

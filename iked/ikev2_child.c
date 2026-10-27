@@ -66,6 +66,8 @@
 #include "sockmisc.h"
 #include "debug.h"
 #include "rc_net.h"
+#include "ikev2_tcp_route.h"
+#include "ikev2_tcp_stream.h"
 #include "ike_pfkey.h"
 
 static int ikev2_update_response(struct sadb_request *,
@@ -2374,7 +2376,24 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa, int inbound,
 	if (child_sa->is_initiator)
 		param->flags |= PFK_FLAG_NOPORTS;
 #ifdef ENABLE_NATT
-	if (child_sa->parent &&
+	/* RFC 8229 ESP-in-TCP: the parent's esp_tcp_encap knob selects the
+	 * espintcp encap (type 3) and hands xfrm the IKE-over-TCP stream
+	 * socket fd (XFRMA_ENCAP_TCP over SCM_RIGHTS) so ESP rides the same
+	 * TCP stream as IKE -- the libreswan enable-tcp model. */
+	if (child_sa->parent && child_sa->parent->rmconf &&
+	    ikev2_esp_tcp_encap(child_sa->parent->rmconf) == RCT_BOOL_ON) {
+#ifndef UDP_ENCAP_ESPINTCP
+#define UDP_ENCAP_ESPINTCP 3
+#endif
+		param->natt_type = UDP_ENCAP_ESPINTCP;
+		if (param->tcp_sock <= 0) {
+			/* Resolve the parent IKE_SA's TCP stream to its fd. */
+			struct tcp_stream *ets =
+			    ikev2_tcp_route(child_sa->parent, 1, NULL, NULL);
+			if (ets != NULL)
+				param->tcp_sock = ets->fd;
+		}
+	} else if (child_sa->parent &&
 	    (child_sa->parent->behind_nat ||
 	     child_sa->parent->peer_behind_nat ||
 	     ikev2_nat_traversal(child_sa->parent->rmconf) == RCT_NATT_FORCE ||
