@@ -61,6 +61,10 @@ struct tcp_stream {
 	size_t obuf_len;		/* bytes queued in obuf */
 	size_t obuf_off;		/* bytes of obuf already written */
 	int prefix_sent;		/* originator's one-time "IKETCP" done */
+	int espintcp;			/* ESP-in-TCP mode: kernel espintcp ULP owns
+					   the wire framing (Len|marker); our write
+					   path sends BARE IKE, the read path gets
+					   marker|payload with Len already stripped */
 	unsigned long short_drops;	/* sub-IKEv2-header records dropped (for
 					   the IKE layer to emit INVALID_SYNTAX) */
 	struct tcp_record *tb;		/* heap-encoded outbound record (not stack) */
@@ -93,7 +97,12 @@ struct tcp_stream *tcp_stream_connect(const struct sockaddr *remote,
  * or any socket error.
  */
 int tcp_stream_connect_done(struct tcp_stream *);
-
+/* Enable ESP-in-TCP (espintcp): loads the kernel's espintcp ULP on the
+ * stream socket (TCP_ULP) and switches this stream to the espintcp framing
+ * mode (bare-IKE writes, marker|payload reads).  Must be called after the
+ * one-time "IKETCP" prefix is sent (initiator) or accepted (responder).
+ * Returns 0 on success, -1 if the kernel has no espintcp ULP. */
+int tcp_stream_enable_espintcp(struct tcp_stream *);
 /* Returns >0 activity, 0 nothing ready (EAGAIN), -1 FATAL (close the stream). */
 int tcp_stream_on_readable(struct tcp_stream *);
 /* Queue + flush an IKE message on the stream (takes a copy of ike,n).

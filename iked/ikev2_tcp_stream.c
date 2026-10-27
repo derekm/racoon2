@@ -28,6 +28,15 @@
 
 #include "ikev2_tcp_stream.h"
 
+/* TCP_ULP (kernel TCP Upper Layer Protocol selector, setsockopt(IPPROTO_TCP)).
+ * Standard on Linux >= 4.3; 31 is the stable value. */
+#ifndef TCP_ULP
+#define TCP_ULP 31
+#endif
+
+/* ESP-in-TCP ULP name the kernel registers (linux net/ipv4/espintcp.c). */
+#define IKEV2_TCP_ULP_ESPINTCP	"espintcp"
+
 /* Originator prefix (6) + record overhead (6) + max payload. */
 #define TCP_STREAM_OBUF_CAP	(IKEV2_TCP_PREFIX_LEN + 6 + IKEV2_TCP_MAXLEN)
 
@@ -220,6 +229,16 @@ tcp_stream_connect_done(struct tcp_stream *ts)
 }
 
 int
+tcp_stream_enable_espintcp(struct tcp_stream *ts)
+{
+	if (setsockopt(ts->fd, IPPROTO_TCP, TCP_ULP,
+		       IKEV2_TCP_ULP_ESPINTCP, sizeof(IKEV2_TCP_ULP_ESPINTCP)) != 0)
+		return -1;
+	ts->espintcp = 1;
+	return 0;
+}
+
+int
 tcp_stream_on_readable(struct tcp_stream *ts)
 {
 	unsigned char buf[4096];
@@ -238,9 +257,30 @@ tcp_stream_on_readable(struct tcp_stream *ts)
 		if (n == 0)
 			return -1;	/* peer FIN: close the stream */
 		ret = 1;
-		if (tcp_decap_feed(&ts->decap, buf, (size_t)n,
-				   stream_frame_cb, ts) != 0)
-			return -1;	/* framing-fatal: close the stream */
+		if (ts->espintcp) {
+			/* ESP-in-TCP mode: the kernel espintcp ULP strips the
+			 * 2-byte Len and returns one complete frame per
+			 * read():
+			 *   4-octet marker | payload
+			 * (marker 0 = IKE; non-zero = an ESP SPI that the
+			 * kernel with an espintcp SA decaps itself and never
+			 * surfaces here).  Strip the marker and hand the
+			 * payload to the same dispatch as a manual-framing
+			 * IKE record; ESP frames are dropped. */
+			const unsigned char *mk = buf;
+			if (n < (ssize_t)IKEV2_TCP_NON_ESP_MARKER_LEN)
+				return 0;
+			if ((mk[0] | mk[1] | mk[2] | mk[3]) != 0)
+				continue;	/* ESP frame: kernel-owned, drop */
+			if (stream_frame_cb(buf + IKEV2_TCP_NON_ESP_MARKER_LEN,
+					    (size_t)n - IKEV2_TCP_NON_ESP_MARKER_LEN,
+					    TCP_FRAME_IKE, ts) != 0)
+				return -1;
+		} else {
+			if (tcp_decap_feed(&ts->decap, buf, (size_t)n,
+					   stream_frame_cb, ts) != 0)
+				return -1;	/* framing-fatal: close the stream */
+		}
 	}
 }
 
@@ -256,14 +296,34 @@ tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 	 * into the heap record (ts->tb), never a 64KB stack array. */
 	memset(rec, 0, sizeof(*rec));
 	have_prefix = 0;
-	if (ts->prefix_sent == 0) {
-		/* We are the TCP connection originator: one-time prefix. */
-		if (tcp_stream_begin(rec) != 0)
-			return 2;	/* not queued; nothing lost, not fatal */
-		have_prefix = 1;
+	if (ts->espintcp) {
+		/* ESP-in-TCP mode: the kernel espintcp ULP owns the wire
+		 * framing (Len|marker).  Queue the BARE IKE message; the
+		 * one-time "IKETCP" prefix was written (originator) or read
+		 * (responder) before the ULP was enabled. */
+		if (ts->prefix_sent == 0) {
+			if (tcp_stream_begin(rec) != 0)
+				return 2;
+			have_prefix = 1;
+		}
+		if (rec->stream_len + n > sizeof(rec->stream))
+			return 2;
+		memcpy(rec->stream + rec->stream_len, ike, n);
+		rec->stream_len += n;
+	} else {
+		/* RFC 9329 manual framing: Prefix + Len|marker|message.
+		 * tcp_record_ike enforces the 16-bit inclusive-Length cap.
+		 * Encoded into the heap record (ts->tb), never a 64KB stack
+		 * array. */
+		if (ts->prefix_sent == 0) {
+			/* We are the TCP connection originator: one-time prefix. */
+			if (tcp_stream_begin(rec) != 0)
+				return 2;	/* not queued; nothing lost, not fatal */
+			have_prefix = 1;
+		}
+		if (tcp_record_ike(rec, ike, n) != 0)
+			return 2;	/* oversized (n > 65529): not queued, not fatal */
 	}
-	if (tcp_record_ike(rec, ike, n) != 0)
-		return 2;	/* oversized (n > 65529): not queued, not fatal */
 	rl = rec->stream_len;
 
 	/* Compact any fully-sent tail before appending. */
