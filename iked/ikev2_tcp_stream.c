@@ -228,13 +228,29 @@ tcp_stream_connect_done(struct tcp_stream *ts)
 	return 0;
 }
 
-int
-tcp_stream_enable_espintcp(struct tcp_stream *ts)
+static int
+ts_ulp_apply(struct tcp_stream *ts)
 {
+	if (ts->espintcp_ulp)
+		return 0;
 	if (setsockopt(ts->fd, IPPROTO_TCP, TCP_ULP,
 		       IKEV2_TCP_ULP_ESPINTCP, sizeof(IKEV2_TCP_ULP_ESPINTCP)) != 0)
 		return -1;
+	ts->espintcp_ulp = 1;
+	return 0;
+}
+
+int
+tcp_stream_enable_espintcp(struct tcp_stream *ts)
+{
+	/* Mark the stream espintcp.  The kernel ULP setsockopt is deferred to
+	 * the prefix boundary: for the ORIGINATOR it is applied in flush()
+	 * right after the plain "IKETCP" prefix is written; for the RESPONDER
+	 * (which never writes the prefix, prefix_sent==1) it is applied here,
+	 * once the IKE layer knows this peer is espintcp. */
 	ts->espintcp = 1;
+	if (ts->prefix_sent == 1)
+		return ts_ulp_apply(ts);
 	return 0;
 }
 
@@ -298,13 +314,13 @@ tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 	have_prefix = 0;
 	if (ts->espintcp) {
 		/* ESP-in-TCP mode: the kernel espintcp ULP owns the wire
-		 * framing (Len|marker).  Queue the BARE IKE message; the
-		 * one-time "IKETCP" prefix was written (originator) or read
-		 * (responder) before the ULP was enabled. */
+		 * framing (Len|marker).  Queue the BARE IKE message.  For the
+		 * originator, the one-time "IKETCP" prefix is NOT queued
+		 * here -- flush() writes it PLAIN and enables the ULP first
+		 * (the kernel must never wrap the prefix). */
 		if (ts->prefix_sent == 0) {
-			if (tcp_stream_begin(rec) != 0)
-				return 2;
-			have_prefix = 1;
+			ts->prefix_pending = 1;
+			ts->prefix_sent = 1;
 		}
 		if (rec->stream_len + n > sizeof(rec->stream))
 			return 2;
@@ -363,6 +379,29 @@ tcp_stream_flush(struct tcp_stream *ts)
 	 * ts->connecting) and then flushes the queued obuf. */
 	if (ts->connecting)
 		return 1;
+	/* espintcp originator: write the "IKETCP" prefix PLAIN, then enable the
+	 * kernel ULP, before any bare-IKE bytes hit the socket (the ULP must
+	 * never wrap the prefix). */
+	if (ts->espintcp && ts->prefix_pending && !ts->espintcp_ulp) {
+		ssize_t pw = send(ts->fd, IKEV2_TCP_PREFIX, IKEV2_TCP_PREFIX_LEN,
+#ifdef MSG_NOSIGNAL
+				  MSG_NOSIGNAL);
+#else
+				  0);
+#endif
+		if (pw < 0) {
+			if (errno == EINTR)
+				return 1;
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				return 1;	/* retry on EPOLLOUT */
+			return -1;
+		}
+		if (pw != (ssize_t)IKEV2_TCP_PREFIX_LEN)
+			return 1;	/* partial prefix: defer the rest */
+		if (ts_ulp_apply(ts) < 0)
+			return -1;
+		ts->prefix_pending = 0;
+	}
 	while (ts->obuf_off < ts->obuf_len) {
 #ifdef MSG_NOSIGNAL
 		/* A peer RST must not SIGPIPE-kill the daemon. */

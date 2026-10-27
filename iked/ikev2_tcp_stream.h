@@ -57,6 +57,12 @@ struct tcp_stream {
 	struct sockaddr_storage local;	/* our bound address */
 	struct sockaddr_storage remote;	/* peer address */
 	struct tcp_decap_state decap;	/* inbound de-framer */
+	int espintcp_ulp;		/* TCP_ULP "espintcp" applied + framing
+					   switched; originator "IKETCP" prefix was
+					   already written plain before this */
+	int prefix_pending;		/* espintcp originator: "IKETCP" still to be
+					   written PLAIN (before the ULP) on the
+					   first flush */
 	unsigned char *obuf;		/* outbound record buffer */
 	size_t obuf_len;		/* bytes queued in obuf */
 	size_t obuf_off;		/* bytes of obuf already written */
