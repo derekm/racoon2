@@ -2377,21 +2377,45 @@ ikev2_sadb_update(struct ikev2_child_sa *child_sa, int inbound,
 		param->flags |= PFK_FLAG_NOPORTS;
 #ifdef ENABLE_NATT
 	/* RFC 8229 ESP-in-TCP: the parent's esp_tcp_encap knob selects the
-	 * espintcp encap (type 3) and hands xfrm the IKE-over-TCP stream
-	 * socket fd (XFRMA_ENCAP_TCP over SCM_RIGHTS) so ESP rides the same
-	 * TCP stream as IKE -- the libreswan enable-tcp model. */
+	 * espintcp encap and the encap template's REAL TCP ports (the kernel
+	 * finds the stream socket via inet_lookup_established(saddr,sport,
+	 * daddr,dport) and requires the espintcp ULP on it) so ESP rides the
+	 * same TCP stream as IKE -- the libreswan enable-tcp model.
+	 * encap_type 7 = TCP_ENCAP_ESPINTCP (RFC 8229). */
 	if (child_sa->parent && child_sa->parent->rmconf &&
 	    ikev2_esp_tcp_encap(child_sa->parent->rmconf) == RCT_BOOL_ON) {
 #ifndef UDP_ENCAP_ESPINTCP
-#define UDP_ENCAP_ESPINTCP 3
+#define UDP_ENCAP_ESPINTCP 7
 #endif
 		param->natt_type = UDP_ENCAP_ESPINTCP;
-		if (param->tcp_sock <= 0) {
-			/* Resolve the parent IKE_SA's TCP stream to its fd. */
+		{
+			/* Resolve the parent IKE_SA's TCP stream.  The kernel's
+			 * espintcp (RFC 8229) finds the ESP-carrying socket via
+			 * inet_lookup_established((daddr,dport,saddr,sport)) from
+			 * the encap template ports, so set them to the stream's
+			 * REAL local/remote TCP ports (the peer port is the
+			 * ephemeral one, not 4500), and load the espintcp ULP on
+			 * the socket so the kernel accepts it (tcp_is_ulp_esp). */
 			struct tcp_stream *ets =
 			    ikev2_tcp_route(child_sa->parent, 1, NULL, NULL);
-			if (ets != NULL)
-				param->tcp_sock = ets->fd;
+			if (ets != NULL) {
+				in_port_t *lsp =
+				    rcs_getsaport((struct sockaddr *)&ets->local);
+				in_port_t *rsp =
+				    rcs_getsaport((struct sockaddr *)&ets->remote);
+				if (lsp && rsp) {
+					param->natt_sport = *lsp;
+					param->natt_dport = *rsp;
+				}
+				/* Load the kernel espintcp ULP + switch this
+				 * stream to espintcp framing (bare-IKE writes,
+				 * marker|payload reads) so inbound ESP-in-TCP
+				 * on the IKE stream is decapped by xfrm.  The
+				 * IKE_SA_INIT..AUTH exchange already ran on
+				 * identical Len|0|IKE wire framing, so this is
+				 * safe once the child SA is installed. */
+				(void)tcp_stream_enable_espintcp(ets);
+			}
 		}
 	} else if (child_sa->parent &&
 	    (child_sa->parent->behind_nat ||
@@ -2538,6 +2562,12 @@ ikev2_sadb_natt_snapshot(struct rcpfk_msg *param,
 static void
 ikev2_sadb_natt_tcp_pin(struct rcpfk_msg *param, struct ikev2_child_sa *child_sa)
 {
+	/* espintcp: the kernel finds the socket by the encap template's REAL
+	 * TCP ports (inet_lookup_established), so never overwrite them with
+	 * the UDP-NAT 4500/4500 pin below. */
+	if (child_sa->parent && child_sa->parent->rmconf &&
+	    ikev2_esp_tcp_encap(child_sa->parent->rmconf) == RCT_BOOL_ON)
+		return;
 	if (child_sa->parent && child_sa->parent->rmconf &&
 	    ikev2_tcp_encap(child_sa->parent->rmconf) == RCT_BOOL_ON) {
 		param->natt_sport = htons(IKEV2_UDP_PORT_NATT);
