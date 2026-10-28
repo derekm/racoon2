@@ -313,17 +313,26 @@ tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 	memset(rec, 0, sizeof(*rec));
 	have_prefix = 0;
 	if (ts->espintcp) {
-		/* ESP-in-TCP mode: the kernel espintcp ULP owns the wire
-		 * framing (Len|marker).  Queue the BARE IKE message.  For the
-		 * originator, the one-time "IKETCP" prefix is NOT queued
-		 * here -- flush() writes it PLAIN and enables the ULP first
-		 * (the kernel must never wrap the prefix). */
+		/* ESP-in-TCP mode: the kernel espintcp ULP prepends ONLY the
+		 * 2-byte inclusive Length on send (probed on .179: a bare ULP
+		 * write surfaces as Len|IKE with NO marker).  The 4-octet
+		 * 00000000 non-ESP marker is the SENDER's job, so queue
+		 * marker|IKE (the receive side already expects marker|payload
+		 * -- the kernel strips only Len -- so the two codecs stay
+		 * symmetric).  For the originator, the one-time "IKETCP"
+		 * prefix is NOT queued here -- flush() writes it PLAIN and
+		 * enables the ULP first (the kernel must never wrap the
+		 * prefix). */
 		if (ts->prefix_sent == 0) {
 			ts->prefix_pending = 1;
 			ts->prefix_sent = 1;
 		}
-		if (rec->stream_len + n > sizeof(rec->stream))
+		if (rec->stream_len + IKEV2_TCP_NON_ESP_MARKER_LEN + n >
+		    sizeof(rec->stream))
 			return 2;
+		memset(rec->stream + rec->stream_len, 0,
+		       IKEV2_TCP_NON_ESP_MARKER_LEN);
+		rec->stream_len += IKEV2_TCP_NON_ESP_MARKER_LEN;
 		memcpy(rec->stream + rec->stream_len, ike, n);
 		rec->stream_len += n;
 	} else {
