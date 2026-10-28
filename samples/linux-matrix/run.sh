@@ -47,6 +47,7 @@ CASES_FILE=${R2_CASES:-$HERE/cases.tsv}
 . "$HERE/kinds/i2iv6.sh"
 . "$HERE/kinds/i2io4.sh"
 . "$HERE/kinds/i2ilw.sh"
+. "$HERE/kinds/i2itcp.sh"
 . "$HERE/kinds/i2iresume.sh"
 . "$HERE/kinds/i2iinit_nointermediate.sh"
 . "$HERE/kinds/icvaudit.sh"
