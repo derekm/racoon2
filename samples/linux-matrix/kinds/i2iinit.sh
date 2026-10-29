@@ -61,6 +61,8 @@ kind_i2iinit() {
 	# ${I2I_ESP:-...} would keep this base value).
 	I2I_ESP=
 	I2I_CLASSICAL=0                 # proposal-shape rows without ADDKE round
+	I2I_ADDKEOFF=0                  # PQC-off charon must ignore an optional ADDKE offer
+	I2I_CHARON_PLUGINS_EXTRA=       # charon plugin overrides (e.g. ml { load = no })
 	# Per-row resets for knobs the suffix arms overwrite (run.sh runs every
 	# row in ONE shell, so a -dh521/-pfsrekey/-ppk row's assignment would
 	# otherwise leak into the next row).  UNCONDITIONAL assignments — a
@@ -259,6 +261,24 @@ esac
 	          I2I_ESP=aes128gcm16-ecp384 ;;
 	*-dh521*) I2I_DH_GROUP=ecp521; I2I_PROPOSAL=aes256gcm16-prfsha256-ecp521-ke1_mlkem768
 	          I2I_ESP=aes128gcm16-ecp521 ;;
+	*-addkeoff-charonr)
+		# PQC-off charon (RFC 9370 s1.3 optionality): charon's own IKE
+		# proposal has NO ke1_mlkem768 element (PQC disabled), yet racoon2
+		# (WITH_ADDKE, normal shape) STILL offers the optional type-6
+		# ML-KEM-768 ADDKE round in its IKE_SA_INIT.  A compliant charon
+		# must IGNORE the optional ADDKE it has no counterpart for and
+		# negotiate plain IKEv2 — NOT NO_PROPOSAL_CHOSEN (contrast the
+		# libreswan strict-matcher behavior, #3118).  The dedicated gate
+		# asserts: type-6 on the wire + charon ESTABLISHED without ML-KEM
+		# + zero IKE_INTERMEDIATE rounds + no NO_PROPOSAL_CHOSEN.
+		I2I_PROPOSAL="aes256gcm16-prfsha256-$I2I_DH_GROUP"   # drop -ke1_mlkem768
+		I2I_ADDKEOFF=1
+		# Also unload the ML-KEM plugin entirely: config-level PQC-off still
+		# lets charon recognize the ADDKE transform and treat it as required
+		# ('no acceptable ADDITIONAL_KEY_EXCHANGE_1 found' -> N(NO_PROP)),
+		# so this row proves the behavior when charon has NO ML-KEM at all.
+		I2I_CHARON_PLUGINS_EXTRA=$(printf '		ml { load = no }\n')
+		;;
 	esac
 	case "$name" in
 	*-pfsrekey*) I2I_LIFETIME=25; I2I_ESP=${I2I_ESP:-aes128gcm16-ecp256} ;;
@@ -849,6 +869,7 @@ fi
 	# charon seat instead logs KE1_ML_KEM_768 selected + ESTABLISHED
 	# (RFC 9370 s3.5).  A classical int exchange logs none of these -> fail.
 	nint=0; i=0
+	if [ "${I2I_ADDKEOFF:-0}" != 1 ]; then
 	while [ "$i" -lt 20 ]; do
 		# responder-seat evidence (iked responder or charon responder)
 		i2i_peer_r_evidence "$D" "$PEER_R"
@@ -871,13 +892,40 @@ fi
 		fi
 		i=$((i+1)); sleep 1
 	done
+	fi
 	# AUTH+IntAuth verified == the RFC 9370 s3.5 SKEYSEED(1) matched: both
 	# sides derived the same intermediate key or the ESP child could not
 	# establish (up=1 is checked separately).  The raw SKEYSEED/IntAuth bytes
 	# are intentionally not logged, so the round-complete marker plus up=1 is
 	# the proof.
 	pqc=0
-	if [ "${nint:-0}" -eq 1 ]; then
+	if [ "${I2I_ADDKEOFF:-0}" = 1 ]; then
+		# PQC-off charon must IGNORE racoon2's optional type-6 ADDKE offer
+		# and negotiate plain IKEv2.  Prove the offer existed on the wire
+		# (initiator SAi1 carries ADDKE1 type-6 = 06000024 ML-KEM-768),
+		# charon ESTABLISHED WITHOUT selecting ML-KEM, ZERO IKE_INTERMEDIATE
+		# rounds ran, charon did NOT answer NO_PROPOSAL_CHOSEN — and the ESP
+		# child is up.  A clean plain negotiation where racoon2 offered
+		# nothing proves nothing; a charon that answers NO_PROPOSAL (the
+		# libreswan strict matcher, #3118) fails the row.
+		if [ "$up" = 1 ] \
+			&& grep -q 'IKE_SA_INIT SA_hex=.*06000024' "$D/init-iked.log" 2>/dev/null \
+			&& grep -qE 'state change: CONNECTING => ESTABLISHED' "$D/charon-resp.log" 2>/dev/null \
+			&& ! grep -q 'KE1_ML_KEM_768' "$D/charon-resp.log" 2>/dev/null \
+			&& ! grep -q 'NO_PROPOSAL_CHOSEN' "$D/charon-resp.log" 2>/dev/null; then
+			pqc=1
+			log "PQC-off charon IGNORED racoon2's optional ADDKE: plain IKEv2 ESTABLISHED, child up, no round, no NO_PROPOSAL_CHOSEN"
+		else
+			# strongSwan 6.0.7 does NOT honor RFC 9370 s1.3 optionality at the
+			# PQC-off level: it treats ADDKE1 as a required proposal element
+			# and answers N(NO_PROP) when its proposal lacks ML-KEM.  Report
+			# charon's own rejection line so the FAIL reason is legible.
+			_rej=$(grep -m1 -E "no acceptable ADDITIONAL_KEY_EXCHANGE_1 found|received proposals unacceptable|generating IKE_SA_INIT response.*N\(NO_PROP\)|NO_PROPOSAL_CHOSEN" "$D/charon-resp.log" 2>/dev/null || true)
+			# 'FAIL ' (space), not 'FAIL:', so run.sh's xfail defect-match (^FAIL / FAIL ) recognizes this as a real failure line carrying the declared defect.
+			log "FAIL PQC-off charon did NOT ignore the optional ADDKE (up=${up:-0}); strongSwan: ${_rej:-<no rejection marker>}"
+			R2_CASE_FAIL=1
+		fi
+	elif [ "${nint:-0}" -eq 1 ]; then
 		pqc=1
 		log "INITIAL IKE_SA ADDKE: IKE_INTERMEDIATE round on BOTH sides, ESP child up => SK(1) key material matched"
 	elif [ "${I2I_CLASSICAL:-0}" != 1 ]; then
@@ -1338,6 +1386,21 @@ fi
 		need_pqc=0
 		if grep -qE 'IKE_INTERMEDIATE ADDKE round complete|KE1_ML_KEM_768' "$D/resp-iked.log" "$D/init-iked.log" "$D/charon-init.log" "$D/charon-resp.log" 2>/dev/null; then
 			log 'FAIL: classical-CBC row shows an ADDKE round (RFC 9242 IntAuth_A cannot run on CBC IKE)'
+		fi
+	fi
+	# PQC-off charon (-addkeoff-charonr): no IKE_INTERMEDIATE round is
+	# expected (charon ignores the optional ADDKE), so the PQC requirement
+	# is waived — the dedicated nint gate above is the authoritative check.
+	# A stray round is still a defect for the row.
+	if [ "${I2I_ADDKEOFF:-0}" = 1 ]; then
+		need_pqc=0
+		# stray-round check: a round means charon accepted the ADDKE, not
+		# ignored it.  Match only round EVIDENCE (iked 'round complete' or
+		# charon SELECTED ML-KEM), NOT charon's 'received proposals:...'
+		# line, which legitimately echoes the peer's ADDKE offer.
+		if grep -q 'IKE_INTERMEDIATE ADDKE round complete' "$D/resp-iked.log" "$D/init-iked.log" 2>/dev/null \
+			|| grep -q 'selected proposal: IKE:.*KE1_ML_KEM_768' "$D/charon-init.log" "$D/charon-resp.log" 2>/dev/null; then
+			log 'FAIL: PQC-off charon row ran an ADDKE/IKE_INTERMEDIATE round (charon should have ignored the optional ADDKE)'
 		fi
 	fi
 
