@@ -3787,6 +3787,7 @@ static struct algdef ikev2_transf_dh[] = {
 #define	ALG_ADDKE(rc, id)		{ (rc), (id), 0, 0, 0, 0, 0 }
 
 static struct algdef ikev2_transf_addke[] = {
+	ALG_ADDKE(RCT_ALG_ADDKE_NONE, IKEV2TRANSF_ADDKE_NONE),
 	ALG_ADDKE(RCT_ALG_MLKEM512, IKEV2TRANSF_ADDKE_MLKEM512),
 	ALG_ADDKE(RCT_ALG_MLKEM768, IKEV2TRANSF_ADDKE_MLKEM768),
 	ALG_ADDKE(RCT_ALG_MLKEM1024, IKEV2TRANSF_ADDKE_MLKEM1024),
@@ -4756,6 +4757,7 @@ ikev2_maybe_offer_ikesa_addke(struct rcf_remote *conf,
 {
 	struct prop_pair *tail, *chain;
 	struct rc_alglist def;
+	struct rc_alglist def2;
 	struct rc_alglist *offer = 0;
 
 	if (!proplist || !proplist[1]) {
@@ -4807,9 +4809,17 @@ ikev2_maybe_offer_ikesa_addke(struct rcf_remote *conf,
 		return 1;
 	}
 
-	/* default: single round-1 ML-KEM-768 (historical/iOS-compatible). */
+	/* default: single round-1 ML-KEM-768 WITH an explicit NONE option
+	 * (RFC 9370 s2.2.1).  ADDKE1 = { ML-KEM-768, NONE } lets a responder
+	 * with no local ML-KEM (e.g. a PQC-off libreswan/strongSwan) select
+	 * NONE and negotiate plain IKEv2 instead of answering
+	 * NO_PROPOSAL_CHOSEN, while a PQC-capable peer selects ML-KEM-768 and
+	 * runs the hybrid round. */
 	memset(&def, 0, sizeof(def));
+	memset(&def2, 0, sizeof(def2));
 	def.algtype = RCT_ALG_MLKEM768;
+	def2.algtype = RCT_ALG_ADDKE_NONE;
+	def.next = &def2;
 	tail = alglist_to_proppair(&def, IKEV2TRANSFORM_TYPE_ADDKE,
 				   &ikev2_transf_addke[0], IKE_DEPR_CTX_IKE);
 	if (!tail) {

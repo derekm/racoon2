@@ -900,29 +900,27 @@ fi
 	# the proof.
 	pqc=0
 	if [ "${I2I_ADDKEOFF:-0}" = 1 ]; then
-		# PQC-off charon must IGNORE racoon2's optional type-6 ADDKE offer
-		# and negotiate plain IKEv2.  Prove the offer existed on the wire
-		# (initiator SAi1 carries ADDKE1 type-6 = 06000024 ML-KEM-768),
-		# charon ESTABLISHED WITHOUT selecting ML-KEM, ZERO IKE_INTERMEDIATE
-		# rounds ran, charon did NOT answer NO_PROPOSAL_CHOSEN — and the ESP
-		# child is up.  A clean plain negotiation where racoon2 offered
-		# nothing proves nothing; a charon that answers NO_PROPOSAL (the
-		# libreswan strict matcher, #3118) fails the row.
+		# RFC 9370 s2.2.1 NONE decline: racoon2's default ADDKE offer is
+		# ADDKE1 = { ML-KEM-768, NONE } (SAi1 carries both 06000024 and
+		# 06000000).  A PQC-disabled charon must SELECT NONE and negotiate
+		# plain IKEv2 — CONNECTING -> ESTABLISHED with an IKE proposal that
+		# carries NO KE1_ML_KEM (no hybrid round), ZERO IKE_INTERMEDIATE
+		# rounds, no NO_PROPOSAL_CHOSEN — and the ESP child is up.  (A
+		# responder that answers NO_PROPOSAL_CHOSEN to a NONE-offered
+		# declinable ADDKE — libreswan 5.4.1 — fails this row.)  Distinguish
+		# charon's SELECTED proposal from its 'received proposals' echo
+		# (which legitimately lists the peer's KE1_ML_KEM_768/KE_NONE).
+		_sel=$(grep -m1 'selected proposal: IKE:' "$D/charon-resp.log" 2>/dev/null || true)
 		if [ "$up" = 1 ] \
 			&& grep -q 'IKE_SA_INIT SA_hex=.*06000024' "$D/init-iked.log" 2>/dev/null \
-			&& grep -qE 'state change: CONNECTING => ESTABLISHED' "$D/charon-resp.log" 2>/dev/null \
-			&& ! grep -q 'KE1_ML_KEM_768' "$D/charon-resp.log" 2>/dev/null \
+			&& grep -q 'IKE_SA_INIT SA_hex=.*06000000' "$D/init-iked.log" 2>/dev/null \
+			&& [ -n "$_sel" ] && ! printf '%s\n' "$_sel" | grep -q 'KE1_ML_KEM' \
 			&& ! grep -q 'NO_PROPOSAL_CHOSEN' "$D/charon-resp.log" 2>/dev/null; then
 			pqc=1
-			log "PQC-off charon IGNORED racoon2's optional ADDKE: plain IKEv2 ESTABLISHED, child up, no round, no NO_PROPOSAL_CHOSEN"
+			log "PQC-off charon SELECTED NONE: plain IKEv2 established, child up, no round, no NO_PROPOSAL_CHOSEN ($_sel)"
 		else
-			# strongSwan 6.0.7 does NOT honor RFC 9370 s1.3 optionality at the
-			# PQC-off level: it treats ADDKE1 as a required proposal element
-			# and answers N(NO_PROP) when its proposal lacks ML-KEM.  Report
-			# charon's own rejection line so the FAIL reason is legible.
 			_rej=$(grep -m1 -E "no acceptable ADDITIONAL_KEY_EXCHANGE_1 found|received proposals unacceptable|generating IKE_SA_INIT response.*N\(NO_PROP\)|NO_PROPOSAL_CHOSEN" "$D/charon-resp.log" 2>/dev/null || true)
-			# 'FAIL ' (space), not 'FAIL:', so run.sh's xfail defect-match (^FAIL / FAIL ) recognizes this as a real failure line carrying the declared defect.
-			log "FAIL PQC-off charon did NOT ignore the optional ADDKE (up=${up:-0}); strongSwan: ${_rej:-<no rejection marker>}"
+			log "FAIL: PQC-off charon did NOT decline the NONE-offered optional ADDKE (up=${up:-0}, sel=$_sel, offer type6 ML-KEM+0?=$(grep -q 'IKE_SA_INIT SA_hex=.*060000(24\|00)' \"$D/init-iked.log\" && echo y || echo n)); strongSwan: ${_rej:-<no rejection marker>}"
 			R2_CASE_FAIL=1
 		fi
 	elif [ "${nint:-0}" -eq 1 ]; then
