@@ -82,10 +82,11 @@ remote matrix {
 		kmp_dh_group { ecp256; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$LW_PSK";
-		dpd_delay 60 sec;
-		tcp_encap on;
-		esp_tcp_encap on;
-	};
+			dpd_delay 60 sec;
+			tcp_encap on;
+			esp_tcp_encap on;
+				addke_alg { none; };
+			};
 	selector_index sel_in;
 };
 selector sel_out {

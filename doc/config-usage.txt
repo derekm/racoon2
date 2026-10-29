@@ -788,7 +788,13 @@ remote
 		child-SA (rekey) ADDKE offer is a separate esp_addke_alg on
 		the sa block.  When unset, a single round-1 ML-KEM-768 type-6
 		is offered (the historical default, interoperable with iOS).
-		Max 7 methods, each distinct (a repeated method is refused -
+			More methods may be configured; "none" is also accepted and means
+			offer NO ADDKE on the initial IKE_SA (skip both the configured
+			methods and the single-round default).  This is the per-remote
+			escape hatch a plain-IKEv2 interop (e.g. a libreswan peer with no
+			ADDKE in its exact-match proposal set) needs:
+			    addke_alg { none; };
+			Max 7 methods, each distinct (a repeated method is refused -
 		RFC 9370 s2.2.1).  Only available on builds with the ML-KEM
 		backend (--enable-addke).
 

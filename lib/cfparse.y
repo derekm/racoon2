@@ -1904,6 +1904,7 @@ algorithm_type
 	|	RSAREV		{ MKRCFVAL($$, RCT_ALG_RSAREV); }
 	|	GSSAPI_KRB	{ MKRCFVAL($$, RCT_ALG_GSSAPI_KRB); }
 	|	EAP		{ MKRCFVAL($$, RCT_ALG_EAP); }
+	|	NONE		{ MKRCFVAL($$, RCT_ALG_ADDKE_NONE); }	/* addke_alg { none; } */
 	;
 
 	/* byte specification */

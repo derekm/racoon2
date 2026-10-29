@@ -592,6 +592,8 @@ rct2str(int type)
 		return "MLKEM768";
 	case RCT_ALG_MLKEM1024:
 		return "MLKEM1024";
+	case RCT_ALG_ADDKE_NONE:
+		return "none";
 	case RCT_ALG_PSK:
 		return "PresharedKey";
 	case RCT_ALG_DSS:

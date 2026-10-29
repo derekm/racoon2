@@ -4772,6 +4772,17 @@ ikev2_maybe_offer_ikesa_addke(struct rcf_remote *conf,
 			return 1;
 
 	offer = ikev2_addke_offer(conf);
+	/* addke_alg { none; }: the operator explicitly opted out of ADDKE
+	 * on the INITIAL IKE_SA -- offer NO ADDKE (skip both the configured
+	 * methods and the single-round ML-KEM-768 default).  This is the
+	 * per-remote escape hatch a plain-IKEv2 interop (e.g. a libreswan
+	 * peer with no ADDKE in its exact-match proposal set) needs; the
+	 * global default stays "offer ML-KEM-768 when unset". */
+	if (offer && offer->algtype == RCT_ALG_ADDKE_NONE) {
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		     "ikesa-addke offer: addke_alg { none; } -- no ADDKE on the initial IKE_SA\n");
+		return 0;
+	}
 	if (offer) {
 		/* config-driven multi-round offer: one transform per method,
 		 * types ADDKE1..ADDKE7.  The RFC 9370 s2.2.1
