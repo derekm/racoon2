@@ -4755,6 +4755,7 @@ ikev2_maybe_offer_ikesa_addke(struct rcf_remote *conf,
 			      struct prop_pair **proplist)
 {
 	struct prop_pair *tail, *chain;
+	struct rc_alglist def;
 	struct rc_alglist *offer = 0;
 
 	if (!proplist || !proplist[1]) {
@@ -4795,16 +4796,27 @@ ikev2_maybe_offer_ikesa_addke(struct rcf_remote *conf,
 		return 1;
 	}
 
-	/* Default OFF: offer ADDKE on the initial IKE_SA only when the
-	 * operator explicitly configures addke_alg.  A no-addke_alg config
-	 * must negotiate a plain IKE_SA (RFC 9370 s1.3 makes ADDKE
-	 * optional), and a non-PQC peer (e.g. libreswan `ike=aes256-...`)
-	 * does an exact transform-set match: an unrequested default ML-KEM
-	 * ADDKE transform makes it answer NO_PROPOSAL_CHOSEN.  The prior
-	 * default-append (single round-1 ML-KEM-768) violated the
-	 * "new behavior behind explicit config default off" rule and broke
-	 * interop; a PQC peer is served by configuring addke_alg. */
-	return 0;
+	/* default: single round-1 ML-KEM-768 (historical/iOS-compatible). */
+	memset(&def, 0, sizeof(def));
+	def.algtype = RCT_ALG_MLKEM768;
+	tail = alglist_to_proppair(&def, IKEV2TRANSFORM_TYPE_ADDKE,
+				   &ikev2_transf_addke[0], IKE_DEPR_CTX_IKE);
+	if (!tail) {
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		     "ikesa-addke offer: alglist_to_proppair failed\n");
+		return 0;
+	}
+	if (proplist[1]->tnext) {
+		for (chain = proplist[1]->tnext; chain && chain->next;
+		     chain = chain->next)
+			;
+		chain->next = tail;
+	} else
+		proplist[1]->tnext = tail;
+	plog(PLOG_DEBUG, PLOGLOC, NULL,
+	     "ikesa-addke offer: appended type-6 (prop %p tnext %p)\n",
+	     (void *)proplist[1], (void *)proplist[1]->tnext);
+	return 1;
 }
 #endif
 
