@@ -4751,6 +4751,71 @@ ikev2_initial_child_ke(struct ikev2_child_sa *child_sa)
  * are unchanged.  Returns 1 if the ADDKE transform(s) are present
  * (appended or already there), 0 on missing proposal / nomem.
  */
+/*
+ * RFC 7296 s3.3.6 backward compatibility: a responder with no counterpart
+ * for a Transform Type (a pre-ADDKE peer, or a matcher without ADDKE such
+ * as libreswan 5.4.1) MUST consider the whole proposal carrying that
+ * unknown type unacceptable, and can only fall back to "other proposals in
+ * the same SA payload ... processed as usual".  So an ADDKE initiator that
+ * wants to interoperate with such a peer MUST also carry a SECOND, identical
+ * IKE proposal WITHOUT the ADDKE transforms (RFC 9370 s2.2.5: "two types of
+ * proposals ... one with and another one without ADDKE Transform Types").
+ * Build that plain clone into proplist[2]; idempotent (proplist[2] already
+ * set -> no-op).  A clone/nomem failure only forfeits the pre-ADDKE
+ * fallback; the ADDKE-carrying proposal #1 is unaffected, so ADDKE-capable
+ * peers still negotiate the hybrid round.
+ */
+static void
+ikev2_add_plain_proposal2(struct prop_pair **proplist)
+{
+	struct prop_pair *clone, *prev, *cand;
+
+	if (!proplist || !proplist[1] || proplist[2])
+		return;
+	clone = proppair_clone(proplist[1]);
+	if (!clone) {
+		plog(PLOG_DEBUG, PLOGLOC, NULL,
+		     "ikesa-addke offer: plain proposal-2 clone failed "
+		     "(no pre-ADDKE fallback)\n");
+		return;
+	}
+	/* Drop the ADDKE transform-type groups (types 6..6+max-round, the
+	 * append-only tail of the ->next chain) from the clone. */
+	prev = clone;
+	cand = clone->tnext;
+	while (cand) {
+		struct ikev2transform *t =
+		    (struct ikev2transform *)cand->trns;
+		struct prop_pair *nxt = cand->next;
+		if (t && t->transform_type >= IKEV2TRANSFORM_TYPE_ADDKE &&
+		    t->transform_type <= IKEV2TRANSFORM_TYPE_ADDKE +
+				       IKEV2_ADDKE_MAX_ROUND) {
+			unsigned int gtype = t->transform_type;
+			/* capture gtype BEFORE proppair_discard -- reading
+			 * t->transform_type in the plog after the free is a
+			 * use-after-free (observable as garbage in the log) */
+			if (prev == clone)
+				clone->tnext = nxt;
+			else
+				prev->next = nxt;
+			cand->next = 0;
+			proppair_discard(cand);
+			plog(PLOG_DEBUG, PLOGLOC, NULL,
+			     "ikesa-addke offer: plain proposal-2 dropped "
+			     "ADDKE type %u\n", gtype);
+		} else {
+			prev = cand;
+		}
+		cand = nxt;
+	}
+	if (clone->prop)
+		clone->prop->p_no = 2;	/* clone inherited p_no=1 */
+	proplist[2] = clone;
+	plog(PLOG_DEBUG, PLOGLOC, NULL,
+	     "ikesa-addke offer: added plain proposal #2 (no ADDKE) for "
+	     "pre-ADDKE responders (RFC 7296 s3.3.6)\n");
+}
+
 int
 ikev2_maybe_offer_ikesa_addke(struct rcf_remote *conf,
 			      struct prop_pair **proplist)
@@ -4806,6 +4871,7 @@ ikev2_maybe_offer_ikesa_addke(struct rcf_remote *conf,
 		plog(PLOG_DEBUG, PLOGLOC, NULL,
 		     "ikesa-addke offer: appended addke_alg rounds (types "
 		     "6..6+N-1)\n");
+		ikev2_add_plain_proposal2(proplist);
 		return 1;
 	}
 
@@ -4837,6 +4903,7 @@ ikev2_maybe_offer_ikesa_addke(struct rcf_remote *conf,
 	plog(PLOG_DEBUG, PLOGLOC, NULL,
 	     "ikesa-addke offer: appended type-6 (prop %p tnext %p)\n",
 	     (void *)proplist[1], (void *)proplist[1]->tnext);
+	ikev2_add_plain_proposal2(proplist);
 	return 1;
 }
 #endif
