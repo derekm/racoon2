@@ -293,8 +293,10 @@ esac
 	[ "$I2I_CHILDLESS" = 1 ] && CHILDLESS_TXT_R='		childless on;
 '
 	# RFC 7296 2.17/2.18 AUTH-child PFS (iPhone EnablePFS shape),
-	# SELF-CONSISTENT iked<->iked: with need_pfs on BOTH seats, the
-	# iked initiator's AUTH-child proposal carries a DH group (charon
+	# SELF-CONSISTENT iked<->iked: with need_pfs on BOTH seats and
+	# ikeauth_child_dh on the initiator (the Apple shape; RFC 7296 s1.2
+	# default is DH-less), the iked initiator's AUTH-child proposal
+	# carries a DH group (charon
 	# never offers child DH at IKE_AUTH, so these rows are iked-only)
 	# and the responder records child_sa->dhgrp from the matched pair
 	# so the responder-minted rekey mirrors THAT group.  Never add to
@@ -306,6 +308,7 @@ esac
 	*-pfsrekey*-charon) : ;;  # charon interop: keep AUTH child DH-less
 	*-pfsrekey*)
 		NEED_PFS_TXT_I='		need_pfs on;
+		ikeauth_child_dh on;
 '
 		NEED_PFS_TXT_R='		need_pfs on;
 ' ;;

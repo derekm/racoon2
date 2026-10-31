@@ -492,6 +492,13 @@ struct rcf_kmp {
 	 * authenticates this identity with the pre-shared key.  Unset = one
 	 * round only. */
 	struct rc_idlist *multi_auth_second_id;
+	/* ikeauth_child_dh (on|off, default off): with need_pfs on, the
+	 * INITIATOR also puts the kmp_dh_group into its IKE_AUTH child
+	 * offer, the shape iOS/macOS send with EnablePFS.  RFC 7296 s1.2
+	 * says IKE_AUTH SA payloads cannot carry a DH group other than NONE,
+	 * so strict peers (Libreswan) refuse that child; off = RFC shape.
+	 * Exists so iked<->iked rows can reproduce the Apple initiator. */
+	rc_type ikeauth_child_dh;
 	};
 
 /* selector info */

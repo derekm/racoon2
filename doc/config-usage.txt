@@ -849,6 +849,19 @@ remote
 		It is valid for both directives of the ikev1 and ikev2.
 		It controls to enable PFS or not.
 		The daemon will send a KE payload in the phase 2 of IKEv1.
+		In IKEv2 every CREATE_CHILD_SA (new child or rekey,
+		including the rekey of the IKE_AUTH child) carries KE in
+		the kmp_dh_group; the IKE_AUTH child offer itself carries
+		no DH group (RFC 7296 s1.2) unless ikeauth_child_dh is on.
+		default is off.
+
+	ikeauth_child_dh (on|off) ;
+		It is valid for the ikev2 directive (initiator).
+		With need_pfs on, also put the kmp_dh_group into the
+		IKE_AUTH child offer, as iOS/macOS do with EnablePFS.
+		This is outside RFC 7296 s1.2 and strict responders
+		(Libreswan) refuse that child with NO_PROPOSAL_CHOSEN; use
+		it only to reproduce that initiator.
 		default is off.
 
 	cert_validate (on|off) ;

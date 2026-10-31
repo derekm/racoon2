@@ -223,6 +223,7 @@ extern rc_type ikev2_legacy_split_netmask(struct rcf_remote *);
 extern rc_type ikev2_multiple_auth(struct rcf_remote *);
 extern int ikev2_auth_lifetime(struct rcf_remote *);
 extern rc_type ikev2_honor_auth_lifetime(struct rcf_remote *);
+extern rc_type ikev2_ikeauth_child_dh(struct rcf_remote *);
 extern rc_type ikev2_cert_intermediates(struct rcf_remote *);
 extern rc_vchar_t *ikev2_accept_dns_domain(struct rcf_remote *);
 extern int ikev2_redirect_period(struct rcf_remote *);

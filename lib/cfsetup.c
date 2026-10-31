@@ -240,6 +240,7 @@ static int rcf_fix_legacy_split_netmask (struct cf_list *, void *);
 static int rcf_fix_multiple_auth (struct cf_list *, void *);
 static int rcf_fix_auth_lifetime (struct cf_list *, void *);
 static int rcf_fix_honor_auth_lifetime (struct cf_list *, void *);
+static int rcf_fix_ikeauth_child_dh (struct cf_list *, void *);
 static int rcf_fix_multi_auth_second_id (struct cf_list *, void *);
 static int rcf_fix_nbns (struct cf_list *, void *);
 static int rcf_fix_cert_intermediates (struct cf_list *, void *);
@@ -391,6 +392,7 @@ struct rcf_tdf_t {
 	{ CFD_MULTIPLE_AUTH,		rcf_fix_multiple_auth, },
 	{ CFD_AUTH_LIFETIME,		rcf_fix_auth_lifetime, },
 	{ CFD_HONOR_AUTH_LIFETIME,	rcf_fix_honor_auth_lifetime, },
+	{ CFD_IKEAUTH_CHILD_DH,		rcf_fix_ikeauth_child_dh, },
 	{ CFD_MULTI_AUTH_SECOND_ID,	rcf_fix_multi_auth_second_id, },
 	{ CFD_CERT_INTERMEDIATES,		rcf_fix_cert_intermediates, },
 	{ CFD_ACCEPT_DNS_DOMAIN,		rcf_fix_accept_dns_domain, },
@@ -2205,6 +2207,19 @@ rcf_fix_auth_lifetime(struct cf_list *head, void *dst0)
 		    head->file, head->lineno);
 		return -1;
 	}
+	return 0;
+}
+
+static int
+rcf_fix_ikeauth_child_dh(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_IKEAUTH_CHILD_DH))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->ikeauth_child_dh))
+		return -1;
+
 	return 0;
 }
 
@@ -4055,6 +4070,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	new->multiple_auth = src->multiple_auth;
 	new->auth_lifetime = src->auth_lifetime;
 	new->honor_auth_lifetime = src->honor_auth_lifetime;
+	new->ikeauth_child_dh = src->ikeauth_child_dh;
 	new->cert_intermediates = src->cert_intermediates;
 	DEEPCOPY_VDUP(src->accept_dns_domain, new->accept_dns_domain);
 	new->redirect_period = src->redirect_period;

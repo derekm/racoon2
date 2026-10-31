@@ -404,6 +404,7 @@ legacy_split_netmask		{ DP; return(LEGACY_SPLIT_NETMASK); }
 multiple_auth		{ DP; return(MULTIPLE_AUTH); }
 multi_auth_second_id	{ DP; return(MULTI_AUTH_SECOND_ID); }
 honor_auth_lifetime	{ DP; return(HONOR_AUTH_LIFETIME); }
+ikeauth_child_dh	{ DP; return(IKEAUTH_CHILD_DH); }
 auth_lifetime		{ DP; return(AUTH_LIFETIME); }
 cert_intermediates		{ DP; return(CERT_INTERMEDIATES); }
 accept_dns_domain		{ DP; return(ACCEPT_DNS_DOMAIN); }
