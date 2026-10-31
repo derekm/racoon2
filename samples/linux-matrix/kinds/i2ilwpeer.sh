@@ -21,6 +21,13 @@
 #                                 CREATE_CHILD_SA (exch 36) on the wire, a new
 #                                 ESP SPI pair installed, the old pair gone,
 #                                 IKE SPIs unchanged
+#   lwpeer-childrekeypfs-i        as childrekey, with PFS on both sides (iked
+#                                 need_pfs on, pluto pfs=yes, ESP modp2048)
+#   lwpeer-pfsmismatch-i          NEGATIVE, realistic misconfig: pluto's
+#                                 default pfs=yes vs iked need_pfs off.  The
+#                                 rekey is rejected (NO_PROPOSAL_CHOSEN);
+#                                 iked must arm bounded backoff and send
+#                                 1..3 CREATE_CHILD_SA requests in 50 s
 #   lwpeer-ikerekey-i             iked kmp_sa_lifetime_time 30 s: exch 36 and
 #                                 a NEW IKE SPI pair carries later traffic
 #   lwpeer-delete-i               pluto (responder) terminates: an
@@ -66,7 +73,7 @@ kind_i2ilwpeer() {
 	PSK_TXT=racoon2-libreswan-interop-0123456789abcdef
 	printf '%s' "$PSK_TXT" >"$C/psk.bin"; chmod 600 "$C/psk.bin"
 	CHILD_LT="ipsec_sa_lifetime_time 3600 sec;"; IKE_LT="kmp_sa_lifetime_time 3600 sec;"
-	[ "$scen" = childrekey ] && CHILD_LT="ipsec_sa_lifetime_time 30 sec;"
+	case $scen in childrekey*|pfsmismatch) CHILD_LT="ipsec_sa_lifetime_time 30 sec;" ;; esac
 	[ "$scen" = ikerekey ] && IKE_LT="kmp_sa_lifetime_time 30 sec;"
 	PASSIVE=on; [ "$role" = i ] && PASSIVE=off
 	ESP_ENC="aes256_cbc;"; ESP_AUTH="hmac_sha2_256;"
@@ -77,7 +84,16 @@ kind_i2ilwpeer() {
 	# iked's child rekey carries no KE unless PFS is configured; pin
 	# pluto to the same (its default pfs=yes would answer the plain
 	# rekey with NO_PROPOSAL_CHOSEN).
-	LW_PFS=no
+	# childrekeypfs: both sides want PFS on the rekey (iked need_pfs on,
+	# pluto pfs=yes + an ESP DH group).  pfsmismatch: pluto's default
+	# pfs=yes against iked's default off -- a realistic misconfiguration
+	# whose rejection (NO_PROPOSAL_CHOSEN) iked must handle with bounded
+	# backoff, not a rekey storm.
+	LW_PFS=no; NEED_PFS=; LW_ESP=aes256-sha2_256
+	case $scen in
+	childrekeypfs) LW_PFS=yes; NEED_PFS="need_pfs on;" ;;
+	pfsmismatch) LW_PFS=yes ;;
+	esac
 
 	cat >"$C/iked.conf" <<EOF
 interface {
@@ -99,6 +115,7 @@ remote lw {
 		kmp_dh_group { modp2048; };
 		kmp_auth_method { psk; };
 		pre_shared_key "$C/psk.bin";
+		$NEED_PFS
 		$IKE_LT
 	};
 	selector_index sel_in;
@@ -136,7 +153,7 @@ conn r2
 	rightsubnet=$HR/32
 	authby=secret
 	ike=aes256-sha2_256-modp2048
-	esp=aes256-sha2_256
+	esp=$LW_ESP
 	fragmentation=yes
 	pfs=$LW_PFS
 	ikelifetime=1h
@@ -294,14 +311,27 @@ EOF
 		[ "$nskf" -ge 2 ] || { log "FAIL: no RFC 7383 fragmented IKE_AUTH from iked (SKF=$nskf)"; efail=1; }
 		[ "$nsk" -eq 0 ] || { log "FAIL: iked also sent an unfragmented IKE_AUTH ($nsk)"; efail=1; }
 		;;
-	childrekey|ikerekey)
+	pfsmismatch)
+		sleep 50
+		nreq=$(awk -F'\t' '$1=="out" && $2==36' "$D/wire.tsv" | wc -l)
+		nnp=$(grep -ac 'NO_PROPOSAL_C' "$D/iked.log")
+		nbo=$(grep -ac 'rekey failed (' "$D/iked.log")
+		log "pfsmismatch: CREATE_CHILD_SA requests from iked=$nreq NO_PROPOSAL_CHOSEN=$nnp backoff-armed=$nbo"
+		[ "$nnp" -ge 1 ] || { log "FAIL: pluto never rejected the PFS-less rekey"; efail=1; }
+		[ "$nbo" -ge 1 ] || { log "FAIL: no bounded backoff armed after the rejected rekey"; efail=1; }
+		# soft at ~27 s, backoff 30 s, hard at 30 s: at most 3 attempts in
+		# 50 s.  Before the backoff every soft/hard EXPIRE retried (>=4).
+		[ "$nreq" -ge 1 ] && [ "$nreq" -le 3 ] ||
+			{ log "FAIL: $nreq CREATE_CHILD_SA requests in 50 s (want 1..3: bounded backoff)"; efail=1; }
+		;;
+	childrekey|childrekeypfs|ikerekey)
 		sleep 50
 		n36=$(awk -F'\t' '$2==36' "$D/wire.tsv" | wc -l)
 		spi1=$(espspis)
 		re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
 		log "$scen: CREATE_CHILD_SA datagrams=$n36 esp before=[$spi0] after=[$spi1]"
 		[ "$n36" -ge 2 ] || { log "FAIL: no CREATE_CHILD_SA exchange on the wire"; efail=1; }
-		if [ "$scen" = childrekey ]; then
+		if [ "$scen" != ikerekey ]; then
 			ip netns exec "$NSR" ping -c2 -i0.3 -W2 "$HI" >/dev/null 2>&1 ||
 				{ log "FAIL: ICMP after rekey"; efail=1; }
 			[ -n "$spi1" ] && [ "$spi1" != "$spi0" ] ||
