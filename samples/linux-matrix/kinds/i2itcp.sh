@@ -198,10 +198,9 @@ EOF
 
 	# --- pluto NSS init (before pluto launch) ---
 	if ! ls "$C/lw-nss"/cert9.db >/dev/null 2>&1; then
-		LWIPSEC=$(command -v ipsec || echo /usr/sbin/ipsec)
-		[ -x "$LWIPSEC" ] || { log "FAIL: no 'ipsec' for initnss"; return 1; }
-		"$LWIPSEC" initnss --nssdir "$C/lw-nss" >"$D/lw-nssinit.log" 2>&1 \
-			|| [ -f "$C/lw-nss/cert9.db" ] || { cat "$D/lw-nssinit.log" >&2; log "FAIL: ipsec initnss"; return 1; }
+		# certutil directly: `ipsec` on PATH may be strongSwan's.
+		certutil -N -d "sql:$C/lw-nss" --empty-password >"$D/lw-nssinit.log" 2>&1 \
+			|| { cat "$D/lw-nssinit.log" >&2; log "FAIL: NSS db init (certutil -N)"; return 1; }
 	fi
 
 	# --- launch: spmd + iked in NSR (racoon2), pluto in NSI (libreswan) ---
@@ -214,7 +213,7 @@ EOF
 	mkdir -p "$C/lw-run"; chmod 700 "$C/lw-run"
 	# Private run dir: pluto's pid file and whack control socket stay
 	# under the row's conf dir, never the host's /run/pluto.
-	( ip netns exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
+	( i2i_lw_ns_exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
 	    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
 	    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
 	    --logfile "$D/lw-pluto.log" --stderrlog ) >"$D/lw-pluto.out" 2>&1 &
