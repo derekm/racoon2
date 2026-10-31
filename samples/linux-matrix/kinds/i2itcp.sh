@@ -216,7 +216,7 @@ EOF
 	( i2i_lw_ns_exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
 	    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
 	    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
-	    --logfile "$D/lw-pluto.log" --stderrlog ) >"$D/lw-pluto.out" 2>&1 &
+	    --logfile "$D/lw-pluto.log" ) >"$D/lw-pluto.out" 2>&1 &
 	LWPLUTO=$!
 	LWWHACK=$(command -v whack || echo /usr/libexec/ipsec/whack)
 	i=0
