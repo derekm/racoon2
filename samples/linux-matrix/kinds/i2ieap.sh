@@ -322,6 +322,17 @@ EOF
 	( ip netns exec "$NSR" "$RADCMD" -d "$RADD" -X ) >"$D/radiusd.log" 2>&1 &
 	RADPID=$!
 	i=0; until ip netns exec "$NSR" ss -lun 2>/dev/null | grep -q ':1812' || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	# Early gate: a FreeRADIUS module that fails to load (e.g. rlm_eap
+	# without its server cert) leaves no :1812 listener, and every later
+	# gate would only report a vague "not ESTABLISHED".  Name the cause
+	# and stop the row here instead.
+	if ! ip netns exec "$NSR" ss -lun 2>/dev/null | grep -q ':1812' ||
+	   grep -Eq 'Failed to load module|Instantiation failed|Failed instantiating|Errors (reading|initializing)' "$D/radiusd.log"; then
+		log "FAIL: FreeRADIUS did not come up: $(grep -Em3 'Failed|Instantiation|Errors|rror' "$D/radiusd.log" | tr '\n' ' ')"
+		pkill -9 -f -- "-d $RADD" 2>/dev/null || true
+		for _ns in "$NSR" "$NSI"; do ip netns del "$_ns" 2>/dev/null || true; done
+		return 1
+	fi
 
 	# --- responder spmd + iked ---
 	( ip netns exec "$NSR" env "$SSLENV" "$SBIN/spmd" -F -f "$C/responder.conf" ) >"$D/resp-spmd.log" 2>&1 &
