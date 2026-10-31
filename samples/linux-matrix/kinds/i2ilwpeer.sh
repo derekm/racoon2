@@ -7,6 +7,10 @@
 # control socket (--rundir / --ctlsocket), so no host /etc/ipsec*, /run/pluto
 # or service is used.
 #
+# An sspeer-* row runs the SAME scenarios with a strongSwan charon seat
+# (i2i_charon_run from i2i_peer.sh: private swanctl root, vici socket and
+# /run bind in a private mount ns) instead of pluto.
+#
 # Row name selects the scenario (suffix -i: iked initiates, -r: pluto does):
 #   lwpeer-psk-i / lwpeer-psk-r   PSK IKE_SA + Child SA, ESP both ways
 #   lwpeer-frag-i                 RFC 7383: 250-octet IDi and IDr push iked's
@@ -30,15 +34,21 @@ kind_i2ilwpeer() {
 	require_root || return 1
 	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
-	[ -x "$I2I_LW_PLUTO" ] || { log "FAIL: no libreswan pluto at $I2I_LW_PLUTO"; return 1; }
-	[ -x "$I2I_LW_WHACK" ] || { log "FAIL: no libreswan whack at $I2I_LW_WHACK"; return 1; }
+	case $name in sspeer-*) PEER=ss ;; *) PEER=lw ;; esac
+	if [ "$PEER" = lw ]; then
+		[ -x "$I2I_LW_PLUTO" ] || { log "FAIL: no libreswan pluto at $I2I_LW_PLUTO"; return 1; }
+		[ -x "$I2I_LW_WHACK" ] || { log "FAIL: no libreswan whack at $I2I_LW_WHACK"; return 1; }
+	else
+		[ -z "$I2I_SWANCTL_FATAL" ] || { log "FAIL: $I2I_SWANCTL_FATAL"; return 1; }
+		[ -x "$I2I_CHARON_BIN" ] || { log "FAIL: no charon at $I2I_CHARON_BIN"; return 1; }
+	fi
 	command -v python3 >/dev/null 2>&1 || { log "FAIL: no python3 (ikesniff.py)"; return 1; }
 
 	case $name in
 	*-i) role=i ;; *-r) role=r ;;
 	*) log "FAIL: $name: row name must end in -i or -r"; return 1 ;;
 	esac
-	scen=${name#lwpeer-}; scen=${scen%-?}
+	scen=${name#??peer-}; scen=${scen%-?}
 
 	row_ns "$name"
 	HR=192.0.7.1; HI=192.0.7.2
@@ -136,6 +146,49 @@ conn r2
 EOF
 	printf '@%s @%s : PSK "%s"\n' "$L_ID" "$R_ID" "$PSK_TXT" >"$C/lw-etc/ipsec.secrets"
 	chmod 600 "$C/lw-etc/ipsec.secrets"
+	SS_CONF=$I2I_CHARON_VDIR/r2-$name.conf
+	if [ "$PEER" = ss ]; then
+		# charon seat: no charon-initiated rekeys (iked drives them), no
+		# PFS on the child (iked's child rekey carries no KE), RFC 7383
+		# on.  Config lives in the shard's private swanctl root.
+		cat >"$SS_CONF" <<EOF
+connections {
+	r2 {
+		version = 2
+		local_addrs = $HI
+		remote_addrs = $HR
+		proposals = aes256-sha256-modp2048
+		fragmentation = yes
+		rekey_time = 0
+		local {
+			auth = psk
+			id = $L_ID
+		}
+		remote {
+			auth = psk
+			id = $R_ID
+		}
+		children {
+			ch {
+				local_ts = $HI/32
+				remote_ts = $HR/32
+				esp_proposals = aes256-sha256
+				rekey_time = 0
+				mode = tunnel
+			}
+		}
+	}
+}
+secrets {
+	ike-r2 {
+		# No ids: charon fails the shared-key lookup for the
+		# 370-octet FQDNs of the frag rows; the row only has one
+		# peer, so a wildcard secret is exact enough.
+		secret = "$PSK_TXT"
+	}
+}
+EOF
+	fi
 
 	pkill -9 -f "$C/" 2>/dev/null || true
 	rm -f "$SPMIF_R" "$SOCK_R"
@@ -165,30 +218,48 @@ EOF
 	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/iked.conf" -D 0x0001 -l "$D/iked.log" ) >"$D/iked.out" 2>&1 &
 
-	# Same db `ipsec initnss` builds: an empty-password sql: NSS db.
-	certutil -N -d "sql:$C/lw-nss" --empty-password >"$D/lw-nssinit.log" 2>&1 ||
-		[ -f "$C/lw-nss/cert9.db" ] || { log "FAIL: NSS db init (certutil -N)"; lwp_cleanup; return 1; }
-	( ip netns exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
-	    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
-	    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
-	    --logfile "$D/pluto.log" --stderrlog ) >"$D/pluto.out" 2>&1 &
-	lwwhack() { ip netns exec "$NSI" "$I2I_LW_WHACK" --ctlsocket "$C/lw-run/pluto.ctl" "$@"; }
-	i=0; until lwwhack --status >/dev/null 2>&1 || [ "$i" -ge 30 ]; do sleep 1; i=$((i+1)); done
-	[ -S "$C/lw-run/pluto.ctl" ] || { log "FAIL: pluto control socket not under $C/lw-run"; lwp_cleanup; return 1; }
-	# Load the conn explicitly (pluto does not parse conns from --conf
-	# on every version); a duplicate add is harmless.
-	ip netns exec "$NSI" "${I2I_LW_ADDCONN:-${I2I_LW_PLUTO%/*}/addconn}" --ctlsocket "$C/lw-run/pluto.ctl" \
-	    --config "$C/lw-etc/ipsec.conf" r2 >"$D/addconn.log" 2>&1 || true
-	# Bind pluto's IKE sockets to the (now configured) veth address.
-	lwwhack --listen >"$D/whack-listen.txt" 2>&1 || true
-	sleep 2
+	if [ "$PEER" = lw ]; then
+		# Same db `ipsec initnss` builds: an empty-password sql: NSS db.
+		certutil -N -d "sql:$C/lw-nss" --empty-password >"$D/lw-nssinit.log" 2>&1 ||
+			[ -f "$C/lw-nss/cert9.db" ] || { log "FAIL: NSS db init (certutil -N)"; lwp_cleanup; return 1; }
+		( ip netns exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
+		    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
+		    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
+		    --logfile "$D/pluto.log" --stderrlog ) >"$D/pluto.out" 2>&1 &
+		lwwhack() { ip netns exec "$NSI" "$I2I_LW_WHACK" --ctlsocket "$C/lw-run/pluto.ctl" "$@"; }
+		i=0; until lwwhack --status >/dev/null 2>&1 || [ "$i" -ge 30 ]; do sleep 1; i=$((i+1)); done
+		[ -S "$C/lw-run/pluto.ctl" ] || { log "FAIL: pluto control socket not under $C/lw-run"; lwp_cleanup; return 1; }
+		# Load the conn explicitly (pluto does not parse conns from --conf
+		# on every version); a duplicate add is harmless.
+		ip netns exec "$NSI" "${I2I_LW_ADDCONN:-${I2I_LW_PLUTO%/*}/addconn}" --ctlsocket "$C/lw-run/pluto.ctl" \
+		    --config "$C/lw-etc/ipsec.conf" r2 >"$D/addconn.log" 2>&1 || true
+		# Bind pluto's IKE sockets to the (now configured) veth address.
+		lwwhack --listen >"$D/whack-listen.txt" 2>&1 || true
+		sleep 2
+
+	else
+		i2i_charon_run "$NSI" "$D/charon.log" || { log "FAIL: charon start"; lwp_cleanup; return 1; }
+		i=0; until ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --stats >/dev/null 2>&1 || [ "$i" -ge 20 ]; do sleep 1; i=$((i+1)); done
+		ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --load-all >"$D/swanctl-load.log" 2>&1 ||
+			{ log "FAIL: swanctl --load-all"; cat "$D/swanctl-load.log"; lwp_cleanup; return 1; }
+		sleep 1
+	fi
+	peer_initiate() {
+		if [ "$PEER" = lw ]; then lwwhack --name r2 --initiate
+		else ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --initiate --child ch --timeout 20; fi
+	}
+	peer_terminate() {
+		if [ "$PEER" = lw ]; then lwwhack --name r2 --terminate
+		else ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --terminate --ike r2 --timeout 10; fi
+	}
+	PEERLOG=$D/pluto.log; [ "$PEER" = ss ] && PEERLOG=$D/charon.log
 
 	if [ "$role" = i ]; then
 		# One trigger only: an ACQUIRE ping on top of establish-sa
 		# would negotiate a second child pair and blur the rekey gates.
 		"$SBIN/ikedctl" -s "$SOCK_R" establish-sa isakmp inet "$HR" "$HI" sel_out >/dev/null 2>&1 || true
 	else
-		lwwhack --name r2 --initiate >"$D/whack-init.txt" 2>&1 || true
+		peer_initiate >"$D/peer-init.txt" 2>&1 || true
 	fi
 	up=0; i=0
 	while [ "$i" -lt 45 ]; do
@@ -208,8 +279,8 @@ EOF
 			awk -v h="src $HR dst $HI" '/^src /{o=($0==h)} o&&/lifetime current/{c=1; next} c{sub(/.*bytes\), /,""); sub(/\(packets.*/,""); n+=$0; c=0} END{print n+0}')
 		[ "${_o:-0}" -ge 3 ] ||
 			{ log "FAIL: outbound ESP packet counter $_o < 3 after ping"; efail=1; }
-		grep -q 'established Child SA' "$D/pluto.log" 2>/dev/null ||
-			{ log "FAIL: pluto never logged an established Child SA"; efail=1; }
+		grep -Eq 'established Child SA|CHILD_SA ch\{[0-9]+\} established' "$PEERLOG" 2>/dev/null ||
+			{ log "FAIL: the $PEER peer never logged an established Child SA"; efail=1; }
 	fi
 	espspis() { ip netns exec "$NSR" ip xfrm state 2>/dev/null | awk '/proto esp spi/{print $4}' | sort | tr '\n' ' '; }
 	spi0=$(espspis)
@@ -245,7 +316,7 @@ EOF
 			# NEW IKE_SA is live by having pluto delete it: its
 			# INFORMATIONAL must carry an IKE SPI pair other than the
 			# original one, and iked must act on it.
-			lwwhack --name r2 --terminate >"$D/whack-term.txt" 2>&1 || true
+			peer_terminate >"$D/peer-term.txt" 2>&1 || true
 			sleep 5
 			nnew=$(awk -F'\t' -v o="$ike0" '$1=="in" && $2==37 && $4"/"$5!=o' "$D/wire.tsv" | wc -l)
 			re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
@@ -255,7 +326,7 @@ EOF
 		fi
 		;;
 	delete)
-		lwwhack --name r2 --terminate >"$D/whack-term.txt" 2>&1 || true
+		peer_terminate >"$D/peer-term.txt" 2>&1 || true
 		gone=0; i=0
 		while [ "$i" -lt 15 ]; do
 			re=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
@@ -263,8 +334,8 @@ EOF
 			i=$((i+1)); sleep 1
 		done
 		n37=$(awk -F'\t' '$1=="in" && $2==37' "$D/wire.tsv" | wc -l)
-		log "delete: INFORMATIONAL from pluto=$n37 iked esp left=${re:-?}"
-		[ "$n37" -ge 1 ] || { log "FAIL: no INFORMATIONAL DELETE from pluto on the wire"; efail=1; }
+		log "delete: INFORMATIONAL from peer=$n37 iked esp left=${re:-?}"
+		[ "$n37" -ge 1 ] || { log "FAIL: no INFORMATIONAL DELETE from the peer on the wire"; efail=1; }
 		[ "$gone" -eq 1 ] || { log "FAIL: iked kept ${re:-?} ESP SAs after the peer's DELETE"; efail=1; }
 		;;
 	psk) ;;
@@ -275,16 +346,20 @@ EOF
 	lwp_cleanup
 	if [ "$efail" -ne 0 ]; then
 		log "--- wire.tsv ---"; cat "$D/wire.tsv" 2>/dev/null | tail -20
-		log "--- pluto.log ---"; tail -25 "$D/pluto.log" 2>/dev/null
+		log "--- peer log ---"; tail -25 "$PEERLOG" 2>/dev/null
 		log "--- iked.log ---"; grep -aiE 'error|fail|rekey|delete|frag' "$D/iked.log" 2>/dev/null | tail -15
 		return 1
 	fi
-	log "PASS $name (libreswan pluto, $scen, iked=$([ "$role" = i ] && echo initiator || echo responder))"
+	log "PASS $name ($([ "$PEER" = lw ] && echo libreswan-pluto || echo strongswan-charon), $scen, iked=$([ "$role" = i ] && echo initiator || echo responder))"
 	return 0
 }
 
 lwp_cleanup() {
 	kill "$SNIFF" 2>/dev/null || true
+	if [ "${PEER:-lw}" = ss ]; then
+		i2i_charon_kill
+		rm -f "$SS_CONF"
+	fi
 	pkill -9 -f "$C/" 2>/dev/null || true
 	sleep 1
 	ip netns del "$NSR" 2>/dev/null || true

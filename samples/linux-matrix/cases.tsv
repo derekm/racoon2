@@ -293,3 +293,13 @@ lwpeer-frag-r	i2ilwpeer	pass	0	RFC 7383 INTEROP, roles swapped: Libreswan pluto 
 lwpeer-childrekey-r	i2ilwpeer	pass	0	Child SA rekey INTEROP with iked as IKE RESPONDER: iked ipsec_sa_lifetime_time 30 s still initiates the CREATE_CHILD_SA. Same gates as lwpeer-childrekey-i.	addke	-
 lwpeer-ikerekey-r	i2ilwpeer	pass	0	IKE_SA rekey INTEROP with iked as IKE RESPONDER initiating the rekey (kmp_sa_lifetime_time 30 s). Same gates as lwpeer-ikerekey-i.	addke	-
 lwpeer-delete-r	i2ilwpeer	pass	0	DELETE INTEROP with pluto as IKE INITIATOR: whack --terminate; INFORMATIONAL from pluto on the wire and iked removes every ESP SA within 15 s.	addke	-
+sspeer-psk-i	i2ilwpeer	pass	0	PSK IKE_SA + child, racoon2 iked INITIATOR -> strongSwan charon RESPONDER (kinds/i2ilwpeer.sh charon seat; private swanctl root + vici socket, private netns). Gate: ESP >= 2 both sides, ICMP with outbound ESP packet counter >= 3, charon 'CHILD_SA ch{N} established'.	-	-
+sspeer-psk-r	i2ilwpeer	pass	0	PSK, charon INITIATOR (swanctl --initiate) -> iked RESPONDER. Same gates as sspeer-psk-i.	-	-
+sspeer-frag-i	i2ilwpeer	pass	0	RFC 7383 INTEROP with charon: iked initiator, long FQDN IDi + multi-transform ESP push IKE_AUTH past 576 octets. Gate: >= 2 SKF IKE_AUTH datagrams from iked, none unfragmented, child UP.	-	-
+sspeer-frag-r	i2ilwpeer	pass	0	RFC 7383 INTEROP, charon initiator -> iked responder fragmenting its IKE_AUTH response. Same gates.	-	-
+sspeer-childrekey-i	i2ilwpeer	pass	0	Child rekey INTEROP with charon (rekey_time=0 on charon, iked ipsec_sa_lifetime_time 30 s drives it). Gate: exch 36 on the wire, new ESP SPI pair, no old SPI left, IKE SPIs unchanged, ICMP flows.	-	-
+sspeer-childrekey-r	i2ilwpeer	pass	0	Child rekey with charon as IKE initiator; iked (IKE responder) drives the rekey. Same gates.	-	-
+sspeer-ikerekey-i	i2ilwpeer	pass	0	IKE_SA rekey INTEROP with charon (iked kmp_sa_lifetime_time 30 s); then charon DELETEs the NEW IKE_SA and iked must act on it.	-	-
+sspeer-ikerekey-r	i2ilwpeer	pass	0	IKE_SA rekey with charon as IKE initiator, iked as responder drives the rekey. Same gates.	-	-
+sspeer-delete-i	i2ilwpeer	pass	0	DELETE INTEROP: charon responder swanctl --terminate --ike; INFORMATIONAL from charon on the wire and iked removes every ESP SA within 15 s.	-	-
+sspeer-delete-r	i2ilwpeer	pass	0	DELETE INTEROP with charon as IKE initiator. Same gates.	-	-
