@@ -64,6 +64,7 @@
 #include "oakley.h"		/* for prototypes */
 #include "crypto_impl.h"
 #include "ike_conf.h"
+#include "ikev2_tcp_route.h"
 #include "ratelimit.h"
 
 #include "debug.h"
@@ -129,6 +130,14 @@ ikev2_established_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		if (changed != 0)
 			ikev2_mobike_apply(ike_sa, remote, local);
 	}
+	/* RFC 9329: a TCP peer that reconnected (same address, new stream)
+	 * continues the IKE_SA on the new stream; MOBIKE or not, replies must
+	 * follow it.  See ikev2_tcp_rebind(). */
+	if (ike_sa->state == IKEV2_STATE_ESTABLISHED && remote &&
+	    ikev2_tcp_rebind(ike_sa, remote))
+		isakmp_log(ike_sa, local, remote, 0, PLOG_INFO, PLOGLOC,
+		    "RFC 9329: IKE_SA re-bound to the peer's new TCP stream "
+		    "%s\n", rcs_sa2str(remote));
 
 	TRACE((PLOGLOC, "%s exch type %d\n",
 	       (is_response ? "response" : "request"), exch_type));

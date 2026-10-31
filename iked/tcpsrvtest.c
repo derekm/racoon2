@@ -27,6 +27,8 @@
 
 #include "racoon.h"
 #include "vmbuf.h"
+#include "rc_net.h"
+#include "rc_malloc.h"
 #include "ikev2_tcp_stream.h"
 #include "ikev2_tcp_srv.h"
 #include <sys/queue.h>
@@ -363,6 +365,47 @@ main(void)
 			      "encap: no SA is not itself tcp_encap (route's "
 			      "pre-SA rule decides)");
 			stub_tcp_encap = RCT_BOOL_OFF;
+		}
+
+		/* RFC 9329 s7: the peer reconnected from the same address on
+		 * a new stream (client2's port): a responder SA re-binds to
+		 * it and replies follow; every other case is left alone. */
+		{
+			struct ikev2_sa rs;
+			struct sockaddr_in other;
+			struct tcp_stream *before, *after;
+
+			memset(&rs, 0, sizeof(rs));
+			rs.remote = rcs_sadup((struct sockaddr *)&r1);
+			rs.local = rcs_sadup((struct sockaddr *)&la);
+			rs.rmconf = (struct rcf_remote *)&rs;
+			rs.is_initiator = 0;
+			stub_tcp_encap = RCT_BOOL_ON;
+			before = ikev2_tcp_route(&rs, 1, NULL, NULL);
+			memcpy(&other, &r2, sizeof(other));
+			other.sin_addr.s_addr = htonl(0x7f000002);
+			CHECK(ikev2_tcp_rebind(&rs, (struct sockaddr *)&other) == 0,
+			      "rebind: an address change is MOBIKE's, not a rebind");
+			rs.is_initiator = 1;
+			CHECK(ikev2_tcp_rebind(&rs, (struct sockaddr *)&r2) == 0,
+			      "rebind: an initiator SA is never re-bound");
+			rs.is_initiator = 0;
+			stub_tcp_encap = RCT_BOOL_OFF;
+			CHECK(ikev2_tcp_rebind(&rs, (struct sockaddr *)&r2) == 0,
+			      "rebind: a UDP SA is never re-bound");
+			stub_tcp_encap = RCT_BOOL_ON;
+			CHECK(ikev2_tcp_rebind(&rs, (struct sockaddr *)&r1) == 0,
+			      "rebind: same stream is a no-op");
+			CHECK(ikev2_tcp_rebind(&rs, (struct sockaddr *)&r2) == 1,
+			      "rebind: same address, new live stream -> re-bound");
+			after = ikev2_tcp_route(&rs, 1, NULL, NULL);
+			CHECK(before != NULL && after != NULL && after != before &&
+			      after == tcp_srv_find_bound((struct sockaddr *)&r2,
+			      (struct sockaddr *)&la),
+			      "rebind: replies now ride the new stream");
+			stub_tcp_encap = RCT_BOOL_OFF;
+			rc_free(rs.remote);
+			rc_free(rs.local);
 		}
 	}
 

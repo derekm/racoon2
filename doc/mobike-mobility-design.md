@@ -158,3 +158,28 @@ config keyword) against the iked responder and proves the negotiation knob, not 
 The suite does **not** exercise an end-to-end racoon2-as-initiator roam, because that feature
 does not exist.  A live roaming-*peer* proof is the iPhone/iOS peer exercising the
 implicit/UPDATE path against the responder, as noted in NEWS.
+
+## MOBIKE and reconnects over RFC 9329 TCP
+
+**Where ESP goes (deliberate):** for a tcp_encap SA only IKE rides the TCP
+stream.  Child ESP stays UDP-encapsulated on 4500/4500 (or kernel espintcp
+when `esp_tcp_encap` is on), both before and after a MOBIKE move.  The
+consequence: on a path that blocks UDP entirely, a tcp_encap SA *without*
+`esp_tcp_encap` keeps IKE alive but has no data plane.  Use `esp_tcp_encap`
+there; it is off by default.
+
+**Responder re-binding (RFC 9329 s7):** a TCP peer that loses its connection
+reconnects and continues the IKE_SA on the new stream.  Replies are routed by
+the SA's remote address:port (the client's TCP source port), so:
+
+- *address changed* -- the integrity-verified message is an implicit or
+  explicit MOBIKE update, handled by `ikev2_mobike_apply()` (ESP migrated,
+  NAT-T ports kept at 4500);
+- *same address, new stream* -- `ikev2_tcp_rebind()` moves only the SA's
+  remote port (and any armed retransmit destination) to the new live stream;
+  ESP is untouched.  Initiator SAs and non-tcp_encap SAs are never re-bound.
+
+The old stream is not closed by the SA (another IKE_SA may share it); it is
+reaped when the peer closes it or a send on it fails.  The re-bind runs on
+INFORMATIONAL exchanges (the liveness check a reconnecting peer sends);
+`tcpsrvtest` covers every branch.

@@ -22,6 +22,7 @@
 #include "ikev2_tcp_stream.h"
 #include "ikev2_tcp_srv.h"
 #include "ike_conf.h"
+#include "rc_net.h"
 #include "ikev2_tcp_route.h"
 
 /*
@@ -101,5 +102,55 @@ ikev2_tcp_send(const struct ikev2_sa *sa, int sa_tcp_encap,
 		*rp = r;
 	if (tsp != NULL)
 		*tsp = ts;
+	return 1;
+}
+
+static void
+rebind_dest(struct sockaddr **dp, const struct sockaddr *remote)
+{
+	struct sockaddr *n;
+
+	if (*dp == NULL || (n = rcs_sadup(remote)) == NULL)
+		return;
+	rc_free(*dp);
+	*dp = n;
+}
+
+/*
+ * RFC 9329 s7 (MOBIKE / reconnect): a TCP-encapsulated peer that changed
+ * its transport opens a NEW TCP connection and continues the IKE_SA on it.
+ * When the peer address is unchanged but the message arrived on a
+ * different live stream (new client source port), re-bind the responder
+ * SA to that stream: its remote port is what ikev2_tcp_route()'s bound
+ * lookup keys on, so without this replies keep going to the old (possibly
+ * dead) stream or to whichever stream the address-only fallback finds
+ * first.  An ADDRESS change is a real MOBIKE move and goes through
+ * ikev2_mobike_apply(); an initiator's remote is the peer's IKE port,
+ * not a stream port, so it is never re-bound here.  The child ESP is not
+ * touched: over TCP it stays UDP-encapsulated on 4500/4500 (see
+ * ikev2_mobike_natt).  Returns 1 when the SA was re-bound.
+ */
+int
+ikev2_tcp_rebind(struct ikev2_sa *sa, const struct sockaddr *remote)
+{
+	struct sockaddr *n;
+
+	if (sa == NULL || remote == NULL || sa->remote == NULL ||
+	    sa->local == NULL || sa->is_initiator || !ikev2_sa_tcp_encap(sa))
+		return 0;
+	if (rcs_cmpsa_wop(remote, sa->remote) != 0)
+		return 0;		/* address change: MOBIKE's job */
+	if (rcs_cmpsa(remote, sa->remote) == 0)
+		return 0;		/* same stream */
+	if (tcp_srv_find_bound(remote, sa->local) == NULL)
+		return 0;		/* not a live registered stream */
+	if ((n = rcs_sadup(remote)) == NULL)
+		return 0;
+	rc_free(sa->remote);
+	sa->remote = n;
+	if (sa->transmit_info.packet || sa->transmit_info.frags)
+		rebind_dest(&sa->transmit_info.dest, remote);
+	if (sa->response_info.packet || sa->response_info.frags)
+		rebind_dest(&sa->response_info.dest, remote);
 	return 1;
 }

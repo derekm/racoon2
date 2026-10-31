@@ -16,6 +16,10 @@ struct tcp_stream *ikev2_tcp_route(const struct ikev2_sa *sa,
 /* RFC 9329: nonzero iff sa has rmconf with tcp_encap on. */
 int ikev2_sa_tcp_encap(const struct ikev2_sa *sa);
 
+/* RFC 9329 s7: re-bind a responder SA to the new stream its peer
+ * reconnected on (same address, new source port).  1 = re-bound. */
+int ikev2_tcp_rebind(struct ikev2_sa *sa, const struct sockaddr *remote);
+
 /* RFC 9329: route + send + result contract (see ikev2_tcp_route.c).
  * 0 = no stream, use UDP; 1 = handled on TCP (even on failure). */
 int ikev2_tcp_send(const struct ikev2_sa *sa, int sa_tcp_encap,
