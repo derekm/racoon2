@@ -2453,8 +2453,7 @@ isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt
 	 * NO remote config is not tcp_encap: it must not be pulled onto a
 	 * stream either.  RFC 9329 (H3): an established IKE_SA rides the
 	 * stream it was built over; see ikev2_tcp_route(). */
-	encap = ike_sa != NULL && ike_sa->rmconf != NULL &&
-	    ikev2_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON;
+	encap = ikev2_sa_tcp_encap(ike_sa);
 	if (!ikev2_tcp_send(ike_sa, encap, dest, src,
 	    (const unsigned char *)pkt->v, pkt->l, &r, &ts))
 		return 0;

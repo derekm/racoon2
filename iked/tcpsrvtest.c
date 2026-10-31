@@ -95,6 +95,18 @@ send_fail_dispatch(rc_vchar_t *pkt, struct sockaddr *remote,
 	return 0;
 }
 
+/* ikev2_sa_tcp_encap() asks the config layer; tcpsrvtest does not link
+ * ike_conf.c, so answer from a knob the test sets. */
+static rc_type stub_tcp_encap = RCT_BOOL_OFF;
+static int stub_tcp_encap_calls;
+rc_type
+ikev2_tcp_encap(struct rcf_remote *rm)
+{
+	(void)rm;
+	++stub_tcp_encap_calls;
+	return stub_tcp_encap;
+}
+
 static int fails;
 
 /* Socket-hook probe: iked installs setsockopt_bypass() here.  The hook has
@@ -316,6 +328,42 @@ main(void)
 		CHECK(ikev2_tcp_route(NULL, 1, (struct sockaddr *)&r1,
 				      (struct sockaddr *)&la) != NULL,
 		      "route: pre-SA IKE_SA_INIT uses the address-only lookup");
+
+		/* The tcp_encap decision isakmp_try_tcp_send makes, through
+		 * the production ikev2_sa_tcp_encap + ikev2_tcp_send. */
+		{
+			static const unsigned char pm[32] = { 0xc3 };
+			struct rcf_remote *fake_rm = (struct rcf_remote *)&sau;
+			int r = 99;
+
+			sau = sa1;
+			sau.rmconf = NULL;
+			stub_tcp_encap = RCT_BOOL_ON;
+			stub_tcp_encap_calls = 0;
+			CHECK(ikev2_sa_tcp_encap(&sau) == 0 &&
+			      stub_tcp_encap_calls == 0,
+			      "encap: an SA with no rmconf is not tcp_encap");
+			CHECK(ikev2_tcp_send(&sau, ikev2_sa_tcp_encap(&sau),
+			      (struct sockaddr *)&r1, (struct sockaddr *)&la,
+			      pm, sizeof(pm), &r, NULL) == 0 && r == 99,
+			      "encap: no-rmconf SA goes to UDP despite a stream "
+			      "to its peer");
+			sau.rmconf = fake_rm;
+			stub_tcp_encap = RCT_BOOL_OFF;
+			CHECK(ikev2_sa_tcp_encap(&sau) == 0,
+			      "encap: tcp_encap off -> UDP");
+			stub_tcp_encap = RCT_BOOL_ON;
+			CHECK(ikev2_sa_tcp_encap(&sau) == 1,
+			      "encap: tcp_encap on -> TCP");
+			CHECK(ikev2_tcp_send(&sau, ikev2_sa_tcp_encap(&sau),
+			      (struct sockaddr *)&r1, (struct sockaddr *)&la,
+			      pm, sizeof(pm), &r, NULL) == 1 && r >= 0,
+			      "encap: tcp_encap SA is sent on its bound stream");
+			CHECK(ikev2_sa_tcp_encap(NULL) == 0,
+			      "encap: no SA is not itself tcp_encap (route's "
+			      "pre-SA rule decides)");
+			stub_tcp_encap = RCT_BOOL_OFF;
+		}
 	}
 
 	FD_ZERO(&rfds); FD_ZERO(&wfds);

@@ -21,6 +21,7 @@
 #include "ikev2_impl.h"
 #include "ikev2_tcp_stream.h"
 #include "ikev2_tcp_srv.h"
+#include "ike_conf.h"
 #include "ikev2_tcp_route.h"
 
 /*
@@ -48,6 +49,20 @@ ikev2_tcp_route(const struct ikev2_sa *sa, int sa_tcp_encap,
 	if (ts == NULL && dest != NULL)
 		ts = tcp_srv_find(dest, src);
 	return ts;
+}
+
+/*
+ * RFC 9329: is this IKE_SA's traffic TCP-bound?  Only when its remote
+ * configuration exists and has tcp_encap on.  An SA without rmconf is NOT
+ * tcp_encap (it must never be pulled onto a stream that happens to reach
+ * the same peer).  The pre-SA IKE_SA_INIT (sa == NULL) is handled by
+ * ikev2_tcp_route() itself, which ignores the flag when sa is NULL.
+ */
+int
+ikev2_sa_tcp_encap(const struct ikev2_sa *sa)
+{
+	return sa != NULL && sa->rmconf != NULL &&
+	    ikev2_tcp_encap(sa->rmconf) == RCT_BOOL_ON;
 }
 
 /*
