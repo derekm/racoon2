@@ -211,7 +211,10 @@ EOF
 	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$RCFG" -D 0x0001 -l "$D/r2-iked.log" ) >"$D/r2-iked.out" 2>&1 &
 	RSPMD_IKED=$!
-	( ip netns exec "$NSI" "$I2I_LW_PLUTO" --nofork \
+	mkdir -p "$C/lw-run"; chmod 700 "$C/lw-run"
+	# Private run dir: pluto's pid file and whack control socket stay
+	# under the row's conf dir, never the host's /run/pluto.
+	( ip netns exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
 	    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
 	    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
 	    --logfile "$D/lw-pluto.log" --stderrlog ) >"$D/lw-pluto.out" 2>&1 &
@@ -219,13 +222,13 @@ EOF
 	LWWHACK=$(command -v whack || echo /usr/libexec/ipsec/whack)
 	i=0
 	while [ "$i" -lt 30 ]; do
-		if ip netns exec "$NSI" "$LWWHACK" --status >/dev/null 2>&1; then break; fi
+		if ip netns exec "$NSI" "$LWWHACK" --ctlsocket "$C/lw-run/pluto.ctl" --status >/dev/null 2>&1; then break; fi
 		i=$((i+1)); sleep 1
 	done
 	sleep 2
 
 	# --- establish ---
-	lwhack() { ip netns exec "$NSI" "$LWWHACK" --name r2tcp "$@"; }
+	lwhack() { ip netns exec "$NSI" "$LWWHACK" --ctlsocket "$C/lw-run/pluto.ctl" --name r2tcp "$@"; }
 	if [ "$L_INIT" = 1 ]; then
 		lwhack --initiate >"$D/lw-init.txt" 2>&1 || true
 	else
