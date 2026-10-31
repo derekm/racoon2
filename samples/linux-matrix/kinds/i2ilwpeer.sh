@@ -165,12 +165,15 @@ EOF
 	chmod 600 "$C/lw-etc/ipsec.secrets"
 	SS_CONF=$I2I_CHARON_VDIR/r2-$name.conf
 	if [ "$PEER" = ss ]; then
+		# Conn/child names are unique to this kind: the swanctl conf.d is
+		# shared by the shard and other kinds name their child 'ch', so
+		# 'swanctl --initiate --child ch' could start another kind's conn.
 		# charon seat: no charon-initiated rekeys (iked drives them), no
 		# PFS on the child (iked's child rekey carries no KE), RFC 7383
 		# on.  Config lives in the shard's private swanctl root.
 		cat >"$SS_CONF" <<EOF
 connections {
-	r2 {
+	lwp {
 		version = 2
 		local_addrs = $HI
 		remote_addrs = $HR
@@ -186,7 +189,7 @@ connections {
 			id = $R_ID
 		}
 		children {
-			ch {
+			lwpch {
 				local_ts = $HI/32
 				remote_ts = $HR/32
 				esp_proposals = aes256-sha256
@@ -197,7 +200,7 @@ connections {
 	}
 }
 secrets {
-	ike-r2 {
+	ike-lwp {
 		# No ids: charon fails the shared-key lookup for the
 		# 370-octet FQDNs of the frag rows; the row only has one
 		# peer, so a wildcard secret is exact enough.
@@ -263,11 +266,11 @@ EOF
 	fi
 	peer_initiate() {
 		if [ "$PEER" = lw ]; then lwwhack --name r2 --initiate
-		else ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --initiate --child ch --timeout 20; fi
+		else ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --initiate --ike lwp --child lwpch --timeout 20; fi
 	}
 	peer_terminate() {
 		if [ "$PEER" = lw ]; then lwwhack --name r2 --terminate
-		else ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --terminate --ike r2 --timeout 10; fi
+		else ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --terminate --ike lwp --timeout 10; fi
 	}
 	PEERLOG=$D/pluto.log; [ "$PEER" = ss ] && PEERLOG=$D/charon.log
 
@@ -296,7 +299,7 @@ EOF
 			awk -v h="src $HR dst $HI" '/^src /{o=($0==h)} o&&/lifetime current/{c=1; next} c{sub(/.*bytes\), /,""); sub(/\(packets.*/,""); n+=$0; c=0} END{print n+0}')
 		[ "${_o:-0}" -ge 3 ] ||
 			{ log "FAIL: outbound ESP packet counter $_o < 3 after ping"; efail=1; }
-		grep -Eq 'established Child SA|CHILD_SA ch\{[0-9]+\} established' "$PEERLOG" 2>/dev/null ||
+		grep -Eq 'established Child SA|CHILD_SA lwpch\{[0-9]+\} established' "$PEERLOG" 2>/dev/null ||
 			{ log "FAIL: the $PEER peer never logged an established Child SA"; efail=1; }
 	fi
 	espspis() { ip netns exec "$NSR" ip xfrm state 2>/dev/null | awk '/proto esp spi/{print $4}' | sort | tr '\n' ' '; }
