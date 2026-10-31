@@ -43,6 +43,7 @@
 #include "racoon.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "ikev2_rekey_backoff.h"
 #include "ikev2_eap_relay.h"
 
 #include "ike_conf.h"
@@ -403,8 +404,18 @@ ikev2_child_abort(struct ikev2_child_sa *child_sa, int err)
 	}
 	if (old_child_sa && old_child_sa != child_sa &&
 	    old_child_sa->rekey_inprogress) {
+		time_t d;
+
 		old_child_sa->rekey_inprogress = FALSE;
-		ikev2_child_arm_expire(old_child_sa, 30);
+		/* Rejected (or failed) rekey: back off, bounded, instead of
+		 * retrying on every soft EXPIRE the kernel still delivers. */
+		d = ikev2_rekey_note_failure(&old_child_sa->rekey_failures,
+		    &old_child_sa->rekey_not_before, time(NULL));
+		isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO, PLOGLOC,
+		    "child_sa %p rekey failed (%u in a row); next attempt in "
+		    "%ld s\n", old_child_sa, old_child_sa->rekey_failures,
+		    (long)d);
+		ikev2_child_arm_expire(old_child_sa, d);
 	}
 
 	ikev2_child_state_set(child_sa, IKEV2_CHILD_STATE_EXPIRED);

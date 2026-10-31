@@ -59,6 +59,7 @@
 #include "ikev2.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "ikev2_rekey_backoff.h"
 #include "ikev2_notify.h"
 #include "ike_conf.h"
 #include "crypto_impl.h"
@@ -3684,6 +3685,14 @@ ikev2_expire_sa(struct ikev2_child_sa *child_sa, int expire_mode,
 	TRACE((PLOGLOC, "ikev2_expire_sa(%p)\n", child_sa));
 	switch (expire_mode) {
 	case 1:		/* soft expired */
+		if (!child_sa->rekey_inprogress &&
+		    ikev2_rekey_deferred(child_sa->rekey_not_before,
+			time(NULL))) {
+			isakmp_log(child_sa->parent, 0, 0, 0, PLOG_INFO,
+			    PLOGLOC, "child_sa %p soft EXPIRE during rekey "
+			    "backoff; the backoff timer retries\n", child_sa);
+			return;
+		}
 		if (!child_sa->rekey_inprogress) {
 			child_sa->rekey_inprogress = TRUE;
 			ikev2_rekey_childsa(child_sa, satype, spi);

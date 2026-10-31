@@ -618,6 +618,10 @@ struct ikev2_child_sa {
 	int rekey_duplicate;
 	uint32_t rekey_duplicate_message_id;
 
+	/* rejected-rekey backoff (ikev2_rekey_backoff.h) */
+	unsigned int rekey_failures;
+	time_t rekey_not_before;
+
 	int delete_sent;
 
 	/* RFC 7296 §3.3.2 / RFC 4303 §2.2.1 ESN: 1 when the negotiated child
