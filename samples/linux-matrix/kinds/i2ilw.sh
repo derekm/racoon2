@@ -194,7 +194,10 @@ EOF
 
 	# libreswan pluto initiator (NSS db is initialized above)
 	rm -f "$D/init-pluto.log" "$D/init-pluto.out"
-	( ip netns exec "$NSI" "$I2I_LW_PLUTO" --nofork \
+	mkdir -p "$C/lw-run"; chmod 700 "$C/lw-run"
+	# Private run dir: pluto's pid file and whack control socket stay
+	# under the row's conf dir, never the host's /run/pluto.
+	( ip netns exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
 	    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
 	    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
 	    --logfile "$D/init-pluto.log" --stderrlog ) >"$D/init-pluto.out" 2>&1 &
@@ -206,14 +209,21 @@ EOF
 	# than raw process presence.
 	i=0
 	while [ "$i" -lt 30 ]; do
-		if ip netns exec "$NSI" "$LWWHACK" --status >/dev/null 2>&1; then
+		if ip netns exec "$NSI" "$LWWHACK" --ctlsocket "$C/lw-run/pluto.ctl" --status >/dev/null 2>&1; then
 			break
 		fi
 		i=$((i+1)); sleep 1
 	done
+	# Load the conn and bind the IKE sockets explicitly: not every
+	# pluto build loads conns from --conf by itself (pluto's own
+	# addconn exec is path-fixed), and a missed --listen leaves pluto
+	# deaf on the veth.  Both are idempotent.
+	ip netns exec "$NSI" "${I2I_LW_ADDCONN:-${I2I_LW_PLUTO%/*}/addconn}" --ctlsocket "$C/lw-run/pluto.ctl" \
+	    --config "$C/lw-etc/ipsec.conf" r2resume >"$D/addconn.log" 2>&1 || true
+	ip netns exec "$NSI" "$LWWHACK" --ctlsocket "$C/lw-run/pluto.ctl" --listen >/dev/null 2>&1 || true
 	sleep 2
 
-	lwwhack() { ip netns exec "$NSI" "$LWWHACK" --name r2resume "$@"; }
+	lwwhack() { ip netns exec "$NSI" "$LWWHACK" --ctlsocket "$C/lw-run/pluto.ctl" --name r2resume "$@"; }
 
 	# --- pass 1: establish, mint the ticket ---
 	log "i2ilw: pass 1 initiate (establish + ticket)"
