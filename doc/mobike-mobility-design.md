@@ -178,6 +178,11 @@ the SA's remote address:port (the client's TCP source port), so:
 - *same address, new stream* -- `ikev2_tcp_rebind()` moves only the SA's
   remote port (and any armed retransmit destination) to the new live stream;
   ESP is untouched.  Initiator SAs and non-tcp_encap SAs are never re-bound.
+- *address changed over TCP* -- both steps run, in that order, on the same
+  message: `ikev2_mobike_apply()` moves the SA (and ESP) to the new address,
+  then `ikev2_tcp_rebind()` finds the address now equal and moves the remote
+  port to the new stream's source port, so replies leave on the stream the
+  update arrived on.
 
 The old stream is not closed by the SA (another IKE_SA may share it); it is
 reaped when the peer closes it or a send on it fails.  The re-bind runs on
