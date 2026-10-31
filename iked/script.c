@@ -291,19 +291,24 @@ ikev1_migrate_script_hook(struct ph1handle *iph1,
 	char	**envp = NULL;
 	size_t	envc = 1;
 
+	/* no migrate hook configured: nothing to run.  Without this the
+	 * child execve()d a NULL path (UB) and envp leaked every move. */
+	if (iph1 == NULL || iph1->rmconf == NULL ||
+	    ikev1_script(iph1->rmconf, SCRIPT_MIGRATE) == NULL)
+		return;
 	if (env_add_addr(old_src, "OLD_SRC", NULL, &envp, &envc) ||
 	    env_add_addr(old_dst, "OLD_DST", NULL, &envp, &envc) ||
 	    env_add_addr(new_src, "NEW_SRC", NULL, &envp, &envc) ||
 	    env_add_addr(new_dst, "NEW_DST", NULL, &envp, &envc))
-		return;
+		goto out;
 
 	if (script_exec(ikev1_script(iph1->rmconf, SCRIPT_MIGRATE),
-			SCRIPT_MIGRATE, envp) != 0) {
+			SCRIPT_MIGRATE, envp) != 0)
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "Script %s execution failed\n",
 		     script_names[SCRIPT_MIGRATE]);
-		return;
-	}
+out:
+	script_env_free(envp);
 }
 #endif
 
@@ -636,19 +641,24 @@ ikev2_migrate_script_hook(struct ikev2_sa *ike_sa,
 	char	**envp = NULL;
 	size_t	envc = 1;
 
+	/* no migrate hook configured: nothing to run.  Without this the
+	 * child execve()d a NULL path (UB) and envp leaked every move. */
+	if (ike_sa == NULL || ike_sa->rmconf == NULL ||
+	    ikev2_script(ike_sa->rmconf, SCRIPT_MIGRATE) == NULL)
+		return;
 	if (env_add_addr(old_src, "OLD_SRC", NULL, &envp, &envc) ||
 	    env_add_addr(old_dst, "OLD_DST", NULL, &envp, &envc) ||
 	    env_add_addr(new_src, "NEW_SRC", NULL, &envp, &envc) ||
 	    env_add_addr(new_dst, "NEW_DST", NULL, &envp, &envc))
-		return;
+		goto out;
 
 	if (script_exec(ikev2_script(ike_sa->rmconf, SCRIPT_MIGRATE),
-			SCRIPT_MIGRATE, envp) != 0) {
+			SCRIPT_MIGRATE, envp) != 0)
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "Script %s execution failed\n",
 		     script_names[SCRIPT_MIGRATE]);
-		return;
-	}
+out:
+	script_env_free(envp);
 }
 
 static int
