@@ -144,6 +144,8 @@ o Linux (kernel 2.6)
 	./configure --with-km-backend=xfrm       # Linux default
 	./configure --with-km-backend=pfkey      # BSD default; Linux opt-in
 	./configure --with-km-backend=userspace  # loopback + unix datagram
+	./configure --with-km-backend=r2dp --with-r2dp=PREFIX
+	                                         # external forwarder (r2dp project)
 
   ESP AES-GCM (RFC 4106 ICV16), XFRM backend:
 

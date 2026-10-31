@@ -327,6 +327,32 @@ esac
 ])
 
 dnl
+dnl Locate libr2dp (installed by the r2dp project) through pkg-config.
+dnl --with-r2dp=PREFIX adds PREFIX's pkgconfig dirs (incl. multiarch libdirs).
+dnl An rpath to libr2dp's libdir is added so libracoon.so (and the daemons
+dnl linked against it) resolve libr2dp.so from a non-system prefix at both
+dnl link and run time.
+AC_DEFUN([RC_WITH_R2DP],
+[
+AC_ARG_WITH(r2dp,
+	[  --with-r2dp=PREFIX      prefix of an installed libr2dp (km-backend=r2dp)],
+	[r2dp_prefix=$withval], [r2dp_prefix=])
+if test -n "$r2dp_prefix" && test x"$r2dp_prefix" != xyes; then
+	for d in "$r2dp_prefix"/lib/pkgconfig "$r2dp_prefix"/lib64/pkgconfig \
+	    "$r2dp_prefix"/lib/*/pkgconfig "$r2dp_prefix"/share/pkgconfig; do
+		test -d "$d" && PKG_CONFIG_PATH="$d${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+	done
+	export PKG_CONFIG_PATH
+fi
+PKG_PROG_PKG_CONFIG
+PKG_CHECK_MODULES([R2DP], [r2dp], [],
+	[AC_MSG_ERROR([libr2dp not found; build/install the r2dp project and pass --with-r2dp=PREFIX])])
+r2dp_libdir=`$PKG_CONFIG --variable=libdir r2dp`
+if test -n "$r2dp_libdir"; then
+	R2DP_LIBS="$R2DP_LIBS -Wl,-rpath,$r2dp_libdir"
+fi
+])
+
 dnl SAD/SPD kernel backend: Linux NETLINK_XFRM vs BSD PF_KEY.
 dnl Same XOR source-file swap as iked RTSOCK (netlink.c vs rtsock.c).
 dnl
@@ -334,9 +360,10 @@ AC_DEFUN([RC_KM_BACKEND],
 [
 AC_MSG_CHECKING([kernel SAD/SPD backend])
 AC_ARG_WITH(km-backend,
-	[  --with-km-backend=xfrm|pfkey|userspace
+	[  --with-km-backend=xfrm|pfkey|userspace|r2dp
                           SAD/SPD interface (Linux default: xfrm;
-                          BSD default: pfkey; userspace is loopback)],
+                          BSD default: pfkey; userspace is loopback;
+                          r2dp talks to an external dataplane forwarder)],
 	[km_backend=$withval], [km_backend=auto])
 if test x"$km_backend" = xauto; then
 	case $host_os in
@@ -362,14 +389,25 @@ userspace)
 pfkey)
 	KM_IF=if_pfkeyv2.c
 	;;
+r2dp)
+	KM_IF=if_r2dp.c
+	AC_DEFINE(HAVE_R2DP_KM, 1, [r2dp external-forwarder SAD/SPD backend])
+	;;
 *)
-	AC_MSG_ERROR([--with-km-backend must be xfrm, pfkey, or userspace])
+	AC_MSG_ERROR([--with-km-backend must be xfrm, pfkey, userspace, or r2dp])
 	;;
 esac
 AC_SUBST(KM_IF)
 AM_CONDITIONAL([USE_XFRM], [test x"$km_backend" = xxfrm])
 AM_CONDITIONAL([USE_USERSPACE], [test x"$km_backend" = xuserspace])
+AM_CONDITIONAL([USE_R2DP], [test x"$km_backend" = xr2dp])
+AC_SUBST(R2DP_CFLAGS)
+AC_SUBST(R2DP_LIBS)
 AC_MSG_RESULT([$km_backend ($KM_IF)])
+dnl Looked up after the backend result so configure output is not nested.
+if test x"$km_backend" = xr2dp; then
+	RC_WITH_R2DP
+fi
 ])
 
 dnl

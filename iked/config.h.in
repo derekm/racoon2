@@ -213,6 +213,9 @@
 /* define to emit child KEYMAT sha256 debug hashes */
 #undef WITH_KEYMAT_ORACLE
 
+/* define when the KM backend is r2dp */
+#undef WITH_KM_R2DP
+
 /* define to use OpenSSL ENGINE */
 #undef WITH_OPENSSL_ENGINE
 
