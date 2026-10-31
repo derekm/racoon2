@@ -241,6 +241,7 @@ static int rcf_fix_multiple_auth (struct cf_list *, void *);
 static int rcf_fix_auth_lifetime (struct cf_list *, void *);
 static int rcf_fix_honor_auth_lifetime (struct cf_list *, void *);
 static int rcf_fix_ikeauth_child_dh (struct cf_list *, void *);
+static int rcf_fix_mobike_initiate (struct cf_list *, void *);
 static int rcf_fix_multi_auth_second_id (struct cf_list *, void *);
 static int rcf_fix_nbns (struct cf_list *, void *);
 static int rcf_fix_cert_intermediates (struct cf_list *, void *);
@@ -393,6 +394,7 @@ struct rcf_tdf_t {
 	{ CFD_AUTH_LIFETIME,		rcf_fix_auth_lifetime, },
 	{ CFD_HONOR_AUTH_LIFETIME,	rcf_fix_honor_auth_lifetime, },
 	{ CFD_IKEAUTH_CHILD_DH,		rcf_fix_ikeauth_child_dh, },
+	{ CFD_MOBIKE_INITIATE,		rcf_fix_mobike_initiate, },
 	{ CFD_MULTI_AUTH_SECOND_ID,	rcf_fix_multi_auth_second_id, },
 	{ CFD_CERT_INTERMEDIATES,		rcf_fix_cert_intermediates, },
 	{ CFD_ACCEPT_DNS_DOMAIN,		rcf_fix_accept_dns_domain, },
@@ -2220,6 +2222,19 @@ rcf_fix_ikeauth_child_dh(struct cf_list *head, void *dst0)
 	if (rcf_fix_boolean(head->nextp, &dst->ikeauth_child_dh))
 		return -1;
 
+	return 0;
+}
+
+/* mobike_initiate (on|off): see rc_type.h */
+static int
+rcf_fix_mobike_initiate(struct cf_list *head, void *dst0)
+{
+	struct rcf_kmp *dst = (struct rcf_kmp *)dst0;
+
+	if (rcf_check_cfd(head, CFD_MOBIKE_INITIATE))
+		return -1;
+	if (rcf_fix_boolean(head->nextp, &dst->mobike_initiate))
+		return -1;
 	return 0;
 }
 
@@ -4071,6 +4086,7 @@ rcf_deepcopy_kmp(struct rcf_kmp *src)
 	new->auth_lifetime = src->auth_lifetime;
 	new->honor_auth_lifetime = src->honor_auth_lifetime;
 	new->ikeauth_child_dh = src->ikeauth_child_dh;
+	new->mobike_initiate = src->mobike_initiate;
 	new->cert_intermediates = src->cert_intermediates;
 	DEEPCOPY_VDUP(src->accept_dns_domain, new->accept_dns_domain);
 	new->redirect_period = src->redirect_period;

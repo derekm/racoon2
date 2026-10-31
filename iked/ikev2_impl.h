@@ -483,6 +483,11 @@ struct ikev2_sa {
 	int mobike_alt_idx;
 	int mobike_rr_pending;
 	struct sockaddr *mobike_rr_prev;
+	/* mobike_initiate: our own address moved.  ike_sa->local already
+	 * names the new address while the UPDATE_SA_ADDRESSES request is
+	 * outstanding; mobike_li_prev keeps the one the kernel SAs use. */
+	int mobike_li_pending;
+	struct sockaddr *mobike_li_prev;
 	struct ikev2_frag_item *frag_chain;	/* Received fragments */
 	struct sched *natk_timer;
 #if 0	/* XXX for transport mode */
@@ -1089,6 +1094,10 @@ void ikev2_mobike_apply(struct ikev2_sa *, struct sockaddr *, struct sockaddr *)
 void ikev2_mobike_apply_nat(struct ikev2_sa *, struct sockaddr *,
     struct sockaddr *, int);
 int ikev2_mobike_probe_next(struct ikev2_sa *);
+void ikev2_mobike_local_changed(void);
+int ikev2_mobike_local_update(struct ikev2_sa *, const struct sockaddr *);
+void ikev2_mobike_local_reply(struct ikev2_sa *, int, int, int, int);
+void ikev2_mobike_local_abandon(struct ikev2_sa *);
 int ikev2_natt_follow_mapping_event(struct ikev2_sa *, struct sockaddr *);
 int ikev2_kernel_migrated(struct ikev2_sa *, struct sockaddr *,
     struct sockaddr *);

@@ -47,6 +47,7 @@
 #include "racoon.h"
 #include "isakmp_impl.h"
 #include "rtsock.h"
+void ikev2_mobike_local_changed(void);
 #include "debug.h"
 
 static int rtsock = -1;
@@ -65,6 +66,77 @@ static int rtsock = -1;
         };
 #endif
 
+#ifdef __linux__
+/*
+ * Linux has no PF_ROUTE routing socket: PF_ROUTE is an alias of
+ * AF_NETLINK, and a NETLINK_ROUTE socket that joins no multicast group
+ * receives nothing, so the code below (#else) never saw an address change
+ * on Linux even with --enable-updateifaddr.  Join the address and route
+ * groups.  Without --enable-updateifaddr this socket is opened only when
+ * a remote sets mobike_initiate on (default off), and its events only
+ * reach ikev2_mobike_local_changed().
+ */
+int
+rtsock_init(void)
+{
+	struct sockaddr_nl snl;
+
+	rtsock = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK, NETLINK_ROUTE);
+	TRACE((PLOGLOC, "rtsock: %d\n", rtsock));
+	if (rtsock < 0)
+		return -1;
+	memset(&snl, 0, sizeof(snl));
+	snl.nl_family = AF_NETLINK;
+	snl.nl_groups = RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR |
+	    RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE;
+	if (bind(rtsock, (struct sockaddr *)&snl, sizeof(snl)) != 0) {
+		close(rtsock);
+		rtsock = -1;
+		return -1;
+	}
+	return 0;
+}
+
+int
+rtsock_socket(void)
+{
+	return rtsock;
+}
+
+void
+rtsock_process(void)
+{
+	char buf[8192];
+	struct nlmsghdr *nlh;
+	ssize_t len;
+	int changed = 0;
+
+	/* drain everything queued; one rescan covers the whole burst */
+	while ((len = recv(rtsock, buf, sizeof(buf), 0)) > 0) {
+		for (nlh = (struct nlmsghdr *)buf; NLMSG_OK(nlh, (size_t)len);
+		    nlh = NLMSG_NEXT(nlh, len)) {
+			switch (nlh->nlmsg_type) {
+			case RTM_NEWADDR:
+			case RTM_DELADDR:
+			case RTM_NEWROUTE:
+			case RTM_DELROUTE:
+				changed = 1;
+				break;
+			default:
+				break;
+			}
+		}
+	}
+	if (len < 0 && errno == ENOBUFS)
+		changed = 1;	/* overflow: something changed, rescan */
+	if (!changed)
+		return;
+#ifdef WITH_RTSOCK
+	isakmp_reopen();
+#endif
+	ikev2_mobike_local_changed();
+}
+#else
 int
 rtsock_init(void)
 {
@@ -162,6 +234,7 @@ rtsock_process(void)
 
 	case RTM_IFINFO:
 		isakmp_reopen(); /* rescan interface addresses */
+		ikev2_mobike_local_changed();	/* RFC 4555 initiator */
 		break;
 	case RTM_MISS:
 		/* ignore this message silently */
@@ -172,3 +245,4 @@ rtsock_process(void)
 	}
 #endif
 }
+#endif /* __linux__ */

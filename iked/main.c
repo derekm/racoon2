@@ -62,7 +62,7 @@
 #include "debug.h"
 #include "ike_conf.h"
 #include "crypto_impl.h"
-#ifdef WITH_RTSOCK
+#if defined(WITH_RTSOCK) || defined(__linux__)
 #  include "rtsock.h"
 #endif
 #ifdef WITH_PARSECOA
@@ -472,6 +472,15 @@ main(int argc, char **argv)
 		iked_exit(IKED_EXIT_FAILURE);
 	}
 #endif
+#if !defined(WITH_RTSOCK) && defined(__linux__)
+	/* RFC 4555 initiator moves need address events (mobike_initiate) */
+	if (ike_conf_any_mobike_initiate() && rtsock_init() != 0) {
+		plog(PLOG_CRITICAL, PLOGLOC, 0,
+		     "mobike_initiate: failed opening rtnetlink socket: %s\n",
+		     strerror(errno));
+		iked_exit(IKED_EXIT_FAILURE);
+	}
+#endif
 #ifdef WITH_PARSECOA
 	if (nl_xfrm_open() != 0) {
 		plog(PLOG_CRITICAL, PLOGLOC, 0,
@@ -590,7 +599,7 @@ iked_mainloop(void)
 	fd_set wfdset;			/* RFC 9329 write readiness (streams) */
 	struct timeval *timeout;
 	int isakmp_sock, sadbsock_fd;
-#ifdef WITH_RTSOCK
+#if defined(WITH_RTSOCK) || defined(__linux__)
 	int rtsock_fd;
 #endif
 #ifdef WITH_PARSECOA
@@ -664,7 +673,7 @@ iked_mainloop(void)
 		if (!debug_spmif && spmif_fd < 0)
 			ike_spmif_reconnect();
 
-#ifdef WITH_RTSOCK
+#if defined(WITH_RTSOCK) || defined(__linux__)
 		monitor_fd(rtsock_fd = rtsock_socket(), &fdset, &nfds);
 #endif
 #ifdef WITH_PARSECOA
@@ -683,7 +692,7 @@ iked_mainloop(void)
 			continue;
 		}
 
-#ifdef WITH_RTSOCK
+#if defined(WITH_RTSOCK) || defined(__linux__)
 		if (rtsock_fd >= 0 && FD_ISSET(rtsock_fd, &fdset))
 			rtsock_process();
 #endif

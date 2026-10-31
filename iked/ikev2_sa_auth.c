@@ -292,6 +292,18 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 							 0, 0),
 				    TRUE);
 
+	/*
+	 * [N(MOBIKE_SUPPORTED)] RFC 4555 s3.1: an initiator that will move
+	 * (mobike_initiate on) must say so; off keeps the old wire image.
+	 */
+	if (ike_sa->rmconf &&
+	    ikev2_mobike_initiate(ike_sa->rmconf) == RCT_BOOL_ON)
+		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
+				    ikev2_notify_payload(0, 0, 0,
+							 IKEV2_MOBIKE_SUPPORTED,
+							 0, 0),
+				    TRUE);
+
 	/* RFC 5723 s4.1: as an INITIATOR, ask the peer (a resumption
 	 * responder) to issue us a session-resumption ticket when session
 	 * resumption is enabled for this remote.  A resumed IKE_AUTH must

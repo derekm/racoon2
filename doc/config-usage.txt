@@ -864,6 +864,26 @@ remote
 		it only to reproduce that initiator.
 		default is off.
 
+	mobike_initiate (on|off) ;
+		It is valid for the ikev2 directive (initiator).
+		RFC 4555 s3.5 address update by the original initiator of a
+		MOBIKE IKE SA: when the source address used to reach the
+		peer changes (an address added or removed on this host),
+		send UPDATE_SA_ADDRESSES with NAT_DETECTION computed over the
+		new address, then move the IKE SA and its Child SAs once the
+		peer answers (UDP encapsulation follows the NAT state the
+		reply reports).  For an IKE SA over TCP (tcp_encap), the
+		update goes over a new TCP connection from the new address.
+		On also adds N(MOBIKE_SUPPORTED) to the initiator's IKE_AUTH
+		(RFC 4555 s3.1), and with nat_traversal on the update moves
+		the IKE SA to port 4500 so a NAT on the new path can be
+		traversed.  On Linux iked then listens for rtnetlink address
+		and route events (also without --enable-updateifaddr); use an
+		interface ike list that covers the new address (e.g. MY_IPV4)
+		so a socket on it exists.
+		off = iked only answers the peer's MOBIKE updates.
+		default is off.
+
 	cert_validate (on|off) ;
 		It is valid for the ikev2 directive.
 		X.509-from-wire: when on, the peer's key is taken from the

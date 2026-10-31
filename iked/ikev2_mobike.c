@@ -42,6 +42,10 @@
 #include "debug.h"
 #include "rc_net.h"
 #include "ike_pfkey.h"
+#include "nattraversal.h"
+#include "ikev2_tcp.h"
+#include <unistd.h>
+#include <sys/socket.h>
 
 #ifndef UDP_ENCAP_ESPINUDP
 #define UDP_ENCAP_ESPINUDP 2
@@ -450,4 +454,223 @@ restore:
 	ike_sa->mobike_rr_pending = 0;
 	rc_free(alt);
 	return 0;
+}
+
+/*
+ * ---- RFC 4555 s3.5 on the original initiator (mobike_initiate on) ----
+ *
+ * An rtnetlink address event calls ikev2_mobike_local_changed(), which
+ * (once the burst has settled, see below) asks the kernel which source
+ * address it now uses toward each MOBIKE peer.  When that differs from
+ * the IKE SA's local address, ikev2_mobike_local_update() points the IKE
+ * SA at the new address (port kept) and sends an INFORMATIONAL with
+ * UPDATE_SA_ADDRESSES plus NAT_DETECTION_{SOURCE,DESTINATION}_IP computed
+ * over the new pair.  The kernel SAs stay on the old pair until the reply
+ * (ikev2_mobike_local_reply): then the NAT state the reply reports is
+ * committed and the SAs migrate, encapsulation included.  A timeout puts
+ * the old address back (ikev2_mobike_local_abandon).
+ */
+
+/* the source address the kernel picks toward dst (no packet is sent) */
+static int
+mobike_route_source(const struct sockaddr *dst, struct sockaddr_storage *out)
+{
+	struct sockaddr_storage d;
+	socklen_t l;
+	int s, ok = -1;
+
+	memset(&d, 0, sizeof(d));
+	memcpy(&d, dst, SA_LEN(dst));
+	if (d.ss_family == AF_INET)
+		((struct sockaddr_in *)&d)->sin_port = htons(IKEV2_UDP_PORT_NATT);
+#ifdef INET6
+	else if (d.ss_family == AF_INET6)
+		((struct sockaddr_in6 *)&d)->sin6_port = htons(IKEV2_UDP_PORT_NATT);
+#endif
+	else
+		return -1;
+	s = socket(d.ss_family, SOCK_DGRAM, 0);
+	if (s < 0)
+		return -1;
+	l = sizeof(*out);
+	if (connect(s, (struct sockaddr *)&d, SA_LEN(dst)) == 0 &&
+	    getsockname(s, (struct sockaddr *)out, &l) == 0)
+		ok = 0;
+	close(s);
+	return ok;
+}
+
+static struct sched *mobike_local_timer;
+
+static int
+mobike_initiator_eligible(struct ikev2_sa *sa)
+{
+	return sa->state == IKEV2_STATE_ESTABLISHED && sa->is_initiator &&
+	    sa->mobike_supported && sa->rmconf != NULL &&
+	    ikev2_mobike_initiate(sa->rmconf) == RCT_BOOL_ON &&
+	    !sa->mobike_li_pending && !sa->mobike_rr_pending &&
+	    sa->local != NULL && sa->remote != NULL;
+}
+
+static void
+mobike_local_scan(void *unused)
+{
+	struct ikev2_sa *sa, *next;
+
+	int any = 0;
+
+	(void)unused;
+	SCHED_INIT(mobike_local_timer);
+	for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa;
+	    sa = IKEV2_SA_LIST_NEXT(sa))
+		if (mobike_initiator_eligible(sa))
+			any = 1;
+	if (!any)
+		return;
+	/* sockets for the new address set (interface ike { MY_IP; }) */
+	isakmp_reopen();
+	for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa; sa = next) {
+		struct sockaddr_storage src;
+
+		next = IKEV2_SA_LIST_NEXT(sa);
+		if (!mobike_initiator_eligible(sa))
+			continue;
+		if (mobike_route_source(sa->remote, &src) != 0)
+			continue;	/* no route yet: a later event retries */
+		if (rcs_cmpsa_wop((struct sockaddr *)&src, sa->local) == 0)
+			continue;
+		(void)ikev2_mobike_local_update(sa, (struct sockaddr *)&src);
+	}
+}
+
+/*
+ * rtnetlink delivers an address change as a burst (NEWADDR, routes,
+ * DELADDR...); scan once the burst is processed, on the next scheduler
+ * pass, not once per message.
+ */
+void
+ikev2_mobike_local_changed(void)
+{
+	if (mobike_local_timer != NULL)
+		return;
+	mobike_local_timer = sched_new(0, mobike_local_scan, NULL);
+}
+
+static void
+mobike_push_natd(struct ikev2_payloads *payl, struct ikev2_sa *sa,
+    struct sockaddr *addr, int type)
+{
+	rc_vchar_t *h = natt_create_hash(sa, addr, 1);
+
+	if (h == NULL)
+		return;
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+	    ikev2_notify_payload(0, 0, 0, type, (uint8_t *)h->v, h->l), TRUE);
+	rc_vfree(h);
+}
+
+int
+ikev2_mobike_local_update(struct ikev2_sa *sa, const struct sockaddr *newaddr)
+{
+	struct sockaddr *nl;
+	struct ikev2_payloads *payl;
+	in_port_t *np, *op;
+
+	if (sa == NULL || newaddr == NULL || !mobike_initiator_eligible(sa))
+		return 0;
+	nl = rcs_sadup(newaddr);
+	if (nl == NULL)
+		return 0;
+	np = rcs_getsaport(nl);
+	op = rcs_getsaport(sa->local);
+	if (np && op)
+		*np = *op;	/* same IKE port, new address */
+#ifdef ENABLE_NATT
+	/*
+	 * RFC 4555 s3.5 / RFC 7296 s2.23: the new path may sit behind a
+	 * NAT this update is about to detect, and ESP-in-UDP and the NAT
+	 * binding both live on port 4500, so a NAT-T-enabled IKE SA moves
+	 * to 4500 (both ends) before the update leaves.  A peer with NAT-T
+	 * on listens there; switching early is always allowed.
+	 */
+	if (ikev2_tcp_encap(sa->rmconf) != RCT_BOOL_ON &&
+	    (ikev2_nat_traversal(sa->rmconf) == RCT_BOOL_ON ||
+	    ikev2_nat_traversal(sa->rmconf) == RCT_NATT_FORCE) &&
+	    np && rcs_getsaport(sa->remote) &&
+	    ntohs(*np) != IKEV2_UDP_PORT_NATT) {
+		*np = htons(IKEV2_UDP_PORT_NATT);
+		*rcs_getsaport(sa->remote) = htons(IKEV2_UDP_PORT_NATT);
+	}
+#endif
+	if (ikev2_tcp_encap(sa->rmconf) == RCT_BOOL_ON) {
+		/* RFC 9329: the old stream is bound to the old address; the
+		 * update must leave over a stream from the new one. */
+		struct sockaddr_storage td, ts;
+
+		memcpy(&td, sa->remote, SA_LEN(sa->remote));
+		memcpy(&ts, nl, SA_LEN(nl));
+		*rcs_getsaport((struct sockaddr *)&td) = htons(IKEV2_TCP_PORT);
+		*rcs_getsaport((struct sockaddr *)&ts) = 0;
+		if (isakmp_tcp_open((struct sockaddr *)&td,
+		    (struct sockaddr *)&ts) == NULL) {
+			isakmp_log(sa, nl, sa->remote, 0, PLOG_INTERR, PLOGLOC,
+			    "MOBIKE: no TCP stream from the new address: %s\n",
+			    strerror(errno));
+			rc_free(nl);
+			return 0;
+		}
+	}
+	payl = racoon_malloc(sizeof(*payl));
+	if (payl == NULL) {
+		rc_free(nl);
+		return 0;
+	}
+	sa->mobike_li_prev = sa->local;
+	sa->local = nl;
+	sa->mobike_li_pending = 1;
+	ikev2_payloads_init(payl);
+	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+	    ikev2_notify_payload(0, 0, 0, IKEV2_UPDATE_SA_ADDRESSES, 0, 0),
+	    TRUE);
+	mobike_push_natd(payl, sa, sa->local, IKEV2_NAT_DETECTION_SOURCE_IP);
+	mobike_push_natd(payl, sa, sa->remote,
+	    IKEV2_NAT_DETECTION_DESTINATION_IP);
+	isakmp_log(sa, sa->local, sa->remote, 0, PLOG_INFO, PLOGLOC,
+	    "MOBIKE initiator: local address %s -> %s, sending "
+	    "UPDATE_SA_ADDRESSES\n", rcs_sa2str(sa->mobike_li_prev),
+	    rcs_sa2str(sa->local));
+	ikev2_informational_initiator_notify(sa, payl);
+	return 1;
+}
+
+/* the peer answered the UPDATE_SA_ADDRESSES: commit the move */
+void
+ikev2_mobike_local_reply(struct ikev2_sa *sa, int src_seen, int src_match,
+    int dst_seen, int dst_match)
+{
+	struct sockaddr *nl;
+	int natchg;
+
+	if (sa == NULL || !sa->mobike_li_pending || sa->mobike_li_prev == NULL)
+		return;
+	nl = sa->local;
+	sa->local = sa->mobike_li_prev;	/* what the kernel SAs still use */
+	sa->mobike_li_prev = NULL;
+	sa->mobike_li_pending = 0;
+	natchg = natt_mobike_renat(sa, src_seen, src_match, dst_seen,
+	    dst_match);
+	ikev2_mobike_apply_nat(sa, sa->remote, nl, natchg);
+	rc_free(nl);
+}
+
+/* the update went unanswered: the kernel SAs never left the old address */
+void
+ikev2_mobike_local_abandon(struct ikev2_sa *sa)
+{
+	if (sa == NULL || !sa->mobike_li_pending || sa->mobike_li_prev == NULL)
+		return;
+	rc_free(sa->local);
+	sa->local = sa->mobike_li_prev;
+	sa->mobike_li_prev = NULL;
+	sa->mobike_li_pending = 0;
 }

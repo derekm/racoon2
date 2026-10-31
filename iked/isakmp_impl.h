@@ -315,6 +315,8 @@ extern int isakmp_init(void);
 extern int isakmp_open(void);
 extern void isakmp_close(void);
 extern void isakmp_reopen(void);
+struct tcp_stream;
+extern struct tcp_stream *isakmp_tcp_open(struct sockaddr *, struct sockaddr *);
 extern int isakmp_fdset(fd_set *);
 extern int isakmp_isset(fd_set *);
 

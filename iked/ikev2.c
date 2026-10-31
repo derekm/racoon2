@@ -683,6 +683,8 @@ ikev2_timeout(struct transmit_info *info)
 		if (dead)
 			rc_free(dead);
 	}
+	/* our own address update went unanswered: back to the old one */
+	ikev2_mobike_local_abandon(ike_sa);
 	if (ikev2_mobike_probe_next(ike_sa))
 		return;
 

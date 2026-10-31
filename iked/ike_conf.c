@@ -516,6 +516,7 @@ IKEV2_CONF_ATTR(rc_type, multiple_auth)
 IKEV2_CONF_ATTR(int, auth_lifetime)
 IKEV2_CONF_ATTR(rc_type, honor_auth_lifetime)
 IKEV2_CONF_ATTR(rc_type, ikeauth_child_dh)
+IKEV2_CONF_ATTR(rc_type, mobike_initiate)
 IKEV2_CONF_ATTR(rc_type, cert_intermediates)
 IKEV2_CONF_ATTR(rc_vchar_t *, accept_dns_domain)
 IKEV2_CONF_ATTR(int, redirect_period)
@@ -7097,5 +7098,17 @@ ikev2_eap_responder_method(struct ikev2_sa *sa)
 		 * (via ikev2_auth_depr_refused inside) applies identically. */
 		return ikev2_auth_method_for_alg(sa, alg);
 	}
+	return 0;
+}
+
+/* does any remote (or the default) set mobike_initiate on? */
+int
+ike_conf_any_mobike_initiate(void)
+{
+	struct rcf_remote *r;
+
+	for (r = rcf_remote_head; r; r = r->next)
+		if (ikev2_mobike_initiate(r) == RCT_BOOL_ON)
+			return 1;
 	return 0;
 }

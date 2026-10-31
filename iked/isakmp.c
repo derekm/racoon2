@@ -1348,6 +1348,26 @@ isakmp_tcp_dispatch(rc_vchar_t *pkt, struct sockaddr *remote,
 	return ikev2_input(pkt, remote, local);
 }
 
+/*
+ * RFC 9329: the stream to dst (port 4500) from the source ADDRESS of src
+ * (port 0): reuse a connecting or established one, else start a
+ * non-blocking connect owned by the event loop.  Used by the initial
+ * IKE_SA_INIT and by a MOBIKE initiator moving to a new local address.
+ */
+struct tcp_stream *
+isakmp_tcp_open(struct sockaddr *dst, struct sockaddr *src)
+{
+	struct tcp_stream *ts;
+
+	ts = tcp_srv_find(dst, src);
+	if (ts != NULL)
+		return ts;
+	ts = tcp_stream_connect(dst, src, isakmp_tcp_dispatch, NULL);
+	if (ts != NULL)
+		tcp_srv_register_connecting(ts);
+	return ts;
+}
+
 void
 isakmp_initiate(struct sadb_request_method *callback_method,
 		uint32_t spid,
@@ -1573,21 +1593,12 @@ isakmp_initiate_cont(void *tag, const char *selector_index)
 		 * hand it to the event loop -- do NOT block the daemon polling
 		 * for POLLOUT.  The first IKE_SA_INIT is queued on the stream
 		 * and flushed once it is established. */
-		ts = tcp_srv_find((struct sockaddr *)&tdst,
-				  (struct sockaddr *)&lsrc);
-		if (ts != NULL) {
-			/* reuse the in-flight or established stream */
-		} else {
-			ts = tcp_stream_connect((struct sockaddr *)&tdst,
-						(struct sockaddr *)&lsrc,
-						isakmp_tcp_dispatch, NULL);
-			if (ts != NULL)
-				tcp_srv_register_connecting(ts);
-			else
-				plog(PLOG_INTERR, PLOGLOC, 0,
-				     "IKE-over-TCP initiation to %s failed: %s\n",
-				     rcs_sa2str(rd), strerror(errno));
-		}
+		ts = isakmp_tcp_open((struct sockaddr *)&tdst,
+				     (struct sockaddr *)&lsrc);
+		if (ts == NULL)
+			plog(PLOG_INTERR, PLOGLOC, 0,
+			     "IKE-over-TCP initiation to %s failed: %s\n",
+			     rcs_sa2str(rd), strerror(errno));
 	}
 
 	switch (ike_initiate_kmp(rm_info)) {

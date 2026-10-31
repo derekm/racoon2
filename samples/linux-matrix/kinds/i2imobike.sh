@@ -1,0 +1,221 @@
+#!/bin/sh
+# kinds/i2imobike.sh -- RFC 4555 MOBIKE with iked on BOTH seats: the
+# initiator (mobike_initiate on) changes its own address and must send
+# UPDATE_SA_ADDRESSES; the responder must move its SAs.
+#
+# Two netns joined by a veth: responder 192.0.8.1, initiator 192.0.8.2.
+# The tunnel's inner selectors are 10.8.8.2 (initiator) and 10.8.8.1
+# (responder), on lo, so they do not follow the outer address.  The move:
+# add 192.0.8.4 on the initiator, point its route to the responder at that
+# source, delete 192.0.8.2 (promote_secondaries on, as on any host that
+# keeps a second address when the first goes).
+#
+#   i2imobike-move     plain move: the initiator's rtnetlink event makes
+#                      it send UPDATE_SA_ADDRESSES (INFORMATIONAL from the
+#                      new address on the wire), both seats' ESP SAs move to
+#                      192.0.8.4, none is left on 192.0.8.2, ICMP flows
+#   i2imobike-off      CONTROL, same move with mobike_initiate at its
+#                      default (off): no INFORMATIONAL from the new address
+#                      and the responder's SA stays on 192.0.8.2.  Proves
+#                      the move row does not pass by implicit mobility.
+#   i2imobike-natin    the new address is SNATed to 192.0.8.3: the update's
+#                      NAT_DETECTION must turn UDP encapsulation ON for both
+#                      seats (RFC 4555 s3.5), ICMP flows
+#   i2imobike-natout   the old address was SNATed (espinudp gated), the new
+#                      one is not: encapsulation must go OFF on both seats
+#   i2imobike-tcp      RFC 9329 IKE over TCP on both seats (tcp_encap on):
+#                      the update leaves over a NEW TCP connection from the
+#                      new address (TCP SYN from 192.0.8.4 on the wire), the
+#                      responder answers over that stream and moves ESP
+#                      (UDP-encapsulated 4500/4500 as for every TCP SA)
+kind_i2imobike() {
+	name=$1
+	require_root || return 1
+	[ -x "$SBIN/iked" ] || { log "FAIL: no $SBIN/iked"; return 1; }
+	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
+	command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
+	scen=${name#i2imobike-}
+	row_ns "$name"
+	HR=192.0.8.1; HI=192.0.8.2; HN=192.0.8.3; HM=192.0.8.4
+	TS_R=10.8.8.1; TS_I=10.8.8.2
+	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
+	printf '%s' racoon2-mobike-matrix-0123456789abcdef >"$C/psk.bin"; chmod 600 "$C/psk.bin"
+
+	MI="mobike_initiate on;"; NAT=; TCP=; OLD=$HI; NEW=$HM; I_OUT=$HI
+	case $scen in
+	move) ;;
+	off) MI= ;;
+	natin) NAT="nat_traversal on;"; NEW=$HN ;;
+	natout) NAT="nat_traversal on;"; OLD=$HN; I_OUT=$HN ;;
+	tcp) TCP="tcp_encap on;" ;;
+	*) log "FAIL: unknown scenario $scen"; return 1 ;;
+	esac
+
+	# $1 seat (r|i) $2 my addr $3 peer addr (for peers_ipaddr) $4 my TS $5 peer TS
+	mkconf() {
+		_pas=on; _extra=; [ "$1" = i ] && { _pas=off; _extra=$MI; }
+		_spmif=$SPMIF_R; [ "$1" = i ] && _spmif=$SPMIF_I
+		_peer=$3; [ "$1" = r ] && _peer=ANY
+		cat >"$C/$1.conf" <<EOF
+interface {
+	ike { $( [ "$1" = i ] && echo MY_IPV4 || echo "\"$2\"" ); };
+	spmd { unix "$_spmif"; };
+	spmd_password "$ETC/spmd.pwd";
+};
+resolver { resolver off; };
+remote mb {
+	acceptable_kmp { ikev2; };
+	ikev2 {
+		passive $_pas;
+		my_id fqdn "mobike-$1";
+		peers_id fqdn "mobike-$( [ "$1" = r ] && echo i || echo r )";
+		peers_ipaddr $( [ "$_peer" = ANY ] && echo IP_RW || echo "\"$_peer\"" );
+		kmp_enc_alg { aes256_cbc; };
+		kmp_prf_alg { hmac_sha2_256; };
+		kmp_hash_alg { hmac_sha2_256; };
+		kmp_dh_group { modp2048; };
+		kmp_auth_method { psk; };
+		pre_shared_key "$C/psk.bin";
+		$_extra
+		$NAT
+		$TCP
+	};
+	selector_index sel_in;
+};
+selector sel_out { direction outbound; src "$4"; dst "$5"; policy_index pol; };
+selector sel_in { direction inbound; dst "$4"; src "$5"; policy_index pol; };
+policy pol {
+	action auto_ipsec;
+	remote_index mb;
+	ipsec_mode tunnel;
+	ipsec_index { ipsec_e; };
+	ipsec_level require;
+	peers_sa_ipaddr $( [ "$_peer" = ANY ] && echo IP_RW || echo "\"$_peer\"" );
+	my_sa_ipaddr "$2";
+};
+ipsec ipsec_e { ipsec_sa_lifetime_time 3600 sec; sa_index esp_e; };
+sa esp_e { sa_protocol esp; esp_enc_alg { aes256_cbc; }; esp_auth_alg { hmac_sha2_256; }; };
+EOF
+	}
+	mkconf r "$HR" "$HI" "$TS_R" "$TS_I"
+	mkconf i "$HI" "$HR" "$TS_I" "$TS_R"
+
+	pkill -9 -f "$C/" 2>/dev/null || true
+	rm -f "$SPMIF_R" "$SPMIF_I" "$SOCK_R" "$SOCK_I"
+	for NS in "$NSR" "$NSI"; do
+		ip netns del "$NS" 2>/dev/null || true
+		ip netns add "$NS"; ip netns exec "$NS" ip link set lo up
+	done
+	ip link add "$VR" type veth peer name "$VI"
+	ip link set "$VR" netns "$NSR"; ip link set "$VI" netns "$NSI"
+	ip netns exec "$NSI" sysctl -qw "net.ipv4.conf.$VI.promote_secondaries=1"
+	ip netns exec "$NSR" ip addr add "$HR/24" dev "$VR"; ip netns exec "$NSR" ip link set "$VR" up
+	ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"; ip netns exec "$NSI" ip link set "$VI" up
+	ip netns exec "$NSR" ip addr add "$TS_R/32" dev lo
+	ip netns exec "$NSI" ip addr add "$TS_I/32" dev lo
+	ip netns exec "$NSR" ip route add "$TS_I/32" dev "$VR" src "$TS_R"
+	ip netns exec "$NSI" ip route add "$TS_R/32" dev "$VI" src "$TS_I"
+	# the NAT's public address sits on the link only to answer ARP; the
+	# pinned route source keeps iked's route lookup off it
+	if [ -n "$NAT" ]; then
+		ip netns exec "$NSI" ip addr add "$HN/24" dev "$VI"
+		ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$HI"
+	fi
+	[ "$scen" = natout ] && { ip netns exec "$NSI" iptables -t nat -A POSTROUTING -o "$VI" -s "$HI" -p udp -j SNAT --to-source "$HN" ||
+		{ log "FAIL: SNAT"; return 1; }; }
+	[ "$scen" = natin ] && { ip netns exec "$NSI" iptables -t nat -A POSTROUTING -o "$VI" -s "$HM" -p udp -j SNAT --to-source "$HN" ||
+		{ log "FAIL: SNAT"; return 1; }; }
+
+	( ip netns exec "$NSR" tcpdump -l -nn -i "$VR" -w "$D/wire.pcap" "udp port 500 or udp port 4500 or tcp port 4500" ) >"$D/tcpdump.out" 2>&1 &
+	DUMP=$!
+	for s in r i; do
+		_ns=$NSR; _sp=$SPMIF_R; _so=$SOCK_R; _pr=$PRIVRES_R
+		[ "$s" = i ] && { _ns=$NSI; _sp=$SPMIF_I; _so=$SOCK_I; _pr=$PRIVRES_I; }
+		( ip netns exec "$_ns" "$SBIN/spmd" -F -f "$C/$s.conf" ) >"$D/spmd-$s.log" 2>&1 &
+		i=0; until [ -S "$_sp" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+		( ip netns exec "$_ns" env RACOON2_ADMIN_SOCK="$_so" RACOON2_RESUME_DIR="$_pr" \
+		    "$SBIN/iked" -F -f "$C/$s.conf" -D 0x0001 -l "$D/iked-$s.log" ) >"$D/iked-$s.out" 2>&1 &
+	done
+	i=0; until [ -S "$SOCK_I" ] && [ -S "$SOCK_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+	sleep 1
+	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >"$D/establish.txt" 2>&1 || true
+	efail=0
+	outpol() { ip netns exec "$1" ip xfrm policy 2>/dev/null |
+		awk -v h="src $2/32 dst $3/32" '$0 ~ "^"h {m=1; next} /^src /{m=0} m && /dir out/{f=1} END{exit !f}'; }
+	up=0; i=0
+	while [ "$i" -lt 150 ]; do
+		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $OLD" &&
+		ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HI dst $HR" &&
+		outpol "$NSR" "$TS_R" "$TS_I" && outpol "$NSI" "$TS_I" "$TS_R" && { up=1; break; }
+		i=$((i+1)); sleep 0.2
+	done
+	[ "$up" -eq 1 ] || { log "FAIL: child not up"; efail=1; }
+	if [ "$up" -eq 1 ]; then
+		grep -q "type MOBIKE_SUPPORTED" "$D/iked-i.log" || { log "FAIL: MOBIKE not negotiated"; efail=1; }
+		ip netns exec "$NSI" ping -c3 -i0.3 -W2 -I "$TS_I" "$TS_R" >/dev/null 2>&1 ||
+			{ log "FAIL: ICMP before the move"; efail=1; }
+		if [ "$scen" = natout ]; then
+			ip netns exec "$NSR" ip xfrm state | grep -q 'encap type espinudp' ||
+				{ log "FAIL: not UDP-encapsulated behind the initial NAT"; efail=1; }
+		fi
+		upd0=$(grep -c "UPDATE_SA_ADDRESSES" "$D/iked-r.log")
+		# the move
+		ip netns exec "$NSI" ip addr add "$HM/24" dev "$VI"
+		ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$HM"
+		ip netns exec "$NSI" ip addr del "$HI/24" dev "$VI"
+		moved=0; i=0
+		while [ "$i" -lt 100 ]; do
+			ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $NEW" &&
+			ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HM dst $HR" && { moved=1; break; }
+			i=$((i+1)); sleep 0.2
+		done
+		upd1=$(grep -c "UPDATE_SA_ADDRESSES" "$D/iked-r.log")
+		upi=$(grep -c "MOBIKE initiator: local address" "$D/iked-i.log")
+		log "mobike: initiator updates=$upi responder UPDATE lines $upd0 -> $upd1 moved=$moved"
+		if [ "$scen" = off ]; then
+			# control: give the default-off initiator the same window
+			[ "$upi" -eq 0 ] || { log "FAIL: mobike_initiate off but an update was sent"; efail=1; }
+			[ "$moved" -eq 0 ] || { log "FAIL: SAs moved with mobike_initiate off"; efail=1; }
+			ip netns exec "$NSR" ip xfrm state | grep -q "^src $HR dst $OLD" ||
+				{ log "FAIL: responder SA left $OLD without an update"; efail=1; }
+		else
+			[ "$upi" -ge 1 ] || { log "FAIL: the initiator never sent UPDATE_SA_ADDRESSES"; efail=1; }
+			[ "$upd1" -gt "$upd0" ] || { log "FAIL: the responder saw no UPDATE_SA_ADDRESSES"; efail=1; }
+			[ "$moved" -eq 1 ] || { log "FAIL: SAs did not move to $NEW (responder) / $HM (initiator)"; efail=1; }
+			ip netns exec "$NSR" ip xfrm state | grep -q "^src $HR dst $OLD" &&
+				{ log "FAIL: a responder SA still targets $OLD"; efail=1; }
+			nr=$(ip netns exec "$NSR" ip xfrm state | grep -c 'encap type espinudp')
+			ni=$(ip netns exec "$NSI" ip xfrm state | grep -c 'encap type espinudp')
+			log "mobike: espinudp SAs after the move: responder=$nr initiator=$ni"
+			case $scen in
+			natin|tcp) [ "$nr" -ge 2 ] && [ "$ni" -ge 2 ] ||
+				{ log "FAIL: ESP not UDP-encapsulated on the new path"; efail=1; } ;;
+			*) [ "$nr" -eq 0 ] && [ "$ni" -eq 0 ] ||
+				{ log "FAIL: ESP still UDP-encapsulated on a NAT-free path"; efail=1; } ;;
+			esac
+			if [ "$scen" = tcp ]; then
+				sleep 1; kill "$DUMP" 2>/dev/null; sleep 1
+				syn=$(tcpdump -nn -r "$D/wire.pcap" "src host $NEW and tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0" 2>/dev/null | wc -l)
+				log "mobike: TCP SYNs from $NEW=$syn"
+				[ "$syn" -ge 1 ] || { log "FAIL: no TCP connection from the new address"; efail=1; }
+				# RFC 9329 s6: the reply must go back over the stream the
+				# update arrived on (from the new address), not the old one
+				grep -q "routed over stream to $NEW\\[" "$D/iked-r.log" ||
+					{ log "FAIL: the responder did not answer over the new TCP stream"; efail=1; }
+			fi
+			ip netns exec "$NSI" ping -c3 -i0.3 -W2 -I "$TS_I" "$TS_R" >/dev/null 2>&1 ||
+				{ log "FAIL: ICMP after the move"; efail=1
+				  for n in "$NSR" "$NSI"; do ip netns exec "$n" ip -s xfrm state; ip netns exec "$n" cat /proc/net/xfrm_stat; done >"$D/after-move.txt" 2>&1; }
+		fi
+	fi
+	for s in r i; do pgrep -f -- "iked -F -f $C/$s.conf" >/dev/null 2>&1 || { log "FAIL: iked ($s) exited"; efail=1; }; done
+	grep -h "ERROR: AddressSanitizer\|runtime error:" "$D"/iked-*.out 2>/dev/null | head -3 | while read -r l; do log "FAIL: $l"; done
+	grep -qh "ERROR: AddressSanitizer\|runtime error:" "$D"/iked-*.out 2>/dev/null && efail=1
+	kill "$DUMP" 2>/dev/null || true
+	pkill -9 -f "$C/" 2>/dev/null || true
+	sleep 1
+	ip netns del "$NSR" 2>/dev/null || true
+	ip netns del "$NSI" 2>/dev/null || true
+	rm -rf "$PRIVRES_R" "$PRIVRES_I"
+	return $efail
+}

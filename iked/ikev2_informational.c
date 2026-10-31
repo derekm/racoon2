@@ -807,6 +807,8 @@ ikev2_info_init_notify_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 	struct ikev2_header *ikehdr;
 	struct ikev2_payload_header *p;
 	int type;
+	int li_src_seen = 0, li_src_match = 0;
+	int li_dst_seen = 0, li_dst_match = 0;
 
 	/* HDR, SK {[N,] [D,] [CP], ... } */
 
@@ -830,6 +832,26 @@ ikev2_info_init_notify_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		case IKEV2_PAYLOAD_ENCRYPTED:
 			break;
 		case IKEV2_PAYLOAD_NOTIFY:
+			/* reply to our own UPDATE_SA_ADDRESSES: the NAT state
+			 * on the new path (RFC 4555 s3.5) */
+			if (ike_sa->mobike_li_pending) {
+				struct ikev2payl_notify *nn =
+				    (struct ikev2payl_notify *)p;
+				int nt = get_notify_type(nn), m;
+
+				if (nt == IKEV2_NAT_DETECTION_SOURCE_IP &&
+				    (m = natt_natd_match(ike_sa, nn,
+				    ike_sa->remote)) >= 0) {
+					li_src_seen = 1;
+					li_src_match |= m;
+				} else if (nt ==
+				    IKEV2_NAT_DETECTION_DESTINATION_IP &&
+				    (m = natt_natd_match(ike_sa, nn,
+				    ike_sa->local)) >= 0) {
+					li_dst_seen = 1;
+					li_dst_match |= m;
+				}
+			}
 			if (ikev2_process_notify(ike_sa, p, TRUE) != 0) {
 				ikev2_abort(ike_sa, ECONNREFUSED);
 				/* abort marked the SA DYING then DEAD (and
@@ -873,6 +895,9 @@ ikev2_info_init_notify_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 			break;
 		}
 	}
+	if (ike_sa->mobike_li_pending)
+		ikev2_mobike_local_reply(ike_sa, li_src_seen, li_src_match,
+		    li_dst_seen, li_dst_match);
 	if (ike_sa->cookie2_matched && ike_sa->mobike_rr_pending &&
 	    ike_sa->mobike_rr_prev && ike_sa->remote) {
 		struct sockaddr *probe = ike_sa->remote;

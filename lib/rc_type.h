@@ -499,6 +499,13 @@ struct rcf_kmp {
 	 * so strict peers (Libreswan) refuse that child; off = RFC shape.
 	 * Exists so iked<->iked rows can reproduce the Apple initiator. */
 	rc_type ikeauth_child_dh;
+	/* mobike_initiate (on|off, default off): RFC 4555 s3.5 on the
+	 * ORIGINAL INITIATOR of a MOBIKE IKE SA.  When the source address the
+	 * kernel would use to reach the peer changes (rtnetlink address
+	 * event), send UPDATE_SA_ADDRESSES with fresh NAT_DETECTION from the
+	 * new address and, on the reply, move the IKE SA and every Child SA.
+	 * Off = iked only answers a peer's MOBIKE updates. */
+	rc_type mobike_initiate;
 	};
 
 /* selector info */

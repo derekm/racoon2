@@ -1405,6 +1405,8 @@ ikev2_dispose_sa(struct ikev2_sa *sa)
 		rc_vfree(sa->cookie2_sent);
 	if (sa->mobike_rr_prev)
 		rc_free(sa->mobike_rr_prev);
+	if (sa->mobike_li_prev)
+		rc_free(sa->mobike_li_prev);
 	if (sa->qcd_token_peer)
 		rc_vfree(sa->qcd_token_peer);
 
