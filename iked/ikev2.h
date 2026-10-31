@@ -241,7 +241,10 @@ struct ikev2transform {
  * round index that encoding reserves (types 6 .. 6+6); keep the range checks
  * in ike_conf.c in terms of it rather than a bare +6. */
 #define	IKEV2_ADDKE_MAX_ROUND		6
-/*	Reserved to IANA		7-240 */
+/*	6-12	Additional Key Exchange 1-7 (RFC 9370)
+ *	13	Key Wrap Algorithm (RFC 9838, G-IKEv2; not used by iked)
+ *	14	Group Controller Authentication Method (RFC 9838; not used)
+ *	15-240	Unassigned (IANA IKEv2 registry) */
 #define	IKEV2TRANSFORM_TYPE_PRIVATE	241
 /* 	Private use			241-255 */
 
