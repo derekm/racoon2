@@ -245,7 +245,7 @@ EOF
 		( i2i_lw_ns_exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
 		    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
 		    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
-		    --logfile "$D/pluto.log" --stderrlog ) >"$D/pluto.out" 2>&1 &
+		    --logfile "$D/pluto.log" ) >"$D/pluto.out" 2>&1 &
 		lwwhack() { ip netns exec "$NSI" "$I2I_LW_WHACK" --ctlsocket "$C/lw-run/pluto.ctl" "$@"; }
 		i=0; until lwwhack --status >/dev/null 2>&1 || [ "$i" -ge 30 ]; do sleep 1; i=$((i+1)); done
 		[ -S "$C/lw-run/pluto.ctl" ] || { log "FAIL: pluto control socket not under $C/lw-run"; lwp_cleanup; return 1; }
@@ -380,6 +380,7 @@ EOF
 	if [ "$efail" -ne 0 ]; then
 		log "--- wire.tsv ---"; cat "$D/wire.tsv" 2>/dev/null | tail -20
 		log "--- peer log ---"; tail -25 "$PEERLOG" 2>/dev/null
+		[ -s "$PEERLOG" ] || { log "--- (peer log empty/missing) pluto.out ---"; tail -15 "$D/pluto.out" 2>/dev/null; ls -l "$D" 2>/dev/null; }
 		log "--- iked.log ---"; grep -aiE 'error|fail|rekey|delete|frag' "$D/iked.log" 2>/dev/null | tail -15
 		return 1
 	fi
