@@ -27,6 +27,20 @@
 #
 # Classical ESP (no ADDKE).  gate=box: box-verified before a container/CI
 # admission.
+# Keyed ESP SAs in a netns.  A bare 'proto esp' count also sees larval
+# states that are not an SA at all: the kernel ACQUIRE placeholder
+# (spi 0, created when traffic -- e.g. the harness's own ICMP probe --
+# hits the policy after the drain) and iked's GETSPI reservation.
+# "Re-established" means keys were installed; the full SAD is kept in
+# $D for the record.
+drain_esp_keyed() {
+	ip netns exec "$1" ip xfrm state 2>/dev/null | awk '
+		/^src /{ if (esp && key) n++; esp=0; key=0 }
+		/proto esp /{ esp=1 }
+		/^[ \t]+(enc|aead|auth|auth-trunc) /{ key=1 }
+		END{ if (esp && key) n++; print n+0 }'
+}
+
 kind_i2ike_drain() {
 	name=$1
 	require_root || return 1
@@ -161,7 +175,7 @@ EOF
 	# 4b: drain-sa SET must tear down the established IKE_SA locally
 	# (gw is positional: a "-to" flag would be eaten by ikedctl's
 	# top-level getopt before the drain-sa branch runs).
-	R_BEFORE=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+	R_BEFORE=$(drain_esp_keyed "$NSR")
 	"$SBIN/ikedctl" -s "$SOCK_R" drain-sa "$HI" "$DGW" \
 	    >"$D/drain-sa.out" 2>&1
 	log "drain-sa exit=$? (out: $(cat "$D/drain-sa.out" 2>/dev/null | tr '\n' ' '))"
@@ -187,7 +201,7 @@ EOF
 	R_AFTER=-1
 	i=0
 	while [ "$i" -lt 30 ]; do
-		R_AFTER=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+		R_AFTER=$(drain_esp_keyed "$NSR")
 		[ "${R_AFTER:-1}" -eq 0 ] && break
 		i=$((i+1)); sleep 1
 	done
@@ -229,7 +243,8 @@ EOF
 		fi
 		i=$((i+1)); sleep 1
 	done
-	R_ESP2=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'proto esp')
+	ip netns exec "$NSR" ip xfrm state >"$D/resp-xfrm-final.txt" 2>&1
+	R_ESP2=$(drain_esp_keyed "$NSR")
 	if [ "$NOACC" = 1 ]; then
 		_rc=0
 		[ "$followed" -eq 0 ] || { log "FAIL: accept_redirect off but the initiator re-targeted to $DGW"; _rc=1; }
