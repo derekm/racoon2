@@ -1943,7 +1943,16 @@ run_nat_row() {
 		jexec $jn ls -l /dev/pf 2>&1 || true
 		jexec $jn pfctl -vvnf /tmp/freeb-nat-pf.conf 2>&1 | head -20
 		jexec $jn pfctl -vv -f /tmp/freeb-nat-pf.conf 2>&1 | head -20
-		jexec $jn pfctl -s info 2>&1 | head -8
+		jexec $jn pfctl -s info 2>&1 | head -3
+		# which ioctl/netlink call refuses the transaction, and errno
+		jexec $jn truss -f pfctl -f /tmp/freeb-nat-pf.conf 2>&1 |
+		    grep -E 'ioctl|socket|sendmsg|recvmsg|ERR' | tail -25
+		# does the filter-only or nat-only load succeed?
+		printf 'pass all\n' >/tmp/freeb-pass-pf.conf
+		jexec $jn pfctl -R -f /tmp/freeb-nat-pf.conf; echo "pfctl -R rc=$?"
+		jexec $jn pfctl -N -f /tmp/freeb-nat-pf.conf; echo "pfctl -N rc=$?"
+		jexec $jn pfctl -f /tmp/freeb-pass-pf.conf; echo "pass-only rc=$?"
+		pfctl -s info >/dev/null 2>&1; echo "host pfctl rc=$?"
 		echo "FAIL freebsd-vnet $_name (pf in the NAT jail)"; return 1
 	fi
 	install -d -m 0755 /tmp/freeb
