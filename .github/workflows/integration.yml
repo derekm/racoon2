@@ -61,7 +61,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
-            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \
+            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-swanctl iproute2 \
             libsystemd-dev iputils-ping xxd iptables conntrack
 
       # Ubuntu ships enforcing AppArmor profiles for charon and swanctl
@@ -166,7 +166,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
-            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan iproute2 \
+            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-swanctl iproute2 \
             libsystemd-dev iputils-ping xxd iptables conntrack
           sudo modprobe af_key || {
             sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" &&
