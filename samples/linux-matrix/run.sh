@@ -57,7 +57,7 @@ for _xk in ${R2_EXTRA_KINDS:-}; do . "$_xk"; done
 
 FILTER=
 REBUILD=
-R2_SRC=${R2_SRC:-/home/derek/src/racoon2}
+R2_SRC=${R2_SRC:-$(CDPATH= cd -- "$HERE/../.." && pwd)}
 
 crstrip() { printf '%s' "$1" | tr -d '\r'; }
 

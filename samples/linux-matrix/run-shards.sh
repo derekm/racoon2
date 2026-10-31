@@ -62,7 +62,7 @@ while [ $# -gt 0 ]; do
 	*) echo "unknown arg: $1" >&2; exit 2 ;;
 	esac
 done
-[ -n "$SRC" ] || SRC=${R2_SRC:-/home/derek/src/racoon2}
+[ -n "$SRC" ] || SRC=${R2_SRC:-$(CDPATH= cd -- "$HERE/../.." && pwd)}
 export R2_SRC=$SRC
 
 # sanity: M must be a positive integer

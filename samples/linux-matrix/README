@@ -7,7 +7,7 @@ Lived adhoc runs from this tree, as case rows. Not pytest.
 	./run.sh --rebuild xfrm --prefix /usr/local/racoon2
 
 `--rebuild` runs `./configure` only if there is no Makefile in `R2_SRC`
-(default `/home/derek/src/racoon2`). It does **not** `systemctl enable
+(default: the source tree this script lives in, `../..`). It does **not** `systemctl enable
 racoon2.target`. IKE rows with an empty `workers` cell use live
 `racoon2-iked`. A numeric cell stops `racoon2-iked`, flushes leftover
 SPD, restarts `racoon2-spmd` (IKE UDP bypass cache), flushes boot SPD,

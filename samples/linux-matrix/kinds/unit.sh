@@ -2,7 +2,7 @@
 # kinds/unit.sh — in-tree check_PROGRAMS. $1 = case name.
 kind_unit() {
 	name=$1
-	src=${R2_SRC:-/home/derek/src/racoon2}
+	src=${R2_SRC:-$(CDPATH= cd -- "$HERE/../.." && pwd)}
 	case $name in
 	kmtest)
 		make -C "$src/lib" kmtest
