@@ -218,7 +218,9 @@ EOF
 	    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
 	    --logfile "$D/lw-pluto.log" ) >"$D/lw-pluto.out" 2>&1 &
 	LWPLUTO=$!
-	LWWHACK=$(command -v whack || echo /usr/libexec/ipsec/whack)
+	# I2I_LW_WHACK honours I2I_LW_ROOT (kinds/i2i_peer.sh); a bare
+	# /usr/libexec fallback skipped the readiness wait and lwir's initiate.
+	LWWHACK=$I2I_LW_WHACK; [ -x "$LWWHACK" ] || LWWHACK=$(command -v whack || echo "$I2I_LW_WHACK")
 	i=0
 	while [ "$i" -lt 30 ]; do
 		if ip netns exec "$NSI" "$LWWHACK" --ctlsocket "$C/lw-run/pluto.ctl" --status >/dev/null 2>&1; then break; fi

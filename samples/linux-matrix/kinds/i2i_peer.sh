@@ -60,9 +60,19 @@ I2I_LW_WHACK=${I2I_LW_WHACK:-/usr/libexec/ipsec/whack}
 i2i_lw_ns_exec() {
 	_lns=$1; shift
 	if [ -n "${I2I_LW_ROOT:-}" ]; then
+		# The unpacked tree's own shared libraries (e.g. addconn's
+		# libunbound) are overlaid on the multiarch lib dir in the same
+		# private mount ns: pluto execs addconn with a sanitised
+		# environment, so LD_LIBRARY_PATH does not reach it.
 		ip netns exec "$_lns" unshare -m --propagation private sh -c \
-		    'mount --bind "$1" /usr/libexec && shift && exec "$@"' sh \
-		    "$I2I_LW_ROOT/usr/libexec" "$@"
+		    'mount --bind "$1" /usr/libexec || exit 1
+		     for _ld in "$2"/usr/lib/*-linux-gnu; do
+			[ -d "$_ld" ] || continue
+			_sys=/usr/lib/${_ld##*/}
+			[ -d "$_sys" ] && mount -t overlay overlay -o "lowerdir=$_ld:$_sys" "$_sys"
+		     done
+		     shift 2; exec "$@"' sh \
+		    "$I2I_LW_ROOT/usr/libexec" "$I2I_LW_ROOT" "$@"
 	else
 		ip netns exec "$_lns" "$@"
 	fi
