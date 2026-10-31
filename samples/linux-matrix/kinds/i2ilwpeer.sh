@@ -99,6 +99,20 @@ kind_i2ilwpeer() {
 	# inbound), so natt rows are -r only.  iked knows the peer by its
 	# public (post-NAT) address, as any NAT-T responder does.
 	HN=192.0.7.3; PEER_OUTER=$HI; NAT_TXT=
+	# mobike: charon (initiator, mobike=yes) moves its outer address from
+	# $HI to $HM; the inner $HI/32 TS stays (now on lo).  RFC 4555: it
+	# must send UPDATE_SA_ADDRESSES and iked must move the ESP SAs.  Only
+	# the peer-initiated role (iked is a MOBIKE responder), charon only
+	# (pluto migrates only modecfg clients).
+	# The tunnel's inner TS: the outer addresses, except for mobike, where
+	# charon re-derives a host-to-host TS from its new address (that
+	# follows the host, not the tunnel); a road warrior's inner network is
+	# separate from its roaming outer address, so use 10.7.7.0/24 there.
+	HM=192.0.7.4; SS_LOCAL=$HI; SS_MOBIKE=no; TS_I=$HI; TS_R=$HR
+	if [ "$scen" = mobike ]; then
+		[ "$role" = r ] && [ "$PEER" = ss ] || { log "FAIL: mobike rows are sspeer -r only"; return 1; }
+		SS_LOCAL=%any; SS_MOBIKE=yes; TS_I=10.7.7.2; TS_R=10.7.7.1
+	fi
 	if [ "$scen" = natt ]; then
 		[ "$role" = r ] || { log "FAIL: natt rows are responder-only (-r)"; return 1; }
 		command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
@@ -135,8 +149,8 @@ remote lw {
 	};
 	selector_index sel_in;
 };
-selector sel_out { direction outbound; src "$HR"; dst "$HI"; policy_index pol; };
-selector sel_in { direction inbound; dst "$HR"; src "$HI"; policy_index pol; };
+selector sel_out { direction outbound; src "$TS_R"; dst "$TS_I"; policy_index pol; };
+selector sel_in { direction inbound; dst "$TS_R"; src "$TS_I"; policy_index pol; };
 policy pol {
 	action auto_ipsec;
 	remote_index lw;
@@ -190,8 +204,9 @@ EOF
 connections {
 	lwp {
 		version = 2
-		local_addrs = $HI
+		local_addrs = $SS_LOCAL
 		remote_addrs = $HR
+		mobike = $SS_MOBIKE
 		proposals = aes256-sha256-modp2048
 		fragmentation = yes
 		rekey_time = 0
@@ -205,8 +220,8 @@ connections {
 		}
 		children {
 			lwpch {
-				local_ts = $HI/32
-				remote_ts = $HR/32
+				local_ts = $TS_I/32
+				remote_ts = $TS_R/32
 				esp_proposals = aes256-sha256
 				rekey_time = 0
 				mode = tunnel
@@ -235,6 +250,12 @@ EOF
 	ip link set "$VR" netns "$NSR"; ip link set "$VI" netns "$NSI"
 	ip netns exec "$NSR" ip addr add "$HR/24" dev "$VR"; ip netns exec "$NSR" ip link set "$VR" up
 	ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"; ip netns exec "$NSI" ip link set "$VI" up
+	if [ "$scen" = mobike ]; then
+		ip netns exec "$NSR" ip addr add "$TS_R/32" dev lo
+		ip netns exec "$NSI" ip addr add "$TS_I/32" dev lo
+		ip netns exec "$NSR" ip route add "$TS_I/32" dev "$VR" src "$TS_R"
+		ip netns exec "$NSI" ip route add "$TS_R/32" dev "$VI" src "$TS_I"
+	fi
 	if [ "$scen" = natt ]; then
 		ip netns exec "$NSI" ip addr add "$HN/24" dev "$VI"
 		ip netns exec "$NSI" iptables -t nat -A POSTROUTING -o "$VI" -s "$HI" -p udp -j SNAT --to-source "$HN" ||
@@ -311,7 +332,7 @@ EOF
 	efail=0
 	[ "$up" -eq 1 ] || { log "FAIL: child not UP (iked esp=${re:-0} pluto esp=${le:-0})"; efail=1; }
 	if [ "$up" -eq 1 ]; then
-		ip netns exec "$NSR" ping -c3 -i0.3 -W2 "$HI" >/dev/null 2>&1 ||
+		ip netns exec "$NSR" ping -c3 -i0.3 -W2 -I "$TS_R" "$TS_I" >/dev/null 2>&1 ||
 			{ log "FAIL: ICMP through the tunnel"; efail=1; }
 		# Sum the "N(packets)" counters under "lifetime current" for
 		# iked's outbound SAs (src $HR, dst the peer outer address): ICMP must have been encrypted.
@@ -392,6 +413,27 @@ EOF
 		[ "$gone" -eq 1 ] || { log "FAIL: iked kept ${re:-?} ESP SAs after the peer's DELETE"; efail=1; }
 		;;
 	psk) ;;
+	mobike)
+		n37a=$(awk -F'\t' '$1=="in" && $2==37' "$D/wire.tsv" | wc -l)
+		ip netns exec "$NSI" ip addr add "$HM/24" dev "$VI"
+		ip netns exec "$NSI" ip addr del "$HI/24" dev "$VI"
+		ip netns exec "$NSI" ip route replace "$TS_R/32" dev "$VI" src "$TS_I"
+		moved=0; i=0
+		while [ "$i" -lt 30 ]; do
+			ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HM" && { moved=1; break; }
+			i=$((i+1)); sleep 1
+		done
+		n37b=$(awk -F'\t' '$1=="in" && $2==37' "$D/wire.tsv" | wc -l)
+		upd=$(grep -c 'UPDATE_SA_ADDRESSES\|update_sa_address' "$D/iked.log" 2>/dev/null)
+		log "mobike: peer INFORMATIONAL before=$n37a after=$n37b iked UPDATE_SA_ADDRESSES lines=$upd moved=$moved"
+		[ "$n37b" -gt "$n37a" ] || { log "FAIL: no INFORMATIONAL from charon after the address change"; efail=1; }
+		[ "$moved" -eq 1 ] || { log "FAIL: iked's outbound ESP SA never moved to $HM"; efail=1; }
+		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HI" &&
+			{ log "FAIL: an outbound SA still targets the old address $HI"; efail=1; }
+		ip netns exec "$NSR" ping -c3 -i0.3 -W2 -I "$TS_R" "$TS_I" >/dev/null 2>&1 ||
+			{ log "FAIL: ICMP after the MOBIKE move"; efail=1
+			  for n in "$NSR" "$NSI"; do ip netns exec "$n" ip -s xfrm state; ip netns exec "$n" ip xfrm policy; ip netns exec "$n" ip route; ip netns exec "$n" cat /proc/net/xfrm_stat; ip netns exec "$n" nstat -az 2>/dev/null | grep -iE "InNoRoutes|InAddrErr|Discard|Drop" ; done >"$D/mobike-xfrm.txt" 2>&1; }
+		;;
 	natt)
 		ip netns exec "$NSR" ip xfrm state >"$D/resp-xfrm.txt" 2>&1
 		nenc=$(grep -c 'encap type espinudp' "$D/resp-xfrm.txt")
@@ -400,7 +442,7 @@ EOF
 		log "natt: iked SAs with espinudp=$nenc outbound to $HN=$nout SNAT pkts=${n500:-?}"
 		[ "$nenc" -ge 2 ] || { log "FAIL: iked ESP SAs are not UDP-encapsulated (RFC 3948) behind the NAT"; efail=1; }
 		[ "$nout" -ge 1 ] || { log "FAIL: iked's outbound SA does not target the post-NAT address $HN"; efail=1; }
-		ip netns exec "$NSR" ping -c3 -i0.3 -W2 "$HI" >/dev/null 2>&1 ||
+		ip netns exec "$NSR" ping -c3 -i0.3 -W2 -I "$TS_R" "$TS_I" >/dev/null 2>&1 ||
 			{ log "FAIL: ICMP across the NAT-T child"; efail=1; }
 		;;
 	*) log "FAIL: unknown scenario '$scen'"; efail=1 ;;

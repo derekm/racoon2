@@ -299,6 +299,7 @@ lwpeer-delete-r	i2ilwpeer	pass	0	DELETE INTEROP with pluto as IKE INITIATOR: wha
 sspeer-psk-i	i2ilwpeer	pass	0	PSK IKE_SA + child, racoon2 iked INITIATOR -> strongSwan charon RESPONDER (kinds/i2ilwpeer.sh charon seat; private swanctl root + vici socket, private netns). Gate: ESP >= 2 both sides, ICMP with outbound ESP packet counter >= 3, charon 'CHILD_SA ch{N} established'.	-	-
 sspeer-psk-r	i2ilwpeer	pass	0	PSK, charon INITIATOR (swanctl --initiate) -> iked RESPONDER. Same gates as sspeer-psk-i.	-	-
 sspeer-natt-r	i2ilwpeer	pass	0	NAT-T INTEROP with charon behind a source NAT in its own netns; same gates as lwpeer-natt-r.	-	-
+sspeer-mobike-r	i2ilwpeer	pass	0	RFC 4555 MOBIKE INTEROP: charon initiator (mobike=yes) moves its outer address 192.0.7.2 -> 192.0.7.4 (inner TS unchanged); it must send UPDATE_SA_ADDRESSES (INFORMATIONAL on the wire), iked must move its outbound ESP SA to the new address with none left on the old, ICMP flows.	-	-
 sspeer-frag-i	i2ilwpeer	pass	0	RFC 7383 INTEROP with charon: iked initiator, long FQDN IDi + multi-transform ESP push IKE_AUTH past 576 octets. Gate: >= 2 SKF IKE_AUTH datagrams from iked, none unfragmented, child UP.	-	-
 sspeer-frag-r	i2ilwpeer	pass	0	RFC 7383 INTEROP, charon initiator -> iked responder fragmenting its IKE_AUTH response. Same gates.	-	-
 sspeer-childrekey-i	i2ilwpeer	pass	0	Child rekey INTEROP with charon (rekey_time=0 on charon, iked ipsec_sa_lifetime_time 30 s drives it). Gate: exch 36 on the wire, new ESP SPI pair, no old SPI left, IKE SPIs unchanged, ICMP flows.	-	-
