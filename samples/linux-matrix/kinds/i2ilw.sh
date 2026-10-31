@@ -113,7 +113,7 @@ EOF
 	mkdir -p "$C/lw-etc" "$C/lw-nss"
 	cat > "$C/lw-etc/ipsec.conf" <<EOF
 config setup
-	logfile=/tmp/$name-ipsec.log
+	logfile=$D/init-pluto.log
 	protostack=netkey
 	nssdir=$C/lw-nss
 	ipsecdir=$C/lw-etc
