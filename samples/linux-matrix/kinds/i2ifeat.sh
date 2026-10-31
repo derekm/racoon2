@@ -343,6 +343,13 @@ feat_row() {
 		esac
 		[ "$PEER_R" = charon ] && CH_CONN='		reauth_time = 30s
 		over_time = 10s'
+		# charon initiator: it reauthenticates at AUTH_LIFETIME minus
+		# over_time and deletes the IKE_SA at AUTH_LIFETIME.  Its default
+		# over_time (10% of rekey_time, ~24 min) exceeds 30 s, so both
+		# timers landed on the same second and the delete could win
+		# ("unable to reauthenticate in DELETING state").  A margin that
+		# fits the lifetime, as with any real AUTH_LIFETIME:
+		[ "$PEER" = charon ] && CH_CONN='		over_time = 10s'
 		;;
 	feat-nbns-*)
 		I_CFG='		request { ip4_nbns; };'
