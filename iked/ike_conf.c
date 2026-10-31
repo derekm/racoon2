@@ -6037,6 +6037,17 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 		rm_index = strdup(rc_vmem2str(rmconf->rm_index));
 
 	kmp = rmconf->ikev2;
+#ifdef WITH_KM_R2DP
+	/* The r2dp forwarder has no ESP-in-UDP/TCP pinning for an RFC 9329
+	 * IKE-over-TCP SA (ikev2_sadb_natt_tcp_pin needs the kernel NAT-T
+	 * state); refuse at load instead of failing every child at install. */
+	if (kmp && kmp->tcp_encap == RCT_BOOL_ON) {
+		++*err;
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "remote %s ikev2 tcp_encap on is not supported with the "
+		     "r2dp KM backend\n", rm_index);
+	}
+#endif
 	if (is_default_clause) {
 		if (!kmp)
 			goto done;

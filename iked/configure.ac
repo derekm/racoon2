@@ -447,6 +447,7 @@ if test x"$with_km_backend" = xr2dp; then
 		[AC_MSG_ERROR([libr2dp not found; pass --with-r2dp=PREFIX])])
 	r2dp_libdir=`$PKG_CONFIG --variable=libdir r2dp`
 	LIBS="$LIBS $R2DP_LIBS${r2dp_libdir:+ -Wl,-rpath,$r2dp_libdir}"
+	AC_DEFINE(WITH_KM_R2DP, 1, [define when the KM backend is r2dp])
 fi
 
 AC_CONFIG_FILES([Makefile iked.8])
