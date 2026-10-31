@@ -308,3 +308,5 @@ sspeer-ikerekey-i	i2ilwpeer	pass	0	IKE_SA rekey INTEROP with charon (iked kmp_sa
 sspeer-ikerekey-r	i2ilwpeer	pass	0	IKE_SA rekey with charon as IKE initiator, iked as responder drives the rekey. Same gates.	-	-
 sspeer-delete-i	i2ilwpeer	pass	0	DELETE INTEROP: charon responder swanctl --terminate --ike; INFORMATIONAL from charon on the wire and iked removes every ESP SA within 15 s.	-	-
 sspeer-delete-r	i2ilwpeer	pass	0	DELETE INTEROP with charon as IKE initiator. Same gates.	-	-
+sspeer-mobikenatin-r	i2ilwpeer	pass	0	RFC 4555 3.5 MOBIKE INTO a NAT: charon moves 192.0.7.2 -> 192.0.7.4, which is SNATed to 192.0.7.3. The NAT_DETECTION in UPDATE_SA_ADDRESSES must turn on UDP encapsulation: iked ESP SAs move to 192.0.7.3 as espinudp, ICMP flows, xfrm_stat clean.	-	-
+sspeer-mobikenatout-r	i2ilwpeer	pass	0	RFC 4555 3.5 MOBIKE OUT of a NAT: charon starts at 192.0.7.2 SNATed to 192.0.7.3 (espinudp gated) and moves to 192.0.7.4 with no NAT. The NAT_DETECTION in UPDATE_SA_ADDRESSES must turn UDP encapsulation off: plain ESP to 192.0.7.4, ICMP flows, xfrm_stat clean.	-	-

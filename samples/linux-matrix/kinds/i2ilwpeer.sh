@@ -109,10 +109,20 @@ kind_i2ilwpeer() {
 	# follows the host, not the tunnel); a road warrior's inner network is
 	# separate from its roaming outer address, so use 10.7.7.0/24 there.
 	HM=192.0.7.4; SS_LOCAL=$HI; SS_MOBIKE=no; TS_I=$HI; TS_R=$HR
-	if [ "$scen" = mobike ]; then
+	# mobikenatin / mobikenatout: the same move, but INTO a NAT (the new
+	# address $HM is SNATed to $HN) or OUT of one (the old address $HI was
+	# SNATed to $HN, the new one is not).  RFC 4555 3.5: the NAT_DETECTION
+	# notifies in UPDATE_SA_ADDRESSES decide whether ESP is UDP-encapsulated
+	# on the new path, so iked must turn encap on / off with the move.
+	MB_OLD=$HI; MB_NEW=$HM
+	case $scen in mobike|mobikenatin|mobikenatout)
 		[ "$role" = r ] && [ "$PEER" = ss ] || { log "FAIL: mobike rows are sspeer -r only"; return 1; }
 		SS_LOCAL=%any; SS_MOBIKE=yes; TS_I=10.7.7.2; TS_R=10.7.7.1
-	fi
+		command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
+		case $scen in mobikenat*) NAT_TXT="nat_traversal on;" ;; esac
+		[ "$scen" = mobikenatin ] && MB_NEW=$HN
+		[ "$scen" = mobikenatout ] && { MB_OLD=$HN; PEER_OUTER=$HN; } ;;
+	esac
 	if [ "$scen" = natt ]; then
 		[ "$role" = r ] || { log "FAIL: natt rows are responder-only (-r)"; return 1; }
 		command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
@@ -250,11 +260,22 @@ EOF
 	ip link set "$VR" netns "$NSR"; ip link set "$VI" netns "$NSI"
 	ip netns exec "$NSR" ip addr add "$HR/24" dev "$VR"; ip netns exec "$NSR" ip link set "$VR" up
 	ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"; ip netns exec "$NSI" ip link set "$VI" up
-	if [ "$scen" = mobike ]; then
+	case $scen in mobike*)
+		# Deleting the old primary address must not take the new
+		# (secondary) one with it: Ubuntu runners default to
+		# promote_secondaries=0, which made charon see both addresses
+		# vanish ("no route found ... MOBIKE update deferred").
+		ip netns exec "$NSI" sysctl -qw "net.ipv4.conf.$VI.promote_secondaries=1"
 		ip netns exec "$NSR" ip addr add "$TS_R/32" dev lo
 		ip netns exec "$NSI" ip addr add "$TS_I/32" dev lo
 		ip netns exec "$NSR" ip route add "$TS_I/32" dev "$VR" src "$TS_R"
-		ip netns exec "$NSI" ip route add "$TS_R/32" dev "$VI" src "$TS_I"
+		ip netns exec "$NSI" ip route add "$TS_R/32" dev "$VI" src "$TS_I" ;;
+	esac
+	if [ "$scen" = mobikenatout ]; then
+		# Start behind the NAT: everything from $HI leaves as $HN.
+		ip netns exec "$NSI" ip addr add "$HN/24" dev "$VI"
+		ip netns exec "$NSI" iptables -t nat -A POSTROUTING -o "$VI" -s "$HI" -p udp -j SNAT --to-source "$HN" ||
+			{ log "FAIL: SNAT in the peer netns"; return 1; }
 	fi
 	if [ "$scen" = natt ]; then
 		ip netns exec "$NSI" ip addr add "$HN/24" dev "$VI"
@@ -313,6 +334,10 @@ EOF
 		if [ "$PEER" = lw ]; then lwwhack --name r2 --terminate
 		else ip netns exec "$NSI" "$I2I_SWANCTL_BIN" --terminate --ike lwp --timeout 10; fi
 	}
+	lwp_outpol() {	# <netns> <src> <dst>: an outbound ESP policy src/32 -> dst/32
+		ip netns exec "$1" ip xfrm policy 2>/dev/null |
+			awk -v h="src $2/32 dst $3/32" '$0 ~ "^"h {m=1; next} /^src /{m=0} m && /dir out/{f=1} END{exit !f}'
+	}
 	PEERLOG=$D/pluto.log; [ "$PEER" = ss ] && PEERLOG=$D/charon.log
 
 	if [ "$role" = i ]; then
@@ -329,6 +354,15 @@ EOF
 		if [ "${re:-0}" -ge 2 ] && [ "${le:-0}" -ge 2 ]; then up=1; break; fi
 		i=$((i+1)); sleep 1
 	done
+	# Event, not time: "up" counts ESP states, but the peer installs its
+	# SAs before its policies; wait until both seats have an outbound ESP
+	# policy for the inner selectors before any traffic.
+	if [ "$up" -eq 1 ]; then
+		i=0
+		until lwp_outpol "$NSR" "$TS_R" "$TS_I" && lwp_outpol "$NSI" "$TS_I" "$TS_R" || [ "$i" -ge 50 ]; do
+			i=$((i+1)); sleep 0.1
+		done
+	fi
 	efail=0
 	[ "$up" -eq 1 ] || { log "FAIL: child not UP (iked esp=${re:-0} pluto esp=${le:-0})"; efail=1; }
 	if [ "$up" -eq 1 ]; then
@@ -413,23 +447,51 @@ EOF
 		[ "$gone" -eq 1 ] || { log "FAIL: iked kept ${re:-?} ESP SAs after the peer's DELETE"; efail=1; }
 		;;
 	psk) ;;
-	mobike)
+	mobike|mobikenatin|mobikenatout)
 		n37a=$(awk -F'\t' '$1=="in" && $2==37' "$D/wire.tsv" | wc -l)
+		if [ "$scen" = mobikenatout ]; then
+			# encap must be on before the move, or the row proves nothing
+			ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q 'encap type espinudp' ||
+				{ log "FAIL: iked SAs not UDP-encapsulated behind the initial NAT"; efail=1; }
+		fi
+		if [ "$scen" = mobikenatin ]; then
+			ip netns exec "$NSI" ip addr add "$HN/24" dev "$VI"
+			ip netns exec "$NSI" iptables -t nat -A POSTROUTING -o "$VI" -s "$HM" -p udp -j SNAT --to-source "$HN" ||
+				{ log "FAIL: SNAT in the peer netns"; efail=1; }
+		fi
 		ip netns exec "$NSI" ip addr add "$HM/24" dev "$VI"
 		ip netns exec "$NSI" ip addr del "$HI/24" dev "$VI"
+		# $HN (the NAT's public address) sits on $VI only to answer ARP;
+		# pin the source charon's route lookup picks to the new address.
+		ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$HM"
 		ip netns exec "$NSI" ip route replace "$TS_R/32" dev "$VI" src "$TS_I"
 		moved=0; i=0
 		while [ "$i" -lt 30 ]; do
-			ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HM" && { moved=1; break; }
+			ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $MB_NEW" && { moved=1; break; }
 			i=$((i+1)); sleep 1
 		done
 		n37b=$(awk -F'\t' '$1=="in" && $2==37' "$D/wire.tsv" | wc -l)
 		upd=$(grep -c 'UPDATE_SA_ADDRESSES\|update_sa_address' "$D/iked.log" 2>/dev/null)
 		log "mobike: peer INFORMATIONAL before=$n37a after=$n37b iked UPDATE_SA_ADDRESSES lines=$upd moved=$moved"
 		[ "$n37b" -gt "$n37a" ] || { log "FAIL: no INFORMATIONAL from charon after the address change"; efail=1; }
-		[ "$moved" -eq 1 ] || { log "FAIL: iked's outbound ESP SA never moved to $HM"; efail=1; }
-		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HI" &&
-			{ log "FAIL: an outbound SA still targets the old address $HI"; efail=1; }
+		[ "$moved" -eq 1 ] || { log "FAIL: iked's outbound ESP SA never moved to $MB_NEW"; efail=1; }
+		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $MB_OLD" &&
+			{ log "FAIL: an outbound SA still targets the old address $MB_OLD"; efail=1; }
+		# Event, not time: charon moves its own SAs only after iked's
+		# UPDATE_SA_ADDRESSES reply; ICMP before that would leave via
+		# its stale SA (XfrmOutBundleGenError in the peer netns).
+		i=0
+		while [ "$i" -lt 50 ] && ! ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HM dst $HR"; do
+			i=$((i+1)); sleep 0.2
+		done
+		ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HM dst $HR" ||
+			{ log "FAIL: charon never moved its outbound SA to $HM"; efail=1; }
+		nenc=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'encap type espinudp')
+		log "mobike: iked espinudp SAs after the move=$nenc"
+		case $scen in
+		mobikenatin) [ "$nenc" -ge 2 ] || { log "FAIL: moved INTO a NAT but iked ESP is not UDP-encapsulated (RFC 4555 3.5)"; efail=1; } ;;
+		*) [ "$nenc" -eq 0 ] || { log "FAIL: no NAT on the new path but iked ESP is still UDP-encapsulated (RFC 4555 3.5)"; efail=1; } ;;
+		esac
 		ip netns exec "$NSR" ping -c3 -i0.3 -W2 -I "$TS_R" "$TS_I" >/dev/null 2>&1 ||
 			{ log "FAIL: ICMP after the MOBIKE move"; efail=1
 			  for n in "$NSR" "$NSI"; do ip netns exec "$n" ip -s xfrm state; ip netns exec "$n" ip xfrm policy; ip netns exec "$n" ip route; ip netns exec "$n" cat /proc/net/xfrm_stat; ip netns exec "$n" nstat -az 2>/dev/null | grep -iE "InNoRoutes|InAddrErr|Discard|Drop" ; done >"$D/mobike-xfrm.txt" 2>&1; }
