@@ -76,6 +76,11 @@ struct tcp_stream {
 	struct tcp_record *tb;		/* heap-encoded outbound record (not stack) */
 	tcp_stream_dispatch dispatch;	/* the IKE receive entry (ikev2_input) */
 	void *arg;
+	int dead;			/* marked fatal (tcp_srv_teardown) while it
+					   may still be on the call stack (e.g. a
+					   send failure inside dispatch): no more
+					   reads/writes/dispatch; the registry
+					   frees it on its next pass */
 };
 
 /*

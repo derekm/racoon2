@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -65,6 +66,33 @@ wait_connect(struct tcp_stream *ts, int ms)
 	    (pfd.revents & (POLLOUT | POLLERR | POLLHUP)))
 		return tcp_stream_connect_done(ts);
 	return -1;
+}
+
+
+/* Fatal-send-inside-dispatch probe: the reply to the first record fails
+ * (our write side is shut, so tcp_stream_send returns -1 just as on a peer
+ * RST) through the production ikev2_tcp_send(), which retires the stream
+ * while tcp_stream_on_readable is still de-framing the same read. */
+static int kill_calls, kill_r = 99, kill_handled, kill_after_dead;
+static int
+send_fail_dispatch(rc_vchar_t *pkt, struct sockaddr *remote,
+		   struct sockaddr *local, void *arg)
+{
+	struct tcp_stream *ts;
+
+	(void)arg;
+	++kill_calls;
+	ts = tcp_srv_find(remote, local);
+	if (ts == NULL) {
+		++kill_after_dead;	/* dispatched on a retired stream */
+		rc_vfree(pkt);
+		return 0;
+	}
+	(void)shutdown(ts->fd, SHUT_WR);
+	kill_handled = ikev2_tcp_send(NULL, 0, remote, local,
+	    (const unsigned char *)pkt->v, pkt->l, &kill_r, NULL);
+	rc_vfree(pkt);
+	return 0;
 }
 
 static int fails;
@@ -365,6 +393,110 @@ main(void)
 		tcp_srv_teardown(tmp);
 		CHECK(tcp_srv_count() == before - 1,
 		      "teardown: stream removed from registry");
+	}
+
+	/* RFC 9329 (M5): a fatal send from INSIDE a stream's own dispatch must
+	 * not free the stream under the read loop (use-after-free; ASan builds
+	 * abort on it).  Two records arrive in one read; the first's reply
+	 * fails.  The stream must be marked dead at once (no lookup, no second
+	 * dispatch, no UDP fallback), freed exactly once by the next
+	 * tcp_srv_process pass, and a second teardown must be a no-op. */
+	{
+		struct tcp_stream *kc;
+		static struct tcp_record rec1, rec2;
+		static unsigned char wire[2 * sizeof(rec1.stream)];
+		size_t wl = 0;
+		int base, k;
+
+		/* Settle earlier connections first so counts are exact. */
+		for (k = 0; k < 10; k++) {
+			FD_ZERO(&rfds); FD_ZERO(&wfds);
+			tcp_srv_fdset(&rfds, &wfds);
+			tv.tv_sec = 0; tv.tv_usec = 20000;
+			select(FD_SETSIZE, &rfds, &wfds, NULL, &tv);
+			tcp_srv_process(&rfds, &wfds);
+		}
+		base = tcp_srv_count_all();
+		CHECK(base == tcp_srv_count(), "send-fail: registry settled");
+
+		signal(SIGPIPE, SIG_IGN);
+		kc = tcp_stream_connect((struct sockaddr *)&ca, NULL, capture,
+		    NULL);
+		CHECK(kc != NULL && wait_connect(kc, 2000) == 0,
+		      "send-fail: client connected");
+		for (k = 0; k < 50 && tcp_srv_count() == base; k++) {
+			FD_ZERO(&rfds); FD_ZERO(&wfds);
+			tcp_srv_fdset(&rfds, &wfds);
+			tv.tv_sec = 0; tv.tv_usec = 20000;
+			select(FD_SETSIZE, &rfds, &wfds, NULL, &tv);
+			tcp_srv_process(&rfds, &wfds);
+		}
+		CHECK(tcp_srv_count_all() == base + 1,
+		      "send-fail: stream accepted");
+		{
+			struct sockaddr_storage cs;
+			socklen_t csl = sizeof(cs);
+			struct tcp_stream *ss;
+
+			getsockname(kc->fd, (struct sockaddr *)&cs, &csl);
+			ss = tcp_srv_find((struct sockaddr *)&cs,
+			    (struct sockaddr *)&ca);
+			CHECK(ss != NULL, "send-fail: server stream found");
+			if (ss != NULL)
+				ss->dispatch = send_fail_dispatch;
+		}
+		/* "IKETCP" prefix + two whole records in one write(). */
+		memset(&rec1, 0, sizeof(rec1));
+		memset(&rec2, 0, sizeof(rec2));
+		tcp_stream_begin(&rec1);
+		CHECK(tcp_record_ike(&rec1, msg, sizeof(msg)) == 0 &&
+		      tcp_record_ike(&rec2, msg, sizeof(msg)) == 0,
+		      "send-fail: records built");
+		memcpy(wire, rec1.stream, rec1.stream_len);
+		wl = rec1.stream_len;
+		memcpy(wire + wl, rec2.stream, rec2.stream_len);
+		wl += rec2.stream_len;
+		CHECK(write(kc->fd, wire, wl) == (ssize_t)wl,
+		      "send-fail: two records written in one burst");
+		usleep(50000);
+		FD_ZERO(&rfds); FD_ZERO(&wfds);
+		tcp_srv_fdset(&rfds, &wfds);
+		tv.tv_sec = 1; tv.tv_usec = 0;
+		select(FD_SETSIZE, &rfds, &wfds, NULL, &tv);
+		tcp_srv_process(&rfds, &wfds);
+		CHECK(kill_calls == 1, "send-fail: exactly one dispatch "
+		      "(second record not delivered on a dead stream)");
+		CHECK(kill_after_dead == 0, "send-fail: no dispatch after death");
+		CHECK(kill_r == -1, "send-fail: tcp_stream_send reported fatal");
+		CHECK(kill_handled == 1, "send-fail: handled on TCP, no UDP "
+		      "fallback for a failed stream send");
+		CHECK(tcp_srv_count_all() == base && tcp_srv_count() == base,
+		      "send-fail: dead stream reaped by tcp_srv_process");
+		tcp_stream_free(kc);
+	}
+
+	/* Deferred teardown outside dispatch + double teardown: marked dead at
+	 * once, invisible to lookups, freed once on the next pass. */
+	{
+		struct tcp_stream *tmp2;
+		int before;
+
+		tmp2 = tcp_stream_connect((struct sockaddr *)&ca, NULL, capture,
+		    NULL);
+		CHECK(tmp2 != NULL && tcp_srv_register_connecting(tmp2) == 0,
+		      "double-teardown: temp stream registered");
+		before = tcp_srv_count_all();
+		tcp_srv_teardown(tmp2);
+		tcp_srv_teardown(tmp2);
+		CHECK(tcp_srv_count() == before - 1 &&
+		      tcp_srv_count_all() == before,
+		      "double-teardown: marked dead, not yet freed");
+		CHECK(tcp_stream_send(tmp2, msg, sizeof(msg)) == -1,
+		      "double-teardown: no writes on a dead stream");
+		FD_ZERO(&rfds); FD_ZERO(&wfds);
+		tcp_srv_process(&rfds, &wfds);	/* frees once (ASan: no DF) */
+		CHECK(tcp_srv_count_all() == before - 1,
+		      "double-teardown: freed once by the next pass");
 	}
 	tcp_srv_fini();
 	if (!fails)

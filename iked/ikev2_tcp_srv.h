@@ -63,8 +63,10 @@ int tcp_srv_fdset(fd_set *rfds, fd_set *wfds);
  * down a stream whose read/write returned fatal. */
 void tcp_srv_process(const fd_set *rfds, const fd_set *wfds);
 
-/* Number of live streams (for diagnostics/tests). */
+/* Number of live streams, and of all registry entries including ones
+ * marked dead but not yet reaped (for diagnostics/tests). */
 int tcp_srv_count(void);
+int tcp_srv_count_all(void);
 
 /* Find the registered stream whose peer == remote and local source == local
  * (address+port, family-exact).  NULL if none.  This is how the transmit path

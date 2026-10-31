@@ -92,6 +92,11 @@ stream_frame_cb(const unsigned char *pkt, size_t len, int is_esp, void *arg)
 	r = ts->dispatch(v, (struct sockaddr *)&ts->remote,
 			 (struct sockaddr *)&ts->local, ts->arg);
 	(void)r;	/* IKE-layer decision; not a stream-fatal condition */
+	/* The dispatch may have marked this stream dead (a fatal send on it
+	 * from inside ikev2_input).  Stop de-framing now: any further record
+	 * in this read must not be delivered on a dead stream. */
+	if (ts->dead)
+		return -1;
 	return 0;
 }
 
@@ -261,7 +266,11 @@ tcp_stream_on_readable(struct tcp_stream *ts)
 	int ret = 0;
 
 	for (;;) {
-		ssize_t n = read(ts->fd, buf, sizeof(buf));
+		ssize_t n;
+
+		if (ts->dead)
+			return -1;
+		n = read(ts->fd, buf, sizeof(buf));
 
 		if (n < 0) {
 			if (errno == EINTR)
@@ -307,6 +316,10 @@ tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 	size_t rl;
 	int have_prefix;
 
+	if (ts->dead) {
+		errno = EPIPE;
+		return -1;
+	}
 	/* Build the record through the codec (Prefix + Len|marker|message);
 	 * tcp_record_ike enforces the 16-bit inclusive-Length cap.  Encoded
 	 * into the heap record (ts->tb), never a 64KB stack array. */
@@ -382,6 +395,8 @@ tcp_stream_send(struct tcp_stream *ts, const unsigned char *ike, size_t n)
 int
 tcp_stream_flush(struct tcp_stream *ts)
 {
+	if (ts->dead)
+		return -1;
 	/* While an outbound connect is in flight the socket is not yet
 	 * established: sending now would fail with ENOTCONN.  Defer -- the
 	 * event loop completes the connect (tcp_stream_connect_done clears

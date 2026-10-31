@@ -221,11 +221,11 @@ tcp_srv_process(const fd_set *rfds, const fd_set *wfds)
 	while (*pp) {
 		struct tcp_conn *c = *pp;
 		struct tcp_stream *st = c->st;
-		int dead = 0;
+		int dead = st->dead;
 
 		/* A connecting (initiator) stream completes on a write/ERR
 		 * wake: ask SO_ERROR only then. */
-		if (c->connecting && wfds && st->fd >= 0 &&
+		if (!dead && c->connecting && wfds && st->fd >= 0 &&
 		    FD_ISSET(st->fd, wfds)) {
 			if (tcp_stream_connect_done(st) < 0)
 				dead = 1;	/* refused/reset connect */
@@ -237,6 +237,8 @@ tcp_srv_process(const fd_set *rfds, const fd_set *wfds)
 			if (tcp_stream_on_readable(st) < 0)
 				dead = 1;	/* framing-fatal / FIN / error */
 		}
+		if (st->dead)
+			dead = 1;	/* torn down from inside dispatch */
 		if (!dead && !c->connecting && wfds && st->fd >= 0 &&
 		    FD_ISSET(st->fd, wfds) && st->obuf_off < st->obuf_len) {
 			if (tcp_stream_flush(st) < 0)
@@ -259,33 +261,45 @@ tcp_srv_count(void)
 	struct tcp_conn *c;
 
 	for (c = conns; c; c = c->next)
+		if (!c->st->dead)
+			++n;
+	return n;
+}
+
+/* Registry entries including streams marked dead but not yet reaped. */
+int
+tcp_srv_count_all(void)
+{
+	int n = 0;
+	struct tcp_conn *c;
+
+	for (c = conns; c; c = c->next)
 		++n;
 	return n;
 }
 
-/* RFC 9329 (M5): forcibly remove a stream from the registry and free it.
- * Used to tear down a stream that hit a fatal send error (r<0 from
+/* RFC 9329 (M5): retire a stream that hit a fatal send error (r<0 from
  * tcp_stream_send/tcp_stream_flush), whose contract says the caller MUST
- * close a stream once it returns -1.  Plain tcp_stream_free() would leave a
- * dangling conns entry (use-after-free on the next loop pass), so unlink the
- * conn first, exactly as tcp_srv_process does.  Safe from the send path: the
- * event loop is single-threaded and never iterates conns concurrently.  If
- * the stream is already gone from the registry (double teardown) this is a
- * no-op -- never free it twice. */
+ * close it.  The send path can run INSIDE this stream's own dispatch
+ * (tcp_srv_process -> tcp_stream_on_readable -> ikev2_input -> transmit),
+ * so freeing here would leave the read loop and tcp_srv_process holding a
+ * freed stream.  Instead mark it dead: lookups stop returning it at once,
+ * reads/writes/dispatch on it stop, the socket is shut down (so the peer
+ * sees the close and the loop wakes), and tcp_srv_process unlinks and frees
+ * it on its next pass -- the only place a registry stream is freed.
+ * Idempotent; a stream not in the registry is left alone. */
 void
 tcp_srv_teardown(struct tcp_stream *ts)
 {
-	struct tcp_conn **pp;
+	struct tcp_conn *c;
 
 	if (ts == NULL)
 		return;
-	for (pp = &conns; *pp; pp = &(*pp)->next) {
-		if ((*pp)->st == ts) {
-			struct tcp_conn *c = *pp;
-
-			*pp = c->next;
-			tcp_stream_free(c->st);
-			free(c);
+	for (c = conns; c; c = c->next) {
+		if (c->st == ts) {
+			if (!ts->dead && ts->fd >= 0)
+				(void)shutdown(ts->fd, SHUT_RDWR);
+			ts->dead = 1;
 			return;
 		}
 	}
@@ -350,7 +364,8 @@ tcp_srv_find(const struct sockaddr *remote, const struct sockaddr *local)
 	struct tcp_conn *c;
 
 	for (c = conns; c; c = c->next)
-		if (sa_addr_only_equal((const struct sockaddr *)&c->st->remote,
+		if (!c->st->dead &&
+		    sa_addr_only_equal((const struct sockaddr *)&c->st->remote,
 				       remote) &&
 		    sa_addr_only_equal((const struct sockaddr *)&c->st->local,
 				       local))
@@ -390,7 +405,8 @@ tcp_srv_find_bound(const struct sockaddr *remote, const struct sockaddr *local)
 	struct tcp_conn *c;
 
 	for (c = conns; c; c = c->next)
-		if (sa_addr_only_equal((const struct sockaddr *)&c->st->remote,
+		if (!c->st->dead &&
+		    sa_addr_only_equal((const struct sockaddr *)&c->st->remote,
 				       remote) &&
 		    sa_same_port((const struct sockaddr *)&c->st->remote,
 				 remote) &&

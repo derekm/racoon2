@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #include "racoon.h"
 #include "isakmp.h"
@@ -47,4 +48,43 @@ ikev2_tcp_route(const struct ikev2_sa *sa, int sa_tcp_encap,
 	if (ts == NULL && dest != NULL)
 		ts = tcp_srv_find(dest, src);
 	return ts;
+}
+
+/*
+ * RFC 9329: the transmit decision + send-result contract, shared by
+ * isakmp_try_tcp_send() and tcpsrvtest so the test drives the production
+ * code rather than a copy.  Returns 0 when no stream applies (caller uses
+ * UDP), 1 whenever a stream matched -- including when the send FAILED: a
+ * tcp_encap peer's IKE never falls back to UDP.  *rp (if non-NULL) gets the
+ * tcp_stream_send() result for logging and *tsp the stream (which, after a
+ * fatal r<0, is already marked dead and must not be touched again beyond
+ * reading its fields before the next event-loop pass).  On r<0 the stream is
+ * retired with tcp_srv_teardown(), which only MARKS it dead: this function
+ * may run inside that very stream's dispatch.
+ */
+int
+ikev2_tcp_send(const struct ikev2_sa *sa, int sa_tcp_encap,
+    const struct sockaddr *dest, const struct sockaddr *src,
+    const unsigned char *pkt, size_t len, int *rp, struct tcp_stream **tsp)
+{
+	struct tcp_stream *ts;
+	int r;
+
+	if (pkt == NULL)
+		return 0;
+	ts = ikev2_tcp_route(sa, sa_tcp_encap, dest, src);
+	if (ts == NULL)
+		return 0;
+	r = tcp_stream_send(ts, pkt, len);
+	if (r < 0) {
+		int e = errno;
+
+		tcp_srv_teardown(ts);
+		errno = e;
+	}
+	if (rp != NULL)
+		*rp = r;
+	if (tsp != NULL)
+		*tsp = ts;
+	return 1;
 }

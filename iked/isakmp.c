@@ -2442,29 +2442,20 @@ static int
 isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt,
 		    struct ikev2_sa *ike_sa)
 {
-	struct tcp_stream *ts;
-	int r;
+	struct tcp_stream *ts = NULL;
+	int r = 0, encap;
 
 	if (pkt == NULL)
 		return 0;
-	/* A non-tcp_encap IKE_SA rides only UDP: even if a stream happens to
-	 * match (e.g. a peer address that also took a TCP connection), never
-	 * pull its traffic onto TCP -- that would leak a UDP SA's messages
-	 * into the stream codec.  The pre-SA IKE_SA_INIT (ike_sa == NULL) is
-	 * exempt; that is exactly the window a new outbound TCP connection
-	 * serves, so it falls through to the address-only registry lookup. */
-	/* RFC 9329 (H3): an established IKE_SA must ride the specific TCP
-	 * stream it was built over (matched on the SA's remote addr + port,
-	 * which for a responder distinguishes several clients behind one NAT),
-	 * falling back to the address-only lookup when that misses.  See
-	 * ikev2_tcp_route(). */
-	ts = ikev2_tcp_route(ike_sa,
-	    !(ike_sa != NULL && ike_sa->rmconf != NULL &&
-	      ikev2_tcp_encap(ike_sa->rmconf) != RCT_BOOL_ON),
-	    dest, src);
-	if (ts == NULL)
+	/* A non-tcp_encap IKE_SA rides only UDP, even when a stream to the
+	 * same peer exists.  The pre-SA IKE_SA_INIT (ike_sa == NULL) is exempt:
+	 * that is the window a new outbound TCP connection serves.  RFC 9329 (H3): an established IKE_SA rides the
+	 * stream it was built over; see ikev2_tcp_route(). */
+	encap = !(ike_sa != NULL && ike_sa->rmconf != NULL &&
+	    ikev2_tcp_encap(ike_sa->rmconf) != RCT_BOOL_ON);
+	if (!ikev2_tcp_send(ike_sa, encap, dest, src,
+	    (const unsigned char *)pkt->v, pkt->l, &r, &ts))
 		return 0;
-	r = tcp_stream_send(ts, pkt->v, pkt->l);
 	if (r < 0) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "IKE-over-TCP send failed: %s\n", strerror(errno));
@@ -2472,9 +2463,10 @@ isakmp_try_tcp_send(struct sockaddr *dest, struct sockaddr *src, rc_vchar_t *pkt
 		 * stream is dead and must be closed.  Tear it down so the
 		 * registry stops routing to a zombie socket; the owning IKE_SA
 		 * then times out via its retransmit instead of being left
-		 * silently mute on a dead stream.  r==2 below is NOT fatal
-		 * (buffer full / message too big -- retriable later). */
-		tcp_srv_teardown(ts);
+		 * silently mute on a dead stream.  ikev2_tcp_send() already
+		 * marked it dead (it may be our caller's own stream, so it is
+		 * freed later by tcp_srv_process, never here).  r==2 below is
+		 * NOT fatal (buffer full / message too big). */
 	} else if (r == 2)
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		     "IKE-over-TCP: %u-byte IKE message not queued "
