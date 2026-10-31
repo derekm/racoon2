@@ -1936,24 +1936,23 @@ run_nat_row() {
 	jexec $jr ifconfig "${_eb}b" inet 192.0.5.1/24 up
 	printf 'nat on %s inet from 10.9.0.0/24 to any -> 192.0.5.254\npass all\n' "${_eb}a" > /tmp/freeb-nat-pf.conf
 	if ! { jexec $jn pfctl -q -f /tmp/freeb-nat-pf.conf && jexec $jn pfctl -q -e; }; then
-		# 16.0-CURRENT refused the transaction (pfctl_rules /
-		# DIOCXROLLBACK, errno 0) while 15.1 loads it: record why.
-		echo "--- pf diag ($_name) ---"
-		uname -a; kldstat | grep -E 'pf|netlink' || true
-		jexec $jn ls -l /dev/pf 2>&1 || true
-		jexec $jn pfctl -vvnf /tmp/freeb-nat-pf.conf 2>&1 | head -20
-		jexec $jn pfctl -vv -f /tmp/freeb-nat-pf.conf 2>&1 | head -20
-		jexec $jn pfctl -s info 2>&1 | head -3
-		# which ioctl/netlink call refuses the transaction, and errno
-		jexec $jn truss -f pfctl -f /tmp/freeb-nat-pf.conf 2>&1 |
-		    grep -E 'ioctl|socket|sendmsg|recvmsg|ERR' | tail -25
-		# does the filter-only or nat-only load succeed?
-		printf 'pass all\n' >/tmp/freeb-pass-pf.conf
-		jexec $jn pfctl -R -f /tmp/freeb-nat-pf.conf; echo "pfctl -R rc=$?"
-		jexec $jn pfctl -N -f /tmp/freeb-nat-pf.conf; echo "pfctl -N rc=$?"
-		jexec $jn pfctl -f /tmp/freeb-pass-pf.conf; echo "pass-only rc=$?"
-		pfctl -s info >/dev/null 2>&1; echo "host pfctl rc=$?"
-		echo "FAIL freebsd-vnet $_name (pf in the NAT jail)"; return 1
+		# 16.0-CURRENT (main-n290352): pf inside a VNET jail refuses
+		# every ruleset transaction, even a bare 'pass all' (truss: the
+		# netlink PFNL transaction answers NLMSG_ERROR, pfctl reports
+		# pfctl_rules / DIOCXROLLBACK 'Operation not supported by
+		# device'), while the host's pf works.  An OS limitation, not
+		# the row: do the same source NAT with ipfw nat (libalias,
+		# setsockopt control path) in the NAT jail.  The host vnet is
+		# kept default-accept so loading ipfw cannot cut the VM off.
+		echo "NOTE: pf refused in the NAT jail on $(uname -r); using ipfw nat"
+		jexec $jn pfctl -vv -f /tmp/freeb-nat-pf.conf 2>&1 | tail -2
+		kldstat -q -m ipfw || { kenv net.inet.ip.fw.default_to_accept=1 >/dev/null; kldload -n ipfw; }
+		kldstat -q -m ipfw_nat || kldload -n ipfw_nat || { echo "FAIL freebsd-vnet $_name (no pf, no ipfw_nat)"; return 1; }
+		{ jexec $jn ipfw -q nat 1 config ip 192.0.5.254 &&
+		  jexec $jn ipfw -q add 100 nat 1 ip4 from 10.9.0.0/24 to any out via "${_eb}a" &&
+		  jexec $jn ipfw -q add 110 nat 1 ip4 from any to 192.0.5.254 in via "${_eb}a" &&
+		  jexec $jn ipfw -q add 65000 allow ip from any to any; } ||
+			{ echo "FAIL freebsd-vnet $_name (ipfw nat in the NAT jail)"; return 1; }
 	fi
 	install -d -m 0755 /tmp/freeb
 	dd if=/dev/urandom of=/tmp/freeb/test.psk bs=32 count=1 2>/dev/null; chmod 600 /tmp/freeb/test.psk
@@ -2144,6 +2143,7 @@ NEOF
 	echo "--- SADB resp ---"; cat /tmp/freeb/resp-sadb.txt; echo "--- SADB init ---"; cat /tmp/freeb/init-sadb.txt
 	echo "--- SPD resp ---"; cat /tmp/freeb/resp-spd.txt; echo "--- SPD init ---"; cat /tmp/freeb/init-spd.txt
 	echo "--- pf states ---"; jexec $jn pfctl -ss 2>&1 | head -20
+	jexec $jn ipfw nat 1 show 2>/dev/null | head -5 || true
 	echo "--- ping/tcp ---"; cat /tmp/freeb/ping-tun.txt /tmp/freeb/tcp-send.txt 2>/dev/null
 	echo "--- spmd logs ---"; cat /tmp/freeb/resp-spmd.log /tmp/freeb/init-spmd.log 2>/dev/null | tail -40
 	echo "--- resp iked (NAT/TS/SA lines) ---"; grep -iE 'nat|TS|substitut|sadb|error|fail' $FR | grep -vE '^[0-9a-f]{8}( |$)' | tail -40
