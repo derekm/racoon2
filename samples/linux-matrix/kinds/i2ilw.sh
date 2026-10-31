@@ -196,7 +196,7 @@ EOF
 	( i2i_lw_ns_exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
 	    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
 	    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
-	    --logfile "$D/init-pluto.log" --stderrlog ) >"$D/init-pluto.out" 2>&1 &
+	    --logfile "$D/init-pluto.log" ) >"$D/init-pluto.out" 2>&1 &
 	LWPLUTO=$!
 	LWWHACK=${I2I_LW_WHACK:-/usr/libexec/ipsec/whack}
 	# Wait until pluto is actually LISTENING before whack --initiate, else
@@ -288,6 +288,7 @@ EOF
 	[ "$ok" -eq 1 ] || {
 		log "--- resp-iked.log (ticket/resume) ---"
 		sed -n 's/.*\(TICKET\|accepted IKE_SESSION\|RFC 5723\|resumed\|err=\).*/\1: &/p' "$D/resp-iked.log" 2>/dev/null | tail -8
+		[ -s "$D/init-pluto.log" ] || { log "--- init-pluto.log empty/missing; init-pluto.out ---"; tail -15 "$D/init-pluto.out" 2>/dev/null; ls -l "$D" 2>/dev/null; }
 		log "--- init-pluto.log (resume/establish) ---"
 		grep -aiE 'session-resum|TICKET|IKE_AUTH|established|authenticated' "$D/init-pluto.log" 2>/dev/null | tail -10
 		return 1
