@@ -181,15 +181,11 @@ EOF
 	# read-only db mode) but accepts one built by libreswan's own
 	# `ipsec initnss`.  Must run BEFORE the pluto launch below — pluto
 	# reads the db at startup and dies if it is not present yet.
+	# The db `ipsec initnss` builds (empty-password sql: NSS db).  Call
+	# certutil directly: `ipsec` on PATH may be strongSwan's starter.
 	if ! ls "$C/lw-nss"/cert9.db >/dev/null 2>&1; then
-		LWIPSEC=$(command -v ipsec || echo /usr/sbin/ipsec)
-		if [ -x "$LWIPSEC" ]; then
-			"$LWIPSEC" initnss --nssdir "$C/lw-nss" >"$D/lw-nssinit.log" 2>&1 \
-				|| { [ -f "$C/lw-nss/cert9.db" ] || { cat "$D/lw-nssinit.log" >&2; log "FAIL: ipsec initnss"; return 1; }; }
-		else
-			log "FAIL: no 'ipsec' binary to init the libreswan NSS db (certutil -N is rejected: pluto SEC_ERROR_BAD_DATABASE)"
-			return 1
-		fi
+		certutil -N -d "sql:$C/lw-nss" --empty-password >"$D/lw-nssinit.log" 2>&1 ||
+			{ cat "$D/lw-nssinit.log" >&2; log "FAIL: NSS db init (certutil -N)"; return 1; }
 	fi
 
 	# libreswan pluto initiator (NSS db is initialized above)
@@ -197,7 +193,7 @@ EOF
 	mkdir -p "$C/lw-run"; chmod 700 "$C/lw-run"
 	# Private run dir: pluto's pid file and whack control socket stay
 	# under the row's conf dir, never the host's /run/pluto.
-	( ip netns exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
+	( i2i_lw_ns_exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
 	    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
 	    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
 	    --logfile "$D/init-pluto.log" --stderrlog ) >"$D/init-pluto.out" 2>&1 &
