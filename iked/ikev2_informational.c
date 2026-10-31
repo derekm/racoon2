@@ -87,6 +87,21 @@ void ikev2_process_delete(struct ikev2_sa *, struct ikev2_payload_header *,
 void ikev2_push_cookie2_echo(struct ikev2_sa *, struct ikev2_payloads *);
 int ikev2_push_natd_report(struct ikev2_sa *, struct ikev2_payloads *);
 
+/* RFC 4555 implicit mobility test, see ikev2_established_recv(). */
+static int
+ikev2_mobike_endpoint_changed(struct ikev2_sa *ike_sa, struct sockaddr *remote)
+{
+	int tcpencap;
+
+	if (ike_sa->state != IKEV2_STATE_ESTABLISHED ||
+	    !ike_sa->mobike_supported || !remote || !ike_sa->remote)
+		return 0;
+	tcpencap = ike_sa->rmconf &&
+	    ikev2_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON;
+	return (tcpencap ? rcs_cmpsa_wop(remote, ike_sa->remote)
+	    : rcs_cmpsa(remote, ike_sa->remote)) != 0;
+}
+
 void
 ikev2_established_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		       struct sockaddr *remote, struct sockaddr *local)
@@ -119,17 +134,14 @@ ikev2_established_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	 * the implicit MOBIKE update.  A non-tcp_encap SA keeps the full
 	 * address+port compare (rcs_cmpsa).
 	 */
-	if (ike_sa->state == IKEV2_STATE_ESTABLISHED &&
-	    ike_sa->mobike_supported && remote && ike_sa->remote) {
-		int tcpencap = ike_sa->rmconf &&
-		    ikev2_tcp_encap(ike_sa->rmconf) == RCT_BOOL_ON;
-		int changed = (tcpencap
-		    ? rcs_cmpsa_wop(remote, ike_sa->remote)
-		    : rcs_cmpsa(remote, ike_sa->remote));
-
-		if (changed != 0)
-			ikev2_mobike_apply(ike_sa, remote, local);
-	}
+	/* An INFORMATIONAL request is moved by informational_responder_recv()
+	 * after its payloads are read, so that the NAT_DETECTION notifies of
+	 * an UPDATE_SA_ADDRESSES decide the encapsulation of the migrated
+	 * SAs (RFC 4555 3.5).  Moving here first would migrate them with the
+	 * stale NAT state and the later apply would be a no-op. */
+	if (!(exch_type == IKEV2EXCH_INFORMATIONAL && !is_response) &&
+	    ikev2_mobike_endpoint_changed(ike_sa, remote))
+		ikev2_mobike_apply(ike_sa, remote, local);
 	/* RFC 9329: a TCP peer that reconnected (same address, new stream)
 	 * continues the IKE_SA on the new stream; MOBIKE or not, replies must
 	 * follow it.  See ikev2_tcp_rebind(). */
@@ -461,6 +473,8 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	rc_vchar_t *pkt = 0;
 	struct ikev2_child_param child_param; /* for CONFIG */
 	int nat_detect = 0;
+	int nd_src_seen = 0, nd_src_match = 0;
+	int nd_dst_seen = 0, nd_dst_match = 0;
 
 	/*
 	 * expect HDR SK { N ... }
@@ -498,6 +512,26 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 			    get_notify_type((struct ikev2payl_notify *)p) ==
 			    IKEV2_NAT_DETECTION_DESTINATION_IP) {
 				nat_detect = 1;
+				/* RFC 4555 3.5: evaluate against the NEW
+				 * endpoints this request arrived on; the
+				 * result is committed only if the request
+				 * also carries UPDATE_SA_ADDRESSES. */
+				{
+					struct ikev2payl_notify *nn =
+					    (struct ikev2payl_notify *)p;
+					int src = get_notify_type(nn) ==
+					    IKEV2_NAT_DETECTION_SOURCE_IP;
+					int m = natt_natd_match(ike_sa, nn,
+					    src ? remote : local);
+
+					if (m >= 0 && src) {
+						nd_src_seen = 1;
+						nd_src_match |= m;
+					} else if (m >= 0) {
+						nd_dst_seen = 1;
+						nd_dst_match |= m;
+					}
+				}
 				/* nwikev2 computes these digests over ITS
 				 * OWN view of the endpoints (its LAN addr
 				 * behind the home router, and the public IP
@@ -585,7 +619,16 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	}
 
 	if (ike_sa->mobike_update) {
+		int natchg;
+
 		ike_sa->mobike_update = 0;
+		natchg = ike_sa->mobike_supported &&
+		    natt_mobike_renat(ike_sa, nd_src_seen, nd_src_match,
+		    nd_dst_seen, nd_dst_match);
+
+		ikev2_mobike_apply_nat(ike_sa, remote, local, natchg);
+	} else if (ikev2_mobike_endpoint_changed(ike_sa, remote)) {
+		/* implicit mobility (no UPDATE_SA_ADDRESSES) */
 		ikev2_mobike_apply(ike_sa, remote, local);
 	}
 

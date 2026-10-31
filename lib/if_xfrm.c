@@ -1919,6 +1919,101 @@ xfrm_update_encap_ports(struct rcpfk_msg *rc)
 	return e;
 }
 
+/*
+ * PFK_FLAG_NOENCAP: drop XFRMA_ENCAP from every SA saddr=sa2_src
+ * daddr=sa2_dst (proto, reqid).  Neither XFRM_MSG_MIGRATE nor UPDSA can
+ * remove an encap template (both keep the old one when none is given), so
+ * each SA is re-created from its own GETSA dump minus the ENCAP attribute:
+ * DELSA, then NEWSA with the same SPI, keys, replay state and lifetimes.
+ * If the NEWSA fails the original (with encap) is put back.
+ */
+static int
+xfrm_strip_encap(struct rcpfk_msg *rc)
+{
+	struct xfrm_encap_job j;
+	struct rcpfk_msg jr;
+	char req[NLMSG_SPACE(sizeof(struct xfrm_usersa_info))];
+	char del[NLMSG_SPACE(sizeof(struct xfrm_usersa_id))];
+	char nb[XFRM_BUFLEN];
+	struct nlmsghdr *n = (void *)req;
+	uint16_t fam = AF_INET;
+	int i, e;
+
+	if (rc->sa2_src == NULL || rc->sa2_dst == NULL)
+		return 0;
+	memset(&j, 0, sizeof(j));
+	jr = *rc;
+	j.rc = &jr;
+	if (sa_to_xaddr(rc->sa2_src, &j.s, &fam) != 0 ||
+	    sa_to_xaddr(rc->sa2_dst, &j.d, &fam) != 0)
+		return EINVAL;
+	j.family = fam;
+	j.msgs = malloc(sizeof(*j.msgs) * XFRM_ENCAP_MAX);
+	if (j.msgs == NULL)
+		return ENOMEM;
+	memset(req, 0, sizeof(req));
+	n->nlmsg_len = NLMSG_LENGTH(sizeof(struct xfrm_usersa_info));
+	n->nlmsg_type = XFRM_MSG_GETSA;
+	n->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	e = xfrm_sync(n, xfrm_encap_collect, &j);
+	for (i = 0; e == 0 && i < j.nmsgs; i++) {
+		struct nlmsghdr *m = (void *)j.msgs[i];
+		struct nlmsghdr *o = (void *)nb;
+		const struct xfrm_usersa_info *sa = NLMSG_DATA(m);
+		struct xfrm_usersa_id *id;
+		struct nlmsghdr *d = (void *)del;
+		struct rtattr *rta;
+		size_t hl = NLMSG_LENGTH(sizeof(struct xfrm_usersa_info));
+		int alen, had = 0;
+
+		if (m->nlmsg_len < hl || m->nlmsg_len > sizeof(nb))
+			continue;
+		/* copy header + every attribute except XFRMA_ENCAP */
+		memcpy(nb, m, NLMSG_ALIGN(hl));
+		o->nlmsg_len = NLMSG_ALIGN(hl);
+		rta = (struct rtattr *)((char *)m + NLMSG_ALIGN(hl));
+		alen = (int)m->nlmsg_len - (int)NLMSG_ALIGN(hl);
+		for (; RTA_OK(rta, alen); rta = RTA_NEXT(rta, alen)) {
+			if (rta->rta_type == XFRMA_ENCAP) {
+				had = 1;
+				continue;
+			}
+			if (o->nlmsg_len + RTA_ALIGN(rta->rta_len) > sizeof(nb))
+				break;
+			memcpy(nb + o->nlmsg_len, rta, rta->rta_len);
+			o->nlmsg_len += RTA_ALIGN(rta->rta_len);
+		}
+		if (!had)
+			continue;
+		memset(del, 0, sizeof(del));
+		d->nlmsg_len = NLMSG_LENGTH(sizeof(*id));
+		d->nlmsg_type = XFRM_MSG_DELSA;
+		d->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+		id = NLMSG_DATA(d);
+		id->daddr = sa->id.daddr;
+		id->spi = sa->id.spi;
+		id->family = sa->family;
+		id->proto = sa->id.proto;
+		if ((e = xfrm_sync(d, NULL, NULL)) != 0)
+			break;
+		o->nlmsg_type = XFRM_MSG_NEWSA;
+		o->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+		if ((e = xfrm_sync(o, NULL, NULL)) != 0) {
+			m->nlmsg_type = XFRM_MSG_NEWSA;
+			m->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+			(void)xfrm_sync(m, NULL, NULL);
+			break;
+		}
+		j.updated++;
+	}
+	free(j.msgs);
+	if (e == 0 && j.updated > 0)
+		plog(PLOG_INFO, PLOGLOC, NULL,
+		    "xfrm: UDP encap removed from %d migrated SA(s)\n",
+		    j.updated);
+	return e;
+}
+
 static int
 xfrm_same_addr(const struct sockaddr *a, const struct sockaddr *b)
 {
@@ -1991,6 +2086,8 @@ rcpfk_send_migrate(struct rcpfk_msg *rc)
 		    xfrm_same_addr(rc->sa_src, rc->sa2_src) &&
 		    xfrm_same_addr(rc->sa_dst, rc->sa2_dst))
 			e = xfrm_update_encap_ports(rc);
+		if (e == 0 && (rc->flags & PFK_FLAG_NOENCAP))
+			e = xfrm_strip_encap(rc);
 		if (e != 0) {
 			xfrm_seterror(rc, e, "xfrm migrate: %s%s", strerror(e),
 			    e == ENOPROTOOPT ? " (kernel built without "

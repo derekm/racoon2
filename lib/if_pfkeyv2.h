@@ -136,6 +136,12 @@ struct rcpfk_msg {
 #define PFK_FLAG_WAITREPLY	0x00000020
 	/* set on messages produced by a post-ENOBUFS resync dump */
 #define PFK_FLAG_RESYNC		0x00000040
+	/* rcpfk_send_migrate(): the migrated SAs must carry NO UDP encap
+	 * (MOBIKE move out of a NAT, RFC 4555 3.5).  Linux migrate copies the
+	 * old encap template when none is given, so the XFRM backend deletes
+	 * and re-adds each encapsulated SA without it (keys, replay state and
+	 * lifetimes kept).  The PF_KEY backends ignore it. */
+#define PFK_FLAG_NOENCAP	0x00000080
 
 	uint32_t slid;			/* "spid" in KAME impl. */
 	struct sockaddr *sp_src;

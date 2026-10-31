@@ -79,8 +79,11 @@ ikev2_mobike_natt(struct ikev2_sa *ike_sa, struct rcpfk_msg *rc,
 	 * in ikev2_child.c. */
 	if (!ike_sa->behind_nat && !ike_sa->peer_behind_nat &&
 	    (ike_sa->rmconf == NULL ||
-	     ikev2_nat_traversal(ike_sa->rmconf) != RCT_NATT_FORCE))
+	     ikev2_nat_traversal(ike_sa->rmconf) != RCT_NATT_FORCE)) {
+		/* a move OUT of a NAT must also drop the old encap */
+		rc->flags |= PFK_FLAG_NOENCAP;
 		return;
+	}
 	rc->natt_type = UDP_ENCAP_ESPINUDP;
 	rc->natt_sport = *sp;
 	rc->natt_dport = *dp;
@@ -134,6 +137,24 @@ ikev2_mobike_apply(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 	if (!ike_sa || !ike_sa->mobike_supported || !remote || !local)
 		return;
 	(void)ikev2_move_sa(ike_sa, remote, local, 1,
+	    "MOBIKE UPDATE_SA_ADDRESSES");
+}
+
+/*
+ * UPDATE_SA_ADDRESSES whose NAT_DETECTION changed behind_nat or
+ * peer_behind_nat (RFC 4555 3.5).  The SA may already sit on the new
+ * endpoints (an earlier message from them moved it implicitly), so a
+ * plain apply would be a no-op and leave the old encapsulation; force
+ * the kernel migration so ikev2_mobike_natt() re-derives it.
+ */
+void
+ikev2_mobike_apply_nat(struct ikev2_sa *ike_sa, struct sockaddr *remote,
+    struct sockaddr *local, int nat_changed)
+{
+	if (!ike_sa || !ike_sa->mobike_supported || !remote || !local)
+		return;
+	(void)ikev2_move_sa(ike_sa, remote, local, nat_changed ? 2 : 1,
+	    nat_changed ? "MOBIKE UPDATE_SA_ADDRESSES (NAT changed)" :
 	    "MOBIKE UPDATE_SA_ADDRESSES");
 }
 
@@ -227,7 +248,9 @@ ikev2_move_sa_impl(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 	rc_type samode = RCT_IPSM_TUNNEL;
 	uint32_t reqid = 0;
 
-	if (ike_sa->remote && ike_sa->local &&
+	/* migrate_kernel == 2: re-migrate even onto the same endpoints,
+	 * because the encapsulation changed (ikev2_mobike_apply_nat). */
+	if (migrate_kernel != 2 && ike_sa->remote && ike_sa->local &&
 	    rcs_cmpsa(ike_sa->remote, remote) == 0 &&
 	    rcs_cmpsa(ike_sa->local, local) == 0)
 		return 0;

@@ -141,6 +141,88 @@ natt_create_natd(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 	return ret;
 }
 
+/*
+ * RFC 4555 3.5: an UPDATE_SA_ADDRESSES request carries fresh
+ * NAT_DETECTION_*_IP notifies computed over the NEW endpoints, and the
+ * responder MUST redo NAT detection from them.  Compare one NATD notify
+ * against an explicit address (the request's new source or destination,
+ * not ike_sa->remote/local which still hold the old pair).  Both SPIs are
+ * known on an established SA.  Returns 1 on match, 0 on mismatch and -1
+ * on a malformed notify (data length is validated before the compare).
+ */
+int
+natt_natd_match(struct ikev2_sa *ike_sa, struct ikev2payl_notify *n,
+    struct sockaddr *addr)
+{
+	rc_vchar_t *hash;
+	size_t plen, hlen;
+	int ret;
+
+	if (ike_sa == NULL || n == NULL || addr == NULL)
+		return -1;
+	plen = get_payload_length(&n->header);
+	hlen = sizeof(struct ikev2payl_notify) + n->nh.spi_size;
+	hash = natt_create_hash(ike_sa, addr, 1);
+	if (hash == NULL)
+		return -1;
+	if (plen < hlen || plen - hlen != hash->l) {
+		rc_vfree(hash);
+		return -1;
+	}
+	ret = CRYPTO_memcmp(get_notify_data(n), hash->v, hash->l) == 0;
+	rc_vfree(hash);
+	return ret;
+}
+
+/*
+ * Commit the NAT state recomputed from an UPDATE_SA_ADDRESSES request.
+ * src_* / dst_* say whether any SOURCE / DESTINATION notify was seen and
+ * whether any of them matched (RFC 7296 2.23: one match among several
+ * SOURCE notifies means no NAT).  With nat_traversal force the state is
+ * pinned and left alone.  The keepalive timer follows behind_nat.
+ * Returns 1 when either flag changed.
+ */
+int
+natt_mobike_renat(struct ikev2_sa *ike_sa, int src_seen, int src_match,
+    int dst_seen, int dst_match)
+{
+	int ob, opb;
+
+	if (ike_sa == NULL)
+		return 0;
+	plog(PLOG_DEBUG, PLOGLOC, NULL,
+	     "MOBIKE NATD: src seen=%d match=%d dst seen=%d match=%d\n",
+	     src_seen, src_match, dst_seen, dst_match);
+	if (!src_seen && !dst_seen)
+		return 0;
+	if (ikev2_nat_traversal(ike_sa->rmconf) == RCT_NATT_FORCE)
+		return 0;
+	ob = ike_sa->behind_nat;
+	opb = ike_sa->peer_behind_nat;
+	if (src_seen)
+		ike_sa->peer_behind_nat = src_match ? FALSE : TRUE;
+	if (dst_seen)
+		ike_sa->behind_nat = dst_match ? FALSE : TRUE;
+	if (ike_sa->behind_nat && !ob &&
+	    ike_sa->state == IKEV2_STATE_ESTABLISHED) {
+		if (ike_sa->natk_timer)
+			SCHED_KILL(ike_sa->natk_timer);
+		ike_sa->natk_timer = sched_new(
+		    ikev2_natk_interval(ike_sa->rmconf),
+		    natt_natk_callback, ike_sa);
+	} else if (!ike_sa->behind_nat && ob && ike_sa->natk_timer) {
+		SCHED_KILL(ike_sa->natk_timer);
+	}
+	if (ob != ike_sa->behind_nat || opb != ike_sa->peer_behind_nat) {
+		plog(PLOG_INFO, PLOGLOC, NULL,
+		     "MOBIKE: NAT state after address update: "
+		     "behind_nat=%d peer_behind_nat=%d (was %d/%d)\n",
+		     ike_sa->behind_nat, ike_sa->peer_behind_nat, ob, opb);
+		return 1;
+	}
+	return 0;
+}
+
 rc_vchar_t *
 natt_create_hash(struct ikev2_sa *ike_sa, struct sockaddr *addr, int use_spi_r)
 {

@@ -1086,6 +1086,8 @@ void responder_ike_sa_auth_eap_final_recv(struct ikev2_sa *, rc_vchar_t *,
 
 /* RFC 4555 MOBIKE, defined in ikev2_mobike.c. */
 void ikev2_mobike_apply(struct ikev2_sa *, struct sockaddr *, struct sockaddr *);
+void ikev2_mobike_apply_nat(struct ikev2_sa *, struct sockaddr *,
+    struct sockaddr *, int);
 int ikev2_mobike_probe_next(struct ikev2_sa *);
 int ikev2_natt_follow_mapping_event(struct ikev2_sa *, struct sockaddr *);
 int ikev2_kernel_migrated(struct ikev2_sa *, struct sockaddr *,
