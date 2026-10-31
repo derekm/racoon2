@@ -21,6 +21,9 @@
 #                                 CREATE_CHILD_SA (exch 36) on the wire, a new
 #                                 ESP SPI pair installed, the old pair gone,
 #                                 IKE SPIs unchanged
+#   lwpeer-natt-r / sspeer-natt-r peer behind SNAT (its netns, -> $HN):
+#                                 RFC 7296 s2.23 NAT-D, float to 4500, both
+#                                 iked SAs espinudp toward $HN, ICMP flows
 #   lwpeer-childrekeypfs-i        as childrekey, with PFS on both sides (iked
 #                                 need_pfs on, pluto pfs=yes, ESP modp2048)
 #   lwpeer-pfsmismatch-i          NEGATIVE, realistic misconfig: pluto's
@@ -90,6 +93,17 @@ kind_i2ilwpeer() {
 	# whose rejection (NO_PROPOSAL_CHOSEN) iked must handle with bounded
 	# backoff, not a rekey storm.
 	LW_PFS=no; NEED_PFS=; LW_ESP=aes256-sha2_256
+	# natt: the peer sits behind a source NAT in its own netns (its
+	# IKE/ESP-in-UDP leave as $HN), as a host behind a NAT gateway.  Only
+	# the peer-initiated role can cross it (a NAT drops unsolicited
+	# inbound), so natt rows are -r only.  iked knows the peer by its
+	# public (post-NAT) address, as any NAT-T responder does.
+	HN=192.0.7.3; PEER_OUTER=$HI; NAT_TXT=
+	if [ "$scen" = natt ]; then
+		[ "$role" = r ] || { log "FAIL: natt rows are responder-only (-r)"; return 1; }
+		command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
+		PEER_OUTER=$HN; NAT_TXT="nat_traversal on;"
+	fi
 	case $scen in
 	childrekeypfs) LW_PFS=yes; NEED_PFS="need_pfs on;" ;;
 	pfsmismatch) LW_PFS=yes ;;
@@ -108,7 +122,8 @@ remote lw {
 		passive $PASSIVE;
 		my_id fqdn "$R_ID";
 		peers_id fqdn "$L_ID";
-		peers_ipaddr "$HI";
+		peers_ipaddr "$PEER_OUTER";
+		$NAT_TXT
 		kmp_enc_alg { aes256_cbc; };
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
@@ -128,7 +143,7 @@ policy pol {
 	ipsec_mode tunnel;
 	ipsec_index { ipsec_e; };
 	ipsec_level require;
-	peers_sa_ipaddr "$HI";
+	peers_sa_ipaddr "$PEER_OUTER";
 	my_sa_ipaddr "$HR";
 };
 ipsec ipsec_e { $CHILD_LT sa_index esp_e; };
@@ -220,6 +235,11 @@ EOF
 	ip link set "$VR" netns "$NSR"; ip link set "$VI" netns "$NSI"
 	ip netns exec "$NSR" ip addr add "$HR/24" dev "$VR"; ip netns exec "$NSR" ip link set "$VR" up
 	ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"; ip netns exec "$NSI" ip link set "$VI" up
+	if [ "$scen" = natt ]; then
+		ip netns exec "$NSI" ip addr add "$HN/24" dev "$VI"
+		ip netns exec "$NSI" iptables -t nat -A POSTROUTING -o "$VI" -s "$HI" -p udp -j SNAT --to-source "$HN" ||
+			{ log "FAIL: SNAT in the peer netns"; return 1; }
+	fi
 
 	# IKE bypass so UDP 500/4500 is never captured by the tunnel policy.
 	for ns in "$NSR:$HR:$HI" "$NSI:$HI:$HR"; do
@@ -294,9 +314,9 @@ EOF
 		ip netns exec "$NSR" ping -c3 -i0.3 -W2 "$HI" >/dev/null 2>&1 ||
 			{ log "FAIL: ICMP through the tunnel"; efail=1; }
 		# Sum the "N(packets)" counters under "lifetime current" for
-		# iked's outbound SAs (src $HR): ICMP must have been encrypted.
+		# iked's outbound SAs (src $HR, dst the peer outer address): ICMP must have been encrypted.
 		_o=$(ip netns exec "$NSR" ip -s xfrm state 2>/dev/null |
-			awk -v h="src $HR dst $HI" '/^src /{o=($0==h)} o&&/lifetime current/{c=1; next} c{sub(/.*bytes\), /,""); sub(/\(packets.*/,""); n+=$0; c=0} END{print n+0}')
+			awk -v h="src $HR dst $PEER_OUTER" '/^src /{o=($0==h)} o&&/lifetime current/{c=1; next} c{sub(/.*bytes\), /,""); sub(/\(packets.*/,""); n+=$0; c=0} END{print n+0}')
 		[ "${_o:-0}" -ge 3 ] ||
 			{ log "FAIL: outbound ESP packet counter $_o < 3 after ping"; efail=1; }
 		grep -Eq 'established Child SA|CHILD_SA lwpch\{[0-9]+\} established' "$PEERLOG" 2>/dev/null ||
@@ -372,6 +392,17 @@ EOF
 		[ "$gone" -eq 1 ] || { log "FAIL: iked kept ${re:-?} ESP SAs after the peer's DELETE"; efail=1; }
 		;;
 	psk) ;;
+	natt)
+		ip netns exec "$NSR" ip xfrm state >"$D/resp-xfrm.txt" 2>&1
+		nenc=$(grep -c 'encap type espinudp' "$D/resp-xfrm.txt")
+		nout=$(grep -c "^src $HR dst $HN" "$D/resp-xfrm.txt")
+		n500=$(ip netns exec "$NSI" iptables -t nat -L POSTROUTING -v -n 2>/dev/null | awk '/SNAT/{print $1; exit}')
+		log "natt: iked SAs with espinudp=$nenc outbound to $HN=$nout SNAT pkts=${n500:-?}"
+		[ "$nenc" -ge 2 ] || { log "FAIL: iked ESP SAs are not UDP-encapsulated (RFC 3948) behind the NAT"; efail=1; }
+		[ "$nout" -ge 1 ] || { log "FAIL: iked's outbound SA does not target the post-NAT address $HN"; efail=1; }
+		ip netns exec "$NSR" ping -c3 -i0.3 -W2 "$HI" >/dev/null 2>&1 ||
+			{ log "FAIL: ICMP across the NAT-T child"; efail=1; }
+		;;
 	*) log "FAIL: unknown scenario '$scen'"; efail=1 ;;
 	esac
 	pgrep -f -- "iked -F -f $C/iked.conf" >/dev/null 2>&1 || { log "FAIL: iked exited"; efail=1; }
