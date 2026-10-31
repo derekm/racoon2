@@ -31,6 +31,10 @@
 #                                 rekey is rejected (NO_PROPOSAL_CHOSEN);
 #                                 iked must arm bounded backoff and send
 #                                 1..3 CREATE_CHILD_SA requests in 50 s
+#   lwpeer-cert-{i,r} / sspeer-cert-{i,r}
+#                                 RSA certificates from a per-run CA, no PSK
+#                                 anywhere; iked validates the peer's CERT
+#                                 payload (cert_validate on + ca_file)
 #   lwpeer-ikerekey-i             iked kmp_sa_lifetime_time 30 s: exch 36 and
 #                                 a NEW IKE SPI pair carries later traffic
 #   lwpeer-delete-i               pluto (responder) terminates: an
@@ -128,6 +132,40 @@ kind_i2ilwpeer() {
 		command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
 		PEER_OUTER=$HN; NAT_TXT="nat_traversal on;"
 	fi
+	# cert: RSA certificates from a per-run test CA on both sides, NO PSK
+	# configured anywhere, so IKE_AUTH can only succeed via the
+	# signatures.  iked validates the peer's CERT payload against the CA
+	# (cert_validate on + ca_file; peers_id must match the SAN).
+	IKED_AUTH="kmp_auth_method { psk; };
+		pre_shared_key \"$C/psk.bin\";"
+	LW_AUTH="authby=secret"; SS_AUTH=psk; SS_LCERT=; SS_RCA=; SSLENV=
+	if [ "$scen" = cert ]; then
+		command -v openssl >/dev/null 2>&1 || { log "FAIL: no openssl"; return 1; }
+		mkdir -p "$C/certs"; _cd=$C/certs
+		openssl req -new -x509 -newkey rsa:2048 -nodes -keyout "$_cd/ca.key" -out "$_cd/ca.crt" \
+			-days 30 -subj "/CN=r2-lwpeer-test-ca" >/dev/null 2>&1 || { log "FAIL: test CA"; return 1; }
+		for _s in r2:"$R_ID" peer:"$L_ID"; do
+			_n=${_s%%:*}; _id=${_s#*:}
+			openssl req -new -newkey rsa:2048 -nodes -keyout "$_cd/$_n.key" -out "$_cd/$_n.csr" \
+				-subj "/CN=$_id" >/dev/null 2>&1 &&
+			printf 'subjectAltName=DNS:%s\n' "$_id" >"$_cd/$_n.ext" &&
+			openssl x509 -req -in "$_cd/$_n.csr" -CA "$_cd/ca.crt" -CAkey "$_cd/ca.key" -CAcreateserial \
+				-out "$_cd/$_n.crt" -days 30 -extfile "$_cd/$_n.ext" >/dev/null 2>&1 ||
+				{ log "FAIL: leaf cert $_n"; return 1; }
+		done
+		rm -f "$C/psk.bin"
+		IKED_AUTH="kmp_auth_method { rsasig; };
+		my_public_key x509pem \"$_cd/r2.crt\" \"$_cd/r2.key\";
+		cert_validate on;
+		ca_file \"$_cd/ca.crt\";"
+		SSLENV="SSL_CERT_FILE=$_cd/ca.crt"
+		LW_AUTH="authby=rsasig
+	leftcert=lwpeer
+	leftsendcert=always"
+		SS_AUTH=pubkey
+		SS_LCERT="certs = $_cd/peer.crt"
+		SS_RCA="cacerts = $_cd/ca.crt"
+	fi
 	case $scen in
 	childrekeypfs) LW_PFS=yes; NEED_PFS="need_pfs on;" ;;
 	pfsmismatch) LW_PFS=yes ;;
@@ -152,8 +190,7 @@ remote lw {
 		kmp_prf_alg { hmac_sha2_256; };
 		kmp_hash_alg { hmac_sha2_256; };
 		kmp_dh_group { modp2048; };
-		kmp_auth_method { psk; };
-		pre_shared_key "$C/psk.bin";
+		$IKED_AUTH
 		$NEED_PFS
 		$IKE_LT
 	};
@@ -190,7 +227,7 @@ conn r2
 	right=$HR
 	rightid=@$R_ID
 	rightsubnet=$HR/32
-	authby=secret
+	$LW_AUTH
 	ike=aes256-sha2_256-modp2048
 	esp=$LW_ESP
 	fragmentation=yes
@@ -210,6 +247,12 @@ EOF
 		# charon seat: no charon-initiated rekeys (iked drives them), no
 		# PFS on the child (iked's child rekey carries no KE), RFC 7383
 		# on.  Config lives in the shard's private swanctl root.
+		# swanctl loads private keys only from its private/ dir (the
+		# shard's private swanctl root, never the host's).
+		if [ "$scen" = cert ]; then
+			mkdir -p "${I2I_CHARON_VDIR%/*}/private"
+			cp "$C/certs/peer.key" "${I2I_CHARON_VDIR%/*}/private/r2-$name.key"
+		fi
 		cat >"$SS_CONF" <<EOF
 connections {
 	lwp {
@@ -220,13 +263,16 @@ connections {
 		proposals = aes256-sha256-modp2048
 		fragmentation = yes
 		rekey_time = 0
+		send_cert = always
 		local {
-			auth = psk
+			auth = $SS_AUTH
 			id = $L_ID
+			$SS_LCERT
 		}
 		remote {
-			auth = psk
+			auth = $SS_AUTH
 			id = $R_ID
+			$SS_RCA
 		}
 		children {
 			lwpch {
@@ -297,13 +343,20 @@ EOF
 
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/iked.conf" ) >"$D/spmd.log" 2>&1 &
 	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSR" env RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
+	( ip netns exec "$NSR" env $SSLENV RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/iked.conf" -D 0x0001 -l "$D/iked.log" ) >"$D/iked.out" 2>&1 &
 
 	if [ "$PEER" = lw ]; then
 		# Same db `ipsec initnss` builds: an empty-password sql: NSS db.
 		certutil -N -d "sql:$C/lw-nss" --empty-password >"$D/lw-nssinit.log" 2>&1 ||
 			[ -f "$C/lw-nss/cert9.db" ] || { log "FAIL: NSS db init (certutil -N)"; lwp_cleanup; return 1; }
+		if [ "$scen" = cert ]; then
+			openssl pkcs12 -export -passout pass: -name lwpeer -inkey "$C/certs/peer.key" \
+				-in "$C/certs/peer.crt" -out "$C/certs/peer.p12" >/dev/null 2>&1 &&
+			pk12util -i "$C/certs/peer.p12" -d "sql:$C/lw-nss" -W "" >>"$D/lw-nssinit.log" 2>&1 &&
+			certutil -A -d "sql:$C/lw-nss" -n r2-lwpeer-test-ca -t "CT,," -i "$C/certs/ca.crt" >>"$D/lw-nssinit.log" 2>&1 ||
+				{ log "FAIL: NSS cert import"; cat "$D/lw-nssinit.log"; lwp_cleanup; return 1; }
+		fi
 		( i2i_lw_ns_exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
 		    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
 		    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
@@ -446,7 +499,7 @@ EOF
 		[ "$n37" -ge 1 ] || { log "FAIL: no INFORMATIONAL DELETE from the peer on the wire"; efail=1; }
 		[ "$gone" -eq 1 ] || { log "FAIL: iked kept ${re:-?} ESP SAs after the peer's DELETE"; efail=1; }
 		;;
-	psk) ;;
+	psk|cert) ;;
 	mobike|mobikenatin|mobikenatout)
 		n37a=$(awk -F'\t' '$1=="in" && $2==37' "$D/wire.tsv" | wc -l)
 		if [ "$scen" = mobikenatout ]; then
