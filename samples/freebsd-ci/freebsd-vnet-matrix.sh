@@ -1935,7 +1935,17 @@ run_nat_row() {
 	jexec $jn sysctl -q net.inet.ip.forwarding=1 >/dev/null
 	jexec $jr ifconfig "${_eb}b" inet 192.0.5.1/24 up
 	printf 'nat on %s inet from 10.9.0.0/24 to any -> 192.0.5.254\npass all\n' "${_eb}a" > /tmp/freeb-nat-pf.conf
-	jexec $jn pfctl -q -f /tmp/freeb-nat-pf.conf && jexec $jn pfctl -q -e || { echo "FAIL freebsd-vnet $_name (pf in the NAT jail)"; return 1; }
+	if ! { jexec $jn pfctl -q -f /tmp/freeb-nat-pf.conf && jexec $jn pfctl -q -e; }; then
+		# 16.0-CURRENT refused the transaction (pfctl_rules /
+		# DIOCXROLLBACK, errno 0) while 15.1 loads it: record why.
+		echo "--- pf diag ($_name) ---"
+		uname -a; kldstat | grep -E 'pf|netlink' || true
+		jexec $jn ls -l /dev/pf 2>&1 || true
+		jexec $jn pfctl -vvnf /tmp/freeb-nat-pf.conf 2>&1 | head -20
+		jexec $jn pfctl -vv -f /tmp/freeb-nat-pf.conf 2>&1 | head -20
+		jexec $jn pfctl -s info 2>&1 | head -8
+		echo "FAIL freebsd-vnet $_name (pf in the NAT jail)"; return 1
+	fi
 	install -d -m 0755 /tmp/freeb
 	dd if=/dev/urandom of=/tmp/freeb/test.psk bs=32 count=1 2>/dev/null; chmod 600 /tmp/freeb/test.psk
 	printf 'ci-spmd-pw\n' > /tmp/freeb/spmd.pwd; chmod 600 /tmp/freeb/spmd.pwd
