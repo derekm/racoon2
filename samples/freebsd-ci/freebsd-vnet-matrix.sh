@@ -341,7 +341,7 @@ fbsd_comply() {
 		grep -q 'kmp_enc_alg { aes_ctr, 192' "/tmp/freeb/$_c" && _ikesz=192 || true
 		grep -q 'kmp_enc_alg { aes_ctr, 128' "/tmp/freeb/$_c" && _ikesz=128 || true
 		# bare aes_ccm/ccm8/ccm16 is the 128-bit default (RFC 4309 key=128)
-		grep -qE 'kmp_enc_alg { aes_ccm' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
+		grep -qF 'kmp_enc_alg { aes_ccm' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
 		grep -q 'kmp_enc_alg { 3des_cbc' "/tmp/freeb/$_c" && _ikesz=168 || true
 		grep -q 'kmp_enc_alg { aes128_cbc' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
 		grep -q 'kmp_enc_alg { aes_gcm' "/tmp/freeb/$_c" && [ "$_ikesz" -eq 0 ] && _ikesz=128 || true
