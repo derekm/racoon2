@@ -70,6 +70,17 @@ ikev2_mobike_natt(struct ikev2_sa *ike_sa, struct rcpfk_msg *rc,
 		return;
 	if (*sp == htons(500) && *dp == htons(500))
 		return;
+	/* RFC 4555 3.3 floats IKE to 4500 whether or not a NAT is present,
+	 * but ESP is UDP-encapsulated only when a NAT was detected (RFC 3948,
+	 * RFC 7296 2.23).  Keying encap off the IKE ports alone installed
+	 * espinudp SAs against a NAT-free peer that keeps sending plain ESP
+	 * (strongSwan), and the kernel dropped every inbound frame as
+	 * XfrmInStateMismatch after the move.  Mirror the child-install rule
+	 * in ikev2_child.c. */
+	if (!ike_sa->behind_nat && !ike_sa->peer_behind_nat &&
+	    (ike_sa->rmconf == NULL ||
+	     ikev2_nat_traversal(ike_sa->rmconf) != RCT_NATT_FORCE))
+		return;
 	rc->natt_type = UDP_ENCAP_ESPINUDP;
 	rc->natt_sport = *sp;
 	rc->natt_dport = *dp;
