@@ -222,7 +222,7 @@ EOF
 		# Same db `ipsec initnss` builds: an empty-password sql: NSS db.
 		certutil -N -d "sql:$C/lw-nss" --empty-password >"$D/lw-nssinit.log" 2>&1 ||
 			[ -f "$C/lw-nss/cert9.db" ] || { log "FAIL: NSS db init (certutil -N)"; lwp_cleanup; return 1; }
-		( ip netns exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
+		( i2i_lw_ns_exec "$NSI" "$I2I_LW_PLUTO" --nofork --rundir "$C/lw-run" \
 		    --ipsecdir "$C/lw-etc" --conf "$C/lw-etc/ipsec.conf" \
 		    --secretsfile "$C/lw-etc/ipsec.secrets" --nssdir "$C/lw-nss" \
 		    --logfile "$D/pluto.log" --stderrlog ) >"$D/pluto.out" 2>&1 &

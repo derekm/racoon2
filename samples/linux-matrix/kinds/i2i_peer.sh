@@ -45,8 +45,28 @@ fi
 # Libreswan initiator seat (RFC 5723 session resumption interop, kinds/i2ilw.sh):
 # pluto + whack live under /usr/libexec/ipsec on Fedora/libreswan 5.x, and can
 # be overridden per-host (e.g. the box's probe install).
+# I2I_LW_ROOT: an unpacked (not installed) libreswan tree, e.g. from
+# `dpkg -x`.  pluto execs a path-fixed /usr/libexec/ipsec/addconn at start,
+# so run it in a private mount ns with $I2I_LW_ROOT/usr/libexec bound over
+# /usr/libexec: nothing on the host filesystem is touched.  Unset (CI,
+# packaged libreswan): plain `ip netns exec`.
+if [ -n "${I2I_LW_ROOT:-}" ]; then
+	I2I_LW_PLUTO=${I2I_LW_PLUTO:-$I2I_LW_ROOT/usr/libexec/ipsec/pluto}
+	I2I_LW_WHACK=${I2I_LW_WHACK:-$I2I_LW_ROOT/usr/libexec/ipsec/whack}
+fi
 I2I_LW_PLUTO=${I2I_LW_PLUTO:-/usr/libexec/ipsec/pluto}
 I2I_LW_WHACK=${I2I_LW_WHACK:-/usr/libexec/ipsec/whack}
+# i2i_lw_ns_exec <netns> <cmd...>
+i2i_lw_ns_exec() {
+	_lns=$1; shift
+	if [ -n "${I2I_LW_ROOT:-}" ]; then
+		ip netns exec "$_lns" unshare -m --propagation private sh -c \
+		    'mount --bind "$1" /usr/libexec && shift && exec "$@"' sh \
+		    "$I2I_LW_ROOT/usr/libexec" "$@"
+	else
+		ip netns exec "$_lns" "$@"
+	fi
+}
 I2I_LW_PSK=${I2I_LW_PSK:-racoon2-libreswan-resume-0123456789abcdef}
 # Private strongSwan root (review M6): rows never read or write the host's
 # /etc/{strongswan/,}swanctl or /var/run/charon.*.  Every run gets its own
