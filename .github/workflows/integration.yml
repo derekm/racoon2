@@ -198,14 +198,16 @@ jobs:
         run: |
           set -o pipefail
           sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
-            --cases '^(pfkeyicv-sha256|pfkeyicv-gcm|i2iinit-ike-cbc128-esp-sha384|i2iinit-ike-cbc128-esp-sha512|icvaudit-ok) ' \
+            --cases '^(pfkeyicv-sha256|pfkeyicv-gcm|i2iinit-ike-cbc128-esp-sha384|i2iinit-ike-cbc128-esp-sha512|icvaudit-ok|i2imobike-(move|move-nomig|off|return|flap-nomig|loss|v6|multi-nomig|childrekey-nomig|ikerekey)) ' \
             | tee /tmp/r2-pfkey.log
         env:
           R2_PREFIX: /usr/local/racoon2
           R2_KM: pfkey
           R2_REQUIRE_LIVE: 1
           R2_LANE: pfkey
-          R2_MIN_PASS: 5
+          # 5 ICV rows + 10 MOBIKE rows (SADB_X_MIGRATE, or the
+          # userspace re-create when the kernel lacks it / -nomig)
+          R2_MIN_PASS: 15
 
       - name: Upload pfkey log
         if: always()

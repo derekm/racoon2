@@ -22,7 +22,7 @@ else
 libracoon_la_SOURCES += if_pfkeyv2.c
 endif
 endif
-EXTRA_DIST = rcpfk_nl.h if_xfrm.c if_pfkeyv2.c if_userspace.c xfrmnatt.c xfrmtmpl.c xfrmnltest.c
+EXTRA_DIST = rcpfk_nl.h if_xfrm.c if_pfkeyv2.c if_userspace.c xfrmnatt.c xfrmtmpl.c xfrmnltest.c pfkumigtest.c
 libracoon_la_LIBADD = $(LTLIBOBJS) -lpcap
 # NOTE: keep the libtool version-info at the default 0:0:0 (soname
 # libracoon.so.0). Bumping it to 1:0:0 (libracoon.so.1) IS the right ABI-drift
@@ -68,6 +68,20 @@ xfrmnatt_SOURCES = xfrmnatt.c
 xfrmnatt_LDADD = libracoon.la
 xfrmtmpl_SOURCES = xfrmtmpl.c
 xfrmtmpl_LDADD = libracoon.la
+endif
+
+if !USE_XFRM
+if !USE_USERSPACE
+# pfkumigtest #includes if_pfkeyv2.c for the no-SADB_X_MIGRATE move's
+# message builders; kernel-free, so NetBSD and FreeBSD run it too.
+TESTS += pfkumigtest
+check_PROGRAMS += pfkumigtest
+pfkumigtest_SOURCES = pfkumigtest.c
+pfkumigtest_LDADD = vmbuf.lo rc_type.lo rc_net.lo rc_str.lo if_spmd.lo \
+	cfsetup.lo rc_pcap.lo cftoken.lo cfparse.lo pidfile.lo sd_listenfds.lo \
+	plog.lo safefile.lo version.lo rbuf.lo addresspool.lo rcpfk_util.lo \
+	$(LTLIBOBJS) -lpcap -lpthread
+endif
 endif
 
 BUILT_SOURCES = cfparse.h

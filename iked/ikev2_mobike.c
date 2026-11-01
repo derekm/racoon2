@@ -113,6 +113,11 @@ ikev2_mobike_migrate_dir(struct ikev2_sa *ike_sa, rc_type dir,
 	rc.pref_src = pref_src;
 	rc.pref_dst = pref_dst;
 	rc.satype = RCT_SATYPE_ESP;
+	/* PF_KEY's SADB_X_MIGRATE carries the policy: without an action
+	 * the pfkey backend refused every MOBIKE move (invalid pltype=0) */
+	rc.pltype = RCT_ACT_AUTO_IPSEC;
+	/* ... and a level (the pfkey backend aborted on seclevel=0) */
+	rc.ipsec_level = reqid != 0 ? RCT_IPSL_UNIQUE : RCT_IPSL_REQUIRE;
 	rc.samode = samode;
 	rc.reqid = reqid;
 	rc.dir = dir;

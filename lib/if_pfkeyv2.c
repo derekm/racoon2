@@ -69,6 +69,7 @@
 #endif
 #include <errno.h>
 #include <poll.h>
+#include <time.h>
 
 #include "racoon.h"
 #include "cfsetup.h"
@@ -1124,6 +1125,540 @@ rcpfk_send_spddump(struct rcpfk_msg *rc)
 }
 
 /*
+ * MOBIKE without SADB_X_MIGRATE (FreeBSD and NetBSD have none; a Linux
+ * kernel without CONFIG_XFRM_MIGRATE refuses it): move the SAs and the
+ * policies' tunnel endpoints in user space over a private PF_KEY socket,
+ * synchronously, the way strongSwan's kernel-pfkey updates an SA's
+ * addresses (SADB_GET/DUMP, add the SA at the new endpoints, delete the
+ * old one).  Matching: every SA of rc->satype with src == sa_src and
+ * dst == sa_dst (addresses only, rc->reqid when set); every policy whose
+ * ipsecrequest names (sa_src, sa_dst).  The address family must not
+ * change (the sockaddrs are rewritten in place).
+ */
+#define PFK_UMIG_BUF	65536
+
+static int
+pfk_umig_addr_eq(const struct sockaddr *a, const struct sockaddr *b)
+{
+	if (a->sa_family != b->sa_family)
+		return 0;
+	if (a->sa_family == AF_INET)
+		return memcmp(&((const struct sockaddr_in *)a)->sin_addr,
+		    &((const struct sockaddr_in *)b)->sin_addr, 4) == 0;
+#ifdef INET6
+	if (a->sa_family == AF_INET6)
+		return memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr,
+		    &((const struct sockaddr_in6 *)b)->sin6_addr, 16) == 0;
+#endif
+	return 0;
+}
+
+/* overwrite the address of *dst with the one in *src (same family) */
+static void
+pfk_umig_addr_set(struct sockaddr *dst, const struct sockaddr *src)
+{
+	if (dst->sa_family == AF_INET)
+		memcpy(&((struct sockaddr_in *)dst)->sin_addr,
+		    &((const struct sockaddr_in *)src)->sin_addr, 4);
+#ifdef INET6
+	else if (dst->sa_family == AF_INET6)
+		memcpy(&((struct sockaddr_in6 *)dst)->sin6_addr,
+		    &((const struct sockaddr_in6 *)src)->sin6_addr, 16);
+#endif
+}
+
+static size_t
+pfk_umig_salen(const struct sockaddr *sa)
+{
+	if (sa->sa_family == AF_INET)
+		return sizeof(struct sockaddr_in);
+#ifdef INET6
+	if (sa->sa_family == AF_INET6)
+		return sizeof(struct sockaddr_in6);
+#endif
+	return 0;
+}
+
+/*
+ * Send one request on the private socket and collect the replies meant
+ * for it (our pid, its type; a non-dump also its seq).  A dump ends at
+ * the entry whose sadb_msg_seq (the count remaining, BSD and Linux) is
+ * 0, or at an errno reply (ENOENT: nothing to dump).
+ */
+static int
+pfk_umig_xchg(int so, rc_vchar_t *req, int dump,
+    int (*cb)(struct sadb_msg *, void *), void *arg)
+{
+	struct sadb_msg *q = (struct sadb_msg *)req->v;
+	uint8_t *rb;
+	int e = 0;
+
+	if (send(so, req->v, req->l, 0) != (ssize_t)req->l) {
+		/* Linux af_key reports parse errors from send() itself */
+		e = errno;
+		plog(PLOG_INTERR, PLOGLOC, NULL,
+		    "pfkey: msg type %d refused: %s\n", q->sadb_msg_type,
+		    strerror(e));
+		return e;
+	}
+	rb = malloc(PFK_UMIG_BUF);
+	if (rb == NULL)
+		return ENOMEM;
+	for (;;) {
+		struct pollfd pfd;
+		struct sadb_msg *m = (struct sadb_msg *)rb;
+		ssize_t n;
+
+		pfd.fd = so;
+		pfd.events = POLLIN;
+		if (poll(&pfd, 1, 2000) <= 0) {
+			e = ETIMEDOUT;
+			break;
+		}
+		n = recv(so, rb, PFK_UMIG_BUF, 0);
+		if (n < (ssize_t)sizeof(*m)) {
+			e = n < 0 ? errno : EBADMSG;
+			break;
+		}
+		if (m->sadb_msg_pid != q->sadb_msg_pid ||
+		    m->sadb_msg_type != q->sadb_msg_type ||
+		    (size_t)PFKEY_UNUNIT64(m->sadb_msg_len) != (size_t)n)
+			continue;	/* another socket's traffic */
+		if (!dump && m->sadb_msg_seq != q->sadb_msg_seq)
+			continue;
+		if (m->sadb_msg_errno != 0) {
+			/* an empty dump answers ENOENT */
+			e = (dump && m->sadb_msg_errno == ENOENT) ? 0 :
+			    m->sadb_msg_errno;
+			if (e != 0)
+				plog(PLOG_INTERR, PLOGLOC, NULL,
+				    "pfkey: msg type %d refused: %s\n",
+				    q->sadb_msg_type, strerror(e));
+			break;
+		}
+		if (cb != NULL && (e = cb(m, arg)) != 0)
+			break;
+		if (!dump || m->sadb_msg_seq == 0)
+			break;
+	}
+	free(rb);
+	return e;
+}
+
+/* walk the extensions of m; return the one of type t (or NULL) */
+static struct sadb_ext *
+pfk_umig_ext(struct sadb_msg *m, int t)
+{
+	uint8_t *p = (uint8_t *)(m + 1);
+	uint8_t *ep = (uint8_t *)m + PFKEY_UNUNIT64(m->sadb_msg_len);
+
+	while (p + sizeof(struct sadb_ext) <= ep) {
+		struct sadb_ext *x = (struct sadb_ext *)p;
+		size_t l = PFKEY_UNUNIT64(x->sadb_ext_len);
+
+		if (l < sizeof(*x) || p + l > ep)
+			return NULL;
+		if (x->sadb_ext_type == t)
+			return x;
+		p += l;
+	}
+	return NULL;
+}
+
+static struct sockaddr *
+pfk_umig_extaddr(struct sadb_msg *m, int t)
+{
+	struct sadb_address *a = (struct sadb_address *)pfk_umig_ext(m, t);
+	struct sockaddr *sa;
+
+	if (a == NULL || PFKEY_UNUNIT64(a->sadb_address_len) <
+	    sizeof(*a) + sizeof(struct sockaddr))
+		return NULL;
+	sa = (struct sockaddr *)(a + 1);
+	if (PFKEY_UNUNIT64(a->sadb_address_len) < sizeof(*a) +
+	    pfk_umig_salen(sa) || pfk_umig_salen(sa) == 0)
+		return NULL;
+	return sa;
+}
+
+struct pfk_umig {
+	struct rcpfk_msg *rc;
+	rc_vchar_t *msgs[64];
+	int n;
+};
+
+static int
+pfk_umig_keep(struct sadb_msg *m, void *arg)
+{
+	struct pfk_umig *u = arg;
+
+	if (u->n >= (int)(sizeof(u->msgs) / sizeof(u->msgs[0])))
+		return 0;
+	if ((u->msgs[u->n] = rc_vnew(m, PFKEY_UNUNIT64(m->sadb_msg_len)))
+	    == NULL)
+		return ENOMEM;
+	u->n++;
+	return 0;
+}
+
+static int
+pfk_umig_sa_match(struct sadb_msg *m, struct rcpfk_msg *rc)
+{
+	struct sockaddr *s = pfk_umig_extaddr(m, SADB_EXT_ADDRESS_SRC);
+	struct sockaddr *d = pfk_umig_extaddr(m, SADB_EXT_ADDRESS_DST);
+	struct sadb_x_sa2 *x2 = (struct sadb_x_sa2 *)
+	    pfk_umig_ext(m, SADB_X_EXT_SA2);
+
+	if (s == NULL || d == NULL || pfk_umig_ext(m, SADB_EXT_SA) == NULL)
+		return 0;
+	if (!pfk_umig_addr_eq(s, rc->sa_src) || !pfk_umig_addr_eq(d, rc->sa_dst))
+		return 0;
+	if (rc->reqid != 0 && x2 != NULL && x2->sadb_x_sa2_reqid != rc->reqid)
+		return 0;
+	return 1;
+}
+
+/* the SADB_ADD for a dumped SA at the new endpoints */
+static rc_vchar_t *
+pfk_umig_mkadd(struct sadb_msg *m, struct rcpfk_msg *rc, uint32_t seq)
+{
+	uint8_t *p = (uint8_t *)(m + 1);
+	uint8_t *ep = (uint8_t *)m + PFKEY_UNUNIT64(m->sadb_msg_len);
+	rc_vchar_t *b;
+	int drop_nat = 0;
+
+#ifdef ENABLE_NATT
+	drop_nat = rc->natt_type != 0 || (rc->flags & PFK_FLAG_NOENCAP);
+#else
+	drop_nat = (rc->flags & PFK_FLAG_NOENCAP) != 0;
+#endif
+	if ((b = rc_vnew(m, sizeof(*m))) == NULL)
+		return NULL;
+	while (p + sizeof(struct sadb_ext) <= ep) {
+		struct sadb_ext *x = (struct sadb_ext *)p;
+		size_t l = PFKEY_UNUNIT64(x->sadb_ext_len), o = b->l;
+		int t = x->sadb_ext_type;
+		rc_vchar_t *nb;
+
+		if (l < sizeof(*x) || p + l > ep)
+			break;
+		p += l;
+		if (t == SADB_EXT_LIFETIME_CURRENT)
+			continue;
+#ifdef SADB_X_EXT_NAT_T_TYPE
+		if (drop_nat && (t == SADB_X_EXT_NAT_T_TYPE ||
+		    t == SADB_X_EXT_NAT_T_SPORT || t == SADB_X_EXT_NAT_T_DPORT))
+			continue;
+#endif
+		if ((nb = rc_vrealloc(b, o + l)) == NULL) {
+			rc_vfree(b);
+			return NULL;
+		}
+		b = nb;
+		memcpy((uint8_t *)b->v + o, x, l);
+		if (t == SADB_EXT_ADDRESS_SRC || t == SADB_EXT_ADDRESS_DST)
+			pfk_umig_addr_set((struct sockaddr *)((uint8_t *)b->v +
+			    o + sizeof(struct sadb_address)),
+			    t == SADB_EXT_ADDRESS_SRC ? rc->sa2_src :
+			    rc->sa2_dst);
+	}
+#ifdef ENABLE_NATT
+	if (rc->natt_type &&
+	    (rcpfk_set_sadb_x_nattype(&b, rc) ||
+	    rcpfk_set_sadb_x_natport(&b, rc, SADB_X_EXT_NAT_T_SPORT) ||
+	    rcpfk_set_sadb_x_natport(&b, rc, SADB_X_EXT_NAT_T_DPORT))) {
+		rc_vfree(b);
+		return NULL;
+	}
+#endif
+	m = (struct sadb_msg *)b->v;
+	m->sadb_msg_type = SADB_ADD;
+	m->sadb_msg_errno = 0;
+	m->sadb_msg_reserved = 0;	/* Linux dumps carry a refcount here */
+	m->sadb_msg_seq = seq;
+	m->sadb_msg_pid = (uint32_t)getpid();
+	m->sadb_msg_len = PFKEY_UNIT64(b->l);
+	return b;
+}
+
+/* SADB_DELETE <base, SA, address(SD)> for a dumped SA */
+static rc_vchar_t *
+pfk_umig_mkdel(struct sadb_msg *m, uint32_t seq)
+{
+	int ts[] = { SADB_EXT_SA, SADB_EXT_ADDRESS_SRC, SADB_EXT_ADDRESS_DST };
+	rc_vchar_t *b;
+	size_t i;
+
+	if ((b = rc_vnew(m, sizeof(*m))) == NULL)
+		return NULL;
+	for (i = 0; i < sizeof(ts) / sizeof(ts[0]); i++) {
+		struct sadb_ext *x = pfk_umig_ext(m, ts[i]);
+		size_t l, o = b->l;
+		rc_vchar_t *nb;
+
+		if (x == NULL) {
+			rc_vfree(b);
+			return NULL;
+		}
+		l = PFKEY_UNUNIT64(x->sadb_ext_len);
+		if ((nb = rc_vrealloc(b, o + l)) == NULL) {
+			rc_vfree(b);
+			return NULL;
+		}
+		b = nb;
+		memcpy((uint8_t *)b->v + o, x, l);
+	}
+	m = (struct sadb_msg *)b->v;
+	m->sadb_msg_type = SADB_DELETE;
+	m->sadb_msg_errno = 0;
+	m->sadb_msg_reserved = 0;	/* Linux dumps carry a refcount here */
+	m->sadb_msg_seq = seq;
+	m->sadb_msg_pid = (uint32_t)getpid();
+	m->sadb_msg_len = PFKEY_UNIT64(b->l);
+	return b;
+}
+
+/* rewrite the tunnel endpoints in a dumped policy; 1 if any matched */
+static int
+pfk_umig_pol_rewrite(struct sadb_msg *m, struct rcpfk_msg *rc)
+{
+	struct sadb_x_policy *xp = (struct sadb_x_policy *)
+	    pfk_umig_ext(m, SADB_X_EXT_POLICY);
+	uint8_t *p, *ep;
+	int hit = 0;
+
+	if (xp == NULL)
+		return 0;
+	p = (uint8_t *)(xp + 1);
+	ep = (uint8_t *)xp + PFKEY_UNUNIT64(xp->sadb_x_policy_len);
+	while (p + sizeof(struct sadb_x_ipsecrequest) <= ep) {
+		struct sadb_x_ipsecrequest *r = (struct sadb_x_ipsecrequest *)p;
+		size_t rl = r->sadb_x_ipsecrequest_len;
+		struct sockaddr *s, *d;
+
+		if (rl < sizeof(*r) || p + rl > ep)
+			break;
+		s = (struct sockaddr *)(r + 1);
+		if (rl >= sizeof(*r) + 2 * sizeof(struct sockaddr) &&
+		    pfk_umig_salen(s) != 0 &&
+		    rl >= sizeof(*r) + 2 * pfk_umig_salen(s)) {
+			d = (struct sockaddr *)((uint8_t *)s + pfk_umig_salen(s));
+			if (pfk_umig_addr_eq(s, rc->sa_src) &&
+			    pfk_umig_addr_eq(d, rc->sa_dst) &&
+			    (rc->reqid == 0 ||
+			    r->sadb_x_ipsecrequest_reqid == 0 ||
+			    r->sadb_x_ipsecrequest_reqid == rc->reqid)) {
+				pfk_umig_addr_set(s, rc->sa2_src);
+				pfk_umig_addr_set(d, rc->sa2_dst);
+				hit = 1;
+			}
+		}
+		p += rl;
+	}
+	return hit;
+}
+
+static int
+pfk_migrate_userspace(struct rcpfk_msg *rc)
+{
+	struct pfk_umig u;
+	rc_vchar_t *req = NULL;
+	struct sadb_msg *q;
+	int so, i, e, moved = 0, repol = 0;
+	uint32_t seq = (uint32_t)time(NULL) << 8;
+
+	if (rc->sa_src == NULL || rc->sa_dst == NULL ||
+	    rc->sa2_src == NULL || rc->sa2_dst == NULL) {
+		plog(PLOG_INTERR, PLOGLOC, NULL, "pfkey: migrate without "
+		    "endpoints\n");
+		return EINVAL;
+	}
+	if (rc->sa_src->sa_family != rc->sa2_src->sa_family ||
+	    rc->sa_dst->sa_family != rc->sa2_dst->sa_family)
+		return EAFNOSUPPORT;
+	if ((so = socket(PF_KEY, SOCK_RAW, PF_KEY_V2)) < 0)
+		return errno;
+	memset(&u, 0, sizeof(u));
+	u.rc = rc;
+
+	/* the SAs */
+	if ((req = rc_vmalloc(sizeof(*q))) == NULL) {
+		close(so);
+		return ENOMEM;
+	}
+	q = (struct sadb_msg *)req->v;
+	memset(q, 0, sizeof(*q));
+	q->sadb_msg_version = PF_KEY_V2;
+	q->sadb_msg_type = SADB_DUMP;
+	q->sadb_msg_satype = rct2pfk_satype(rc->satype);
+	q->sadb_msg_len = PFKEY_UNIT64(sizeof(*q));
+	q->sadb_msg_seq = ++seq;
+	q->sadb_msg_pid = (uint32_t)getpid();
+	e = pfk_umig_xchg(so, req, 1, pfk_umig_keep, &u);
+	for (i = 0; e == 0 && i < u.n; i++) {
+		struct sadb_msg *m = (struct sadb_msg *)u.msgs[i]->v;
+		rc_vchar_t *a, *d;
+		int keychg;
+
+		if (!pfk_umig_sa_match(m, rc))
+			continue;
+		a = pfk_umig_mkadd(m, rc, ++seq);
+		d = pfk_umig_mkdel(m, ++seq);
+		if (a == NULL || d == NULL) {
+			rc_vfree(a);
+			rc_vfree(d);
+			e = ENOMEM;
+			break;
+		}
+		/* the SA key is (dst, SPI, proto): a new dst may go in
+		 * first (no window); the same dst must be freed first */
+		keychg = !pfk_umig_addr_eq(rc->sa_dst, rc->sa2_dst);
+		if (keychg) {
+			if ((e = pfk_umig_xchg(so, a, 0, NULL, NULL)) == 0)
+				(void)pfk_umig_xchg(so, d, 0, NULL, NULL);
+		} else if ((e = pfk_umig_xchg(so, d, 0, NULL, NULL)) == 0) {
+			if ((e = pfk_umig_xchg(so, a, 0, NULL, NULL)) != 0) {
+				/* put the old SA back */
+				struct sadb_msg *r = (struct sadb_msg *)m;
+
+				r->sadb_msg_type = SADB_ADD;
+				r->sadb_msg_seq = ++seq;
+				r->sadb_msg_pid = (uint32_t)getpid();
+				r->sadb_msg_errno = 0;
+				r->sadb_msg_reserved = 0;	/* Linux dumps carry a refcount here */
+				(void)pfk_umig_xchg(so, u.msgs[i], 0, NULL,
+				    NULL);
+			}
+		}
+		rc_vfree(a);
+		rc_vfree(d);
+		if (e == 0)
+			moved++;
+	}
+	for (i = 0; i < u.n; i++)
+		rc_vfree(u.msgs[i]);
+	u.n = 0;
+
+	/* the policies' tunnel endpoints */
+	if (e == 0) {
+		q->sadb_msg_type = SADB_X_SPDDUMP;
+		q->sadb_msg_satype = SADB_SATYPE_UNSPEC;
+		q->sadb_msg_seq = ++seq;
+		e = pfk_umig_xchg(so, req, 1, pfk_umig_keep, &u);
+	}
+	for (i = 0; e == 0 && i < u.n; i++) {
+		struct sadb_msg *m = (struct sadb_msg *)u.msgs[i]->v;
+		uint8_t *p, *ep;
+		rc_vchar_t *b;
+
+		if (!pfk_umig_pol_rewrite(m, rc))
+			continue;
+		/* SPDUPDATE <base, address(SD), policy>: drop the lifetimes */
+		if ((b = rc_vnew(m, sizeof(*m))) == NULL) {
+			e = ENOMEM;
+			break;
+		}
+		p = (uint8_t *)(m + 1);
+		ep = (uint8_t *)m + PFKEY_UNUNIT64(m->sadb_msg_len);
+		while (p + sizeof(struct sadb_ext) <= ep) {
+			struct sadb_ext *x = (struct sadb_ext *)p;
+			size_t l = PFKEY_UNUNIT64(x->sadb_ext_len), o = b->l;
+			rc_vchar_t *nb;
+
+			if (l < sizeof(*x) || p + l > ep)
+				break;
+			p += l;
+			if (x->sadb_ext_type != SADB_EXT_ADDRESS_SRC &&
+			    x->sadb_ext_type != SADB_EXT_ADDRESS_DST &&
+			    x->sadb_ext_type != SADB_X_EXT_POLICY)
+				continue;
+			if ((nb = rc_vrealloc(b, o + l)) == NULL) {
+				e = ENOMEM;
+				break;
+			}
+			b = nb;
+			memcpy((uint8_t *)b->v + o, x, l);
+		}
+		if (e == 0) {
+			struct sadb_msg *r = (struct sadb_msg *)b->v;
+			struct sadb_x_policy *xp = (struct sadb_x_policy *)
+			    pfk_umig_ext(r, SADB_X_EXT_POLICY);
+
+			r->sadb_msg_type = SADB_X_SPDUPDATE;
+			r->sadb_msg_errno = 0;
+			r->sadb_msg_reserved = 0;	/* Linux dumps carry a refcount here */
+			r->sadb_msg_seq = ++seq;
+			r->sadb_msg_pid = (uint32_t)getpid();
+			r->sadb_msg_len = PFKEY_UNIT64(b->l);
+			/* the kernel picks a fresh id on update */
+			if (xp != NULL)
+				xp->sadb_x_policy_id = 0;
+			if ((e = pfk_umig_xchg(so, b, 0, NULL, NULL)) == 0)
+				repol++;
+		}
+		rc_vfree(b);
+	}
+	for (i = 0; i < u.n; i++)
+		rc_vfree(u.msgs[i]);
+	rc_vfree(req);
+	close(so);
+	if (e == 0)
+		plog(PLOG_INFO, PLOGLOC, NULL,
+		    "pfkey: no SADB_X_MIGRATE; moved %d SA(s) and %d "
+		    "policy template(s) by re-creating them\n", moved, repol);
+	return e;
+}
+
+#ifdef SADB_X_MIGRATE
+static int
+pfk_migrate_kernel(rc_vchar_t *buf)
+{
+	struct sadb_msg *q = SADB_MSG(buf);
+	uint8_t rb[512];
+	int so, e = 0;
+
+	if ((so = socket(PF_KEY, SOCK_RAW, PF_KEY_V2)) < 0)
+		return errno;
+	q->sadb_msg_pid = (uint32_t)getpid();
+	q->sadb_msg_len = PFKEY_UNIT64_U16(buf->l);
+	if (send(so, buf->v, buf->l, 0) != (ssize_t)buf->l) {
+		e = errno;
+		close(so);
+		return e;
+	}
+	for (;;) {
+		struct pollfd pfd;
+		struct sadb_msg *m = (struct sadb_msg *)rb;
+		ssize_t n;
+
+		pfd.fd = so;
+		pfd.events = POLLIN;
+		if (poll(&pfd, 1, 1000) <= 0)
+			break;		/* no error reply: accepted */
+		n = recv(so, rb, sizeof(rb), 0);
+		if (n < (ssize_t)sizeof(*m))
+			break;
+		if (m->sadb_msg_type != SADB_X_MIGRATE ||
+		    m->sadb_msg_pid != q->sadb_msg_pid ||
+		    m->sadb_msg_seq != q->sadb_msg_seq)
+			continue;
+		e = m->sadb_msg_errno;
+		break;
+	}
+	close(so);
+	return e;
+}
+#endif
+
+static int
+pfk_no_migrate_forced(void)
+{
+	const char *nm = getenv("RACOON2_PFKEY_NO_MIGRATE");
+
+	return nm != NULL && strcmp(nm, "1") == 0;
+}
+
+/*
  * send a SADB_X_MIGRATE to kernel.
  *    <base, address(SD), policy>
  */
@@ -1132,6 +1667,17 @@ rcpfk_send_migrate(struct rcpfk_msg *rc)
 {
 #ifdef SADB_X_MIGRATE
 	rc_vchar_t *buf = 0;
+
+	/* RACOON2_PFKEY_NO_MIGRATE=1 (tests): the path BSD kernels take */
+	if (pfk_no_migrate_forced()) {
+		int e = pfk_migrate_userspace(rc);
+
+		if (e != 0) {
+			rcpfk_seterror(rc, e, "pfkey migrate: %s", strerror(e));
+			return -1;
+		}
+		return 0;
+	}
 	struct sockaddr *sa_addr_bak;
 
 	if (rcpfk_set_sadbmsg(&buf, rc, SADB_X_MIGRATE)) {
@@ -1158,16 +1704,41 @@ rcpfk_send_migrate(struct rcpfk_msg *rc)
 
 	SADB_MSG(buf)->sadb_msg_satype = SADB_SATYPE_UNSPEC;
 
-	if (rcpfk_send(rc, buf)) {
-		rc_vfree(buf);
-		return -1;
-	}
+	/*
+	 * Send on a private socket so a refusal comes back here rather
+	 * than later through sadb_poll: kernels built without
+	 * XFRM_MIGRATE answer ENOPROTOOPT, and then the SAs and policy
+	 * templates are moved by hand, as on the BSDs.  af_key replies to
+	 * the sender only on error, so silence means it was accepted.
+	 */
+	{
+		int e = pfk_migrate_kernel(buf);
 
-	rc_vfree(buf);
+		rc_vfree(buf);
+		if (e == ENOPROTOOPT || e == EOPNOTSUPP) {
+			plog(PLOG_INFO, PLOGLOC, NULL, "pfkey: kernel has no "
+			    "SADB_X_MIGRATE (%s), moving in userspace\n",
+			    strerror(e));
+			e = pfk_migrate_userspace(rc);
+		}
+		if (e != 0) {
+			rcpfk_seterror(rc, e, "pfkey migrate: %s",
+			    strerror(e));
+			return -1;
+		}
+	}
 	return 0;
 #else
-	rcpfk_seterror(rc, EOPNOTSUPP, "SADB_X_MIGRATE not supported");
-	return -1;
+	/* FreeBSD / NetBSD: no SADB_X_MIGRATE in PF_KEY at all */
+	int e = pfk_migrate_userspace(rc);
+
+	(void)pfk_no_migrate_forced;
+	if (e != 0) {
+		rcpfk_seterror(rc, e, "pfkey migrate (no SADB_X_MIGRATE): %s",
+		    strerror(e));
+		return -1;
+	}
+	return 0;
 #endif
 }
 

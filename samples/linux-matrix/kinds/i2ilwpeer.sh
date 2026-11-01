@@ -388,7 +388,7 @@ EOF
 
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/iked.conf" ) >"$D/spmd.log" 2>&1 &
 	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSR" env $SSLENV ${NOMIG:+RACOON2_XFRM_NO_MIGRATE=1} RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
+	( ip netns exec "$NSR" env $SSLENV ${NOMIG:+RACOON2_XFRM_NO_MIGRATE=1} ${NOMIG:+RACOON2_PFKEY_NO_MIGRATE=1} RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/iked.conf" -D 0x0001 -l "$D/iked.log" ) >"$D/iked.out" 2>&1 &
 
 	if [ "$PEER" = lw ]; then

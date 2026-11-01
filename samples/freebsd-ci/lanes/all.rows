@@ -126,6 +126,8 @@ i2io4-cbc128
 i2io4-gcm256
 i2ipubkey-ecdsa
 i2ipubkey-rsa
+i2imobike-move
+i2imobike-off
 i2iresume-nack
 i2iresume-resume
 i2iresume-reuse

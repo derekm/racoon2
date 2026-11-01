@@ -82,6 +82,8 @@ kind_i2imobike() {
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 	printf '%s' racoon2-mobike-matrix-0123456789abcdef >"$C/psk.bin"; chmod 600 "$C/psk.bin"
 
+	# the Linux pfkey backend refuses hmac_sha2_256 (af_key's 96-bit ICV)
+	ESP_AUTH="hmac_sha2_256;"; [ "${R2_KM:-xfrm}" = pfkey ] && ESP_AUTH="hmac_sha2_512;"
 	MI="mobike_initiate on;"; NAT=; TCP=; PIN=; CHILD_LT_I=; IKE_LT_I=; OLD=$HI; NEW=$HM; I_OUT=$HI
 	case $scen in
 	move) ;;
@@ -141,7 +143,7 @@ policy pol {
 	my_sa_ipaddr "$2";
 };
 ipsec ipsec_e { $_clt sa_index esp_e; };
-sa esp_e { sa_protocol esp; esp_enc_alg { aes256_cbc; }; esp_auth_alg { hmac_sha2_256; }; };
+sa esp_e { sa_protocol esp; esp_enc_alg { aes256_cbc; }; esp_auth_alg { $ESP_AUTH }; };
 EOF
 	}
 	mkconf r "$HR" "$HI" "$TS_R" "$TS_I"
@@ -190,7 +192,7 @@ EOF
 		[ "$s" = i ] && { _ns=$NSI; _sp=$SPMIF_I; _so=$SOCK_I; _pr=$PRIVRES_I; }
 		( ip netns exec "$_ns" "$SBIN/spmd" -F -f "$C/$s.conf" ) >"$D/spmd-$s.log" 2>&1 &
 		i=0; until [ -S "$_sp" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-		( ip netns exec "$_ns" env ${NOMIG:+RACOON2_XFRM_NO_MIGRATE=1} RACOON2_ADMIN_SOCK="$_so" RACOON2_RESUME_DIR="$_pr" \
+		( ip netns exec "$_ns" env ${NOMIG:+RACOON2_XFRM_NO_MIGRATE=1 RACOON2_PFKEY_NO_MIGRATE=1} RACOON2_ADMIN_SOCK="$_so" RACOON2_RESUME_DIR="$_pr" \
 		    "$SBIN/iked" -F -f "$C/$s.conf" -D 0x0001 -l "$D/iked-$s.log" ) >"$D/iked-$s.out" 2>&1 &
 	done
 	i=0; until [ -S "$SOCK_I" ] && [ -S "$SOCK_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done

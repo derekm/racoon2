@@ -27,7 +27,8 @@
 #   *-charon(r)   strongSwan charon (pkg) as the initiator / responder seat
 #                 in its vnet jail (mirrors the linux -charon/-charonr rows)
 # Rows that are Linux-BOUND are deliberately NOT replicated: netem drop/dup rows
-# (Linux 'tc' only), mobike/cookie2 multi-address rows (need 2 SA endpoints),
+# (Linux 'tc' only), the wider mobike/cookie2 scenarios (i2imobike-move/-off
+# below cover the pfkey userspace move),
 # xfrm-only cells.  Every row PASSes only on a real per-jail SADB + a
 # post-establishment data-plane ping through the tunnel (in/out `require`).
 #
@@ -2376,6 +2377,138 @@ fb_feat_gates() {
 	return 0
 }
 
+# ==== RFC 4555 MOBIKE initiator rows (port of linux kinds/i2imobike.sh) =====
+# FreeBSD PF_KEY has no SADB_X_MIGRATE, so a MOBIKE move re-creates the
+# SAs at the new endpoints and rewrites the policy templates from userspace
+# (lib/if_pfkeyv2.c pfk_migrate_userspace).  iked<->iked over one epair:
+# responder 192.0.5.1 (r2vr), initiator 192.0.5.2 (r2vi), tunnel inner
+# 10.9.0.1/10.9.0.2 on lo0 so the selectors survive the move.  The
+# initiator listens on MY_IPV4, gets 192.0.5.4 and loses 192.0.5.2: its
+# PF_ROUTE address event must send UPDATE_SA_ADDRESSES and both jails'
+# SADBs must end up on 192.0.5.4, with traffic through the moved tunnel.
+#   i2imobike-move  mobike_initiate on
+#   i2imobike-off   mobike_initiate off: no update, nothing moves
+run_mobike_row() {
+	_name=$1
+	echo "$SEP"
+	echo "=== ROW $_name (RFC 4555 MOBIKE over pfkey, no SADB_X_MIGRATE) ==="
+	jails_teardown
+	_e=$(ifconfig epair create) || { echo "FAIL freebsd-vnet $_name (epair create)"; return 1; }
+	_e=${_e%a}
+	jail -c name=$jr persist vnet vnet.interface="${_e}a" &&
+	jail -c name=$ji persist vnet vnet.interface="${_e}b" || { echo "FAIL freebsd-vnet $_name (jail -c)"; return 1; }
+	for _j in $jr $ji; do jexec $_j ifconfig lo0 inet 127.0.0.1/8 up; done
+	jexec $jr ifconfig "${_e}a" inet 192.0.5.1/24 up
+	jexec $ji ifconfig "${_e}b" inet 192.0.5.2/24 up
+	jexec $jr ifconfig lo0 inet 10.9.0.1/32 alias
+	jexec $ji ifconfig lo0 inet 10.9.0.2/32 alias
+	jexec $jr route -q add -host 10.9.0.2 -iface "${_e}a"
+	jexec $ji route -q add -host 10.9.0.1 -iface "${_e}b"
+	install -d -m 0755 /tmp/freeb
+	dd if=/dev/urandom of=/tmp/freeb/test.psk bs=32 count=1 2>/dev/null; chmod 600 /tmp/freeb/test.psk
+	printf 'ci-spmd-pw\n' > /tmp/freeb/spmd.pwd; chmod 600 /tmp/freeb/spmd.pwd
+	_mi="mobike_initiate on;"
+	[ "$_name" = i2imobike-off ] && _mi="mobike_initiate off;"
+	_mconf() { # $1 seat $2 ike-if $3 my-sa $4 peer $5 myid $6 peerid $7 passive $8 extra $9 my TS ${10} peer TS
+		cat > /tmp/freeb/$1.conf <<MEOF
+interface {
+	ike { $2; };
+	spmd { unix "/tmp/freeb/$1-spmif"; };
+	spmd_password "/tmp/freeb/spmd.pwd";
+};
+resolver { resolver off; };
+remote mb {
+	acceptable_kmp { ikev2; };
+	ikev2 {
+		passive $7;
+		my_id fqdn "$5";
+		peers_id fqdn "$6";
+		peers_ipaddr $4;
+		kmp_enc_alg { aes256_cbc; };
+		kmp_prf_alg { hmac_sha2_256; };
+		kmp_hash_alg { hmac_sha2_256; };
+		kmp_dh_group { modp2048; };
+		kmp_auth_method { psk; };
+		pre_shared_key "/tmp/freeb/test.psk";
+		$8
+	};
+	selector_index sel_in;
+};
+selector sel_out { direction outbound; src $9; dst ${10}; policy_index pol; };
+selector sel_in { direction inbound; dst $9; src ${10}; policy_index pol; };
+policy pol {
+	action auto_ipsec;
+	remote_index mb;
+	ipsec_mode tunnel;
+	ipsec_index { ipsec_e; };
+	ipsec_level require;
+	peers_sa_ipaddr $4;
+	my_sa_ipaddr $3;
+};
+ipsec ipsec_e { ipsec_sa_lifetime_time 3600 sec; sa_index esp_e; };
+sa esp_e { sa_protocol esp; esp_enc_alg { aes256_cbc; }; esp_auth_alg { hmac_sha2_256; }; };
+MEOF
+	}
+	_mconf $jr 192.0.5.1 192.0.5.1 IP_RW mobike-r mobike-i on "" 10.9.0.1 10.9.0.2
+	_mconf $ji MY_IPV4 192.0.5.2 192.0.5.1 mobike-i mobike-r off "$_mi" 10.9.0.2 10.9.0.1
+	for _s in $jr:resp $ji:init; do
+		_j=${_s%%:*}; _t=${_s#*:}
+		jexec $_j /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/$_t-ctl RACOON2_RESUME_DIR=/tmp/freeb/$_t-resume $SBIN/spmd -F -f /tmp/freeb/$_j.conf > /tmp/freeb/$_t-spmd.log 2>&1 &"
+		i=0; while [ "$i" -lt 15 ] && [ ! -S /tmp/freeb/$_j-spmif ]; do i=$((i+1)); sleep 1; done
+		jexec $_j /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/$_t-ctl RACOON2_RESUME_DIR=/tmp/freeb/$_t-resume $SBIN/iked -F -f /tmp/freeb/$_j.conf -D 0x0001 > /tmp/freeb/$_t-iked.log 2>&1 &"
+	done
+	i=0; while [ "$i" -lt 15 ] && [ ! -S /tmp/freeb/init-ctl ]; do i=$((i+1)); sleep 1; done
+	jexec $ji $SBIN/ikedctl -s /tmp/freeb/init-ctl establish-sa isakmp inet 10.9.0.2 10.9.0.1 sel_out >/dev/null 2>&1 || true
+	_sa() { # _sa JAIL SRC DST : esp tunnel SAs SRC->DST in that jail
+		jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null | grep -c "^$2 $3\$" || true
+	}
+	_up=0; i=0
+	while [ "$i" -lt 45 ]; do
+		[ "$(esp_up $jr)" -ge 2 ] && [ "$(esp_up $ji)" -ge 2 ] && { _up=1; break; }
+		i=$((i+1)); sleep 1
+	done
+	_p0=0
+	jexec $ji ping -c 1 -t 5 -S 10.9.0.2 10.9.0.1 > /tmp/freeb/ping-mb0.txt 2>&1 && _p0=1
+	# the move: a new address arrives, then the old one goes
+	jexec $ji ifconfig "${_e}b" inet 192.0.5.4/24 alias
+	jexec $ji ifconfig "${_e}b" inet 192.0.5.2 -alias
+	jexec $ji route -q add -host 10.9.0.1 -iface "${_e}b" 2>/dev/null || true
+	_moved=0; i=0
+	while [ "$i" -lt 30 ]; do
+		[ "$(_sa $jr 192.0.5.1 192.0.5.4)" -ge 1 ] && [ "$(_sa $ji 192.0.5.4 192.0.5.1)" -ge 1 ] &&
+		[ "$(_sa $jr 192.0.5.1 192.0.5.2)" -eq 0 ] && { _moved=1; break; }
+		i=$((i+1)); sleep 1
+	done
+	_p1=0
+	jexec $ji ping -c 1 -t 5 -S 10.9.0.2 10.9.0.1 > /tmp/freeb/ping-mb1.txt 2>&1 && _p1=1
+	_upd=$(grep -c 'MOBIKE initiator: local address' $FI 2>/dev/null || true)
+	_um=$(grep -c 'pfkey: no SADB_X_MIGRATE; moved [1-9][0-9]* SA(s) and [1-9][0-9]* policy template' $FI 2>/dev/null || true)
+	_umr=$(grep -c 'pfkey: no SADB_X_MIGRATE; moved [1-9][0-9]* SA(s) and [1-9][0-9]* policy template' $FR 2>/dev/null || true)
+	echo "row $_name gates: up=$_up ping0=$_p0 updates=$_upd moved=$_moved umig_i=$_um umig_r=$_umr ping1=$_p1"
+	_ok=0
+	case $_name in
+	i2imobike-off)
+		[ "$_up" = 1 ] && [ "$_p0" = 1 ] && [ "${_upd:-0}" -eq 0 ] && [ "$_moved" = 0 ] &&
+		[ "$(_sa $jr 192.0.5.1 192.0.5.4)" -eq 0 ] && _ok=1 ;;
+	*)
+		[ "$_up" = 1 ] && [ "$_p0" = 1 ] && [ "${_upd:-0}" -ge 1 ] && [ "$_moved" = 1 ] &&
+		[ "${_um:-0}" -ge 1 ] && [ "${_umr:-0}" -ge 1 ] && [ "$_p1" = 1 ] && _ok=1 ;;
+	esac
+	if [ "$_ok" = 1 ]; then
+		echo "PASS freebsd-vnet $_name (MOBIKE over pfkey: userspace SA/SPD move gates met)"
+		jails_teardown
+		return 0
+	fi
+	echo "FAIL freebsd-vnet $_name (MOBIKE gates not met)"
+	echo "--- SADB/SPD resp ---"; jexec $jr /usr/local/sbin/setkey -D 2>&1 | grep -vE '^\s+[AE]:' | head -30; jexec $jr /usr/local/sbin/setkey -DP 2>&1 | head -20
+	echo "--- SADB/SPD init ---"; jexec $ji /usr/local/sbin/setkey -D 2>&1 | grep -vE '^\s+[AE]:' | head -30; jexec $ji /usr/local/sbin/setkey -DP 2>&1 | head -20
+	echo "--- pings ---"; cat /tmp/freeb/ping-mb0.txt /tmp/freeb/ping-mb1.txt 2>/dev/null
+	echo "--- init iked ---"; grep -aiE 'mobike|pfkey|migrat|UPDATE_SA|error|fail' $FI 2>/dev/null | tail -30
+	echo "--- resp iked ---"; grep -aiE 'mobike|pfkey|migrat|UPDATE_SA|error|fail' $FR 2>/dev/null | tail -30
+	jails_teardown
+	return 1
+}
+
 fail=0
 run() {
 	# 0-based dispatcher index, matching linux run.sh --shard K M
@@ -2383,6 +2516,7 @@ run() {
 		case "$1" in
 		i2inatt-*) run_nat_row "$1" || fail=1 ;;
 		i2iresume-*) run_resume_row "$1" || fail=1 ;;
+		i2imobike-*) run_mobike_row "$1" || fail=1 ;;
 		*)         run_row "$@" || fail=1 ;;
 		esac
 	fi
@@ -2627,6 +2761,9 @@ case "$ROW" in
 		run i2iresume-resume
 		run i2iresume-nack
 		run i2iresume-reuse
+		# RFC 4555 MOBIKE: userspace SA/SPD move (no SADB_X_MIGRATE)
+		run i2imobike-move
+		run i2imobike-off
 		run i2io4-gcm256        inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 "aes_gcm, 256" non_auth 300 300 0 a ""
 		;;
 	i2iinit-esp-cbc128) run_row i2iinit-esp-cbc128 inet 192.0.5.2 192.0.5.1 aes128_cbc hmac_sha2_256 modp2048 aes128_cbc hmac_sha2_256 300 300 0 a "" ;;
@@ -2736,6 +2873,7 @@ case "$ROW" in
 	i2inatt-transport) run_nat_row i2inatt-transport || fail=1 ;;
 	i2inatt-transport-wild) run_nat_row i2inatt-transport-wild || fail=1 ;;
 	i2iresume-resume|i2iresume-nack|i2iresume-reuse) run_resume_row "$ROW" || fail=1 ;;
+	i2imobike-move|i2imobike-off) run_mobike_row "$ROW" || fail=1 ;;
 	*) echo "unknown ROW=$ROW"; exit 2 ;;
 esac
 echo "$SEP"
