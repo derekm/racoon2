@@ -346,3 +346,7 @@ i2imobike-v6	i2imobike	pass	0	RFC 4555 over IPv6: iked initiator (MY_IPV6) moves
 i2imobike-dual	i2imobike	pass	0	DUAL-STACK: initiator listens on MY_IPV4 + MY_IPV6, an IPv4 address stays on the link, the IPv6 IKE SA moves ::2 -> ::4 with the same gates as i2imobike-v6.	-	-
 i2imobike-v6-nomig	i2imobike	pass	0	i2imobike-v6 with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
 i2imobike-dual-nomig	i2imobike	pass	0	i2imobike-dual with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
+i2imobike-childrekey	i2imobike	pass	0	MOVE DURING A CHILD REKEY / IN-FLIGHT EXCHANGE: initiator child lifetime 20 s; the responder answers are held so the initiator CREATE_CHILD_SA is in flight (wire event), the address moves, the answers are released. The rekey must complete (new ESP SPIs), an INFORMATIONAL follow it, every SA end on the new address, ICMP flows.	-	-
+i2imobike-ikerekey	i2imobike	pass	0	MOVE DURING AN IKE REKEY: as childrekey with the initiator IKE lifetime 20 s; the UPDATE_SA_ADDRESSES must ride the NEW IKE SA (IKE SPI other than the in-flight rekey), everything ends on the new address.	-	-
+i2imobike-childrekey-nomig	i2imobike	pass	0	i2imobike-childrekey with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
+i2imobike-ikerekey-nomig	i2imobike	pass	0	i2imobike-ikerekey with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-

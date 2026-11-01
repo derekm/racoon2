@@ -38,6 +38,11 @@
 #   i2imobike-v6       the plain move over IPv6 (outer and inner)
 #   i2imobike-dual     dual-stack initiator (MY_IPV4 + MY_IPV6, an IPv4
 #                      address stays on the link): the IPv6 IKE SA moves
+#   i2imobike-childrekey / -ikerekey
+#                      the move happens while the initiator's
+#                      CREATE_CHILD_SA (child / IKE rekey) is in flight
+#                      (responder answers held): the rekey completes, the
+#                      update follows, everything ends on the new address
 #   i2imobike-tcp      RFC 9329 IKE over TCP on both seats (tcp_encap on):
 #                      the update leaves over a NEW TCP connection from the
 #                      new address (TCP SYN from 192.0.8.4 on the wire), the
@@ -74,7 +79,7 @@ kind_i2imobike() {
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 	printf '%s' racoon2-mobike-matrix-0123456789abcdef >"$C/psk.bin"; chmod 600 "$C/psk.bin"
 
-	MI="mobike_initiate on;"; NAT=; TCP=; PIN=; OLD=$HI; NEW=$HM; I_OUT=$HI
+	MI="mobike_initiate on;"; NAT=; TCP=; PIN=; CHILD_LT_I=; IKE_LT_I=; OLD=$HI; NEW=$HM; I_OUT=$HI
 	case $scen in
 	move) ;;
 	off) MI= ;;
@@ -82,6 +87,8 @@ kind_i2imobike() {
 	natout) NAT="nat_traversal on;"; OLD=$HN; I_OUT=$HN ;;
 	tcp) TCP="tcp_encap on;" ;;
 	return|flap|loss|v6|dual) ;;
+	childrekey) CHILD_LT_I="ipsec_sa_lifetime_time 20 sec;" ;;
+	ikerekey) IKE_LT_I="kmp_sa_lifetime_time 20 sec;" ;;
 	optout) MI="mobike_initiate off;"; PIN=1 ;;
 	pinned) PIN=1 ;;
 	*) log "FAIL: unknown scenario $scen"; return 1 ;;
@@ -89,7 +96,8 @@ kind_i2imobike() {
 
 	# $1 seat (r|i) $2 my addr $3 peer addr (for peers_ipaddr) $4 my TS $5 peer TS
 	mkconf() {
-		_pas=on; _extra=; [ "$1" = i ] && { _pas=off; _extra=$MI; }
+		_pas=on; _extra=; _clt="ipsec_sa_lifetime_time 3600 sec;"
+		[ "$1" = i ] && { _pas=off; _extra="$MI $IKE_LT_I"; [ -n "$CHILD_LT_I" ] && _clt=$CHILD_LT_I; }
 		_spmif=$SPMIF_R; [ "$1" = i ] && _spmif=$SPMIF_I
 		_peer=$3; [ "$1" = r ] && _peer=ANY
 		cat >"$C/$1.conf" <<EOF
@@ -129,7 +137,7 @@ policy pol {
 	peers_sa_ipaddr $( [ "$_peer" = ANY ] && echo IP_RW || echo "\"$_peer\"" );
 	my_sa_ipaddr "$2";
 };
-ipsec ipsec_e { ipsec_sa_lifetime_time 3600 sec; sa_index esp_e; };
+ipsec ipsec_e { $_clt sa_index esp_e; };
 sa esp_e { sa_protocol esp; esp_enc_alg { aes256_cbc; }; esp_auth_alg { hmac_sha2_256; }; };
 EOF
 	}
@@ -217,6 +225,24 @@ EOF
 			[ "$(grep -c 'MOBIKE initiator: local address' "$D/iked-i.log")" -eq 0 ] ||
 				{ log "FAIL: an update was sent with no address"; efail=1; }
 		fi
+		case $scen in childrekey|ikerekey)
+			# move DURING an exchange: hold the responder's answers so
+			# the initiator's CREATE_CHILD_SA (exch 36) is in flight,
+			# move while it is, then let the answers through
+			( ip netns exec "$NSR" python3 "$HERE/tools/ikesniff.py" "$VR" "$HR" "$D/wire.tsv" ) >"$D/sniff.out" 2>&1 &
+			SNIFF=$!
+			# no harness probe while the SAs sit on an address that is
+			# gone (rekeyed SAs land on it before the update moves
+			# them): xfrm_audit.sh xa_hold, as in the peer MOBIKE rows
+			xa_hold
+			spi_pre=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | awk '/proto esp spi/{print $4}' | sort | tr '\n' ' ')
+			ip netns exec "$NSR" iptables -A OUTPUT -p udp -m multiport --sports 500,4500 -j DROP
+			i=0; until awk -F'\t' '$1=="in" && $2==36{f=1} END{exit !f}' "$D/wire.tsv" 2>/dev/null || [ "$i" -ge 300 ]; do
+				i=$((i+1)); sleep 0.2; done
+			awk -F'\t' '$1=="in" && $2==36{f=1} END{exit !f}' "$D/wire.tsv" 2>/dev/null ||
+				{ log "FAIL: no CREATE_CHILD_SA from the initiator within 60 s"; efail=1; }
+			;;
+		esac
 		# the move
 		ip netns exec "$NSI" ip addr add "$HM/$PL" dev "$VI" $NODAD
 		ip netns exec "$NSI" ip route replace "$HR/$HL" dev "$VI" src "$HM"
@@ -225,12 +251,46 @@ EOF
 		# back, as DHCP would; a no-op otherwise
 		ip netns exec "$NSI" ip route replace "$TS_R/$HL" dev "$VI" src "$TS_I"
 		[ "$scen" = loss ] || ip netns exec "$NSI" ip addr del "$HI/$PL" dev "$VI"
+		case $scen in childrekey|ikerekey)
+			ip netns exec "$NSR" iptables -D OUTPUT -p udp -m multiport --sports 500,4500 -j DROP ;;
+		esac
 		moved=0; i=0
 		while [ "$i" -lt 100 ]; do
 			ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $NEW" &&
 			ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HM dst $HR" && { moved=1; break; }
 			i=$((i+1)); sleep 0.2
 		done
+		case $scen in childrekey|ikerekey)
+			# the rekey must complete too (its answer came back), and
+			# the UPDATE after it: exch 36 out, then exch 37 in
+			i=0; until awk -F'\t' '$1=="out" && $2==36{r=1} r && $1=="in" && $2==37{f=1} END{exit !f}' "$D/wire.tsv" || [ "$i" -ge 150 ]; do
+				i=$((i+1)); sleep 0.2; done
+			awk -F'\t' '$1=="out" && $2==36{r=1} r && $1=="in" && $2==37{f=1} END{exit !f}' "$D/wire.tsv" ||
+				{ log "FAIL: no rekey answer followed by an INFORMATIONAL"; efail=1; }
+			moved=0; i=0
+			while [ "$i" -lt 100 ]; do
+				ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $NEW" &&
+				ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HM dst $HR" &&
+				! ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $OLD\$" && { moved=1; break; }
+				i=$((i+1)); sleep 0.2
+			done
+			spi_post=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | awk '/proto esp spi/{print $4}' | sort | tr '\n' ' ')
+			log "mobike: $scen esp before=[$spi_pre] after=[$spi_post]"
+			if [ "$scen" = ikerekey ]; then
+				# the update rides the NEW IKE SA (other SPIs than
+				# IKE_SA_INIT's), so the rekeyed SA is the one moved
+				ike0=$(awk -F'\t' '$2==34{print $4; exit}' "$D/wire.tsv")
+				[ -z "$ike0" ] && ike0=$(awk -F'\t' '$2==36{print $4; exit}' "$D/wire.tsv")
+				nnew=$(awk -F'\t' -v o="$ike0" '$1=="in" && $2==37 && $4!=o' "$D/wire.tsv" | wc -l)
+				log "mobike: INFORMATIONAL on a new IKE SPI=$nnew (old $ike0)"
+				[ "$nnew" -ge 1 ] || { log "FAIL: the update did not ride the rekeyed IKE SA"; efail=1; }
+			fi
+			if [ "$scen" = childrekey ]; then
+				[ "$spi_post" != "$spi_pre" ] || { log "FAIL: child SPIs unchanged: the rekey never completed"; efail=1; }
+			fi
+			kill "$SNIFF" 2>/dev/null
+			xa_release ;;
+		esac
 		upd1=$(grep -c "UPDATE_SA_ADDRESSES" "$D/iked-r.log")
 		upi=$(grep -c "MOBIKE initiator: local address" "$D/iked-i.log")
 		log "mobike: initiator updates=$upi responder UPDATE lines $upd0 -> $upd1 moved=$moved"
