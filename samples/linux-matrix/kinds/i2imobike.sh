@@ -27,6 +27,9 @@
 #                      update, both seats on $HI again
 #   i2imobike-flap     move, then 11 back-to-back address flips: converge
 #                      on the final address, at most one update per change
+#   i2imobike-loss     the only address is removed first (no route at
+#                      all): iked keeps running and keeps the SAs, sends
+#                      nothing, then moves when the new address appears
 #   i2imobike-tcp      RFC 9329 IKE over TCP on both seats (tcp_encap on):
 #                      the update leaves over a NEW TCP connection from the
 #                      new address (TCP SYN from 192.0.8.4 on the wire), the
@@ -60,7 +63,7 @@ kind_i2imobike() {
 	natin) NAT="nat_traversal on;"; NEW=$HN ;;
 	natout) NAT="nat_traversal on;"; OLD=$HN; I_OUT=$HN ;;
 	tcp) TCP="tcp_encap on;" ;;
-	return|flap) ;;
+	return|flap|loss) ;;
 	*) log "FAIL: unknown scenario $scen"; return 1 ;;
 	esac
 
@@ -172,10 +175,31 @@ EOF
 				{ log "FAIL: not UDP-encapsulated behind the initial NAT"; efail=1; }
 		fi
 		upd0=$(grep -c "UPDATE_SA_ADDRESSES" "$D/iked-r.log")
+		if [ "$scen" = loss ]; then
+			# interface loss: the only address goes (its routes with
+			# it); iked must keep running and keep the SAs, then move
+			# once an address comes back
+			ip netns exec "$NSI" ip addr del "$HI/24" dev "$VI"
+			i=0; until grep -q "MOBIKE initiator: no route to the peer" "$D/iked-i.log" || [ "$i" -ge 50 ]; do
+				i=$((i+1)); sleep 0.2; done
+			grep -q "MOBIKE initiator: no route to the peer" "$D/iked-i.log" ||
+				{ log "FAIL: iked never processed the address loss"; efail=1; }
+			pgrep -f -- "iked -F -f $C/i.conf" >/dev/null 2>&1 || { log "FAIL: iked (i) died on address loss"; efail=1; }
+			ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HI\$" ||
+				{ log "FAIL: the responder SA changed during the outage"; efail=1; }
+			nst=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -c "^src")
+			[ "$nst" -ge 2 ] || { log "FAIL: initiator SAs gone during the outage ($nst)"; efail=1; }
+			[ "$(grep -c 'MOBIKE initiator: local address' "$D/iked-i.log")" -eq 0 ] ||
+				{ log "FAIL: an update was sent with no address"; efail=1; }
+		fi
 		# the move
 		ip netns exec "$NSI" ip addr add "$HM/24" dev "$VI"
 		ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$HM"
-		ip netns exec "$NSI" ip addr del "$HI/24" dev "$VI"
+		# the kernel flushes a device's routes when its last IPv4
+		# address goes (loss): the new network brings the inner route
+		# back, as DHCP would; a no-op otherwise
+		ip netns exec "$NSI" ip route replace "$TS_R/32" dev "$VI" src "$TS_I"
+		[ "$scen" = loss ] || ip netns exec "$NSI" ip addr del "$HI/24" dev "$VI"
 		moved=0; i=0
 		while [ "$i" -lt 100 ]; do
 			ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $NEW" &&

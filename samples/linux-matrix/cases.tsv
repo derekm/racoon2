@@ -332,3 +332,5 @@ i2imobike-return	i2imobike	pass	0	RFC 4555 RETURN: iked initiator moves 192.0.8.
 i2imobike-flap	i2imobike	pass	0	RFC 4555 FLAPPING: after the first move, 11 back-to-back address flips (.4/.2, no settling, add/route/del each). iked must converge on the final address (.2) on both seats with 1..2 updates (debounced: 1 s quiet, 3 s cap; one in flight at a time, no storm), ICMP flows, no ASan report.	-	-
 i2imobike-return-nomig	i2imobike	pass	0	i2imobike-return with RACOON2_XFRM_NO_MIGRATE=1 on both iked (userspace re-create path).	-	-
 i2imobike-flap-nomig	i2imobike	pass	0	i2imobike-flap with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
+i2imobike-loss	i2imobike	pass	0	RFC 4555 INTERFACE LOSS: the initiator loses its only address (no route to the peer). iked must log the wait (event gate), stay up, keep both seats SAs, send no update; when 192.0.8.4 appears the normal move completes, ICMP flows.	-	-
+i2imobike-loss-nomig	i2imobike	pass	0	i2imobike-loss with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-

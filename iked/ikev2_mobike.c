@@ -545,8 +545,14 @@ mobike_local_scan(void *unused)
 		next = IKEV2_SA_LIST_NEXT(sa);
 		if (!mobike_initiator_eligible(sa))
 			continue;
-		if (mobike_route_source(sa->remote, &src) != 0)
-			continue;	/* no route yet: a later event retries */
+		if (mobike_route_source(sa->remote, &src) != 0) {
+			/* no usable address: keep the SA, a later event
+			 * (an address or route coming back) retries */
+			isakmp_log(sa, sa->local, sa->remote, 0, PLOG_INFO,
+			    PLOGLOC, "MOBIKE initiator: no route to the peer, "
+			    "waiting for an address\n");
+			continue;
+		}
 		if (rcs_cmpsa_wop((struct sockaddr *)&src, sa->local) == 0)
 			continue;
 		(void)ikev2_mobike_local_update(sa, (struct sockaddr *)&src);
