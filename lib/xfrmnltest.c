@@ -581,6 +581,9 @@ kthr(void *arg)
 static volatile int mthr_stop;
 static int mthr_migrate, mthr_dump, mthr_upd;
 static unsigned mthr_upd_sport, mthr_upd_dport;
+/* the address-move (userspace re-create) path */
+static int mthr_new, mthr_del, mthr_poldump, mthr_updpol, mthr_order;
+static uint32_t mthr_new_daddr, mthr_tmpl_daddr;
 
 static void *
 mthr(void *arg)
@@ -628,6 +631,54 @@ mthr(void *arg)
 			o->nlmsg_len = NLMSG_ALIGN(l) + RTA_ALIGN(rta->rta_len);
 			kput(k_req, out.b, o->nlmsg_len);
 			kput(k_req, out.b, mk_done(out.b, n->nlmsg_seq, PORTID));
+		} else if (n->nlmsg_type == XFRM_MSG_NEWSA) {
+			mthr_new++;
+			mthr_order = mthr_order * 10 + 1;
+			mthr_new_daddr = ((struct xfrm_usersa_info *)
+			    NLMSG_DATA(n))->id.daddr.a4;
+			kput(k_req, out.b, mk_err(out.b, n->nlmsg_seq, PORTID, 0,
+			    XFRM_MSG_NEWSA));
+		} else if (n->nlmsg_type == XFRM_MSG_DELSA) {
+			mthr_del++;
+			mthr_order = mthr_order * 10 + 2;
+			kput(k_req, out.b, mk_err(out.b, n->nlmsg_seq, PORTID, 0,
+			    XFRM_MSG_DELSA));
+		} else if (n->nlmsg_type == XFRM_MSG_GETPOLICY &&
+		    (n->nlmsg_flags & NLM_F_DUMP)) {
+			struct nlmsghdr *o = (void *)out.b;
+			struct rtattr *rta;
+			struct xfrm_user_tmpl t;
+			size_t l;
+
+			mthr_poldump++;
+			/* one policy whose template names the old endpoints */
+			l = mk_policy(out.b, XFRM_MSG_NEWPOLICY, n->nlmsg_seq,
+			    PORTID, "10.0.0.1", "10.0.1.0", NLM_F_MULTI);
+			memset(&t, 0, sizeof(t));
+			t.family = AF_INET;
+			t.id.proto = IPPROTO_ESP;
+			inet_pton(AF_INET, "192.0.2.1", &t.saddr.a4);
+			inet_pton(AF_INET, "192.0.2.2", &t.id.daddr.a4);
+			rta = (struct rtattr *)(out.b + NLMSG_ALIGN(l));
+			rta->rta_type = XFRMA_TMPL;
+			rta->rta_len = RTA_LENGTH(sizeof(t));
+			memcpy(RTA_DATA(rta), &t, sizeof(t));
+			o->nlmsg_len = NLMSG_ALIGN(l) + RTA_ALIGN(rta->rta_len);
+			kput(k_req, out.b, o->nlmsg_len);
+			kput(k_req, out.b, mk_done(out.b, n->nlmsg_seq, PORTID));
+		} else if (n->nlmsg_type == XFRM_MSG_UPDPOLICY) {
+			struct rtattr *rta = (struct rtattr *)((char *)NLMSG_DATA(n)
+			    + NLMSG_ALIGN(sizeof(struct xfrm_userpolicy_info)));
+			int alen = (int)n->nlmsg_len -
+			    (int)NLMSG_LENGTH(sizeof(struct xfrm_userpolicy_info));
+
+			mthr_updpol++;
+			for (; RTA_OK(rta, alen); rta = RTA_NEXT(rta, alen))
+				if (rta->rta_type == XFRMA_TMPL)
+					mthr_tmpl_daddr = ((struct xfrm_user_tmpl *)
+					    RTA_DATA(rta))->id.daddr.a4;
+			kput(k_req, out.b, mk_err(out.b, n->nlmsg_seq, PORTID, 0,
+			    XFRM_MSG_UPDPOLICY));
 		} else if (n->nlmsg_type == XFRM_MSG_UPDSA) {
 			struct rtattr *rta = (struct rtattr *)((char *)NLMSG_DATA(n)
 			    + NLMSG_ALIGN(sizeof(struct xfrm_usersa_info)));
@@ -694,13 +745,33 @@ test_migrate_port_only_without_migrate(void)
 	    mthr_migrate, mthr_dump, mthr_upd);
 	CHECK(mthr_upd_sport == 4500 && mthr_upd_dport == 40028,
 	    "UPDSA encap %u -> %u", mthr_upd_sport, mthr_upd_dport);
-	/* an ADDRESS change cannot be done without MIGRATE: error, no UPDSA */
+	/*
+	 * An ADDRESS change without MIGRATE: re-create the SA in user space
+	 * (RFC 4555 on kernels without CONFIG_XFRM_MIGRATE).  The lookup key
+	 * (daddr, SPI, proto) changes, so the new SA goes in BEFORE the old
+	 * one is deleted (no window without an SA), only the matching SA is
+	 * touched (not the 192.0.2.99 one), no UPDSA, and the policy
+	 * template follows with UPDPOLICY.
+	 */
 	inet_pton(AF_INET, "192.0.2.77", &d2.sin_addr);
 	mthr_migrate = mthr_dump = mthr_upd = 0;
+	mthr_new = mthr_del = mthr_poldump = mthr_updpol = mthr_order = 0;
+	mthr_new_daddr = mthr_tmpl_daddr = 0;
 	r = rcpfk_send_migrate(&rc);
-	CHECK(r == -1 && rc.eno == ENOPROTOOPT,
-	    "address move fails loudly (r=%d eno=%d: %s)", r, rc.eno, rc.estr);
-	CHECK(mthr_upd == 0 && mthr_dump == 0, "no UPDSA for an address move");
+	CHECK(r == 0, "address move re-created without MIGRATE (r=%d: %s)",
+	    r, rc.estr);
+	CHECK(mthr_migrate == 1 && mthr_dump == 1 && mthr_upd == 0,
+	    "MIGRATE tried, SA dumped, no UPDSA (m=%d d=%d u=%d)",
+	    mthr_migrate, mthr_dump, mthr_upd);
+	CHECK(mthr_new == 1 && mthr_del == 1 && mthr_order == 12,
+	    "ONE NEWSA then ONE DELSA (new=%d del=%d order=%d)",
+	    mthr_new, mthr_del, mthr_order);
+	CHECK(mthr_new_daddr == htonl(0xc000024d),
+	    "new SA daddr is 192.0.2.77 (%08x)", ntohl(mthr_new_daddr));
+	CHECK(mthr_poldump == 1 && mthr_updpol == 1 &&
+	    mthr_tmpl_daddr == htonl(0xc000024d),
+	    "policy template moved with UPDPOLICY (dump=%d upd=%d tmpl=%08x)",
+	    mthr_poldump, mthr_updpol, ntohl(mthr_tmpl_daddr));
 	mthr_stop = 1;
 	pthread_join(th, NULL);
 }
