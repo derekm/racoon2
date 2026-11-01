@@ -1741,7 +1741,8 @@ xfrm_sync_msg(struct nlmsghdr *h, void *v)
 		c->result = -((struct nlmsgerr *)NLMSG_DATA(h))->error;
 		return 1;
 	}
-	if (c->each_sa == NULL || h->nlmsg_type != XFRM_MSG_NEWSA)
+	if (c->each_sa == NULL || (h->nlmsg_type != XFRM_MSG_NEWSA &&
+	    h->nlmsg_type != XFRM_MSG_NEWPOLICY))
 		return 0;
 	/* 4-byte netlink alignment: hand over an aligned copy */
 	if (((uintptr_t)h & 7) != 0 && h->nlmsg_len <= sizeof(al)) {
@@ -2019,6 +2020,235 @@ xfrm_same_addr(const struct sockaddr *a, const struct sockaddr *b)
 {
 	return a != NULL && b != NULL && rcs_cmpsa_wop(a, b) == 0;
 }
+
+/*
+ * Address move without CONFIG_XFRM_MIGRATE (many cloud/distribution
+ * kernels: XFRM_MSG_MIGRATE then fails with ENOPROTOOPT).  Do in user
+ * space what the kernel's migrate would: every SA saddr=sa_src
+ * daddr=sa_dst (proto, reqid) is re-created on sa2_src/sa2_dst from its
+ * own GETSA dump (same SPI, keys, replay state, lifetimes), and every
+ * policy whose template names the old pair gets the new pair
+ * (XFRM_MSG_UPDPOLICY).  strongSwan's kernel-netlink does the same
+ * (delete + re-add) when it cannot migrate.  When the SA's lookup key
+ * (daddr, SPI, proto) changes the new SA is added before the old one is
+ * deleted, so outbound traffic always finds one; otherwise delete, add,
+ * and the original is put back if the add fails.
+ */
+struct xfrm_pol_job {
+	int family;
+	xfrm_address_t s, d;
+	uint32_t reqid;
+	char (*msgs)[XFRM_BUFLEN];
+	int nmsgs;
+};
+
+static int
+xfrm_tmpl_matches(const struct xfrm_user_tmpl *t, const struct xfrm_pol_job *j)
+{
+	return t->family == j->family &&
+	    memcmp(&t->saddr, &j->s, sizeof(j->s)) == 0 &&
+	    memcmp(&t->id.daddr, &j->d, sizeof(j->d)) == 0 &&
+	    (j->reqid == 0 || t->reqid == j->reqid);
+}
+
+static int
+xfrm_pol_collect(struct nlmsghdr *h, void *arg)
+{
+	struct xfrm_pol_job *j = arg;
+	size_t hl = NLMSG_LENGTH(sizeof(struct xfrm_userpolicy_info));
+	struct rtattr *rta;
+	int alen, hit = 0;
+
+	if (h->nlmsg_type != XFRM_MSG_NEWPOLICY || h->nlmsg_len < hl)
+		return 0;
+	rta = (struct rtattr *)((char *)h + NLMSG_ALIGN(hl));
+	alen = (int)h->nlmsg_len - (int)NLMSG_ALIGN(hl);
+	for (; RTA_OK(rta, alen); rta = RTA_NEXT(rta, alen)) {
+		struct xfrm_user_tmpl *t;
+		size_t k, nt;
+
+		if (rta->rta_type != XFRMA_TMPL)
+			continue;
+		t = RTA_DATA(rta);
+		nt = RTA_PAYLOAD(rta) / sizeof(*t);
+		for (k = 0; k < nt; k++)
+			if (xfrm_tmpl_matches(&t[k], j))
+				hit = 1;
+	}
+	if (hit && j->nmsgs < XFRM_ENCAP_MAX && h->nlmsg_len <= XFRM_BUFLEN) {
+		memcpy(j->msgs[j->nmsgs], h, h->nlmsg_len);
+		j->nmsgs++;
+	}
+	return 0;
+}
+
+static int
+xfrm_migrate_userspace(struct rcpfk_msg *rc)
+{
+	struct xfrm_encap_job j;
+	struct xfrm_pol_job pj;
+	/* used for the GETSA and the GETPOLICY dump requests */
+	char req[NLMSG_SPACE(sizeof(struct xfrm_usersa_info)) +
+	    NLMSG_SPACE(sizeof(struct xfrm_userpolicy_info))];
+	char del[NLMSG_SPACE(sizeof(struct xfrm_usersa_id))];
+	char nb[XFRM_BUFLEN];
+	struct nlmsghdr *n = (void *)req;
+	xfrm_address_t ns, nd;
+	uint16_t fam = AF_INET, nfam = AF_INET;
+	int i, e, moved = 0, repol = 0;
+	int new_encap = 0;
+
+	if (rc->sa_src == NULL || rc->sa_dst == NULL ||
+	    rc->sa2_src == NULL || rc->sa2_dst == NULL)
+		return EINVAL;
+	memset(&j, 0, sizeof(j));
+	j.rc = rc;
+	if (sa_to_xaddr(rc->sa_src, &j.s, &fam) != 0 ||
+	    sa_to_xaddr(rc->sa_dst, &j.d, &fam) != 0 ||
+	    sa_to_xaddr(rc->sa2_src, &ns, &nfam) != 0 ||
+	    sa_to_xaddr(rc->sa2_dst, &nd, &nfam) != 0)
+		return EINVAL;
+	if (nfam != fam)
+		return EAFNOSUPPORT;	/* family change: kernel migrate only */
+	j.family = fam;
+#ifdef ENABLE_NATT
+	new_encap = natt_wanted(rc);
+#endif
+	j.msgs = malloc(sizeof(*j.msgs) * XFRM_ENCAP_MAX);
+	if (j.msgs == NULL)
+		return ENOMEM;
+	memset(req, 0, sizeof(req));
+	n->nlmsg_len = NLMSG_LENGTH(sizeof(struct xfrm_usersa_info));
+	n->nlmsg_type = XFRM_MSG_GETSA;
+	n->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	e = xfrm_sync(n, xfrm_encap_collect, &j);
+	for (i = 0; e == 0 && i < j.nmsgs; i++) {
+		struct nlmsghdr *m = (void *)j.msgs[i];
+		struct nlmsghdr *o = (void *)nb;
+		struct xfrm_usersa_info *osa;
+		const struct xfrm_usersa_info *sa = NLMSG_DATA(m);
+		struct xfrm_usersa_id *id;
+		struct nlmsghdr *d = (void *)del;
+		struct rtattr *rta;
+		size_t hl = NLMSG_LENGTH(sizeof(struct xfrm_usersa_info));
+		int alen, keychg;
+
+		if (m->nlmsg_len < hl || m->nlmsg_len > sizeof(nb))
+			continue;
+		memcpy(nb, m, NLMSG_ALIGN(hl));
+		o->nlmsg_len = NLMSG_ALIGN(hl);
+		osa = NLMSG_DATA(o);
+		osa->saddr = ns;
+		osa->id.daddr = nd;
+		/* transport mode: the SA selector names the endpoints too */
+		if (memcmp(&osa->sel.saddr, &j.s, sizeof(j.s)) == 0 &&
+		    memcmp(&osa->sel.daddr, &j.d, sizeof(j.d)) == 0) {
+			osa->sel.saddr = ns;
+			osa->sel.daddr = nd;
+		}
+		rta = (struct rtattr *)((char *)m + NLMSG_ALIGN(hl));
+		alen = (int)m->nlmsg_len - (int)NLMSG_ALIGN(hl);
+		for (; RTA_OK(rta, alen); rta = RTA_NEXT(rta, alen)) {
+			/* ENCAP: replaced by the caller's, dropped with
+			 * NOENCAP, else kept (as the kernel migrate does) */
+			if (rta->rta_type == XFRMA_ENCAP &&
+			    (new_encap || (rc->flags & PFK_FLAG_NOENCAP)))
+				continue;
+			if (o->nlmsg_len + RTA_ALIGN(rta->rta_len) > sizeof(nb)) {
+				e = ENOBUFS;
+				break;
+			}
+			memcpy(nb + o->nlmsg_len, rta, rta->rta_len);
+			o->nlmsg_len += RTA_ALIGN(rta->rta_len);
+		}
+		if (e != 0)
+			break;
+		if (!(rc->flags & PFK_FLAG_NOENCAP) &&
+		    add_encap_attr(o, sizeof(nb), rc) != 0) {
+			e = ENOBUFS;
+			break;
+		}
+		o->nlmsg_type = XFRM_MSG_NEWSA;
+		o->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+		memset(del, 0, sizeof(del));
+		d->nlmsg_len = NLMSG_LENGTH(sizeof(*id));
+		d->nlmsg_type = XFRM_MSG_DELSA;
+		d->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+		id = NLMSG_DATA(d);
+		id->daddr = sa->id.daddr;
+		id->spi = sa->id.spi;
+		id->family = sa->family;
+		id->proto = sa->id.proto;
+		keychg = memcmp(&nd, &sa->id.daddr, sizeof(nd)) != 0;
+		if (keychg) {
+			if ((e = xfrm_sync(o, NULL, NULL)) != 0)
+				break;
+			(void)xfrm_sync(d, NULL, NULL);
+		} else {
+			if ((e = xfrm_sync(d, NULL, NULL)) != 0)
+				break;
+			if ((e = xfrm_sync(o, NULL, NULL)) != 0) {
+				m->nlmsg_type = XFRM_MSG_NEWSA;
+				m->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+				(void)xfrm_sync(m, NULL, NULL);
+				break;
+			}
+		}
+		moved++;
+	}
+	free(j.msgs);
+	if (e != 0)
+		return e;
+
+	/* the policies' templates follow */
+	memset(&pj, 0, sizeof(pj));
+	pj.family = fam;
+	pj.s = j.s;
+	pj.d = j.d;
+	pj.reqid = (uint32_t)rc->reqid;
+	pj.msgs = malloc(sizeof(*pj.msgs) * XFRM_ENCAP_MAX);
+	if (pj.msgs == NULL)
+		return ENOMEM;
+	memset(req, 0, sizeof(req));
+	n->nlmsg_len = NLMSG_LENGTH(sizeof(struct xfrm_userpolicy_info));
+	n->nlmsg_type = XFRM_MSG_GETPOLICY;
+	n->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	e = xfrm_sync(n, xfrm_pol_collect, &pj);
+	for (i = 0; e == 0 && i < pj.nmsgs; i++) {
+		struct nlmsghdr *m = (void *)pj.msgs[i];
+		size_t hl = NLMSG_LENGTH(sizeof(struct xfrm_userpolicy_info));
+		struct rtattr *rta;
+		int alen;
+
+		rta = (struct rtattr *)((char *)m + NLMSG_ALIGN(hl));
+		alen = (int)m->nlmsg_len - (int)NLMSG_ALIGN(hl);
+		for (; RTA_OK(rta, alen); rta = RTA_NEXT(rta, alen)) {
+			struct xfrm_user_tmpl *t;
+			size_t k, nt;
+
+			if (rta->rta_type != XFRMA_TMPL)
+				continue;
+			t = RTA_DATA(rta);
+			nt = RTA_PAYLOAD(rta) / sizeof(*t);
+			for (k = 0; k < nt; k++)
+				if (xfrm_tmpl_matches(&t[k], &pj)) {
+					t[k].saddr = ns;
+					t[k].id.daddr = nd;
+				}
+		}
+		m->nlmsg_type = XFRM_MSG_UPDPOLICY;
+		m->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+		if ((e = xfrm_sync(m, NULL, NULL)) == 0)
+			repol++;
+	}
+	free(pj.msgs);
+	if (e == 0)
+		plog(PLOG_INFO, PLOGLOC, NULL,
+		    "xfrm: no XFRM_MSG_MIGRATE in this kernel "
+		    "(CONFIG_XFRM_MIGRATE off); moved %d SA(s) and %d "
+		    "policy template(s) by re-creating them\n", moved, repol);
+	return e;
+}
 #endif
 
 int
@@ -2080,19 +2310,34 @@ rcpfk_send_migrate(struct rcpfk_msg *rc)
 	 * SAs did not use.
 	 */
 	{
-		int e = xfrm_sync(n, NULL, NULL);
+		/* RACOON2_XFRM_NO_MIGRATE=1 (tests): behave as a kernel built
+		 * without CONFIG_XFRM_MIGRATE, so the fallback below runs on
+		 * any kernel */
+		const char *nm = getenv("RACOON2_XFRM_NO_MIGRATE");
+		int e = (nm != NULL && strcmp(nm, "1") == 0) ? ENOPROTOOPT :
+		    xfrm_sync(n, NULL, NULL);
+		int userspace = 0;
 
 		if (e == ENOPROTOOPT && rc->natt_type != 0 &&
 		    xfrm_same_addr(rc->sa_src, rc->sa2_src) &&
-		    xfrm_same_addr(rc->sa_dst, rc->sa2_dst))
+		    xfrm_same_addr(rc->sa_dst, rc->sa2_dst)) {
 			e = xfrm_update_encap_ports(rc);
-		if (e == 0 && (rc->flags & PFK_FLAG_NOENCAP))
+			/* no encap to re-port: it is being turned ON
+			 * (RFC 4555 3.5 move into a NAT) */
+			if (e == ESRCH) {
+				e = xfrm_migrate_userspace(rc);
+				userspace = 1;
+			}
+		} else if (e == ENOPROTOOPT) {
+			e = xfrm_migrate_userspace(rc);
+			userspace = 1;	/* encap already decided there */
+		}
+		if (e == 0 && !userspace && (rc->flags & PFK_FLAG_NOENCAP))
 			e = xfrm_strip_encap(rc);
 		if (e != 0) {
 			xfrm_seterror(rc, e, "xfrm migrate: %s%s", strerror(e),
 			    e == ENOPROTOOPT ? " (kernel built without "
-			    "CONFIG_XFRM_MIGRATE; only a NAT port change can "
-			    "be applied without it)" : "");
+			    "CONFIG_XFRM_MIGRATE)" : "");
 			return -1;
 		}
 		return 0;

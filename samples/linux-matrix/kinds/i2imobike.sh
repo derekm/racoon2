@@ -28,6 +28,9 @@
 #                      new address (TCP SYN from 192.0.8.4 on the wire), the
 #                      responder answers over that stream and moves ESP
 #                      (UDP-encapsulated 4500/4500 as for every TCP SA)
+#   i2imobike-*-nomig  the same, with both iked forced onto the path for a
+#                      kernel without CONFIG_XFRM_MIGRATE (SAs re-created,
+#                      policy templates updated); its log line is gated
 kind_i2imobike() {
 	name=$1
 	require_root || return 1
@@ -35,6 +38,11 @@ kind_i2imobike() {
 	[ -f "$ETC/spmd.pwd" ] || { log "FAIL: no $ETC/spmd.pwd"; return 1; }
 	command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
 	scen=${name#i2imobike-}
+	# *-nomig: both iked behave as on a kernel without
+	# CONFIG_XFRM_MIGRATE (RACOON2_XFRM_NO_MIGRATE=1), so the user-space
+	# re-create fallback runs whatever this kernel has
+	NOMIG=
+	case $scen in *-nomig) NOMIG=1; scen=${scen%-nomig} ;; esac
 	row_ns "$name"
 	HR=192.0.8.1; HI=192.0.8.2; HN=192.0.8.3; HM=192.0.8.4
 	TS_R=10.8.8.1; TS_I=10.8.8.2
@@ -133,7 +141,7 @@ EOF
 		[ "$s" = i ] && { _ns=$NSI; _sp=$SPMIF_I; _so=$SOCK_I; _pr=$PRIVRES_I; }
 		( ip netns exec "$_ns" "$SBIN/spmd" -F -f "$C/$s.conf" ) >"$D/spmd-$s.log" 2>&1 &
 		i=0; until [ -S "$_sp" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-		( ip netns exec "$_ns" env RACOON2_ADMIN_SOCK="$_so" RACOON2_RESUME_DIR="$_pr" \
+		( ip netns exec "$_ns" env ${NOMIG:+RACOON2_XFRM_NO_MIGRATE=1} RACOON2_ADMIN_SOCK="$_so" RACOON2_RESUME_DIR="$_pr" \
 		    "$SBIN/iked" -F -f "$C/$s.conf" -D 0x0001 -l "$D/iked-$s.log" ) >"$D/iked-$s.out" 2>&1 &
 	done
 	i=0; until [ -S "$SOCK_I" ] && [ -S "$SOCK_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
@@ -202,6 +210,12 @@ EOF
 				# update arrived on (from the new address), not the old one
 				grep -q "routed over stream to $NEW\\[" "$D/iked-r.log" ||
 					{ log "FAIL: the responder did not answer over the new TCP stream"; efail=1; }
+			fi
+			if [ -n "$NOMIG" ]; then
+				for s in r i; do
+					grep -q "moved [1-9][0-9]* SA(s) and [1-9][0-9]* policy template" "$D/iked-$s.log" ||
+						{ log "FAIL: iked ($s) did not take the no-MIGRATE path"; efail=1; }
+				done
 			fi
 			ip netns exec "$NSI" ping -c3 -i0.3 -W2 -I "$TS_I" "$TS_R" >/dev/null 2>&1 ||
 				{ log "FAIL: ICMP after the move"; efail=1
