@@ -1110,7 +1110,8 @@ void ikev2_sadb_resync(const struct sadb_resync_ent *, size_t);
  * ikev2_transmit.c. */
 int ikev2_check_message_ordering(struct ikev2_sa *, uint32_t, int,
     struct sockaddr *, struct sockaddr *);
-int ikev2_retransmit_forced(struct ikev2_sa *, uint32_t, int);
+int ikev2_retransmit_forced(struct ikev2_sa *, uint32_t, int,
+    struct sockaddr *, struct sockaddr *);
 int ikev2_check_icv_prev_gen(struct ikev2_sa *, rc_vchar_t *);
 
 /* INFORMATIONAL / ESTABLISHED-state dispatch, defined in

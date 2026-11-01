@@ -185,7 +185,7 @@ EOF
 	[ "$scen" = natin ] && { ip netns exec "$NSI" iptables -t nat -A POSTROUTING -o "$VI" -s "$HM" -p udp -j SNAT --to-source "$HN" ||
 		{ log "FAIL: SNAT"; return 1; }; }
 
-	( ip netns exec "$NSR" tcpdump -l -nn -i "$VR" -w "$D/wire.pcap" "udp port 500 or udp port 4500 or tcp port 4500" ) >"$D/tcpdump.out" 2>&1 &
+	( ip netns exec "$NSR" tcpdump -U -l -nn -i "$VR" -w "$D/wire.pcap" "udp port 500 or udp port 4500 or tcp port 4500" ) >"$D/tcpdump.out" 2>&1 &
 	DUMP=$!
 	for s in r i; do
 		_ns=$NSR; _sp=$SPMIF_R; _so=$SOCK_R; _pr=$PRIVRES_R
@@ -289,6 +289,11 @@ EOF
 				i=$((i+1)); sleep 0.2
 			done
 			spi_post=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | awk '/proto esp spi/{print $4}' | sort | tr '\n' ' ')
+			i=0
+			while [ "$scen" = childrekey ] && [ "$spi_post" = "$spi_pre" ] && [ "$i" -lt 50 ]; do
+				i=$((i+1)); sleep 0.2
+				spi_post=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | awk '/proto esp spi/{print $4}' | sort | tr '\n' ' ')
+			done
 			log "mobike: $scen esp before=[$spi_pre] after=[$spi_post]"
 			if [ "$scen" = ikerekey ]; then
 				# the update rides the NEW IKE SA (other SPIs than
@@ -399,7 +404,16 @@ EOF
 				{ log "FAIL: ESP still UDP-encapsulated on a NAT-free path"; efail=1; } ;;
 			esac
 			if [ "$scen" = tcp ]; then
-				sleep 1; kill "$DUMP" 2>/dev/null; sleep 1
+				# SIGINT flushes the pcap; do not read it until tcpdump
+				# has exited.  A fixed sleep races the flush (Fedora
+				# saw SYN=0 on a row that established).
+				kill -INT "$DUMP" 2>/dev/null || true
+				i=0
+				while kill -0 "$DUMP" 2>/dev/null && [ "$i" -lt 50 ]; do
+					i=$((i+1)); sleep 0.1
+				done
+				kill -9 "$DUMP" 2>/dev/null || true
+				wait "$DUMP" 2>/dev/null || true
 				syn=$(tcpdump -nn -r "$D/wire.pcap" "src host $NEW and tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0" 2>/dev/null | wc -l)
 				log "mobike: TCP SYNs from $NEW=$syn"
 				[ "$syn" -ge 1 ] || { log "FAIL: no TCP connection from the new address"; efail=1; }

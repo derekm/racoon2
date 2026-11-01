@@ -149,9 +149,11 @@ ikev2_check_icv_prev_gen(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 
 int
 ikev2_retransmit_forced(struct ikev2_sa *ike_sa, uint32_t message_id,
-                        int is_response)
+                        int is_response, struct sockaddr *local,
+                        struct sockaddr *remote)
 {
 	struct timeval t, diff;
+	int moved = 0;
 
 	if (is_response) {
 		return 0;
@@ -181,9 +183,39 @@ ikev2_retransmit_forced(struct ikev2_sa *ike_sa, uint32_t message_id,
 	 * need to retransmit the response. rate limit
 	 * is 1 sec for now.
 	 */
+	/*
+	 * RFC 7296 / RFC 4555 s1.2: a response is sent to the address the
+	 * request was received from.  A retransmit that arrives from a new
+	 * source (the initiator moved while this exchange was in flight)
+	 * must be answered there — replaying to the address of the first
+	 * copy sends the answer at an address that no longer exists, and
+	 * the window never clears.
+	 */
+	if (remote && ike_sa->response_info.dest &&
+	    rcs_cmpsa_wop(remote, ike_sa->response_info.dest) != 0) {
+		struct sockaddr *nd = rcs_sadup(remote);
+		struct sockaddr *ns = local ? rcs_sadup(local) : NULL;
+
+		if (nd) {
+			rc_free(ike_sa->response_info.dest);
+			ike_sa->response_info.dest = nd;
+			if (ns) {
+				if (ike_sa->response_info.src)
+					rc_free(ike_sa->response_info.src);
+				ike_sa->response_info.src = ns;
+			}
+			moved = 1;
+			isakmp_log(ike_sa, local, remote, 0, PLOG_INFO,
+			    PLOGLOC, "MOBIKE: request retransmit from %s, "
+			    "replaying response there\n", rcs_sa2str(remote));
+		} else if (ns)
+			rc_free(ns);
+	}
 	gettimeofday(&t, 0);
 	timersub(&t, &ike_sa->response_info.sent_time, &diff);
-	if (diff.tv_sec >= 1) {
+	/* a moved source bypasses the 1 s rate limit: the previous copy
+	 * went to the old address and cannot complete the exchange */
+	if (moved || diff.tv_sec >= 1) {
 		TRACE((PLOGLOC, "force retransmit\n"));
 		isakmp_force_retransmit(&ike_sa->response_info);
 		isakmp_log(ike_sa, 0, 0, 0, PLOG_DEBUG, PLOGLOC,

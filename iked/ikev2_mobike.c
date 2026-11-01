@@ -47,6 +47,7 @@
 #include "nattraversal.h"
 #include "ikev2_tcp.h"
 #include <unistd.h>
+#include <errno.h>
 #include <sys/socket.h>
 
 #ifndef UDP_ENCAP_ESPINUDP
@@ -123,10 +124,30 @@ ikev2_mobike_migrate_dir(struct ikev2_sa *ike_sa, rc_type dir,
 	rc.dir = dir;
 	rc.ul_proto = RC_PROTO_ANY;
 	ikev2_mobike_natt(ike_sa, &rc, new_s, new_d);
-	if (sadb_migrate(&rc) != 0) {
-		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
-			   "MOBIKE migrate failed: %s\n", rc.estr);
-		return -1;
+	/*
+	 * A rekey overlap leaves two SAs on the old addresses.  One
+	 * MIGRATE moves one of them; repeat until the kernel reports
+	 * none left, or the second SA stays on the old address and the
+	 * peer keeps a target the move was supposed to clear.
+	 */
+	{
+		int moved = 0;
+
+		for (;;) {
+			if (sadb_migrate(&rc) != 0) {
+				if (moved > 0 &&
+				    (rc.eno == ENOENT || rc.eno == ESRCH ||
+				     (rc.estr[0] &&
+				      strstr(rc.estr, "No data") != NULL)))
+					return 0;
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR,
+				    PLOGLOC, "MOBIKE migrate failed: %s\n",
+				    rc.estr);
+				return -1;
+			}
+			if (++moved >= 8)
+				return 0;
+		}
 	}
 	return 0;
 }
@@ -239,6 +260,18 @@ ikev2_move_sa(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 		if (l)
 			rc_free(l);
 		return -1;
+	}
+	/* Confirmed NAT: kernel SAs are still on 500. New endpoints go to
+	 * 4500 so ESP-in-UDP has a port. A clear path (flags still off)
+	 * must not float — that is what broke a NAT-free move. */
+	if (ike_sa->behind_nat || ike_sa->peer_behind_nat) {
+		in_port_t *rp = rcs_getsaport(r);
+		in_port_t *lp = rcs_getsaport(l);
+
+		if (rp)
+			*rp = htons(IKEV2_UDP_PORT_NATT);
+		if (lp)
+			*lp = htons(IKEV2_UDP_PORT_NATT);
 	}
 	ret = ikev2_move_sa_impl(ike_sa, r, l, migrate_kernel, why);
 	rc_free(r);
@@ -633,17 +666,19 @@ ikev2_mobike_local_update(struct ikev2_sa *sa, const struct sockaddr *newaddr)
 		*np = *op;	/* same IKE port, new address */
 #ifdef ENABLE_NATT
 	/*
-	 * RFC 4555 s3.5 / RFC 7296 s2.23: the new path may sit behind a
-	 * NAT this update is about to detect, and ESP-in-UDP and the NAT
-	 * binding both live on port 4500, so a NAT-T-enabled IKE SA moves
-	 * to 4500 (both ends) before the update leaves.  A peer with NAT-T
-	 * on listens there; switching early is always allowed.
+	 * Float to 4500 only when a NAT is already known (or forced).
+	 * Doing it on a clear port-500 SA makes the in-memory endpoints
+	 * disagree with the kernel SAs, so XFRM_MSG_MIGRATE returns
+	 * ENOENT ("No data available") and a NAT-D hash over the floated
+	 * port looks like a NAT that is not there (espinudp on a
+	 * NAT-free path).  A real NAT is detected from the UPDATE reply
+	 * and applied by ikev2_mobike_apply_nat.
 	 */
 	if (ikev2_tcp_encap(sa->rmconf) != RCT_BOOL_ON &&
-	    (ikev2_nat_traversal(sa->rmconf) == RCT_BOOL_ON ||
-	    ikev2_nat_traversal(sa->rmconf) == RCT_NATT_FORCE) &&
 	    np && rcs_getsaport(sa->remote) &&
-	    ntohs(*np) != IKEV2_UDP_PORT_NATT) {
+	    ntohs(*np) != IKEV2_UDP_PORT_NATT &&
+	    (sa->behind_nat || sa->peer_behind_nat ||
+	     ikev2_nat_traversal(sa->rmconf) == RCT_NATT_FORCE)) {
 		*np = htons(IKEV2_UDP_PORT_NATT);
 		*rcs_getsaport(sa->remote) = htons(IKEV2_UDP_PORT_NATT);
 	}
@@ -688,6 +723,36 @@ ikev2_mobike_local_update(struct ikev2_sa *sa, const struct sockaddr *newaddr)
 	sa->mobike_li_prev = sa->local;
 	sa->local = nl;
 	sa->mobike_li_pending = 1;
+	/*
+	 * RFC 4555 s3.5: if a request is still outstanding, retransmit it
+	 * from the new address now.  The peer answers that copy (the
+	 * window cannot take the UPDATE until the reply arrives), and the
+	 * address the first copy was sent to may already be gone.
+	 */
+	if (sa->transmit_info.packet || sa->transmit_info.nfrags > 0) {
+		struct sockaddr *ns = rcs_sadup(sa->local);
+		in_port_t *oldp = sa->transmit_info.src ?
+		    rcs_getsaport(sa->transmit_info.src) : NULL;
+		in_port_t *np = ns ? rcs_getsaport(ns) : NULL;
+
+		/*
+		 * Keep the port the outstanding request was sent on.
+		 * Floating it to 4500 makes the peer replay a port-500
+		 * response (no non-ESP marker) at a UDP_ENCAP socket,
+		 * and the kernel consumes it as ESP.  The UPDATE that
+		 * follows is a new exchange and may use 4500.
+		 */
+		if (ns && oldp && np)
+			*np = *oldp;
+		isakmp_log(sa, ns ? ns : sa->local, sa->remote, 0,
+		    PLOG_INFO, PLOGLOC,
+		    "MOBIKE initiator: retransmitting outstanding request "
+		    "from %s\n", rcs_sa2str(ns ? ns : sa->local));
+		if (ns)
+			isakmp_retarget_src(&sa->transmit_info, ns);
+		if (ns)
+			rc_free(ns);
+	}
 	ikev2_payloads_init(payl);
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
 	    ikev2_notify_payload(0, 0, 0, IKEV2_UPDATE_SA_ADDRESSES, 0, 0),

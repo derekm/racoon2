@@ -2581,6 +2581,28 @@ isakmp_retransmit_socket(struct transmit_info *info)
 	return sock;
 }
 
+/*
+ * RFC 4555 s3.5: an outstanding request is retransmitted from the new
+ * local address, not the address it was first sent from.  transmit_info
+ * owns a private copy of that source; replace it and send now so recovery
+ * does not wait out the backoff (the old address may already be gone).
+ */
+void
+isakmp_retarget_src(struct transmit_info *info, const struct sockaddr *src)
+{
+	struct sockaddr *nsrc;
+
+	if (!info || !src || (!info->packet && info->nfrags <= 0))
+		return;
+	nsrc = rcs_sadup(src);
+	if (!nsrc)
+		return;
+	if (info->src)
+		rc_free(info->src);
+	info->src = nsrc;
+	isakmp_force_retransmit(info);
+}
+
 void
 isakmp_force_retransmit(struct transmit_info *info)
 {

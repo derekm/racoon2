@@ -2117,6 +2117,32 @@ ikev2_child_adopt(struct ikev2_sa *old_sa, struct ikev2_sa *new_sa)
 			break;
 		}
 	}
+	/*
+	 * A MOBIKE update queued behind the rekey (window full) was armed
+	 * on the old SA.  The INFORMATIONAL goes out on the new SA, and
+	 * the reply is processed there, so the pending-move state has to
+	 * move with it or the SAs never leave the old address.
+	 */
+	if (old_sa->mobike_li_pending && old_sa->mobike_li_prev) {
+		struct sockaddr *nl = rcs_sadup(old_sa->local);
+
+		if (nl) {
+			if (new_sa->local)
+				rc_free(new_sa->local);
+			new_sa->local = nl;
+		}
+		new_sa->mobike_li_prev = old_sa->mobike_li_prev;
+		old_sa->mobike_li_prev = NULL;
+		new_sa->mobike_li_pending = 1;
+		old_sa->mobike_li_pending = 0;
+		if (old_sa->cookie2_sent) {
+			if (new_sa->cookie2_sent)
+				rc_vfree(new_sa->cookie2_sent);
+			new_sa->cookie2_sent = old_sa->cookie2_sent;
+			old_sa->cookie2_sent = NULL;
+		}
+		new_sa->cookie2_matched = old_sa->cookie2_matched;
+	}
 }
 
 

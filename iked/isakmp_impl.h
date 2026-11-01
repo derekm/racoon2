@@ -368,6 +368,7 @@ extern int isakmp_schedule_retransmit_frags(struct transmit_info *,
 extern void isakmp_transmit_noretry(struct transmit_info *, rc_vchar_t *,
 				    struct sockaddr *, struct sockaddr *);
 extern void isakmp_force_retransmit(struct transmit_info *);
+extern void isakmp_retarget_src(struct transmit_info *, const struct sockaddr *);
 extern void isakmp_stop_retransmit(struct transmit_info *);
 extern void isakmp_sendto(rc_vchar_t *, struct sockaddr *, struct sockaddr *);
 

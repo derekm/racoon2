@@ -433,7 +433,8 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 		if (ike_pcap_file)
 			rc_pcap_push(remote, local, packet);
 #endif
-		if (ikev2_retransmit_forced(ike_sa, message_id, is_response) != 0) {
+		if (ikev2_retransmit_forced(ike_sa, message_id, is_response,
+		    local, remote) != 0) {
 			goto end;
 		}
 		if (ikev2_check_message_ordering(ike_sa, message_id, is_response, local, remote) != 0) {
@@ -514,7 +515,8 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 					goto end;
 				}
 			}
-			if (ikev2_retransmit_forced(ike_sa, message_id, is_response) != 0) {
+			if (ikev2_retransmit_forced(ike_sa, message_id, is_response,
+		    local, remote) != 0) {
 				goto end;
 			}
 			if (ikev2_check_message_ordering(ike_sa, message_id, is_response, local, remote) != 0) {
@@ -570,7 +572,7 @@ ikev2_input(rc_vchar_t *packet, struct sockaddr *remote, struct sockaddr *local)
 		 */
 		if (reassembled) {
 			if (ikev2_retransmit_forced(ike_sa, message_id,
-			    is_response) != 0)
+			    is_response, local, remote) != 0)
 				goto end;
 			if (ikev2_check_message_ordering(ike_sa, message_id,
 			    is_response, local, remote) != 0) {
