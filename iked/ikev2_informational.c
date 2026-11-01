@@ -909,6 +909,8 @@ ikev2_info_init_notify_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		ike_sa->mobike_rr_pending = 0;
 		ike_sa->cookie2_matched = 0;
 		ike_sa->mobike_alt_idx = 0;
+		rc_vfree(ike_sa->cookie2_sent);
+		ike_sa->cookie2_sent = NULL;
 		isakmp_log(ike_sa, ike_sa->local, probe, 0, PLOG_INFO, PLOGLOC,
 			   "MOBIKE responder-follow COOKIE2 matched, migrating\n");
 		ikev2_mobike_apply(ike_sa, probe, ike_sa->local);

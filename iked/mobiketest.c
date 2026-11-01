@@ -10,7 +10,8 @@
  *    events every 100 ms for 8 s produce one or two scans (each capped
  *    burst lasts at least 4 s and at most ~5 s), not one per second;
  *  - the reply / abandon hooks tolerate NULL and an SA with no update
- *    pending (no crash, no state change).
+ *    pending (no crash, no state change);
+ *  - a reply without our COOKIE2 echo (RFC 4555 s5.2) moves nothing.
  *
  * Linked with the full iked object set like notifytest.
  */
@@ -21,6 +22,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <arpa/inet.h>
 #include <time.h>
 
 #include "racoon.h"
@@ -125,6 +127,40 @@ main(int argc, char *argv[])
 	ck(sa.local == NULL && sa.mobike_li_pending == 0,
 	    "reply/abandon without a pending update change nothing");
 	ck(sched_live() == 0, "and arm no rescan");
+
+	/*
+	 * RFC 4555 s5.2: an update reply without our COOKIE2 echo must not
+	 * move anything: local goes back to the address the kernel SAs use,
+	 * the pending state and the cookie are cleared.
+	 */
+	{
+		struct sockaddr_in o4, n4;
+		struct sockaddr *oldl;
+
+		memset(&o4, 0, sizeof(o4));
+		o4.sin_family = AF_INET;
+		o4.sin_port = htons(500);
+		inet_pton(AF_INET, "192.0.2.2", &o4.sin_addr);
+		n4 = o4;
+		inet_pton(AF_INET, "192.0.2.4", &n4.sin_addr);
+		memset(&sa, 0, sizeof(sa));
+		oldl = rcs_sadup((struct sockaddr *)&o4);
+		sa.mobike_li_prev = oldl;
+		sa.local = rcs_sadup((struct sockaddr *)&n4);
+		sa.remote = rcs_sadup((struct sockaddr *)&o4);
+		sa.mobike_li_pending = 1;
+		sa.cookie2_sent = rc_vnew((const void *)"0123456789abcdef", 16);
+		sa.cookie2_matched = 0;
+		ikev2_mobike_local_reply(&sa, 1, 1, 1, 1);
+		ck(sa.local == oldl && sa.mobike_li_prev == NULL &&
+		    sa.mobike_li_pending == 0,
+		    "no COOKIE2 echo: the move is refused, local restored");
+		ck(sa.cookie2_sent == NULL && sa.cookie2_matched == 0,
+		    "and the COOKIE2 state is cleared");
+		ck(sched_live() == 0, "and no rescan is armed for a refusal");
+		rc_free(sa.local);
+		rc_free(sa.remote);
+	}
 
 	if (fails) {
 		printf("mobiketest: %d failure(s)\n", fails);

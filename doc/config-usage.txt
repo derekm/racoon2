@@ -883,6 +883,11 @@ remote
 		from an address interface ike does not listen on: a config
 		that pins its IKE addresses (no MY_IPV4 / MY_IPV6) keeps its
 		SAs where they are.
+		The update carries a COOKIE2 the peer must echo (RFC 4555
+		s5.2); without the echo nothing moves.  IKE_AUTH lists this
+		host's other addresses of the same family (no loopback or
+		IPv6 link-local, at most 8) as ADDITIONAL_IP4/IP6_ADDRESS,
+		or N(NO_ADDITIONAL_ADDRESSES) (RFC 4555 s3.4).
 		On also adds N(MOBIKE_SUPPORTED) to the initiator's IKE_AUTH
 		(RFC 4555 s3.1), and with nat_traversal on the update moves
 		the IKE SA to port 4500 so a NAT on the new path can be

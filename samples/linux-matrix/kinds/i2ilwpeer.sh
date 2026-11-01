@@ -586,6 +586,8 @@ EOF
 			[ "$upi" -ge 1 ] || { log "FAIL: iked never sent UPDATE_SA_ADDRESSES"; efail=1; }
 			[ "$np" -ge 1 ] || { log "FAIL: no IKE datagram from $HRM on the wire"; efail=1; }
 			[ "$moved" -eq 1 ] || { log "FAIL: SAs did not move to $HRM on both seats"; efail=1; }
+			grep -q "MOBIKE initiator: COOKIE2 echoed, return routability confirmed" "$D/iked.log" ||
+				{ log "FAIL: the $PEER peer did not echo iked's COOKIE2 (RFC 4555 s5.2)"; efail=1; }
 			ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HI dst $HR\$" &&
 				{ log "FAIL: a peer SA still targets $HR"; efail=1; }
 			xa_release

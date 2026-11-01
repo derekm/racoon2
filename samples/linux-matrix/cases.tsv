@@ -350,3 +350,5 @@ i2imobike-childrekey	i2imobike	pass	0	MOVE DURING A CHILD REKEY / IN-FLIGHT EXCH
 i2imobike-ikerekey	i2imobike	pass	0	MOVE DURING AN IKE REKEY: as childrekey with the initiator IKE lifetime 20 s; the UPDATE_SA_ADDRESSES must ride the NEW IKE SA (IKE SPI other than the in-flight rekey), everything ends on the new address.	-	-
 i2imobike-childrekey-nomig	i2imobike	pass	0	i2imobike-childrekey with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
 i2imobike-ikerekey-nomig	i2imobike	pass	0	i2imobike-ikerekey with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
+i2imobike-multi	i2imobike	pass	0	RFC 4555 s3.4 MULTIPLE ADDRESSES: the initiator holds 192.0.8.2 and .4 from the start; its IKE_AUTH must advertise .4 (ADDITIONAL_IP4_ADDRESS, the responder logs it stored); losing .2 moves everything to .4 with the COOKIE2 echo confirmed, ICMP flows.	-	-
+i2imobike-multi-nomig	i2imobike	pass	0	i2imobike-multi with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-

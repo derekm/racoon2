@@ -1155,7 +1155,11 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 		if (dlen < 8 || dlen > 64)
 			return 0;
 		data = get_notify_data(n);
-		if (ike_sa->cookie2_sent) {
+		/* our own probe's echo only while it is outstanding; after
+		 * it a peer COOKIE2 is a new return-routability check (RFC
+		 * 4555 s3.6) to echo, not a "mismatch" with an old probe */
+		if (ike_sa->cookie2_sent &&
+		    (ike_sa->mobike_rr_pending || ike_sa->mobike_li_pending)) {
 			if (ike_sa->cookie2_sent->l == dlen &&
 			    CRYPTO_memcmp(ike_sa->cookie2_sent->v, data, dlen) == 0) {
 				ike_sa->cookie2_matched = 1;
@@ -1163,6 +1167,11 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 			}
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
 				   "COOKIE2 mismatch\n");
+			/* our address update: ikev2_mobike_local_reply
+			 * refuses the move (cookie2_matched stays 0); the
+			 * IKE SA itself is fine */
+			if (ike_sa->mobike_li_pending)
+				return 0;
 			return 1;
 		}
 		if (ike_sa->cookie2_echo)

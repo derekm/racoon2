@@ -1096,6 +1096,7 @@ void ikev2_mobike_apply_nat(struct ikev2_sa *, struct sockaddr *,
 int ikev2_mobike_probe_next(struct ikev2_sa *);
 void ikev2_mobike_local_changed(void);
 int ikev2_mobike_local_update(struct ikev2_sa *, const struct sockaddr *);
+void ikev2_mobike_push_additional(struct ikev2_sa *, struct ikev2_payloads *);
 void ikev2_mobike_local_reply(struct ikev2_sa *, int, int, int, int);
 void ikev2_mobike_local_abandon(struct ikev2_sa *);
 int ikev2_natt_follow_mapping_event(struct ikev2_sa *, struct sockaddr *);

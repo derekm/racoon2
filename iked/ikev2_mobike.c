@@ -29,6 +29,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <net/if.h>
+#include <ifaddrs.h>
 #include "racoon.h"
 #include "isakmp.h"
 #include "dhgroup.h"
@@ -685,6 +687,25 @@ ikev2_mobike_local_update(struct ikev2_sa *sa, const struct sockaddr *newaddr)
 	ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
 	    ikev2_notify_payload(0, 0, 0, IKEV2_UPDATE_SA_ADDRESSES, 0, 0),
 	    TRUE);
+	/*
+	 * RFC 4555 s3.5 / s5.2: COOKIE2 on the update, which the responder
+	 * MUST echo; the move is committed only if the echo matches, so a
+	 * reply that did not come back over the new path (or an off-path
+	 * forgery) cannot move the SAs.
+	 */
+	{
+		rc_vchar_t *c2 = eay_set_random(16);
+
+		if (c2 != NULL) {
+			if (sa->cookie2_sent)
+				rc_vfree(sa->cookie2_sent);
+			sa->cookie2_sent = c2;
+			sa->cookie2_matched = 0;
+			ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0, IKEV2_COOKIE2,
+			    (uint8_t *)c2->v, c2->l), TRUE);
+		}
+	}
 	mobike_push_natd(payl, sa, sa->local, IKEV2_NAT_DETECTION_SOURCE_IP);
 	mobike_push_natd(payl, sa, sa->remote,
 	    IKEV2_NAT_DETECTION_DESTINATION_IP);
@@ -710,6 +731,24 @@ ikev2_mobike_local_reply(struct ikev2_sa *sa, int src_seen, int src_match,
 	sa->local = sa->mobike_li_prev;	/* what the kernel SAs still use */
 	sa->mobike_li_prev = NULL;
 	sa->mobike_li_pending = 0;
+	if (sa->cookie2_sent != NULL) {
+		int ok = sa->cookie2_matched;
+
+		rc_vfree(sa->cookie2_sent);
+		sa->cookie2_sent = NULL;
+		sa->cookie2_matched = 0;
+		if (!ok) {
+			/* RFC 4555 s5.2: no (or a wrong) COOKIE2 echo */
+			isakmp_log(sa, nl, sa->remote, 0, PLOG_PROTOERR,
+			    PLOGLOC, "MOBIKE initiator: the update reply did "
+			    "not echo our COOKIE2, not moving\n");
+			rc_free(nl);
+			return;
+		}
+		isakmp_log(sa, nl, sa->remote, 0, PLOG_INFO, PLOGLOC,
+		    "MOBIKE initiator: COOKIE2 echoed, return routability "
+		    "confirmed\n");
+	}
 	natchg = natt_mobike_renat(sa, src_seen, src_match, dst_seen,
 	    dst_match);
 	ikev2_mobike_apply_nat(sa, sa->remote, nl, natchg);
@@ -727,5 +766,77 @@ ikev2_mobike_local_abandon(struct ikev2_sa *sa)
 	sa->local = sa->mobike_li_prev;
 	sa->mobike_li_prev = NULL;
 	sa->mobike_li_pending = 0;
+	if (sa->cookie2_sent != NULL) {
+		rc_vfree(sa->cookie2_sent);
+		sa->cookie2_sent = NULL;
+	}
 	ikev2_mobike_local_changed();	/* retry from the current address */
+}
+
+/*
+ * RFC 4555 s3.4: the initiator that will move lists its other addresses
+ * (same family as the IKE SA, up to IKEV2_MAX_EXTRA_ADDR, no loopback or
+ * IPv6 link-local) as ADDITIONAL_IP4/IP6_ADDRESS in IKE_AUTH, so the
+ * responder can probe them (COOKIE2, s3.6) when the current path dies.
+ * strongSwan's charon advertises its addresses the same way.  None
+ * found: N(NO_ADDITIONAL_ADDRESSES).
+ */
+void
+ikev2_mobike_push_additional(struct ikev2_sa *sa, struct ikev2_payloads *payl)
+{
+	struct ifaddrs *ifa0, *ifa;
+	int n = 0;
+
+	if (sa == NULL || sa->local == NULL || payl == NULL)
+		return;
+	if (getifaddrs(&ifa0) == 0) {
+		for (ifa = ifa0; ifa && n < IKEV2_MAX_EXTRA_ADDR;
+		    ifa = ifa->ifa_next) {
+			const struct sockaddr *a = ifa->ifa_addr;
+			const uint8_t *p = NULL;
+			int type = 0;
+			size_t l = 0;
+
+			if (a == NULL || a->sa_family != sa->local->sa_family ||
+			    (ifa->ifa_flags & IFF_LOOPBACK) ||
+			    !(ifa->ifa_flags & IFF_UP))
+				continue;
+			if (a->sa_family == AF_INET) {
+				const struct in_addr *x =
+				    &((const struct sockaddr_in *)a)->sin_addr;
+
+				if (x->s_addr == ((struct sockaddr_in *)
+				    sa->local)->sin_addr.s_addr)
+					continue;
+				p = (const uint8_t *)x;
+				l = 4;
+				type = IKEV2_ADDITIONAL_IP4_ADDRESS;
+			}
+#ifdef INET6
+			else if (a->sa_family == AF_INET6) {
+				const struct in6_addr *x =
+				    &((const struct sockaddr_in6 *)a)->sin6_addr;
+
+				if (IN6_IS_ADDR_LINKLOCAL(x) ||
+				    IN6_ARE_ADDR_EQUAL(x, &((struct sockaddr_in6 *)
+				    sa->local)->sin6_addr))
+					continue;
+				p = (const uint8_t *)x;
+				l = 16;
+				type = IKEV2_ADDITIONAL_IP6_ADDRESS;
+			}
+#endif
+			if (p == NULL)
+				continue;
+			ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+			    ikev2_notify_payload(0, 0, 0, type, (uint8_t *)p, l), TRUE);
+			n++;
+		}
+		freeifaddrs(ifa0);
+	}
+	if (n == 0)
+		ikev2_payloads_push(payl, IKEV2_PAYLOAD_NOTIFY,
+		    ikev2_notify_payload(0, 0, 0, IKEV2_NO_ADDITIONAL_ADDRESSES,
+		    0, 0), TRUE);
+	TRACE((PLOGLOC, "MOBIKE: %d additional address(es) advertised\n", n));
 }

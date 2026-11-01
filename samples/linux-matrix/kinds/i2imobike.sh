@@ -43,6 +43,9 @@
 #                      CREATE_CHILD_SA (child / IKE rekey) is in flight
 #                      (responder answers held): the rekey completes, the
 #                      update follows, everything ends on the new address
+#   i2imobike-multi    two addresses from the start: the second is
+#                      advertised (ADDITIONAL_IP4_ADDRESS, stored by the
+#                      responder); losing the first moves to it
 #   i2imobike-tcp      RFC 9329 IKE over TCP on both seats (tcp_encap on):
 #                      the update leaves over a NEW TCP connection from the
 #                      new address (TCP SYN from 192.0.8.4 on the wire), the
@@ -86,7 +89,7 @@ kind_i2imobike() {
 	natin) NAT="nat_traversal on;"; NEW=$HN ;;
 	natout) NAT="nat_traversal on;"; OLD=$HN; I_OUT=$HN ;;
 	tcp) TCP="tcp_encap on;" ;;
-	return|flap|loss|v6|dual) ;;
+	return|flap|loss|v6|dual|multi) ;;
 	childrekey) CHILD_LT_I="ipsec_sa_lifetime_time 20 sec;" ;;
 	ikerekey) IKE_LT_I="kmp_sa_lifetime_time 20 sec;" ;;
 	optout) MI="mobike_initiate off;"; PIN=1 ;;
@@ -160,6 +163,11 @@ EOF
 		ip netns exec "$NSR" ip addr add 192.0.8.1/24 dev "$VR"
 		ip netns exec "$NSI" ip addr add 192.0.8.2/24 dev "$VI"
 	fi
+	# multi: the initiator holds a second address from the start; it must
+	# be advertised (ADDITIONAL_IP4_ADDRESS) and the move is losing the
+	# first one
+	[ "$scen" = multi ] && ip netns exec "$NSI" ip addr add "$HM/$PL" dev "$VI" $NODAD
+	[ "$scen" = multi ] && ip netns exec "$NSI" ip route replace "$HR/$HL" dev "$VI" src "$HI"
 	ip netns exec "$NSR" ip addr add "$TS_R/$HL" dev lo
 	ip netns exec "$NSI" ip addr add "$TS_I/$HL" dev lo
 	ip netns exec "$NSR" ip route add "$TS_I/$HL" dev "$VR" src "$TS_R"
@@ -244,7 +252,11 @@ EOF
 			;;
 		esac
 		# the move
-		ip netns exec "$NSI" ip addr add "$HM/$PL" dev "$VI" $NODAD
+		if [ "$scen" = multi ]; then
+			grep -q "stored additional IPv4 $HM" "$D/iked-r.log" ||
+				{ log "FAIL: the responder never stored the initiator's additional address $HM"; efail=1; }
+		fi
+		[ "$scen" = multi ] || ip netns exec "$NSI" ip addr add "$HM/$PL" dev "$VI" $NODAD
 		ip netns exec "$NSI" ip route replace "$HR/$HL" dev "$VI" src "$HM"
 		# the kernel flushes a device's routes when its last IPv4
 		# address goes (loss): the new network brings the inner route
@@ -370,6 +382,9 @@ EOF
 			[ "$upi" -ge 1 ] || { log "FAIL: the initiator never sent UPDATE_SA_ADDRESSES"; efail=1; }
 			[ "$upd1" -gt "$upd0" ] || { log "FAIL: the responder saw no UPDATE_SA_ADDRESSES"; efail=1; }
 			[ "$moved" -eq 1 ] || { log "FAIL: SAs did not move to $NEW (responder) / $HM (initiator)"; efail=1; }
+			# RFC 4555 s5.2: the move was committed on our COOKIE2 echo
+			grep -q "MOBIKE initiator: COOKIE2 echoed, return routability confirmed" "$D/iked-i.log" ||
+				{ log "FAIL: no COOKIE2 return-routability confirmation"; efail=1; }
 			ip netns exec "$NSR" ip xfrm state | grep -q "^src $HR dst $OLD" &&
 				{ log "FAIL: a responder SA still targets $OLD"; efail=1; }
 			nr=$(ip netns exec "$NSR" ip xfrm state | grep -c 'encap type espinudp')

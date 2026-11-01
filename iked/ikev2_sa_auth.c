@@ -297,12 +297,15 @@ initiator_state1_send(struct ikev2_sa *ike_sa, void *certreq,
 	 * (mobike_initiate on) must say so; off keeps the old wire image.
 	 */
 	if (ike_sa->rmconf &&
-	    ikev2_mobike_initiate(ike_sa->rmconf) == RCT_BOOL_ON)
+	    ikev2_mobike_initiate(ike_sa->rmconf) == RCT_BOOL_ON) {
 		ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY,
 				    ikev2_notify_payload(0, 0, 0,
 							 IKEV2_MOBIKE_SUPPORTED,
 							 0, 0),
 				    TRUE);
+		/* RFC 4555 s3.4 */
+		ikev2_mobike_push_additional(ike_sa, &payl);
+	}
 
 	/* RFC 5723 s4.1: as an INITIATOR, ask the peer (a resumption
 	 * responder) to issue us a session-resumption ticket when session

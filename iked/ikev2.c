@@ -680,6 +680,10 @@ ikev2_timeout(struct transmit_info *info)
 		ike_sa->remote = ike_sa->mobike_rr_prev;
 		ike_sa->mobike_rr_prev = NULL;
 		ike_sa->mobike_rr_pending = 0;
+		if (ike_sa->cookie2_sent) {
+			rc_vfree(ike_sa->cookie2_sent);
+			ike_sa->cookie2_sent = NULL;
+		}
 		if (dead)
 			rc_free(dead);
 	}
