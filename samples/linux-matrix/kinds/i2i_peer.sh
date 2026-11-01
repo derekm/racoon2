@@ -226,6 +226,13 @@ ${I2I_CHARON_EXTRA:-}
 		vici {
 			socket = $I2I_VICI_URI
 		}
+		# keep the row out of host /etc: never write DNS servers a
+		# peer hands out into /etc/resolv.conf (resolve plugin off; and
+		# if this build loads it anyway, its file is row-private)
+		resolve {
+			load = no
+			file = ${_log%.log}.resolv.conf
+		}
 ${I2I_CHARON_PLUGINS_EXTRA:-}
 	}
 	filelog {
@@ -264,7 +271,8 @@ SCEOF
 	sleep 1
 	if grep -q 'invalid configuration' "${_log%.log}.stdout.log" 2>/dev/null; then
 		echo "i2i_charon_run: charon rejected $_scf; stock config, stdout log only" >>"$_log"
-		printf 'charon { plugins { vici { socket = %s } } }\n' "$I2I_VICI_URI" >"$_scf.min"
+		printf 'charon { plugins { vici { socket = %s } resolve { load = no\n file = %s } } }\n' \
+		    "$I2I_VICI_URI" "${_log%.log}.resolv.conf" >"$_scf.min"
 		( ip netns exec "$_ns" unshare -m sh -c "$_pr" sh "$I2I_SW_ROOT/run" $_sb env STRONGSWAN_CONF="$_scf.min" ${I2I_OPENSSL_ENV:-} \
 		    "$I2I_CHARON_BIN" --debug-ike 3 --debug-knl 1 \
 		    --debug-cfg 2 --debug-mgr 2 --debug-net 1 --debug-chd 2 ) \
