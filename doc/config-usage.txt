@@ -875,7 +875,8 @@ remote
 		reply reports).  For an IKE SA over TCP (tcp_encap), the
 		update goes over a new TCP connection from the new address.
 		Address events are debounced: iked acts once they have been
-		quiet for 1 second (at most 3 seconds after the first), with
+		quiet for 1 to 2 seconds, and within about 5 seconds of the
+		first event even on a link that keeps flapping, with
 		one update in flight per IKE SA; a change made while an update
 		is outstanding is picked up when it completes.  No update is
 		sent to a peer that did not send MOBIKE_SUPPORTED.

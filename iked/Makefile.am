@@ -126,6 +126,13 @@ check_PROGRAMS += notifytest
 notifytest_SOURCES = notifytest.c
 notifytest_LDADD = $(addtest_ikedsrc) $(LDADD)
 
+# RFC 4555 initiator address-event handler: debounce, burst cap, and the
+# completion hooks (ikev2_mobike.c), full iked link like notifytest
+TESTS += mobiketest
+check_PROGRAMS += mobiketest
+mobiketest_SOURCES = mobiketest.c
+mobiketest_LDADD = $(addtest_ikedsrc) $(LDADD)
+
 # RFC 8229 / RFC 9329 IKE-over-TCP framing codec (iked/ikev2_tcp.c): the
 # 16-bit Len (including itself) + 4-octet non-ESP marker wire format, prefix
 # validation, Len 0/1 fatal vs Len 2 and keepalive silent-ignore, ESP/IKE

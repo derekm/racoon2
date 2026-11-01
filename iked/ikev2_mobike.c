@@ -501,6 +501,8 @@ mobike_route_source(const struct sockaddr *dst, struct sockaddr_storage *out)
 }
 
 static struct sched *mobike_local_timer;
+/* scans run so far (mobiketest checks the debounce with it) */
+unsigned long ikev2_mobike_scan_count;
 
 static int
 mobike_initiator_eligible(struct ikev2_sa *sa)
@@ -521,6 +523,7 @@ mobike_local_scan(void *unused)
 
 	(void)unused;
 	SCHED_INIT(mobike_local_timer);
+	ikev2_mobike_scan_count++;
 	for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa;
 	    sa = IKEV2_SA_LIST_NEXT(sa)) {
 		if (mobike_initiator_eligible(sa))
@@ -562,13 +565,19 @@ mobike_local_scan(void *unused)
 /*
  * Debounce.  rtnetlink delivers an address change as a burst (NEWADDR,
  * routes, DELADDR...) and a flapping link delivers many: scan once the
- * events have been quiet for MOBIKE_SETTLE seconds (trailing edge), but
- * never later than MOBIKE_SETTLE_MAX after the first event of a burst, so
+ * events have been quiet for 1-2 seconds (trailing edge), but stop
+ * re-arming MOBIKE_SETTLE_MAX seconds after the first event of a burst, so
  * a link that never stops flapping still gets an update.  One update is
  * in flight per SA at a time; ikev2_mobike_local_reply/_abandon rescan,
  * so a change during that exchange is not lost.
  */
-#define MOBIKE_SETTLE		1
+/*
+ * The scheduler clock has 1-second resolution: sched_new(n) fires at the
+ * n-th second boundary from now, i.e. after (n-1, n] seconds, so a quiet
+ * time of at least one second needs n = 2 (mobiketest found 1 firing on
+ * nearly every event of a 100 ms flap).
+ */
+#define MOBIKE_SETTLE		2
 #define MOBIKE_SETTLE_MAX	3
 static time_t mobike_burst_start;
 
