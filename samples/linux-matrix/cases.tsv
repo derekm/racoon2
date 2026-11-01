@@ -336,3 +336,7 @@ i2imobike-loss	i2imobike	pass	0	RFC 4555 INTERFACE LOSS: the initiator loses its
 i2imobike-loss-nomig	i2imobike	pass	0	i2imobike-loss with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
 i2imobike-optout	i2imobike	pass	0	OPT-OUT: explicit mobike_initiate off with interface ike pinned to 192.0.8.2: after the move no UPDATE_SA_ADDRESSES, the responder SA stays on .2 (the configuration that must stay unchanged when the default flips).	-	-
 i2imobike-pinned	i2imobike	pass	0	PINNED: mobike_initiate on but interface ike lists only 192.0.8.2: iked must decline the move (logs no IKE socket on .4; event gate), send no update, never transmit without a socket, keep its SAs.	-	-
+i2imobike-v6	i2imobike	pass	0	RFC 4555 over IPv6: iked initiator (MY_IPV6) moves 2001:db8:8::2 -> ::4 (inner fd00:8::/128 TS); UPDATE_SA_ADDRESSES sent and seen, both seats SAs on ::4, none on ::2, ICMPv6 flows.	-	-
+i2imobike-dual	i2imobike	pass	0	DUAL-STACK: initiator listens on MY_IPV4 + MY_IPV6, an IPv4 address stays on the link, the IPv6 IKE SA moves ::2 -> ::4 with the same gates as i2imobike-v6.	-	-
+i2imobike-v6-nomig	i2imobike	pass	0	i2imobike-v6 with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
+i2imobike-dual-nomig	i2imobike	pass	0	i2imobike-dual with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-

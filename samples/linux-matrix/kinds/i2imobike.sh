@@ -35,6 +35,9 @@
 #   i2imobike-pinned   mobike_initiate on, interface ike pinned to the
 #                      old address: iked declines (no socket there),
 #                      sends nothing, keeps its SAs
+#   i2imobike-v6       the plain move over IPv6 (outer and inner)
+#   i2imobike-dual     dual-stack initiator (MY_IPV4 + MY_IPV6, an IPv4
+#                      address stays on the link): the IPv6 IKE SA moves
 #   i2imobike-tcp      RFC 9329 IKE over TCP on both seats (tcp_encap on):
 #                      the update leaves over a NEW TCP connection from the
 #                      new address (TCP SYN from 192.0.8.4 on the wire), the
@@ -58,6 +61,16 @@ kind_i2imobike() {
 	row_ns "$name"
 	HR=192.0.8.1; HI=192.0.8.2; HN=192.0.8.3; HM=192.0.8.4
 	TS_R=10.8.8.1; TS_I=10.8.8.2
+	# v6: the same rows over IPv6 (outer and inner); dual: a dual-stack
+	# initiator (an IPv4 address stays on the link, iked listens on both
+	# families) whose IPv6 IKE SA moves
+	PL=24; HL=32; AF=inet; MYIP=MY_IPV4; NODAD=; V6=
+	case $name in i2imobike-v6*|i2imobike-dual*)
+		V6=1; PL=64; HL=128; AF=inet6; MYIP=MY_IPV6; NODAD=nodad
+		HR=2001:db8:8::1; HI=2001:db8:8::2; HN=2001:db8:8::3; HM=2001:db8:8::4
+		TS_R=fd00:8::1; TS_I=fd00:8::2
+		case $name in i2imobike-dual*) MYIP="MY_IPV4; MY_IPV6" ;; esac ;;
+	esac
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 	printf '%s' racoon2-mobike-matrix-0123456789abcdef >"$C/psk.bin"; chmod 600 "$C/psk.bin"
 
@@ -68,7 +81,7 @@ kind_i2imobike() {
 	natin) NAT="nat_traversal on;"; NEW=$HN ;;
 	natout) NAT="nat_traversal on;"; OLD=$HN; I_OUT=$HN ;;
 	tcp) TCP="tcp_encap on;" ;;
-	return|flap|loss) ;;
+	return|flap|loss|v6|dual) ;;
 	optout) MI="mobike_initiate off;"; PIN=1 ;;
 	pinned) PIN=1 ;;
 	*) log "FAIL: unknown scenario $scen"; return 1 ;;
@@ -81,7 +94,7 @@ kind_i2imobike() {
 		_peer=$3; [ "$1" = r ] && _peer=ANY
 		cat >"$C/$1.conf" <<EOF
 interface {
-	ike { $( [ "$1" = i ] && [ -z "$PIN" ] && echo MY_IPV4 || echo "\"$2\"" ); };
+	ike { $( [ "$1" = i ] && [ -z "$PIN" ] && echo "$MYIP" || echo "\"$2\"" ); };
 	spmd { unix "$_spmif"; };
 	spmd_password "$ETC/spmd.pwd";
 };
@@ -132,17 +145,22 @@ EOF
 	ip link add "$VR" type veth peer name "$VI"
 	ip link set "$VR" netns "$NSR"; ip link set "$VI" netns "$NSI"
 	ip netns exec "$NSI" sysctl -qw "net.ipv4.conf.$VI.promote_secondaries=1"
-	ip netns exec "$NSR" ip addr add "$HR/24" dev "$VR"; ip netns exec "$NSR" ip link set "$VR" up
-	ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"; ip netns exec "$NSI" ip link set "$VI" up
-	ip netns exec "$NSR" ip addr add "$TS_R/32" dev lo
-	ip netns exec "$NSI" ip addr add "$TS_I/32" dev lo
-	ip netns exec "$NSR" ip route add "$TS_I/32" dev "$VR" src "$TS_R"
-	ip netns exec "$NSI" ip route add "$TS_R/32" dev "$VI" src "$TS_I"
+	ip netns exec "$NSR" ip addr add "$HR/$PL" dev "$VR" $NODAD; ip netns exec "$NSR" ip link set "$VR" up
+	ip netns exec "$NSI" ip addr add "$HI/$PL" dev "$VI" $NODAD; ip netns exec "$NSI" ip link set "$VI" up
+	if [ "$scen" = dual ]; then
+		# the IPv4 side of the dual-stack link: stays put
+		ip netns exec "$NSR" ip addr add 192.0.8.1/24 dev "$VR"
+		ip netns exec "$NSI" ip addr add 192.0.8.2/24 dev "$VI"
+	fi
+	ip netns exec "$NSR" ip addr add "$TS_R/$HL" dev lo
+	ip netns exec "$NSI" ip addr add "$TS_I/$HL" dev lo
+	ip netns exec "$NSR" ip route add "$TS_I/$HL" dev "$VR" src "$TS_R"
+	ip netns exec "$NSI" ip route add "$TS_R/$HL" dev "$VI" src "$TS_I"
 	# the NAT's public address sits on the link only to answer ARP; the
 	# pinned route source keeps iked's route lookup off it
 	if [ -n "$NAT" ]; then
-		ip netns exec "$NSI" ip addr add "$HN/24" dev "$VI"
-		ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$HI"
+		ip netns exec "$NSI" ip addr add "$HN/$PL" dev "$VI" $NODAD
+		ip netns exec "$NSI" ip route replace "$HR/$HL" dev "$VI" src "$HI"
 	fi
 	[ "$scen" = natout ] && { ip netns exec "$NSI" iptables -t nat -A POSTROUTING -o "$VI" -s "$HI" -p udp -j SNAT --to-source "$HN" ||
 		{ log "FAIL: SNAT"; return 1; }; }
@@ -161,10 +179,10 @@ EOF
 	done
 	i=0; until [ -S "$SOCK_I" ] && [ -S "$SOCK_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 	sleep 1
-	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp inet "$HI" "$HR" sel_out >"$D/establish.txt" 2>&1 || true
+	"$SBIN/ikedctl" -s "$SOCK_I" establish-sa isakmp $AF "$HI" "$HR" sel_out >"$D/establish.txt" 2>&1 || true
 	efail=0
 	outpol() { ip netns exec "$1" ip xfrm policy 2>/dev/null |
-		awk -v h="src $2/32 dst $3/32" '$0 ~ "^"h {m=1; next} /^src /{m=0} m && /dir out/{f=1} END{exit !f}'; }
+		awk -v h="src $2/$HL dst $3/$HL" '$0 ~ "^"h {m=1; next} /^src /{m=0} m && /dir out/{f=1} END{exit !f}'; }
 	up=0; i=0
 	while [ "$i" -lt 150 ]; do
 		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $OLD" &&
@@ -186,7 +204,7 @@ EOF
 			# interface loss: the only address goes (its routes with
 			# it); iked must keep running and keep the SAs, then move
 			# once an address comes back
-			ip netns exec "$NSI" ip addr del "$HI/24" dev "$VI"
+			ip netns exec "$NSI" ip addr del "$HI/$PL" dev "$VI"
 			i=0; until grep -q "MOBIKE initiator: no route to the peer" "$D/iked-i.log" || [ "$i" -ge 50 ]; do
 				i=$((i+1)); sleep 0.2; done
 			grep -q "MOBIKE initiator: no route to the peer" "$D/iked-i.log" ||
@@ -200,13 +218,13 @@ EOF
 				{ log "FAIL: an update was sent with no address"; efail=1; }
 		fi
 		# the move
-		ip netns exec "$NSI" ip addr add "$HM/24" dev "$VI"
-		ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$HM"
+		ip netns exec "$NSI" ip addr add "$HM/$PL" dev "$VI" $NODAD
+		ip netns exec "$NSI" ip route replace "$HR/$HL" dev "$VI" src "$HM"
 		# the kernel flushes a device's routes when its last IPv4
 		# address goes (loss): the new network brings the inner route
 		# back, as DHCP would; a no-op otherwise
-		ip netns exec "$NSI" ip route replace "$TS_R/32" dev "$VI" src "$TS_I"
-		[ "$scen" = loss ] || ip netns exec "$NSI" ip addr del "$HI/24" dev "$VI"
+		ip netns exec "$NSI" ip route replace "$TS_R/$HL" dev "$VI" src "$TS_I"
+		[ "$scen" = loss ] || ip netns exec "$NSI" ip addr del "$HI/$PL" dev "$VI"
 		moved=0; i=0
 		while [ "$i" -lt 100 ]; do
 			ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $NEW" &&
@@ -219,9 +237,9 @@ EOF
 		if [ "$scen" = return ] && [ "$moved" -eq 1 ]; then
 			# RFC 4555: moving back to the original address is just
 			# another update; both seats must return to $HI
-			ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"
-			ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$HI"
-			ip netns exec "$NSI" ip addr del "$HM/24" dev "$VI"
+			ip netns exec "$NSI" ip addr add "$HI/$PL" dev "$VI" $NODAD
+			ip netns exec "$NSI" ip route replace "$HR/$HL" dev "$VI" src "$HI"
+			ip netns exec "$NSI" ip addr del "$HM/$PL" dev "$VI"
 			back=0; i=0
 			while [ "$i" -lt 100 ]; do
 				ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HI\$" &&
@@ -246,15 +264,15 @@ EOF
 			k=0; cur=$HM
 			while [ "$k" -lt 10 ]; do
 				nxt=$HI; [ "$cur" = "$HI" ] && nxt=$HM
-				ip netns exec "$NSI" ip addr add "$nxt/24" dev "$VI"
-				ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$nxt"
-				ip netns exec "$NSI" ip addr del "$cur/24" dev "$VI"
+				ip netns exec "$NSI" ip addr add "$nxt/$PL" dev "$VI" $NODAD
+				ip netns exec "$NSI" ip route replace "$HR/$HL" dev "$VI" src "$nxt"
+				ip netns exec "$NSI" ip addr del "$cur/$PL" dev "$VI"
 				cur=$nxt; k=$((k+1))
 			done
 			# 10 flaps from HM end on HM; one more to finish on HI
-			ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"
-			ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$HI"
-			ip netns exec "$NSI" ip addr del "$HM/24" dev "$VI"
+			ip netns exec "$NSI" ip addr add "$HI/$PL" dev "$VI" $NODAD
+			ip netns exec "$NSI" ip route replace "$HR/$HL" dev "$VI" src "$HI"
+			ip netns exec "$NSI" ip addr del "$HM/$PL" dev "$VI"
 			back=0; i=0
 			while [ "$i" -lt 150 ]; do
 				ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HI\$" &&
