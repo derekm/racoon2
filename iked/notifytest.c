@@ -93,6 +93,35 @@ main(int argc, char *argv[])
 	test_init(argv[0]);
 
 	/*
+	 * get_notify_data_len(): the data starts AFTER the SPI
+	 * (get_notify_data), so its length must subtract spi_size too.
+	 * REDIRECT, the NAT_DETECTION digest pin and the INFORMATIONAL
+	 * NAT_D echo computed it without the SPI and then read 20+ bytes at
+	 * get_notify_data(): a notify claiming spi_size 255 with 20 bytes of
+	 * data made them read up to 255 bytes past the payload (REDIRECT and
+	 * the IKE_SA_INIT digests are pre-authentication).
+	 */
+	{
+		uint8_t b[sizeof(struct ikev2payl_notify) + 64];
+		struct ikev2payl_notify *n = (struct ikev2payl_notify *)b;
+
+		memset(b, 0, sizeof(b));
+		n->nh.spi_size = 255;
+		put_uint16(&n->header.payload_length,
+		    sizeof(struct ikev2payl_notify) + 20);
+		ck(get_notify_data_len(n) == -1,
+		    "spi_size larger than the payload: no data (-1)");
+		n->nh.spi_size = 4;
+		put_uint16(&n->header.payload_length,
+		    sizeof(struct ikev2payl_notify) + 4 + 20);
+		ck(get_notify_data_len(n) == 20, "SPI 4 + 20 data octets: 20");
+		n->nh.spi_size = 0;
+		put_uint16(&n->header.payload_length,
+		    sizeof(struct ikev2payl_notify));
+		ck(get_notify_data_len(n) == 0, "empty notify: 0");
+	}
+
+	/*
 	 * Error-type notifies: each must be reported (non-zero) so the
 	 * CREATE_CHILD_SA request is treated as failed (RFC 7296 §2.7).
 	 */

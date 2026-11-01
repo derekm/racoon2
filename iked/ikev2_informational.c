@@ -545,8 +545,8 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				 * binding exactly as the peer computed it. */
 				{
 					uint8_t *dn;
-					int dl = ntohs(((struct ikev2_payload_header *)p)->payload_length)
-					    - sizeof(struct ikev2payl_notify);
+					int dl = get_notify_data_len(
+					    (struct ikev2payl_notify *)p);
 					if (dl >= 20) {
 						dn = get_notify_data(
 						    (struct ikev2payl_notify *)p);

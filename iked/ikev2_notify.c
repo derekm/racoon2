@@ -396,8 +396,7 @@ init_ike_sa_init_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 			rc_vchar_t *gw = 0, *ni = 0;
 			uint8_t gwt = 0;
 			uint8_t *nd;
-			int dl = get_payload_length(payload) -
-			    sizeof(struct ikev2payl_notify);
+			int dl = get_notify_data_len(notify);
 
 			if (dl < 0) {
 				++isakmpstat.malformed_payload;
@@ -856,9 +855,7 @@ createchild_resp_recv_notify(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		 * pin would otherwise hide).  (RFC 7296 2.23.) */
 		{
 			uint8_t *dn;
-			int dl = ntohs(
-			    ((struct ikev2_payload_header *)notify)->
-			    payload_length) - sizeof(struct ikev2payl_notify);
+			int dl = get_notify_data_len(notify);
 			if (dl >= 20) {
 				dn = get_notify_data(notify);
 				if (get_notify_type(notify) ==

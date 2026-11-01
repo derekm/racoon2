@@ -516,6 +516,13 @@ struct ikev2payl_notify {
 
 #define	get_notify_type(n_)	(get_uint16(&(n_)->nh.notify_message_type))
 #define	get_notify_data(n_)	((uint8_t *)((n_) + 1) + (n_)->nh.spi_size)
+/* Notification Data length: payload length minus the notify header AND
+ * the SPI (get_notify_data() skips it); -1 if the SPI does not fit */
+#define	get_notify_data_len(n_)						\
+	((int)get_payload_length(&(n_)->header) <			\
+	 (int)(sizeof(struct ikev2payl_notify) + (n_)->nh.spi_size) ? -1 :	\
+	 (int)get_payload_length(&(n_)->header) -			\
+	 (int)(sizeof(struct ikev2payl_notify) + (n_)->nh.spi_size))
 
 #define	IKEV2_NOTIFY_PROTO_NONE		0
 #define	IKEV2_NOTIFY_PROTO_IKE		1
