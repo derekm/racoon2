@@ -879,7 +879,10 @@ remote
 		first event even on a link that keeps flapping, with
 		one update in flight per IKE SA; a change made while an update
 		is outstanding is picked up when it completes.  No update is
-		sent to a peer that did not send MOBIKE_SUPPORTED.
+		sent to a peer that did not send MOBIKE_SUPPORTED, and none
+		from an address interface ike does not listen on: a config
+		that pins its IKE addresses (no MY_IPV4 / MY_IPV6) keeps its
+		SAs where they are.
 		On also adds N(MOBIKE_SUPPORTED) to the initiator's IKE_AUTH
 		(RFC 4555 s3.1), and with nat_traversal on the update moves
 		the IKE SA to port 4500 so a NAT on the new path can be

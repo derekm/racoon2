@@ -30,6 +30,11 @@
 #   i2imobike-loss     the only address is removed first (no route at
 #                      all): iked keeps running and keeps the SAs, sends
 #                      nothing, then moves when the new address appears
+#   i2imobike-optout   explicit mobike_initiate off with a pinned
+#                      interface ike address: no update, nothing moves
+#   i2imobike-pinned   mobike_initiate on, interface ike pinned to the
+#                      old address: iked declines (no socket there),
+#                      sends nothing, keeps its SAs
 #   i2imobike-tcp      RFC 9329 IKE over TCP on both seats (tcp_encap on):
 #                      the update leaves over a NEW TCP connection from the
 #                      new address (TCP SYN from 192.0.8.4 on the wire), the
@@ -56,7 +61,7 @@ kind_i2imobike() {
 	rm -rf "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"; mkdir -p "$PRIVRES_R" "$PRIVRES_I" "$D" "$C"
 	printf '%s' racoon2-mobike-matrix-0123456789abcdef >"$C/psk.bin"; chmod 600 "$C/psk.bin"
 
-	MI="mobike_initiate on;"; NAT=; TCP=; OLD=$HI; NEW=$HM; I_OUT=$HI
+	MI="mobike_initiate on;"; NAT=; TCP=; PIN=; OLD=$HI; NEW=$HM; I_OUT=$HI
 	case $scen in
 	move) ;;
 	off) MI= ;;
@@ -64,6 +69,8 @@ kind_i2imobike() {
 	natout) NAT="nat_traversal on;"; OLD=$HN; I_OUT=$HN ;;
 	tcp) TCP="tcp_encap on;" ;;
 	return|flap|loss) ;;
+	optout) MI="mobike_initiate off;"; PIN=1 ;;
+	pinned) PIN=1 ;;
 	*) log "FAIL: unknown scenario $scen"; return 1 ;;
 	esac
 
@@ -74,7 +81,7 @@ kind_i2imobike() {
 		_peer=$3; [ "$1" = r ] && _peer=ANY
 		cat >"$C/$1.conf" <<EOF
 interface {
-	ike { $( [ "$1" = i ] && echo MY_IPV4 || echo "\"$2\"" ); };
+	ike { $( [ "$1" = i ] && [ -z "$PIN" ] && echo MY_IPV4 || echo "\"$2\"" ); };
 	spmd { unix "$_spmif"; };
 	spmd_password "$ETC/spmd.pwd";
 };
@@ -264,8 +271,19 @@ EOF
 				{ log "FAIL: $nupd updates for 11 address changes (want 1..2: the burst must be debounced)"; efail=1; }
 			NEW=$HI; OLD=$HM
 		fi
-		if [ "$scen" = off ]; then
+		if [ "$scen" = off ] || [ "$scen" = optout ] || [ "$scen" = pinned ]; then
 			# control: give the default-off initiator the same window
+			# pinned: on, but interface ike lists only the old
+			# address; wait for iked's decision (event, not time)
+			if [ "$scen" = pinned ]; then
+				i=0; until grep -q "MOBIKE initiator: no IKE socket on $HM" "$D/iked-i.log" || [ "$i" -ge 50 ]; do
+					i=$((i+1)); sleep 0.2; done
+				grep -q "MOBIKE initiator: no IKE socket on $HM" "$D/iked-i.log" ||
+					{ log "FAIL: iked never declined the move for its pinned address"; efail=1; }
+				upi=$(grep -c "MOBIKE initiator: local address" "$D/iked-i.log")
+				grep -q "failed to find a socket" "$D/iked-i.log" &&
+					{ log "FAIL: iked transmitted without a socket"; efail=1; }
+			fi
 			[ "$upi" -eq 0 ] || { log "FAIL: mobike_initiate off but an update was sent"; efail=1; }
 			[ "$moved" -eq 0 ] || { log "FAIL: SAs moved with mobike_initiate off"; efail=1; }
 			ip netns exec "$NSR" ip xfrm state | grep -q "^src $HR dst $OLD" ||

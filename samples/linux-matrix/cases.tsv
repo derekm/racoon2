@@ -334,3 +334,5 @@ i2imobike-return-nomig	i2imobike	pass	0	i2imobike-return with RACOON2_XFRM_NO_MI
 i2imobike-flap-nomig	i2imobike	pass	0	i2imobike-flap with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
 i2imobike-loss	i2imobike	pass	0	RFC 4555 INTERFACE LOSS: the initiator loses its only address (no route to the peer). iked must log the wait (event gate), stay up, keep both seats SAs, send no update; when 192.0.8.4 appears the normal move completes, ICMP flows.	-	-
 i2imobike-loss-nomig	i2imobike	pass	0	i2imobike-loss with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
+i2imobike-optout	i2imobike	pass	0	OPT-OUT: explicit mobike_initiate off with interface ike pinned to 192.0.8.2: after the move no UPDATE_SA_ADDRESSES, the responder SA stays on .2 (the configuration that must stay unchanged when the default flips).	-	-
+i2imobike-pinned	i2imobike	pass	0	PINNED: mobike_initiate on but interface ike lists only 192.0.8.2: iked must decline the move (logs no IKE socket on .4; event gate), send no update, never transmit without a socket, keep its SAs.	-	-

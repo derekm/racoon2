@@ -641,6 +641,20 @@ ikev2_mobike_local_update(struct ikev2_sa *sa, const struct sockaddr *newaddr)
 		*rcs_getsaport(sa->remote) = htons(IKEV2_UDP_PORT_NATT);
 	}
 #endif
+	/*
+	 * interface ike pins the listening addresses (no MY_IP): there is no
+	 * socket on the new address to send from or to answer on, so a
+	 * pinned config does not move (it keeps its SAs, as it did before
+	 * initiator MOBIKE existed) instead of retransmitting into nowhere.
+	 */
+	if (ikev2_tcp_encap(sa->rmconf) != RCT_BOOL_ON &&
+	    isakmp_find_socket(nl) == -1) {
+		isakmp_log(sa, sa->local, sa->remote, 0, PLOG_INFO, PLOGLOC,
+		    "MOBIKE initiator: no IKE socket on %s (interface ike "
+		    "does not listen there), not moving\n", rcs_sa2str(nl));
+		rc_free(nl);
+		return 0;
+	}
 	if (ikev2_tcp_encap(sa->rmconf) == RCT_BOOL_ON) {
 		/* RFC 9329: the old stream is bound to the old address; the
 		 * update must leave over a stream from the new one. */
