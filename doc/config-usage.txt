@@ -874,6 +874,11 @@ remote
 		peer answers (UDP encapsulation follows the NAT state the
 		reply reports).  For an IKE SA over TCP (tcp_encap), the
 		update goes over a new TCP connection from the new address.
+		Address events are debounced: iked acts once they have been
+		quiet for 1 second (at most 3 seconds after the first), with
+		one update in flight per IKE SA; a change made while an update
+		is outstanding is picked up when it completes.  No update is
+		sent to a peer that did not send MOBIKE_SUPPORTED.
 		On also adds N(MOBIKE_SUPPORTED) to the initiator's IKE_AUTH
 		(RFC 4555 s3.1), and with nat_traversal on the update moves
 		the IKE SA to port 4500 so a NAT on the new path can be

@@ -23,6 +23,10 @@
 #                      seats (RFC 4555 s3.5), ICMP flows
 #   i2imobike-natout   the old address was SNATed (espinudp gated), the new
 #                      one is not: encapsulation must go OFF on both seats
+#   i2imobike-return   move, then back to the original address: a second
+#                      update, both seats on $HI again
+#   i2imobike-flap     move, then 11 back-to-back address flips: converge
+#                      on the final address, at most one update per change
 #   i2imobike-tcp      RFC 9329 IKE over TCP on both seats (tcp_encap on):
 #                      the update leaves over a NEW TCP connection from the
 #                      new address (TCP SYN from 192.0.8.4 on the wire), the
@@ -56,6 +60,7 @@ kind_i2imobike() {
 	natin) NAT="nat_traversal on;"; NEW=$HN ;;
 	natout) NAT="nat_traversal on;"; OLD=$HN; I_OUT=$HN ;;
 	tcp) TCP="tcp_encap on;" ;;
+	return|flap) ;;
 	*) log "FAIL: unknown scenario $scen"; return 1 ;;
 	esac
 
@@ -180,6 +185,61 @@ EOF
 		upd1=$(grep -c "UPDATE_SA_ADDRESSES" "$D/iked-r.log")
 		upi=$(grep -c "MOBIKE initiator: local address" "$D/iked-i.log")
 		log "mobike: initiator updates=$upi responder UPDATE lines $upd0 -> $upd1 moved=$moved"
+		if [ "$scen" = return ] && [ "$moved" -eq 1 ]; then
+			# RFC 4555: moving back to the original address is just
+			# another update; both seats must return to $HI
+			ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"
+			ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$HI"
+			ip netns exec "$NSI" ip addr del "$HM/24" dev "$VI"
+			back=0; i=0
+			while [ "$i" -lt 100 ]; do
+				ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HI\$" &&
+				ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HI dst $HR\$" &&
+				! ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HM\$" && { back=1; break; }
+				i=$((i+1)); sleep 0.2
+			done
+			upi2=$(grep -c "MOBIKE initiator: local address" "$D/iked-i.log")
+			log "mobike: return to $HI back=$back initiator updates $upi -> $upi2"
+			[ "$back" -eq 1 ] || { log "FAIL: SAs did not return to $HI"; efail=1; }
+			[ "$upi2" -gt "$upi" ] || { log "FAIL: no update for the return"; efail=1; }
+			# the remaining checks below run against the original address
+			NEW=$HI; OLD=$HM
+		fi
+		if [ "$scen" = flap ] && [ "$moved" -eq 1 ]; then
+			# 10 rapid flaps HM <-> HI (address and route events back to
+			# back, no settling), ending on $HI: iked must converge on
+			# the final address with a bounded number of updates (RFC
+			# 4555 s3.5 leaves the pacing to the initiator; one update
+			# in flight at a time, no storm).
+			upf0=$(grep -c "MOBIKE initiator: local address" "$D/iked-i.log")
+			k=0; cur=$HM
+			while [ "$k" -lt 10 ]; do
+				nxt=$HI; [ "$cur" = "$HI" ] && nxt=$HM
+				ip netns exec "$NSI" ip addr add "$nxt/24" dev "$VI"
+				ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$nxt"
+				ip netns exec "$NSI" ip addr del "$cur/24" dev "$VI"
+				cur=$nxt; k=$((k+1))
+			done
+			# 10 flaps from HM end on HM; one more to finish on HI
+			ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"
+			ip netns exec "$NSI" ip route replace "$HR/32" dev "$VI" src "$HI"
+			ip netns exec "$NSI" ip addr del "$HM/24" dev "$VI"
+			back=0; i=0
+			while [ "$i" -lt 150 ]; do
+				ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HI\$" &&
+				ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HI dst $HR\$" &&
+				! ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $HM\$" &&
+				{ back=1; break; }
+				i=$((i+1)); sleep 0.2
+			done
+			upf1=$(grep -c "MOBIKE initiator: local address" "$D/iked-i.log")
+			nupd=$((upf1 - upf0))
+			log "mobike: flap x11 converged=$back updates during the flaps=$nupd"
+			[ "$back" -eq 1 ] || { log "FAIL: SAs did not converge on the final address $HI"; efail=1; }
+			[ "$nupd" -ge 1 ] && [ "$nupd" -le 2 ] ||
+				{ log "FAIL: $nupd updates for 11 address changes (want 1..2: the burst must be debounced)"; efail=1; }
+			NEW=$HI; OLD=$HM
+		fi
 		if [ "$scen" = off ]; then
 			# control: give the default-off initiator the same window
 			[ "$upi" -eq 0 ] || { log "FAIL: mobike_initiate off but an update was sent"; efail=1; }

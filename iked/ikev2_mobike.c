@@ -554,16 +554,30 @@ mobike_local_scan(void *unused)
 }
 
 /*
- * rtnetlink delivers an address change as a burst (NEWADDR, routes,
- * DELADDR...); scan once the burst is processed, on the next scheduler
- * pass, not once per message.
+ * Debounce.  rtnetlink delivers an address change as a burst (NEWADDR,
+ * routes, DELADDR...) and a flapping link delivers many: scan once the
+ * events have been quiet for MOBIKE_SETTLE seconds (trailing edge), but
+ * never later than MOBIKE_SETTLE_MAX after the first event of a burst, so
+ * a link that never stops flapping still gets an update.  One update is
+ * in flight per SA at a time; ikev2_mobike_local_reply/_abandon rescan,
+ * so a change during that exchange is not lost.
  */
+#define MOBIKE_SETTLE		1
+#define MOBIKE_SETTLE_MAX	3
+static time_t mobike_burst_start;
+
 void
 ikev2_mobike_local_changed(void)
 {
-	if (mobike_local_timer != NULL)
-		return;
-	mobike_local_timer = sched_new(0, mobike_local_scan, NULL);
+	time_t now = time(NULL);
+
+	if (mobike_local_timer != NULL) {
+		if (now - mobike_burst_start >= MOBIKE_SETTLE_MAX)
+			return;		/* due soon: let it fire */
+		SCHED_KILL(mobike_local_timer);
+	} else
+		mobike_burst_start = now;
+	mobike_local_timer = sched_new(MOBIKE_SETTLE, mobike_local_scan, NULL);
 }
 
 static void
@@ -671,6 +685,7 @@ ikev2_mobike_local_reply(struct ikev2_sa *sa, int src_seen, int src_match,
 	    dst_match);
 	ikev2_mobike_apply_nat(sa, sa->remote, nl, natchg);
 	rc_free(nl);
+	ikev2_mobike_local_changed();	/* moved again meanwhile? */
 }
 
 /* the update went unanswered: the kernel SAs never left the old address */
@@ -683,4 +698,5 @@ ikev2_mobike_local_abandon(struct ikev2_sa *sa)
 	sa->local = sa->mobike_li_prev;
 	sa->mobike_li_prev = NULL;
 	sa->mobike_li_pending = 0;
+	ikev2_mobike_local_changed();	/* retry from the current address */
 }
