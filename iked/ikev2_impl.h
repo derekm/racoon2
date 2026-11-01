@@ -276,6 +276,10 @@ struct ikev2_sa {
 	int rekey_duplicate;
 	int rekey_duplicate_serial;
 	struct ikev2_sa *new_sa;	/* rekeyed IKE_SA */
+	/* SPIs of the SA this one replaced. NAT-D includes them (RFC 4555
+	 * s3.8); an update built on the old SA is checked after it is gone. */
+	int rekey_prev_valid;
+	isakmp_index_t rekey_prev_index;
 
 	/* RFC 9370 ADDKE (IKE-SA rekey): while this SA's rekey is waiting
 	 * for its IKE_FOLLOWUP_KE exchange, the rekey response has been
@@ -585,6 +589,13 @@ struct ikev2_child_sa {
 
 	struct sockaddr *local;
 	struct sockaddr *remote;
+	/* addresses used when this Child was added to the kernel.
+	 * MOBIKE may rewrite local/remote before a rekey DELETE;
+	 * the kernel SA can still be on this pair. */
+	struct sockaddr *install_in_src;
+	struct sockaddr *install_in_dst;
+	struct sockaddr *install_out_src;
+	struct sockaddr *install_out_dst;
 
 	uint32_t message_id;
 	/* struct timeval           time; */

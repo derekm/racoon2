@@ -1167,11 +1167,8 @@ ikev2_process_notify(struct ikev2_sa *ike_sa,
 			}
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
 				   "COOKIE2 mismatch\n");
-			/* our address update: ikev2_mobike_local_reply
-			 * refuses the move (cookie2_matched stays 0); the
-			 * IKE SA itself is fine */
-			if (ike_sa->mobike_li_pending)
-				return 0;
+			/* RFC 4555 s3.7: values that do not match MUST close
+			 * the IKE SA.  The caller aborts. */
 			return 1;
 		}
 		if (ike_sa->cookie2_echo)

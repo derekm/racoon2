@@ -77,9 +77,9 @@ ikev2_mobike_natt(struct ikev2_sa *ike_sa, struct rcpfk_msg *rc,
 		return;
 	if (*sp == htons(500) && *dp == htons(500))
 		return;
-	/* RFC 4555 3.3 floats IKE to 4500 whether or not a NAT is present,
-	 * but ESP is UDP-encapsulated only when a NAT was detected (RFC 3948,
-	 * RFC 7296 2.23).  Keying encap off the IKE ports alone installed
+	/* RFC 4555 s3.5 enables NAT Traversal when a NAT is likely; RFC 3948
+	 * and RFC 7296 s2.23 encapsulate ESP only when a NAT was detected.
+	 * Keying encap off the IKE ports alone installed
 	 * espinudp SAs against a NAT-free peer that keeps sending plain ESP
 	 * (strongSwan), and the kernel dropped every inbound frame as
 	 * XfrmInStateMismatch after the move.  Mirror the child-install rule
@@ -135,21 +135,22 @@ ikev2_mobike_migrate_dir(struct ikev2_sa *ike_sa, rc_type dir,
 
 		for (;;) {
 			if (sadb_migrate(&rc) != 0) {
-				if (moved > 0 &&
-				    (rc.eno == ENOENT || rc.eno == ESRCH ||
-				     (rc.estr[0] &&
-				      strstr(rc.estr, "No data") != NULL)))
-					return 0;
+				/* none left is not a failure: a later Child with
+				 * the same reqid, or a direction with no SA */
+				if (rc.eno == ENOENT || rc.eno == ESRCH ||
+				    (rc.estr[0] &&
+				     strstr(rc.estr, "No data") != NULL))
+					return moved;
 				isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR,
 				    PLOGLOC, "MOBIKE migrate failed: %s\n",
 				    rc.estr);
 				return -1;
 			}
 			if (++moved >= 8)
-				return 0;
-		}
+				return moved;
+			}
+		return moved;
 	}
-	return 0;
 }
 
 /*
@@ -279,18 +280,113 @@ ikev2_move_sa(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 	return ret;
 }
 
+/*
+ * RFC 4555 s3.5: update every IPsec SA associated with this IKE SA.
+ * One MIGRATE moves one kernel SA of one reqid.  Walk every Child
+ * selector (and its address-family twin).  A reqid already drained
+ * returns 0 from ikev2_mobike_migrate_dir, not an error.
+ * Returns 0 when every associated SA was migrated, or there was
+ * nothing to move.  -1 if a migrate failed, or a selector was seen
+ * and nothing moved.
+ */
+static int
+mobike_migrate_children(struct ikev2_sa *ike_sa,
+    struct sockaddr *old_l, struct sockaddr *old_r,
+    struct sockaddr *local, struct sockaddr *remote)
+{
+	struct ikev2_child_sa *c;
+	uint32_t seen[16];
+	int nseen = 0, moved = 0, saw = 0;
+
+	for (c = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
+	     !IKEV2_CHILD_LIST_END(c);
+	     c = IKEV2_CHILD_LIST_NEXT(c)) {
+		struct rcf_selector *cs;
+		struct sockaddr *lease_inner = NULL;
+		uint8_t lease_pref = 0;
+		struct sockaddr_storage lease_ss;
+
+		if (!LIST_EMPTY(&c->lease_list)) {
+			struct rcf_address *a;
+			int plen = 0;
+
+			a = LIST_FIRST(&c->lease_list);
+			ikev2_cfg_addr2sockaddr(
+			    (struct sockaddr *)&lease_ss, a, &plen);
+			lease_inner = (struct sockaddr *)&lease_ss;
+			lease_pref = (uint8_t)plen;
+		}
+		for (cs = c->selector; cs; cs = cs->next) {
+			int i, m;
+			struct sockaddr *lan, *inner;
+			uint8_t lan_pref, inner_pref;
+			rc_type samode;
+			uint32_t reqid;
+
+			if (!cs->pl || !cs->src || !cs->dst ||
+			    cs->src->type != RCT_ADDR_INET ||
+			    cs->dst->type != RCT_ADDR_INET ||
+			    !cs->src->a.ipaddr || !cs->dst->a.ipaddr)
+				continue;
+			reqid = cs->reqid;
+			for (i = 0; i < nseen; i++)
+				if (seen[i] == reqid)
+					break;
+			if (i < nseen)
+				continue;
+			if (nseen < 16)
+				seen[nseen++] = reqid;
+			saw = 1;
+			samode = ike_ipsec_mode(cs->pl);
+			if (cs->direction == RCT_DIR_INBOUND) {
+				lan = cs->dst->a.ipaddr;
+				lan_pref = cs->dst->prefixlen;
+				inner = lease_inner ? lease_inner :
+				    cs->src->a.ipaddr;
+				inner_pref = lease_inner ? lease_pref :
+				    cs->src->prefixlen;
+			} else {
+				lan = cs->src->a.ipaddr;
+				lan_pref = cs->src->prefixlen;
+				inner = lease_inner ? lease_inner :
+				    cs->dst->a.ipaddr;
+				inner_pref = lease_inner ? lease_pref :
+				    cs->dst->prefixlen;
+			}
+			m = ikev2_mobike_migrate_dir(ike_sa,
+			    RCT_DIR_OUTBOUND, old_l, old_r, local, remote,
+			    lan, inner, lan_pref, inner_pref, samode, reqid);
+			if (m < 0)
+				return -1;
+			moved += m;
+			m = ikev2_mobike_migrate_dir(ike_sa,
+			    RCT_DIR_INBOUND, old_r, old_l, remote, local,
+			    inner, lan, inner_pref, lan_pref, samode, reqid);
+			if (m < 0)
+				return -1;
+			moved += m;
+			if (samode == RCT_IPSM_TUNNEL) {
+				m = ikev2_mobike_migrate_dir(ike_sa,
+				    RCT_DIR_FWD, old_r, old_l, remote, local,
+				    inner, lan, inner_pref, lan_pref,
+				    samode, reqid);
+				if (m < 0)
+					return -1;
+				moved += m;
+			}
+		}
+	}
+	if (saw && moved == 0)
+		return -1;
+	return 0;
+}
+
 static int
 ikev2_move_sa_impl(struct ikev2_sa *ike_sa, struct sockaddr *remote,
     struct sockaddr *local, int migrate_kernel, const char *why)
 {
 	struct ikev2_child_sa *c;
 	struct sockaddr *old_r, *old_l;
-	struct rcf_selector *sl = NULL;
-	struct sockaddr *lan = NULL, *inner = NULL;
-	uint8_t lan_pref = 0, inner_pref = 0;
-	struct sockaddr_storage lease_ss;
-	rc_type samode = RCT_IPSM_TUNNEL;
-	uint32_t reqid = 0;
 
 	/* migrate_kernel == 2: re-migrate even onto the same endpoints,
 	 * because the encapsulation changed (ikev2_mobike_apply_nat). */
@@ -306,70 +402,18 @@ ikev2_move_sa_impl(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 		   rcs_sa2str(old_r), rcs_sa2str(remote));
 
 	/*
-	 * Collect the new endpoints / selectors first.  The kernel
-	 * migrations below must ALL succeed before any in-memory
-	 * endpoint is committed — a partial move strands the SAD and
-	 * the returned (new) ike_sa pair would describe a broken
-	 * data path (M3).
+	 * RFC 4555 s3.5: every associated IPsec SA, not the first
+	 * selector's reqid.  All of those migrates must succeed
+	 * before any in-memory endpoint is committed.
 	 */
-	for (c = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
-	     !IKEV2_CHILD_LIST_END(c);
-	     c = IKEV2_CHILD_LIST_NEXT(c)) {
-		if (!sl && c->selector && c->selector->pl &&
-		    c->selector->src && c->selector->dst &&
-		    c->selector->src->type == RCT_ADDR_INET &&
-		    c->selector->dst->type == RCT_ADDR_INET)
-			sl = c->selector;
-		if (inner == NULL && !LIST_EMPTY(&c->lease_list)) {
-			struct rcf_address *a;
-			int plen = 0;
-
-			a = LIST_FIRST(&c->lease_list);
-			ikev2_cfg_addr2sockaddr((struct sockaddr *)&lease_ss,
-			    a, &plen);
-			inner = (struct sockaddr *)&lease_ss;
-			inner_pref = (uint8_t)plen;
-		}
-	}
-
-	if (sl) {
-		samode = ike_ipsec_mode(sl->pl);
-		reqid = sl->reqid;
-		if (sl->direction == RCT_DIR_INBOUND) {
-			lan = sl->dst->a.ipaddr;
-			lan_pref = sl->dst->prefixlen;
-			if (!inner) {
-				inner = sl->src->a.ipaddr;
-				inner_pref = sl->src->prefixlen;
-			}
-		} else {
-			lan = sl->src->a.ipaddr;
-			lan_pref = sl->src->prefixlen;
-			if (!inner) {
-				inner = sl->dst->a.ipaddr;
-				inner_pref = sl->dst->prefixlen;
-			}
-		}
-	}
-
-	if (migrate_kernel && old_l && old_r && lan && inner) {
-		if (ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_OUTBOUND,
-		    old_l, old_r, local, remote,
-		    lan, inner, lan_pref, inner_pref, samode, reqid) != 0 ||
-		    ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_INBOUND,
-		    old_r, old_l, remote, local,
-		    inner, lan, inner_pref, lan_pref, samode, reqid) != 0 ||
-		    (samode == RCT_IPSM_TUNNEL &&
-		     ikev2_mobike_migrate_dir(ike_sa, RCT_DIR_FWD,
-		     old_r, old_l, remote, local,
-		     inner, lan, inner_pref, lan_pref, samode, reqid) != 0)) {
-			/* each failing direction already logged its error */
-			isakmp_log(ike_sa, local, remote, 0, PLOG_INTERR,
-				   PLOGLOC,
-				   "MOBIKE migrate incomplete; keeping %s\n",
-				   rcs_sa2str(old_r));
-			return -1;
-		}
+	if (migrate_kernel && old_l && old_r &&
+	    mobike_migrate_children(ike_sa, old_l, old_r,
+	    local, remote) != 0) {
+		isakmp_log(ike_sa, local, remote, 0, PLOG_INTERR,
+			   PLOGLOC,
+			   "MOBIKE migrate incomplete; keeping %s\n",
+			   rcs_sa2str(old_r));
+		return -1;
 	}
 
 	/*
@@ -818,6 +862,27 @@ ikev2_mobike_local_reply(struct ikev2_sa *sa, int src_seen, int src_match,
 		isakmp_log(sa, nl, sa->remote, 0, PLOG_INFO, PLOGLOC,
 		    "MOBIKE initiator: COOKIE2 echoed, return routability "
 		    "confirmed\n");
+	}
+	/*
+	 * RFC 4555 s3.5: if the address changed again while this
+	 * update was outstanding, do no MOBIKE processing on the
+	 * reply.  The rescan sends a new update from the address
+	 * the kernel SAs still use.
+	 */
+	{
+		struct sockaddr_storage cur;
+
+		if (sa->remote &&
+		    mobike_route_source(sa->remote, &cur) == 0 &&
+		    rcs_cmpsa_wop((struct sockaddr *)&cur, nl) != 0) {
+			isakmp_log(sa, nl, sa->remote, 0, PLOG_INFO,
+			    PLOGLOC, "MOBIKE initiator: address changed "
+			    "again while UPDATE_SA_ADDRESSES was "
+			    "outstanding; ignoring this reply\n");
+			rc_free(nl);
+			ikev2_mobike_local_changed();
+			return;
+		}
 	}
 	natchg = natt_mobike_renat(sa, src_seen, src_match, dst_seen,
 	    dst_match);

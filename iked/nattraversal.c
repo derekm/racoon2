@@ -142,39 +142,6 @@ natt_create_natd(struct ikev2_sa *ike_sa, struct ikev2_payloads *payl,
 }
 
 /*
- * RFC 4555 3.5: an UPDATE_SA_ADDRESSES request carries fresh
- * NAT_DETECTION_*_IP notifies computed over the NEW endpoints, and the
- * responder MUST redo NAT detection from them.  Compare one NATD notify
- * against an explicit address (the request's new source or destination,
- * not ike_sa->remote/local which still hold the old pair).  Both SPIs are
- * known on an established SA.  Returns 1 on match, 0 on mismatch and -1
- * on a malformed notify (data length is validated before the compare).
- */
-int
-natt_natd_match(struct ikev2_sa *ike_sa, struct ikev2payl_notify *n,
-    struct sockaddr *addr)
-{
-	rc_vchar_t *hash;
-	size_t plen, hlen;
-	int ret;
-
-	if (ike_sa == NULL || n == NULL || addr == NULL)
-		return -1;
-	plen = get_payload_length(&n->header);
-	hlen = sizeof(struct ikev2payl_notify) + n->nh.spi_size;
-	hash = natt_create_hash(ike_sa, addr, 1);
-	if (hash == NULL)
-		return -1;
-	if (plen < hlen || plen - hlen != hash->l) {
-		rc_vfree(hash);
-		return -1;
-	}
-	ret = CRYPTO_memcmp(get_notify_data(n), hash->v, hash->l) == 0;
-	rc_vfree(hash);
-	return ret;
-}
-
-/*
  * Commit the NAT state recomputed from an UPDATE_SA_ADDRESSES request.
  * src_* / dst_* say whether any SOURCE / DESTINATION notify was seen and
  * whether any of them matched (RFC 7296 2.23: one match among several
@@ -283,6 +250,84 @@ natt_create_hash(struct ikev2_sa *ike_sa, struct sockaddr *addr, int use_spi_r)
 	rc_vfree(buf);
 
 	return hash;
+}
+
+/*
+ * RFC 4555 s3.8: NAT-D includes the IKE SPIs. A rekey changes them.
+ * An update built on the old SA and checked on the new one mismatches
+ * even when the address was not rewritten. If the same address matches
+ * the other SA's SPIs, this is not a NAT.
+ */
+static int
+natt_hash_matches(isakmp_index_t *index, struct sockaddr *addr,
+    struct rcf_remote *rmconf, const uint8_t *digest, size_t dlen)
+{
+	rc_vchar_t *hash;
+	int ret;
+	struct ikev2_sa tmp;
+
+	memset(&tmp, 0, sizeof(tmp));
+	tmp.index = *index;
+	tmp.rmconf = rmconf;
+	hash = natt_create_hash(&tmp, addr, 1);
+	if (hash == NULL || hash->l != dlen) {
+		if (hash)
+			rc_vfree(hash);
+		return 0;
+	}
+	ret = CRYPTO_memcmp(digest, hash->v, hash->l) == 0;
+	rc_vfree(hash);
+	return ret;
+}
+
+static struct ikev2_sa *
+natt_rekey_peer(struct ikev2_sa *ike_sa)
+{
+	struct ikev2_sa *s;
+
+	if (ike_sa->new_sa)
+		return ike_sa->new_sa;
+	for (s = IKEV2_SA_LIST_FIRST(&ikev2_sa_list);
+	     !IKEV2_SA_LIST_END(s);
+	     s = IKEV2_SA_LIST_NEXT(s))
+		if (s->new_sa == ike_sa)
+			return s;
+	return NULL;
+}
+
+int
+natt_natd_match(struct ikev2_sa *ike_sa, struct ikev2payl_notify *n,
+    struct sockaddr *addr)
+{
+	rc_vchar_t *hash;
+	size_t plen, hlen;
+	int ret;
+	struct ikev2_sa *peer;
+
+	if (ike_sa == NULL || n == NULL || addr == NULL)
+		return -1;
+	plen = get_payload_length(&n->header);
+	hlen = sizeof(struct ikev2payl_notify) + n->nh.spi_size;
+	hash = natt_create_hash(ike_sa, addr, 1);
+	if (hash == NULL)
+		return -1;
+	if (plen < hlen || plen - hlen != hash->l) {
+		rc_vfree(hash);
+		return -1;
+	}
+	ret = CRYPTO_memcmp(get_notify_data(n), hash->v, hash->l) == 0;
+	rc_vfree(hash);
+	if (ret)
+		return 1;
+	if (ike_sa->rekey_prev_valid &&
+	    natt_hash_matches(&ike_sa->rekey_prev_index, addr, ike_sa->rmconf,
+	    get_notify_data(n), plen - hlen))
+		return 1;
+	peer = natt_rekey_peer(ike_sa);
+	if (peer && natt_hash_matches(&peer->index, addr, ike_sa->rmconf,
+	    get_notify_data(n), plen - hlen))
+		return 1;
+	return 0;
 }
 
 int

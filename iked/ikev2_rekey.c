@@ -2087,6 +2087,11 @@ ikev2_child_adopt(struct ikev2_sa *old_sa, struct ikev2_sa *new_sa)
 {
 	struct ikev2_child_sa *child, *next_child;
 
+	/* NAT-D is SHA1(SPIs | addr | port). The update was built on
+	 * old_sa and is checked on new_sa after old_sa is gone. */
+	new_sa->rekey_prev_index = old_sa->index;
+	new_sa->rekey_prev_valid = 1;
+
 	/*
 	 * The rekeyed IKE SA takes over the old one's lineage.  Both the
 	 * soft-lifetime rekey and ikev2_sa_expire() gate on child_created

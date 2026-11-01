@@ -621,12 +621,15 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 	if (ike_sa->mobike_update) {
 		int natchg;
 
-		ike_sa->mobike_update = 0;
 		natchg = ike_sa->mobike_supported &&
 		    natt_mobike_renat(ike_sa, nd_src_seen, nd_src_match,
 		    nd_dst_seen, nd_dst_match);
 
 		ikev2_mobike_apply_nat(ike_sa, remote, local, natchg);
+		/* mobike_update stays set until the reply re-pins
+		 * NAT-D (ikev2_push_natd_report). Clearing it here
+		 * replayed the IKE_SA_INIT digests, and the initiator
+		 * compared those against the new SPIs and called it a NAT. */
 	} else if (ikev2_mobike_endpoint_changed(ike_sa, remote)) {
 		/* implicit mobility (no UPDATE_SA_ADDRESSES) */
 		ikev2_mobike_apply(ike_sa, remote, local);
@@ -656,6 +659,7 @@ informational_responder_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 				   "INFORMATIONAL reply\n");
 		ike_sa->natd_report = 0;
 	}
+	ike_sa->mobike_update = 0;
 
 	{
 		int t_i;
@@ -895,9 +899,27 @@ ikev2_info_init_notify_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 			break;
 		}
 	}
-	if (ike_sa->mobike_li_pending)
-		ikev2_mobike_local_reply(ike_sa, li_src_seen, li_src_match,
-		    li_dst_seen, li_dst_match);
+	/*
+	 * RFC 4555 s3.7: a COOKIE2 we sent must come back unchanged.
+	 * A mismatch already aborted in ikev2_process_notify.  No echo
+	 * is the same failure (the value is not the one we sent).
+	 * Snapshot before local_reply clears the cookie.
+	 */
+	{
+		int cookie_fail = ike_sa->cookie2_sent != NULL &&
+		    !ike_sa->cookie2_matched &&
+		    (ike_sa->mobike_li_pending || ike_sa->mobike_rr_pending);
+
+		if (ike_sa->mobike_li_pending)
+			ikev2_mobike_local_reply(ike_sa, li_src_seen,
+			    li_src_match, li_dst_seen, li_dst_match);
+		if (cookie_fail) {
+			isakmp_log(ike_sa, 0, 0, msg, PLOG_PROTOERR, PLOGLOC,
+			    "COOKIE2 was not echoed, closing the IKE SA\n");
+			ikev2_abort(ike_sa, ECONNREFUSED);
+			return;
+		}
+	}
 	if (ike_sa->cookie2_matched && ike_sa->mobike_rr_pending &&
 	    ike_sa->mobike_rr_prev && ike_sa->remote) {
 		struct sockaddr *probe = ike_sa->remote;

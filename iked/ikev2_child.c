@@ -533,6 +533,14 @@ ikev2_destroy_child_sa(struct ikev2_child_sa *sa)
 		rc_free(sa->local);
 	if (sa->remote)
 		rc_free(sa->remote);
+	if (sa->install_in_src)
+		rc_free(sa->install_in_src);
+	if (sa->install_in_dst)
+		rc_free(sa->install_in_dst);
+	if (sa->install_out_src)
+		rc_free(sa->install_out_src);
+	if (sa->install_out_dst)
+		rc_free(sa->install_out_dst);
 	if (sa->dhpriv)
 		rc_vfreez(sa->dhpriv);
 	if (sa->dhpub)
@@ -954,7 +962,34 @@ ikev2_create_child_responder(struct ikev2_sa *ike_sa,
 	child_sa->remote = rcs_sadup(remote);
 
 #ifdef ENABLE_NATT
-	{
+	/*
+	 * RFC 4555 s3.8: once MOBIKE is negotiated, a host that is not
+	 * behind a NAT MUST NOT update its own IKE endpoints from the
+	 * packet. A peer behind a NAT is different: the floated port
+	 * on the packet is the one ESP must use. A CREATE_CHILD still
+	 * in flight from the old address would otherwise install the
+	 * new Child SA there after UPDATE_SA_ADDRESSES had already
+	 * moved this IKE SA.
+	 */
+	if (ike_sa->mobike_supported && !ike_sa->behind_nat &&
+	    !ike_sa->peer_behind_nat &&
+	    ike_sa->local && ike_sa->remote) {
+		struct sockaddr *cl, *cr;
+
+		cl = rcs_sadup(ike_sa->local);
+		cr = rcs_sadup(ike_sa->remote);
+		if (cl == NULL || cr == NULL) {
+			if (cl)
+				rc_free(cl);
+			if (cr)
+				rc_free(cr);
+			goto fail_nomem;
+		}
+		rc_free(child_sa->local);
+		rc_free(child_sa->remote);
+		child_sa->local = cl;
+		child_sa->remote = cr;
+	} else {
 		struct sockaddr *nlocal, *nremote;
 
 		nlocal = rcs_sadup(local);
@@ -2689,6 +2724,12 @@ ikev2_sadb_outbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 	    ike_ipsec_mode(p));
 	param->sa_src = my_addr;
 	param->sa_dst = peer_addr;
+	if (child_sa->install_out_src)
+		rc_free(child_sa->install_out_src);
+	if (child_sa->install_out_dst)
+		rc_free(child_sa->install_out_dst);
+	child_sa->install_out_src = rcs_sadup(my_addr);
+	child_sa->install_out_dst = rcs_sadup(peer_addr);
 
 	/* Linux XFRM: carry the inner traffic-selector family on the tunnel SA
 	 * so the v6 SPD policy can bind it.  fill_usersa() only stamps a
@@ -2757,6 +2798,12 @@ ikev2_sadb_inbound(struct ikev2_child_sa *child_sa, struct rcpfk_msg *param,
 	    ike_ipsec_mode(p));
 	param->sa_src = peer_addr;
 	param->sa_dst = my_addr;
+	if (child_sa->install_in_src)
+		rc_free(child_sa->install_in_src);
+	if (child_sa->install_in_dst)
+		rc_free(child_sa->install_in_dst);
+	child_sa->install_in_src = rcs_sadup(peer_addr);
+	child_sa->install_in_dst = rcs_sadup(my_addr);
 	param->pref_src = 0;
 	param->pref_dst = 0;
 
@@ -3799,6 +3846,12 @@ ikev2_child_delete_outbound(struct ikev2_child_sa *child_sa)
 		outbound_spi = get_uint32(prop + 1);
 		ikev2_delete_sa(child_sa, prop->proto_id, local, remote,
 				outbound_spi);
+		if (child_sa->install_out_src && child_sa->install_out_dst &&
+		    (rcs_cmpsa_wop(child_sa->install_out_src, local) != 0 ||
+		     rcs_cmpsa_wop(child_sa->install_out_dst, remote) != 0))
+			ikev2_delete_sa(child_sa, prop->proto_id,
+			    child_sa->install_out_src,
+			    child_sa->install_out_dst, outbound_spi);
 	}
 }
 
@@ -3829,9 +3882,16 @@ ikev2_child_delete_inbound(struct ikev2_child_sa *child_sa)
 		assert(proposal->prop != 0);
 		prop = proposal->prop;
 		inbound_spi = get_uint32(prop + 1);
-		if (inbound_spi != 0)
+		if (inbound_spi != 0) {
 			ikev2_delete_sa(child_sa, prop->proto_id, remote, local,
 					inbound_spi);
+			if (child_sa->install_in_src && child_sa->install_in_dst &&
+			    (rcs_cmpsa_wop(child_sa->install_in_src, remote) != 0 ||
+			     rcs_cmpsa_wop(child_sa->install_in_dst, local) != 0))
+				ikev2_delete_sa(child_sa, prop->proto_id,
+				    child_sa->install_in_src,
+				    child_sa->install_in_dst, inbound_spi);
+		}
 	}
 }
 
