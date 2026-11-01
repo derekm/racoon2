@@ -58,11 +58,16 @@ kind_i2ilwpeer() {
 	fi
 	command -v python3 >/dev/null 2>&1 || { log "FAIL: no python3 (ikesniff.py)"; return 1; }
 
-	case $name in
+	# *-nomig: iked behaves as on a kernel without CONFIG_XFRM_MIGRATE
+	# (RACOON2_XFRM_NO_MIGRATE=1): MOBIKE rows then prove the user-space
+	# re-create path against a third-party peer
+	NOMIG=; _base=$name
+	case $name in *-nomig) NOMIG=1; _base=${name%-nomig} ;; esac
+	case $_base in
 	*-i) role=i ;; *-r) role=r ;;
-	*) log "FAIL: $name: row name must end in -i or -r"; return 1 ;;
+	*) log "FAIL: $name: row name must end in -i or -r (or -i-nomig / -r-nomig)"; return 1 ;;
 	esac
-	scen=${name#??peer-}; scen=${scen%-?}
+	scen=${_base#??peer-}; scen=${scen%-?}
 
 	row_ns "$name"
 	HR=192.0.7.1; HI=192.0.7.2
@@ -383,7 +388,7 @@ EOF
 
 	( ip netns exec "$NSR" "$SBIN/spmd" -F -f "$C/iked.conf" ) >"$D/spmd.log" 2>&1 &
 	i=0; until [ -S "$SPMIF_R" ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-	( ip netns exec "$NSR" env $SSLENV RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
+	( ip netns exec "$NSR" env $SSLENV ${NOMIG:+RACOON2_XFRM_NO_MIGRATE=1} RACOON2_ADMIN_SOCK="$SOCK_R" RACOON2_RESUME_DIR="$PRIVRES_R" \
 	    "$SBIN/iked" -F -f "$C/iked.conf" -D 0x0001 -l "$D/iked.log" ) >"$D/iked.out" 2>&1 &
 
 	if [ "$PEER" = lw ]; then
@@ -661,6 +666,12 @@ EOF
 	*) log "FAIL: unknown scenario '$scen'"; efail=1 ;;
 	esac
 	pgrep -f -- "iked -F -f $C/iked.conf" >/dev/null 2>&1 || { log "FAIL: iked exited"; efail=1; }
+	if [ -n "$NOMIG" ]; then
+		case $scen in mobikeoff) ;;
+		*) grep -q "moved [1-9][0-9]* SA(s) and [1-9][0-9]* policy template" "$D/iked.log" ||
+			{ log "FAIL: iked did not take the no-MIGRATE path"; efail=1; } ;;
+		esac
+	fi
 
 	lwp_cleanup
 	if [ "$efail" -ne 0 ]; then
