@@ -112,6 +112,7 @@ kind_i2ilwpeer() {
 	# charon re-derives a host-to-host TS from its new address (that
 	# follows the host, not the tunnel); a road warrior's inner network is
 	# separate from its roaming outer address, so use 10.7.7.0/24 there.
+	IKED_PROVIDE=; IKED_POOL=; LW_MOBIKE=
 	HM=192.0.7.4; SS_LOCAL=$HI; SS_MOBIKE=no; TS_I=$HI; TS_R=$HR
 	# mobikenatin / mobikenatout: the same move, but INTO a NAT (the new
 	# address $HM is SNATed to $HN) or OUT of one (the old address $HI was
@@ -120,7 +121,22 @@ kind_i2ilwpeer() {
 	# on the new path, so iked must turn encap on / off with the move.
 	MB_OLD=$HI; MB_NEW=$HM
 	case $scen in mobike|mobikenatin|mobikenatout)
-		[ "$role" = r ] && [ "$PEER" = ss ] || { log "FAIL: mobike rows are sspeer -r only"; return 1; }
+		[ "$role" = r ] || { log "FAIL: mobike rows are peer-initiated (-r) only"; return 1; }
+		# pluto roams only as a mode-config client (RFC 4555 with a
+		# CP lease): iked hands out 10.7.7.2 from a one-address pool,
+		# so the lease IS the inner TS; no NAT variants for pluto.
+		if [ "$PEER" = lw ]; then
+			[ "$scen" = mobike ] || { log "FAIL: lwpeer has the plain mobike row only"; return 1; }
+			IKED_PROVIDE="provide { addresspool lwpool; };"
+			IKED_POOL="addresspool lwpool { \"10.7.7.2\" - \"10.7.7.2\"; };"
+			# leftupdown=%disabled: the lease (= TS_I) and its route are
+			# set up below exactly as for the charon rows, and the
+			# host's _updown may not match this pluto
+			LW_MOBIKE="mobike=yes
+	leftmodecfgclient=yes
+	narrowing=yes
+	leftupdown=%disabled"
+		fi
 		SS_LOCAL=%any; SS_MOBIKE=yes; TS_I=10.7.7.2; TS_R=10.7.7.1
 		command -v iptables >/dev/null 2>&1 || { log "FAIL: no iptables"; return 1; }
 		case $scen in mobikenat*) NAT_TXT="nat_traversal on;" ;; esac
@@ -193,9 +209,11 @@ remote lw {
 		$IKED_AUTH
 		$NEED_PFS
 		$IKE_LT
+		$IKED_PROVIDE
 	};
 	selector_index sel_in;
 };
+$IKED_POOL
 selector sel_out { direction outbound; src "$TS_R"; dst "$TS_I"; policy_index pol; };
 selector sel_in { direction inbound; dst "$TS_R"; src "$TS_I"; policy_index pol; };
 policy pol {
@@ -216,17 +234,18 @@ config setup
 	logfile=$D/pluto.log
 	nssdir=$C/lw-nss
 	ipsecdir=$C/lw-etc
-	plutodebug=none
+	plutodebug=${LW_DEBUG:-none}
 
 conn r2
 	type=tunnel
 	ikev2=insist
 	left=$HI
 	leftid=@$L_ID
-	leftsubnet=$HI/32
+	leftsubnet=$( [ -n "$LW_MOBIKE" ] && echo 0.0.0.0/0 || echo "$HI/32" )
 	right=$HR
 	rightid=@$R_ID
-	rightsubnet=$HR/32
+	rightsubnet=$TS_R/32
+	$LW_MOBIKE
 	$LW_AUTH
 	ike=aes256-sha2_256-modp2048
 	esp=$LW_ESP
@@ -315,7 +334,12 @@ EOF
 		ip netns exec "$NSR" ip addr add "$TS_R/32" dev lo
 		ip netns exec "$NSI" ip addr add "$TS_I/32" dev lo
 		ip netns exec "$NSR" ip route add "$TS_I/32" dev "$VR" src "$TS_R"
-		ip netns exec "$NSI" ip route add "$TS_R/32" dev "$VI" src "$TS_I" ;;
+		ip netns exec "$NSI" ip route add "$TS_R/32" dev "$VI" src "$TS_I"
+		# pluto re-resolves its source after an address change only
+		# through a default route via a gateway ("no local gateway to
+		# reach ..." otherwise); a roaming client has one.
+		[ "$PEER" = lw ] && ip netns exec "$NSI" ip route add default via "$HR" dev "$VI"
+		;;
 	esac
 	if [ "$scen" = mobikenatout ]; then
 		# Start behind the NAT: everything from $HI leaves as $HN.
@@ -419,7 +443,7 @@ EOF
 	efail=0
 	[ "$up" -eq 1 ] || { log "FAIL: child not UP (iked esp=${re:-0} pluto esp=${le:-0})"; efail=1; }
 	if [ "$up" -eq 1 ]; then
-		ip netns exec "$NSR" ping -c3 -i0.3 -W2 -I "$TS_R" "$TS_I" >/dev/null 2>&1 ||
+		ip netns exec "$NSR" ping -c3 -i0.3 -W2 -I "$TS_R" "$TS_I" >"$D/ping-up.txt" 2>&1 ||
 			{ log "FAIL: ICMP through the tunnel"; efail=1; }
 		# Sum the "N(packets)" counters under "lifetime current" for
 		# iked's outbound SAs (src $HR, dst the peer outer address): ICMP must have been encrypted.
@@ -501,6 +525,8 @@ EOF
 		;;
 	psk|cert) ;;
 	mobike|mobikenatin|mobikenatout)
+		# no harness probe while the peer migrates (xfrm_audit.sh xa_hold)
+		xa_hold
 		n37a=$(awk -F'\t' '$1=="in" && $2==37' "$D/wire.tsv" | wc -l)
 		if [ "$scen" = mobikenatout ]; then
 			# encap must be on before the move, or the row proves nothing
@@ -526,26 +552,33 @@ EOF
 		n37b=$(awk -F'\t' '$1=="in" && $2==37' "$D/wire.tsv" | wc -l)
 		upd=$(grep -c 'UPDATE_SA_ADDRESSES\|update_sa_address' "$D/iked.log" 2>/dev/null)
 		log "mobike: peer INFORMATIONAL before=$n37a after=$n37b iked UPDATE_SA_ADDRESSES lines=$upd moved=$moved"
-		[ "$n37b" -gt "$n37a" ] || { log "FAIL: no INFORMATIONAL from charon after the address change"; efail=1; }
+		[ "$n37b" -gt "$n37a" ] || { log "FAIL: no INFORMATIONAL from the peer after the address change"; efail=1; }
 		[ "$moved" -eq 1 ] || { log "FAIL: iked's outbound ESP SA never moved to $MB_NEW"; efail=1; }
 		ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HR dst $MB_OLD" &&
 			{ log "FAIL: an outbound SA still targets the old address $MB_OLD"; efail=1; }
 		# Event, not time: charon moves its own SAs only after iked's
 		# UPDATE_SA_ADDRESSES reply; ICMP before that would leave via
 		# its stale SA (XfrmOutBundleGenError in the peer netns).
+		# ... and its policies: the peer migrates the SA and the policy
+		# template separately; a reply sent between the two finds a
+		# template on the old address with no state for it
+		# (XfrmOutBundleGenError in the peer netns).
 		i=0
-		while [ "$i" -lt 50 ] && ! ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HM dst $HR"; do
+		while [ "$i" -lt 50 ] && ! { ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HM dst $HR" &&
+		    ip netns exec "$NSI" ip xfrm policy 2>/dev/null | grep -q "tmpl src $HM dst $HR" &&
+		    ! ip netns exec "$NSI" ip xfrm policy 2>/dev/null | grep -q "tmpl src $HI dst $HR"; }; do
 			i=$((i+1)); sleep 0.2
 		done
 		ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HM dst $HR" ||
-			{ log "FAIL: charon never moved its outbound SA to $HM"; efail=1; }
+			{ log "FAIL: the peer never moved its outbound SA to $HM"; efail=1; }
+		xa_release
 		nenc=$(ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -c 'encap type espinudp')
 		log "mobike: iked espinudp SAs after the move=$nenc"
 		case $scen in
 		mobikenatin) [ "$nenc" -ge 2 ] || { log "FAIL: moved INTO a NAT but iked ESP is not UDP-encapsulated (RFC 4555 3.5)"; efail=1; } ;;
 		*) [ "$nenc" -eq 0 ] || { log "FAIL: no NAT on the new path but iked ESP is still UDP-encapsulated (RFC 4555 3.5)"; efail=1; } ;;
 		esac
-		ip netns exec "$NSR" ping -c3 -i0.3 -W2 -I "$TS_R" "$TS_I" >/dev/null 2>&1 ||
+		ip netns exec "$NSR" ping -c3 -i0.3 -W2 -I "$TS_R" "$TS_I" >"$D/ping-moved.txt" 2>&1 ||
 			{ log "FAIL: ICMP after the MOBIKE move"; efail=1
 			  for n in "$NSR" "$NSI"; do ip netns exec "$n" ip -s xfrm state; ip netns exec "$n" ip xfrm policy; ip netns exec "$n" ip route; ip netns exec "$n" cat /proc/net/xfrm_stat; ip netns exec "$n" nstat -az 2>/dev/null | grep -iE "InNoRoutes|InAddrErr|Discard|Drop" ; done >"$D/mobike-xfrm.txt" 2>&1; }
 		;;

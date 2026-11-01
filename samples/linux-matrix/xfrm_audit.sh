@@ -55,6 +55,12 @@ xa_probe() {
 	# This is independent of the `traffic` XFAIL check: a traffic
 	# exemption alone never disables the probe.
 	[ -z "$(xa_allow "$1" noprobe)" ] || return 0
+	# a row holds the probe while a THIRD-PARTY peer migrates its SAs
+	# (xa_hold / xa_release below)
+	# (busy marker first, then the hold check: with xa_hold doing the
+	# reverse, one of the two always sees the other)
+	: >"$2/probing"
+	[ ! -e "$2/hold" ] || { rm -f "$2/probing"; return 0; }
 	for _xns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
 		case $_xns in "n$1-"*) ;; *) continue ;; esac
 		_xaddr=$(ip -n "$_xns" -o addr 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "inet" || $i == "inet6") { a = $(i + 1); sub(/\/.*/, "", a); printf "%s ", a } }')
@@ -97,6 +103,7 @@ xa_probe() {
 			esac
 		done
 	done
+	rm -f "$2/probing"
 }
 
 xa_enabled() {
@@ -104,6 +111,38 @@ xa_enabled() {
 	[ "$(id -u)" -eq 0 ] || return 1
 	[ -r /proc/net/xfrm_stat ] || return 1
 	return 0
+}
+
+# xa_hold / xa_release: a MOBIKE row moves the peer's address, and a
+# third-party peer (charon) migrates its SAs and policies in several
+# netlink steps (delete + re-add), so a harness probe sent from the peer's
+# netns inside that window hits a policy whose template has no state yet
+# (XfrmOutBundleGenError in the peer netns) -- traffic the row did not send,
+# at a moment the row did not choose.  xa_hold stops new probes and waits
+# until no probe ping/UDP sender is left in the row's netns; xa_release
+# resumes them once the row has seen the move complete.  The counters are
+# still asserted for the whole row, and the row's own traffic after the
+# move still has to pass.
+xa_hold() {
+	[ -n "${XA_DIR:-}" ] && [ -d "$XA_DIR" ] || return 0
+	: >"$XA_DIR/hold"
+	_xi=0
+	while [ "$_xi" -lt 50 ]; do
+		_xbusy=0
+		[ -e "$XA_DIR/probing" ] && _xbusy=1
+		for _xns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
+			case $_xns in "n$XA_ROW-"*) ;; *) continue ;; esac
+			for _xp in $(ip netns pids "$_xns" 2>/dev/null); do
+				grep -qa 'r2probe\|^ping' "/proc/$_xp/cmdline" 2>/dev/null && _xbusy=1
+			done
+		done
+		[ "$_xbusy" -eq 0 ] && return 0
+		_xi=$((_xi + 1)); sleep 0.1
+	done
+}
+xa_release() {
+	[ -n "${XA_DIR:-}" ] || return 0
+	rm -f "$XA_DIR/hold"
 }
 
 xa_start() {	# xa_start <row>
