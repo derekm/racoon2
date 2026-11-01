@@ -522,9 +522,19 @@ mobike_local_scan(void *unused)
 	(void)unused;
 	SCHED_INIT(mobike_local_timer);
 	for (sa = IKEV2_SA_LIST_FIRST(&ikev2_sa_list); sa;
-	    sa = IKEV2_SA_LIST_NEXT(sa))
+	    sa = IKEV2_SA_LIST_NEXT(sa)) {
 		if (mobike_initiator_eligible(sa))
 			any = 1;
+		else if (sa->state == IKEV2_STATE_ESTABLISHED &&
+		    sa->is_initiator && !sa->mobike_supported &&
+		    sa->rmconf != NULL &&
+		    ikev2_mobike_initiate(sa->rmconf) == RCT_BOOL_ON)
+			/* RFC 4555 s3.1: no UPDATE_SA_ADDRESSES to a peer
+			 * that did not send MOBIKE_SUPPORTED */
+			isakmp_log(sa, sa->local, sa->remote, 0, PLOG_INFO,
+			    PLOGLOC, "MOBIKE initiator: local address change "
+			    "ignored, the peer does not support MOBIKE\n");
+	}
 	if (!any)
 		return;
 	/* sockets for the new address set (interface ike { MY_IP; }) */

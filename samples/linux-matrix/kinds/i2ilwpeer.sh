@@ -120,8 +120,22 @@ kind_i2ilwpeer() {
 	# notifies in UPDATE_SA_ADDRESSES decide whether ESP is UDP-encapsulated
 	# on the new path, so iked must turn encap on / off with the move.
 	MB_OLD=$HI; MB_NEW=$HM
-	case $scen in mobike|mobikenatin|mobikenatout)
-		[ "$role" = r ] || { log "FAIL: mobike rows are peer-initiated (-r) only"; return 1; }
+	# mobike-i / mobikeoff-i: iked is the MOBIKE INITIATOR
+	# (mobike_initiate on, interface ike { MY_IPV4; }) and moves its own
+	# outer address $HR -> $HRM; the peer answers with mobike=yes and must
+	# move its SAs.  mobikeoff-i: the peer has MOBIKE off (charon
+	# mobike=no, pluto mobike=no), so it sends no MOBIKE_SUPPORTED and
+	# iked must send nothing from the new address (RFC 4555 s3.1).
+	IKED_MI=; IKED_IKE="\"$HR\""; HRM=192.0.7.5; SS_REMOTE=$HR; LW_RIGHT=$HR
+	if [ "$role" = i ]; then case $scen in mobike|mobikeoff)
+		IKED_MI="mobike_initiate on;"; IKED_IKE=MY_IPV4
+		SS_REMOTE=%any; LW_RIGHT=%any; TS_I=10.7.7.2; TS_R=10.7.7.1
+		SS_MOBIKE=yes; LW_MOBIKE="mobike=yes"
+		[ "$scen" = mobikeoff ] && { SS_MOBIKE=no; LW_MOBIKE="mobike=no"; }
+		[ "$scen" = mobike ] && scen=mobikei	# the iked-initiated move
+		;; esac
+	fi
+	case $role:$scen in r:mobike|r:mobikenatin|r:mobikenatout)
 		# pluto roams only as a mode-config client (RFC 4555 with a
 		# CP lease): iked hands out 10.7.7.2 from a one-address pool,
 		# so the lease IS the inner TS; no NAT variants for pluto.
@@ -189,7 +203,7 @@ kind_i2ilwpeer() {
 
 	cat >"$C/iked.conf" <<EOF
 interface {
-	ike { "$HR"; };
+	ike { $IKED_IKE; };
 	spmd { unix "$SPMIF_R"; };
 	spmd_password "$ETC/spmd.pwd";
 };
@@ -210,6 +224,7 @@ remote lw {
 		$NEED_PFS
 		$IKE_LT
 		$IKED_PROVIDE
+		$IKED_MI
 	};
 	selector_index sel_in;
 };
@@ -241,8 +256,8 @@ conn r2
 	ikev2=insist
 	left=$HI
 	leftid=@$L_ID
-	leftsubnet=$( [ -n "$LW_MOBIKE" ] && echo 0.0.0.0/0 || echo "$HI/32" )
-	right=$HR
+	leftsubnet=$( [ -n "$LW_MOBIKE" ] && [ "$role" = r ] && echo 0.0.0.0/0 || echo "$TS_I/32" )
+	right=$LW_RIGHT
 	rightid=@$R_ID
 	rightsubnet=$TS_R/32
 	$LW_MOBIKE
@@ -277,7 +292,7 @@ connections {
 	lwp {
 		version = 2
 		local_addrs = $SS_LOCAL
-		remote_addrs = $HR
+		remote_addrs = $SS_REMOTE
 		mobike = $SS_MOBIKE
 		proposals = aes256-sha256-modp2048
 		fragmentation = yes
@@ -326,6 +341,7 @@ EOF
 	ip netns exec "$NSR" ip addr add "$HR/24" dev "$VR"; ip netns exec "$NSR" ip link set "$VR" up
 	ip netns exec "$NSI" ip addr add "$HI/24" dev "$VI"; ip netns exec "$NSI" ip link set "$VI" up
 	case $scen in mobike*)
+		ip netns exec "$NSR" sysctl -qw "net.ipv4.conf.$VR.promote_secondaries=1"
 		# Deleting the old primary address must not take the new
 		# (secondary) one with it: Ubuntu runners default to
 		# promote_secondaries=0, which made charon see both addresses
@@ -524,6 +540,55 @@ EOF
 		[ "$gone" -eq 1 ] || { log "FAIL: iked kept ${re:-?} ESP SAs after the peer's DELETE"; efail=1; }
 		;;
 	psk|cert) ;;
+	mobikei|mobikeoff)
+		[ "$role" = i ] || { log "FAIL: $scen-$role: unsupported"; efail=1; }
+		xa_hold
+		( ip netns exec "$NSI" tcpdump -l -nn -i "$VI" -w "$D/peer.pcap" "src host $HRM and (udp port 500 or udp port 4500)" ) >"$D/peer-dump.out" 2>&1 &
+		PDUMP=$!; sleep 1
+		[ "$scen" = mobikeoff ] || grep -q "peer supports MOBIKE\|type MOBIKE_SUPPORTED" "$D/iked.log" ||
+			{ log "FAIL: MOBIKE not negotiated"; efail=1; }
+		ip netns exec "$NSR" ip addr add "$HRM/24" dev "$VR"
+		ip netns exec "$NSR" ip route replace "$HI/32" dev "$VR" src "$HRM"
+		ip netns exec "$NSR" ip addr del "$HR/24" dev "$VR"
+		if [ "$scen" = mobikeoff ]; then
+			# event: iked's scan saw the change and declined it
+			i=0; until grep -q "local address change ignored, the peer does not support MOBIKE" "$D/iked.log" || [ "$i" -ge 50 ]; do
+				i=$((i+1)); sleep 0.2; done
+			grep -q "local address change ignored" "$D/iked.log" ||
+				{ log "FAIL: iked never processed the address change"; efail=1; }
+			sleep 2; kill "$PDUMP" 2>/dev/null; wait "$PDUMP" 2>/dev/null
+			np=$(tcpdump -nn -r "$D/peer.pcap" 2>/dev/null | wc -l)
+			upi=$(grep -c "MOBIKE initiator: local address .* sending" "$D/iked.log")
+			log "mobikeoff: IKE datagrams from $HRM=$np iked updates=$upi"
+			[ "$np" -eq 0 ] || { log "FAIL: iked sent $np IKE datagrams from the new address to a non-MOBIKE peer"; efail=1; }
+			[ "$upi" -eq 0 ] || { log "FAIL: iked sent UPDATE_SA_ADDRESSES to a non-MOBIKE peer"; efail=1; }
+			ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HI dst $HR" ||
+				{ log "FAIL: the peer's SA changed without an update"; efail=1; }
+			xa_release
+		else
+			moved=0; i=0
+			while [ "$i" -lt 100 ]; do
+				ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HI dst $HRM" &&
+				ip netns exec "$NSI" ip xfrm policy 2>/dev/null | grep -q "tmpl src $HI dst $HRM" &&
+				! ip netns exec "$NSI" ip xfrm policy 2>/dev/null | grep -q "tmpl src $HI dst $HR\$" &&
+				ip netns exec "$NSR" ip xfrm state 2>/dev/null | grep -q "^src $HRM dst $HI" && { moved=1; break; }
+				i=$((i+1)); sleep 0.2
+			done
+			sleep 1; kill "$PDUMP" 2>/dev/null; wait "$PDUMP" 2>/dev/null
+			upi=$(grep -c "MOBIKE initiator: local address .* sending" "$D/iked.log")
+			np=$(tcpdump -nn -r "$D/peer.pcap" 2>/dev/null | wc -l)
+			log "mobike-i: iked updates=$upi IKE datagrams from $HRM=$np moved=$moved"
+			[ "$upi" -ge 1 ] || { log "FAIL: iked never sent UPDATE_SA_ADDRESSES"; efail=1; }
+			[ "$np" -ge 1 ] || { log "FAIL: no IKE datagram from $HRM on the wire"; efail=1; }
+			[ "$moved" -eq 1 ] || { log "FAIL: SAs did not move to $HRM on both seats"; efail=1; }
+			ip netns exec "$NSI" ip xfrm state 2>/dev/null | grep -q "^src $HI dst $HR\$" &&
+				{ log "FAIL: a peer SA still targets $HR"; efail=1; }
+			xa_release
+			ip netns exec "$NSR" ping -c3 -i0.3 -W2 -I "$TS_R" "$TS_I" >"$D/ping-moved.txt" 2>&1 ||
+				{ log "FAIL: ICMP after the MOBIKE move"; efail=1
+				  for n in "$NSR" "$NSI"; do ip netns exec "$n" ip -s xfrm state; ip netns exec "$n" ip xfrm policy; ip netns exec "$n" cat /proc/net/xfrm_stat; done >"$D/mobike-xfrm.txt" 2>&1; }
+		fi
+		;;
 	mobike|mobikenatin|mobikenatout)
 		# no harness probe while the peer migrates (xfrm_audit.sh xa_hold)
 		xa_hold
