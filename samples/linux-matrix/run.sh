@@ -214,6 +214,19 @@ charon_ikev1_absent() {
 	done
 	return 1
 }
+# xfrm_migrate_absent: succeed (printing the proof) only when the kernel
+# answers XFRM_MSG_MIGRATE with ENOPROTOOPT (built without
+# CONFIG_XFRM_MIGRATE), probed in a throwaway private netns.
+xfrm_migrate_absent() {
+	_mns=r2mprobe$$
+	ip netns add "$_mns" 2>/dev/null || return 1
+	_mp=$(ip netns exec "$_mns" python3 "$HERE/tools/xfrm_migrate_probe.py" 2>&1)
+	_mrc=$?
+	ip netns del "$_mns" 2>/dev/null
+	[ "$_mrc" -eq 0 ] || return 1
+	echo "$_mp"
+	return 0
+}
 # lane_expects_skip <name> <reason-class>: is this skip in the manifest?
 # Manifest lines: "row <name> <why>" or "gate <gate> <why>".
 lane_expects_skip() {
@@ -301,6 +314,20 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 	ikev1-strongswan|ikev1-depr-clean|ikev1-depr-3des)
 		if _cv1=$(charon_ikev1_absent); then
 			row_skip "$name" charonv1 "charon has no IKEv1: $_cv1"
+			continue
+		fi
+		;;
+	esac
+	# XFRM MIGRATE capability for a Libreswan MOBIKE seat: pluto refuses
+	# mobike=yes on a kernel without CONFIG_XFRM_MIGRATE ("MOBIKE support
+	# is not enabled for xfrm kernel interface"), so no MOBIKE SA can be
+	# negotiated with it there (the GitHub runner kernel).  Skip only on
+	# PROOF from the kernel (run.sh xfrm_migrate_absent); lanes list the
+	# class (gate xfrmmig).  Where the kernel migrates, the rows run.
+	case $name in
+	lwpeer-mobike-i|lwpeer-mobike-i-nomig|lwpeer-mobike-r|lwpeer-mobike-r-nomig)
+		if _xm=$(xfrm_migrate_absent); then
+			row_skip "$name" xfrmmig "Libreswan MOBIKE needs XFRM_MSG_MIGRATE: $_xm"
 			continue
 		fi
 		;;
