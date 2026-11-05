@@ -1165,7 +1165,7 @@ run_row() {
 	[ "$_run_i" = 0 ] || jexec $ji /bin/sh -c "env RACOON2_ADMIN_SOCK=/tmp/freeb/init-ctl$_sfx RACOON2_RESUME_DIR=/tmp/freeb/init-resume $_sslenv $SBIN/spmd -F -f /tmp/freeb/$ji.conf > /tmp/freeb/init-spmd.log 2>&1 &" || true
 	i=0
 	while [ "$i" -lt 15 ]; do
-		{ [ "$_run_r" = 0 ] || [ -S "/tmp/freeb/resp-spmif$_sfx" ]; } && { [ "$_run_i" = 0 ] || [ -S "/tmp/freeb/init-spmif$_sfx" ]; } && break
+		{ [ "$_run_r" = 0 ] || [ -S "/tmp/freeb/$jr-spmif$_sfx" ]; } && { [ "$_run_i" = 0 ] || [ -S "/tmp/freeb/$ji-spmif$_sfx" ]; } && break
 		i=$((i+1)); sleep 1
 	done
 	[ "$i" -lt 15 ] || echo "note: spmif sockets slow"
