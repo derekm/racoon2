@@ -73,10 +73,8 @@ jobs:
         run: |
           cd /tmp && apt-get download libreswan
           dpkg -x /tmp/libreswan_*.deb /tmp/lwroot
-          deps=$(apt-cache depends --no-recommends --no-suggests --no-conflicts \
-            --no-breaks --no-replaces --no-enhances libreswan |
-            awk '/Depends:/{print $2}' | grep -v '^<' | sort -u)
-          sudo apt-get install -y -qq $deps
+          # apt resolves the Depends alternatives itself
+          sudo apt-get satisfy -y -qq "$(dpkg-deb -f /tmp/libreswan_*.deb Depends)"
           test -x /tmp/lwroot/usr/libexec/ipsec/pluto
           ls -l /usr/lib/ipsec/charon
 

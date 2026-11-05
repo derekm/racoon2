@@ -106,9 +106,7 @@ done; true'
 # it in a private mount ns (kinds/i2i_peer.sh I2I_LW_ROOT).
 G 600 'export DEBIAN_FRONTEND=noninteractive; cd /tmp && apt-get download -qq libreswan &&
 	dpkg -x /tmp/libreswan_*.deb /tmp/lwroot &&
-	apt-get install -y -qq $(apt-cache depends --no-recommends --no-suggests --no-conflicts \
-	    --no-breaks --no-replaces --no-enhances libreswan | awk "/Depends:/{print \$2}" |
-	    grep -v "^<" | sort -u) >/dev/null &&
+	apt-get satisfy -y -qq "$(dpkg-deb -f /tmp/libreswan_*.deb Depends)" >/dev/null &&
 	test -x /tmp/lwroot/usr/libexec/ipsec/pluto && echo libreswan unpacked'
 tar czf - --exclude="kl-*" --exclude='.git' . | G 300 'mkdir -p /root/rc2 && tar xzf - -C /root/rc2'
 G 1800 'cd /root/rc2 && R2_PREFIX=/usr/local/racoon2 bash samples/linux-matrix/run.sh \
