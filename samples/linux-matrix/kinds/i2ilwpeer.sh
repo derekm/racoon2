@@ -548,6 +548,10 @@ EOF
 	mobikei|mobikeoff)
 		[ "$role" = i ] || { log "FAIL: $scen-$role: unsupported"; efail=1; }
 		xa_hold
+		# the wire gates read this capture; without tcpdump the
+		# mobikeoff "zero datagrams" gate would pass on an empty file
+		command -v tcpdump >/dev/null 2>&1 ||
+			{ log "FAIL: tcpdump not installed (the peer-wire gates need it)"; efail=1; }
 		( ip netns exec "$NSI" tcpdump -l -nn -i "$VI" -w "$D/peer.pcap" "src host $HRM and (udp port 500 or udp port 4500)" ) >"$D/peer-dump.out" 2>&1 &
 		PDUMP=$!; sleep 1
 		[ "$scen" = mobikeoff ] || grep -q "peer supports MOBIKE\|type MOBIKE_SUPPORTED" "$D/iked.log" ||

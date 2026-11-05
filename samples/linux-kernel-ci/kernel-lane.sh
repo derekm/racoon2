@@ -90,7 +90,7 @@ G 1200 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq &&
 	apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
 	libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-charon strongswan-swanctl iproute2 \
 	libsystemd-dev iputils-ping xxd iptables conntrack nftables python3 procps \
-	netcat-openbsd psmisc kmod >/dev/null && echo deps ok'
+	netcat-openbsd psmisc kmod tcpdump >/dev/null && echo deps ok'
 tar czf - --exclude="kl-*" --exclude='.git' . | G 300 'mkdir -p /root/rc2 && tar xzf - -C /root/rc2'
 G 1800 'cd /root/rc2 && R2_PREFIX=/usr/local/racoon2 bash samples/linux-matrix/run.sh \
 	--src /root/rc2 --rebuild xfrm --cases "a^" > /root/build.log 2>&1; rc=$?; tail -5 /root/build.log; exit $rc'
