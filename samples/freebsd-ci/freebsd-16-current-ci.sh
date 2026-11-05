@@ -183,11 +183,16 @@ echo "=== vnet conformance (iked<->iked ESP over pfkey KM) === $SHARD_K/$SHARD_M
 # same as the vmactions legs).
 timeout 1500 ssh -i fb16-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -o IdentitiesOnly=yes -p "$SSHPORT" -l root 127.0.0.1 \
-  "cd /root/rc2 && ROW=all sh samples/freebsd-ci/freebsd-vnet-matrix.sh --shard $SHARD_K $SHARD_M > /tmp/freebsd-16-matrix-$SHARD_K.log 2>&1; echo matrix_rc=\$?; tail -2 /tmp/freebsd-16-matrix-$SHARD_K.log"
+  "cd /root/rc2 && ROW=all sh samples/freebsd-ci/freebsd-vnet-matrix.sh --shard $SHARD_K $SHARD_M > /tmp/freebsd-16-matrix-$SHARD_K.log 2>&1; echo matrix_rc=\$?; tail -2 /tmp/freebsd-16-matrix-$SHARD_K.log" ||
+  { _mrc=$?; echo "FAIL: vnet matrix ssh rc=$_mrc (124 = the 1500s timeout); copying the partial log";
+    timeout 30 ssh -i fb16-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o IdentitiesOnly=yes -p "$SSHPORT" -l root 127.0.0.1 \
+      "grep -n '=== ROW' /tmp/freebsd-16-matrix-$SHARD_K.log | tail -1; ps axww | grep -E 'iked|spmd|ping|ikedctl|jexec|sleep' | grep -v grep | head -20" || true; }
 timeout 120 scp -q -i fb16-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -o IdentitiesOnly=yes -P "$SSHPORT" root@127.0.0.1:/tmp/freebsd-16-matrix-$SHARD_K.log "$LOG"
 test -s "$LOG" || { echo "FAIL: matrix log empty/missing"; exit 1; }
 cat "$LOG"
+[ -z "${_mrc:-}" ] || { echo "FAIL: vnet matrix did not finish (rc=$_mrc)"; exit 1; }
 
 # ---- 5. gate on red rows (and on a non-vacuous shard) -------------------
 # The ==32 full-matrix composition lives in the merged report job, exactly
