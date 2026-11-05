@@ -472,11 +472,16 @@ main(int argc, char **argv)
 		iked_exit(IKED_EXIT_FAILURE);
 	}
 #endif
-#if !defined(WITH_RTSOCK) && defined(__linux__)
-	/* RFC 4555 initiator moves need address events (mobike_initiate) */
+#if !defined(WITH_RTSOCK)
+	/*
+	 * RFC 4555 initiator moves need address events (mobike_initiate):
+	 * rtnetlink on Linux, the PF_ROUTE socket elsewhere.  The BSDs used
+	 * to open it only with --enable-updateifaddr, so a FreeBSD initiator
+	 * never saw its address change and never sent an update.
+	 */
 	if (ike_conf_any_mobike_initiate() && rtsock_init() != 0) {
 		plog(PLOG_CRITICAL, PLOGLOC, 0,
-		     "mobike_initiate: failed opening rtnetlink socket: %s\n",
+		     "mobike_initiate: failed opening the routing socket: %s\n",
 		     strerror(errno));
 		iked_exit(IKED_EXIT_FAILURE);
 	}
