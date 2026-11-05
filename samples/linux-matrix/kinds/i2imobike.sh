@@ -43,6 +43,10 @@
 #                      CREATE_CHILD_SA (child / IKE rekey) is in flight
 #                      (responder answers held): the rekey completes, the
 #                      update follows, everything ends on the new address
+#   i2imobike-ikerekeyexp
+#                      ADDKE IKE rekey answers held until the old IKE SA
+#                      hits its hard lifetime: iked abandons the parked
+#                      followup, keeps running, no sanitizer report
 #   i2imobike-multi    two addresses from the start: the second is
 #                      advertised (ADDITIONAL_IP4_ADDRESS, stored by the
 #                      responder); losing the first moves to it
@@ -93,7 +97,12 @@ kind_i2imobike() {
 	tcp) TCP="tcp_encap on;" ;;
 	return|flap|loss|v6|dual|multi) ;;
 	childrekey) CHILD_LT_I="ipsec_sa_lifetime_time 20 sec;" ;;
-	ikerekey) IKE_LT_I="kmp_sa_lifetime_time 20 sec;" ;;
+	# 60 s: the soft-lifetime rekey must have room to finish (answers
+	# held, the move, the release) before the hard lifetime; at 20 s a
+	# slow runner reached it first and the row tested expiry instead
+	ikerekey) IKE_LT_I="kmp_sa_lifetime_time 60 sec;" ;;
+	# the hard lifetime arrives while the ADDKE rekey is in flight
+	ikerekeyexp) IKE_LT_I="kmp_sa_lifetime_time 20 sec;" ;;
 	optout) MI="mobike_initiate off;"; PIN=1 ;;
 	pinned) PIN=1 ;;
 	*) log "FAIL: unknown scenario $scen"; return 1 ;;
@@ -187,6 +196,44 @@ EOF
 
 	( ip netns exec "$NSR" tcpdump -U -l -nn -i "$VR" -w "$D/wire.pcap" "udp port 500 or udp port 4500 or tcp port 4500" ) >"$D/tcpdump.out" 2>&1 &
 	DUMP=$!
+	# i2imobike-ikerekeyexp: hold the responder's answers to the
+	# initiator's ADDKE IKE_SA rekey until the old IKE SA reaches its hard
+	# lifetime (DYING), then let them through.  The rekey response lands
+	# on a dying SA while the IKE_FOLLOWUP_KE context is parked on it: iked
+	# must abandon the park, not free it under the SA (the followup
+	# response then read freed memory; seen on a slow CI runner).
+	mobike_ikerekeyexp() {
+		( ip netns exec "$NSR" python3 "$HERE/tools/ikesniff.py" "$VR" "$HR" "$D/wire.tsv" ) >"$D/sniff.out" 2>&1 &
+		SNIFF=$!
+		xa_hold
+		for _hp in 500 4500; do
+			ip netns exec "$NSR" iptables -A OUTPUT -p udp --sport $_hp -j DROP ||
+				{ log "FAIL: could not hold the responder's answers (iptables)"; efail=1; }
+		done
+		i=0; until awk -F'\t' '$1=="in" && $2==36{f=1} END{exit !f}' "$D/wire.tsv" 2>/dev/null || [ "$i" -ge 300 ]; do
+			i=$((i+1)); sleep 0.2; done
+		awk -F'\t' '$1=="in" && $2==36{f=1} END{exit !f}' "$D/wire.tsv" 2>/dev/null ||
+			{ log "FAIL: no CREATE_CHILD_SA from the initiator within 60 s"; efail=1; }
+		i=0; until grep -q "state ESTABLISHED -> DYING" "$D/iked-i.log" || [ "$i" -ge 150 ]; do
+			i=$((i+1)); sleep 0.2; done
+		grep -q "state ESTABLISHED -> DYING" "$D/iked-i.log" ||
+			{ log "FAIL: the IKE SA never reached its hard lifetime with the rekey held"; efail=1; }
+		for _hp in 500 4500; do
+			ip netns exec "$NSR" iptables -D OUTPUT -p udp --sport $_hp -j DROP 2>/dev/null
+		done
+		i=0; until awk -F'\t' '$1=="out" && $2==36{f=1} END{exit !f}' "$D/wire.tsv" 2>/dev/null || [ "$i" -ge 100 ]; do
+			i=$((i+1)); sleep 0.2; done
+		awk -F'\t' '$1=="out" && $2==36{f=1} END{exit !f}' "$D/wire.tsv" 2>/dev/null ||
+			{ log "FAIL: the held rekey answer never reached the initiator"; efail=1; }
+		i=0; until grep -q "abandoning parked ADDKE initiator IKE-SA rekey" "$D/iked-i.log" || [ "$i" -ge 100 ]; do
+			i=$((i+1)); sleep 0.2; done
+		grep -q "abandoning parked ADDKE initiator IKE-SA rekey" "$D/iked-i.log" ||
+			{ log "FAIL: iked (i) did not abandon the parked rekey of the dying IKE SA"; efail=1; }
+		# let any followup response / retransmit land on the dying SA
+		sleep 3
+		kill "$SNIFF" 2>/dev/null
+		xa_release
+	}
 	for s in r i; do
 		_ns=$NSR; _sp=$SPMIF_R; _so=$SOCK_R; _pr=$PRIVRES_R
 		[ "$s" = i ] && { _ns=$NSI; _sp=$SPMIF_I; _so=$SOCK_I; _pr=$PRIVRES_I; }
@@ -235,6 +282,9 @@ EOF
 			[ "$(grep -c 'MOBIKE initiator: local address' "$D/iked-i.log")" -eq 0 ] ||
 				{ log "FAIL: an update was sent with no address"; efail=1; }
 		fi
+		if [ "$scen" = ikerekeyexp ]; then
+			mobike_ikerekeyexp
+		else
 		case $scen in childrekey|ikerekey)
 			# move DURING an exchange: hold the responder's answers so
 			# the initiator's CREATE_CHILD_SA (exch 36) is in flight,
@@ -246,11 +296,19 @@ EOF
 			# them): xfrm_audit.sh xa_hold, as in the peer MOBIKE rows
 			xa_hold
 			spi_pre=$(ip netns exec "$NSI" ip xfrm state 2>/dev/null | awk '/proto esp spi/{print $4}' | sort | tr '\n' ' ')
-			ip netns exec "$NSR" iptables -A OUTPUT -p udp -m multiport --sports 500,4500 -j DROP
-			i=0; until awk -F'\t' '$1=="in" && $2==36{f=1} END{exit !f}' "$D/wire.tsv" 2>/dev/null || [ "$i" -ge 300 ]; do
+			# one rule per port: no multiport match needed (some
+			# kernels lack xt_multiport), and a hold that did not
+			# install fails the row rather than letting it pass
+			# without the exchange ever being in flight
+			for _hp in 500 4500; do
+				ip netns exec "$NSR" iptables -A OUTPUT -p udp --sport $_hp -j DROP ||
+					{ log "FAIL: could not hold the responder's answers (iptables)"; efail=1; }
+			done
+			# the IKE rekey starts at the soft lifetime (~51 s of 60)
+			i=0; until awk -F'\t' '$1=="in" && $2==36{f=1} END{exit !f}' "$D/wire.tsv" 2>/dev/null || [ "$i" -ge 450 ]; do
 				i=$((i+1)); sleep 0.2; done
 			awk -F'\t' '$1=="in" && $2==36{f=1} END{exit !f}' "$D/wire.tsv" 2>/dev/null ||
-				{ log "FAIL: no CREATE_CHILD_SA from the initiator within 60 s"; efail=1; }
+				{ log "FAIL: no CREATE_CHILD_SA from the initiator within 90 s"; efail=1; }
 			;;
 		esac
 		# the move
@@ -266,7 +324,9 @@ EOF
 		ip netns exec "$NSI" ip route replace "$TS_R/$HL" dev "$VI" src "$TS_I"
 		[ "$scen" = loss ] || ip netns exec "$NSI" ip addr del "$HI/$PL" dev "$VI"
 		case $scen in childrekey|ikerekey)
-			ip netns exec "$NSR" iptables -D OUTPUT -p udp -m multiport --sports 500,4500 -j DROP ;;
+			for _hp in 500 4500; do
+				ip netns exec "$NSR" iptables -D OUTPUT -p udp --sport $_hp -j DROP 2>/dev/null
+			done ;;
 		esac
 		moved=0; i=0
 		while [ "$i" -lt 100 ]; do
@@ -432,6 +492,7 @@ EOF
 				{ log "FAIL: ICMP after the move"; efail=1
 				  for n in "$NSR" "$NSI"; do ip netns exec "$n" ip -s xfrm state; ip netns exec "$n" cat /proc/net/xfrm_stat; done >"$D/after-move.txt" 2>&1; }
 		fi
+		fi	# ikerekeyexp
 	fi
 	for s in r i; do pgrep -f -- "iked -F -f $C/$s.conf" >/dev/null 2>&1 || { log "FAIL: iked ($s) exited"; efail=1; }; done
 	grep -h "ERROR: AddressSanitizer\|runtime error:" "$D"/iked-*.out 2>/dev/null | head -3 | while read -r l; do log "FAIL: $l"; done
