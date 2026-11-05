@@ -2460,7 +2460,7 @@ MEOF
 	i=0; while [ "$i" -lt 15 ] && [ ! -S /tmp/freeb/init-ctl ]; do i=$((i+1)); sleep 1; done
 	jexec $ji $SBIN/ikedctl -s /tmp/freeb/init-ctl establish-sa isakmp inet 10.9.0.2 10.9.0.1 sel_out >/dev/null 2>&1 || true
 	_sa() { # _sa JAIL SRC DST : esp tunnel SAs SRC->DST in that jail
-		jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null | grep -c "^$2 $3\$" || true
+		jexec "$1" /usr/local/sbin/setkey -D 2>/dev/null | grep -c "^$2 $3[[:space:]]*\$" || true
 	}
 	_up=0; i=0
 	while [ "$i" -lt 45 ]; do
