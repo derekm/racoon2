@@ -131,6 +131,11 @@ struct ph1handle {
 	int frag;			/* IKE phase 1 fragmentation */
 	uint32_t frag_msgid;		/* IKE phase 1 fragment message ID */
 	struct isakmp_frag_item *frag_chain;	/* Received fragments */
+	/* half-open fragment context: timer is frag_sce, not sce, so a
+	 * later lifetime timer cannot orphan it. Cleared on reassembly
+	 * and on any delph1, so the cap cannot leak. */
+	struct sched *frag_sce;
+	int frag_halfopen;
 
 	int dpd_support;	/* Does remote supports DPD ? */
 	time_t dpd_lastack;	/* Last ack received */

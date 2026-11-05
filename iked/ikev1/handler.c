@@ -312,6 +312,9 @@ delph1(struct ph1handle *iph1)
 
 	VPTRINIT(iph1->authstr);
 
+	/* before sched_scrub_param: that kills the frag timer without
+	 * telling the half-open counter. */
+	isakmp_frag_halfopen_disarm(iph1);
 	sched_scrub_param(iph1);
 	iph1->sce = NULL;
 	iph1->scr = NULL;

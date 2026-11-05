@@ -1011,14 +1011,26 @@ isakmp_frag_purge(struct ph1handle *iph1)
  * Count those half-open contexts and drop them on a timer. */
 static int isakmp_frag_half_open;
 
+void
+isakmp_frag_halfopen_disarm(struct ph1handle *iph1)
+{
+	if (iph1 == NULL || !iph1->frag_halfopen)
+		return;
+	iph1->frag_halfopen = 0;
+	if (isakmp_frag_half_open > 0)
+		isakmp_frag_half_open--;
+	if (iph1->frag_sce)
+		SCHED_KILL(iph1->frag_sce);
+}
+
 static void
 isakmp_frag_halfopen_expire(void *p)
 {
 	struct ph1handle *iph1 = p;
 
-	iph1->sce = NULL;
-	if (isakmp_frag_half_open > 0)
-		isakmp_frag_half_open--;
+	/* scheduler frees this entry after we return */
+	iph1->frag_sce = NULL;
+	isakmp_frag_halfopen_disarm(iph1);
 	remph1(iph1);
 	delph1(iph1);
 }
@@ -1302,14 +1314,15 @@ isakmp_handler(int so_isakmp)
 				error = -1;
 				goto end;
 			}
-			frag_iph1->sce = sched_new(ISAKMP_FRAG_TIMEOUT,
+			frag_iph1->frag_sce = sched_new(ISAKMP_FRAG_TIMEOUT,
 			    isakmp_frag_halfopen_expire, frag_iph1);
-			if (frag_iph1->sce == NULL) {
+			if (frag_iph1->frag_sce == NULL) {
 				remph1(frag_iph1);
 				delph1(frag_iph1);
 				error = -1;
 				goto end;
 			}
+			frag_iph1->frag_halfopen = 1;
 			isakmp_frag_half_open++;
 
 			plog(PLOG_DEBUG, PLOGLOC, 0,
@@ -1334,11 +1347,12 @@ isakmp_handler(int so_isakmp)
 		 * live Phase 1 found by getph1byindex() (e.g. fragmented
 		 * MM5/MM6 with certificates) must survive reassembly --
 		 * delph1() does not unbind its ph2tree. */
+		/* Drop the half-open timer before ikev1_main adopts this handle.
+		 * A later fragment has frag_temp == 0; leaving the timer armed
+		 * deletes the live SA when it fires, and overwriting sce does
+		 * not cancel it. */
+		isakmp_frag_halfopen_disarm(frag_iph1);
 		if (frag_temp) {
-			if (frag_iph1->sce)
-				SCHED_KILL(frag_iph1->sce);
-			if (isakmp_frag_half_open > 0)
-				isakmp_frag_half_open--;
 			remph1(frag_iph1);
 			delph1(frag_iph1);
 		}

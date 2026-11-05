@@ -86,6 +86,7 @@ extern int isakmp_open (void);
 extern void isakmp_close (void);
 extern int isakmp_send (struct ph1handle *, rc_vchar_t *);
 extern int isakmp_sendfrags(struct ph1handle *, rc_vchar_t*);extern void isakmp_frag_purge(struct ph1handle *);
+extern void isakmp_frag_halfopen_disarm(struct ph1handle *);
 
 /*  extern void isakmp_ph1resend_stub (void *); */
 extern int isakmp_ph1resend (struct ph1handle *);
