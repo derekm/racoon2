@@ -62,9 +62,7 @@
 #include "debug.h"
 #include "ike_conf.h"
 #include "crypto_impl.h"
-#if defined(WITH_RTSOCK) || defined(__linux__)
-#  include "rtsock.h"
-#endif
+#include "rtsock.h"
 #ifdef WITH_PARSECOA
 #  include "parse_coa.h"
 #endif
@@ -604,9 +602,7 @@ iked_mainloop(void)
 	fd_set wfdset;			/* RFC 9329 write readiness (streams) */
 	struct timeval *timeout;
 	int isakmp_sock, sadbsock_fd;
-#if defined(WITH_RTSOCK) || defined(__linux__)
 	int rtsock_fd;
-#endif
 #ifdef WITH_PARSECOA
 	int nlxsock_fd;
 #endif
@@ -678,9 +674,8 @@ iked_mainloop(void)
 		if (!debug_spmif && spmif_fd < 0)
 			ike_spmif_reconnect();
 
-#if defined(WITH_RTSOCK) || defined(__linux__)
+		/* -1 unless updateifaddr or mobike_initiate opened it */
 		monitor_fd(rtsock_fd = rtsock_socket(), &fdset, &nfds);
-#endif
 #ifdef WITH_PARSECOA
 		monitor_fd(nlxsock_fd = nl_xfrm_socket(), &fdset, &nfds);
 #endif
@@ -697,10 +692,8 @@ iked_mainloop(void)
 			continue;
 		}
 
-#if defined(WITH_RTSOCK) || defined(__linux__)
 		if (rtsock_fd >= 0 && FD_ISSET(rtsock_fd, &fdset))
 			rtsock_process();
-#endif
 #ifdef WITH_PARSECOA
 		if (nlxsock_fd >= 0 && FD_ISSET(nlxsock_fd, &fdset))
 			nl_xfrm_process();
