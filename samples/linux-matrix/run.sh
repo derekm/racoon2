@@ -133,12 +133,23 @@ addke_ok() {
 	yes) return 0 ;;
 	no)  return 1 ;;
 	esac
-	[ -x "$SBIN/iked" ] && grep -q ikev2_followup_ke_recv "$SBIN/iked" 2>/dev/null && return 0
+	# The gate=addke rows are the xfrm-addke build's (builds.tsv): their
+	# PQC gates compare the child KEYMAT hashes that only
+	# --enable-keymat-oracle logs.  configure turns ADDKE on by itself
+	# wherever <openssl/ml_kem.h> exists (OpenSSL 3.5: ubuntu-26.04, Debian
+	# sid), so WITH_ADDKE alone ran these rows on a plain xfrm build, where
+	# "kh_i=none" can never match.  Require both.
+	if [ -x "$SBIN/iked" ] && grep -q ikev2_followup_ke_recv "$SBIN/iked" 2>/dev/null; then
+		grep -q "CHILD keymat g_ir_prefix" "$SBIN/iked" 2>/dev/null
+		return
+	fi
 	# Autoconf writes `/* #undef WITH_ADDKE */` when the feature is off.
 	# A bare grep of the token is a false-positive on Ubuntu OpenSSL 3.0
 	# and lets i2ikesa-addke / i2iinit-addke run (and fail) in CI.
 	[ -f "$R2_SRC/iked/config.h" ] &&
 		grep -qE '^[[:space:]]*#define[[:space:]]+WITH_ADDKE([[:space:]]|$)' \
+			"$R2_SRC/iked/config.h" 2>/dev/null &&
+		grep -qE '^[[:space:]]*#define[[:space:]]+WITH_KEYMAT_ORACLE([[:space:]]|$)' \
 			"$R2_SRC/iked/config.h" 2>/dev/null
 }
 
