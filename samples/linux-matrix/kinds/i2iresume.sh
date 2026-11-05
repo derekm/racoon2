@@ -246,6 +246,25 @@ EOF
 		i=$((i+1)); sleep 1
 	done
 	if [ "$i" -gt 0 ]; then log "i2iresume: pass-1 ticket store write took ${i}s after child UP"; fi
+	# -drain: the drain-sa below closes the responder's pass-1 SAs at
+	# once; the harness probe (xfrm_audit.sh xa_probe) must have crossed
+	# the pass-1 child first, or its echo lands on a deleted SA and the
+	# traffic audit sees a flat inbound counter (CI Fedora shard 1, sid).
+	# Wait, bounded, for the echo reply on the initiator's inbound SA.
+	case $name in *-drain)
+		if xa_enabled; then
+			i=0
+			while [ "$i" -lt 20 ]; do
+				_rx=$(ip -n "$NSI" -s xfrm state 2>/dev/null | awk -v d="$HI" '
+					/^src / { in_ = ($4 == d); next }
+					in_ && /packets\)/ { sub(/\(packets\)/, ""); split($0, f, ","); gsub(/[^0-9]/, "", f[2]); if (f[2] + 0 > 0) n = 1 }
+					END { print n + 0 }')
+				[ "$_rx" = 1 ] && break
+				i=$((i+1)); sleep 0.5
+			done
+			[ "$_rx" = 1 ] || log "i2iresume-drain: pass-1 probe reply not seen before drain"
+		fi ;;
+	esac
 	minted=$(grep -c 'issuing session-resumption ticket' "$D/resp-iked.log" 2>/dev/null || true)
 	stored=$(ls "$TKSTORE"/r2tkt-* 2>/dev/null | wc -l)
 
