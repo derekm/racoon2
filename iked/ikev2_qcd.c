@@ -175,39 +175,62 @@ ikev2_qcd_taker_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 {
 	struct ikev2_header *ikehdr;
 	struct ikev2_payload_header *p;
+	uint8_t *end, *base;
 	int type;
 
-	if (!ike_sa || !packet || !ike_sa->qcd_token_peer)
+	if (!ike_sa || !packet || !packet->v || !ike_sa->qcd_token_peer)
+		return 0;
+	if (packet->l < sizeof(struct ikev2_header))
 		return 0;
 	ikehdr = (struct ikev2_header *)packet->v;
-	p = (struct ikev2_payload_header *)(ikehdr + 1);
+	end = (uint8_t *)packet->v + packet->l;
+	base = (uint8_t *)(ikehdr + 1);
+	p = (struct ikev2_payload_header *)base;
+	/*
+	 * Stop at ENCRYPTED. ikev2_check_payloads() does not validate
+	 * past that payload, and this walk runs before the ICV check.
+	 * ENCRYPTED's next_payload is the first inner type, not the
+	 * next plaintext payload; following it reads ciphertext.
+	 */
 	for (type = ikehdr->next_payload;
-	     type != IKEV2_NO_NEXT_PAYLOAD;
-	     POINT_NEXT_PAYLOAD(p, type)) {
+	     type != IKEV2_NO_NEXT_PAYLOAD; ) {
 		struct ikev2payl_notify *n;
-		size_t tot, hdr, dlen;
+		size_t plen, tot, hdr, dlen;
 		uint8_t *data;
 
-		if (type != IKEV2_PAYLOAD_NOTIFY)
-			continue;
-		n = (struct ikev2payl_notify *)p;
-		if (get_notify_type(n) != IKEV2_QCD_TOKEN)
-			continue;
-		tot = get_payload_length(&n->header);
-		hdr = sizeof(*n) + n->nh.spi_size;
-		if (tot < hdr)
-			continue;
-		dlen = tot - hdr;
-		data = get_notify_data(n);
-		if (n->nh.spi_size != 0 ||
-		    dlen < IKEV2_QCD_TOKEN_MIN || dlen > IKEV2_QCD_TOKEN_MAX)
-			continue;	/* RFC 6290 4.1 / 5 */
-		if (ike_sa->qcd_token_peer->l == dlen &&
-		    CRYPTO_memcmp(ike_sa->qcd_token_peer->v, data, dlen) == 0) {
-			isakmp_log(ike_sa, 0, 0, 0, PLOG_INFO, PLOGLOC,
-				   "QCD_TOKEN match, deleting IKE_SA\n");
-			return 1;
+		if ((uint8_t *)p < base ||
+		    (size_t)(end - (uint8_t *)p) < sizeof(*p))
+			return 0;
+		if (type == IKEV2_PAYLOAD_ENCRYPTED ||
+		    type == IKEV2_PAYLOAD_ENCRYPTED_AND_AUTHENTICATED_FRAGMENT)
+			break;
+		plen = get_payload_length(p);
+		if (plen < sizeof(*p) ||
+		    (size_t)(end - (uint8_t *)p) < plen)
+			return 0;
+		if (type == IKEV2_PAYLOAD_NOTIFY) {
+			n = (struct ikev2payl_notify *)p;
+			if (get_notify_type(n) == IKEV2_QCD_TOKEN) {
+				tot = plen;
+				hdr = sizeof(*n) + n->nh.spi_size;
+				if (tot >= hdr && n->nh.spi_size == 0) {
+					dlen = tot - hdr;
+					data = (uint8_t *)n + hdr;
+					if (dlen >= IKEV2_QCD_TOKEN_MIN &&
+					    dlen <= IKEV2_QCD_TOKEN_MAX &&
+					    ike_sa->qcd_token_peer->l == dlen &&
+					    CRYPTO_memcmp(ike_sa->qcd_token_peer->v,
+						data, dlen) == 0) {
+						isakmp_log(ike_sa, 0, 0, 0,
+						    PLOG_INFO, PLOGLOC,
+						    "QCD_TOKEN match, deleting IKE_SA\n");
+						return 1;
+					}
+				}
+			}
 		}
+		type = p->next_payload;
+		p = (struct ikev2_payload_header *)((uint8_t *)p + plen);
 	}
 	return 0;
 }

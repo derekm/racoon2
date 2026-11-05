@@ -730,6 +730,12 @@ ikev2_frag_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 		     frag_no, total_frags);
 		goto fail;
 	}
+	if (decrypted->l == 0 || decrypted->v == NULL) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+		     "ikev2_frag_recv: empty plaintext (frag %u/%u)\n",
+		     frag_no, total_frags);
+		goto fail;
+	}
 
 	/* Strip padding */
 	d = (uint8_t *)decrypted->v;

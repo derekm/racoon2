@@ -145,6 +145,8 @@ ikev2_decrypt_internal(struct ikev2_sa *ike_sa, rc_vchar_t *packet,
 	}
 	if (!decrypted)
 		goto fail;
+	if (decrypted->l == 0 || decrypted->v == NULL)
+		goto fail;
 
 	d = (uint8_t *)decrypted->v;
 	pad_length = d[decrypted->l - 1];

@@ -995,6 +995,27 @@ isakmp_frag_purge(struct ph1handle *iph1)
 	iph1->frag_chain = NULL;
 }
 
+#ifdef IKEV1
+/* Incomplete IKEv1 fragment reassembly used to leave a ph1 in the
+ * global tree until a later fragment for the same SPI called
+ * isakmp_frag_expire(). A single fragment with a fresh cookie never
+ * comes back, so the handle and its chain lived until process exit.
+ * Count those half-open contexts and drop them on a timer. */
+static int isakmp_frag_half_open;
+
+static void
+isakmp_frag_halfopen_expire(void *p)
+{
+	struct ph1handle *iph1 = p;
+
+	iph1->sce = NULL;
+	if (isakmp_frag_half_open > 0)
+		isakmp_frag_half_open--;
+	remph1(iph1);
+	delph1(iph1);
+}
+#endif
+
 /*
  * isakmp packet handler
  */
@@ -1173,6 +1194,7 @@ isakmp_handler(int so_isakmp)
 	}
 
 	/* Dispatch the packet to protocol handler by ISAKMP version */
+#ifdef IKEV1
 	if (ISAKMP_GETMAJORV(isakmp.v) == ISAKMP_MAJOR_VERSION &&
 	    buf->l >= sizeof(struct isakmp) &&
 	    ((struct isakmp *)buf->v)->np == ISAKMP_NPTYPE_FRAG) {
@@ -1210,6 +1232,14 @@ isakmp_handler(int so_isakmp)
 				error = -1;
 				goto end;
 			}
+			if (isakmp_frag_half_open >= IKED_MAX_HALF_OPEN_SA) {
+				plog(PLOG_PROTOERR, PLOGLOC, 0,
+				     "IKE fragment half-open cap (%d)\n",
+				     IKED_MAX_HALF_OPEN_SA);
+				++isakmpstat.malformed_message;
+				error = -1;
+				goto end;
+			}
 
 			frag_iph1 = newph1();
 			if (frag_iph1 == NULL) {
@@ -1226,9 +1256,17 @@ isakmp_handler(int so_isakmp)
 			frag_iph1->flags = isakmp.flags;
 			frag_iph1->status = PHASE1ST_START;
 			frag_iph1->rmconf = getrmconf((struct sockaddr *)&remote);
-			if (frag_iph1->rmconf != NULL)
-				frag_iph1->proposal =
-				    ikev1_conf_to_isakmpsa(frag_iph1->rmconf);
+			if (frag_iph1->rmconf == NULL) {
+				delph1(frag_iph1);
+				plog(PLOG_PROTOERR, PLOGLOC, 0,
+				     "IKE fragment from unconfigured peer %s\n",
+				     rcs_sa2str((struct sockaddr *)&remote));
+				++isakmpstat.malformed_message;
+				error = -1;
+				goto end;
+			}
+			frag_iph1->proposal =
+			    ikev1_conf_to_isakmpsa(frag_iph1->rmconf);
 
 			memcpy(&frag_iph1->index, index, sizeof(*index));
 
@@ -1256,6 +1294,15 @@ isakmp_handler(int so_isakmp)
 				error = -1;
 				goto end;
 			}
+			frag_iph1->sce = sched_new(ISAKMP_FRAG_TIMEOUT,
+			    isakmp_frag_halfopen_expire, frag_iph1);
+			if (frag_iph1->sce == NULL) {
+				remph1(frag_iph1);
+				delph1(frag_iph1);
+				error = -1;
+				goto end;
+			}
+			isakmp_frag_half_open++;
 
 			plog(PLOG_DEBUG, PLOGLOC, 0,
 			     "created temporary IKE fragment "
@@ -1280,11 +1327,16 @@ isakmp_handler(int so_isakmp)
 		 * MM5/MM6 with certificates) must survive reassembly --
 		 * delph1() does not unbind its ph2tree. */
 		if (frag_temp) {
+			if (frag_iph1->sce)
+				SCHED_KILL(frag_iph1->sce);
+			if (isakmp_frag_half_open > 0)
+				isakmp_frag_half_open--;
 			remph1(frag_iph1);
 			delph1(frag_iph1);
 		}
 		frag_iph1 = NULL;
 	}
+#endif
 	switch (ISAKMP_GETMAJORV(isakmp.v)) {
 #ifdef IKEV1
 	case ISAKMP_MAJOR_VERSION:
