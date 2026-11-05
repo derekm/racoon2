@@ -2062,20 +2062,44 @@ ikev2_rekey_ikesa_init_recv_dh_done(int rc, void *arg)
 	old_sa->crypto_pending = 0;
 	if (old_sa->new_sa != ctx->new_sa) {
 		/* rekey was abandoned while DH ran */
+#ifdef WITH_ADDKE
+		/* an ADDKE rekey parks this same ctx on old_sa: unpark it
+		 * before the free, or the followup response (or the
+		 * followup-wait timer) reads it after it is gone */
+		if (old_sa->addke_rekey_init == ctx) {
+			old_sa->addke_rekey_init = NULL;
+			old_sa->addke_rekey_pending = 0;
+			if (old_sa->addke_rekey_timer) {
+				SCHED_KILL(old_sa->addke_rekey_timer);
+				old_sa->addke_rekey_timer = NULL;
+			}
+		}
+#endif
 		ikev2_rekey_init_recv_ctx_free(ctx);
 		return;
 	}
 
 	if (old_sa->state == IKEV2_STATE_DYING ||
-	    old_sa->state == IKEV2_STATE_DEAD) {
-		ikev2_rekey_init_recv_ctx_free(ctx);
-		return;
-	}
-	if (rc != 0) {
-		TRACE((PLOGLOC, "failed dh_compute\n"));
-		isakmp_log(old_sa, 0, 0, 0,
-			   PLOG_INTERR, PLOGLOC, "failed processing rekey response\n");
-		++isakmpstat.fail_process_packet;
+	    old_sa->state == IKEV2_STATE_DEAD || rc != 0) {
+		if (rc != 0) {
+			TRACE((PLOGLOC, "failed dh_compute\n"));
+			isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				   "failed processing rekey response\n");
+			++isakmpstat.fail_process_packet;
+		}
+#ifdef WITH_ADDKE
+		/*
+		 * The IKE SA reached its hard lifetime (or the DH failed)
+		 * while the ADDKE followup was in flight: the ctx is still
+		 * parked on old_sa.  Abandon the park (frees the ctx and
+		 * disposes the unlisted stub) instead of freeing it under
+		 * old_sa, where the followup response would find it.
+		 */
+		if (old_sa->addke_rekey_init == ctx) {
+			ikev2_rekey_ikesa_init_abandon(old_sa);
+			return;
+		}
+#endif
 		ikev2_rekey_init_recv_ctx_free(ctx);
 		return;
 	}
