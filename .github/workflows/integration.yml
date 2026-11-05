@@ -97,7 +97,9 @@ jobs:
 
       - name: Build + install (xfrm backend)
         run: |
-          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+          # sudo-rs (ubuntu-26.04) drops the env on -E; pass the R2_/I2I_/sanitizer vars
+          mapfile -t KEEP < <(env | grep -E '^(R2_|I2I_|ASAN_|UBSAN_)')
+          sudo env "${KEEP[@]}" bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
             --rebuild xfrm --cases 'a^'
         env:
           R2_PREFIX: /usr/local/racoon2
@@ -114,14 +116,19 @@ jobs:
           # the unpacked Libreswan's ipsec/_updown ahead of strongSwan's
           LWPATH="/tmp/lwroot/usr/sbin:/tmp/lwroot/usr/bin:$PATH"
           if [ -n "$CASES" ]; then
-            sudo -E env PATH="$LWPATH" bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            # sudo-rs (ubuntu-26.04) drops the env on -E; pass the R2_/I2I_/sanitizer vars
+            mapfile -t KEEP < <(env | grep -E '^(R2_|I2I_|ASAN_|UBSAN_)')
+            sudo env "${KEEP[@]}" PATH="$LWPATH" bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
               --shard ${{ matrix.shard }} 3 --cases "$CASES" \
               | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
           else
-            sudo -E env PATH="$LWPATH" bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            # sudo-rs (ubuntu-26.04) drops the env on -E; pass the R2_/I2I_/sanitizer vars
+            mapfile -t KEEP < <(env | grep -E '^(R2_|I2I_|ASAN_|UBSAN_)')
+            sudo env "${KEEP[@]}" PATH="$LWPATH" bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
               --shard ${{ matrix.shard }} 3 \
               | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
           fi
+          grep -q '^lane=.* require_live=1$' /tmp/r2-matrix-shard-${{ matrix.shard }}.log
         env:
           R2_PREFIX: /usr/local/racoon2
           # any skip not expected by lanes/ubuntu.skip fails; a shard with
@@ -192,7 +199,9 @@ jobs:
 
       - name: Build + install (pfkey backend)
         run: |
-          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+          # sudo-rs (ubuntu-26.04) drops the env on -E; pass the R2_/I2I_/sanitizer vars
+          mapfile -t KEEP < <(env | grep -E '^(R2_|I2I_|ASAN_|UBSAN_)')
+          sudo env "${KEEP[@]}" bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
             --rebuild pfkey --cases 'a^'
         env:
           R2_PREFIX: /usr/local/racoon2
@@ -214,9 +223,12 @@ jobs:
       - name: Run the pfkey rows
         run: |
           set -o pipefail
-          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+          # sudo-rs (ubuntu-26.04) drops the env on -E; pass the R2_/I2I_/sanitizer vars
+          mapfile -t KEEP < <(env | grep -E '^(R2_|I2I_|ASAN_|UBSAN_)')
+          sudo env "${KEEP[@]}" bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
             --cases '^(pfkeyicv-sha256|pfkeyicv-gcm|i2iinit-ike-cbc128-esp-sha384|i2iinit-ike-cbc128-esp-sha512|icvaudit-ok|i2imobike-(move|move-nomig|off|return|flap-nomig|loss|v6|multi-nomig|childrekey-nomig|ikerekey)) ' \
             | tee /tmp/r2-pfkey.log
+          grep -qx 'lane=pfkey km=pfkey require_live=1' /tmp/r2-pfkey.log
         env:
           R2_PREFIX: /usr/local/racoon2
           R2_KM: pfkey

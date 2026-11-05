@@ -114,6 +114,8 @@ fi
 # The warmup 'a^' is the one intentional unanchored pattern, and it does
 # not set R2_REQUIRE_LIVE.  '.*' is the documented all-rows filter
 # (run-shards.sh).  Any other live-lane filter must be anchored.
+# lane identity, so CI can prove its env reached the run (sudo can drop it)
+echo "lane=${R2_LANE:-none} km=${R2_KM:-xfrm} require_live=${R2_REQUIRE_LIVE:-0}"
 if [ -n "$FILTER" ] && [ "$FILTER" != '.*' ] && [ "${R2_REQUIRE_LIVE:-0}" = 1 ]; then
 	case $FILTER in
 	^*) ;;

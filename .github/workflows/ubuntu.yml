@@ -283,7 +283,9 @@ jobs:
           printf 'racoon2-ci-pwd\n' | sudo tee "$E/spmd.pwd" >/dev/null
           sudo chmod 600 "$E/psk/macos.psk" "$E/spmd.pwd"
           sudo rm -rf /tmp/r2-asan && sudo mkdir -p /tmp/r2-asan
-          sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+          # sudo-rs (ubuntu-26.04) drops the env on -E; pass the R2_/I2I_/sanitizer vars
+          mapfile -t KEEP < <(env | grep -E '^(R2_|I2I_|ASAN_|UBSAN_)')
+          sudo env "${KEEP[@]}" bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
             --cases '^(i2iinit-ike-cbc128|i2iinit-ike-cbc128-esp-sha384|i2inatt-rebind|i2inatt-xfrmflood|icvaudit-ok) ' \
             | tee /tmp/r2-asan-matrix.log
           if ls /tmp/r2-asan/asan.* >/dev/null 2>&1; then
