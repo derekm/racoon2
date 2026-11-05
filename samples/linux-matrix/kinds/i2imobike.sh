@@ -70,6 +70,10 @@ kind_i2imobike() {
 	# re-create fallback runs whatever this kernel has
 	NOMIG=
 	case $scen in *-nomig) NOMIG=1; scen=${scen%-nomig} ;; esac
+	# the TCP row's SYN gate reads the wire capture
+	if [ "$scen" = tcp ] && ! command -v tcpdump >/dev/null 2>&1; then
+		log "FAIL: tcpdump not installed (the TCP SYN gate needs it)"; return 1
+	fi
 	row_ns "$name"
 	HR=192.0.8.1; HI=192.0.8.2; HN=192.0.8.3; HM=192.0.8.4
 	TS_R=10.8.8.1; TS_I=10.8.8.2
