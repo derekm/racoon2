@@ -61,8 +61,24 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
-            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-swanctl iproute2 \
+            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-charon strongswan-swanctl iproute2 \
             libsystemd-dev iputils-ping xxd iptables conntrack
+
+      # Libreswan peer seat (lwpeer-* rows): unpacked, not installed, so
+      # no host pluto/ipsec service and no conflict with strongSwan; the
+      # rows run it in a private mount ns (kinds/i2i_peer.sh I2I_LW_ROOT).
+      # ubuntu-26.04 also split charon out of the strongswan metapackage
+      # (strongswan-charon above ships /usr/lib/ipsec/charon).
+      - name: Unpack Libreswan for the peer seat
+        run: |
+          cd /tmp && apt-get download libreswan
+          dpkg -x /tmp/libreswan_*.deb /tmp/lwroot
+          deps=$(apt-cache depends --no-recommends --no-suggests --no-conflicts \
+            --no-breaks --no-replaces --no-enhances libreswan |
+            awk '/Depends:/{print $2}' | grep -v '^<' | sort -u)
+          sudo apt-get install -y -qq $deps
+          test -x /tmp/lwroot/usr/libexec/ipsec/pluto
+          ls -l /usr/lib/ipsec/charon
 
       # Ubuntu ships enforcing AppArmor profiles for charon and swanctl
       # that only allow /etc/swanctl, /etc/strongswan* and /run paths; the
@@ -97,12 +113,14 @@ jobs:
         run: |
           set -o pipefail
           CASES="${{ inputs.cases }}"
+          # the unpacked Libreswan's ipsec/_updown ahead of strongSwan's
+          LWPATH="/tmp/lwroot/usr/sbin:/tmp/lwroot/usr/bin:$PATH"
           if [ -n "$CASES" ]; then
-            sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            sudo -E env PATH="$LWPATH" bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
               --shard ${{ matrix.shard }} 3 --cases "$CASES" \
               | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
           else
-            sudo -E bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
+            sudo -E env PATH="$LWPATH" bash samples/linux-matrix/run.sh --src "$GITHUB_WORKSPACE" \
               --shard ${{ matrix.shard }} 3 \
               | tee /tmp/r2-matrix-shard-${{ matrix.shard }}.log
           fi
@@ -112,6 +130,7 @@ jobs:
           # zero passing rows fails (empty-run guard)
           R2_REQUIRE_LIVE: 1
           R2_LANE: ubuntu
+          I2I_LW_ROOT: /tmp/lwroot
 
       - name: Upload shard matrix log
         if: always()
@@ -166,7 +185,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
-            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-swanctl iproute2 \
+            libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-charon strongswan-swanctl iproute2 \
             libsystemd-dev iputils-ping xxd iptables conntrack
           sudo modprobe af_key || {
             sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" &&
