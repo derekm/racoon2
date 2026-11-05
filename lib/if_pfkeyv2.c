@@ -1510,13 +1510,23 @@ pfk_migrate_userspace(struct rcpfk_msg *rc)
 			e = ENOMEM;
 			break;
 		}
-		/* the SA key is (dst, SPI, proto): a new dst may go in
-		 * first (no window); the same dst must be freed first */
+		/* Linux keys an SA by (dst, SPI, proto): a new dst may go
+		 * in first (no window); the same dst must be freed first.
+		 * FreeBSD checks SPI uniqueness across all SAs
+		 * (key_checkspidup), so its add-first answers EEXIST: free
+		 * the old SA first there too. */
 		keychg = !pfk_umig_addr_eq(rc->sa_dst, rc->sa2_dst);
 		if (keychg) {
 			if ((e = pfk_umig_xchg(so, a, 0, NULL, NULL)) == 0)
 				(void)pfk_umig_xchg(so, d, 0, NULL, NULL);
-		} else if ((e = pfk_umig_xchg(so, d, 0, NULL, NULL)) == 0) {
+			else if (e == EEXIST) {
+				plog(PLOG_DEBUG, PLOGLOC, NULL,
+				    "pfkey: SPI held by the old SA; "
+				    "deleting it before the re-add\n");
+				keychg = 0;
+			}
+		}
+		if (!keychg && (e = pfk_umig_xchg(so, d, 0, NULL, NULL)) == 0) {
 			if ((e = pfk_umig_xchg(so, a, 0, NULL, NULL)) != 0) {
 				/* put the old SA back */
 				struct sadb_msg *r = (struct sadb_msg *)m;
