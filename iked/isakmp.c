@@ -449,6 +449,14 @@ isakmp_reopen_stub(void *param)
 {
 	SCHED_KILL(isakmp_socket_retry);
 	isakmp_reopen();
+	/*
+	 * A MOBIKE initiator move found no socket on its new address when
+	 * the bind failed (a FreeBSD IPv4 alias is still tentative right
+	 * after RTM_NEWADDR); no further address event need follow, so
+	 * rescan now that the socket may be open.  No-op without a
+	 * mobike_initiate SA.
+	 */
+	ikev2_mobike_local_changed();
 }
 
 

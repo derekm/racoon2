@@ -2503,7 +2503,7 @@ MEOF
 	echo "--- SADB/SPD resp ---"; jexec $jr /usr/local/sbin/setkey -D 2>&1 | grep -vE '^\s+[AE]:' | head -30; jexec $jr /usr/local/sbin/setkey -DP 2>&1 | head -20
 	echo "--- SADB/SPD init ---"; jexec $ji /usr/local/sbin/setkey -D 2>&1 | grep -vE '^\s+[AE]:' | head -30; jexec $ji /usr/local/sbin/setkey -DP 2>&1 | head -20
 	echo "--- pings ---"; cat /tmp/freeb/ping-mb0.txt /tmp/freeb/ping-mb1.txt 2>/dev/null
-	echo "--- init iked ---"; grep -aiE 'mobike|pfkey|migrat|UPDATE_SA|error|fail' $FI 2>/dev/null | tail -30
+	echo "--- init iked ---"; grep -aiE 'mobike|pfkey|migrat|UPDATE_SA|error|fail|bind' $FI 2>/dev/null | tail -30
 	echo "--- resp iked ---"; grep -aiE 'mobike|pfkey|migrat|UPDATE_SA|error|fail' $FR 2>/dev/null | tail -30
 	jails_teardown
 	return 1
