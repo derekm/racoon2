@@ -101,6 +101,15 @@ G 60 'for p in /etc/apparmor.d/usr.lib.ipsec.charon /etc/apparmor.d/usr.sbin.swa
 	[ -f "$p" ] || { echo "no $p"; continue; }
 	apparmor_parser -R "$p" && echo "unloaded $p" || echo "not loaded: $p"
 done; true'
+# Libreswan peer seat (lwpeer-* rows): unpacked into /tmp/lwroot, not
+# installed (no pluto service, no conflict with strongSwan); the rows run
+# it in a private mount ns (kinds/i2i_peer.sh I2I_LW_ROOT).
+G 600 'export DEBIAN_FRONTEND=noninteractive; cd /tmp && apt-get download -qq libreswan &&
+	dpkg -x /tmp/libreswan_*.deb /tmp/lwroot &&
+	apt-get install -y -qq $(apt-cache depends --no-recommends --no-suggests --no-conflicts \
+	    --no-breaks --no-replaces --no-enhances libreswan | awk "/Depends:/{print \$2}" |
+	    grep -v "^<" | sort -u) >/dev/null &&
+	test -x /tmp/lwroot/usr/libexec/ipsec/pluto && echo libreswan unpacked'
 tar czf - --exclude="kl-*" --exclude='.git' . | G 300 'mkdir -p /root/rc2 && tar xzf - -C /root/rc2'
 G 1800 'cd /root/rc2 && R2_PREFIX=/usr/local/racoon2 bash samples/linux-matrix/run.sh \
 	--src /root/rc2 --rebuild xfrm --cases "a^" > /root/build.log 2>&1; rc=$?; tail -5 /root/build.log; exit $rc'
@@ -110,6 +119,7 @@ ARGS="--src /root/rc2 --shard $SHARD_K $SHARD_M"
 [ -z "$CASES" ] || ARGS="$ARGS --cases '$CASES'"
 set +e
 G 18000 "cd /root/rc2 && echo KERNEL \$(uname -r) && R2_PREFIX=/usr/local/racoon2 R2_REQUIRE_LIVE=1 R2_LANE=kernel \
+	I2I_LW_ROOT=/tmp/lwroot PATH=/tmp/lwroot/usr/sbin:/tmp/lwroot/usr/bin:\$PATH \
 	bash samples/linux-matrix/run.sh $ARGS > /root/matrix.log 2>&1; echo matrix_rc=\$? >> /root/matrix.log"
 set -e
 timeout 120 scp -q -i "$P-key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
