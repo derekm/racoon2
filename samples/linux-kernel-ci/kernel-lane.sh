@@ -91,6 +91,16 @@ G 1200 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq &&
 	libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-charon strongswan-swanctl iproute2 \
 	libsystemd-dev iputils-ping xxd iptables conntrack nftables python3 procps \
 	netcat-openbsd psmisc kmod tcpdump >/dev/null && echo deps ok'
+# Debian/Ubuntu ship enforcing AppArmor profiles for charon and swanctl
+# that only allow /etc/swanctl, /etc/strongswan* and /run; the charon
+# seats run from a per-row strongswan.conf and vici socket under /tmp, so
+# charon aborted ("invalid configuration": the file could not be read)
+# and every charon row failed at swanctl --load-all.  The guest is
+# throwaway: unload just those two profiles, as the Ubuntu job does.
+G 60 'for p in /etc/apparmor.d/usr.lib.ipsec.charon /etc/apparmor.d/usr.sbin.swanctl; do
+	[ -f "$p" ] || { echo "no $p"; continue; }
+	apparmor_parser -R "$p" && echo "unloaded $p" || echo "not loaded: $p"
+done; true'
 tar czf - --exclude="kl-*" --exclude='.git' . | G 300 'mkdir -p /root/rc2 && tar xzf - -C /root/rc2'
 G 1800 'cd /root/rc2 && R2_PREFIX=/usr/local/racoon2 bash samples/linux-matrix/run.sh \
 	--src /root/rc2 --rebuild xfrm --cases "a^" > /root/build.log 2>&1; rc=$?; tail -5 /root/build.log; exit $rc'
