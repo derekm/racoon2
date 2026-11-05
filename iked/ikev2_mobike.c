@@ -269,9 +269,12 @@ ikev2_move_sa(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 		in_port_t *rp = rcs_getsaport(r);
 		in_port_t *lp = rcs_getsaport(l);
 
-		if (rp)
+		/* Only 500 floats.  Any other port is the one the NAT
+		 * mapped (an XFRM MAPPING moves the peer to it); forcing
+		 * that to 4500 made the move a no-op. */
+		if (rp && *rp == htons(IKEV2_UDP_PORT))
 			*rp = htons(IKEV2_UDP_PORT_NATT);
-		if (lp)
+		if (lp && *lp == htons(IKEV2_UDP_PORT))
 			*lp = htons(IKEV2_UDP_PORT_NATT);
 	}
 	ret = ikev2_move_sa_impl(ike_sa, r, l, migrate_kernel, why);
