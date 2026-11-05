@@ -499,6 +499,11 @@ EOF
 		fi	# ikerekeyexp
 	fi
 	for s in r i; do pgrep -f -- "iked -F -f $C/$s.conf" >/dev/null 2>&1 || { log "FAIL: iked ($s) exited"; efail=1; }; done
+	# an address that never changes keeps its IKE sockets across the
+	# move (isakmp_reopen once closed and re-bound every socket; FreeBSD
+	# then failed the bind with EADDRINUSE)
+	_lo=$(grep -c 'socket [0-9]* bind 127\.0\.0\.1\[500\]' "$D/iked-i.log" 2>/dev/null || true)
+	[ "${_lo:-0}" -le 1 ] || { log "FAIL: iked (i) re-bound 127.0.0.1[500] $_lo times (sockets dropped on reopen)"; efail=1; }
 	grep -h "ERROR: AddressSanitizer\|runtime error:" "$D"/iked-*.out 2>/dev/null | head -3 | while read -r l; do log "FAIL: $l"; done
 	grep -qh "ERROR: AddressSanitizer\|runtime error:" "$D"/iked-*.out 2>/dev/null && efail=1
 	kill "$DUMP" 2>/dev/null || true

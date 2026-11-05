@@ -410,28 +410,41 @@ isakmp_reopen(void)
 			continue;
 		}
 
-		/* if the address is bound already, reuse it */
-		if (addr->port == 0) {
-			in_port_t *prt = rcs_getsaport(addr->a.ipaddr);
-			if (!prt)  {
-				plog(PLOG_DEBUG, PLOGLOC, NULL,
-				     "bad address family %d\n",
-				     addr->a.ipaddr->sa_family);
-				continue;
-			}
-			*prt = isakmp_port;
+		if (!rcs_getsaport(addr->a.ipaddr)) {
+			plog(PLOG_DEBUG, PLOGLOC, NULL,
+			     "bad address family %d\n",
+			     addr->a.ipaddr->sa_family);
+			continue;
 		}
-		item = socket_list_find(&old_list, addr->a.ipaddr);
+		/*
+		 * If the address is bound already, keep that socket.  Match
+		 * each port separately (port 0 = isakmp_port, network order
+		 * in the bound sockaddr): the old code stored isakmp_port in
+		 * host order and never matched the NAT-T socket, so every
+		 * reopen closed and re-bound every socket.  Linux UDP with
+		 * SO_REUSEADDR hid that; on FreeBSD the new bind failed with
+		 * EADDRINUSE while the old socket was still open, and the
+		 * next reopen closed the survivors (a MOBIKE move found no
+		 * socket on its new address).
+		 */
+		item = socket_list_find_port(&old_list, addr->a.ipaddr,
+		    addr->port);
 		if (item) {
 			SOCKET_LIST_REMOVE(item);
 			SOCKET_LIST_LINK(&socket_list_head, item);
-			continue;
-        }
-
+		} else
+			isakmp_open_address(addr->a.ipaddr, addr->port);
 #ifdef ENABLE_NATT
-        isakmp_open_address(addr->a.ipaddr, RC_PORT_IKE_NATT);
+		/* as isakmp_open(): every IKE address also gets 4500 */
+		item = socket_list_find_port(&old_list, addr->a.ipaddr,
+		    RC_PORT_IKE_NATT);
+		if (item) {
+			SOCKET_LIST_REMOVE(item);
+			SOCKET_LIST_LINK(&socket_list_head, item);
+		} else if (!socket_list_find_port(&socket_list_head,
+		    addr->a.ipaddr, RC_PORT_IKE_NATT))
+			isakmp_open_address(addr->a.ipaddr, RC_PORT_IKE_NATT);
 #endif
-		isakmp_open_address(addr->a.ipaddr, addr->port);
 	}
 
 	rcs_free_addrlist(ike_iflist);

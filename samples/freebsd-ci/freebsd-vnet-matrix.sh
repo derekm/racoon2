@@ -2484,7 +2484,11 @@ MEOF
 	_upd=$(grep -c 'MOBIKE initiator: local address' $FI 2>/dev/null || true)
 	_um=$(grep -c 'pfkey: no SADB_X_MIGRATE; moved [1-9][0-9]* SA(s) and [1-9][0-9]* policy template' $FI 2>/dev/null || true)
 	_umr=$(grep -c 'pfkey: no SADB_X_MIGRATE; moved [1-9][0-9]* SA(s) and [1-9][0-9]* policy template' $FR 2>/dev/null || true)
-	echo "row $_name gates: up=$_up ping0=$_p0 updates=$_upd moved=$_moved umig_i=$_um umig_r=$_umr ping1=$_p1"
+	# an address that stays (loopback) keeps its IKE socket across the
+	# move: a re-bind means isakmp_reopen dropped and re-opened it
+	_rebind=$(grep -c 'socket [0-9]* bind 127\.0\.0\.1\[500\]' $FI 2>/dev/null || true)
+	_inuse=$(grep -c 'bind(.*): Address already in use' $FI 2>/dev/null || true)
+	echo "row $_name gates: up=$_up ping0=$_p0 updates=$_upd moved=$_moved umig_i=$_um umig_r=$_umr ping1=$_p1 lo_binds=$_rebind inuse=$_inuse"
 	_ok=0
 	case $_name in
 	i2imobike-off)
@@ -2492,7 +2496,8 @@ MEOF
 		[ "$(_sa $jr 192.0.5.1 192.0.5.4)" -eq 0 ] && _ok=1 ;;
 	*)
 		[ "$_up" = 1 ] && [ "$_p0" = 1 ] && [ "${_upd:-0}" -ge 1 ] && [ "$_moved" = 1 ] &&
-		[ "${_um:-0}" -ge 1 ] && [ "${_umr:-0}" -ge 1 ] && [ "$_p1" = 1 ] && _ok=1 ;;
+		[ "${_um:-0}" -ge 1 ] && [ "${_umr:-0}" -ge 1 ] && [ "$_p1" = 1 ] &&
+		[ "${_rebind:-0}" -le 1 ] && [ "${_inuse:-0}" -eq 0 ] && _ok=1 ;;
 	esac
 	if [ "$_ok" = 1 ]; then
 		echo "PASS freebsd-vnet $_name (MOBIKE over pfkey: userspace SA/SPD move gates met)"
