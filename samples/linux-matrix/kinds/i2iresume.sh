@@ -263,6 +263,17 @@ EOF
 				i=$((i+1)); sleep 0.5
 			done
 			[ "$_rx" = 1 ] || log "i2iresume-drain: pass-1 probe reply not seen before drain"
+			# the drain deletes the responder's SAs at once; the 0.5 s
+			# sampler may not have seen them since the probe crossed
+			# (Fedora PQC shard 1: -r sampled once, at 0 packets).
+			# Wait (bounded) until the sampler has recorded the
+			# responder's counters after the probe crossed.
+			i=0
+			while [ -n "${XA_DIR:-}" ] && [ "$i" -lt 20 ] &&
+			    ! grep -q '^ *[1-9][0-9]*(bytes), [1-9][0-9]*(packets)' \
+			    "$XA_DIR/$NSR.log" 2>/dev/null; do
+				i=$((i+1)); sleep 0.25
+			done
 		fi ;;
 	esac
 	minted=$(grep -c 'issuing session-resumption ticket' "$D/resp-iked.log" 2>/dev/null || true)
