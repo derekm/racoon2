@@ -86,7 +86,11 @@
 #include "rc_openssl.h"
 
 #if HAVE_OPENSSL_SHA2
+/* SHA512_CTX is deprecated API (hidden by OPENSSL_NO_DEPRECATED_3_0);
+ * only the low-level SHA callers need the alias */
+#ifndef OPENSSL_NO_DEPRECATED_3_0
 typedef SHA512_CTX SHA384_CTX;
+#endif
 #else
 /* #include "crypto/sha2/sha2.h" */
 #define SHA256_DIGEST_LENGTH		32
