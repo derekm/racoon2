@@ -2,6 +2,7 @@
 # R2_REQUIRE_LIVE=1 any other skip fails the run.
 #   row <name> <why>   |   gate <gate> <why>
 gate addke RFC 9370 ADDKE needs OpenSSL 3.5 (Fedora lane runs these rows)
+gate charonv1 strongSwan >= 6.1 (resident on some 24.04/sid peers) has no IKEv1; skipped only when libcharon proves it (run.sh charon_ikev1_absent)
 gate dpd   11-timer DPD ladder (~16 min) is box-only
 gate box   new rows are box-verified before CI admits them
 gate pfkey  Linux pfkey-backend rows run in the pfkey lane only
