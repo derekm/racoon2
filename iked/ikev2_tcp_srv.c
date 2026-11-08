@@ -30,8 +30,8 @@ struct tcp_conn {
 
 /* RFC 9329 listener sockets.  A set, not a single fd, so IPv4 and IPv6 can
  * listen simultaneously on the 4500 port (IPV6_V6ONLY keeps them apart).
- * Reload-time add/remove of a listener is NOT wired yet: iked_reload does
- * not re-apply this set.  The set only makes that future work possible. */
+ * iked_reload closes the set (tcp_srv_close_listeners, which keeps live
+ * streams) and re-opens it, so a SIGHUP re-applies the listener set. */
 struct tcp_listener {
 	struct tcp_listener *next;
 	int fd;
