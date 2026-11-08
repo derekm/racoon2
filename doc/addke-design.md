@@ -69,10 +69,14 @@ Landed (do not re-open these as gaps):
   source port, rekey window never retiring) was the root cause of the
   ADDKE-over-TCP child-rekey stall; the wire gate on `i2ike-tcp` asserts it stays
   off (udp_ike=0).
-- **IKE_INTERMEDIATE** (RFC 9242) and INIT-time PQC carry the single pre-AUTH
-  ML-KEM round on the initial IKE_SA (exch 43 + N(16438)); matrix row
+- **IKE_INTERMEDIATE** (RFC 9242) and INIT-time PQC carry the pre-AUTH ML-KEM
+  round(s) on the initial IKE_SA (exch 43 + N(16438)); matrix row
   `i2iinit-addke` proves the same intermediate SKEYSEED on both sides.
-  One round only — ADDKE rounds 2+ are not implemented.
+  Multi-round is implemented (cap `IKEV2_ADDKE_MAX_ROUNDS` = 7, ADDKE1..ADDKE7
+  types 6..12): a multi-round initial offer is echoed in full and N
+  IKE_INTERMEDIATE rounds run (iked/ikev2.c initial-ADDKE collect loop); the
+  IKE_SA-rekey and child-rekey ADDKE paths are also multi-round
+  (ikev2_addke_rounds.c).
 - **IKE_SA-rekey ADDKE on both roles** — matrix row `i2ikesa-addke` proves
   racoon2-as-initiator driving an IKE_SA rekey that negotiates ADDKE and
   completes SK(1) via IKE_FOLLOWUP_KE.

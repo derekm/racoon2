@@ -211,7 +211,7 @@ Currently, the system supports the following specifications:
 	          Protocol Version 2 (IKEv2)
 	RFC 9370, Multiple Key Exchanges in the Internet Key Exchange
 	          Protocol Version 2 (IKEv2)
-	          (ML-KEM-512/768/1024; one intermediate round)
+	          (ML-KEM-512/768/1024; multi-round ADDKE1..ADDKE7, cap 7)
 	RFC 4555, IKEv2 Mobility and Multihoming Protocol (MOBIKE)
 	          (responder-follow implicit/RFC-4555 UPDATE_SA_ADDRESSES
 	          migrates IKE + Child SA endpoints; initiator-originated
