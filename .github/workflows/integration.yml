@@ -136,13 +136,20 @@ jobs:
           R2_REQUIRE_LIVE: 1
           R2_LANE: ubuntu
           I2I_LW_ROOT: /tmp/lwroot
+          # explicit per-shard structured results so the actual R2_RESULTS
+          # TSV (row/kind/expect/verdict/gate/gates_pass/gates_fail) is
+          # uploaded alongside the log and can be schema/reconcile-audited,
+          # instead of only the log's printed "/tmp/r2-results.<rand>" path.
+          R2_RESULTS: /tmp/r2-matrix-shard-${{ matrix.shard }}.tsv
 
-      - name: Upload shard matrix log
+      - name: Upload shard matrix log + results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: matrix-shard-${{ matrix.shard }}
-          path: /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+          path: |
+            /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+            /tmp/r2-matrix-shard-${{ matrix.shard }}.tsv
           overwrite: true
           if-no-files-found: error
 
@@ -401,13 +408,17 @@ jobs:
           R2_REQUIRE_LIVE: 1
           R2_LANE: fedora
           R2_CLASSIC_PREFIX: /usr/local/racoon2-classic
+          # per-shard structured results uploaded with the log (see Ubuntu block)
+          R2_RESULTS: /tmp/r2-matrix-shard-${{ matrix.shard }}.tsv
 
-      - name: Upload shard matrix log
+      - name: Upload shard matrix log + results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fedora-pqc-matrix-shard-${{ matrix.shard }}
-          path: /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+          path: |
+            /tmp/r2-matrix-shard-${{ matrix.shard }}.log
+            /tmp/r2-matrix-shard-${{ matrix.shard }}.tsv
           overwrite: true
           if-no-files-found: error
 
