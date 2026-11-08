@@ -353,8 +353,3 @@ i2imobike-ikerekey-nomig	i2imobike	pass	0	i2imobike-ikerekey with RACOON2_XFRM_N
 i2imobike-ikerekeyexp	i2imobike	pass	0	ADDKE IKE_SA REKEY OUTLIVED BY THE HARD LIFETIME: initiator IKE lifetime 20 s, the responder's answers to the rekey (and its IKE_FOLLOWUP_KE) are held until the old IKE SA goes DYING, then released. iked must log that it abandons the parked followup, keep running, and no ASan/UBSan report (it used to free the parked context under the SA and then read it from the followup response).	addke	-
 i2imobike-multi	i2imobike	pass	0	RFC 4555 s3.4 MULTIPLE ADDRESSES: the initiator holds 192.0.8.2 and .4 from the start; its IKE_AUTH must advertise .4 (ADDITIONAL_IP4_ADDRESS, the responder logs it stored); losing .2 moves everything to .4 with the COOKIE2 echo confirmed, ICMP flows.	-	-
 i2imobike-multi-nomig	i2imobike	pass	0	i2imobike-multi with RACOON2_XFRM_NO_MIGRATE=1 on both iked.	-	-
-
-
-
-
-
