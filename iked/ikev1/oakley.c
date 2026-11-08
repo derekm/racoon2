@@ -3047,6 +3047,12 @@ oakley_do_decrypt(struct ph1handle *iph1, rc_vchar_t *msg,
 			"decryption %d failed.\n", iph1->approval->enctype);
 		goto end;
 	}
+	if (new->l == 0 || new->v == NULL) {
+		plog(PLOG_PROTOERR, PLOGLOC, NULL,
+			"decrypted payload is empty\n");
+		error = -1;
+		goto end;
+	}
 	plog(PLOG_DEBUG, PLOGLOC, NULL, "with key:\n");
 	plogdump(PLOG_DEBUG, PLOGLOC, 0, iph1->key->v, iph1->key->l);
 
