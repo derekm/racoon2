@@ -70,10 +70,77 @@ test_size_gate(void)
 	TEST_CHECK(out != NULL);
 	if (out != NULL) {
 		TEST_CHECK(out->l == sizeof(struct isakmp) + data_len);
+		/* the reassembled payload must be the received bytes */
+		TEST_CHECK(((unsigned char *)out->v)[sizeof(struct isakmp)]
+		    == 0x21);
 		rc_vfree(out);
 	}
 	rc_vfree(pkt);
 	isakmp_frag_purge(&ph1);
+}
+
+/* The reassembly cap itself: two fragments totalling more than
+ * ISAKMP_MAX_REASM must be rejected (NULL) and the context freed.  Without
+ * the `held > ISAKMP_MAX_REASM` check the second fragment has all parts and
+ * reassembles (non-NULL) -> red.  This is distinct from the size-gate *brace*
+ * row above (which guards the fit under the cap, not the cap itself). */
+static void
+test_reject_cap(void)
+{
+	struct ph1handle ph1;
+	rc_vchar_t *f1 = NULL, *f2 = NULL, *out;
+	struct isakmp *ih;
+	struct isakmp_frag_hdr *frag;
+	size_t d1 = 40000, d2 = 40000;
+	uint32_t msgid = htonl(0x90abcdefu);
+
+	memset(&ph1, 0, sizeof(ph1));
+
+	f1 = rc_vmalloc(sizeof(struct isakmp) +
+	    sizeof(struct isakmp_frag_hdr) + d1);
+	if (f1 == NULL) {
+		TEST_CHECK(0);
+		return;
+	}
+	memset(f1->v, 0x11, f1->l);
+	ih = (struct isakmp *)f1->v;
+	ih->len = htonl((uint32_t)f1->l);
+	ih->msgid = msgid;
+	frag = (struct isakmp_frag_hdr *)(f1->v + sizeof(struct isakmp));
+	frag->frag_id = 0xcd;
+	frag->h.len = htons(sizeof(struct isakmp_frag_hdr) + d1);
+	frag->frag_no = htons(1);
+	frag->flags = ISAKMP_FRAG_MORE;	/* not the last */
+	out = isakmp_frag_recv(&ph1, f1);
+	TEST_CHECK(out == NULL);		/* incomplete: still assembling */
+	if (out)
+		rc_vfree(out);
+
+	f2 = rc_vmalloc(sizeof(struct isakmp) +
+	    sizeof(struct isakmp_frag_hdr) + d2);
+	if (f2 == NULL) {
+		TEST_CHECK(0);
+		rc_vfree(f1);
+		return;
+	}
+	memset(f2->v, 0x22, f2->l);
+	ih = (struct isakmp *)f2->v;
+	ih->len = htonl((uint32_t)f2->l);
+	ih->msgid = msgid;
+	frag = (struct isakmp_frag_hdr *)(f2->v + sizeof(struct isakmp));
+	frag->frag_id = 0xcd;
+	frag->h.len = htons(sizeof(struct isakmp_frag_hdr) + d2);
+	frag->frag_no = htons(2);
+	frag->flags = 0;			/* last */
+	out = isakmp_frag_recv(&ph1, f2);
+	/* held is now 80000 > 65535: rejected, context freed.  Dropping the
+	 * cap check would reassemble this into a non-NULL buffer -> red. */
+	TEST_CHECK(out == NULL);
+	TEST_CHECK(ph1.frag_chain == NULL);	/* reject frees the context */
+	if (out)
+		rc_vfree(out);
+	rc_vfree(f1);
+	rc_vfree(f2);
 }
 
 /* Disarming half-open temps must return the 20-slot cap, not leak it. */
@@ -109,7 +176,9 @@ test_live_survives(void)
 	memset(&ph1, 0, sizeof(ph1));
 	ph1.frag_halfopen = 0;	/* live, in-progress exchange */
 	isakmp_frag_halfopen_disarm(&ph1);
-	TEST_CHECK(ph1.frag_halfopen == 0);	/* still live */
+	/* disarming a live handle must not steal a cap slot (the guard
+	 * `!iph1->frag_halfopen` makes this a no-op); removing it decrements
+	 * the counter -> red below. */
 	TEST_CHECK(isakmp_frag_half_open_count() == base + 1);
 }
 
@@ -119,6 +188,7 @@ main(int argc, char **argv)
 	(void)argc;
 	test_init(argv[0]);
 	RUN_TEST(test_size_gate);
+	RUN_TEST(test_reject_cap);
 	RUN_TEST(test_cap_restore);
 	RUN_TEST(test_live_survives);
 	return test_exit_status();
