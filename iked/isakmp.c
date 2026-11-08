@@ -929,7 +929,11 @@ isakmp_frag_recv(struct ph1handle *iph1, rc_vchar_t *packet)
 			if (ctx->parts[j])
 				held += ctx->parts[j]->l;
 		}
-		if (held + data_len > ISAKMP_MAX_REASM) {
+		/* held already includes this fragment (parts[frag_no] was
+		 * allocated above with l = data_len), so compare held
+		 * directly — held + data_len would double-count and
+		 * reject a legitimate reassembly near the cap. */
+		if (held > ISAKMP_MAX_REASM) {
 			plog(PLOG_PROTOERR, PLOGLOC, NULL,
 			    "IKE fragment reassembly exceeds %d\n",
 			    ISAKMP_MAX_REASM);
@@ -1296,8 +1300,18 @@ isakmp_handler(int so_isakmp)
 				error = -1;
 				goto end;
 			}
-			frag_iph1->proposal =
-			    ikev1_conf_to_isakmpsa(frag_iph1->rmconf);
+			/*
+			 * getrmconf() returns an owned deepcopy; delph1()
+			 * does not free rmconf or proposal. The fragment
+			 * path never reads either — it is only an existence
+			 * check for an acceptable peer — and after
+			 * reassembly ikev1_main re-creates its own handle
+			 * (and its own getrmconf/proposal) from the
+			 * reassembled message. Free the deepcopy now so it
+			 * is not orphaned on the success or expire path.
+			 */
+			rcf_free_remote(frag_iph1->rmconf);
+			frag_iph1->rmconf = NULL;
 
 			memcpy(&frag_iph1->index, index, sizeof(*index));
 
