@@ -43,9 +43,13 @@ Status: **implemented & live-verified** (row `i2ike-tcp`, box-tier only).
   of UDP, with RFC 9329 §3 framing (`Len(16-bit self-inclusive) | 4-octet zero
   non-ESP marker | IKE`).  Per-remote knob `tcp_encap (on|off)`, **default off**
   (documented in `doc/config-usage.txt`); new behaviour is config-gated only.
-- **IKE-over-TCP only, not ESP-in-TCP** (`espintcp`): the ESP data plane stays
-  UDP-encap on 4500/4500 for a `tcp_encap on` SA (the child's NAT-T ports are
-  pinned to 4500; a MOBIKE update keeps them pinned).
+- **ESP-in-TCP is a separate, default-off opt-in** (`esp_tcp_encap on`): the
+  child SAs are installed with the RFC 8229 espintcp encap (type 7) and the ESP
+  data plane rides the same TCP stream as IKE, requiring `tcp_encap on`.  Default
+  (`esp_tcp_encap off`) keeps the ESP data plane on UDP-encap 4500/4500 (the
+  child's NAT-T ports are pinned to 4500; a MOBIKE update keeps them pinned).
+  The espintcp data plane additionally needs kernel espintcp ULP support
+  (kernel-capability gated).
 - **Linux SPD/bypass:** a `tcp_encap` TCP socket needs the same per-socket IPsec
   bypass the UDP IKE sockets get (`application_bypass`), or an explicit SPD
   exemption for tcp/4500; otherwise the SYN matches the tunnel SPD, is parked on

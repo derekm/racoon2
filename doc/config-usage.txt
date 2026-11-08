@@ -763,16 +763,23 @@ remote
 
 	addke_unrequested (on|off) ;
 		It is valid for the ikev2 directive.
-		It controls responder-driven ADDKE (RFC 9370).  When on, the
-		responder offers a type-6 ADDKE transform in a CREATE_CHILD /
-		child-rekey response even when the initiator never requested
-		one (a classical-only peer such as iOS still drives the
-		IKE_FOLLOWUP_KE when the response carries type-6) and then
-		completes the resulting ML-KEM key exchange.  This forces
-		ADDKE on child rekey for the peer.  Only available on builds
-		with the ML-KEM backend (--enable-addke).
-		default is off (a peer that never offered ADDKE gets a plain
-		response and no followup).
+		EXPERIMENTAL / NONSTANDARD extension -- do not read it as
+		plain RFC 9370.  When on, the responder injects a type-6
+		ADDKE transform into a CREATE_CHILD / child-rekey RESPONSE
+		even when the initiator never offered one, and then
+		completes the resulting ML-KEM exchange.  RFC 9370 s2.2.1
+		treats an unoffered ADDKE transform as NONE and s2.2.4
+		applies the same rule to CREATE_CHILD_SA, so this option
+		deliberately deviates from the standards negotiation to
+		force PQC on a classical-only peer (compat path: such a
+		peer still drives IKE_FOLLOWUP_KE when the response carries
+		type-6).  It is an interop opt-in for a specific peer class,
+		NOT generic RFC-compliant negotiation; verify the peer
+		actually completes the forced method before trusting it, and
+		do not advertise a failed forced attempt as PQC-protected.
+		Only available on builds with the ML-KEM backend
+		(--enable-addke).  default is off (a peer that never offered
+		ADDKE gets a plain response and no followup).
 
 	addke_alg (algorithm-list) ;
 		It is valid for the ikev2 directive.
