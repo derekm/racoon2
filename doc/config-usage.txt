@@ -1013,12 +1013,14 @@ remote
 		round as configured for this remote (kmp_auth_method must
 		include eap, with its RADIUS server).  The child SA is
 		created after the second round from the first round's offer.
-		A second round that is not EAP, a third round, or
-		ANOTHER_AUTH_FOLLOWS on a remote without EAP is refused
-		with AUTHENTICATION_FAILED.  The round-one peer certificate
-		is bound to the round-one IDi; round two binds only the
-		EAP identity.  As initiator, multiple rounds run only when
-		multi_auth_second_id is also set (see below).
+		A second round that is neither EAP nor a configured PSK
+		round (multi_auth_second_id, below), a third round, or
+		ANOTHER_AUTH_FOLLOWS on a remote without EAP and without a
+		configured second identity is refused with
+		AUTHENTICATION_FAILED.  The round-one peer certificate
+		is bound to the round-one IDi; round two binds only the EAP
+		or the declared PSK identity.  As initiator, multiple rounds
+		run only when multi_auth_second_id is also set (see below).
 		When off, neither notify is sent and received ones are
 		ignored.
 		default is off.
