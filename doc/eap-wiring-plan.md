@@ -1,9 +1,12 @@
 # EAP wiring plan for racoon2 iked (remote-access EAP on Fedora .165)
 
-Status: milestones 1-2 landed (framing codec, RADIUS client, MSK extract,
-worker + relay engines, AUTH derivation), config grammar (§4 item 5) landed;
-the **responder IKE_AUTH wiring** (§4 item 1 areas + §9 milestone 3) is the
-outstanding roadmap. Authored 2026-10-06, updated as parts land.
+Status: milestones 1-3 landed (framing codec, RADIUS client, MSK extract,
+worker + relay engines, AUTH derivation, AND the responder IKE_AUTH EAP
+wiring), config grammar (§4 item 5) landed.  The authoritative implemented
+state is doc/eap-design.md (2026-10-10): responder role only, RADIUS-only
+backend, EAP initiator NOT implemented.  This plan is the dated design
+rewrite; the implementation supersedes it where they differ.  Authored
+2026-10-06, updated as parts land.
 
 ## 1. Goal
 
@@ -194,7 +197,9 @@ outputs stay as the peer computes them.
    Message-Authenticator, retry) — ~800 LOC.
 3. EAP-MSCHAPv2 via FreeRADIUS+ntlm_auth/AD end-to-end on .165 — wiring ~400
    LOC + FreeRADIUS config.
-4. EAP-TLS + RFC 5998 EAP-only-auth + MSK→SKEYSEED — ~500 LOC.
+4. EAP-TLS + RFC 5998 EAP-only-auth + MSK->AUTH — ~500 LOC.  (The EAP MSK
+   substitutes into the IKEv2 AUTH shared secret per RFC 7296 s2.15/2.16; it
+   is NOT remixed into SK_d/SKEYSEED.)
 5. Config grammar + docs + matrix rows — ~300 LOC.
 
 Total ~2.5–3 kLOC for a production EAP-MSCHAPv2/EAP-TLS server path, first
