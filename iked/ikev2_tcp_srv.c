@@ -29,8 +29,9 @@ struct tcp_conn {
 };
 
 /* RFC 9329 listener sockets.  A set, not a single fd, so IPv4 and IPv6 can
- * listen simultaneously and a reload can add/remove listeners independently
- * (handoff: enable simultaneous listeners). */
+ * listen simultaneously on the 4500 port (IPV6_V6ONLY keeps them apart).
+ * Reload-time add/remove of a listener is NOT wired yet: iked_reload does
+ * not re-apply this set.  The set only makes that future work possible. */
 struct tcp_listener {
 	struct tcp_listener *next;
 	int fd;
@@ -167,7 +168,9 @@ tcp_srv_open_listener(const struct sockaddr *local, int port)
 	return -1;
 }
 
-/* For diagnostics/tests: the first opened listener fd, or -1. */
+/* For diagnostics/tests: the most recently opened listener fd, or -1.
+ * open_listener() prepends, so this is the head (the last opened), not the
+ * first. */
 int
 tcp_srv_listener_fd(void)
 {
