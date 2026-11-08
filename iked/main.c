@@ -593,10 +593,10 @@ monitor_fd(int fd, fd_set *fdset, int *nfds)
 }
 
 /* Open the RFC 9329 listener set (one per family on the IKE port) when any
- * remote has tcp_encap on.  -4/-6 gate the families, mirroring the UDP
- * path.  Called at startup and on every reload; iked_reload closes the set
- * first so a config change to tcp_encap or the family set is re-applied on
- * SIGHUP. */
+ * remote has tcp_encap on.  The -4/-6 family flags are process-global and
+ * fixed at startup (mirroring the UDP path); they do not change on reload.
+ * Called at startup and on every reload; iked_reload closes the set first
+ * so a config change to tcp_encap is re-applied on SIGHUP. */
 static void
 open_tcp_listeners(void)
 {
@@ -771,9 +771,11 @@ iked_reload(void)
 	isakmp_reopen();
 
 	/* Re-apply the RFC 9329 TCP listener set to the reread config: close
-	 * existing listeners (live streams/conns are kept) and reopen what the
-	 * new config wants (tcp_encap on/off and -4/-6 families).  Without this
-	 * a SIGHUP that changed tcp_encap left the old listener set in place. */
+	 * existing listeners (accepted streams survive; the IKE SAs were
+	 * already shut down above by ikev2_shutdown) and reopen what the new
+	 * config wants (tcp_encap on/off).  The -4/-6 family set is fixed at
+	 * process start and cannot change on SIGHUP.  Without this a reload
+	 * that changed tcp_encap left the old listener set in place. */
 	tcp_srv_close_listeners();
 	open_tcp_listeners();
 }
