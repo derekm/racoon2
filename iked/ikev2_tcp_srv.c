@@ -134,6 +134,19 @@ tcp_srv_open_listener(const struct sockaddr *local, int port)
 		goto fail;
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0)
 		goto fail;
+#ifdef IPV6_V6ONLY
+	if (la.ss_family == AF_INET6) {
+		/* Pure IPv6 listener.  Without this, on Linux
+		 * (net.ipv6.bindv6only=0 default, v4-mapped dual-stack) the
+		 * in6addr_any:4500 bind collides with the separate IPv4
+		 * listener and fails EADDRINUSE, silently leaving only IPv4.
+		 * IPv6-only lets the two listeners coexist on the same port. */
+		int v6only = 1;
+		if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only,
+		    sizeof(v6only)) < 0)
+			goto fail;
+	}
+#endif
 	if (set_nonblock(fd) < 0)
 		goto fail;
 	if (bind(fd, (struct sockaddr *)&la, len) < 0)

@@ -625,18 +625,22 @@ iked_mainloop(void)
 			if (rcf_interface_head->application_bypass != RCT_BOOL_OFF)
 				tcp_stream_sock_hook = setsockopt_bypass;
 			if (iked_tcp_encap_enabled()) {
-				/* Open the IKE-over-TCP listener.  Non-fatal on
-				 * failure so a bind problem never stops iked
-				 * (the UDP path stays authoritative).  One
-				 * listener per address family: IPv4 and IPv6
-				 * peers both connect (simultaneous listeners). */
+				/* One listener per address family: IPv4 and
+				 * IPv6 peers both connect (simultaneous
+				 * listeners).  V6ONLY on the v6 socket lets the
+				 * two coexist on the 4500 port; -4/-6 gate
+				 * which families open, like the UDP path. */
 				struct sockaddr_storage a4, a6;
 
 				memset(&a4, 0, sizeof(a4));
 				a4.ss_family = AF_INET;
 				((struct sockaddr_in *)&a4)->sin_addr.s_addr =
 				    htonl(INADDR_ANY);
-				if (tcp_srv_open_listener(
+				if (opt_ipv6_only)
+					plog(PLOG_DEBUG, PLOGLOC, 0,
+					     "skipping IPv4 IKE-over-TCP "
+					     "listener (-6)\n");
+				else if (tcp_srv_open_listener(
 					(struct sockaddr *)&a4,
 					IKEV2_TCP_PORT) < 0)
 					plog(PLOG_INTERR, PLOGLOC, 0,
@@ -652,7 +656,11 @@ iked_mainloop(void)
 				a6.ss_family = AF_INET6;
 				((struct sockaddr_in6 *)&a6)->sin6_addr =
 				    in6addr_any;
-				if (tcp_srv_open_listener(
+				if (opt_ipv4_only)
+					plog(PLOG_DEBUG, PLOGLOC, 0,
+					     "skipping IPv6 IKE-over-TCP "
+					     "listener (-4)\n");
+				else if (tcp_srv_open_listener(
 					(struct sockaddr *)&a6,
 					IKEV2_TCP_PORT) < 0)
 					plog(PLOG_INTERR, PLOGLOC, 0,

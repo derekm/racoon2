@@ -634,6 +634,61 @@ main(void)
 		tcp_stream_free(cliA);
 		tcp_stream_free(cliB);
 	}
+	/* Dual stack on ONE port: an IPv4 INADDR_ANY listener and an IPv6
+	 * in6addr_any listener must both bind the same port, then a
+	 * 127.0.0.1 client and an ::1 client must both connect.  The v6
+	 * socket must be IPV6_V6ONLY: on Linux with net.ipv6.bindv6only=0
+	 * (the default) a dual-stack in6addr_any bind collides with the IPv4
+	 * INADDR_ANY bind on the same port (EADDRINUSE), so without the option
+	 * the v6 listener never comes up and the ::1 client cannot connect ->
+	 * red. */
+	{
+		struct sockaddr_in l4, c4;
+		struct sockaddr_in6 l6, c6;
+		struct tcp_stream *cli4, *cli6;
+		socklen_t l4len = sizeof(l4), l6len = sizeof(l6);
+		int lf4, lf6, port;
+
+		memset(&l4, 0, sizeof(l4));
+		l4.sin_family = AF_INET;
+		l4.sin_addr.s_addr = htonl(INADDR_ANY);	/* wildcard */
+		lf4 = tcp_srv_open_listener((struct sockaddr *)&l4, 0);
+		CHECK(lf4 >= 0, "dual: IPv4 wildcard listener opened");
+		if (lf4 < 0)
+			return 1;
+		if (getsockname(lf4, (struct sockaddr *)&l4, &l4len) < 0)
+			return 1;
+		port = ntohs(l4.sin_port);
+
+		memset(&l6, 0, sizeof(l6));
+		l6.sin6_family = AF_INET6;
+		l6.sin6_addr = in6addr_any;		/* wildcard, same port */
+		lf6 = tcp_srv_open_listener((struct sockaddr *)&l6, port);
+		CHECK(lf6 >= 0, "dual: IPv6 wildcard listener opens on same port");
+		if (lf6 < 0)
+			return 1;
+
+		/* v4 client to 127.0.0.1, v6 client to ::1, same port. */
+		memset(&c4, 0, sizeof(c4));
+		c4.sin_family = AF_INET;
+		c4.sin_port = htons(port);
+		inet_pton(AF_INET, "127.0.0.1", &c4.sin_addr);
+		memset(&c6, 0, sizeof(c6));
+		c6.sin6_family = AF_INET6;
+		c6.sin6_port = htons(port);
+		inet_pton(AF_INET6, "::1", &c6.sin6_addr);
+		cli4 = tcp_stream_connect((struct sockaddr *)&c4, NULL, capture, NULL);
+		cli6 = tcp_stream_connect((struct sockaddr *)&c6, NULL, capture, NULL);
+		CHECK(cli4 && cli6, "dual: clients to v4 and v6 listeners");
+		if (!cli4 || !cli6)
+			return 1;
+		CHECK(wait_connect(cli4, 3000) == 0 &&
+		      wait_connect(cli6, 3000) == 0,
+		      "dual: v4 and v6 clients both connect");
+		(void)tcp_srv_accept_pending();
+		tcp_stream_free(cli4);
+		tcp_stream_free(cli6);
+	}
 	tcp_srv_fini();
 	if (!fails)
 		printf("all tcp-srv checks passed\n");
