@@ -965,6 +965,7 @@ isakmp_ph1begin_r(rc_vchar_t *msg, struct sockaddr *remote,
 		plog(PLOG_PROTOERR, PLOGLOC, 0,
 		     "received IKEv1 request but no IKEv1 configuration for peer %s\n",
 		     rc_vmem2str(rmconf->rm_index));
+		rcf_free_remote(rmconf);
 		return -1;
 	}
 
@@ -972,13 +973,16 @@ isakmp_ph1begin_r(rc_vchar_t *msg, struct sockaddr *remote,
 	if (etype != ikev1_conf_exmode_to_isakmp(rmconf)) {
 		plog(PLOG_PROTOERR, PLOGLOC, 0,
 		     "not acceptable %s mode\n", s_isakmp_etype(etype));
+		rcf_free_remote(rmconf);
 		return -1;
 	}
 
 	/* get new entry to isakmp status table. */
 	iph1 = newph1();
-	if (iph1 == NULL)
+	if (iph1 == NULL) {
+		rcf_free_remote(rmconf);
 		return -1;
+	}
 
 	memcpy(&iph1->index.i_ck, &isakmp->i_ck, sizeof(iph1->index.i_ck));
 	iph1->status = PHASE1ST_START;

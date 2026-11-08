@@ -357,6 +357,16 @@ delph1(struct ph1handle *iph1)
 	VPTRINIT(iph1->sa);
 	VPTRINIT(iph1->sa_ret);
 
+	/* Owned deepcopies (getrmconf / rcf_get_remotebyindex for rmconf,
+	 * ikev1_conf_to_isakmpsa for proposal): delph1 has never freed either,
+	 * so every IKEv1 SA teardown leaked them.  The fragment temp frees its
+	 * rmconf and zeroes the pointer first and never builds a proposal; the
+	 * NULL guards below keep this safe there. */
+	if (iph1->proposal)
+		delisakmpsa(iph1->proposal);
+	if (iph1->rmconf)
+		rcf_free_remote(iph1->rmconf);
+
 	isakmp_frag_purge(iph1);
 #ifdef HAVE_GSSAPI
 	VPTRINIT(iph1->gi_i);
@@ -1322,11 +1332,17 @@ revalidate_ph1tree_rmconf(void)
 
 		newrmconf=getrmconf(p->remote);
 		if(newrmconf == NULL){
+			/* old rmconf was an owned deepcopy; free before discarding */
+			rcf_free_remote(p->rmconf);
 			p->rmconf = NULL;
 			remove_ph1(p);
 		}else{
-			/* Do not free old rmconf, it is just a pointer to an entry in rmtree
-			 */
+			/* getrmconf() returns an owned deepcopy, so the old rmconf
+			 * must be freed before it is replaced (the stale comment
+			 * claiming it "is just a pointer to an entry in rmtree" is
+			 * false). */
+			if (p->rmconf && p->rmconf != newrmconf)
+				rcf_free_remote(p->rmconf);
 			p->rmconf=newrmconf;
 			if(p->approval != NULL){
 				struct isakmpsa *tmpsa;

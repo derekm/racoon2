@@ -450,8 +450,10 @@ isakmp_info_send_nx(struct isakmp *isakmp, struct sockaddr *remote, struct socka
 
 	/* add new entry to isakmp status table. */
 	iph1 = newph1();
-	if (iph1 == NULL)
+	if (iph1 == NULL) {
+		rcf_free_remote(rmconf);
 		return -1;
+	}
 
 	memcpy(&iph1->index.i_ck, &isakmp->i_ck, sizeof(isakmp_cookie_t));
 	isakmp_newcookie((char *)&iph1->index.r_ck, remote, local);
