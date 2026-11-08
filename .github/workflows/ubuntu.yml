@@ -280,8 +280,9 @@ jobs:
           E=/usr/local/racoon2/etc/racoon2
           sudo mkdir -p "$E/psk"
           printf 'racoon2-ci-psk-0123456789abcdef' | sudo tee "$E/psk/macos.psk" >/dev/null
+          printf 'racoon2-ci-psk-different-key-9999999' | sudo tee "$E/psk/l2tp.psk" >/dev/null
           printf 'racoon2-ci-pwd\n' | sudo tee "$E/spmd.pwd" >/dev/null
-          sudo chmod 600 "$E/psk/macos.psk" "$E/spmd.pwd"
+          sudo chmod 600 "$E/psk/macos.psk" "$E/psk/l2tp.psk" "$E/spmd.pwd"
           sudo rm -rf /tmp/r2-asan && sudo mkdir -p /tmp/r2-asan
           # sudo-rs (ubuntu-26.04) drops the env on -E; pass the R2_/I2I_/sanitizer vars
           mapfile -t KEEP < <(env | grep -E '^(R2_|I2I_|ASAN_|UBSAN_)')

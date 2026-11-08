@@ -222,8 +222,9 @@ jobs:
           E="$R2_PREFIX/etc/racoon2"
           sudo mkdir -p "$E/psk"
           printf 'racoon2-ci-psk-0123456789abcdef' | sudo tee "$E/psk/macos.psk" >/dev/null
+          printf 'racoon2-ci-psk-different-key-9999999' | sudo tee "$E/psk/l2tp.psk" >/dev/null
           printf 'racoon2-ci-pwd\n' | sudo tee "$E/spmd.pwd" >/dev/null
-          sudo chmod 600 "$E/psk/macos.psk" "$E/spmd.pwd"
+          sudo chmod 600 "$E/psk/macos.psk" "$E/psk/l2tp.psk" "$E/spmd.pwd"
         env:
           R2_PREFIX: /usr/local/racoon2
 
@@ -368,12 +369,13 @@ jobs:
           E="$R2_PREFIX/etc/racoon2"
           mkdir -p "$E/psk"
           printf 'racoon2-ci-psk-0123456789abcdef' > "$E/psk/macos.psk"
+          printf 'racoon2-ci-psk-different-key-9999999' > "$E/psk/l2tp.psk"
           printf 'racoon2-ci-pwd\n' > "$E/spmd.pwd"
-          chmod 600 "$E/psk/macos.psk" "$E/spmd.pwd"
+          chmod 600 "$E/psk/macos.psk" "$E/psk/l2tp.psk" "$E/spmd.pwd"
           ls -la "$E" | head -8
           C=/usr/local/racoon2-classic/etc/racoon2
           mkdir -p "$C/psk"
-          cp -p "$E/psk/macos.psk" "$C/psk/"; cp -p "$E/spmd.pwd" "$C/"
+          cp -p "$E/psk/macos.psk" "$E/psk/l2tp.psk" "$C/psk/"; cp -p "$E/spmd.pwd" "$C/"
         env:
           R2_PREFIX: /usr/local/racoon2
 
