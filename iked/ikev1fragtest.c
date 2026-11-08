@@ -15,6 +15,10 @@
  *  - live SA survives: disarming a frag_halfopen == 0 (live) handle is a
  *    no-op -- it stays live and must not steal a cap slot.  red if the
  *    `!iph1->frag_halfopen` guard is removed.
+ *  - handler dispatch: a first fragment for an unknown SA is rejected by
+ *    the unconfigured-peer guard (newph1 -> getrmconf -> delph1), reaching
+ *    ikev1_frag_dispatch() -- the lifecycle isakmp_frag_recv() alone cannot.
+ *    red if the `rmconf == NULL` reject is removed.
  */
 #include "config.h"
 #include <sys/types.h>

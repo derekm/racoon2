@@ -263,7 +263,8 @@ oakleytest_LDADD = $(addtest_ikedsrc) $(LDADD)
 # the counter accessors (isakmp_frag_half_open_count/take) are exposed from
 # isakmp.c for this full-link test (addtest_ikedsrc links isakmp.o).  Red
 # against: `held + data_len` size-gate regression, a removed disarm decrement,
-# or a removed `!frag_halfopen` live-SA guard.
+# a removed `!frag_halfopen` live-SA guard, or a removed `rmconf == NULL`
+# unconfigured-peer reject in ikev1_frag_dispatch().
 TESTS += ikev1fragtest
 check_PROGRAMS += ikev1fragtest
 ikev1fragtest_SOURCES = ikev1fragtest.c

@@ -70,6 +70,7 @@ struct ipsecdoi_pl_id;		/* XXX */
 struct isakmp_pl_ke;		/* XXX */
 struct isakmp_pl_nonce;		/* XXX */
 struct rcf_remote;
+struct isakmp;
 
 extern int isakmp_handler (int);
 extern int isakmp_ph1begin_i (struct rcf_remote *, struct sockaddr *,
@@ -88,9 +89,11 @@ extern int isakmp_send (struct ph1handle *, rc_vchar_t *);
 extern int isakmp_sendfrags(struct ph1handle *, rc_vchar_t*);extern void isakmp_frag_purge(struct ph1handle *);
 extern void isakmp_frag_halfopen_disarm(struct ph1handle *);
 extern rc_vchar_t *isakmp_frag_recv (struct ph1handle *, rc_vchar_t *);
+#ifdef IKEV1
 extern int ikev1_frag_dispatch(struct isakmp *, rc_vchar_t **,
 			    const struct sockaddr *, const struct sockaddr *,
 			    socklen_t, socklen_t);
+#endif /* IKEV1 */
 extern int isakmp_frag_half_open_count (void);
 extern void isakmp_frag_half_open_take (void);
 

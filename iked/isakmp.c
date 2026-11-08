@@ -189,7 +189,7 @@ isakmp_init(void)
 	if (ikev2_init() < 0)
 		goto err;
 
-#ifdef ENABLE_NATT	/* XXX for IKEv1 */
+#if defined(ENABLE_NATT) && defined(IKEV1)	/* NAT-T keepalive is IKEv1 only */
 	{
 		natt_keepalive_init();
 	}
@@ -717,6 +717,7 @@ isakmp_find_socket(struct sockaddr *sa)
 		return -1;
 	return a->sock;
 }
+#ifdef IKEV1
 /*
  * Free a fragment context and all of the per-fragment buffers that it
  * owns.  Safe to call with a NULL pointer.
@@ -1019,6 +1020,7 @@ isakmp_frag_purge(struct ph1handle *iph1)
 	}
 	iph1->frag_chain = NULL;
 }
+#endif /* IKEV1 */
 
 #ifdef IKEV1
 /* Incomplete IKEv1 fragment reassembly used to leave a ph1 in the
@@ -1069,6 +1071,7 @@ isakmp_frag_halfopen_expire(void *p)
 }
 #endif
 
+#ifdef IKEV1
 /*
  * ikev1_frag_dispatch() -- run one inbound IKEv1 fragment through the
  * fragment subsystem on behalf of isakmp_handler().  The caller guarantees
@@ -1209,6 +1212,8 @@ ikev1_frag_dispatch(struct isakmp *isakmp, rc_vchar_t **bufp,
 	}
 	return 1;
 }
+#endif
+
 
 /*
  * isakmp packet handler
@@ -1407,7 +1412,8 @@ isakmp_handler(int so_isakmp)
 	    buf->l >= sizeof(struct isakmp) +
 	    sizeof(struct isakmp_frag_hdr) &&
 	    ((struct isakmp *)buf->v)->np == ISAKMP_NPTYPE_FRAG) {
-		int handled = ikev1_frag_dispatch(&isakmp, &buf, (struct sockaddr *)&remote, (struct sockaddr *)&local,
+		int handled = ikev1_frag_dispatch(&isakmp, &buf,
+			    (struct sockaddr *)&remote, (struct sockaddr *)&local,
 			    remote_len, local_len);
 
 		if (handled == 0) {
