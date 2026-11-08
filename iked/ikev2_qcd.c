@@ -210,6 +210,8 @@ ikev2_qcd_taker_recv(struct ikev2_sa *ike_sa, rc_vchar_t *packet)
 			return 0;
 		if (type == IKEV2_PAYLOAD_NOTIFY) {
 			n = (struct ikev2payl_notify *)p;
+			if (plen < sizeof(*n))
+				return 0;
 			if (get_notify_type(n) == IKEV2_QCD_TOKEN) {
 				tot = plen;
 				hdr = sizeof(*n) + n->nh.spi_size;

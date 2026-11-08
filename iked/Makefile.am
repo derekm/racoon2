@@ -323,3 +323,9 @@ $(racoon_install_sbin): install-libracoon-first
 install-libracoon-first:
 	cd $(top_builddir)/../lib && $(MAKE) $(AM_MAKEFLAGS) install-libLTLIBRARIES
 .PHONY: install-libracoon-first
+
+# Pre-authentication payload boundary regressions, using the real walker.
+TESTS += qcdtest
+check_PROGRAMS += qcdtest
+qcdtest_SOURCES = qcdtest.c
+qcdtest_LDADD = $(addtest_ikedsrc) $(LDADD)

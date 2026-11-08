@@ -1132,6 +1132,59 @@ test_trailing_bytes_gcm(void)
 	sa_teardown(&sa);
 }
 
+/* Inject a successful crypto-provider return with no pad-length octet.
+ * This is distinct from a NULL (decryption failed) return. The production
+ * receivers must reject it before indexing plaintext[l - 1]. */
+static int empty_decrypt_calls;
+static rc_vchar_t *
+empty_decrypt(rc_vchar_t *in, rc_vchar_t *key, rc_vchar_t *iv)
+{
+    rc_vchar_t *out = rc_vmalloc(1);
+    (void)in; (void)key; (void)iv;
+    empty_decrypt_calls++;
+    if (out) out->l = 0;
+    return out;
+}
+
+static void
+test_empty_plaintext(void)
+{
+    struct ikev2_sa sa;
+    struct encryptor_method method = encr_aes128;
+    rc_vchar_t *wire, *out;
+    uint8_t inner[8];
+    struct ikev2_header *h;
+    struct ikev2_payload_header *p;
+    size_t delta = sizeof(struct ikev2payl_encrypted_fragment) - sizeof(*p);
+    method.decrypt = empty_decrypt;
+    sa_setup(&sa, MODE_CBC);
+    inner_payload(inner, sizeof(inner), IKEV2_PAYLOAD_NOTIFY);
+    wire = build_frag(&sa, MODE_CBC, 0x5566, IKEV2_PAYLOAD_NOTIFY,
+        1, 1, inner, sizeof(inner), 0, 0);
+    encryptor_destroy(sa.encryptor);
+    sa.encryptor = encryptor_new(&method);
+    empty_decrypt_calls = 0;
+    out = ikev2_frag_recv(&sa, wire, NULL, NULL);
+    CHECK(out == NULL && empty_decrypt_calls == 1 && chain_count(&sa) == 0,
+        "SKF rejects empty decrypted plaintext before pad-length read");
+    if (out) rc_vfree(out);
+    /* Reframe the same ciphertext as an SK payload; ikev2_decrypt() is
+     * called after the separate integrity check in the receive path. */
+    h = (struct ikev2_header *)wire->v;
+    p = (struct ikev2_payload_header *)(h + 1);
+    memmove((uint8_t *)(p + 1), (uint8_t *)p + sizeof(*p) + delta,
+        wire->l - sizeof(*h) - sizeof(*p) - delta);
+    wire->l -= delta;
+    h->next_payload = IKEV2_PAYLOAD_ENCRYPTED;
+    put_uint32(&h->length, wire->l);
+    put_uint16(&p->payload_length, wire->l - sizeof(*h));
+    empty_decrypt_calls = 0;
+    CHECK(ikev2_decrypt_local(&sa, wire) != 0 && empty_decrypt_calls == 1,
+        "SK rejects empty decrypted plaintext before pad-length read");
+    rc_vfree(wire);
+    sa_teardown(&sa);
+}
+
 int
 main(void)
 {
@@ -1163,6 +1216,7 @@ main(void)
 	test_forged_no_eviction_gcm();
 	test_not_negotiated();
 	test_trailing_bytes_gcm();
+	test_empty_plaintext();
 
 	printf("1..%d\n", checks);
 	if (failures) {
