@@ -48,19 +48,30 @@ int main(int argc, char **argv)
     /* Red-capable ENCRYPTED boundary: an ENCRYPTED payload whose Length is
      * the generic header and whose trailing in-packet bytes are a MATCHING
      * QCD token. Stopping at ENCRYPTED returns 0; if the stop is removed the
-     * walker advances past it, consumes the token and returns 1 -> red. */
-    len = sizeof(*h) + 2 * sizeof(*p) + sizeof(*n) + 16;
-    packet.v = mem + pagesz - len; packet.l = len;
-    memset(packet.v, 0, len);
-    h = (struct ikev2_header *)packet.v;
-    h->next_payload = IKEV2_PAYLOAD_ENCRYPTED;
-    p = (struct ikev2_payload_header *)(h + 1);
-    set_payload_header(p, IKEV2_PAYLOAD_NOTIFY, sizeof(*p));
-    n = (struct ikev2payl_notify *)(p + 1);
-    set_payload_header(&n->header, IKEV2_NO_NEXT_PAYLOAD, sizeof(*n) + 16);
-    put_uint16(&n->nh.notify_message_type, IKEV2_QCD_TOKEN);
-    memcpy(n + 1, sa.qcd_token_peer->v, 16);
-    TEST_CHECK(ikev2_qcd_taker_recv(&sa, &packet) == 0);
+     * walker advances past it, consumes the token and returns 1 -> red.
+     * Built on a private buffer so the short guard-page packet below stays
+     * intact for the truncated-notify and vendor-id rows. */
+    {
+        unsigned char redbuf[128];
+        struct ikev2_header *rh;
+        struct ikev2_payload_header *rp;
+        struct ikev2payl_notify *rn;
+        rc_vchar_t rpkt;
+
+        len = sizeof(*h) + 2 * sizeof(*p) + sizeof(*n) + 16;
+        memset(redbuf, 0, sizeof(redbuf));
+        rh = (struct ikev2_header *)redbuf;
+        rh->next_payload = IKEV2_PAYLOAD_ENCRYPTED;
+        rp = (struct ikev2_payload_header *)(rh + 1);
+        set_payload_header(rp, IKEV2_PAYLOAD_NOTIFY, sizeof(*rp));
+        rn = (struct ikev2payl_notify *)(rp + 1);
+        set_payload_header(&rn->header, IKEV2_NO_NEXT_PAYLOAD,
+            sizeof(*rn) + 16);
+        put_uint16(&rn->nh.notify_message_type, IKEV2_QCD_TOKEN);
+        memcpy(rn + 1, sa.qcd_token_peer->v, 16);
+        rpkt.v = redbuf; rpkt.l = len;
+        TEST_CHECK(ikev2_qcd_taker_recv(&sa, &rpkt) == 0);
+    }
     /* A truncated Notify has a generic header but no notify type. */
     h->next_payload = IKEV2_PAYLOAD_NOTIFY;
     TEST_CHECK(ikev2_qcd_taker_recv(&sa, &packet) == 0);
