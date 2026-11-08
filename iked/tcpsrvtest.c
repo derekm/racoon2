@@ -646,7 +646,7 @@ main(void)
 		struct sockaddr_in l4, c4;
 		struct sockaddr_in6 l6, c6;
 		struct tcp_stream *cli4, *cli6;
-		socklen_t l4len = sizeof(l4), l6len = sizeof(l6);
+		socklen_t l4len = sizeof(l4);
 		int lf4, lf6, port;
 
 		memset(&l4, 0, sizeof(l4));
