@@ -153,9 +153,15 @@ and require an AEAD IKE cipher to run the initial-IKE_SA ADDKE path
 for AEAD IKE ciphers; non-AEAD suites skip the intermediate round"). This does
 **not** mean the code implements AEAD method A. The `.A` here is the RFC 9242
 chunk name (Associated Data: header + Encrypted generic header), and the AEAD
-requirement is purely a **transport** precondition: pre-IKE_AUTH,
-IKE_INTERMEDIATE messages are only integrity-protected in flight if the IKE SA
-encryption algorithm carries an ICV, i.e. is an AEAD. The IntAuth value embedded
+requirement is purely an **implementation transport precondition**, not a
+protocol one: like any IKE message, IKE_INTERMEDIATE is protected in flight
+with the already-negotiated SK_e/SK_a — an AEAD ENCR, or a conventional ENCR
+with a separate SK_a integrity key.  There is no protocol basis for
+"non-AEAD == no in-flight integrity" (RFC 9242 §3.3.1 keys the transcript with
+SK_e/SK_a; §3.3.2's A-chunk calculation does not depend on AEAD versus a plain
+cipher).  This daemon simply restricts the initial-IKE_SA ADDKE/INTERMEDIATE
+path to AEAD IKE ciphers; that is a local limitation, not an RFC requirement.
+The IntAuth value embedded
 in AUTH is, in every case, the two-PRF-chain method B value built above. If a
 reviewer reads only the code's "IntAuth_A requires an AEAD" comments and equates
 that with "method A", the conclusion would be wrong; the source structure
@@ -171,11 +177,14 @@ that with "method A", the conclusion would be wrong; the source structure
   the child/IKE keymat directly (SK_d / prf+), with no AUTH binding — see the
   deferred-install path `ikev2_child_addke_install` and the SK(1) accumulation
   in `ikev2_addke.c`.
-- **Initial-IKE_SA ADDKE requires an AEAD IKE cipher** (`encryptor_icv_length`
-  check, `ikev2_intermediate.c:623-627`); non-AEAD suites simply skip the
-  intermediate round (`ikev2.h:109-110`). A non-AEAD-capable IntAuth_B path
-  would need the PRF method to run without an AEAD transport — not implemented,
-  and the PRF method B already interoperates only under an AEAD ICV here.
+- **Initial-IKE_SA ADDKE is restricted to AEAD IKE ciphers in this daemon**
+  (`encryptor_icv_length` check, `ikev2_intermediate.c:623-627`); non-AEAD IKE
+  suites simply skip the intermediate round (`ikev2.h:109-110`).  This is an
+  implementation transport restriction, not an RFC requirement: a conventional
+  ENCR with a separate SK_a integrity key still carries an ICV in flight (RFC
+  9242 §3.3.1), and the PRF IntAuth method does not inherently need AEAD.
+  Supporting a non-AEAD IKE cipher on the initial-SA ADDKE path is a build/choice
+  step, not an unclimbable protocol barrier.
 - **IKE_AUTH_MID reconstruction** assumes the current single-round layout
   (`IKE_AUTH_MID = intermediate_rounds + 1`); a future multi-round / reordered
   msgid allocation must keep it tracking the real AUTH msgid
