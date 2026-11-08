@@ -38,7 +38,10 @@ echo "staging racoon2 config for $IP under $ETC"
 
 # printable whole-file PSK (32 chars; the matrix client keys 0x hex of it)
 printf 'racoon2-ci-psk-0123456789abcdef' > "$ETC/psk/macos.psk"
-chmod 600 "$ETC/psk/macos.psk"
+# The negative wrong-PSK row (i2ineg-*) drives the initiator with a
+# deliberately DIFFERENT key (l2tp.psk) and asserts the refusal.
+printf 'racoon2-ci-psk-different-key-9999999' > "$ETC/psk/l2tp.psk"
+chmod 600 "$ETC/psk/macos.psk" "$ETC/psk/l2tp.psk"
 printf 'racoon2-ci-pwd\n' > "$ETC/spmd.pwd"
 
 cat > "$ETC/racoon2.conf" <<EOF
