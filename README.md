@@ -412,3 +412,31 @@ with SHISA (http://www.mobileip.jp/) in iked(8).
 [BUILDING]: BUILDING
 [status]: https://travis-ci.org/zoulasc/racoon2.svg?branch=master
 [travis]: https://travis-ci.org/zoulasc/racoon2
+
+### Service sandbox and debug core collection
+
+The Linux iked service now uses the same baseline sandbox as kinkd:
+read-only system/configuration files, hidden home directories, private temporary
+files/devices, restricted namespaces, and no privilege gains. Its existing
+network capability/address-family allowlists remain unchanged. State under
+`/var/lib/racoon2` (the installed StateDirectory drop-in) and spmd's runtime
+socket directory remain writable. Custom hooks that write elsewhere need a
+local service drop-in with narrowly scoped `ReadWritePaths=` entries; a
+configuration/installation below a home directory needs an explicit local
+`ProtectHome=` override. No shared RuntimeDirectory owner was added to iked:
+stopping iked must not remove spmd's sockets.
+
+**Core dumps and root gdb collection are opt-in**, independently of compiler
+`--enable-debug`. Configure with `--enable-debug-cores` only in a trusted debug
+environment to install iked/spmd unlimited-core drop-ins and `iked-core-bt`.
+Fresh default installs contain neither debug drop-in nor the helper; iked's
+baseline `LimitCORE=0` disables dumps. Core files/backtraces may expose keys.
+An upgrade does not delete existing administrator/old installed drop-ins:
+remove or disable those deliberately when migrating to the safe default, and
+review the effective unit with `systemctl cat iked spmd` before restarting.
+No service restart is performed by this change.
+
+`make -C samples/systemd check` stages the **real install rules** in a disposable
+DESTDIR and checks the selected mode's manifest. Test both a default configure
+and `--enable-debug-cores` in separate clean build trees; never test-install into
+`/usr/local` or overwrite a live configuration.

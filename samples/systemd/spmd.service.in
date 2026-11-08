@@ -5,6 +5,8 @@ Wants=network-online.target
 Before=iked.service kinkd.service
 
 [Service]
+# Core collection requires the explicit debug-cores drop-in.
+LimitCORE=0
 Type=simple
 ExecStart=@racoon_sbindir@/spmd -F -f @racoon_sysconfdir@/racoon2.conf
 Restart=on-failure

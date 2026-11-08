@@ -15,6 +15,27 @@ StandardOutput=journal
 StandardError=journal
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+# Core dumps hold IKE/ESP key material; the debug-cores drop-in opts in.
+LimitCORE=0
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+ReadOnlyPaths=/usr/local/racoon2/etc/racoon2
+# StateDirectory (state.conf) is writable automatically. spmd owns /run/racoon2.
+ReadWritePaths=-/run/racoon2 -/var/run/racoon2
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_KEY
 
 [Install]

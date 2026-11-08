@@ -17,21 +17,28 @@ systemdsystemunit_DATA = \
 # 'P'"), so the capture drop-in is installed only under the PCAP
 # conditional (configure --enable-pcap).
 systemdikeddconfdir = $(systemdsystemunitdir)/iked.service.d
+systemdikeddconf_DATA = iked.service.d/state.conf iked.service.d/xfrm-crypto.conf
 if PCAP
-systemdikeddconf_DATA = iked.service.d/core.conf iked.service.d/capture.conf \
-	iked.service.d/state.conf iked.service.d/xfrm-crypto.conf
-else
-systemdikeddconf_DATA = iked.service.d/core.conf \
-	iked.service.d/state.conf iked.service.d/xfrm-crypto.conf
+systemdikeddconf_DATA += iked.service.d/capture.conf
 endif
 
 systemdspmddconfdir = $(systemdsystemunitdir)/spmd.service.d
-systemdspmddconf_DATA = spmd.service.d/core.conf
-
+systemdspmddconf_DATA =
 systemdikedsbindir = @racoon_sbindir@
-systemdikedsbin_SCRIPTS = iked-core-bt
+systemdikedsbin_SCRIPTS =
+if DEBUG_CORES
+systemdikeddconf_DATA += iked.service.d/core.conf
+systemdspmddconf_DATA += spmd.service.d/core.conf
+systemdikedsbin_SCRIPTS += iked-core-bt
+endif
 
-EXTRA_DIST = \
+TESTS = check-install.sh
+AM_TESTS_ENVIRONMENT = DEBUG_CORES='@enable_debug_cores@' \
+    UNITDIR='$(systemdsystemunitdir)' SBINDIR='@racoon_sbindir@' \
+    MAKE='$(MAKE)'; export DEBUG_CORES UNITDIR SBINDIR MAKE;
+
+EXTRA_DIST = check-install.sh iked-core-bt spmd.service.d/core.conf \
+	iked.service.d/state.conf \
 	spmd.service.in spmd.socket.in \
 	iked.service.in iked.socket.in \
 	fwd-nat.service.in \

@@ -45,6 +45,16 @@ AC_ARG_ENABLE(pcap,
 AC_MSG_RESULT($enable_pcap)
 AM_CONDITIONAL([PCAP], [test x"$enable_pcap" = xyes])
 
+dnl Core dumps contain key material. Never install debug collection by default.
+AC_ARG_ENABLE([debug-cores],
+    [AS_HELP_STRING([--enable-debug-cores],
+        [install unlimited-core and root backtrace service drop-ins (default no)])],
+    [], [enable_debug_cores=no])
+AS_CASE([$enable_debug_cores], [yes|no], [],
+    [AC_MSG_ERROR([--enable-debug-cores accepts only yes or no])])
+AC_SUBST([enable_debug_cores])
+AM_CONDITIONAL([DEBUG_CORES], [test x"$enable_debug_cores" = xyes])
+
 dnl check --enable-pedant
 AC_MSG_CHECKING(if --enable-pedant option is specified)
 AC_ARG_ENABLE(pedant,
