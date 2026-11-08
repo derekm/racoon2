@@ -1332,18 +1332,25 @@ revalidate_ph1tree_rmconf(void)
 
 		newrmconf=getrmconf(p->remote);
 		if(newrmconf == NULL){
-			/* old rmconf was an owned deepcopy; free before discarding */
+			/* p->approval->rmconf aliases p->rmconf (set at ikev1.c:2619),
+			 * so retarget the alias before freeing the owned copy, else it
+			 * dangles. */
+			if (p->approval)
+				p->approval->rmconf = NULL;
 			rcf_free_remote(p->rmconf);
 			p->rmconf = NULL;
 			remove_ph1(p);
 		}else{
-			/* getrmconf() returns an owned deepcopy, so the old rmconf
-			 * must be freed before it is replaced (the stale comment
-			 * claiming it "is just a pointer to an entry in rmtree" is
-			 * false). */
-			if (p->rmconf && p->rmconf != newrmconf)
-				rcf_free_remote(p->rmconf);
-			p->rmconf=newrmconf;
+			struct rcf_remote *oldrmconf = p->rmconf;
+			/* getrmconf() returns an owned deepcopy.  Transfer ownership to
+			 * the fresh copy and retarget the approval alias up front, so
+			 * p->approval->rmconf never dangles -- including when
+			 * dupisakmpsa fails below -- then free the old copy once. */
+			p->rmconf = newrmconf;
+			if (p->approval)
+				p->approval->rmconf = newrmconf;
+			if (oldrmconf && oldrmconf != newrmconf)
+				rcf_free_remote(oldrmconf);
 			if(p->approval != NULL){
 				struct isakmpsa *tmpsa;
 
@@ -1351,7 +1358,8 @@ revalidate_ph1tree_rmconf(void)
 				if(tmpsa != NULL){
 					delisakmpsa(p->approval);
 					p->approval=tmpsa;
-					p->approval->rmconf=newrmconf;
+					/* tmpsa already cloned rmconf == newrmconf;
+					 * retargeted above, so no dangling alias. */
 				}
 			}
 		}
