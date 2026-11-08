@@ -305,11 +305,12 @@ while IFS="$(printf '	')" read -r name kind expect workers note gate defect || [
 		row_skip "$name" dpd "DPD gate off: R2_DPD=${R2_DPD:-no}"
 		continue
 	fi
-	# BOX gate: new rows (i2ike-dup, i2ike-reqdrop) run
+	# BOX gate: new rows (i2ike-dup and the remaining box rows) run
 	# ONLY on the box until a counted-gate PASS exists there AND a
 	# container run admits them (i2ike-drop576 rule).  The box sets
 	# R2_BOX=yes; CI does not, so unverified rows cannot leak into the
 	# Ubuntu/NetBSD full matrix or the Fedora container default.
+	# (i2ike-reqdrop graduated to gate=addke: it needs WITH_KEYMAT_ORACLE.)
 	# PFKEY gate: rows about the Linux pfkey backend itself run only in
 	# the pfkey lane (R2_KM=pfkey); xfrm lanes list the gate as expected.
 	if [ "$gate" = pfkey ] && [ "${R2_KM:-xfrm}" != pfkey ]; then
