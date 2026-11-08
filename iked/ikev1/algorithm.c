@@ -583,6 +583,22 @@ alg_oakley_encdef_decrypt(int doi, rc_vchar_t *buf, rc_vchar_t *key,
 	return res;
 }
 
+/* Test seam only: replace the decrypt implementation for every entry that
+ * carries `doi`.  Both RCT_ALG_RIJNDAEL_CBC and the RCT_ALG_AES*_CBC
+ * entries share the single OAKLEY AES doi, and alg_oakley_encdef() returns
+ * the first of them, so all entries with the doi must be patched together.
+ * Never called by the daemon; no-op when the doi is not in the table. */
+void
+alg_oakley_encdef_test_set_decrypt(int doi,
+    rc_vchar_t *(*decrypt)(rc_vchar_t *, rc_vchar_t *, rc_vchar_t *))
+{
+	int i;
+
+	for (i = 0; i < ARRAYLEN(oakley_encdef); i++)
+		if (oakley_encdef[i].doi == doi)
+			oakley_encdef[i].decrypt = decrypt;
+}
+
 rc_vchar_t *
 alg_oakley_encdef_encrypt(int doi, rc_vchar_t *buf, rc_vchar_t *key,
     rc_vchar_t *iv)

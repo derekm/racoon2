@@ -246,6 +246,18 @@ eapmethodtest_SOURCES = eapmethodtest.c
 eapmethodtest_LDADD = $(addtest_ikedsrc) $(LDADD)
 endif
 
+# IKEv1 oakley_do_decrypt empty-plaintext guard.  A provider returning a
+# non-NULL empty plaintext (new->l == 0) must be rejected before the pad
+# byte at new->u[new->l - 1].  The empty-returning decrypt is injected via
+# the alg_oakley_encdef_test_set_decrypt() test seam in algorithm.c (never
+# called by the daemon).  Full iked link so oakley.c + algorithm.c + crypto
+# are present.  Red if the guard is removed.
+TESTS += oakleytest
+check_PROGRAMS += oakleytest
+oakleytest_SOURCES = oakleytest.c
+oakleytest_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/ikev1
+oakleytest_LDADD = $(addtest_ikedsrc) $(LDADD)
+
 if USE_EPOLL
 addtest_ikedsrc = dh.$(OBJEXT) ikev2_rekey_backoff.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	ike_deprecated.$(OBJEXT) \

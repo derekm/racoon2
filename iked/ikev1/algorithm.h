@@ -187,9 +187,11 @@ extern int alg_oakley_encdef_doi(rc_type);
 extern int alg_oakley_encdef_keylen (int, int);
 extern int alg_oakley_encdef_blocklen (int);
 extern rc_vchar_t *alg_oakley_encdef_decrypt (int, rc_vchar_t *,
-						  rc_vchar_t *, rc_vchar_t *);
+    rc_vchar_t *, rc_vchar_t *);
 extern rc_vchar_t *alg_oakley_encdef_encrypt (int, rc_vchar_t *,
-						  rc_vchar_t *, rc_vchar_t *);
+    rc_vchar_t *, rc_vchar_t *);
+extern void alg_oakley_encdef_test_set_decrypt (int,
+    rc_vchar_t *(*)(rc_vchar_t *, rc_vchar_t *, rc_vchar_t *));
 
 extern int alg_ipsec_encdef_doi(rc_type);
 extern int alg_ipsec_encdef_keylen (int, int);
