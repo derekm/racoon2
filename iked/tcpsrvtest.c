@@ -726,6 +726,34 @@ main(void)
 			(struct sockaddr *)&lc) != NULL,
 		      "close-listeners: live stream kept");
 		tcp_stream_free(cli);
+
+		/* Reopen the SAME port after close_listeners: open_listener sets
+		 * SO_REUSEADDR, so the listener must come back on (addr,port) and a
+		 * fresh client connect.  Pins that a reload's close-then-reopen
+		 * actually rebinds instead of losing the port (a close that skipped
+		 * close()/unlinked only the struct would stay green on the list
+		 * check above but is caught here by the rebind). */
+		{
+			struct sockaddr_in c3 = { 0 };
+			int lfd3 = tcp_srv_open_listener((struct sockaddr *)&lc, 0);
+			struct tcp_stream *cli3;
+
+			c3.sin_family = AF_INET;
+			c3.sin_port = lc.sin_port;	/* same port as the closed listener */
+			c3.sin_addr.s_addr = htonl(0x7f000003);	/* 127.0.0.3 */
+			CHECK(lfd3 >= 0, "reopen: listener rebinds on the same port");
+			if (lfd3 < 0)
+				return 1;
+			cli3 = tcp_stream_connect((struct sockaddr *)&c3, NULL,
+			    capture, NULL);
+			CHECK(cli3 != NULL, "reopen: client to rebind listener");
+			if (!cli3)
+				return 1;
+			CHECK(wait_connect(cli3, 3000) == 0,
+			      "reopen: client connected after rebind");
+			(void)tcp_srv_accept_pending();
+			tcp_stream_free(cli3);
+		}
 	}
 	tcp_srv_fini();
 	if (!fails)
