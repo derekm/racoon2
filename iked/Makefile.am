@@ -258,6 +258,18 @@ oakleytest_SOURCES = oakleytest.c
 oakleytest_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/ikev1
 oakleytest_LDADD = $(addtest_ikedsrc) $(LDADD)
 
+# IKEv1 fragment state machine: isakmp_frag_recv() size gate, the half-open
+# counter cap-restore, and the live-SA-survives rule.  isakmp_frag_recv and
+# the counter accessors (isakmp_frag_half_open_count/take) are exposed from
+# isakmp.c for this full-link test (addtest_ikedsrc links isakmp.o).  Red
+# against: `held + data_len` size-gate regression, a removed disarm decrement,
+# or a removed `!frag_halfopen` live-SA guard.
+TESTS += ikev1fragtest
+check_PROGRAMS += ikev1fragtest
+ikev1fragtest_SOURCES = ikev1fragtest.c
+ikev1fragtest_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/ikev1
+ikev1fragtest_LDADD = $(addtest_ikedsrc) $(LDADD)
+
 if USE_EPOLL
 addtest_ikedsrc = dh.$(OBJEXT) ikev2_rekey_backoff.$(OBJEXT) ike_sa.$(OBJEXT) ike_conf.$(OBJEXT) \
 	ike_deprecated.$(OBJEXT) \

@@ -827,7 +827,7 @@ isakmp_frag_detach(struct isakmp_frag_item *head,
 /*
  * Receive a single IKEv1 fragment.
  */
-static rc_vchar_t *
+rc_vchar_t *
 isakmp_frag_recv(struct ph1handle *iph1, rc_vchar_t *packet)
 {
 	struct isakmp *ih;
@@ -1027,6 +1027,22 @@ isakmp_frag_purge(struct ph1handle *iph1)
  * comes back, so the handle and its chain lived until process exit.
  * Count those half-open contexts and drop them on a timer. */
 static int isakmp_frag_half_open;
+
+/* Test-visible accessors for the half-open counter.  The daemon's
+ * isakmp_handler reads it via count() and bumps it via take(); a unit test
+ * drives the same counter directly to pin the cap-restore and live-SA rules.
+ * Compiled together with the IKEv1 half-open machinery. */
+int
+isakmp_frag_half_open_count(void)
+{
+	return isakmp_frag_half_open;
+}
+
+void
+isakmp_frag_half_open_take(void)
+{
+	isakmp_frag_half_open++;
+}
 
 void
 isakmp_frag_halfopen_disarm(struct ph1handle *iph1)
@@ -1268,7 +1284,7 @@ isakmp_handler(int so_isakmp)
 				error = -1;
 				goto end;
 			}
-			if (isakmp_frag_half_open >= IKED_MAX_HALF_OPEN_SA) {
+			if (isakmp_frag_half_open_count() >= IKED_MAX_HALF_OPEN_SA) {
 				plog(PLOG_PROTOERR, PLOGLOC, 0,
 				     "IKE fragment half-open cap (%d)\n",
 				     IKED_MAX_HALF_OPEN_SA);
@@ -1348,7 +1364,7 @@ isakmp_handler(int so_isakmp)
 				goto end;
 			}
 			frag_iph1->frag_halfopen = 1;
-			isakmp_frag_half_open++;
+			isakmp_frag_half_open_take();
 
 			plog(PLOG_DEBUG, PLOGLOC, 0,
 			     "created temporary IKE fragment "
