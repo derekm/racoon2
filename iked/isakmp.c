@@ -1248,7 +1248,6 @@ isakmp_handler(int so_isakmp)
 	    ((struct isakmp *)buf->v)->np == ISAKMP_NPTYPE_FRAG) {
 		isakmp_index_t *index = (isakmp_index_t *)&isakmp;
 		struct ph1handle *frag_iph1 = getph1byindex(index);
-		int frag_temp = 0;	/* frag_iph1 is a temporary context */
 		rc_vchar_t *reassembled;
 
 		if (frag_iph1 == NULL) {
@@ -1283,7 +1282,6 @@ isakmp_handler(int so_isakmp)
 				goto end;
 			}
 
-			frag_temp = 1;
 			frag_iph1->side = RESPONDER;
 			frag_iph1->etype = isakmp.etype;
 			frag_iph1->flags = isakmp.flags;
@@ -1356,16 +1354,16 @@ isakmp_handler(int so_isakmp)
 		buf = reassembled;
 		memcpy(&isakmp, buf->v, sizeof(isakmp));
 
-		/* Only tear down the temporary context created above; a
-		 * live Phase 1 found by getph1byindex() (e.g. fragmented
-		 * MM5/MM6 with certificates) must survive reassembly --
-		 * delph1() does not unbind its ph2tree. */
-		/* Drop the half-open timer before ikev1_main adopts this handle.
-		 * A later fragment has frag_temp == 0; leaving the timer armed
-		 * deletes the live SA when it fires, and overwriting sce does
-		 * not cancel it. */
-		isakmp_frag_halfopen_disarm(frag_iph1);
-		if (frag_temp) {
+		/* Tear down the fragment reassembly context and let
+		 * ikev1_main re-create its own handle from the reassembled
+		 * message. Gate on frag_halfopen (persistent on the handle),
+		 * not on whether this packet created it: a later fragment
+		 * completing the exchange has frag_halfopen == 1 too. A live
+		 * Phase 1 found by getph1byindex() (e.g. fragmented MM5/MM6
+		 * with certificates) has frag_halfopen == 0 and must survive
+		 * -- delph1() does not unbind its ph2tree. delph1() disarms
+		 * the half-open timer, so the cap is restored exactly once. */
+		if (frag_iph1->frag_halfopen) {
 			remph1(frag_iph1);
 			delph1(frag_iph1);
 		}
