@@ -1,13 +1,16 @@
 # RFC 4555 MOBIKE mobility — design note & validation
 
-Status: **partial — the roaming-*follower* side is implemented (implicit update on a peer
-source change, explicit UPDATE_SA_ADDRESSES accepted, NAT-T mapping follow, responder-follow
-COOKIE2 probing); the roaming-*initiator* push side (racoon2 detecting its OWN address change
-and actively sending UPDATE_SA_ADDRESSES) is NOT implemented.** racoon2 fills the
-remote-access-server / move-accepting role; initiator-originated updates are the design gap.
-There is **no `mobike` config knob** in racoon2 — MOBIKE handling is active whenever the peer
-advertises MOBIKE_SUPPORTED; the closely related `natt_follow_mapping` knob (default off) gates
-only the XFRM_MSG_MAPPING path.
+Status: **partial — but both roles are now implemented.**  The roaming-*follower*
+side (implicit update on a peer source change, explicit UPDATE_SA_ADDRESSES accepted,
+NAT-T mapping follow, responder-follow COOKIE2 probing) is implemented.  The
+roaming-*initiator* push side — racoon2 detecting its OWN address change and actively
+sending UPDATE_SA_ADDRESSES — is implemented as the `mobike_initiate (on|off)` knob
+(default off, RFC 4555 §3.5): on a local-address change (rtnetlink event, Linux) iked
+asks the kernel for the new source address and, when it differs, sends an INFORMATIONAL
+UPDATE_SA_ADDRESSES (+NAT_DETECTION) and commits the migration on the peer's reply
+(abandon on timeout).  `mobike_initiate` and `natt_follow_mapping` (default off; gates
+only the XFRM_MSG_MAPPING path) are the two relevant tunables; MOBIKE follow handling is
+otherwise active whenever the peer advertises MOBIKE_SUPPORTED.
 Branch: `int/gsoc2026` (this file is a design/status note, not a commit pin — check `git log`
 for the current HEAD of the implemented code).
 
@@ -26,12 +29,12 @@ events — the peer's source changing (implicit, RFC 4555 §3.1), an explicit
 UPDATE_SA_ADDRESSES request, the kernel's XFRM_MSG_MAPPING NAT-T rebind, or another KM's
 XFRM_MSG_MIGRATE — never by racoon2 deciding on its own to move.
 
-The **initiator push role** would be the mirror image: racoon2 notices that *it* has acquired a
-new source address (interface came up, its NAT mapping rotated), starts an INFORMATIONAL
-exchange carrying N(UPDATE_SA_ADDRESSES), and only commits the endpoint change after the peer
-acknowledges.  That code does not exist.  The only genuinely *initiated* mobility in the tree is
-the responder-follow probe (below), which is aimed at alternate addresses of the **peer**, not
-at publishing racoon2's own.
+The **initiator push role** is the mirror image and is implemented (config-gated,
+`mobike_initiate on`): racoon2 notices *it* has acquired a new source address (interface
+came up, NAT mapping rotated), starts an INFORMATIONAL exchange carrying
+N(UPDATE_SA_ADDRESSES) plus NAT_DETECTION, and only commits the endpoint change after the
+peer acknowledges (timeout puts the old address back).  The responder-follow probe (below)
+is a separate path aimed at alternate addresses of the **peer**.
 
 ## Implementation inventory (source of truth: code)
 
@@ -112,19 +115,18 @@ link to the responder dies — it does not publish racoon2's own new address to 
 
 ## What is NOT implemented / limits
 
-- **Initiator-originated UPDATE_SA_ADDRESSES is not implemented.**  There is no site that
-  constructs and sends an UPDATE_SA_ADDRESSES notify (a search of the tree for a push builder
-  with `IKEV2_UPDATE_SA_ADDRESSES` finds only the receive/define side), and therefore no code
-  that detects racoon2's own local address change — interface state, source-address acquisition,
-  or an outbound NAT rebind — and drives a mobility exchange toward the peer.  racoon2 never
-  tells a peer "I have moved."  It only ever follows a peer/kernel change.  (README.md:215-218
-  states this explicitly: "responder-follow … initiator-originated updates not implemented —
-  remote-access server role"; NEWS records it as "RFC 4555 MOBIKE responder".)
+- **Initiator-originated UPDATE_SA_ADDRESSES: implemented, config-gated.**  `mobike_initiate on`
+  (default off) constructs and sends an UPDATE_SA_ADDRESSES notify on racoon2's own local-address
+  change (interface state / source-address acquisition / outbound NAT rebind), drives the
+  INFORMATIONAL exchange toward the peer, and commits the endpoint change on the reply (abandon on
+  timeout).  This supersedes the earlier "responder-follow … initiator-originated updates not
+  implemented" note: the follow half and the initiator half are both in tree.
 - **racoon2 does not advertise its own ADDITIONAL_IP4/6_ADDRESS.**  `extra_addr4/6` are filled
   only from the peer's notifies (for responder-follow); there is no builder that advertises
   racoon2's alternate addresses.
-- **No config knob.**  RFC 4555 does not require one; MOBIKE is driven entirely by the peer's
-  MOBIKE_SUPPORTED notify.  `natt_follow_mapping` (default off) is the only related tunable.
+- **Config knobs** (both default off): `mobike_initiate` (initiator-originated push, RFC 4555
+  §3.5) and `natt_follow_mapping` (gates only the XFRM_MSG_MAPPING path).  Follow handling
+  itself is driven by the peer's MOBIKE_SUPPORTED notify.
 - **Single traffic direction semantics**: the migrate assumes a road-warrior shape (one
   tunnel, lease-provided inner address); there is no multi-Child/multihoming address-set
   bookkeeping beyond the single lease/selector pair harvested in one pass.
