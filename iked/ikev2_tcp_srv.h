@@ -37,6 +37,13 @@
 void tcp_srv_init(tcp_stream_dispatch dispatch, void *arg);
 void tcp_srv_fini(void);
 
+/* Close and free the listener sockets only, leaving established streams
+ * (conns) alive.  Used by reload to re-apply the listener set without
+ * tearing down live IKE-over-TCP connections.  The fdset/accept loops read
+ * `listeners` fresh each iteration, so the change applies on the next
+ * loop without an fdset rebuild. */
+void tcp_srv_close_listeners(void);
+
 /* Create the non-blocking TCP listener on [local]addr.  RFC 9329's default
  * port is 4500 (IKEV2_TCP_PORT).  `port` is authoritative when non-zero;
  * when zero, the port already in `local` is kept (so a caller may bind to

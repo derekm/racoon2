@@ -89,6 +89,12 @@ tcp_srv_fini(void)
 		tcp_stream_free(c->st);
 		free(c);
 	}
+	tcp_srv_close_listeners();
+}
+
+void
+tcp_srv_close_listeners(void)
+{
 	while (listeners) {
 		struct tcp_listener *l = listeners;
 		listeners = l->next;

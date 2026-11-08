@@ -689,6 +689,44 @@ main(void)
 		tcp_stream_free(cli4);
 		tcp_stream_free(cli6);
 	}
+	/* tcp_srv_close_listeners(): frees the listener sockets but keeps
+	 * established streams, so iked_reload can re-apply the listener set
+	 * without killing live IKE-over-TCP connections.  A close that also
+	 * drained conns would make find() below come back NULL -> red. */
+	{
+		struct sockaddr_in lc;
+		struct tcp_stream *cli;
+		struct sockaddr_storage clsrc;
+		socklen_t lc_len = sizeof(lc), cl_len = sizeof(clsrc);
+		int lfd;
+
+		memset(&lc, 0, sizeof(lc));
+		lc.sin_family = AF_INET;
+		lc.sin_addr.s_addr = htonl(0x7f000003);	/* 127.0.0.3 */
+		lfd = tcp_srv_open_listener((struct sockaddr *)&lc, 0);
+		CHECK(lfd >= 0, "close-listeners: listener opened");
+		if (lfd < 0)
+			return 1;
+		if (getsockname(lfd, (struct sockaddr *)&lc, &lc_len) < 0)
+			return 1;
+		cli = tcp_stream_connect((struct sockaddr *)&lc, NULL, capture, NULL);
+		CHECK(cli != NULL, "close-listeners: client connected");
+		if (!cli)
+			return 1;
+		CHECK(wait_connect(cli, 3000) == 0,
+		      "close-listeners: client established");
+		(void)tcp_srv_accept_pending();
+
+		tcp_srv_close_listeners();
+		CHECK(tcp_srv_listener_fd() == -1,
+		      "close-listeners: listener sockets freed");
+		memset(&clsrc, 0, sizeof(clsrc));
+		(void)getsockname(cli->fd, (struct sockaddr *)&clsrc, &cl_len);
+		CHECK(tcp_srv_find((struct sockaddr *)&clsrc,
+			(struct sockaddr *)&lc) != NULL,
+		      "close-listeners: live stream kept");
+		tcp_stream_free(cli);
+	}
 	tcp_srv_fini();
 	if (!fails)
 		printf("all tcp-srv checks passed\n");

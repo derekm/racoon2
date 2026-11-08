@@ -592,6 +592,52 @@ monitor_fd(int fd, fd_set *fdset, int *nfds)
 	return 0;
 }
 
+/* Open the RFC 9329 listener set (one per family on the IKE port) when any
+ * remote has tcp_encap on.  -4/-6 gate the families, mirroring the UDP
+ * path.  Called at startup and on every reload; iked_reload closes the set
+ * first so a config change to tcp_encap or the family set is re-applied on
+ * SIGHUP. */
+static void
+open_tcp_listeners(void)
+{
+	struct sockaddr_storage a4, a6;
+
+	if (!iked_tcp_encap_enabled())
+		return;
+
+	memset(&a4, 0, sizeof(a4));
+	a4.ss_family = AF_INET;
+	((struct sockaddr_in *)&a4)->sin_addr.s_addr = htonl(INADDR_ANY);
+	if (opt_ipv6_only)
+		plog(PLOG_DEBUG, PLOGLOC, 0,
+		     "skipping IPv4 IKE-over-TCP listener (-6)\n");
+	else if (tcp_srv_open_listener((struct sockaddr *)&a4,
+		IKEV2_TCP_PORT) < 0)
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "failed to open IPv4 IKE-over-TCP listener on port %d: %s\n",
+		     IKEV2_TCP_PORT, strerror(errno));
+	else
+		plog(PLOG_INFO, PLOGLOC, 0,
+		     "IKE-over-TCP IPv4 listener on port %d\n",
+		     IKEV2_TCP_PORT);
+
+	memset(&a6, 0, sizeof(a6));
+	a6.ss_family = AF_INET6;
+	((struct sockaddr_in6 *)&a6)->sin6_addr = in6addr_any;
+	if (opt_ipv4_only)
+		plog(PLOG_DEBUG, PLOGLOC, 0,
+		     "skipping IPv6 IKE-over-TCP listener (-4)\n");
+	else if (tcp_srv_open_listener((struct sockaddr *)&a6,
+		IKEV2_TCP_PORT) < 0)
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		     "failed to open IPv6 IKE-over-TCP listener on port %d: %s\n",
+		     IKEV2_TCP_PORT, strerror(errno));
+	else
+		plog(PLOG_INFO, PLOGLOC, 0,
+		     "IKE-over-TCP IPv6 listener on port %d\n",
+		     IKEV2_TCP_PORT);
+}
+
 static void
 iked_mainloop(void)
 {
@@ -624,54 +670,7 @@ iked_mainloop(void)
 			 * (isakmp_open_address); IKE over TCP is IKE too. */
 			if (rcf_interface_head->application_bypass != RCT_BOOL_OFF)
 				tcp_stream_sock_hook = setsockopt_bypass;
-			if (iked_tcp_encap_enabled()) {
-				/* One listener per address family: IPv4 and
-				 * IPv6 peers both connect (simultaneous
-				 * listeners).  V6ONLY on the v6 socket lets the
-				 * two coexist on the 4500 port; -4/-6 gate
-				 * which families open, like the UDP path. */
-				struct sockaddr_storage a4, a6;
-
-				memset(&a4, 0, sizeof(a4));
-				a4.ss_family = AF_INET;
-				((struct sockaddr_in *)&a4)->sin_addr.s_addr =
-				    htonl(INADDR_ANY);
-				if (opt_ipv6_only)
-					plog(PLOG_DEBUG, PLOGLOC, 0,
-					     "skipping IPv4 IKE-over-TCP "
-					     "listener (-6)\n");
-				else if (tcp_srv_open_listener(
-					(struct sockaddr *)&a4,
-					IKEV2_TCP_PORT) < 0)
-					plog(PLOG_INTERR, PLOGLOC, 0,
-					     "failed to open IPv4 IKE-over-TCP "
-					     "listener on port %d: %s\n",
-					     IKEV2_TCP_PORT, strerror(errno));
-				else
-					plog(PLOG_INFO, PLOGLOC, 0,
-					     "IKE-over-TCP IPv4 listener on port %d\n",
-					     IKEV2_TCP_PORT);
-
-				memset(&a6, 0, sizeof(a6));
-				a6.ss_family = AF_INET6;
-				((struct sockaddr_in6 *)&a6)->sin6_addr =
-				    in6addr_any;
-				if (opt_ipv4_only)
-					plog(PLOG_DEBUG, PLOGLOC, 0,
-					     "skipping IPv6 IKE-over-TCP "
-					     "listener (-4)\n");
-				else if (tcp_srv_open_listener(
-					(struct sockaddr *)&a6,
-					IKEV2_TCP_PORT) < 0)
-					plog(PLOG_INTERR, PLOGLOC, 0,
-					     "failed to open IPv6 IKE-over-TCP "
-					     "listener on port %d: %s\n",
-					     IKEV2_TCP_PORT, strerror(errno));
-				else
-					plog(PLOG_INFO, PLOGLOC, 0,
-					     "IKE-over-TCP IPv6 listener on port %d\n",
-					     IKEV2_TCP_PORT);
-			}
+			open_tcp_listeners();
 		}
 	}
 
@@ -770,6 +769,13 @@ iked_reload(void)
 	}
 
 	isakmp_reopen();
+
+	/* Re-apply the RFC 9329 TCP listener set to the reread config: close
+	 * existing listeners (live streams/conns are kept) and reopen what the
+	 * new config wants (tcp_encap on/off and -4/-6 families).  Without this
+	 * a SIGHUP that changed tcp_encap left the old listener set in place. */
+	tcp_srv_close_listeners();
+	open_tcp_listeners();
 }
 
 static void
