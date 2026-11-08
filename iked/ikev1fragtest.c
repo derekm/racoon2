@@ -182,6 +182,60 @@ test_live_survives(void)
 	TEST_CHECK(isakmp_frag_half_open_count() == base + 1);
 }
 
+/* Reach the handler-side lifecycle: a first fragment for an unknown SA and
+ * a free half-open slot goes through newph1()/getrmconf() and is rejected
+ * because no peer is configured (delph1 tears the temp down; the counter is
+ * untouched).  Removing the unconfigured-peer reject builds the temp and
+ * returns 0 (consumed) instead of -1 -> red. */
+static void
+test_frag_dispatch_unconfigured(void)
+{
+	/* The red arm reaches sched_new(); the scheduler tree must exist
+	 * (sched_init is what the daemon does at startup). */
+	sched_init();
+	rc_vchar_t *pkt = NULL;
+	struct isakmp *ih;
+	struct isakmp_frag_hdr *frag;
+	struct sockaddr_storage remote, local;
+	struct isakmp isakmp;
+	int rc, base = isakmp_frag_half_open_count();
+
+	memset(&remote, 0, sizeof(remote));
+	memset(&local, 0, sizeof(local));
+	((struct sockaddr_in *)&remote)->sin_family = AF_INET;
+	((struct sockaddr_in *)&remote)->sin_port = htons(1500);
+	((struct sockaddr_in *)&remote)->sin_addr.s_addr = htonl(0x7f000001u);
+	((struct sockaddr_in *)&local)->sin_family = AF_INET;
+	((struct sockaddr_in *)&local)->sin_port = htons(1500);
+
+	pkt = rc_vmalloc(sizeof(struct isakmp) +
+	    sizeof(struct isakmp_frag_hdr) + 128);
+	TEST_CHECK(pkt != NULL);
+	if (pkt == NULL)
+		return;
+	memset(pkt->v, 0x21, pkt->l);
+	ih = (struct isakmp *)pkt->v;
+	ih->np = ISAKMP_NPTYPE_FRAG;
+	ih->len = htonl((uint32_t)pkt->l);
+	ih->msgid = htonl(0x55667788u);
+	frag = (struct isakmp_frag_hdr *)(pkt->v + sizeof(struct isakmp));
+	frag->frag_no = htons(1);
+	frag->frag_id = 0xab;
+	frag->h.len = htons(sizeof(struct isakmp_frag_hdr) + 128);
+	frag->flags = ISAKMP_FRAG_MORE;	/* not the last; incomplete */
+
+	memcpy(&isakmp, pkt->v, sizeof(isakmp));
+	rc = ikev1_frag_dispatch(&isakmp, &pkt,
+	    (struct sockaddr *)&remote, (struct sockaddr *)&local,
+	    sizeof(remote), sizeof(local));
+	TEST_CHECK(rc < 0);
+		/* unconfigured peer -> reject */
+	TEST_CHECK(isakmp_frag_half_open_count() == base);
+		/* no cap slot taken by the rejected temp */
+
+	rc_vfree(pkt);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -191,5 +245,6 @@ main(int argc, char **argv)
 	RUN_TEST(test_reject_cap);
 	RUN_TEST(test_cap_restore);
 	RUN_TEST(test_live_survives);
+	RUN_TEST(test_frag_dispatch_unconfigured);
 	return test_exit_status();
 }

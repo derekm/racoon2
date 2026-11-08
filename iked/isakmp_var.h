@@ -88,6 +88,9 @@ extern int isakmp_send (struct ph1handle *, rc_vchar_t *);
 extern int isakmp_sendfrags(struct ph1handle *, rc_vchar_t*);extern void isakmp_frag_purge(struct ph1handle *);
 extern void isakmp_frag_halfopen_disarm(struct ph1handle *);
 extern rc_vchar_t *isakmp_frag_recv (struct ph1handle *, rc_vchar_t *);
+extern int ikev1_frag_dispatch(struct isakmp *, rc_vchar_t **,
+			    const struct sockaddr *, const struct sockaddr *,
+			    socklen_t, socklen_t);
 extern int isakmp_frag_half_open_count (void);
 extern void isakmp_frag_half_open_take (void);
 

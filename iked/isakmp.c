@@ -1070,6 +1070,147 @@ isakmp_frag_halfopen_expire(void *p)
 #endif
 
 /*
+ * ikev1_frag_dispatch() -- run one inbound IKEv1 fragment through the
+ * fragment subsystem on behalf of isakmp_handler().  The caller guarantees
+ * the packet is a non-truncated IKEv1 ISAKMP_NPTYPE_FRAG message (buf->l
+ * covers the fragment header).
+ *
+ * Returns:
+ *   -1 : the fragment exchange is rejected (unknown SA, half-open cap,
+ *        unconfigured peer, allocation/insert/timer failure).  *bufp is
+ *        NOT freed; the caller drops the packet.
+ *    0 : the fragments were consumed (partial/exhausted exchange).  *bufp
+ *        is NOT freed; the caller drops the packet.
+ *    1 : reassembled.  *bufp was freed and replaced with the reassembled
+ *        message and *isakmp was refreshed from it.  The caller owns the
+ *        new *bufp and continues normal dispatch on it.
+ */
+int
+ikev1_frag_dispatch(struct isakmp *isakmp, rc_vchar_t **bufp,
+		    const struct sockaddr *remote, const struct sockaddr *local,
+		    socklen_t remote_len, socklen_t local_len)
+{
+	rc_vchar_t *buf = *bufp;
+	isakmp_index_t *index = (isakmp_index_t *)isakmp;
+	struct ph1handle *frag_iph1 = getph1byindex(index);
+	rc_vchar_t *reassembled;
+
+	if (frag_iph1 == NULL) {
+		struct isakmp_frag_hdr *frag =
+		    (struct isakmp_frag_hdr *)
+		    ((char *)buf->v + sizeof(struct isakmp));
+		uint16_t frag_no = ntohs(frag->frag_no);
+
+		if (frag_no != 1) {
+			plog(PLOG_PROTOERR, PLOGLOC, 0,
+			     "received IKE fragment %d for unknown ISAKMP SA\n", frag_no);
+			++isakmpstat.malformed_message;
+			return -1;
+		}
+		if (isakmp_frag_half_open_count() >= IKED_MAX_HALF_OPEN_SA) {
+			plog(PLOG_PROTOERR, PLOGLOC, 0,
+			     "IKE fragment half-open cap (%d)\n", IKED_MAX_HALF_OPEN_SA);
+			++isakmpstat.malformed_message;
+			return -1;
+		}
+
+		frag_iph1 = newph1();
+		if (frag_iph1 == NULL) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "failed to allocate temporary IKE fragment context\n");
+			return -1;
+		}
+
+		frag_iph1->side = RESPONDER;
+		frag_iph1->etype = isakmp->etype;
+		frag_iph1->flags = isakmp->flags;
+		frag_iph1->status = PHASE1ST_START;
+		frag_iph1->rmconf = getrmconf((struct sockaddr *)remote);
+		if (frag_iph1->rmconf == NULL) {
+			delph1(frag_iph1);
+			plog(PLOG_PROTOERR, PLOGLOC, 0,
+			     "IKE fragment from unconfigured peer %s\n",
+			     rcs_sa2str((struct sockaddr *)remote));
+			++isakmpstat.malformed_message;
+			return -1;
+		}
+		/*
+		 * getrmconf() returns an owned deepcopy; delph1() does not
+		 * free rmconf or proposal. The fragment path never reads
+		 * either -- it is only an existence check for an acceptable
+		 * peer -- and after reassembly ikev1_main re-creates its own
+		 * handle (and its own getrmconf/proposal) from the
+		 * reassembled message. Free the deepcopy now so it is not
+		 * orphaned on the success or expire path.
+		 */
+		rcf_free_remote(frag_iph1->rmconf);
+		frag_iph1->rmconf = NULL;
+
+		memcpy(&frag_iph1->index, index, sizeof(*index));
+
+		frag_iph1->remote = racoon_malloc(remote_len);
+		if (frag_iph1->remote == NULL) {
+			delph1(frag_iph1);
+			return -1;
+		}
+		memcpy(frag_iph1->remote, remote, remote_len);
+
+		frag_iph1->local = racoon_malloc(local_len);
+		if (frag_iph1->local == NULL) {
+			delph1(frag_iph1);
+			return -1;
+		}
+		memcpy(frag_iph1->local, local, local_len);
+
+		if (insph1(frag_iph1) < 0) {
+			plog(PLOG_INTERR, PLOGLOC, NULL,
+			     "failed to insert temporary IKE fragment SA\n");
+			delph1(frag_iph1);
+			return -1;
+		}
+
+		frag_iph1->frag_sce = sched_new(ISAKMP_FRAG_TIMEOUT,
+		    isakmp_frag_halfopen_expire, frag_iph1);
+		if (frag_iph1->frag_sce == NULL) {
+			remph1(frag_iph1);
+			delph1(frag_iph1);
+			return -1;
+		}
+		frag_iph1->frag_halfopen = 1;
+		isakmp_frag_half_open_take();
+
+		plog(PLOG_DEBUG, PLOGLOC, 0,
+		     "created temporary IKE fragment context for SPI %s\n",
+		     rcs_sa2str((struct sockaddr *)remote));
+	}
+
+	reassembled = isakmp_frag_recv(frag_iph1, buf);
+	if (reassembled == NULL)
+		return 0;	/* consumed */
+
+	plog(PLOG_DEBUG, PLOGLOC, 0,
+	     "IKEv1 message reassembled from fragments\n");
+	rc_vfree(buf);
+	*bufp = reassembled;
+	memcpy(isakmp, reassembled->v, sizeof(*isakmp));
+
+	/* Tear down the fragment reassembly context and let ikev1_main
+	 * re-create its own handle from the reassembled message. Gate on
+	 * frag_halfopen (persistent on the handle), not on whether this
+	 * packet created it: a later fragment completing the exchange has
+	 * frag_halfopen == 1 too. A live Phase 1 found by getph1byindex()
+	 * (e.g. fragmented MM5/MM6 with certificates) has frag_halfopen == 0
+	 * and must survive -- delph1() does not unbind its ph2tree.
+	 * delph1() disarms the half-open timer, so the cap is restored
+	 * exactly once. */
+	if (frag_iph1->frag_halfopen) {
+		remph1(frag_iph1);
+		delph1(frag_iph1);
+	}
+	return 1;
+}
+
+/*
  * isakmp packet handler
  */
 int
@@ -1266,138 +1407,19 @@ isakmp_handler(int so_isakmp)
 	    buf->l >= sizeof(struct isakmp) +
 	    sizeof(struct isakmp_frag_hdr) &&
 	    ((struct isakmp *)buf->v)->np == ISAKMP_NPTYPE_FRAG) {
-		isakmp_index_t *index = (isakmp_index_t *)&isakmp;
-		struct ph1handle *frag_iph1 = getph1byindex(index);
-		rc_vchar_t *reassembled;
+		int handled = ikev1_frag_dispatch(&isakmp, &buf, (struct sockaddr *)&remote, (struct sockaddr *)&local,
+			    remote_len, local_len);
 
-		if (frag_iph1 == NULL) {
-			struct isakmp_frag_hdr *frag =
-			    (struct isakmp_frag_hdr *)
-			    ((char *)buf->v + sizeof(struct isakmp));
-			uint16_t frag_no = ntohs(frag->frag_no);
-
-			if (frag_no != 1) {
-				plog(PLOG_PROTOERR, PLOGLOC, 0,
-				     "received IKE fragment %d for "
-				     "unknown ISAKMP SA\n", frag_no);
-				++isakmpstat.malformed_message;
-				error = -1;
-				goto end;
-			}
-			if (isakmp_frag_half_open_count() >= IKED_MAX_HALF_OPEN_SA) {
-				plog(PLOG_PROTOERR, PLOGLOC, 0,
-				     "IKE fragment half-open cap (%d)\n",
-				     IKED_MAX_HALF_OPEN_SA);
-				++isakmpstat.malformed_message;
-				error = -1;
-				goto end;
-			}
-
-			frag_iph1 = newph1();
-			if (frag_iph1 == NULL) {
-				plog(PLOG_INTERR, PLOGLOC, NULL,
-				     "failed to allocate temporary "
-				     "IKE fragment context\n");
-				error = -1;
-				goto end;
-			}
-
-			frag_iph1->side = RESPONDER;
-			frag_iph1->etype = isakmp.etype;
-			frag_iph1->flags = isakmp.flags;
-			frag_iph1->status = PHASE1ST_START;
-			frag_iph1->rmconf = getrmconf((struct sockaddr *)&remote);
-			if (frag_iph1->rmconf == NULL) {
-				delph1(frag_iph1);
-				plog(PLOG_PROTOERR, PLOGLOC, 0,
-				     "IKE fragment from unconfigured peer %s\n",
-				     rcs_sa2str((struct sockaddr *)&remote));
-				++isakmpstat.malformed_message;
-				error = -1;
-				goto end;
-			}
-			/*
-			 * getrmconf() returns an owned deepcopy; delph1()
-			 * does not free rmconf or proposal. The fragment
-			 * path never reads either — it is only an existence
-			 * check for an acceptable peer — and after
-			 * reassembly ikev1_main re-creates its own handle
-			 * (and its own getrmconf/proposal) from the
-			 * reassembled message. Free the deepcopy now so it
-			 * is not orphaned on the success or expire path.
-			 */
-			rcf_free_remote(frag_iph1->rmconf);
-			frag_iph1->rmconf = NULL;
-
-			memcpy(&frag_iph1->index, index, sizeof(*index));
-
-			frag_iph1->remote = racoon_malloc(remote_len);
-			if (frag_iph1->remote == NULL) {
-				delph1(frag_iph1);
-				error = -1;
-				goto end;
-			}
-			memcpy(frag_iph1->remote, &remote, remote_len);
-
-			frag_iph1->local = racoon_malloc(local_len);
-			if (frag_iph1->local == NULL) {
-				delph1(frag_iph1);
-				error = -1;
-				goto end;
-			}
-			memcpy(frag_iph1->local, &local, local_len);
-
-			if (insph1(frag_iph1) < 0) {
-				plog(PLOG_INTERR, PLOGLOC, NULL,
-				     "failed to insert temporary "
-				     "IKE fragment SA\n");
-				delph1(frag_iph1);
-				error = -1;
-				goto end;
-			}
-			frag_iph1->frag_sce = sched_new(ISAKMP_FRAG_TIMEOUT,
-			    isakmp_frag_halfopen_expire, frag_iph1);
-			if (frag_iph1->frag_sce == NULL) {
-				remph1(frag_iph1);
-				delph1(frag_iph1);
-				error = -1;
-				goto end;
-			}
-			frag_iph1->frag_halfopen = 1;
-			isakmp_frag_half_open_take();
-
-			plog(PLOG_DEBUG, PLOGLOC, 0,
-			     "created temporary IKE fragment "
-			     "context for SPI %s\n",
-			     rcs_sa2str((struct sockaddr *)&remote));
-		}
-
-		reassembled = isakmp_frag_recv(frag_iph1, buf);
-		if (reassembled == NULL) {
-			error = 0;
+		if (handled == 0) {
+			error = 0;	/* fragment exchange consumed; nothing to dispatch */
 			goto end;
 		}
-
-		plog(PLOG_DEBUG, PLOGLOC, 0,
-		     "IKEv1 message reassembled from fragments\n");
-		rc_vfree(buf);
-		buf = reassembled;
-		memcpy(&isakmp, buf->v, sizeof(isakmp));
-
-		/* Tear down the fragment reassembly context and let
-		 * ikev1_main re-create its own handle from the reassembled
-		 * message. Gate on frag_halfopen (persistent on the handle),
-		 * not on whether this packet created it: a later fragment
-		 * completing the exchange has frag_halfopen == 1 too. A live
-		 * Phase 1 found by getph1byindex() (e.g. fragmented MM5/MM6
-		 * with certificates) has frag_halfopen == 0 and must survive
-		 * -- delph1() does not unbind its ph2tree. delph1() disarms
-		 * the half-open timer, so the cap is restored exactly once. */
-		if (frag_iph1->frag_halfopen) {
-			remph1(frag_iph1);
-			delph1(frag_iph1);
+		if (handled < 0) {
+			error = -1;
+			goto end;
 		}
-		frag_iph1 = NULL;
+		/* handled == 1: buf now holds the reassembled message and isakmp was
+		 * refreshed from it; fall through to the normal per-version dispatch. */
 	}
 #endif
 	switch (ISAKMP_GETMAJORV(isakmp.v)) {
