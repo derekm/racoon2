@@ -589,6 +589,51 @@ main(void)
 		CHECK(tcp_srv_count_all() == before - 1,
 		      "double-teardown: freed once by the next pass");
 	}
+	/* Simultaneous listeners: a second listener must NOT replace the first.
+	 * Connect one client to each listener's port, then accept_pending()
+	 * must drain BOTH (returns 2) and both streams register.  Single-fd
+	 * server regressions here: the second open clobbers listener_fd, so
+	 * the client on the FIRST listener's port is never accepted -> red. */
+	{
+		struct sockaddr_in lb, cbA, cbB;
+		struct sockaddr_storage csrcA, csrcB;
+		struct tcp_stream *cliA, *cliB, *fA, *fB;
+		socklen_t sl2 = sizeof(lb), cla = sizeof(csrcA), clb = sizeof(csrcB);
+		int lfd2;
+
+		memset(&lb, 0, sizeof(lb));
+		lb.sin_family = AF_INET;
+		lb.sin_addr.s_addr = htonl(0x7f000002);	/* 127.0.0.2 */
+		lfd2 = tcp_srv_open_listener((struct sockaddr *)&lb, 0);
+		CHECK(lfd2 >= 0, "simul: second listener opened");
+		if (lfd2 < 0)
+			return 1;
+		if (getsockname(lfd2, (struct sockaddr *)&lb, &sl2) < 0)
+			return 1;
+
+		cbA = la;		/* first listener's addr:port */
+		cbB = lb;		/* second listener's addr:port */
+		cliA = tcp_stream_connect((struct sockaddr *)&cbA, NULL, capture, NULL);
+		cliB = tcp_stream_connect((struct sockaddr *)&cbB, NULL, capture, NULL);
+		CHECK(cliA && cliB, "simul: clients to both listeners");
+		CHECK(wait_connect(cliA, 3000) == 0 && wait_connect(cliB, 3000) == 0,
+		      "simul: both clients connected");
+		/* A prior section can leave a stale connection queued on the
+		 * first listener, so do not count: assert each listener's client
+		 * is actually REGISTERED by address, which a single-fd server
+		 * cannot satisfy for both listeners at once. */
+		(void)tcp_srv_accept_pending();
+		memset(&csrcA, 0, sizeof(csrcA));
+		memset(&csrcB, 0, sizeof(csrcB));
+		(void)getsockname(cliA->fd, (struct sockaddr *)&csrcA, &cla);
+		(void)getsockname(cliB->fd, (struct sockaddr *)&csrcB, &clb);
+		fA = tcp_srv_find((struct sockaddr *)&csrcA, (struct sockaddr *)&la);
+		fB = tcp_srv_find((struct sockaddr *)&csrcB, (struct sockaddr *)&lb);
+		CHECK(fA != NULL, "simul: first-listener client registered");
+		CHECK(fB != NULL, "simul: second-listener client registered");
+		tcp_stream_free(cliA);
+		tcp_stream_free(cliB);
+	}
 	tcp_srv_fini();
 	if (!fails)
 		printf("all tcp-srv checks passed\n");

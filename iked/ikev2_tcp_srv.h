@@ -2,7 +2,8 @@
 /*
  * iked/ikev2_tcp_srv.h -- RFC 9329 TCP listener + stream registry.
  *
- * This is what the iked main loop drives.  One listener socket (IKE port)
+ * This is what the iked main loop drives.  A set of listener sockets (the
+ * IKE port, one per address family so IPv4 and IPv6 can listen at once)
  * plus the set of accepted tcp_stream connections are held here; the loop
  * asks which fds to wait on (read AND write) and hands the ready sets back
  * for processing.  It is deliberately separate from the UDP recvfrom path in

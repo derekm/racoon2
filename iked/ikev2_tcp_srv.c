@@ -28,8 +28,16 @@ struct tcp_conn {
 	int connecting;		/* outbound (initiator) stream, not yet connected */
 };
 
+/* RFC 9329 listener sockets.  A set, not a single fd, so IPv4 and IPv6 can
+ * listen simultaneously and a reload can add/remove listeners independently
+ * (handoff: enable simultaneous listeners). */
+struct tcp_listener {
+	struct tcp_listener *next;
+	int fd;
+};
+
 static struct tcp_conn *conns;
-static int listener_fd = -1;
+static struct tcp_listener *listeners;
 static tcp_stream_dispatch g_dispatch;
 static void *g_arg;
 
@@ -59,7 +67,14 @@ void
 tcp_srv_init(tcp_stream_dispatch dispatch, void *arg)
 {
 	conns = NULL;
-	listener_fd = -1;
+	while (listeners) {
+		struct tcp_listener *l = listeners;
+		listeners = l->next;
+		if (l->fd >= 0)
+			close(l->fd);
+		free(l);
+	}
+	listeners = NULL;
 	g_dispatch = dispatch;
 	g_arg = arg;
 }
@@ -73,9 +88,12 @@ tcp_srv_fini(void)
 		tcp_stream_free(c->st);
 		free(c);
 	}
-	if (listener_fd >= 0) {
-		close(listener_fd);
-		listener_fd = -1;
+	while (listeners) {
+		struct tcp_listener *l = listeners;
+		listeners = l->next;
+		if (l->fd >= 0)
+			close(l->fd);
+		free(l);
 	}
 }
 
@@ -122,18 +140,25 @@ tcp_srv_open_listener(const struct sockaddr *local, int port)
 		goto fail;
 	if (listen(fd, 32) < 0)
 		goto fail;
-	listener_fd = fd;
+	{
+		struct tcp_listener *l = calloc(1, sizeof(*l));
+		if (l == NULL)
+			goto fail;
+		l->fd = fd;
+		l->next = listeners;
+		listeners = l;
+	}
 	return fd;
       fail:
 	close(fd);
-	listener_fd = -1;
 	return -1;
 }
 
+/* For diagnostics/tests: the first opened listener fd, or -1. */
 int
 tcp_srv_listener_fd(void)
 {
-	return listener_fd;
+	return listeners ? listeners->fd : -1;
 }
 
 /* Cap on concurrently-accepted RFC 9329 streams.  Each accepted stream
@@ -147,31 +172,34 @@ int
 tcp_srv_accept_pending(void)
 {
 	int n = 0;
+	struct tcp_listener *l;
 
-	if (listener_fd < 0)
-		return 0;
-	for (;;) {
-		struct tcp_stream *st;
-		struct tcp_conn *c;
+	for (l = listeners; l; l = l->next) {
+		if (l->fd < 0)
+			continue;
+		for (;;) {
+			struct tcp_stream *st;
+			struct tcp_conn *c;
 
-		if (tcp_srv_count() >= TCP_SRV_MAX_CONNS)
-			break;
-
-		st = tcp_stream_accept(listener_fd, g_dispatch, g_arg);
-		if (st == NULL) {
-			/* EAGAIN: no more pending; any other errno: stop
-			 * accepting this round (listener stays open). */
-			break;
+			if (tcp_srv_count() >= TCP_SRV_MAX_CONNS)
+				break;
+			st = tcp_stream_accept(l->fd, g_dispatch, g_arg);
+			if (st == NULL) {
+				/* EAGAIN: no more pending on this
+				 * listener; any other errno: stop this
+				 * round (listener stays open). */
+				break;
+			}
+			c = calloc(1, sizeof(*c));
+			if (c == NULL) {
+				tcp_stream_free(st);
+				break;
+			}
+			c->st = st;
+			c->next = conns;
+			conns = c;
+			++n;
 		}
-		c = calloc(1, sizeof(*c));
-		if (c == NULL) {
-			tcp_stream_free(st);
-			break;
-		}
-		c->st = st;
-		c->next = conns;
-		conns = c;
-		++n;
 	}
 	return n;
 }
@@ -181,12 +209,14 @@ tcp_srv_fdset(fd_set *rfds, fd_set *wfds)
 {
 	int max = -1;
 	struct tcp_conn *c;
+	struct tcp_listener *l;
 
-	if (rfds && listener_fd >= 0 && listener_fd < FD_SETSIZE) {
-		FD_SET(listener_fd, rfds);
-		if (listener_fd > max)
-			max = listener_fd;
-	}
+	for (l = listeners; l; l = l->next)
+		if (rfds && l->fd >= 0 && l->fd < FD_SETSIZE) {
+			FD_SET(l->fd, rfds);
+			if (l->fd > max)
+				max = l->fd;
+		}
 	for (c = conns; c; c = c->next) {
 		int fd = c->st->fd;
 
@@ -214,9 +244,18 @@ tcp_srv_process(const fd_set *rfds, const fd_set *wfds)
 {
 	struct tcp_conn **pp = &conns;
 
-	/* A ready listener means there are queued connections: accept them. */
-	if (rfds && listener_fd >= 0 && FD_ISSET(listener_fd, rfds))
-		tcp_srv_accept_pending();
+	/* A ready listener means there are queued connections: accept them.
+	 * tcp_srv_accept_pending() drains every listener, so one ready fd
+	 * kicks off a full pass. */
+	if (rfds) {
+		struct tcp_listener *l;
+
+		for (l = listeners; l; l = l->next)
+			if (l->fd >= 0 && FD_ISSET(l->fd, rfds)) {
+				tcp_srv_accept_pending();
+				break;
+			}
+	}
 
 	while (*pp) {
 		struct tcp_conn *c = *pp;

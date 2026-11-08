@@ -627,22 +627,41 @@ iked_mainloop(void)
 			if (iked_tcp_encap_enabled()) {
 				/* Open the IKE-over-TCP listener.  Non-fatal on
 				 * failure so a bind problem never stops iked
-				 * (the UDP path stays authoritative). */
-				struct sockaddr_in a;
+				 * (the UDP path stays authoritative).  One
+				 * listener per address family: IPv4 and IPv6
+				 * peers both connect (simultaneous listeners). */
+				struct sockaddr_storage a4, a6;
 
-				memset(&a, 0, sizeof(a));
-				a.sin_family = AF_INET;
-				a.sin_addr.s_addr = htonl(INADDR_ANY);
+				memset(&a4, 0, sizeof(a4));
+				a4.ss_family = AF_INET;
+				((struct sockaddr_in *)&a4)->sin_addr.s_addr =
+				    htonl(INADDR_ANY);
 				if (tcp_srv_open_listener(
-					(struct sockaddr *)&a,
+					(struct sockaddr *)&a4,
 					IKEV2_TCP_PORT) < 0)
 					plog(PLOG_INTERR, PLOGLOC, 0,
-					     "failed to open IKE-over-TCP "
+					     "failed to open IPv4 IKE-over-TCP "
 					     "listener on port %d: %s\n",
 					     IKEV2_TCP_PORT, strerror(errno));
 				else
 					plog(PLOG_INFO, PLOGLOC, 0,
-					     "IKE-over-TCP listener on port %d\n",
+					     "IKE-over-TCP IPv4 listener on port %d\n",
+					     IKEV2_TCP_PORT);
+
+				memset(&a6, 0, sizeof(a6));
+				a6.ss_family = AF_INET6;
+				((struct sockaddr_in6 *)&a6)->sin6_addr =
+				    in6addr_any;
+				if (tcp_srv_open_listener(
+					(struct sockaddr *)&a6,
+					IKEV2_TCP_PORT) < 0)
+					plog(PLOG_INTERR, PLOGLOC, 0,
+					     "failed to open IPv6 IKE-over-TCP "
+					     "listener on port %d: %s\n",
+					     IKEV2_TCP_PORT, strerror(errno));
+				else
+					plog(PLOG_INFO, PLOGLOC, 0,
+					     "IKE-over-TCP IPv6 listener on port %d\n",
 					     IKEV2_TCP_PORT);
 			}
 		}
