@@ -1239,9 +1239,13 @@ ikev2_find_match_ikesa(struct rcf_remote *rminfo,
 	if (result && (spi != NULL || allow_init_addke)) {
 
 		/* On the INITIAL IKE_SA (allow_init_addke), ADDKE/type-6
-		 * requires the IKE_INTERMEDIATE round, which needs an AEAD
-		 * IKE cipher (IntAuth_A is deterministic only for AEAD;
-		 * without 16438 echoed, INIT stays classical).  When the
+		 * requires the IKE_INTERMEDIATE round, which this daemon
+		 * restricts to an AEAD IKE cipher (an implementation
+		 * transport precondition of the IntAuth transcript handling;
+		 * in-flight integrity is SK_e/SK_a per RFC 9242 s3.3.1 -- a
+		 * conventional ENCR with a separate SK_a integrity key also
+		 * carries an ICV, so this is not an AEAD-only protocol
+		 * requirement; without 16438 echoed, INIT stays classical).  When the
 		 * negotiated ENCR is not AEAD (we matched a CBC proposal),
 		 * do NOT echo type-6 -- keep the SA classical so iOS default
 		 * profiles that offer interim + ADDKE as their preferred

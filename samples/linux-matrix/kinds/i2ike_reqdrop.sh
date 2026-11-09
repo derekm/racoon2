@@ -235,19 +235,27 @@ EOF
 		[ "$up" -eq 1 ] || log "FAIL: child not up after 45s (attempt $attempt)"
 		[ "$up" -eq 1 ] || continue
 
-		# INIT SA is up.  Arm 100% request-direction loss only AFTER the
-		# initiator actually sends the rekey, so the counted drops are
-		# genuinely rekey-request retransmit copies and not the
-		# AUTH/DH/spurious traffic at child-up (a 1s/5-drop tick with
-		# req0=0 can never be the 60s rekey and must not satisfy the
-		# gate).  100%: the first copy CANNOT arrive while armed, so any
-		# arrival logged after removal is a retransmit-ladder copy.  The
-		# instigator of recovery is the INITIATOR's own retransmit ladder.
+		# INIT SA is up.  Apply 100% request-direction loss NOW and KEEP it
+		# armed through the 60s soft rekey, so the rekey's FIRST CREATE_CHILD
+		# copy is unavoidably lost.  (Arming only after the initiator send-log
+		# is too late on a veth: GETSPI callback -> send -> response all elapse
+		# in ms and the retransmit ladder is cancelled, so nothing would be
+		# left to drop.)  Spurious child-up/FOLLOWUP egress dropped before the
+		# rekey is irrelevant: the pass proof is a FRESH request arriving
+		# strictly after the qdisc comes off, which can only be a
+		# retransmit-ladder copy.  Recovery is the INITIATOR's own ladder.
+		if ! ip netns exec "$NSI" tc qdisc replace dev "$VI" root netem loss 100% 2>/dev/null; then
+			log "FAIL: cannot apply netem loss on $NSI/$VI (no tc?); abort"
+			break
+		fi
+
+		# Wait for the initiator rekey send (the 60s soft rekey).  Its first
+		# CREATE_CHILD copy is already lost under the armed qdisc.
 		rekey_sent=0; i=0
 		while [ "$i" -lt 90 ]; do
 			if grep -q 'initiating CREATE_CHILD_SA rekey' "$D/init-iked.log" 2>/dev/null; then
 				rekey_sent=1
-				log "initiator rekey send logged after ${i}s (attempt $attempt)"
+				log "initiator rekey send seen after ${i}s; first copy dropped under armed loss (attempt $attempt)"
 				break
 			fi
 			i=$((i+1)); sleep 1
@@ -256,49 +264,31 @@ EOF
 			log "FAIL: no initiator rekey send in 90s (attempt $attempt)"
 		[ "$rekey_sent" -eq 1 ] || continue
 
-		if ! ip netns exec "$NSI" tc qdisc replace dev "$VI" root netem loss 100% 2>/dev/null; then
-			log "FAIL: cannot apply netem loss on $NSI/$VI (no tc?); abort"
-			break
-		fi
+		# The rekey is firing under 100% loss: its request and the early
+		# ladder retransmits (1,2,4,...s) are counted lost.  Snapshot req0
+		# NOW (the first rekey copy is gone, so it is NOT in req0), hold ~4s
+		# so the early ladder rungs are also dropped, then remove the qdisc;
+		# the next ladder rung arrives with the link clean.
 		d0=$(tc_dropped "$NSI" "$VI" || true)
 		req0=$(grep -c 'CREATE_CHILD_SA request: msgid=' "$D/resp-iked.log" 2>/dev/null || true)
-
-		# While 100% is up, NOTHING arrives.  Watch the netem drop
-		# counter for up to 40s: the first tick is a counted loss of a
-		# rekey-request retransmit copy (the ladder retries at 1,2,4,...s).
-		# Hold 4s so the early ladder rungs are also counted dropped, THEN
-		# remove the qdisc; the next ladder rung arrives with the link
-		# clean, before FOLLOWUP even starts.
-		ticked=0; i=0
-		while [ "$i" -lt 40 ]; do
-			d1=$(tc_dropped "$NSI" "$VI" || true)
-			if [ $(( ${d1:-0} - ${d0:-0} )) -ge 1 ]; then
-				ticked=1
-				log "rekey request copy counted lost after ${i}s at 100% request-direction loss (attempt $attempt)"
-				break
-			fi
-			i=$((i+1)); sleep 1
-		done
-		[ "$ticked" -eq 1 ] || \
-			log "FAIL: no counted loss of a rekey retransmit copy in 40s at 100% (attempt $attempt)"
 		sleep 4
 		d1=$(tc_dropped "$NSI" "$VI" || true)
 		ndrop=$(( ${d1:-0} - ${d0:-0} ))
 		ip netns exec "$NSI" tc qdisc del dev "$VI" root 2>/dev/null || true
-		log "drop-count window (REQUEST direction): netem dropped $ndrop datagrams (d0=${d0:-0} d1=${d1:-0}) req ${req0:-0}->(polling)"
+		log "rekey-window loss: netem dropped $ndrop datagrams after the rekey send (d0=${d0:-0} d1=${d1:-0}) req ${req0:-0}->(polling)"
 
-		# The qdisc is OFF; require a FRESH request entry (req > req0)
-		# after removal -- at 100% nothing could have arrived while armed,
+		# The qdisc is OFF; require a FRESH request entry (req > req0) after
+		# removal -- the first rekey copy was dropped under the armed qdisc,
 		# so the increment is the initiator's own retransmit ladder
 		# completing delivery.  This arrival is a HARD gate: without it the
-		# attempt FAILS (a rekey+pqc that completes on a clean link with
-		# only spurious early drops counts as zero proof).
+		# attempt FAILS (a rekey+pqc that completes on a clean link with no
+		# counted rekey loss proves nothing).
 		arrived=0; req=0; i=0
 		while [ "$i" -lt 40 ]; do
 			req=$(grep -c 'CREATE_CHILD_SA request: msgid=' "$D/resp-iked.log" 2>/dev/null || true)
 			if [ "${req:-0}" -gt "${req0:-0}" ]; then
 				arrived=1
-				log "rekey request arrived at responder ${i}s after qdisc removal (attempt $attempt)"
+				log "rekey request (retransmit) arrived at responder ${i}s after qdisc removal (attempt $attempt)"
 				break
 			fi
 			i=$((i+1)); sleep 1

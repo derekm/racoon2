@@ -622,7 +622,7 @@ initiator_ike_intermediate_send(struct ikev2_sa *sa)
 	}
 	if (!sa->encryptor || encryptor_icv_length(sa->encryptor) <= 0) {
 		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
-			   "IKE_INTERMEDIATE: IntAuth_A requires an AEAD IKE cipher\n");
+			   "IKE_INTERMEDIATE: this daemon restricts IntAuth to an AEAD IKE cipher\n");
 		ikev2_abort(sa, ECONNREFUSED);
 		return;
 	}
@@ -995,7 +995,7 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	}
 	if (!sa->encryptor || encryptor_icv_length(sa->encryptor) <= 0) {
 		isakmp_log(sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
-			   "IKE_INTERMEDIATE: IntAuth_A requires an AEAD IKE cipher\n");
+			   "IKE_INTERMEDIATE: this daemon restricts IntAuth to an AEAD IKE cipher\n");
 		goto drop;
 	}
 	if (ikehdr->flags & IKEV2FLAG_RESPONSE) {
