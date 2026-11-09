@@ -2436,7 +2436,13 @@ handle_newsa(struct xfrm_usersa_info *sa, struct rcpfk_msg *rc, uint32_t seq)
 		return 0;
 	}
 	op = op_find(seq);
-	ours = op != NULL;
+	/* only OUR request's echo may complete an op; an external/foreign
+	 * NEWSA/UPDSA event (another daemon, `ip xfrm state add`, a kernel
+	 * event) whose netlink seq collides with an in-flight op must not
+	 * free it -- otherwise the genuine reply is later dropped as stale
+	 * and the op's SPI/SA is delivered from the wrong message.
+	 * Mirrors the xfrm_is_echo() guard on the DELSA branch. */
+	ours = op != NULL && xfrm_is_echo(nlh);
 	if (ours && op->type == XFRM_MSG_ALLOCSPI)
 		fn = cb && cb->cb_getspi ? cb->cb_getspi : NULL;
 	else if (ours && op->type == XFRM_MSG_UPDSA)
