@@ -1892,8 +1892,32 @@ ikev2_create_child_responder_cont(struct ikev2_child_sa *child_sa)
 		return;
 	}
 
-	ikev2_add_ipsec_sa(child_sa, &child_sa->child_param,
-			   child_sa->peer_proposal, child_sa->my_proposal[1]);
+	/*
+	 * G02: the CHILD-SA install is a transaction.  ikev2_add_ipsec_sa
+	 * returns non-zero on a synchronous install failure (keymat alloc,
+	 * proposal_to_ipsec).  Ignoring it treated a failed install as
+	 * success: the child was marked MATURE (by the state dispatcher
+	 * that ran this cont) and a success CREATE_CHILD_SA response went
+	 * out for a CHILD_SA that was never installed, deleting the old
+	 * child of an in-flight rekey.  On failure abort the child -- this
+	 * preserves the old child / rekey state (rekey_inprogress cleared,
+	 * backoff armed) and removes the partial new state -- and send NO
+	 * success response (we have no stored request from which to build a
+	 * tailored notify; the initiator's retransmit/timeout handles it).
+	 */
+	{
+		int err = ikev2_add_ipsec_sa(child_sa, &child_sa->child_param,
+					    child_sa->peer_proposal,
+					    child_sa->my_proposal[1]);
+		if (err) {
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+				   "responder failed adding ipsec SA (err %d); "
+				   "aborting child %p, old child preserved\n",
+				   err, child_sa);
+			ikev2_child_abort(child_sa, EIO);
+			return;
+		}
+	}
 
 	ikev2_child_start_lifetime_timer(child_sa);
 
@@ -3034,8 +3058,15 @@ ikev2_add_ipsec_sa(struct ikev2_child_sa *child_sa,
 
 /*
  * update the ipsec SA of initiator child_sa
+ *
+ * Returns 0 on success (child installed and moved to MATURE, or the
+ * ADDKE followup deferred the install and the child is left pending),
+ * -1 if the install failed and the child was aborted.  The caller MUST
+ * honour this: on -1 it must not treat the exchange as succeeded (no
+ * initiator rekey finalize, no old-child delete), because the new SA was
+ * never established.
  */
-void
+int
 ikev2_update_child(struct ikev2_child_sa *child_sa,
 		   struct ikev2_payload_header *sa_r2,
 		   struct ikev2_payload_header *ts_i,
@@ -3056,6 +3087,7 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 	rc_vchar_t *g_ir;
 #endif
 	int err = 0;
+	int fail = 0;
 
 	/* update IPsec SA with received parameter */
 
@@ -3276,12 +3308,13 @@ ikev2_update_child(struct ikev2_child_sa *child_sa,
 		proppair_discard(matching_proposal);
 	if (parsed_sa)
 		proplist_discard(parsed_sa);
-	return;
+	return (fail ? -1 : 0);
 
       abort_nomem:
 	isakmp_log(child_sa->parent, 0, 0, 0,
 		   PLOG_INTERR, PLOGLOC, "failed allocating memory\n");
       abort:
+	fail = 1;
 	ikev2_child_abort(child_sa, ECONNREFUSED);	/* ??? */
 
 #if 0				/* not sure whether this is correct */
@@ -5774,7 +5807,21 @@ ikev2_createchild_initiator_recv(struct ikev2_sa *ike_sa, rc_vchar_t *msg,
 		}
 	}
 
-	ikev2_update_child(child_sa, sa, ts_i, ts_r, &child_param);
+	if (ikev2_update_child(child_sa, sa, ts_i, ts_r, &child_param) != 0) {
+		/*
+		 * G02: the CHILD-SA install is a transaction.  A failed
+		 * install (keymat alloc, proposal_to_ipsec, ...) aborted the
+		 * new child inside ikev2_update_child() -- it was NOT moved
+		 * to MATURE.  We must NOT run the initiator rekey finalize
+		 * here: that would delete the old, still-live child whose
+		 * replacement was never established.  ikev2_child_abort()
+		 * already preserved the old child (cleared rekey_inprogress,
+		 * armed backoff) and set the new child EXPIRED so its partial
+		 * outbound SA is torn down.  Just bail -- no success path, no
+		 * old-child delete.
+		 */
+		goto done;
+	}
 
 	/*
 	 * RFC 9370 s2.2.4: an ADDKE child rekey defers the keymat/XFRM

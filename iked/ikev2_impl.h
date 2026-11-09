@@ -942,9 +942,9 @@ extern struct ikev2_child_sa *ikev2_find_request(struct ikev2_sa *ike_sa,
 						 uint32_t id);
 extern void ikev2_wakeup_child_sa(struct ikev2_child_sa *);
 
-extern void ikev2_update_child(struct ikev2_child_sa *,
-			       struct ikev2_payload_header *,
-			       struct ikev2_payload_header *,
+extern int ikev2_update_child(struct ikev2_child_sa *,
+			      struct ikev2_payload_header *,
+			      struct ikev2_payload_header *,
 			       struct ikev2_payload_header *,
 			       struct ikev2_child_param *);
 

@@ -107,6 +107,8 @@ static unsigned int last_error_type;
 static int n_rekey_complete;
 static int n_child_install;	/* ikev2_child_addke_install() invocations */
 static int child_install_fail;	/* make ikev2_child_addke_install() fail */
+static int n_rekey_finalize;	/* ikev2_initiator_rekey_finalize() calls */
+static int n_child_abort;	/* ikev2_child_abort() invocations */
 
 void
 isakmp_log(struct ikev2_sa *ike_sa, struct sockaddr *local,
@@ -157,6 +159,13 @@ ikev2_initiator_rekey_finalize(struct ikev2_sa *ike_sa,
 			       struct ikev2_child_sa *child_sa)
 {
 	(void)ike_sa; (void)child_sa;
+	/*
+	 * G02 observation: the production finalize deletes the old child
+	 * (ikev2_child_delete(old_child_sa)).  The tests count invocations
+	 * to prove the rekey finalize (old-child delete) is reached on a
+	 * SUCCESSFUL install but is NEVER reached on a failed one.
+	 */
+	++n_rekey_finalize;
 }
 
 /* iked-side packet machinery referenced by ikev2_addke.c's followup
@@ -421,9 +430,12 @@ void
 ikev2_child_abort(struct ikev2_child_sa *child_sa, int err)
 {
 	/* addketest only needs to satisfy the linker (real impl in ike_sa.c);
-	 * the child-path install-failure tests assert state, not this. */
+	 * the child-path install-failure tests assert state, not this.
+	 * G02: count invocations so the tests prove a detected mid-install
+	 * failure tears the new child down (no zombie) via ikev2_child_abort. */
 	(void)child_sa;
 	(void)err;
+	++n_child_abort;
 }
 
 static int fail;
@@ -656,6 +668,8 @@ followup_reset(void)
 	last_error_type = 0;
 	n_rekey_complete = 0;
 	n_child_install = 0;
+	n_rekey_finalize = 0;
+	n_child_abort = 0;
 }
 
 /* --- fake ops to drive the REAL ikev2_rekey_responder_addke_complete() ---
@@ -1785,6 +1799,102 @@ rekey_gap_round_tests(void)
 	}
 }
 
+/* --- G02: the CHILD-SA install is a transaction. ---
+ * Mirror the fake-ops install-failure shim (ikev2_child_addke_install at
+ * the top of this file): on a FAILED install of an initiator child rekey
+ * the new child must (a) not be marked MATURE, (b) never reach
+ * ikev2_initiator_rekey_finalize (so the OLD child is never deleted), and
+ * (c) be torn down immediately via ikev2_child_abort so no partially
+ * installed outbound SA (zombie) lingers.  The positive control proves
+ * finalize IS reached on a successful install -- so (b) is a real gate,
+ * not a degenerately-always-skipped check.  Drives the REAL
+ * ikev2_initiator_followup_complete() (ikev2_addke.c) through the
+ * classical single-round install; the child is an initiator rekey
+ * (preceding_satype set) so a successful install would delete the old
+ * child. */
+static void
+initiator_install_failure_rekey_tests(void)
+{
+	const unsigned int sid = FAKE_DH_ID;
+	struct ikev2_sa *sa;
+	struct ikev2_child_sa *c;
+	rc_vchar_t *pub = NULL, *peer = NULL;
+	int shape;
+
+	printf("--- G02: CHILD-SA install failure is a transaction ---\n");
+	/* shape 0: FATAL install failure (old child must survive, new
+	 * child torn down, no zombie, not MATURE);
+	 * shape 1: SUCCESSFUL install control (finalize reached, no
+	 * abort). */
+	for (shape = 0; shape < 2; shape++) {
+		sa = calloc(1, sizeof(*sa));
+		c = calloc(1, sizeof(*c));
+		if (!sa || !c) {
+			free(sa); free(c);
+			fail = 1;
+			return;
+		}
+		IKEV2_CHILD_LIST_INIT(&sa->children);
+		c->parent = sa;
+		c->state = IKEV2_CHILD_STATE_WAIT_RESPONSE;
+		c->addke_pending = 1;
+		c->addke_round = 0;
+		c->addke_nrounds = 1;
+		c->addke_methods[0] = sid;
+		c->addke_link = rc_vnew("g02r", 4);
+		/* an initiator CHILD rekey: the OLD child (not materialized
+		 * here; finalize's lookup runs against the counting stub)
+		 * is what a premature finalize would delete. */
+		c->preceding_satype = RCT_SATYPE_ESP;
+		c->preceding_spi = 0x11223344;
+		IKEV2_CHILD_LIST_LINK(&sa->children, c);
+
+		CHECK(ikev2_addke_round_keygen(c, sid, &pub) == 0 && pub &&
+		      pub->l == FAKE_DH_PUBLEN,
+		      "g02: round-0 keygen (KEi = DH public value)");
+		peer = rc_vmalloc(FAKE_DH_PUBLEN);
+		memset(peer->v, 0x66, peer->l);
+
+		n_child_install = 0;
+		followup_reset();
+		if (shape == 0) {
+			child_install_fail = 1;
+			CHECK(ikev2_initiator_followup_complete(c, peer) < 0,
+			      "g02: failing install fails the round");
+			child_install_fail = 0;
+			CHECK(c->state != IKEV2_CHILD_STATE_MATURE,
+			      "g02 (a): child NOT marked MATURE on failed "
+			      "install");
+			CHECK(n_rekey_finalize == 0,
+			      "g02 (b): initiator rekey finalize NOT "
+			      "reached; old child NOT deleted on failed "
+			      "install");
+			CHECK(n_child_install == 1,
+			      "g02: install attempted exactly once");
+			CHECK(n_child_abort == 1 && c->addke_sk == NULL,
+			      "g02 (c): mid-install failure aborts child; "
+			      "partial outbound removed (no zombie)");
+		} else {
+			CHECK(ikev2_initiator_followup_complete(c, peer) == 0,
+			      "g02: successful install completes the round");
+			CHECK(n_rekey_finalize == 1,
+			      "g02 control: finalize reached on SUCCESS "
+			      "(old child deleted only after a live install)");
+			CHECK(n_child_abort == 0,
+			      "g02 control: no abort on success");
+		}
+
+		IKEV2_CHILD_LIST_REMOVE(&sa->children, c);
+		rc_vfree(c->addke_link);
+		rc_vfreez(c->addke_sk);
+		ikev2_addke_round_state_clear(c);
+		free(c);
+		free(sa);
+		rc_vfree(pub); pub = NULL;
+		rc_vfree(peer); peer = NULL;
+	}
+}
+
 int
 main(void)
 {
@@ -1824,6 +1934,7 @@ main(void)
 	retransmit_no_double_sk_tests();
 	initiator_multiround_tests();
 	initiator_classical_round_tests();
+	initiator_install_failure_rekey_tests();
 	collect_rounds_tests();
 
 	if (have_cli) {

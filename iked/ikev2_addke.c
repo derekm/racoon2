@@ -748,6 +748,18 @@ ikev2_initiator_followup_complete(struct ikev2_child_sa *child_sa,
 	if (ikev2_child_addke_install(child_sa) < 0) {
 		rc_vfreez(child_sa->addke_sk);
 		child_sa->addke_sk = NULL;
+		/*
+		 * G02: the CHILD-SA install is a transaction.  A detected
+		 * mid-install failure (e.g. a partially-installed outbound
+		 * SA) must tear the new child down, not leave it pending:
+		 * ikev2_child_abort() removes the partial new state (no
+		 * zombie, no sleeping 10 s arm-wait timer holding a half SA)
+		 * and, for a rekey, preserves the old child (clears
+		 * rekey_inprogress, arms backoff).  Solely returning -1 left
+		 * this child addke_pending in WAIT_RESPONSE with the partial
+		 * outbound SA resident until the timeout fired.
+		 */
+		ikev2_child_abort(child_sa, ECONNREFUSED);
 		return -1;
 	}
 	/*
