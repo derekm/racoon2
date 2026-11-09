@@ -277,6 +277,15 @@ EOF
 		d1=$(tc_dropped "$NSI" "$VI" || true)
 		ndrop=$(( ${d1:-0} - ${d0:-0} ))
 		ip netns exec "$NSI" tc qdisc del dev "$VI" root 2>/dev/null || true
+		# SPI base AT qdisc-removal time: the responder still holds only the
+		# OLD (pre-rekey) SPIs -- the first rekey copy was dropped, so no
+		# new SPI is installed yet -- and the install that lands after the
+		# retransmit is therefore guaranteed to show up as a delta.  (Base
+		# must be taken here, NOT after the arrival wait: on a low-latency
+		# box the rekey install completes within the 1s poll granularity, so
+		# a later base already contains the new SPIs and no delta is seen.)
+		spi(){ ip netns exec "$1" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort; }
+		SR0=$(spi "$NSR"); SI0=$(spi "$NSI")
 		# Baseline req0 AFTER the qdisc is gone: loss was armed the whole
 		# time, so no rekey request reached the responder in-window; any
 		# NEW handler entry after this snapshot is necessarily a
@@ -306,8 +315,6 @@ EOF
 
 		# With loss off, the response + FOLLOWUP finish; watch for the new
 		# SPI (rekey install) for up to 30s.
-		spi(){ ip netns exec "$1" ip xfrm state 2>/dev/null | grep -oE 'spi 0x[0-9a-f]+' | sort; }
-		SR0=$(spi "$NSR"); SI0=$(spi "$NSI")
 		rekeyed=0; i=0
 		while [ "$i" -lt 30 ]; do
 			SRn=$(spi "$NSR"); SIn=$(spi "$NSI")
