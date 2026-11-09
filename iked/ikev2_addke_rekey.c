@@ -225,14 +225,37 @@ ikev2_rekey_responder_addke_round(struct ikev2_sa *old_sa, rc_vchar_t *ss,
 		return -1;
 
 	nrounds = new_sa->negotiated_sa->addke_nrounds;
-	if (nrounds <= 0)
-		nrounds = new_sa->negotiated_sa->addke != 0 ? 1 : 0;
 	round = old_sa->addke_rekey_round;
-	if (round < 0 || round >= nrounds || round >= 8)
+	if (round < 0 || round >= 8)
 		return -1;
-	expect = new_sa->negotiated_sa->addke_methods[round];
-	if (expect == 0)
+	if (nrounds > 0) {
+		const unsigned int *m =
+		    new_sa->negotiated_sa->addke_methods;
+		int slot;
+
+		/* Drive the REAL (non-NONE) rounds densely.  The
+		 * type-indexed list may carry a NONE gap (addke_nrounds 3
+		 * with methods {36, 0, 19}); addke_rekey_round is a DENSE
+		 * round index, so resolve it through the type-indexed
+		 * array and skip the gap instead of falling back to a
+		 * stale method. */
+		nrounds = ikev2_addke_dense_count(m, nrounds);
+		if (round >= nrounds ||
+		    ikev2_addke_dense_slot(m,
+			new_sa->negotiated_sa->addke_nrounds, round,
+			&slot, &expect) != 0) {
+			isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			    "IKE-SA rekey round %d out of range (%d rounds)\n",
+			    round, nrounds);
+			return -1;
+		}
+	} else {
+		/* legacy single-round descriptor */
+		nrounds = new_sa->negotiated_sa->addke != 0 ? 1 : 0;
+		if (round >= nrounds)
+			return -1;
 		expect = (unsigned int)new_sa->negotiated_sa->addke;
+	}
 	if (ke_method != expect) {
 		isakmp_log(old_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
 			   "IKE-SA rekey followup method %u != round %d "

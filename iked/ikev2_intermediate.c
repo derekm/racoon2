@@ -633,7 +633,13 @@ initiator_ike_intermediate_send(struct ikev2_sa *sa)
 		int rnd = sa->intermediate_rounds;
 
 		if (sa->negotiated_sa->addke_nrounds > 0) {
-			if (rnd < 0 || rnd >= sa->negotiated_sa->addke_nrounds) {
+			int slot;
+
+			if (rnd < 0 ||
+			    ikev2_addke_dense_slot(
+				sa->negotiated_sa->addke_methods,
+				sa->negotiated_sa->addke_nrounds,
+				rnd, &slot, &method) != 0) {
 				isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 				    "IKE_INTERMEDIATE: round %d out of range "
 				    "(nrounds=%d)\n", rnd,
@@ -641,7 +647,6 @@ initiator_ike_intermediate_send(struct ikev2_sa *sa)
 				ikev2_abort(sa, ECONNREFUSED);
 				return;
 			}
-			method = sa->negotiated_sa->addke_methods[rnd];
 		} else {
 			method = (unsigned int)sa->negotiated_sa->addke;
 		}
@@ -809,7 +814,7 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	if (!ke)
 		goto malformed;
 	/* RFC 9370 multi-round: validate THIS round's KE method against the
-	 * per-round negotiated method list (addke_methods[round], type
+	 * per-round negotiated method list (addke_methods[type], type
 	 * ADDKE1+r), not the type-6-only shorthand sa->negotiated_sa->addke.
 	 * A 2-round offer (37 then 36) makes round 2 carry method 36 while
 	 * addke is still the round-1 value 37; matching against addke would
@@ -822,14 +827,19 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 		unsigned int expect;
 
 		if (sa->negotiated_sa->addke_nrounds > 0) {
-			if (rnd < 0 || rnd >= sa->negotiated_sa->addke_nrounds) {
+			int slot;
+
+			if (rnd < 0 ||
+			    ikev2_addke_dense_slot(
+				sa->negotiated_sa->addke_methods,
+				sa->negotiated_sa->addke_nrounds,
+				rnd, &slot, &expect) != 0) {
 				isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
 				    "IKE_INTERMEDIATE: round %d out of range "
 				    "(nrounds=%d)\n", rnd,
 				    sa->negotiated_sa->addke_nrounds);
 				goto malformed;
 			}
-			expect = sa->negotiated_sa->addke_methods[rnd];
 		} else {
 			/* legacy single-round descriptor */
 			expect = (unsigned int)sa->negotiated_sa->addke;
@@ -861,10 +871,19 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 		unsigned int cmethod;
 		int rnd = sa->intermediate_rounds;
 
-		if (sa->negotiated_sa->addke_nrounds > 0)
-			cmethod = sa->negotiated_sa->addke_methods[rnd];
-		else
+		if (sa->negotiated_sa->addke_nrounds > 0) {
+			int slot;
+
+			if (ikev2_addke_dense_slot(
+				sa->negotiated_sa->addke_methods,
+				sa->negotiated_sa->addke_nrounds,
+				rnd, &slot, &cmethod) != 0) {
+				rc_vfree(body);
+				goto abort;
+			}
+		} else {
 			cmethod = (unsigned int)sa->negotiated_sa->addke;
+		}
 		if (ikev2_addke_method_is_mlkem(cmethod)) {
 			if (ikev2_addke_mlkem_decap((EVP_PKEY *)
 				    sa->intermediate_priv, body, &ss) != 0) {
@@ -927,7 +946,9 @@ initiator_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	 * > send_message_id).  Advance the reserve to the NEXT id so the
 	 * response to this round is accepted. */
 	if (sa->negotiated_sa->addke_nrounds > 0 &&
-	    sa->intermediate_rounds < sa->negotiated_sa->addke_nrounds) {
+	    sa->intermediate_rounds < ikev2_addke_dense_count(
+		sa->negotiated_sa->addke_methods,
+		sa->negotiated_sa->addke_nrounds)) {
 		sa->intermediate_msgid++;
 		sa->send_message_id = sa->intermediate_msgid + 1;
 		initiator_ike_intermediate_send(sa);
@@ -1010,8 +1031,16 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	 * (nrounds 0) uses negotiated_sa->addke. */
 	rnd = sa->intermediate_rounds;
 	if (sa->negotiated_sa->addke_nrounds > 0) {
-		if (rnd >= 0 && rnd < sa->negotiated_sa->addke_nrounds)
-			round_method = sa->negotiated_sa->addke_methods[rnd];
+		int slot;
+
+		/* resolve the current round densely over the real
+		 * (non-NONE) types */
+		round_method = 0;
+		if (rnd >= 0)
+			(void)ikev2_addke_dense_slot(
+			    sa->negotiated_sa->addke_methods,
+			    sa->negotiated_sa->addke_nrounds,
+			    rnd, &slot, &round_method);
 	} else {
 		round_method = (unsigned int)sa->negotiated_sa->addke;
 	}
@@ -1191,7 +1220,9 @@ responder_ike_intermediate_recv(struct ikev2_sa *sa, rc_vchar_t *packet,
 	 * when every negotiated round is done. */
 	if (sa->ppk_active && sa->ppk_deferred &&
 	    (sa->negotiated_sa->addke_nrounds <= 0 ||
-	     sa->intermediate_rounds >= sa->negotiated_sa->addke_nrounds)) {
+	     sa->intermediate_rounds >= ikev2_addke_dense_count(
+		 sa->negotiated_sa->addke_methods,
+		 sa->negotiated_sa->addke_nrounds))) {
 		sa->ppk_deferred = 0;
 		if (ikev2_ppk_apply(sa) != 0) {
 			isakmp_log(sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,

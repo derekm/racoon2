@@ -112,3 +112,59 @@ ikev2_addke_collect_rounds(struct prop_pair *proposal,
 	*nrounds = n;
 	return 0;
 }
+
+/*
+ * Dense-slot helpers over the type-indexed negotiated ADDKE method list.
+ *
+ * addke_methods[] on a negotiated isakmpsa is keyed by TYPE (slot r =
+ * transform type IKEV2TRANSFORM_TYPE_ADDKE + r); addke_nrounds is the
+ * highest occupied slot + 1, so NONE (0) rounds leave exposed "gaps" in
+ * the middle (e.g. an offer of ADDKE1=mlkem768, ADDKE2=NONE, ADDKE3=
+ * mlkem1024 is {36, 0, 19} with addke_nrounds 3).  The wire emitter and
+ * the storage are correct and iterate the slots, skipping 0; only the
+ * ROUND-DRIVING consumers (which walk real rounds one at a time) must
+ * collapse the array to its non-NONE entries.  These two helpers provide
+ * that dense view: a dense round index counts the real (non-NONE) types,
+ * and ikev2_addke_dense_slot() maps it back to the type slot (for
+ * re-emitting a type-specific transform if ever needed) and its method.
+ */
+
+/* Number of real (non-NONE) additional key-exchange rounds described by a
+ * type-indexed methods[0..nslots).  A NONE transform is not a round
+ * (RFC 9370 s2.2.1), so it is not counted. */
+int
+ikev2_addke_dense_count(const unsigned int *methods, int nslots)
+{
+	int i, n = 0;
+
+	for (i = 0; i < nslots; ++i)
+		if (methods[i] != 0)
+			++n;
+	return n;
+}
+
+/* Map a DENSE round index (0-based over the real non-NONE rounds) to the
+ * type-indexed slot that carries it.  On success returns 0 and, if non-NULL,
+ * stores the type offset in *slot (transform_type == IKEV2TRANSFORM_TYPE_ADDKE
+ * + *slot) and the method in *method.  Returns -1 when rounds is out of range
+ * (fewer than rounds non-NONE slots); *slot/*method are then untouched. */
+int
+ikev2_addke_dense_slot(const unsigned int *methods, int nslots, int rounds,
+		       int *slot, unsigned int *method)
+{
+	int i, n = 0;
+
+	for (i = 0; i < nslots; ++i) {
+		if (methods[i] == 0)
+			continue;
+		if (n == rounds) {
+			if (slot)
+				*slot = i;
+			if (method)
+				*method = methods[i];
+			return 0;
+		}
+		++n;
+	}
+	return -1;
+}

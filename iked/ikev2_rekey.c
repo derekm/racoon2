@@ -1578,9 +1578,14 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		ctx->addke_priv = kp;
 		ctx->addke_method = new_sa->negotiated_sa->addke;
 		ctx->addke_round = 0;
+		/* Dense round count: only the real (non-NONE) ADDKE
+		 * types run, so collapse the type-indexed list (a NONE
+		 * gap is skipped, not a round). */
 		ctx->addke_nrounds =
 		    new_sa->negotiated_sa->addke_nrounds > 0 ?
-		    new_sa->negotiated_sa->addke_nrounds : 1;
+		    ikev2_addke_dense_count(
+			new_sa->negotiated_sa->addke_methods,
+			new_sa->negotiated_sa->addke_nrounds) : 1;
 		ctx->addke_final = 0;
 		/*
 		 * RFC 9370 s2.2.2: the link is the responder's opaque blob
@@ -1845,10 +1850,26 @@ ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *old_sa,
 		}
 		if (!ctx->new_sa || !ctx->new_sa->negotiated_sa)
 			return -1;
-		next = ctx->new_sa->negotiated_sa->addke_methods[
-		    ctx->addke_round + 1];
-		if (next == 0 ||
-		    ikev2_addke_mlkem_keygen(next, &pub, &nkp) != 0 ||
+		{
+			int ns;
+			unsigned int nm;
+
+			/* Resolve the NEXT method densely: the type-indexed
+			 * list may hide a NONE gap, so round+1 maps through
+			 * ikev2_addke_dense_slot() to the next real type. */
+			if (ikev2_addke_dense_slot(
+			    ctx->new_sa->negotiated_sa->addke_methods,
+			    ctx->new_sa->negotiated_sa->addke_nrounds,
+			    ctx->addke_round + 1, &ns, &nm) != 0) {
+				isakmp_log(old_sa, 0, 0, 0, PLOG_INTERR,
+				    PLOGLOC,
+				    "IKE-SA rekey followup next round %d "
+				    "has no method\n", ctx->addke_round + 1);
+				return -1;
+			}
+			next = nm;
+		}
+		if (ikev2_addke_mlkem_keygen(next, &pub, &nkp) != 0 ||
 		    !pub || !nkp) {
 			rc_vfree(pub);
 			EVP_PKEY_free(nkp);

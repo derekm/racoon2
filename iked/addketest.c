@@ -1709,6 +1709,82 @@ round_internal_tests(void)
 	round_cleanup(os); rc_vfree(ct); rc_vfree(ss);
 }
 
+/* --- G03: NONE/gap round offers drive the REAL (non-NONE) rounds ---
+ * A lawful offer ADDKE1=mlkem768, ADDKE2=NONE, ADDKE3=mlkem1024 lands in
+ * the type-indexed negotiated list as {36, 0, 19} with addke_nrounds 3
+ * (highest slot + 1).  The round-carrying consumers must collapse that to
+ * the two REAL rounds (36 then 19); indexing densely (addke_methods[round])
+ * would read slot 1 == 0 on round 2 and mis-handle it (responder falls back
+ * to the round-1 method and mis-matches; initiator's next==0 aborts).  Drive
+ * the REAL responder round through the gap, then the initiator next-round
+ * dense resolution. */
+static void
+rekey_gap_round_tests(void)
+{
+	struct ikev2_sa *os;
+	rc_vchar_t *ct, *ss;
+	int r;
+
+	printf("--- IKE-SA rekey ADDKE gap round (G03: {36,NONE,19}) ---\n");
+	ar_install_test_ops();
+	ar_ops_reset();
+	ct = rc_vnew("C", 1); ss = rc_vnew("S", 1);
+
+	/* negotiated IKE proposal: ADDKE1=mlkem768(36), ADDKE2=NONE(0 gap),
+	 * ADDKE3=ecp256(19); type-indexed, nrounds = highest slot+1 = 3.
+	 * 36 is ML-KEM-768, 19 a classical DH group (RFC 9370 makes every
+	 * round a KE method that may be PQ or classical). */
+	os = calloc(1, sizeof(*os));
+	os->new_sa = calloc(1, sizeof(*os->new_sa));
+	os->new_sa->negotiated_sa =
+	    calloc(1, sizeof(*os->new_sa->negotiated_sa));
+	os->new_sa->negotiated_sa->addke_nrounds = 3;
+	os->new_sa->negotiated_sa->addke = 36;
+	os->new_sa->negotiated_sa->addke_methods[0] = 36;
+	os->new_sa->negotiated_sa->addke_methods[1] = 0;  /* NONE gap */
+	os->new_sa->negotiated_sa->addke_methods[2] = 19;
+	os->addke_rekey_round = 0;
+	os->addke_rekey_complete =
+	    calloc(1, sizeof(struct ikev2_rekey_responder_ctx));
+
+	/* REAL round 1 = ADDKE1 (mlkem768, type slot 0) */
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 5, 36);
+	CHECK(r == 1 && os->addke_rekey_round == 1,
+	      "gap responder: round 1 (36/mlkem768) commits and advances");
+	ar_ops_reset();	/* clears counters, keeps round/sk/link state */
+
+	/* REAL round 2 = ADDKE3 (ecp256, type slot 2) — the NONE slot
+	 * must be SKIPPED, not mis-handled as a round-1 fallback/abort. */
+	r = ikev2_rekey_responder_addke_round(os, ss, ct, 6, 19);
+	CHECK(r == 0 && os->addke_rekey_round == 1 &&
+	      os->addke_rekey_sk != NULL &&
+	      os->addke_rekey_sk->l == 2 * ss->l,
+	      "gap responder: round 2 (19/ecp256) is final, SK(1|2) appended");
+	round_cleanup(os); rc_vfree(ct); rc_vfree(ss);
+
+	/* initiator next-round step (ikev2_rekey.c IKE-SA-rekey addke
+	 * complete): the DENSE next method after round 0 is type slot 2 /
+	 * 19 — the two REAL rounds resolve 36 then 19, never 0. */
+	{
+		const unsigned int gm[] = { 36, 0, 19 };
+		int slot;
+		unsigned int m;
+
+		CHECK(ikev2_addke_dense_count(gm, 3) == 2,
+		      "gap init: 2 REAL rounds (sparse nrounds 3 hides NONE)");
+		CHECK(ikev2_addke_dense_slot(gm, 3, 0, &slot, &m) == 0 &&
+		      slot == 0 && m == 36,
+		      "gap init: next round 0 -> type slot 0, 36");
+		CHECK(ikev2_addke_dense_slot(gm, 3, 1, &slot, &m) == 0 &&
+		      slot == 2 && m == 19,
+		      "gap init: next round 1 -> type slot 2, 19 "
+		      "(skips the NONE gap)");
+		CHECK(gm[1] == 0,
+		      "gap init: type-slot 1 is the NONE gap a sparse read "
+		      "would abort on");
+	}
+}
+
 int
 main(void)
 {
@@ -1744,6 +1820,7 @@ main(void)
 	followup_rekey_contract_tests();
 	complete_internal_tests();
 	round_internal_tests();
+	rekey_gap_round_tests();
 	retransmit_no_double_sk_tests();
 	initiator_multiround_tests();
 	initiator_classical_round_tests();

@@ -776,6 +776,9 @@ extern void ikev2_createchild_initiator_recv(struct ikev2_sa *, rc_vchar_t *,
 #define	IKEV2_ADDKE_MAX_ROUNDS	7
 extern int ikev2_addke_collect_rounds(struct prop_pair *, unsigned int *,
 				      int *, int *);
+extern int ikev2_addke_dense_count(const unsigned int *, int);
+extern int ikev2_addke_dense_slot(const unsigned int *, int, int, int *,
+				  unsigned int *);
 
 /* defined in every build (NULL without WITH_ADDKE): dispose calls it */
 extern struct ikev2_sa *ikev2_rekey_init_stub(struct ikev2_sa *);
