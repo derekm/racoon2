@@ -198,12 +198,16 @@ that with "method A", the conclusion would be wrong; the source structure
   `intermediate_content_a` naming and these comments must be revisited so the
   two meanings do not collide.
 - **AEAD-only gating** narrows the initial-IKE_SA ADDKE feature to suites whose
-  ENCR is an AEAD; adding non-AEAD IKE ciphers would require the PRF method to
-  run without relying on an ICV for transport authenticity — an unclimbed hill.
-- **Multi-round IKE_INTERMEDIATE** is designed for (per-round method
-  dispatch at `ikev2_intermediate.c:632-648, 820-844, 858-891`) but the live
-  initial-SA path is single-round (`allow_init_addke`); the IKE_AUTH_MID
-  tracking (above) is the brittle spot if it grows.
+  ENCR is an AEAD; a non-AEAD IKE cipher with a separate SK_a integrity key
+  would still carry an ICV in flight (RFC 9242 §3.3.1) and the PRF method does
+  not inherently need AEAD — supporting one is a build/choice step, not an
+  ICV-less impossibility.
+- **Multi-round IKE_INTERMEDIATE** (per-round method dispatch at
+  `ikev2_intermediate.c:632-648, 820-844, 858-891`) runs on the initial IKE_SA
+  and the rekey paths — the initial-ADDKE collect loop echoes ADDKE1..ADDKE7
+  (cap `IKEV2_ADDKE_MAX_ROUNDS` = 7) and N rounds run (iked/ikev2.c initial
+  collect); the IKE_AUTH_MID tracking (above) is the brittle spot to keep true
+  as the round count grows.
 - **`make check` claim**: crypto/unit coverage (`addketest`, `addkekat`) is as
   recorded in `doc/addke-design.md` (7/7 PASS, WITH_ADDKE). Interop of the
   IntAuth_B AUTH blob against a strict non-racoon2 peer is matrix/box-proven for

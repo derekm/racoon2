@@ -133,14 +133,14 @@ link to the responder dies — it does not publish racoon2's own new address to 
 
 ## Risks / open items
 
-- **Discovery of racoon2's own mobility is the open design gap.**  To become a MOBIKE
-  *initiator* that pushes updates, racoon2 needs (a) a trigger source — the kernel routing /
-  source-preference change or an outbound mapping rotation — and (b) a new INFORMATIONAL request
-  builder that carries N(UPDATE_SA_ADDRESSES) guarded by `mobike_supported`, plus (c) a
-  hold-down so the address swap is committed only after the peer's ACK, and (d) an
-  "I-AM-INITIATOR" alternate-address advertisement of racoon2's own addresses to support
-  responder-follow *of* racoon2.  Items (b) reuses the existing `ikev2_informational_initiator_notify`
-  path and the existing applier; (c) is the substantive new state (a pending-initiated move).
+- **Discovery of racoon2's own mobility is implemented** (`mobike_initiate on`,
+  RFC 4555 §3.5): (a) the rtnetlink local-address event is the trigger, (b)
+  `ikev2_mobike_local_update` builds and sends the INFORMATIONAL
+  UPDATE_SA_ADDRESSES (+NAT_DETECTION) and folds in the kernel's new source
+  address, and (c) a hold-down commits the endpoint change on the peer's ACK
+  or abandons on timeout.  The still-open piece is (d) advertising racoon2's
+  OWN alternate addresses (`extra_addr`) to support responder-follow *of*
+  racoon2; the follow half and the initiator push half are both in tree.
 - **First-message race on follow**: the implicit detection keys on `ike_sa->mobike_supported`,
   which requires having seen the peer's notify — a message from a moved (post-auth) peer is
   integrity-checked before the compare, so an unauthenticated source is not an update.
@@ -157,9 +157,9 @@ The matrix row `ikev2-netns-mobike` (samples/linux-matrix/cases.tsv:34) drives c
 `mobike = yes` (a **charon** knob, samples/linux-matrix/kinds/ikev2.sh:285 — it is not a racoon2
 config keyword) against the iked responder and proves the negotiation knob, not a roam; the
 `ikev2-netns-cookie2` row (cases.tsv:35) proves NO_ADDITIONAL_ADDRESSES/COOKIE2 processing.
-The suite does **not** exercise an end-to-end racoon2-as-initiator roam, because that feature
-does not exist.  A live roaming-*peer* proof is the iPhone/iOS peer exercising the
-implicit/UPDATE path against the responder, as noted in NEWS.
+The suite does **not** yet have a dedicated racoon2-as-initiator roam row (the
+feature exists as `mobike_initiate on`, RFC 4555 §3.5); a live roaming-*peer* proof is the
+iPhone/iOS peer exercising the implicit/UPDATE path against the responder, as noted in NEWS.
 
 ## MOBIKE and reconnects over RFC 9329 TCP
 

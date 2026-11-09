@@ -14,11 +14,14 @@
 # required here (nothing was answered and then lost); the counted gate is
 # proof that a request-direction drop did not stop the rekey.
 #
-# Shape (tightened per review #4): 100% loss armed on the initiator
-# egress AFTER child-up; KEPT until the netem drop counter ticks (the
-# first request copy is counted lost), held ~4s longer so the 1s/3s
-# ladder rungs are also counted dropped, THEN the qdisc is REMOVED and
-# the next ladder rung (t+7s) arrives inside the 10s ADDKE arm timer.
+# Shape (tightened across reviews): 100% loss is armed on the initiator
+# egress at child-up and KEPT through the 60s soft rekey, so the rekey's
+# FIRST CREATE_CHILD copy is unavoidably lost (arming only after the send is
+# too late on a veth, where the exchange completes in ms).  When the rekey
+# fires, hold ~4s so the early ladder rungs are counted dropped, THEN remove
+# the qdisc; a FRESH request arriving after removal is necessarily a
+# retransmit-ladder copy and is hard-gated in pass_ok.  Spurious child-up /
+# FOLLOWUP egress dropped before the rekey cannot satisfy the proof.
 # Keeping loss on across the FOLLOWUP would reproduce CI 36204006963
 # (y_arm=1, followup timeout) for the wrong reason — loss ends before
 # the FOLLOWUP starts.
