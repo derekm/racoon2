@@ -1,8 +1,9 @@
 # name	configure_args
 # Linux default is xfrm (empty args). pfkey is opt-in (lossy AF_KEY).
-# xfrm-addke enables the RFC 9370 PQC path (--enable-addke); it auto-off after
-# the configure probe finds no <openssl/ml_kem.h> (OpenSSL 3.5 = Fedora 44) on
-# older x86_64 OpenSSL.  The PQC matrix rows (gate=addke) run only on this build.
+# xfrm-addke enables the RFC 9370 PQC path (--enable-addke --enable-keymat-oracle).
+# ADDKE auto-builds wherever <openssl/ml_kem.h> exists (OpenSSL 3.5+: Fedora 44
+# and ubuntu-latest alike); the PQC rows (gate=addke) need BOTH flags, so only
+# the xfrm-addke build runs them, on the Fedora lane.
 xfrm	
 pfkey	--with-km-backend=pfkey
 xfrm-addke	--enable-addke --enable-keymat-oracle

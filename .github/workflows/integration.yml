@@ -6,11 +6,17 @@
 #
 # inputs.dist selects which job:
 #   - 'linux'  (default): Ubuntu host with systemd, runs the full matrix. The
-#     PQC rows (gate=addke in cases.tsv) are SKIPPED because the OpenSSL 3.0
-#     build has no ADDKE (run.sh's R2_ADDKE gate).  This is what the user asked
+#     PQC rows (gate=addke in cases.tsv, currently i2ike-reqdrop) are SKIPPED
+#     because the plain xfrm build is not configured with
+#     --enable-keymat-oracle, so run.sh's addke_ok gate is false (it requires
+#     WITH_ADDKE AND WITH_KEYMAT_ORACLE).  ADDKE itself auto-builds wherever
+#     <openssl/ml_kem.h> exists (OpenSSL 3.5+, incl. this ubuntu-latest runner);
+#     what keeps the PQC matrix off Ubuntu is the missing keymat-oracle, not
+#     the OpenSSL version.  This is what the user asked
 #     for: the PQC matrix does NOT run on Ubuntu.
 #   - 'fedora': Fedora 44 container (OpenSSL 3.5), builds xfrm-addke
-#     (--enable-addke, R2_ADDKE=yes) and runs the ADDKE-gated PQC case(s) plus
+#     (--enable-addke --enable-keymat-oracle, R2_ADDKE=yes) so addke_ok is
+#     true, and runs the ADDKE-gated PQC case(s) plus
 #     the systemd-free unit cases inline.  The PQC matrix RUNS here.
 #
 # A NetBSD integration run can reuse this workflow later via inputs.os; see

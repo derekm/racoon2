@@ -1,7 +1,11 @@
-# Expected skips on the Ubuntu 24.04 lane (OpenSSL 3.0, no ADDKE).  With
+# Expected skips on the ubuntu-latest lane (plain xfrm build; not configured
+# with --enable-keymat-oracle, so run.sh's addke_ok is false even though ADDKE
+# itself auto-builds on this runner's OpenSSL 3.5).  With
 # R2_REQUIRE_LIVE=1 any other skip fails the run.
 #   row <name> <why>   |   gate <gate> <why>
-gate addke RFC 9370 ADDKE needs OpenSSL 3.5 (Fedora lane runs these rows)
+gate addke PQC rows need the keymat-oracle: addke_ok requires WITH_ADDKE AND
+  WITH_KEYMAT_ORACLE, and the plain xfrm build lacks the oracle -> Fedora's
+  xfrm-addke lane (--enable-addke --enable-keymat-oracle) runs i2ike-reqdrop
 gate charonv1 strongSwan >= 6.1 (resident on some 24.04/sid peers) has no IKEv1; skipped only when libcharon proves it (run.sh charon_ikev1_absent)
 gate dpd   11-timer DPD ladder (~16 min) is box-only
 gate box   new rows are box-verified before CI admits them
