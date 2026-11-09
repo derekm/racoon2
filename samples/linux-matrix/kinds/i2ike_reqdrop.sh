@@ -270,11 +270,15 @@ EOF
 		# so the early ladder rungs are also dropped, then remove the qdisc;
 		# the next ladder rung arrives with the link clean.
 		d0=$(tc_dropped "$NSI" "$VI" || true)
-		req0=$(grep -c 'CREATE_CHILD_SA request: msgid=' "$D/resp-iked.log" 2>/dev/null || true)
 		sleep 4
 		d1=$(tc_dropped "$NSI" "$VI" || true)
 		ndrop=$(( ${d1:-0} - ${d0:-0} ))
 		ip netns exec "$NSI" tc qdisc del dev "$VI" root 2>/dev/null || true
+		# Baseline req0 AFTER the qdisc is gone: loss was armed the whole
+		# time, so no rekey request reached the responder in-window; any
+		# NEW handler entry after this snapshot is necessarily a
+		# retransmit-ladder copy (the first copy was dropped).
+		req0=$(grep -c 'CREATE_CHILD_SA request: msgid=' "$D/resp-iked.log" 2>/dev/null || true)
 		log "rekey-window loss: netem dropped $ndrop datagrams after the rekey send (d0=${d0:-0} d1=${d1:-0}) req ${req0:-0}->(polling)"
 
 		# The qdisc is OFF; require a FRESH request entry (req > req0) after

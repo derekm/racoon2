@@ -67,14 +67,14 @@ Success/Failure/Nak codes are the skeleton any method must handle.
 
 1. **EAP framing module** — `ikev2_eap.c` (framing codec, landed) + the
    responder relay engine `ikev2_eap_relay.c` (landed, verified by relaytest
-   and exercised one-round-live by relayworkertest).  Payload type 48 is
-   still `#ifdef notyet` in the
-   IKE_AUTH responder: `IKEV2_PAYLOAD_EAP` (48) appears in `iked/ikev2.c` only
-   as the top of the critical-payload type range (~line 1229); the responder
-   arms that would intercept an IDi-without-AUTH message for an eap-remote and
-   emit payload 48 inside the SK response are still to be written (the EAP
-   request/response orchestration across the IKE_AUTH state is the open
-   milestone-3 wiring).
+   and exercised one-round-live by relayworkertest).  The responder IKE_AUTH
+   EAP wiring is implemented: the responder state machine
+   `IKEV2_STATE_RES_IKE_AUTH_EAP` and the responder arms in
+   `iked/ikev2_sa_auth.c` (`responder_ike_sa_auth_eap_*`,
+   `ikev2_eap_emit_request()`) intercept an IDi-without-AUTH for an eap-remote
+   and emit payload 48 inside the SK response (see doc/eap-design.md,
+   implemented 2026-10-10).  A `#ifdef notyet` on payload 48 elsewhere in
+   `iked/ikev2.c` is an unrelated unprotected-notify stub, not this wiring.
 2. **RADIUS client module** — `ikev2_radius.c` (or in `lib/`): packet
    encode/decode for `Access-Request/Challenge/Reject/Accept`, UDP 1812,
    shared-secret MD5 authenticator, `EAP-Message`(79)/`Message-Authenticator`
