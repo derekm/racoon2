@@ -235,7 +235,7 @@ ikev2_kernel_migrated(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 	return ikev2_move_sa(ike_sa, remote, local, 0, "kernel MIGRATE");
 }
 
-static int ikev2_move_sa_impl(struct ikev2_sa *, struct sockaddr *,
+int ikev2_move_sa_impl(struct ikev2_sa *, struct sockaddr *,
     struct sockaddr *, int, const char *);
 
 /*
@@ -284,6 +284,96 @@ ikev2_move_sa(struct ikev2_sa *ike_sa, struct sockaddr *remote,
 }
 
 /*
+ * One successfully-migrated (reqid, direction), enough to walk it back
+ * to the old endpoint if a later direction hard-fails.  The kernel SA
+ * now lives at cur_s/cur_d (the forward target); reversing it calls
+ * ikev2_mobike_migrate_dir again with the forward source (old_s/old_d)
+ * as the target, which exercises whatever reversal the backend supports
+ * (the umig / no-SADB_X_MIGRATE fallback in if_pfkeyv2.c already has a
+ * per-SA delete+re-add path).  A reqid is deduped once across children
+ * and moved in at most three directions, so (seen[16] * 3) bounds it.
+ */
+#define	MAX_MOBIKE_MIGRATES	(16 * 3)
+struct mobike_mig_trace {
+	rc_type dir;
+	struct sockaddr *cur_s, *cur_d;	/* current kernel location (fwd target) */
+	struct sockaddr *old_s, *old_d;	/* reverse target (fwd source) */
+	struct sockaddr *sp_src, *sp_dst;
+	uint8_t pref_src, pref_dst;
+	rc_type samode;
+	uint32_t reqid;
+};
+
+/*
+ * Reverse every migrated direction back to its old endpoint after a
+ * hard failure.  Rely on ikev2_mobike_migrate_dir + the backend's
+ * per-SA reversal: at minimum keep the kernel and the in-memory
+ * endpoint from disagreeing (no "lying endpoint pair").  A reversal
+ * that itself fails is logged loudly but still returns -1 from the
+ * caller -- never a silent contradiction.
+ */
+static void
+mobike_migrate_rollback(struct ikev2_sa *ike_sa,
+    struct mobike_mig_trace *tr, int n)
+{
+	int i;
+
+	for (i = n - 1; i >= 0; i--) {
+		int m;
+
+		m = ikev2_mobike_migrate_dir(ike_sa, tr[i].dir,
+		    tr[i].cur_s, tr[i].cur_d,
+		    tr[i].old_s, tr[i].old_d,
+		    tr[i].sp_src, tr[i].sp_dst, tr[i].pref_src,
+		    tr[i].pref_dst, tr[i].samode, tr[i].reqid);
+		if (m < 0)
+			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			    "MOBIKE rollback of reqid %u dir %s failed: "
+			    "kernel SA may still sit on the new endpoint\n",
+			    tr[i].reqid, rct2str(tr[i].dir));
+	}
+}
+
+/*
+ * One migrate_dir with rollback bookkeeping: on a hard failure (< 0)
+ * walk back every direction already migrated in the kernel and re-raise
+ * the failure.  Real moves (m > 0) are traced; m == 0 is a drained /
+ * nothing-to-move and needs no reversal.
+ */
+static int
+mobike_migrate_dir_track(struct ikev2_sa *ike_sa,
+    struct mobike_mig_trace *tr, int *nt,
+    rc_type dir, struct sockaddr *old_s, struct sockaddr *old_d,
+    struct sockaddr *new_s, struct sockaddr *new_d,
+    struct sockaddr *sp_src, struct sockaddr *sp_dst,
+    uint8_t pref_src, uint8_t pref_dst, rc_type samode, uint32_t reqid)
+{
+	int m;
+
+	m = ikev2_mobike_migrate_dir(ike_sa, dir, old_s, old_d, new_s, new_d,
+	    sp_src, sp_dst, pref_src, pref_dst, samode, reqid);
+	if (m < 0) {
+		mobike_migrate_rollback(ike_sa, tr, *nt);
+		return -1;
+	}
+	if (m > 0 && *nt < MAX_MOBIKE_MIGRATES) {
+		tr[*nt].dir = dir;
+		tr[*nt].cur_s = new_s;
+		tr[*nt].cur_d = new_d;
+		tr[*nt].old_s = old_s;
+		tr[*nt].old_d = old_d;
+		tr[*nt].sp_src = sp_src;
+		tr[*nt].sp_dst = sp_dst;
+		tr[*nt].pref_src = pref_src;
+		tr[*nt].pref_dst = pref_dst;
+		tr[*nt].samode = samode;
+		tr[*nt].reqid = reqid;
+		(*nt)++;
+	}
+	return m;
+}
+
+/*
  * RFC 4555 s3.5: update every IPsec SA associated with this IKE SA.
  * One MIGRATE moves one kernel SA of one reqid.  Walk every Child
  * selector (and its address-family twin).  A reqid already drained
@@ -298,6 +388,8 @@ mobike_migrate_children(struct ikev2_sa *ike_sa,
     struct sockaddr *local, struct sockaddr *remote)
 {
 	struct ikev2_child_sa *c;
+	struct mobike_mig_trace tr[MAX_MOBIKE_MIGRATES];
+	int nt = 0;
 	uint32_t seen[16];
 	int nseen = 0, moved = 0, saw = 0;
 
@@ -356,20 +448,20 @@ mobike_migrate_children(struct ikev2_sa *ike_sa,
 				inner_pref = lease_inner ? lease_pref :
 				    cs->dst->prefixlen;
 			}
-			m = ikev2_mobike_migrate_dir(ike_sa,
+			m = mobike_migrate_dir_track(ike_sa, tr, &nt,
 			    RCT_DIR_OUTBOUND, old_l, old_r, local, remote,
 			    lan, inner, lan_pref, inner_pref, samode, reqid);
 			if (m < 0)
 				return -1;
 			moved += m;
-			m = ikev2_mobike_migrate_dir(ike_sa,
+			m = mobike_migrate_dir_track(ike_sa, tr, &nt,
 			    RCT_DIR_INBOUND, old_r, old_l, remote, local,
 			    inner, lan, inner_pref, lan_pref, samode, reqid);
 			if (m < 0)
 				return -1;
 			moved += m;
 			if (samode == RCT_IPSM_TUNNEL) {
-				m = ikev2_mobike_migrate_dir(ike_sa,
+				m = mobike_migrate_dir_track(ike_sa, tr, &nt,
 				    RCT_DIR_FWD, old_r, old_l, remote, local,
 				    inner, lan, inner_pref, lan_pref,
 				    samode, reqid);
@@ -384,7 +476,7 @@ mobike_migrate_children(struct ikev2_sa *ike_sa,
 	return 0;
 }
 
-static int
+int
 ikev2_move_sa_impl(struct ikev2_sa *ike_sa, struct sockaddr *remote,
     struct sockaddr *local, int migrate_kernel, const char *why)
 {

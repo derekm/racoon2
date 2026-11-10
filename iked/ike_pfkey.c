@@ -426,6 +426,7 @@ sadb_responder_error(struct rcpfk_msg *param)
 	return 0;
 }
 
+__attribute__((weak))
 int
 sadb_migrate(struct rcpfk_msg *rc)
 {

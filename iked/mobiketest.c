@@ -32,6 +32,8 @@
 #include "ikev2.h"
 #include "ikev2_impl.h"
 #include "ike_conf.h"
+#include "ike_pfkey.h"
+#include <errno.h>
 
 #include "test_util.h"
 
@@ -72,6 +74,175 @@ msleep(int ms)
 	struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
 
 	nanosleep(&ts, NULL);
+}
+
+/* ================================================================= *
+ * Transactional MOBIKE kernel migration (G07): a multi-child hard
+ * failure must walk back every direction already migrated in the
+ * kernel, so the kernel SAD and the in-memory endpoint never disagree
+ * ("lying endpoint pair").  We drive ikev2_move_sa_impl through the
+ * real mobike_migrate_children and override the migrate callback
+ * (sadb_migrate, weak in ike_pfkey.c) with a mock kernel.
+ * ================================================================= */
+
+extern int ikev2_move_sa_impl(struct ikev2_sa *, struct sockaddr *,
+    struct sockaddr *, int, const char *);
+
+/* mock kernel SAD.  NSLOT leaves headroom for the reqids/dirs used
+ * here; slot = 1 when that (reqid, dir) SA sits on the NEW endpoint. */
+#define	M_NSLOT(reqid, dir)	((reqid) * 8 + (dir))
+static int m_slots[64];
+static int m_new_installs;	/* net SAs currently on the NEW endpoint */
+static int m_migrate_calls;	/* total migrate attempts (diagnostic) */
+static int m_fail_req2_out;	/* script: hard-fail child 2's OUT */
+static struct sockaddr *m_new_l, *m_new_r;
+
+int
+sadb_migrate(struct rcpfk_msg *rc)
+{
+	int target_new, idx;
+
+	m_migrate_calls++;
+	target_new = (rcs_cmpsa(rc->sa2_src, m_new_l) == 0) ||
+	    (rcs_cmpsa(rc->sa2_src, m_new_r) == 0);
+	idx = M_NSLOT(rc->reqid, rc->dir);
+
+	/* scripted hard failure: the second child's first (OUT) direction
+	 * fails with a real errno, so grab it: nothing moves. */
+	if (m_fail_req2_out && rc->reqid == 2 &&
+	    rc->dir == RCT_DIR_OUTBOUND) {
+		m_fail_req2_out = 0;
+		rc->eno = ECONNREFUSED;
+		snprintf(rc->estr, sizeof(rc->estr),
+		    "scripted hard MOBIKE failure");
+		return -1;
+	}
+	/* the SA already sits where requested: the migration loop's
+	 * "none left" stop (migrate_dir returns `moved` on ENOENT). */
+	if ((target_new && m_slots[idx]) || (!target_new && !m_slots[idx])) {
+		rc->eno = ENOENT;
+		return -1;
+	}
+	/* perform the move (target_new: onto the new endpoint; else back
+	 * onto the old one -- the rollback path exercises this reversal). */
+	m_slots[idx] = target_new ? 1 : 0;
+	m_new_installs += target_new ? 1 : -1;
+	return 0;
+}
+
+static void
+m_free_selector(struct rcf_selector *s)
+{
+	if (s == NULL)
+		return;
+	if (s->src) {
+		rc_free(s->src->a.ipaddr);
+		free(s->src);
+	}
+	if (s->dst) {
+		rc_free(s->dst->a.ipaddr);
+		free(s->dst);
+	}
+	free(s->pl);
+	free(s);
+}
+
+static struct rcf_selector *
+m_mk_selector(int reqid, const char *sip, const char *dip)
+{
+	struct rcf_selector *s = calloc(1, sizeof(*s));
+	struct rcf_policy *pl = calloc(1, sizeof(*pl));
+	struct sockaddr_storage ss;
+
+	s->direction = RCT_DIR_OUTBOUND;
+	s->reqid = reqid;
+	s->src = calloc(1, sizeof(*s->src));
+	s->dst = calloc(1, sizeof(*s->dst));
+
+	test_make_addr4(&ss, sip, 0);
+	s->src->type = RCT_ADDR_INET;
+	s->src->prefixlen = 24;
+	s->src->a.ipaddr = rcs_sadup((struct sockaddr *)&ss);
+
+	test_make_addr4(&ss, dip, 0);
+	s->dst->type = RCT_ADDR_INET;
+	s->dst->prefixlen = 32;
+	s->dst->a.ipaddr = rcs_sadup((struct sockaddr *)&ss);
+
+	pl->ipsec_mode = RCT_IPSM_TRANSPORT;	/* OUT + IN, no FWD */
+	s->pl = pl;
+	return s;
+}
+
+static void
+test_migrate_rollback(void)
+{
+	struct ikev2_sa sa;
+	struct ikev2_child_sa *c1, *c2;
+	struct sockaddr_storage oldl, oldr, newl, newr;
+	struct sockaddr *_oldl, *_oldr, *_newl, *_newr;
+	int ret;
+
+	/* old and new endpoints, all on the clear path (500/500) */
+	test_make_addr4(&oldl, "192.0.2.2", 500);
+	test_make_addr4(&oldr, "192.0.2.1", 500);
+	test_make_addr4(&newl, "198.51.100.2", 500);
+	test_make_addr4(&newr, "198.51.100.1", 500);
+	_oldl = rcs_sadup((struct sockaddr *)&oldl);
+	_oldr = rcs_sadup((struct sockaddr *)&oldr);
+	_newl = rcs_sadup((struct sockaddr *)&newl);
+	_newr = rcs_sadup((struct sockaddr *)&newr);
+	m_new_l = _newl;
+	m_new_r = _newr;
+	m_new_installs = 0;
+	m_migrate_calls = 0;
+	m_fail_req2_out = 1;
+	memset(m_slots, 0, sizeof(m_slots));
+
+	memset(&sa, 0, sizeof(sa));
+	IKEV2_CHILD_LIST_INIT(&sa.children);
+	sa.local = rcs_sadup((struct sockaddr *)&oldl);
+	sa.remote = rcs_sadup((struct sockaddr *)&oldr);
+	sa.mobike_supported = 1;
+
+	/* two children, two distinct reqids */
+	c1 = calloc(1, sizeof(*c1));
+	c1->selector = m_mk_selector(1, "10.1.1.1", "10.1.1.2");
+	IKEV2_CHILD_LIST_LINK(&sa.children, c1);
+	c2 = calloc(1, sizeof(*c2));
+	c2->selector = m_mk_selector(2, "10.2.2.1", "10.2.2.2");
+	IKEV2_CHILD_LIST_LINK(&sa.children, c2);
+
+	/* The SA sits on the OLD endpoints; migrate to NEW.  Child 1's
+	 * OUT + IN succeed in the kernel, child 2's OUT hard-fails. */
+	ret = ikev2_move_sa_impl(&sa, _newr, _newl, 1,
+	    "unit: transactional migrate");
+
+	ck(ret == -1, "move_sa_impl returns -1 on a multi-child hard failure");
+	ck(rcs_cmpsa(sa.remote, _oldr) == 0 && rcs_cmpsa(sa.local, _oldl) == 0,
+	    "in-memory endpoints stay OLD after the failure (no partial commit)");
+	ck(c1->remote == NULL && c1->local == NULL &&
+	    c2->remote == NULL && c2->local == NULL,
+	    "no child endpoint was committed");
+	printf("migrate attempts=%d net new-endpoint installs=%d\n",
+	    m_migrate_calls, m_new_installs);
+	ck(m_new_installs == 0,
+	    "kernel SAD is rolled back: net zero SAS left on the new endpoint");
+	ck(m_slots[M_NSLOT(1, RCT_DIR_OUTBOUND)] == 0 &&
+	    m_slots[M_NSLOT(1, RCT_DIR_INBOUND)] == 0,
+	    "child-1 OUT and IN were reversed back to the old endpoint");
+
+	/* cleanup */
+	m_free_selector(c1->selector);
+	m_free_selector(c2->selector);
+	free(c1);
+	free(c2);
+	rc_free(sa.remote);
+	rc_free(sa.local);
+	rc_free(_oldl);
+	rc_free(_oldr);
+	rc_free(_newl);
+	rc_free(_newr);
 }
 
 int
@@ -161,6 +332,9 @@ main(int argc, char *argv[])
 		rc_free(sa.local);
 		rc_free(sa.remote);
 	}
+
+	/* G07 transactional kernel migration on a multi-child hard failure */
+	test_migrate_rollback();
 
 	if (fails) {
 		printf("mobiketest: %d failure(s)\n", fails);
