@@ -347,16 +347,29 @@ prop_add_trns(struct prop_pair *p, uint8_t type, uint16_t id, uint16_t keylen)
 		put_uint16(a + 2, keylen);
 	}
 	t->trns = (struct isakmp_pl_t *)tr;
+	/*
+	 * Link distinct transform types on ->next, NOT ->tnext.  An IKEv2
+	 * proposal represents the alternatives of ONE type on ->tnext but
+	 * the different types (ENCR, INTEGR, DH, ESN) on ->next, and
+	 * ikev2_get_transforms(), ikev2_match_transforms() and
+	 * ikev2_construct_sa() all walk the ->next chain for the types.
+	 * Building every transform onto ->tnext hid the INTEGR (and any
+	 * DH/ESN) from the matcher and packer, so a resumed child's
+	 * recovery rekey was packed with the wrong transform count AND
+	 * the initiator's response check failed with "peer response does
+	 * not match my proposal" (ikev2_child.c:3109) even though the peer
+	 * accepted the offer.  The packer rewrites each transform's `more`
+	 * bit from the tnext/next topology, so no more-bit fiddling is
+	 * needed here.
+	 */
 	if (!p->tnext) {
 		p->tnext = t;
 		return 0;
 	}
 	tail = p->tnext;
-	while (tail->tnext)
-		tail = tail->tnext;
-	if (tail->trns)
-		((struct ikev2transform *)tail->trns)->more = IKEV2TRANSFORM_MORE;
-	tail->tnext = t;
+	while (tail->next)
+		tail = tail->next;
+	tail->next = t;
 	return 0;
 }
 
@@ -369,34 +382,55 @@ suite_from_prop(struct prop_pair *p, struct r2rs_child *c)
 	c->integr_id = 0;
 	c->encr_klen = 0;
 	c->esn = 0;
+	c->dh_id = 0;
 	if (!p)
 		return;
-	for (t = p->tnext; t; t = t->tnext) {
-		struct ikev2transform *tr;
-		uint16_t tlen;
+	/*
+	 * Walk the WHOLE transform chain.  In a proposal the alternative
+	 * transforms of a single type (e.g. variable-keylen ENCR rows, the
+	 * ESN_YES/ESN_NO pair) are linked on ->tnext, but the distinct types
+	 * (ENCR, INTEGR, DH, ESN, ...) are linked on ->next.  Historical
+	 * versions walked only ->tnext -- i.e. only the FIRST type (the ENCR
+	 * alternatives) -- so the negotiated INTEGR (and DH) transforms were
+	 * never read here and integr_id persisted as 0.  A rekey of the
+	 * restored child then offered an ESP proposal WITHOUT its integrity
+	 * transform, which the peer rejects with NO_PROPOSAL_CHOSEN (G05
+	 * kernel_lost recovery).  Walk both chains so the negotiated suite
+	 * (ENCR / INTEGR / DH / ESN) survives the resume round-trip intact.
+	 */
+	for (t = p->tnext; t; t = t->next) {
+		struct prop_pair *s;
 
-		if (!t->trns)
-			continue;
-		tr = (struct ikev2transform *)t->trns;
-		tlen = get_uint16(&tr->transform_length);
-		switch (tr->transform_type) {
-		case IKEV2TRANSFORM_TYPE_ENCR:
-			c->encr_id = get_uint16(&tr->transform_id);
-			if (tlen >= sizeof(*tr) + 4) {
-				uint16_t at = get_uint16(tr + 1);
-				if ((at & 0x7fff) == 14)
-					c->encr_klen = get_uint16(
-					    (uint8_t *)(tr + 1) + 2);
+		for (s = t; s; s = s->tnext) {
+			struct ikev2transform *tr;
+			uint16_t tlen;
+
+			if (!s->trns)
+				continue;
+			tr = (struct ikev2transform *)s->trns;
+			tlen = get_uint16(&tr->transform_length);
+			switch (tr->transform_type) {
+			case IKEV2TRANSFORM_TYPE_ENCR:
+				c->encr_id = get_uint16(&tr->transform_id);
+				if (tlen >= sizeof(*tr) + 4) {
+					uint16_t at = get_uint16(tr + 1);
+					if ((at & 0x7fff) == 14)
+						c->encr_klen = get_uint16(
+						    (uint8_t *)(tr + 1) + 2);
+				}
+				break;
+			case IKEV2TRANSFORM_TYPE_INTEGR:
+				c->integr_id = get_uint16(&tr->transform_id);
+				break;
+			case IKEV2TRANSFORM_TYPE_DH:
+				c->dh_id = get_uint16(&tr->transform_id);
+				break;
+			case IKEV2TRANSFORM_TYPE_ESN:
+				c->esn = (uint8_t)get_uint16(&tr->transform_id);
+				break;
+			default:
+				break;
 			}
-			break;
-		case IKEV2TRANSFORM_TYPE_INTEGR:
-			c->integr_id = get_uint16(&tr->transform_id);
-			break;
-		case IKEV2TRANSFORM_TYPE_ESN:
-			c->esn = (uint8_t)get_uint16(&tr->transform_id);
-			break;
-		default:
-			break;
 		}
 	}
 }
@@ -920,6 +954,21 @@ restore_one(const char *path)
 			    prop_add_trns(ch->my_proposal[1],
 			    IKEV2TRANSFORM_TYPE_INTEGR, c->integr_id, 0) != 0)
 				goto fail;
+			if (c->dh_id) {
+				/* (v7) the child's negotiated PFS group.  Carry
+				 * it onto the restored proposal AND onto
+				 * child_sa->dhgrp so a later recovery rekey
+				 * re-offers the SAME DH group the SA was
+				 * established with (RFC 7296 2.18), instead of
+				 * the config default or none. */
+				struct algdef *dhdef = ikev2_dhinfo(c->dh_id);
+				if (!dhdef)
+					goto fail;
+				ch->dhgrp = dhdef;
+				if (prop_add_trns(ch->my_proposal[1],
+				    IKEV2TRANSFORM_TYPE_DH, c->dh_id, 0) != 0)
+					goto fail;
+			}
 			if (prop_add_trns(ch->my_proposal[1],
 			    IKEV2TRANSFORM_TYPE_ESN, c->esn ? 1 : 0, 0) != 0)
 				goto fail;

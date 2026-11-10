@@ -36,7 +36,7 @@ extern "C" {
  * the 576-byte frag threshold, so the armed form is the fragment
  * datagrams; resp_buf now holds either a whole packet (resp_nfrags==0)
  * or the concatenated fragment datagrams with per-datagram lengths. */
-#define R2RS_VERSION	6
+#define R2RS_VERSION	7
 #define R2RS_MAXRESP	4608
 #define R2RS_MAXFRAGS	8
 #define R2RS_MAXFRAG	576
@@ -61,6 +61,13 @@ struct r2rs_child {
 	uint16_t integr_id;
 	uint16_t encr_klen;
 	uint8_t esn;
+	uint16_t dh_id;	/* (v7) child's negotiated PFS DH group (transform_id,
+			 * 0 = none).  Persisted so a restarted child's recovery
+			 * rekey re-offers the SAME group the SA was established
+			 * with instead of the config default.  (v7 grew the
+			 * child record by 2 octets; a v6 dump no longer matches
+			 * the v7 record size and is skipped by the loader, so
+			 * the field is always present on anything we restore.) */
 	uint8_t is_initiator;	/* who created this child (was reserved pad byte):
 				 * 1 = we did, 0 = peer did.  Previously hard-
 				 * coded 0 on restore, which broke rekey
