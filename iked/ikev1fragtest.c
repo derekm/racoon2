@@ -240,6 +240,203 @@ test_frag_dispatch_unconfigured(void)
 	rc_vfree(pkt);
 }
 
+/* A helper that restores the half-open counter by `n` after a test sized it
+ * up, so later rows observe their own pristine baseline. */
+static void
+restore_half_open(int base)
+{
+	struct ph1handle phs[IKED_MAX_HALF_OPEN_SA];
+	int i, n = isakmp_frag_half_open_count() - base;
+
+	if (n <= 0 || n > IKED_MAX_HALF_OPEN_SA)
+		return;
+	memset(phs, 0, sizeof(phs));
+	for (i = 0; i < n; i++) {
+		phs[i].frag_halfopen = 1;
+		isakmp_frag_halfopen_disarm(&phs[i]);
+	}
+}
+
+/*
+ * Handler-side cap-admission reject: when the half-open table is already full
+ * (counter == IKED_MAX_HALF_OPEN_SA), a NEW first-fragment for an unknown SA
+ * must be rejected by ikev1_frag_dispatch() returning -1 at the cap check --
+ * NOT a new slot claimed, NOT success, NOT a crash.  A configured default
+ * peer is installed first (rcf_default_head->remote), so getrmconf() would
+ * succeed: the -1 is provably the cap admit gate (isakmp.c: "IKE fragment
+ * half-open cap"), not the unconfigured-peer reject.  Red if the cap check
+ * is dropped (the same fragment would then consume a slot and return 0).
+ */
+static void
+test_frag_dispatch_cap_admission(void)
+{
+	struct rcf_default dflt;
+	struct rcf_remote rm;
+	struct rcf_default *saved_default = rcf_default_head;
+	rc_vchar_t *pkt = NULL;
+	struct isakmp *ih;
+	struct isakmp_frag_hdr *frag;
+	struct sockaddr_storage remote, local;
+	struct isakmp isakmp;
+	int rc, base, i;
+
+	/* configured default peer -> getrmconf() succeeds (deepcopy). */
+	memset(&dflt, 0, sizeof(dflt));
+	memset(&rm, 0, sizeof(rm));
+	dflt.remote = &rm;
+	rcf_default_head = &dflt;
+
+	sched_init();
+	base = isakmp_frag_half_open_count();
+	for (i = 0; i < IKED_MAX_HALF_OPEN_SA; i++)
+		isakmp_frag_half_open_take();	/* table full: 20 live temps */
+	TEST_CHECK(isakmp_frag_half_open_count() == base + IKED_MAX_HALF_OPEN_SA);
+
+	memset(&remote, 0, sizeof(remote));
+	memset(&local, 0, sizeof(local));
+	((struct sockaddr_in *)&remote)->sin_family = AF_INET;
+	((struct sockaddr_in *)&remote)->sin_port = htons(1501);
+	((struct sockaddr_in *)&remote)->sin_addr.s_addr = htonl(0x7f000002u);
+	((struct sockaddr_in *)&local)->sin_family = AF_INET;
+	((struct sockaddr_in *)&local)->sin_port = htons(1501);
+
+	pkt = rc_vmalloc(sizeof(struct isakmp) +
+	    sizeof(struct isakmp_frag_hdr) + 128);
+	TEST_CHECK(pkt != NULL);
+	if (pkt == NULL) {
+		rcf_default_head = saved_default;
+		restore_half_open(base);
+		return;
+	}
+	memset(pkt->v, 0x31, pkt->l);
+	ih = (struct isakmp *)pkt->v;
+	ih->np = ISAKMP_NPTYPE_FRAG;
+	ih->len = htonl((uint32_t)pkt->l);
+	ih->msgid = htonl(0x10203040u);
+	frag = (struct isakmp_frag_hdr *)(pkt->v + sizeof(struct isakmp));
+	frag->frag_no = htons(1);
+	frag->frag_id = 0xcd;
+	frag->h.len = htons(sizeof(struct isakmp_frag_hdr) + 128);
+	frag->flags = ISAKMP_FRAG_MORE;
+
+	memcpy(&isakmp, pkt->v, sizeof(isakmp));
+	rc = ikev1_frag_dispatch(&isakmp, &pkt,
+	    (struct sockaddr *)&remote, (struct sockaddr *)&local,
+	    sizeof(remote), sizeof(local));
+	TEST_CHECK(rc < 0);		/* cap-admission reject (peer IS configured) */
+	TEST_CHECK(isakmp_frag_half_open_count() == base + IKED_MAX_HALF_OPEN_SA);
+		/* no extra slot claimed by the rejected fresh fragment */
+
+	rc_vfree(pkt);
+	rcf_default_head = saved_default;
+	restore_half_open(base);
+}
+
+/*
+ * Handler-side live-SA survival: an ESTABLISHED phase-1 in the tree
+ * (frag_halfopen == 0) reached via getph1byindex() must survive fragment
+ * dispatch -- a fragment carrying that SA's cookies is fed to the live
+ * handle's reassembly, and the live SA is NOT freed (the teardown only
+ * applies to half-open temps, `if (frag_iph1->frag_halfopen)`).  Red if the
+ * dispatch drops the getph1byindex() carve-out and treats the fragment as a
+ * fresh half-open (would claim a slot / free the live SA).
+ */
+static void
+test_frag_dispatch_live_sa_survives(void)
+{
+	struct ph1handle *live = NULL;
+	struct sockaddr_in *r4, *l4;
+	rc_vchar_t *pkt = NULL;
+	struct isakmp *ih;
+	struct isakmp_frag_hdr *frag;
+	struct sockaddr_storage remote, local;
+	struct isakmp isakmp;
+	int rc, base;
+
+	sched_init();
+	initph1tree();
+	base = isakmp_frag_half_open_count();
+
+	live = newph1();
+	TEST_CHECK(live != NULL);
+	if (live == NULL)
+		return;
+	memset(live->index.i_ck, 0x5a, sizeof(live->index.i_ck));
+	memset(live->index.r_ck, 0x3c, sizeof(live->index.r_ck));
+	live->status = PHASE1ST_ESTABLISHED;	/* live, in-progress */
+	live->frag_halfopen = 0;		/* NOT a half-open temp */
+	r4 = racoon_calloc(1, sizeof(*r4));
+	l4 = racoon_calloc(1, sizeof(*l4));
+	TEST_CHECK(r4 != NULL && l4 != NULL);
+	if (r4 == NULL || l4 == NULL) {
+		racoon_free(r4);
+		racoon_free(l4);
+		delph1(live);
+		return;
+	}
+	r4->sin_family = AF_INET;
+	r4->sin_port = htons(1502);
+	r4->sin_addr.s_addr = htonl(0x7f000003u);
+	l4->sin_family = AF_INET;
+	l4->sin_port = htons(1502);
+	l4->sin_addr.s_addr = htonl(0x7f000003u);
+	live->remote = (struct sockaddr *)r4;
+	live->local = (struct sockaddr *)l4;
+	TEST_CHECK(insph1(live) == 0);
+	TEST_CHECK(getph1byindex(&live->index) == live);	/* in tree */
+
+	memset(&remote, 0, sizeof(remote));
+	memset(&local, 0, sizeof(local));
+	((struct sockaddr_in *)&remote)->sin_family = AF_INET;
+	((struct sockaddr_in *)&remote)->sin_port = htons(1502);
+	((struct sockaddr_in *)&remote)->sin_addr.s_addr = htonl(0x7f000003u);
+	((struct sockaddr_in *)&local)->sin_family = AF_INET;
+	((struct sockaddr_in *)&local)->sin_port = htons(1502);
+
+	pkt = rc_vmalloc(sizeof(struct isakmp) +
+	    sizeof(struct isakmp_frag_hdr) + 128);
+	TEST_CHECK(pkt != NULL);
+	if (pkt == NULL) {
+		remph1(live);
+		delph1(live);
+		return;
+	}
+	memset(pkt->v, 0x41, pkt->l);
+	ih = (struct isakmp *)pkt->v;
+	memcpy(ih->i_ck, live->index.i_ck, sizeof(ih->i_ck));
+	memcpy(ih->r_ck, live->index.r_ck, sizeof(ih->r_ck));
+	ih->np = ISAKMP_NPTYPE_FRAG;
+	ih->len = htonl((uint32_t)pkt->l);
+	ih->msgid = htonl(0x50607080u);
+	frag = (struct isakmp_frag_hdr *)(pkt->v + sizeof(struct isakmp));
+	frag->frag_no = htons(1);
+	frag->frag_id = 0xef;
+	frag->h.len = htons(sizeof(struct isakmp_frag_hdr) + 128);
+	frag->flags = 0;	/* not MORE: a single complete (last) fragment */
+
+	memcpy(&isakmp, pkt->v, sizeof(isakmp));
+	rc = ikev1_frag_dispatch(&isakmp, &pkt,
+	    (struct sockaddr *)&remote, (struct sockaddr *)&local,
+	    sizeof(remote), sizeof(local));
+	TEST_CHECK(rc == 1);		/* reassembled, exchange continues */
+	TEST_CHECK(getph1byindex(&live->index) == live);
+		/* live SA NOT freed/removed by dispatch */
+	if (getph1byindex(&live->index) != live) {
+		/* live SA was torn down (the regression under test): the
+		 * handle is already delph1()'d -- do not dereference it. */
+		rc_vfree(pkt);
+		return;
+	}
+	TEST_CHECK(live->frag_halfopen == 0);
+		/* live SA still not a half-open slot */
+	TEST_CHECK(isakmp_frag_half_open_count() == base);
+		/* no cap slot taken for the live-SA fragment */
+
+	rc_vfree(pkt);
+	remph1(live);
+	delph1(live);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -250,5 +447,7 @@ main(int argc, char **argv)
 	RUN_TEST(test_cap_restore);
 	RUN_TEST(test_live_survives);
 	RUN_TEST(test_frag_dispatch_unconfigured);
+	RUN_TEST(test_frag_dispatch_cap_admission);
+	RUN_TEST(test_frag_dispatch_live_sa_survives);
 	return test_exit_status();
 }

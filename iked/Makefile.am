@@ -265,7 +265,16 @@ oakleytest_LDADD = $(addtest_ikedsrc) $(LDADD)
 # isakmp.c for this full-link test (addtest_ikedsrc links isakmp.o).  Red
 # against: `held + data_len` size-gate regression, a removed disarm decrement,
 # a removed `!frag_halfopen` live-SA guard, or a removed `rmconf == NULL`
-# unconfigured-peer reject in ikev1_frag_dispatch().
+# unconfigured-peer reject in ikev1_frag_dispatch().  Two further
+# handler-side rows drive the real dispatch with a configured default peer
+# (rcf_default_head) and a live ph1 inserted into the tree:
+#   test_frag_dispatch_cap_admission -- half-open table full
+#   (count == IKED_MAX_HALF_OPEN_SA) rejects a fresh first-fragment at the
+#   cap gate (-1, no slot claimed); red if the cap check is dropped.
+#   test_frag_dispatch_live_sa_survives -- a fragment addressing an
+#   ESTABLISHED (frag_halfopen==0) ph1 found by getph1byindex() reassembles
+#   onto the live SA and does NOT free it / does not claim a slot; red if the
+#   young `frag_halfopen` teardown guard is inverted.
 TESTS += ikev1fragtest
 check_PROGRAMS += ikev1fragtest
 ikev1fragtest_SOURCES = ikev1fragtest.c
