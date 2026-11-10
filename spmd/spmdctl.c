@@ -676,7 +676,7 @@ sc_policy(int s, char *selector_index, uint64_t lifetime, sa_mode_t samode,
 	char rbuf[BUFSIZ];
 	char sl[512]; /* XXX */
 	char lt[32];
-	int ps;
+	int ps, rc_err = 0;
 	struct rcpfk_msg *rc = &pfkey_container;
 	struct sp_entry *spe = NULL;
 	const char *fmtstr = NULL;
@@ -741,12 +741,14 @@ dump:	/* DUMP */
 			break;
 	}
 
-	rcpfk_send_spddump(rc);
+	if (rcpfk_send_spddump(rc) == -1)
+		rc_err = -1;
 	do {
 		rcpfk_handler(rc);
 	} while (rc->seq > 0 && rc->eno == 0);
 	if (rc->eno) {
 		fprintf(stderr, "PF_KEY Error:%s\n", rc->estr);
+		rc_err = -1;
 	}
 	rcpfk_clean(rc);
 
@@ -758,7 +760,7 @@ dump:	/* DUMP */
 	}
 
 	sc_free_all_sp_entry();
-	return 0;
+	return rc_err;
 }
 
 static int
