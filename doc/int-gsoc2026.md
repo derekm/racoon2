@@ -37,7 +37,9 @@ Not a product README. Status vs HEAD. Done items stay in NEWS.
 
 ## IKE-over-TCP (RFC 9329 / RFC 8229)
 
-Status: **implemented & live-verified** (row `i2ike-tcp`, box-tier only).
+Status: **implemented & live-verified** (rows `i2ike-tcp`, `i2itcp-lwsi`,
+`i2itcp-lwir`; gate=addke / Fedora PQC lane after a 3/3 isolated-container
+counted-gate PASS).
 
 - Carries the IKEv2 control plane over a single TCP stream on port 4500 instead
   of UDP, with RFC 9329 §3 framing (`Len(16-bit self-inclusive) | 4-octet zero
@@ -62,10 +64,13 @@ Status: **implemented & live-verified** (row `i2ike-tcp`, box-tier only).
   to 16447, and RFC 9329 preconfigures TCP (it is not negotiated), so no IANA
   TCP-encap type exists; 40960 is a config-gated informational advertisement,
   never required for interop.
-- Verified: `i2ike-tcp` (box-gated, `R2_BOX`) passes a wire-level gate
+- Verified: `i2ike-tcp` (gate=addke, Fedora PQC lane) passes a wire-level gate
   (tcpdump from before daemon start: zero IKE datagrams on UDP 500/4500, a TCP
-  SYN to :4500, and a SYN-ACK back) plus the ESP/dataplane gates.
-  See `samples/linux-matrix/kinds/i2ike.sh`.
+  SYN to :4500, and a SYN-ACK back) plus the ESP/dataplane gates; the two
+  interop rows (`i2itcp-lwsi` / `i2itcp-lwir`) gate the libreswan TCP peer the
+  same way.  Graduated from box after a 3/3 isolated-container counted-gate
+  PASS (Fedora lane already provisions libreswan + nss-tools + tcpdump).
+  See `samples/linux-matrix/kinds/i2ike.sh` / `kinds/i2itcp.sh`.
 
 ## Build & deploy
 - Top-level `make install` (after `./configure && make`) is the only
