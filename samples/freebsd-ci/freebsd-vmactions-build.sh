@@ -81,13 +81,19 @@ test -x /usr/local/racoon2/sbin/ikedctl
 
 echo "=== Unit/KAT suites on the production-shaped build ==="
 $MAKE -C lib check
+# iked unit suite: run the FULL configured TESTS (no static override).  The
+# generated Makefile already conditionally includes addketest/addkekat only
+# under WITH_ADDKE (FreeBSD 15/16 OpenSSL has ML-KEM; 14.x/OpenSSL 3.0 does
+# not), so the correct inventory comes from configure, not a per-release
+# list.  The pre-2026 static 4/6-target override silently dropped ~32
+# declared tests (fragtest/resumetest/eap*/tcp*/oakleytest/ikev1fragtest/
+# qcdtest...); this mirrors the netbsd-vmactions-build.sh fix (G16).
 if grep -q "^#define WITH_ADDKE 1" iked/config.h 2>/dev/null; then
-	IKE_TESTS="eaytest evlooptest workerstest ndcppkats addketest addkekat"
+	echo "=== iked unit suite (WITH_ADDKE: includes addketest/addkekat) ==="
 else
-	IKE_TESTS="eaytest evlooptest workerstest ndcppkats"
+	echo "=== iked unit suite (no WITH_ADDKE: addketest/addkekat excluded) ==="
 fi
-echo "IKE_TESTS=$IKE_TESTS"
-$MAKE -C iked check TESTS="$IKE_TESTS"
+$MAKE -C iked check
 
 echo "=== FreeBSD build/test OK ==="
 echo "vnet conformance leg runs as the next workflow step (separate script)"
