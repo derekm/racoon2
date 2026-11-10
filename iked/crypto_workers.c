@@ -41,8 +41,16 @@ static void
 notify_write(void)
 {
 	char c = 1;
-	if (write(notify[1], &c, 1) < 0)
-		(void)0;	/* pipe wakeup is best-effort */
+	ssize_t n;
+
+	do {
+		n = write(notify[1], &c, 1);
+	} while (n < 0 && errno == EINTR);
+	/* Any other short write or error, incl. EAGAIN on a full pipe, is the
+	 * intended best-effort drop: a full pipe already carries a pending byte
+	 * and drain is level-triggered, so no wakeup is lost.  EINTR is
+	 * retried so an interrupted 1-byte write cannot lose the only wakeup. */
+	(void)n;
 }
 
 static void *
@@ -92,18 +100,39 @@ crypto_workers_init(int nthreads)
 #endif
 #ifdef O_NONBLOCK
 	{
-		/* Both ends non-blocking: the read side so drain() never
+		/*
+		 * Both ends non-blocking: the read side so drain() never
 		 * blocks, the write side so a worker in notify_write()
 		 * cannot stall in a full pipe (a full pipe already carries
 		 * a pending byte and drain is level-triggered, so an EAGAIN
-		 * drop cannot lose the wakeup). */
+		 * drop cannot lose the wakeup).
+		 *
+		 * The READ end is a hard contract: crypto_workers_drain()'s
+		 * loop (while (read() > 0)) would block forever on an empty
+		 * blocking pipe.  If the read end cannot be made non-blocking,
+		 * fail init (the caller falls back to inline) instead of
+		 * risking a wedged event loop.  The write end and close-
+		 * on-exec are best-effort.
+		 */
 		int fl = fcntl(notify[0], F_GETFL);
-		if (fl >= 0)
-			(void)fcntl(notify[0], F_SETFL, fl | O_NONBLOCK);
+		if (fl < 0 || fcntl(notify[0], F_SETFL, fl | O_NONBLOCK) < 0) {
+			close(notify[0]);
+			close(notify[1]);
+			notify[0] = notify[1] = -1;
+			return -1;
+		}
 		fl = fcntl(notify[1], F_GETFL);
 		if (fl >= 0)
 			(void)fcntl(notify[1], F_SETFL, fl | O_NONBLOCK);
 	}
+#else
+	/* O_NONBLOCK is unconditionally defined by POSIX fcntl.h; if a build
+	 * truly lacks it we cannot guarantee a non-blocking read end, so fail
+	 * init rather than risk wedging drain. */
+	close(notify[0]);
+	close(notify[1]);
+	notify[0] = notify[1] = -1;
+	return -1;
 #endif
 #ifndef HAVE_PTHREAD
 	(void)nthreads;
@@ -132,7 +161,13 @@ crypto_workers_init(int nthreads)
 		}
 	}
 	plog(PLOG_INFO, PLOGLOC, NULL,
-	    "crypto workers: %d thread%s\n", nworkers, nworkers == 1 ? "" : "s");
+	    "crypto workers: started %d of %d requested thread%s\n",
+	    nworkers, nthreads, nthreads == 1 ? "" : "s");
+	if (nworkers < nthreads)
+		plog(PLOG_INTWARN, PLOGLOC, NULL,
+		    "crypto workers: only %d of %d requested threads started; %s\n",
+		    nworkers, nthreads,
+		    nworkers == 0 ? "running inline" : "running with fewer workers");
 	return 0;
 #endif
 }
