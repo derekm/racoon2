@@ -192,7 +192,12 @@ resume_kernel_esp_present(const struct sockaddr *dst, uint32_t spi_host)
 
 		if (e->error == 0)
 			return 1;
-		if (e->error == -ENOENT)
+		/* GETSA error means the SA is not in the kernel.  Kernels
+		 * signal a missing state as -ENOENT (classic) or -ESRCH
+		 * (some Linux xfrm paths); both mean absent, so the caller
+		 * arms the 1s CHILD rekey recovery.  Any other error is a
+		 * transport/query failure, reported as -1. */
+		if (e->error == -ENOENT || e->error == -ESRCH)
 			return 0;
 		return -1;
 	}
