@@ -69,10 +69,11 @@ Success/Failure.
   EAP-only selection, RSA + SIG_HASH.
 - MSK-shape and fail-closed coverage (32/64-octet MPPE lengths, wrong-length
   reject).
-- Box-gated matrix row `i2ieap-mschapv2` (kind `i2ieap`): charon initiator,
+- Box-un-gated matrix row `i2ieap-mschapv2` (kind `i2ieap`): charon initiator,
   MSCHAPv2 over FreeRADIUS, reaches IKE_SA/CHILD **ESTABLISHED** with
-  `MSK stored (l=64)` + responder CERT auth.  `gate=box` because it needs
-  charon + a RADIUS server.
+  `MSK stored (l=64)` + responder CERT auth.  Was `gate=box` because it needs
+  charon + a RADIUS server; the Fedora/Ubuntu matrix lanes now install
+  FreeRADIUS, so it runs un-gated (`gate=-`, 2026-11-09).
 
 ## Known limits
 
