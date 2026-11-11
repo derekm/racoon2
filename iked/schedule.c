@@ -201,8 +201,19 @@ current_time(void)
 
 	time(&n);
 	t = n - launched;
-	if (t < 0)
+	/*
+	 * deltaY2038 remaps only the genuine post-2038 wraparound of a 32-bit
+	 * time_t (n far below launched, deeply negative).  An ordinary backward
+	 * clock step (NTP correction, `date` set-back of seconds-to-hours)
+	 * gives only a small negative t; adding ~0x7fffffff-launched (~12
+	 * years) would inflate every timer deadline and stall the scheduler, so
+	 * non-wraparound negatives are clamped to 0 (elapsed time never goes
+	 * negative relative to launch).
+	 */
+	if (t <= -(deltaY2038 / 2))
 		t += deltaY2038;
+	if (t < 0)
+		t = 0;
 
 	return t;
 #else
