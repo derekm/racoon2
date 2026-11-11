@@ -138,8 +138,15 @@ rbuf_getvb(size_t len)
 	vbuf_num++;
 	if (vbuf_num >= vbuf_maxnum)
 		vbuf_num = 0;
-	if (vbuf[vbuf_num])
+	if (vbuf[vbuf_num]) {
+		/* The scratch ring reuses this slot via rc_vfree.  A slot may
+		 * hold secret bytes (rc_vmem2str of a privkey/psk/radius-secret,
+		 * ike_conf.c / ikev2_sa_auth.c callers), so rinse the old bytes
+		 * with a non-elidable wipe BEFORE freeing, so they do not
+		 * persist into the next reuse of this ring slot (VB-03). */
+		vmbuf_cleanse(vbuf[vbuf_num]);
 		rc_vfree(vbuf[vbuf_num]);
+	}
 	if ((vbuf[vbuf_num] = rc_vmalloc(len)) == NULL)
 		return NULL;
 	return vbuf[vbuf_num];

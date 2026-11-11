@@ -45,6 +45,16 @@ icketest_LDADD = libracoon.la
 LOG_COMPILER = $(SHELL) $(srcdir)/sample-wrapper.sh
 AM_TESTS_ENVIRONMENT = R2_SAMPLE_CONF='$(abs_srcdir)/../samples/libsample.conf'; export R2_SAMPLE_CONF;
 kmtest_SOURCES = kmtest.c kmtest_backend.c
+# vmbuf_test exercises lib/vmbuf.c + lib/rbuf.c hardening (VB-01..VB-05):
+# length-wrap rejection, zero-size / empty-buffer semantics, rc_vmemcmp
+# sign across INT_MAX, rc_vmem2str scratch-OOM, scratch-ring rinse.
+# It needs no ADDKE and touches no kernel state, so it belongs in the
+# default check.  Extensionless test -> the sample-wrapper LOG_COMPILER
+# passes the (ignored) sample config path; main() ignores argv.
+TESTS += vmbuf_test
+check_PROGRAMS += vmbuf_test
+vmbuf_test_SOURCES = vmbuf_test.c
+vmbuf_test_LDADD = vmbuf.lo rbuf.lo $(LTLIBOBJS)
 if USE_XFRM
 # xfrmnatt and xfrmtmpl talk to the REAL kernel (guarded only by
 # geteuid()/return-77) and are kernel-mutating, so auto-running them from

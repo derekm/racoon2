@@ -49,11 +49,25 @@ rc_vchar_t *
 rc_vmalloc(size_t size)
 {
 	rc_vchar_t *var;
+	caddr_t v;
 
 	if ((var = (rc_vchar_t *)rc_malloc(sizeof(*var))) == NULL)
 		return NULL;
 
 	var->l = size;
+	if (size == 0) {
+		/* A zero-length buffer is a VALID empty vmbuf (l == 0).
+		 * Guarantee a non-NULL v slot regardless of how the libc
+		 * allocator treats a 0-size request (glibc is non-NULL, but
+		 * other allocators may return NULL). */
+		v = (caddr_t)rc_calloc(1, 1);
+		if (v == NULL) {
+			rc_free(var);
+			return NULL;
+		}
+		var->v = v;
+		return var;
+	}
 	var->v = (caddr_t)rc_calloc(1, size);
 	if (var->v == NULL) {
 		rc_free(var);
@@ -77,6 +91,19 @@ rc_vrealloc(rc_vchar_t *ptr, size_t size)
 	caddr_t v;
 
 	if (ptr != NULL) {
+		if (size == 0) {
+			/* Valid shrink to an empty (l == 0) vmbuf, returned
+			 * non-NULL.  Do NOT relay realloc(p, 0): its result is
+			 * implementation-defined (glibc frees p and may return
+			 * NULL, which we must not mistake for OOM), and we must
+			 * not free the bytes twice.  Free the old bytes once and
+			 * establish a non-NULL empty slot. */
+			if (ptr->v)
+				rc_free(ptr->v);
+			ptr->v = (caddr_t)rc_calloc(1, 1);
+			ptr->l = 0;
+			return ptr;
+		}
 		if ((v = (caddr_t)rc_realloc(ptr->v, size)) == NULL)
 			return NULL;
 		if (size > ptr->l)
@@ -105,8 +132,20 @@ rc_vreallocf(rc_vchar_t *ptr, size_t size)
 	caddr_t v;
 
 	if (ptr != NULL) {
+		if (size == 0) {
+			/* Valid shrink to an empty (l == 0) vmbuf: consume the
+			 * old bytes once and return ptr non-NULL.  Never relay
+			 * realloc(p, 0) — glibc frees p and may return NULL,
+			 * which would lead us to rc_vfree() the already-freed
+			 * bytes (double free). */
+			if (ptr->v)
+				rc_free(ptr->v);
+			ptr->v = (caddr_t)rc_calloc(1, 1);
+			ptr->l = 0;
+			return ptr;
+		}
 		if ((v = (caddr_t)rc_realloc(ptr->v, size)) == NULL) {
-			rc_vfree(ptr);
+			rc_vfree(ptr);	/* consumes the original on OOM */
 			return NULL;
 		}
 		if (size > ptr->l)
@@ -162,6 +201,27 @@ rc_vfreez(rc_vchar_t *var)
 	return;
 }
 
+/*
+ * Rinse a vmbuf's contents with a non-elidable wipe so that secret bytes
+ * (e.g. an rc_vmem2str'd privkey / psk / radius-secret) cannot persist in
+ * memory that will be reused — the rbuf scratch ring reuses slots via
+ * rc_vfree (rbuf.c).  A plain memset(0) may be optimized away for a buffer
+ * that is about to be freed, so the wipe writes through a volatile pointer
+ * the compiler cannot elide (portable fallback for explicit_bzero).
+ */
+void
+vmbuf_cleanse(rc_vchar_t *var)
+{
+	volatile unsigned char *p;
+	size_t i;
+
+	if (var == NULL || var->v == NULL || var->l == 0)
+		return;
+	p = (volatile unsigned char *)var->v;
+	for (i = 0; i < var->l; i++)
+		p[i] = 0;
+}
+
 rc_vchar_t *
 rc_vdup(const rc_vchar_t *src)
 {
@@ -190,7 +250,11 @@ rc_vmemcmp(const rc_vchar_t *s1, const rc_vchar_t *s2)
 				return (*--p1 - *--p2);
 		} while (--n != 0);
 	}
-	return (int)(s1->l - s2->l);
+	if (s1->l > s2->l)
+		return 1;
+	if (s1->l < s2->l)
+		return -1;
+	return 0;
 }
 
 /*
@@ -201,7 +265,15 @@ rc_vmem2str(const rc_vchar_t *src)
 {
 	rc_vchar_t *buf;
 
+	/* The +1 for the NUL terminator must not wrap past SIZE_MAX
+	 * (src->l == SIZE_MAX would wrap to 0). */
+	if (src->l == (size_t)-1)
+		return NULL;
 	buf = rbuf_getvb(1 + src->l);
+	/* The scratch allocation can fail: return NULL instead of
+	 * dereferencing a NULL buffer (VB-05). */
+	if (buf == NULL)
+		return NULL;
 	memcpy(buf->v, src->v, src->l);
 	buf->s[src->l] = '\0';
 
@@ -242,10 +314,15 @@ rc_vchar_t *
 rc_vprepend(const rc_vchar_t *buf, const void * ptr, size_t len)
 {
 	rc_vchar_t	* newv;
+	size_t orig_l;
 
 	if (buf == NULL)
 		return NULL;
-	size_t orig_l = buf->l;
+	orig_l = buf->l;
+	/* Reject a length add that would wrap past SIZE_MAX, before the
+	 * allocation/copy; the original buffer is left untouched. */
+	if (len > (size_t)-1 - orig_l)
+		return NULL;
 	newv = rc_vmalloc(orig_l + len);
 	if (newv == NULL)
 		return NULL;
@@ -259,17 +336,46 @@ rc_vprepend(const rc_vchar_t *buf, const void * ptr, size_t len)
  * resizes dest, then copies data to tail of buf
  * returns new dest if success
  * if fail, dest does not change, and returns 0
+ *
+ * NOTE (VB-04): `data` must not alias, or point into, `dest->v`.  As a
+ * defensive guard for a future compliant-but-overlapping slice caller, if
+ * `data` does lie within dest->v we snapshot it to a temp BEFORE the
+ * relocating rc_vrealloc (which may move dest->v and invalidate `data`),
+ * then copy from the snapshot; otherwise a memmove is used for the copy.
+ * Normal non-alias output is unchanged: dest followed by data.
  */
 rc_vchar_t *
 rc_vconcat(rc_vchar_t *dest, const void *data, size_t len)
 {
 	size_t orig_l;
+	int overlap;
+	rc_vchar_t *snap;
 
 	orig_l = dest->l;
-	dest = rc_vrealloc(dest, orig_l + len);
-	if (! dest)
+	/* Reject a length add that would wrap past SIZE_MAX, before the
+	 * relocating rc_vrealloc; dest is left untouched. */
+	if (len > (size_t)-1 - orig_l)
 		return 0;
-	memcpy(dest->u + orig_l, data, len);
+
+	overlap = ((const char *)data >= (const char *)dest->v &&
+		   (const char *)data < (const char *)dest->v + orig_l);
+	if (overlap) {
+		snap = rc_vnew(data, len);
+		if (snap == NULL)
+			return NULL;
+		dest = rc_vrealloc(dest, orig_l + len);
+		if (!dest) {
+			rc_vfree(snap);
+			return 0;
+		}
+		memcpy(dest->u + orig_l, snap->v, len);
+		rc_vfree(snap);
+	} else {
+		dest = rc_vrealloc(dest, orig_l + len);
+		if (! dest)
+			return 0;
+		memmove(dest->u + orig_l, data, len);
+	}
 	return dest;
 }
 

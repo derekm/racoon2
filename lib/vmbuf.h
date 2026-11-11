@@ -70,6 +70,7 @@ extern rc_vchar_t *rc_vrealloc (rc_vchar_t *, size_t);
 extern rc_vchar_t *rc_vreallocf (rc_vchar_t *, size_t);
 extern void rc_vfree (rc_vchar_t *);
 extern void rc_vfreez (rc_vchar_t *);
+extern void vmbuf_cleanse (rc_vchar_t *);
 extern rc_vchar_t *rc_vdup (const rc_vchar_t *);
 extern int rc_vmemcmp (const rc_vchar_t *, const rc_vchar_t *);
 extern const char *rc_vmem2str (const rc_vchar_t *);
