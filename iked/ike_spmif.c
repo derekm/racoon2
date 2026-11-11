@@ -140,7 +140,11 @@ ike_spmif_post_slid_callback(void *tag, const char *slid)
 			isakmp_initiate_cont(req, "");
 			return -1;
 		}
-		index = rc_strdup(rc_vmem2str(selector->sl_index));
+		{
+			const char *idx = rc_vmem2str(selector->sl_index);
+			/* rc_strdup is plain strdup; idx NULL on scratch OOM (RB-03) */
+			index = rc_strdup(idx ? idx : "");
+		}
 		isakmp_initiate_cont(req, index);
 		rc_free(index);
 		return 0;

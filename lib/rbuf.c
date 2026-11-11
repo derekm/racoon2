@@ -53,10 +53,25 @@ static int lbuf_len = 0;
 static int vbuf_maxnum = 0;
 static int vbuf_num = 0;
 
+/*
+ * The scratch pools are process-global and one-time-only: every count and
+ * length must be positive (RB-01), rbuf_clean() is the only teardown (it walks
+ * each array with its current *_maxnum), and a re-init must be preceded by
+ * rbuf_clean().  Prior pools are never freed here -- borrowed-pointer
+ * invalidation is unspecified and no caller depends on it (RB-02).  All
+ * production callers initialize once at startup (iked/main.c, spmd/main.c,
+ * kinkd/main.c, and the test prologues).  The pools are unlocked process-global
+ * scratch; nothing here imposes a thread/lock guarantee (RB-04).
+ */
 int
 rbuf_init(int snum, int slen, int lnum, int llen, int vnum)
 {
 	int i;
+
+	/* A non-positive count or length would leave rbuf_getsb/getlb/getvb
+	 * indexing a never-allocated pool and returning NULL, so reject it. */
+	if (snum <= 0 || slen <= 0 || lnum <= 0 || llen <= 0 || vnum <= 0)
+		return -1;
 
 	vbuf_maxnum = vnum;
 	sbuf_maxnum = snum;
@@ -151,23 +166,3 @@ rbuf_getvb(size_t len)
 		return NULL;
 	return vbuf[vbuf_num];
 }
-
-#ifdef RBUFTEST
-#include <stdio.h>
-int
-main()
-{
-	rc_vchar_t *p;
-	int i;
-
-	if (rbuf_init(8, 80, 4, 160))
-		exit(1);
-	for (i = 0; i < 50; i++) {
-		p = rbuf_getsb();
-		snprintf(p->v, p->l, "hoge hoge hoge %02d", i);
-		printf("%s\n", p->v);
-	}
-
-	exit(0);
-}
-#endif

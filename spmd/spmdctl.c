@@ -1007,7 +1007,12 @@ sc_login(void)
 	for (rcl=rcl_top; rcl; rcl=rcl->next) {
 		switch (rcl->type) {
 		case RCT_ADDR_FILE:
-			sa = sc_build_sock_unix(rc_vmem2str(rcl->a.vstr));
+			{
+				const char *path = rc_vmem2str(rcl->a.vstr);
+				if (path == NULL)
+					continue;	/* scratch OOM: skip (RB-03) */
+				sa = sc_build_sock_unix(path);
+			}
 			s = sc_sock_open_file(sa);
 			if (s < 0) {
 				free(sa);

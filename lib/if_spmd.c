@@ -180,7 +180,12 @@ spmif_init(void)
 			break;
 #endif
 		case RCT_ADDR_FILE:
-			fd = open_spmif_local(rc_vmem2str(addr->a.vstr));
+			{
+				const char *path = rc_vmem2str(addr->a.vstr);
+				/* strlen(path) inside open_spmif_local cannot take NULL;
+				 * treat scratch OOM as no usable interface (RB-03). */
+				fd = (path != NULL) ? open_spmif_local(path) : -1;
+			}
 			break;
 		default:
 			plog(PLOG_INTWARN, PLOGLOC, NULL,

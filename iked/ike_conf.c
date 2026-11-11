@@ -887,7 +887,12 @@ ikev2_public_key(struct ikev2_sa *ike_sa, rc_vchar_t *id_data,
 	for (pk = ike_sa->rmconf->ikev2->peers_pubkey; pk; pk = pk->next) {
 		switch (pk->ftype) {
 		case RCT_FTYPE_X509PEM:
-			cert = eay_get_x509cert(rc_vmem2str(pk->pubkey));
+			{
+				const char *pkpath = rc_vmem2str(pk->pubkey);
+				/* fopen(NULL) inside eay_get_x509cert() is undefined;
+				 * only pass a valid scratch path (UB, RB-03). */
+				cert = (pkpath != NULL) ? eay_get_x509cert(pkpath) : NULL;
+			}
 			if (!cert) {
 				plog(PLOG_INTERR, PLOGLOC, 0,
 				     "failed reading cert file (%s)\n",
@@ -919,7 +924,12 @@ ikev2_public_key(struct ikev2_sa *ike_sa, rc_vchar_t *id_data,
 				rc_vchar_t *pk12;
 				char *passphrase = 0;	/* XXX */
 
-				pk12 = eay_get_pkcs12(rc_vmem2str(pk->pubkey));
+				{
+					const char *pkpath = rc_vmem2str(pk->pubkey);
+					/* fopen(NULL) in eay_get_pkcs12() is undefined
+					 * (UB, RB-03) */
+					pk12 = (pkpath != NULL) ? eay_get_pkcs12(pkpath) : NULL;
+				}
 				if (pk12) {
 					cert = eay_get_pkcs12_x509cert(pk12,
 								       passphrase);
@@ -978,14 +988,24 @@ ikev2_private_key(struct ikev2_sa *ike_sa, rc_vchar_t *id_data)
 	for (pk = ike_sa->rmconf->ikev2->my_pubkey; pk; pk = pk->next) {
 		switch (pk->ftype) {
 		case RCT_FTYPE_X509PEM:
-			cert = eay_get_x509cert(rc_vmem2str(pk->pubkey));
+			{
+				const char *pkpath = rc_vmem2str(pk->pubkey);
+				/* fopen(NULL) inside eay_get_x509cert() is undefined;
+				 * only pass a valid scratch path (UB, RB-03). */
+				cert = (pkpath != NULL) ? eay_get_x509cert(pkpath) : NULL;
+			}
 			if (!cert) {
 				plog(PLOG_INTERR, PLOGLOC, 0,
 				     "failed reading pubkey (%s)\n",
 				     rc_vmem2str(pk->pubkey));
 				goto done;
 			}
-			privkey = eay_get_pkcs1privkey(rc_vmem2str(pk->privkey));
+			{
+				const char *pkpath = rc_vmem2str(pk->privkey);
+				/* fopen(NULL) in eay_get_pkcs1privkey() is undefined
+				 * (UB, RB-03) */
+				privkey = (pkpath != NULL) ? eay_get_pkcs1privkey(pkpath) : NULL;
+			}
 			if (!privkey)
 				isakmp_log(ike_sa, 0, 0, 0,
 					   PLOG_INTERR, PLOGLOC,
@@ -999,7 +1019,12 @@ ikev2_private_key(struct ikev2_sa *ike_sa, rc_vchar_t *id_data)
 				rc_vchar_t *pk12;
 				char *passphrase = 0;	/* XXX */
 
-				pk12 = eay_get_pkcs12(rc_vmem2str(pk->pubkey));
+				{
+					const char *pkpath = rc_vmem2str(pk->pubkey);
+					/* fopen(NULL) in eay_get_pkcs12() is undefined
+					 * (UB, RB-03) */
+					pk12 = (pkpath != NULL) ? eay_get_pkcs12(pkpath) : NULL;
+				}
 				if (pk12) {
 					cert = eay_get_pkcs12_x509cert(pk12,
 								       passphrase);
@@ -5388,8 +5413,11 @@ ike_conf_check_ikev1(struct rcf_remote *rmconf, int *err, int *warn,
 
 	if (is_default_clause)
 		rm_index = strdup("(default)");
-	else
-		rm_index = strdup(rc_vmem2str(rmconf->rm_index));
+	else {
+		const char *ri = rc_vmem2str(rmconf->rm_index);
+		/* strdup(NULL) crashes; ri NULL on scratch OOM (RB-03) */
+		rm_index = strdup(ri ? ri : "");
+	}
 
 	kmp = rmconf->ikev1;
 
@@ -6179,8 +6207,11 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 
 	if (is_default_clause)
 		rm_index = strdup("(default)");
-	else
-		rm_index = strdup(rc_vmem2str(rmconf->rm_index));
+	else {
+		const char *ri = rc_vmem2str(rmconf->rm_index);
+		/* strdup(NULL) crashes; ri NULL on scratch OOM (RB-03) */
+		rm_index = strdup(ri ? ri : "");
+	}
 
 	kmp = rmconf->ikev2;
 	if (is_default_clause) {

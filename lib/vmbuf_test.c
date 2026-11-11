@@ -449,8 +449,10 @@ main(int ac, char **av)
 	(void)ac; (void)av;
 
 	/* initialize the scratch ring (vbuf slots allocated lazily) so
-	 * rc_vmem2str can run; no addke/libracoon needed. */
-	if (rbuf_init(0, 0, 0, 0, 8) == -1) {
+	 * rc_vmem2str can run; no addke/libracoon needed.  rbuf_init rejects
+	 * any non-positive pool count/length, so give the unused pools a
+	 * harmless positive size (the vbuf ring stays at 8 slots). */
+	if (rbuf_init(8, 80, 4, 160, 8) == -1) {
 		printf("FAIL: rbuf_init failed\n");
 		return 1;
 	}

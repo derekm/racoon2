@@ -2771,6 +2771,8 @@ rcf_setproto(rc_vchar_t *proto, int *num)
 	char *bp;
 
 	name = rc_vmem2str(proto);
+	if (name == NULL)
+		return -1;	/* scratch OOM: no proto name (RB-03) */
 	*num = (int)strtol(name, &bp, 0);
 	if (*bp == '\0')
 		return 0;
@@ -5045,7 +5047,14 @@ rcf_get_spmd_if_passwd(rc_vchar_t **dst)
 	if (!rcf_interface_head->spmd_if_passwd)
 		return -1;
 
-	vpasswd = rcf_readfile(rc_vmem2str(rcf_interface_head->spmd_if_passwd), PLOGLOC, 1);
+	{
+		const char *pp = rc_vmem2str(rcf_interface_head->spmd_if_passwd);
+		/* rc_safefile() (via rcf_readfile) fopen()s the path; a NULL
+		 * scratch path is undefined, so fail early (UB, RB-03). */
+		if (pp == NULL)
+			return -1;
+		vpasswd = rcf_readfile(pp, PLOGLOC, 1);
+	}
 	if (vpasswd == 0)
 		return -1;
 	else

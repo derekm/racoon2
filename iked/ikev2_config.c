@@ -705,6 +705,8 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 		vstr = ikev2_application_version(ike_sa->rmconf);
 		if (vstr) {
 			str = rc_vmem2str(vstr);
+			if (str == NULL)
+				str = "";	/* scratch OOM: emit empty (RB-03) */
 		} else {
 			str = "";
 		}
@@ -899,8 +901,13 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 	if (emitted_dns && param->cfg_dns_domain &&
 	    ikev2_dns_domain(ike_sa->rmconf)) {
 		const char *dd = rc_vmem2str(ikev2_dns_domain(ike_sa->rmconf));
-		size_t ddlen = strlen(dd);
+		size_t ddlen;
 		struct ikev2cfg_attrib hdr;
+
+		/* scratch OOM: skip emitting 25 rather than strlen(NULL) (RB-03) */
+		if (dd == NULL)
+			goto dns_domain_done;
+		ddlen = strlen(dd);
 
 		TRACE((PLOGLOC, "INTERNAL_DNS_DOMAIN: %s\n", dd));
 		cfg_attrib_set(&hdr, IKEV2_CFG_INTERNAL_DNS_DOMAIN, ddlen);
@@ -908,8 +915,9 @@ ikev2_create_config_reply(struct ikev2_sa *ike_sa,
 		    ! rc_vconcat(cfg_payload, dd, ddlen))
 			goto err;
 	}
+dns_domain_done:
 
-	/* Split-DNS DNSSEC trust anchor (RFC 8598 §4.2).  The responder cannot
+	/* Split-DNS DNSSEC trust anchor (RFC 8598 §4.2).
 	 * source a trust anchor from DNS, so the operator configures it as a
 	 * hex `dnssec_ta` (DS-style Key Tag|Alg|Digest Type|Digest Data); when
 	 * the peer asked for INTERNAL_DNSSEC_TA (26) AND a 25 will actually be

@@ -249,6 +249,12 @@ plogv(int tag, const char *location, struct rc_log *plg,
 	if ((header = plog_getheader(tag, location)) == NULL)
 		return NULL;
 	rbuf = rbuf_getlb();
+	if (rbuf == NULL) {
+		/* scratch ring exhausted (OOM): drop the message rather than
+		 * dereference a NULL getter return (RB-03). */
+		rc_free(header);
+		return NULL;
+	}
 	hlen = snprintf(rbuf->v, rbuf->l, "%s", header);
 	rc_free(header);
 	if (hlen >= rbuf->l)
@@ -315,6 +321,13 @@ plogdump(int tag, const char *location, struct rc_log *plg,
 	}
 
 	rbuf = rbuf_getvb(strlen(header) + data_buflen + 1);
+	if (rbuf == NULL) {
+		/* scratch ring exhausted (OOM): drop the dump rather than
+		 * dereference a NULL getter return (RB-03). */
+		rc_free(data_buf);
+		rc_free(header);
+		return NULL;
+	}
 	p = rbuf->v;
 	reslen = rbuf->l;
 	len = snprintf(p, reslen, "%s", header);

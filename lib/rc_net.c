@@ -128,6 +128,8 @@ rcs_is_addr_name(struct rc_addrlist *al, const char *name)
 		return 0;
 
 	macro = rc_vmem2str(al->a.vstr);
+	if (macro == NULL)
+		return 0;	/* scratch ring exhausted (OOM): no match, RB-03 */
 	if (strncmp(macro, name, strlen(macro)))
 		return 0;
 
@@ -1041,10 +1043,14 @@ rcs_sa2str(const struct sockaddr *sa)
 		return NULL;
 	addr = rbuf_getlb();
 	port = rbuf_getsb();
+	if (addr == NULL || port == NULL)
+		return NULL;	/* scratch ring exhausted (OOM), RB-03 */
 	if (getnameinfo(sa, (socklen_t)SA_LEN(sa), addr->v, (socklen_t)addr->l,
 	    port->v, (socklen_t)port->l, niflags))
 		return "error[error]";
 	vbuf = rbuf_getvb(strlen(addr->v) + strlen(port->v) + 4);
+	if (vbuf == NULL)
+		return NULL;	/* scratch ring exhausted (OOM), RB-03 */
 	snprintf(vbuf->s, vbuf->l, "%s[%s]", addr->s, port->s);
 
 	return vbuf->v;

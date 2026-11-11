@@ -1738,20 +1738,26 @@ oakley_getsign(struct ph1handle *iph1)
 	switch (ikev1_certtype(iph1->rmconf)) {
 	case ISAKMP_CERT_X509SIGN:
 	case ISAKMP_CERT_DNS:
-		if (ikev1_myprivfile(iph1->rmconf) == NULL) {
-			plog(PLOG_INTERR, PLOGLOC, NULL, "no cert defined.\n");
-			goto end;
-		}
+		{
+			const char *mypriv = ikev1_myprivfile(iph1->rmconf);
+			/* ikev1_myprivfile() is a fresh rc_vmem2str each call and can
+			 * return NULL on scratch OOM; capture once and let the NULL
+			 * check cover the eay_get_pkcs1privkey() use below (RB-03). */
+			if (mypriv == NULL) {
+				plog(PLOG_INTERR, PLOGLOC, NULL, "no cert defined.\n");
+				goto end;
+			}
 
-		/* make private file name */
+			/* make private file name */
 #if 0
-		getpathname(path, sizeof(path),
-			LC_PATHTYPE_CERT,
-			iph1->rmconf->myprivfile);
-		privkey = privsep_eay_get_pkcs1privkey(path);
+			getpathname(path, sizeof(path),
+				LC_PATHTYPE_CERT,
+				iph1->rmconf->myprivfile);
+			privkey = privsep_eay_get_pkcs1privkey(path);
 #else
-		privkey = eay_get_pkcs1privkey(ikev1_myprivfile(iph1->rmconf));
+			privkey = eay_get_pkcs1privkey(mypriv);
 #endif
+		}
 		if (privkey == NULL) {
 			plog(PLOG_INTERR, PLOGLOC, NULL,
 				"failed to get private key.\n");
