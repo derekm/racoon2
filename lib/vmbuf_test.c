@@ -190,6 +190,41 @@ test_mem2str_normal(void)
 	CHECK(s != NULL && s[0] == '\0');
 }
 
+/* ---------- VB-04 : contained-overlap (aliasing) rc_vconcat ---------- */
+
+static void
+test_concat_overlap(void)
+{
+	char out[16];
+	rc_vchar_t *b;
+
+	/* data aliases dest->v (self-append): rc_vconcat must snapshot the
+	 * source before the relocating rc_vrealloc, else a moved buffer
+	 * leaves the self-slice pointing at freed memory (VB-04). */
+	b = rc_vnew("abcdef", 6);
+	CHECK(b != NULL);
+	if (!b)
+		return;
+	b = rc_vconcat(b, (const char *)b->v, b->l);	/* data == dest->v */
+	CHECK(b != NULL && b->l == 12);
+	if (b) {
+		memcpy(out, b->v, b->l);
+		out[b->l] = 0;
+		CHECK(strcmp(out, "abcdefabcdef") == 0);
+
+		/* mid-buffer slice: data = dest->v + 3, len 3 */
+		b = rc_vconcat(b, (const char *)b->v + 3, 3);
+		CHECK(b != NULL && b->l == 15);
+		if (b) {
+			memcpy(out, b->v, b->l);
+			out[b->l] = 0;
+			CHECK(strncmp(out + 12, "def", 3) == 0);
+		}
+	}
+	if (b)
+		rc_vfree(b);
+}
+
 /* ---------- VB-02 : zero-size / empty-buffer semantics ---------- */
 
 static void
@@ -214,6 +249,7 @@ test_vrealloc_zero(void)
 	r = rc_vrealloc(b, 0);
 	CHECK(r == b);			/* shrink to empty, NOT NULL */
 	CHECK(r != NULL && r->l == 0);
+	CHECK(r == NULL || r->v != NULL);	/* non-NULL empty slot */
 	if (r)
 		rc_vfree(r);
 
@@ -234,6 +270,7 @@ test_vreallocf_zero(void)
 	 * UNFIXED code triggers a glibc "double free" abort here. */
 	b = rc_vreallocf(b, 0);
 	CHECK(b != NULL && b->l == 0);
+	CHECK(b == NULL || b->v != NULL);	/* non-NULL empty slot */
 	if (b)
 		rc_vfree(b);
 }
@@ -341,6 +378,18 @@ test_mem2str_oom(void)
 
 /* ---------- VB-03 : non-elidable rinse + scratch-slot reuse ---------- */
 
+/* Linked with -Wl,--wrap=vmbuf_cleanse so every vmbuf_cleanse call in the
+ * linked vmbuf.lo/rbuf.lo lands here and increments this counter.  The
+ * scratch-reuse test asserts the counter advances when rbuf_getvb reuses a
+ * ring slot, i.e. it FAILS if the rinse call site is ever deleted. */
+static int s_cleanse_count;
+void __real_vmbuf_cleanse(rc_vchar_t *);
+void __wrap_vmbuf_cleanse(rc_vchar_t *v)
+{
+	s_cleanse_count++;
+	__real_vmbuf_cleanse(v);
+}
+
 static void
 test_cleanse(void)
 {
@@ -365,19 +414,33 @@ test_scratch_reuse(void)
 	static unsigned char payload[64];
 	rc_vchar_t src;
 	const char *s;
-	int i;
+	int before, i;
 
 	memset(payload, 0x5a, sizeof(payload));	/* stand-in "secret" */
 	src.l = sizeof(payload);
 	src.v = payload;
-	for (i = 0; i < 24; i++) {
+	/* warm all 8 ring slots (allocated lazily), so the next round of
+	 * rbuf_getvb calls REUSES (and must rinse) prior slot bytes. */
+	for (i = 0; i < 8; i++) {
 		s = rc_vmem2str(&src);
 		if (s == NULL) {
 			CHECK(0);
 			return;
 		}
 	}
-	CHECK(1);	/* 8-slot ring reused ~3x; no crash / double-free */
+	before = s_cleanse_count;
+	/* rotate through the ring again: every reuse must rinse the prior
+	 * (secret-like) bytes before freeing.  If rbuf_getvb ever stops
+	 * calling vmbuf_cleanse, s_cleanse_count stops advancing -> FAIL. */
+	for (i = 0; i < 16; i++) {
+		s = rc_vmem2str(&src);
+		if (s == NULL) {
+			CHECK(0);
+			return;
+		}
+	}
+	CHECK(s_cleanse_count > before);
+	CHECK(1);	/* 8-slot ring reused ~2x; no crash / double-free */
 }
 
 int
@@ -396,6 +459,7 @@ main(int ac, char **av)
 	test_mem2str_normal();
 	test_prepend_normal();
 	test_concat_normal();
+	test_concat_overlap();
 	test_memcmp();
 	test_vmalloc_zero();
 	test_vrealloc_zero();

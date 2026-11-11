@@ -96,11 +96,16 @@ rc_vrealloc(rc_vchar_t *ptr, size_t size)
 			 * non-NULL.  Do NOT relay realloc(p, 0): its result is
 			 * implementation-defined (glibc frees p and may return
 			 * NULL, which we must not mistake for OOM), and we must
-			 * not free the bytes twice.  Free the old bytes once and
-			 * establish a non-NULL empty slot. */
+			 * not free the bytes twice.  Establish the non-NULL
+			 * 1-byte empty slot BEFORE releasing the old bytes so
+			 * that on allocation failure ptr is left unchanged and
+			 * its original bytes intact (the failure contract
+			 * below: "If reallocate fails, ptr does not change"). */
+			if ((v = (caddr_t)rc_calloc(1, 1)) == NULL)
+				return NULL;	/* ptr unchanged, original intact */
 			if (ptr->v)
 				rc_free(ptr->v);
-			ptr->v = (caddr_t)rc_calloc(1, 1);
+			ptr->v = v;
 			ptr->l = 0;
 			return ptr;
 		}
@@ -137,10 +142,17 @@ rc_vreallocf(rc_vchar_t *ptr, size_t size)
 			 * old bytes once and return ptr non-NULL.  Never relay
 			 * realloc(p, 0) — glibc frees p and may return NULL,
 			 * which would lead us to rc_vfree() the already-freed
-			 * bytes (double free). */
+			 * bytes (double free).  Establish the non-NULL 1-byte
+			 * empty slot FIRST, so that on allocation failure we
+			 * still consume the original (the contract below:
+			 * "if reallocate fails, ptr is deallocated"). */
+			if ((v = (caddr_t)rc_calloc(1, 1)) == NULL) {
+				rc_vfree(ptr);	/* consumes the original on OOM */
+				return NULL;
+			}
 			if (ptr->v)
 				rc_free(ptr->v);
-			ptr->v = (caddr_t)rc_calloc(1, 1);
+			ptr->v = v;
 			ptr->l = 0;
 			return ptr;
 		}
