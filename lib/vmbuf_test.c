@@ -17,13 +17,20 @@
  *         rc_vreallocf(ptr,0) consumes the original bytes and yields a
  *         valid empty vmbuf (no glibc double free); positive->zero and
  *         zero->positive; realloc failure preserves the original for
- *         rc_vrealloc and consumes it for rc_vreallocf.
+ *         rc_vrealloc and consumes it for rc_vreallocf.  A fault-inject
+ *         sentinel-OOM test (__wrap_calloc fails the 1-byte rc_calloc(1,1))
+ *         pins the old 90b9ff7 bug where a NULL sentinel still returned a
+ *         broken `v` (bytes freed before the sentinel).
  *   VB-03 the scratch ring rinses a reused slot's prior (possibly secret)
  *         bytes via a non-elidable wipe (vmbuf_cleanse) + heavy slot
- *         reuse stays clean under the sanitizer.
+ *         reuse stays clean under the sanitizer.  The rinse count is
+ *         asserted EXACTLY (before + 16 = every ring reuse).
  *   VB-04 rc_vconcat is safe for a compliant-but-overlapping slice caller
  *         (snapshot before the relocating rc_vrealloc / memmove) and keeps
- *         normal non-alias output equal to dest followed by data.
+ *         normal non-alias output equal to dest followed by data.  The
+ *         overlap test forces rc_realloc to actually MOVE the buffer (via
+ *         malloc_usable_size size classes) so the snapshot branch is
+ *         genuinely required.
  *   VB-05 rc_vmemcmp keeps the correct ordering sign when the length
  *         difference exceeds INT_MAX, plus equal/unequal/empty; rc_vmem2str
  *         returns NULL (not a crash) when the scratch allocation fails.
@@ -35,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <malloc.h>		/* malloc_usable_size (glibc/.179) */
 #include <sys/resource.h>
 
 #include "vmbuf.h"
@@ -64,6 +72,30 @@ check_bytes(const char *label, const rc_vchar_t *b, const void *expected, size_t
 		nfails++;
 	}
 	nchecks++;
+}
+
+/* ---------- fault-injection wrappers (sentinel-OOM, VB-02) ----------
+ * Linked with -Wl,--wrap=calloc --wrap=free so every calloc/free in the
+ * linked vmbuf.lo/rbuf.lo lands here.  __wrap_calloc fails ONLY the
+ * deterministic 1-byte sentinel calloc(1,1) once g_fail_sentinel is set
+ * (that is the exact rc_calloc(1,1) rc_vrealloc/rc_vreallocf use to
+ * establish the non-NULL empty slot on a shrink-to-zero); __wrap_free
+ * counts frees so a test can prove whether the original bytes were (or
+ * were not) released during a sentinel-OOM. */
+static int g_fail_sentinel;	/* when set, calloc(1,1) returns NULL */
+static int s_free_count;
+void *__real_calloc(size_t, size_t);
+void *__wrap_calloc(size_t n, size_t s)
+{
+	if (g_fail_sentinel && n == 1 && s == 1)
+		return NULL;
+	return __real_calloc(n, s);
+}
+void __real_free(void *);
+void __wrap_free(void *p)
+{
+	s_free_count++;
+	__real_free(p);
 }
 
 /* ---------- VB-01 : wrap past SIZE_MAX must be rejected ---------- */
@@ -195,34 +227,82 @@ test_mem2str_normal(void)
 static void
 test_concat_overlap(void)
 {
-	char out[16];
-	rc_vchar_t *b;
+	size_t L = 16384;	/* vmbuf length: glibc usable ~16.4 KiB */
+	rc_vchar_t *b, *r;
+	void *blk[4], *origv;
+	size_t i, j;
+	int ok;
 
-	/* data aliases dest->v (self-append): rc_vconcat must snapshot the
-	 * source before the relocating rc_vrealloc, else a moved buffer
-	 * leaves the self-slice pointing at freed memory (VB-04). */
-	b = rc_vnew("abcdef", 6);
+	/* MOVING-REALLOC OVERLAP RED TEST: force rc_realloc (realloc) to
+	 * actually RELOCATE dest->v so the snapshot-before-realloc (VB-04)
+	 * branch is genuinely required — a deleted snapshot lets the source
+	 * slice read the old, moved-away memory -> wrong bytes.
+	 *
+	 * glibc/.179: a dest chunk has usable malloc_usable_size(dest->v)
+	 * (~16.4 KiB for a 16 KiB request).  Growing it past that capacity is
+	 * guaranteed to RELOCATE when four LIVE blocker chunks are allocated
+	 * immediately after dest (so realloc cannot extend in place; verified
+	 * 1500/1500 with and without the snapshot allocation).  All payload
+	 * bytes are distinct (index & 0xff) so a stale post-move read of the
+	 * source yields a wrong tail -> FAIL.  (The move must hold in BOTH
+	 * the snapshot and snapshotless builds so the red only fires on the
+	 * real bug, not on a construction assumption.) */
+
+	/* (A) self-append (data == dest->v, len == dest->l) forced to move */
+	b = rc_vmalloc(L);
 	CHECK(b != NULL);
 	if (!b)
 		return;
-	b = rc_vconcat(b, (const char *)b->v, b->l);	/* data == dest->v */
-	CHECK(b != NULL && b->l == 12);
-	if (b) {
-		memcpy(out, b->v, b->l);
-		out[b->l] = 0;
-		CHECK(strcmp(out, "abcdefabcdef") == 0);
+	for (i = 0; i < L; i++)
+		((unsigned char *)b->v)[i] = (unsigned char)(i & 0xff);
+	CHECK(malloc_usable_size(b->v) < 2 * L);/* append must exceed usable */
+	for (j = 0; j < 4; j++)
+		blk[j] = malloc(2 * L);		/* live chunks right after dest */
+	origv = b->v;
+	r = rc_vconcat(b, b->v, b->l);		/* data aliases dest->v (self) */
+	CHECK(r != NULL);
+	if (!r)
+		goto done_ab;
+	b = r;
+	CHECK(b->v != origv);	/* realloc really relocated (VB-04 required) */
+	CHECK(b->l == 2 * L);
+	ok = 1;
+	for (i = 0; i < 2 * L; i++)
+		if (((unsigned char *)b->v)[i] != (unsigned char)(i & 0xff))
+			ok = 0;	/* wrong if source read post-move */
+	CHECK(ok);	/* exactly dest followed by src */
+done_ab:
+	rc_vfree(b);
+	for (j = 0; j < 4; j++)
+		free(blk[j]);
 
-		/* mid-buffer slice: data = dest->v + 3, len 3 */
-		b = rc_vconcat(b, (const char *)b->v + 3, 3);
-		CHECK(b != NULL && b->l == 15);
-		if (b) {
-			memcpy(out, b->v, b->l);
-			out[b->l] = 0;
-			CHECK(strncmp(out + 12, "def", 3) == 0);
-		}
-	}
-	if (b)
-		rc_vfree(b);
+	/* (B) mid-buffer slice (data = dest->v + L/4, len = L/2): fresh dest,
+	 * same relocating construction */
+	b = rc_vmalloc(L);
+	CHECK(b != NULL);
+	if (!b)
+		return;
+	for (i = 0; i < L; i++)
+		((unsigned char *)b->v)[i] = (unsigned char)(i & 0xff);
+	for (j = 0; j < 4; j++)
+		blk[j] = malloc(2 * L);		/* live chunks right after dest */
+	origv = b->v;
+	r = rc_vconcat(b, b->v + L / 4, L / 2);	/* regrow to 1.5 * L -> move */
+	CHECK(r != NULL);
+	if (!r)
+		goto done_cd;
+	b = r;
+	CHECK(b->v != origv);	/* relocated again */
+	CHECK(b->l == L + L / 2);
+	ok = 1;
+	for (i = 0; i < L + L / 2; i++)
+		if (((unsigned char *)b->v)[i] != (unsigned char)(i & 0xff))
+			ok = 0;	/* wrong if source read post-move */
+	CHECK(ok);	/* exactly dest followed by the slice */
+done_cd:
+	rc_vfree(b);
+	for (j = 0; j < 4; j++)
+		free(blk[j]);
 }
 
 /* ---------- VB-02 : zero-size / empty-buffer semantics ---------- */
@@ -273,6 +353,89 @@ test_vreallocf_zero(void)
 	CHECK(b == NULL || b->v != NULL);	/* non-NULL empty slot */
 	if (b)
 		rc_vfree(b);
+}
+
+/*
+ * SENTINEL-OOM RED TEST: make the 1-byte rc_calloc(1,1) inside
+ * rc_vrealloc(ptr,0) / rc_vreallocf(ptr,0) FAIL deterministically and
+ * assert the documented OOM contracts.  This is the path 90b9ff7 got
+ * wrong: it freed the old bytes before establishing the sentinel, so a
+ * NULL sentinel still returned a broken `v` (rc_vrealloc returned the
+ * still-owned-but-now-freed dummy; rc_vreallocf returned a vmbuf whose v
+ * was NULL/dangling).  The success-path CHECK(r->v != NULL) above cannot
+ * see this because on success calloc(1,1) succeeds; only by failing the
+ * sentinel do we pin the bug.
+ *
+ * FIXED rc_vrealloc(ptr,0): sentinel calloc fails -> returns NULL with
+ * ptr unchanged (bytes still owned, nothing freed).
+ * OLD   rc_vrealloc(ptr,0): frees ptr->v first, then returns ptr with a
+ * NULL `.v` (broken).  => every CHECK below FAILs.
+ */
+static void
+test_vrealloc_zero_sentinel_oom(void)
+{
+	rc_vchar_t *b, *r;
+	unsigned char orig[16];
+	void *origv;
+	int f0, f1, i, ok;
+
+	b = rc_vnew("abcdef", 6);
+	CHECK(b != NULL);
+	if (!b)
+		return;
+	memcpy(orig, b->v, 6);
+	origv = b->v;
+
+	f0 = s_free_count;
+	g_fail_sentinel = 1;
+	r = rc_vrealloc(b, 0);
+	g_fail_sentinel = 0;
+	f1 = s_free_count;
+
+	CHECK(r == NULL);		/* OLD returns b (non-NULL) -> FAIL */
+	CHECK(b->v == origv);		/* OLD: v==NULL -> FAIL */
+	CHECK(b->l == 6);		/* OLD: l==0 -> FAIL */
+	CHECK(f1 - f0 == 0);		/* OLD frees the bytes -> FAIL */
+	ok = 1;
+	if (b->v == origv && b->l == 6) {
+		for (i = 0; i < 6; i++)
+			if (((unsigned char *)b->v)[i] != orig[i])
+				ok = 0;	/* bytes preserved, not freed */
+	}
+	CHECK(ok);
+	if (b)
+		rc_vfree(b);
+}
+
+/*
+ * FIXED rc_vreallocf(ptr,0) on sentinel-OOM: rc_vfree(ptr) consumes the
+ * original (frees v + var) and returns NULL.
+ * OLD   rc_vreallocf(ptr,0): frees ptr->v, returns ptr with v==NULL.
+ */
+static void
+test_vreallocf_zero_sentinel_oom(void)
+{
+	rc_vchar_t *b, *r;
+	int f0, f1;
+
+	b = rc_vnew("abcdef", 6);
+	CHECK(b != NULL);
+	if (!b)
+		return;
+
+	f0 = s_free_count;
+	g_fail_sentinel = 1;
+	r = rc_vreallocf(b, 0);
+	g_fail_sentinel = 0;
+	f1 = s_free_count;
+
+	CHECK(r == NULL);		/* OLD returns b (non-NULL) -> FAIL */
+	/* the original vmbuf is CONSUMED (freed) on OOM: rc_vfree() freed
+	 * both v and var, so s_free_count advanced by 2.  We cannot touch b
+	 * after the OOM (it no longer owns the bytes); consumption is proven
+	 * by the free delta and by the absence of a double free under
+	 * MALLOC_CHECK_=3 / glibc tcache. */
+	CHECK(f1 - f0 == 2);		/* v + var consumed -> FAIL under OLD */
 }
 
 /* Below, the two realloc/scratch-failure tests force rc_malloc/rc_realloc
@@ -430,8 +593,9 @@ test_scratch_reuse(void)
 	}
 	before = s_cleanse_count;
 	/* rotate through the ring again: every reuse must rinse the prior
-	 * (secret-like) bytes before freeing.  If rbuf_getvb ever stops
-	 * calling vmbuf_cleanse, s_cleanse_count stops advancing -> FAIL. */
+	 * (secret-like) bytes before freeing, and it MUST rinse on ALL 16
+	 * reuses (== before + 16, not merely "more than").  If rbuf_getvb
+	 * ever stops cleansing on a slot reuse, the exact count drops -> FAIL. */
 	for (i = 0; i < 16; i++) {
 		s = rc_vmem2str(&src);
 		if (s == NULL) {
@@ -439,7 +603,7 @@ test_scratch_reuse(void)
 			return;
 		}
 	}
-	CHECK(s_cleanse_count > before);
+	CHECK(s_cleanse_count == before + 16);
 	CHECK(1);	/* 8-slot ring reused ~2x; no crash / double-free */
 }
 
@@ -466,6 +630,8 @@ main(int ac, char **av)
 	test_vmalloc_zero();
 	test_vrealloc_zero();
 	test_vreallocf_zero();
+	test_vrealloc_zero_sentinel_oom();
+	test_vreallocf_zero_sentinel_oom();
 	test_cleanse();
 	test_scratch_reuse();
 

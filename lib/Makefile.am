@@ -57,8 +57,12 @@ vmbuf_test_SOURCES = vmbuf_test.c
 vmbuf_test_LDADD = vmbuf.lo rbuf.lo $(LTLIBOBJS)
 # Route every vmbuf_cleanse call in the linked vmbuf.lo/rbuf.lo through the
 # test's counter so the VB-03 scratch-reuse test asserts the rinse call
-# site is present (fails if rbuf_getvb stops cleansing on slot reuse).
-vmbuf_test_LDFLAGS = -Wl,--wrap=vmbuf_cleanse
+# site is present (fails if rbuf_getvb stops cleansing on slot reuse), and
+# route calloc/free through the test's fault-injection stubs so the
+# VB-02 sentinel-OOM tests can fail the 1-byte rc_calloc(1,1) inside
+# rc_vrealloc/rc_vreallocf and prove the OOM contract (--wrap=calloc /
+# --wrap=free).
+vmbuf_test_LDFLAGS = -Wl,--wrap=vmbuf_cleanse -Wl,--wrap=calloc -Wl,--wrap=free
 if USE_XFRM
 # xfrmnatt and xfrmtmpl talk to the REAL kernel (guarded only by
 # geteuid()/return-77) and are kernel-mutating, so auto-running them from
