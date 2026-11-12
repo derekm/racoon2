@@ -47,8 +47,10 @@
  * introduces $[...] is expanded by the subsequent pass; nested
  * $[A] -> $[B] chains resolve within the same pass.  (This asymmetry is
  * intentional and preserved here.)
- * On ANY failure *dst is left untouched; on the no-macro success the caller
- * owns a valid NUL-terminated empty string.
+ * On ANY failure *dst is left untouched; on success the caller owns a valid
+ * NUL-terminated result (the expanded text, which is empty only if the
+ * input was empty or expanded entirely to empty values).  A no-macro input
+ * like "plain text" is returned unchanged.
  */
 
 /*
@@ -103,11 +105,18 @@ rc_strzcat(char **buf, size_t *buflen, char *src, size_t srclen)
 	 * srclen == 0: append nothing, but the caller must still own a valid
 	 * NUL-terminated empty result (never an uninitialized pointer / stale
 	 * length).  If a buffer already exists, leave it; otherwise establish
-	 * a valid owned empty string so a getter for an empty value/name can
-	 * return a well-formed "" rather than garbage.
+	 * a valid owned empty string so a getter for an empty VALUE can
+	 * return a well-formed "" rather than garbage.  An empty NAME is not
+	 * given a value here - the getters reject it (e.g. getenv("") is NULL
+	 * and maps to -3 undefined) at rc_strex.
 	 */
 	if (srclen == 0) {
 		if (*buflen == 0) {
+			/* *buf is not trustworthy when *buflen == 0 - the caller
+			 * may have passed an uninitialized pointer (e.g. an empty
+			 * ${...} or $[...] name); null it so rc_realloc allocates
+			 * fresh instead of relocating garbage (SX review). */
+			*buf = NULL;
 			if ((new = rc_realloc(*buf, 1)) == NULL)
 				return -1;
 			new[0] = '\0';
@@ -179,7 +188,9 @@ static char *
 strex_env(char *str, size_t len)
 {
 	char *res;
-	char *buf;
+	/* defense-in-depth: init so getenv(buf) is safe even if rc_strzcat
+	 * ever fails to populate an empty result */
+	char *buf = NULL;
 	size_t buflen = 0;
 
 	if (rc_strzcat(&buf, &buflen, str, len)) {
