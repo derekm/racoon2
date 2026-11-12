@@ -102,4 +102,21 @@ pfkumigtest_LDADD = vmbuf.lo rc_type.lo rc_net.lo rc_str.lo if_spmd.lo \
 endif
 endif
 
+# pidfile_test exercises lib/pidfile.c hardening (PF-01..PF-05): reader
+# rejects non-positive/malformed/overflow PIDs, writer fully publishes the
+# pidstring (EINTR retry + partial-write loop, terminal errors fail), the
+# on_dir path rejects an oversized progname before any open, and the writer fd
+# is close-on-exec so exec'd helpers cannot prolong the flock.  It needs no
+# ADDKE and touches no kernel state; it links the real pidfile.lo and provides
+# its own plog/plog_location stubs plus -Wl,--wrap=write/--wrap=open fault
+# injection (same pattern as vmbuf_test).  Extensionless test -> the
+# sample-wrapper LOG_COMPILER passes the (ignored) sample config; main() runs
+# its own probes (and re-execs itself in --flockcheck mode for the PF-05
+# fork+exec demonstration).
+TESTS += pidfile_test
+check_PROGRAMS += pidfile_test
+pidfile_test_SOURCES = pidfile_test.c
+pidfile_test_LDADD = pidfile.lo $(LTLIBOBJS)
+pidfile_test_LDFLAGS = -Wl,--wrap=write -Wl,--wrap=open
+
 BUILT_SOURCES = cfparse.h

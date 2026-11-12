@@ -370,6 +370,13 @@ do_kill(void)
 		SPMD_PLOG(SPMD_L_INTERR, "Can't read pidfile");
 		return;
 	}
+	/* Defensive guard (PF-01): never let a non-positive PID reach
+	 * kill(), which would turn 0/-1 into a process-group / signal-all. */
+	if (pid <= 0) {
+		SPMD_PLOG(SPMD_L_INTERR, "Invalid pid in pidfile: %ld",
+		    (long)pid);
+		return;
+	}
 	kill(pid, SIGTERM);
 	return;
 }

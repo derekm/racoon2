@@ -886,6 +886,12 @@ sc_reload(void)
 		fprintf(stderr, "can't read pid file\n");
 		return -1;
 	}
+	/* Defensive guard (PF-01): never let a non-positive PID reach
+	 * kill(), which would turn 0/-1 into a process-group / signal-all. */
+	if (pid <= 0) {
+		fprintf(stderr, "invalid pid %ld in pid file\n", (long)pid);
+		return -1;
+	}
 	if (kill(pid, SIGHUP)<0) {
 		fprintf(stderr, "can't send SIGUP:%s\n",
 			strerror(errno));
