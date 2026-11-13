@@ -140,4 +140,24 @@ check_PROGRAMS += safefile_test
 safefile_test_SOURCES = safefile_test.c
 safefile_test_LDADD = safefile.lo $(LTLIBOBJS)
 
+# addresspool_test exercises lib/addresspool.c + the addresspool config
+# parsing in lib/cfsetup.c (AP-01..AP-05): full-candidate bytes/lower bound
+# for assign_ip6intf, ctor-NULL on allocation failure, lossless move that
+# preserves reservations even under an injected allocator failure,
+# exhaustion/no-wrap at the address-space maximum, and config-parser
+# rejection of overlapping same-family ranges.  It links the real
+# addresspool/cfsetup objects and fault-injects malloc/calloc/free
+# (--wrap, same pattern as vmbuf_test); the exhaustion probes are bounded
+# with an alarm(5) so an unbounded wrap cannot hang the suite.  No kernel
+# state touched.  Extensionless test -> the sample-wrapper LOG_COMPILER
+# passes the (ignored) sample config; main() runs its own probes.
+TESTS += addresspool_test
+check_PROGRAMS += addresspool_test
+addresspool_test_SOURCES = addresspool_test.c
+addresspool_test_LDADD = vmbuf.lo rc_type.lo rc_net.lo rc_str.lo if_spmd.lo \
+	cfsetup.lo rc_pcap.lo cftoken.lo cfparse.lo pidfile.lo sd_listenfds.lo \
+	plog.lo safefile.lo version.lo rbuf.lo addresspool.lo rcpfk_util.lo \
+	$(LTLIBOBJS) -lpcap -lpthread
+addresspool_test_LDFLAGS = -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=free
+
 BUILT_SOURCES = cfparse.h

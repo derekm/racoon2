@@ -3815,6 +3815,40 @@ rcf_fix_addresspool(struct rcf_addresspool **dst0)
 				}
 			}
 			r->af = start_af;
+			/* Reject a reversed (start > end) range explicitly rather
+			 * than silently producing an empty-but-confusing pool. */
+			if (memcmp(r->start, r->end,
+			    (start_af == AF_INET6) ? sizeof(struct in6_addr) :
+			    (start_af == AF_INET) ? sizeof(struct in_addr) : 0) > 0) {
+				plog(PLOG_CRITICAL, PLOGLOC, NULL,
+				     "addresspool range start is after end, line %d in %s\n",
+				     n->lineno, n->file);
+				goto err;
+			}
+			/* Reject overlapping same-family ranges within one
+			 * addresspool: every lease in a pool is checked only
+			 * against its own item, so two overlapping ranges in the
+			 * same allocation domain could otherwise mint a duplicate
+			 * address (AP-05). */
+			{
+				struct rcf_address_pool_item *o;
+				for (o = LIST_FIRST(&pool->pool_list); o;
+				     o = LIST_NEXT(o, link)) {
+					if (o->af != r->af)
+						continue;
+					if (memcmp(r->start, o->end,
+					    (r->af == AF_INET6) ? sizeof(struct in6_addr) :
+					    (r->af == AF_INET) ? sizeof(struct in_addr) : 0) <= 0 &&
+					    memcmp(o->start, r->end,
+					    (o->af == AF_INET6) ? sizeof(struct in6_addr) :
+					    (o->af == AF_INET) ? sizeof(struct in_addr) : 0) <= 0) {
+						plog(PLOG_CRITICAL, PLOGLOC, NULL,
+						     "addresspool ranges overlap, line %d in %s\n",
+						     n->lineno, n->file);
+						goto err;
+					}
+				}
+			}
 			LIST_INSERT_HEAD(&pool->pool_list, r, link);
 
 			rc_vfree(start_str);

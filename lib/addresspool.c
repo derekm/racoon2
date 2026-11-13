@@ -54,7 +54,7 @@ af_addrsize(int af)
 	}
 }
 
-static void
+static int
 addrbits_incr(int af, uint8_t *octets)
 {
 	size_t i, len;
@@ -62,10 +62,11 @@ addrbits_incr(int af, uint8_t *octets)
 	len = af_addrsize(af);
 	for (i = len; i-- > 0; ) {
 		if (++octets[i] != 0)
-			return;
+			return 0;	/* normal increment */
 	}
 
-	/* shouldn't reach here */
+	/* all bytes carried: increment wrapped past the address-space maximum */
+	return -1;
 }
 
 
@@ -102,6 +103,8 @@ rc_addrpool_item_new(void)
 	struct rcf_address_pool_item	*pool;
 
 	pool = rc_malloc(sizeof(struct rcf_address_pool_item));
+	if (!pool)
+		return NULL;
 	LIST_INIT(&pool->lease_list);
 	return pool;
 }
@@ -162,12 +165,16 @@ rc_addrpool_alloc_any(struct rcf_addresspool *conf, int af)
 		 * try if it's possible to assign one
 		 * XXX need better algorithm
 		 */
-		for (memcpy(addr, &i->start, addrsize);
-		     memcmp(addr, &i->end, addrsize) <= 0;
-		     addrbits_incr(af, addr)) {
+		memcpy(addr, &i->start, addrsize);
+		for (;;) {
+			if (memcmp(addr, &i->end, addrsize) > 0)
+				break;	/* exhausted this range */
 
-			if (addrpool_check(i, addr) != 0)
+			if (addrpool_check(i, addr) != 0) {
+				if (addrbits_incr(af, addr))
+					break;	/* wrapped past address-space maximum; don't roll below start */
 				continue;
+			}
 
 			/*
 			 * OK.  Assign it.
@@ -257,11 +264,18 @@ rc_addrpool_assign_ip6intf(struct rcf_addresspool *conf, uint8_t *addr)
 		memcpy(&a, i->start, ip6prefix_bytes);
 		memcpy(&a.s6_addr[ip6intf_id], &addr[ip6intf_id], ip6intf_id_bytes);
 		while (memcmp(a.s6_addr, i->end, sizeof(struct in6_addr)) <= 0) {
-			if (addrpool_check(i, a.s6_addr) == 0) {
+			/* reject candidates below the configured start:
+			 * the pool prefix is authoritative, so a constructed
+			 * candidate under i->start must not be leased. */
+			if (memcmp(a.s6_addr, i->start, sizeof(struct in6_addr)) >= 0 &&
+			    addrpool_check(i, a.s6_addr) == 0) {
 				struct rcf_address *n;
 
-				/* ok.  use it */
-				n = rc_address_new(AF_INET6, addr,
+				/* ok.  use it.  store the SAME full candidate the
+				 * checks/lease-list used (pool prefix + interface
+				 * identifier), so the stored, checked and returned
+				 * bytes are identical and duplicate rejection works. */
+				n = rc_address_new(AF_INET6, a.s6_addr,
 						   IPV6_ADDRESS_PREFIX_LEN, 0,
 						   &i->lease_list);
 				if (!n)
@@ -274,6 +288,8 @@ rc_addrpool_assign_ip6intf(struct rcf_addresspool *conf, uint8_t *addr)
 				if (++a.s6_addr[p] != 0)
 					break;
 			}
+			if (p == (size_t)-1)
+				break;	/* prefix wrapped past IPv6 max; exhausted, don't roll below start */
 		}
 	}
 	/* no appropriate prefix found */
@@ -286,24 +302,20 @@ rc_addrpool_assign_ip6intf(struct rcf_addresspool *conf, uint8_t *addr)
  */
 void
 rc_addrpool_move(struct rcf_address_list_head *dest,
-	      struct rcf_address_list_head *src)
+      struct rcf_address_list_head *src)
 {
 	struct rcf_address	*a;
 	struct rcf_address	*a_next;
-	struct rcf_address	*new_a;
 
+	/* Relink the SAME lease nodes: link_pool stays in the pool's
+	 * lease_list (so the reservation and uniqueness are preserved and
+	 * there is no allocation, hence no failure path and no dropped
+	 * reservation), only link_sa moves src -> dest. */
 	for (a = LIST_FIRST(src); a; a = a_next) {
-		new_a = rc_address_new(a->af, a->address, a->prefixlen,
-				       &a->expiry, a->pool_head);
-		if (!new_a) {
-			plog(PLOG_INTERR, PLOGLOC, NULL,
-			     "failed allocating memory\n");
-		} else {
-			LIST_INSERT_HEAD(dest, new_a, link_sa);
-		}
-
 		a_next = LIST_NEXT(a, link_sa);
-		rc_addrpool_release_addr(a);
+		if (a->link_sa.le_prev)
+			LIST_REMOVE(a, link_sa);
+		LIST_INSERT_HEAD(dest, a, link_sa);
 	}
 }
 
