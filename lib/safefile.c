@@ -69,6 +69,11 @@ rc_safefile_strerror(int err)
  *               0: a "safe" file (no error),
  *              -1: on an errno error, or
  * positive number: a unsafe error.
+ *
+ * ENABLE_SECURE is wired through config.h (lib/configure.ac AC_DEFINEs it
+ * when --enable-secure, the default, is on); every lib compile carries
+ * -DHAVE_CONFIG_H so this #ifdef tracks the configure-time opt.  Do not
+ * move ENABLE_SECURE back to the unused OPTFLAG mechanism.
  */
 int
 rc_safefile(const char *path, int secret)

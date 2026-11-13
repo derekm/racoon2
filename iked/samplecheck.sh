@@ -74,6 +74,16 @@ for s in "$SAMPLES"/*.conf; do
 			echo "SKIP sample $b (no icmp6 in /etc/protocols)"
 			continue
 		fi ;;
+	libsample.conf)
+		# libsample.conf is the lib/sample fixture: it references the
+		# documented deployment secret /etc/secrets/sample.psk.  With
+		# ENABLE_SECURE active (SF-01) iked -C requires that secret file
+		# to be present+accessible, so the sample can only be
+		# config-validated where that secret is provisioned.
+		if [ ! -r /etc/secrets/sample.psk ]; then
+			echo "SKIP sample $b (no /etc/secrets/sample.psk deployed)"
+			continue
+		fi ;;
 	esac
 	{ cat "$E/racoon2.conf"
 	  for i in $inc; do echo "include \"$E/$i\";"; done; } > "$T/top-$b"
@@ -196,6 +206,10 @@ remote $1 {
 EOT
 }
 [ -f "$E/psk.txt" ] || echo samplecheck-psk > "$E/psk.txt"
+# With ENABLE_SECURE active (SF-01), rc_safefile() rejects a secret file that
+# is group/other-readable.  psk.txt is a secret (pre_shared_key) fixture, so
+# pin it to owner-only just like the other psk fixtures above.
+chmod 600 "$E/psk.txt"
 C=$T/dns-ok.conf; base "$C"; v2dns sd 127.0.0.5 'accept_dns_domain "corp.example, lab.test.";' >> "$C"
 check "accept_dns_domain with valid domains" ok "$C"
 C=$T/dns-bad.conf; base "$C"; v2dns sd 127.0.0.5 'accept_dns_domain "corp.example,*.lab";' >> "$C"

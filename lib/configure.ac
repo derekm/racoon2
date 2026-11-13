@@ -87,11 +87,24 @@ if test x"$GCC" = x"yes" ; then
 fi
 
 AC_MSG_CHECKING(if --enable-secure option is specified)
+dnl --enable-secure is default ON.  When active, we must actually deliver
+dnl ENABLE_SECURE to the compiler so rc_safefile()/rc_privatedir()
+dnl (lib/safefile.c) compile their validation in instead of degrading to
+dnl unconditional 'return 0'.  We define it here so it lands in config.h
+dnl (picked up by every lib compile via DEFS = -DHAVE_CONFIG_H); the old
+dnl OPTFLAG mechanism was never referenced by any Makefile.am and left the
+dnl define orphaned.  This build-wiring is the contract -- do not move it
+dnl back into (unused) OPTFLAG.  --disable-secure leaves it undefined and
+dnl the checks compile out.
 AC_ARG_ENABLE(secure, [  --enable-secure         build a secure version],
 	[], [enable_secure=yes])
 if test x"$enable_secure" = xyes; then
-	OPTFLAG="-DENABLE_SECURE $OPTFLAG"
+	AC_DEFINE([ENABLE_SECURE], [1], [secure file/dir validation])
+	SUBSECURE="-DENABLE_SECURE"
+else
+	SUBSECURE=""
 fi
+AC_SUBST(SUBSECURE)
 AC_MSG_RESULT($enable_secure)
 
 dnl Checks for libraries.

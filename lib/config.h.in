@@ -6,6 +6,9 @@
 /* define to enable NAT Traversal support */
 #undef ENABLE_NATT
 
+/* secure file/dir validation */
+#undef ENABLE_SECURE
+
 /* Define to 1 if you have the `arc4random_buf' function. */
 #undef HAVE_ARC4RANDOM_BUF
 

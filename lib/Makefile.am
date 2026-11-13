@@ -2,6 +2,15 @@
 
 AM_CPPFLAGS =-DSYSCONFDIR=\"${sysconfdir}\"
 AM_CPPFLAGS +=-DCF_DEBUG
+# LSC-lane-scoped ENABLE_SECURE delivery: lib/configure.ac AC_DEFINEs
+# ENABLE_SECURE into config.h when --enable-secure (default ON) so the
+# safefile/privatedir validation in lib/safefile.c compiles in (consumers
+# iked/spmd/kinkd link libracoon.la and see it too).  @SUBSECURE@
+# (-DENABLE_SECURE, empty with --disable-secure) additionally puts the flag
+# literally on this lib's compile lines as the SF-01 regression net.  Keep it
+# lib-scoped (safefile.c compiles only here) and NEVER pull in the orphaned
+# -Werror/-Wall/-Wmissing-* warning set.
+AM_CPPFLAGS += @SUBSECURE@
 #AM_CPPFLAGS +=-DSADB_X_MIGRATE
 AM_YFLAGS = -d
 LEX_OUTPUT_ROOT = lex\.yy
@@ -118,5 +127,17 @@ check_PROGRAMS += pidfile_test
 pidfile_test_SOURCES = pidfile_test.c
 pidfile_test_LDADD = pidfile.lo $(LTLIBOBJS)
 pidfile_test_LDFLAGS = -Wl,--wrap=write -Wl,--wrap=open
+
+# safefile_test exercises rc_safefile()/rc_privatedir() against disposable
+# temp fixtures only (never a live config file) and is the SF-01 regression
+# net: with ENABLE_SECURE wired to the compile, a world-readable secret is
+# rejected (5), foreign-owner (2), non-regular (3); if the wiring is ever
+# broken the checks degrade to `return 0` and this test FAILs make check.
+# Foreign-owner subtest needs euid 0 to chown (SKIPs otherwise).  No kernel
+# state touched.
+TESTS += safefile_test
+check_PROGRAMS += safefile_test
+safefile_test_SOURCES = safefile_test.c
+safefile_test_LDADD = safefile.lo $(LTLIBOBJS)
 
 BUILT_SOURCES = cfparse.h
