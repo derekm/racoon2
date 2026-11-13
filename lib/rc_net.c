@@ -889,7 +889,16 @@ rcs_getaddrlist(const char *addrstr0, const char *portstr0, rc_type flag,
 				return error;
 			for (p = *al0; p; p = p->next) {
 				in_port_t *prt;
+				int pfam = p->a.ipaddr ? p->a.ipaddr->sa_family : AF_UNSPEC;
 				p->port = nport;
+				/* AS-01: family-specific prefix bound on each expanded
+				 * macro result, mirroring the numeric path */
+				if (prefstr &&
+				    prefixlen > (pfam == AF_INET6 ? 128 : 32)) {
+					rcs_free_addrlist(*al0);
+					*al0 = 0;
+					return EAI_FAIL;
+				}
 				p->prefixlen = prefixlen;
 
 				prt = rcs_getsaport(p->a.ipaddr);
@@ -922,8 +931,10 @@ rcs_getaddrlist(const char *addrstr0, const char *portstr0, rc_type flag,
 		rc_vfree(vaddr);
 
 	/* the caller expected the string is a macro */
-	if (flag == RCT_ADDR_MACRO)
+	if (flag == RCT_ADDR_MACRO) {
+		rc_free(addrstr);	/* AS-04: addrstr is still owned here */
 		return EAI_NONAME;
+	}
 
 	/* skip it if the string is likely to the numeric ip address */
 	memset(&hints, 0, sizeof(hints));

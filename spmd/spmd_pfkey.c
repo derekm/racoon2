@@ -654,6 +654,16 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 		break; /* never reach */
 	}
 	rc->pref_src = sl->src->prefixlen;
+	/* AS-01: a macro/numeric src carries its parsed prefix; reject one
+	 * wider than the resolved source address family instead of passing
+	 * it to pref_src (e.g. an IPv4 src with a /64 prefix). */
+	if (rc->sp_src != NULL &&
+	    rc->pref_src > (rc->sp_src->sa_family == AF_INET6 ? 128 : 32)) {
+		SPMD_PLOG(SPMD_L_INTERR,
+			"prefixlen %u exceeds source address family (selector=%.*s)",
+			rc->pref_src, (int)sl->sl_index->l, sl->sl_index->s);
+		goto err;
+	}
 
 	al = sl->dst; /* do we need to care multiple entries? - ditto */
 	switch (al->type) {
