@@ -100,11 +100,11 @@ rc_pcap_push(struct sockaddr *src, struct sockaddr *dst, rc_vchar_t *data)
 		ehdr->ether_type = htons(ETHERTYPE_IPV6);
 #endif
 		ip6 = (void *)&dummy_hdr[header_len];
-#ifdef __linux__
-		ip6->ip6_vfc = 6;
-#else
+		/* IPv6 version is the HIGH 4 bits of the first byte, so the value
+		 * is 0x60 (version 6), NOT a literal 6 (0x06 = version 0).  The
+		 * Linux branch previously wrote 6, so the synthetic header did
+		 * not decode as IPv6 (PC-01). */
 		ip6->ip6_vfc = IPV6_VERSION;
-#endif
 		ip6->ip6_plen = htons(sizeof(*udp) + data->l);
 		ip6->ip6_nxt = IPPROTO_UDP;
 		memcpy(&ip6->ip6_src, rcs_getsaaddr(src), sizeof(ip6->ip6_src));
@@ -141,6 +141,16 @@ rc_pcap_push(struct sockaddr *src, struct sockaddr *dst, rc_vchar_t *data)
 #endif
 	header_len += sizeof(*udp);
 
+	/* Reject a payload that would overflow the 16-bit IP/UDP length
+	 * fields, so the recorded lengths stay internally consistent
+	 * (PC-02). */
+	if (data->l > 0xFFFF - header_len) {
+		plog(PLOG_INTERR, PLOGLOC, 0,
+		    "payload too large for a UDP pcap record: %d\n",
+		    (int)data->l);
+		return;
+	}
+
 	(void)gettimeofday(&hdr.ts, NULL);
 	hdr.len = hdr.caplen = (uint32_t)(header_len + data->l);
 
@@ -152,9 +162,15 @@ rc_pcap_push(struct sockaddr *src, struct sockaddr *dst, rc_vchar_t *data)
 	}
 
 	packet = rc_vprepend(data, dummy_hdr, header_len);
+	if (packet == NULL) {	/* allocation failure (PC-02) */
+		fclose(fp);
+		fp = NULL;	/* keep the global accurate (PC-03) */
+		return;
+	}
 	pcap_dump((void *)fp, &hdr, (uint8_t *)packet->v);
 	rc_vfree(packet);
 	fclose(fp);
+	fp = NULL;		/* keep the global accurate (PC-03) */
 }
 
 /*
@@ -183,6 +199,7 @@ rc_pcap_init(const char *fname, const char *fmode)
 		return -1;
 	}
 	fclose(fp);
+	fp = NULL;	/* the global must track an OPEN stream (PC-03) */
 
 	/* need initialization ? */
 	if (stat(fname, &sb)) {
@@ -201,7 +218,7 @@ rc_pcap_init(const char *fname, const char *fmode)
 		hdr.version_major = PCAP_VERSION_MAJOR;
 		hdr.version_minor = PCAP_VERSION_MINOR;
 		hdr.thiszone = 0;/*thiszone*/;
-		hdr.snaplen = 0;
+		hdr.snaplen = 0xFFFF;	/* keep caplen <= snaplen (PC-05) */
 		hdr.sigfigs = 0;
 		hdr.linktype = DLT_EN10MB;
 		if (fwrite(&hdr, sizeof(hdr), 1, fp) != 1) {
@@ -209,9 +226,11 @@ rc_pcap_init(const char *fname, const char *fmode)
 			    "failed writing the header to pcap file %s\n",
 			    dump_file);
 			fclose(fp);
+			fp = NULL;
 			return -1;
 		}
 		fclose(fp);
+		fp = NULL;
 	}
 
 	return 0;
