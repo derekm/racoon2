@@ -652,6 +652,17 @@ isakmp_open_address(struct sockaddr *addr, int port)
 	plog(PLOG_INTERR, PLOGLOC, 0,
 	     "failed allocating memory\n");
       fail:
+	/*
+	 * NOTE (latent, by design - comment only, no behavior change): if an
+	 * inherited descriptor was adopted above via rc_take_listenfd()
+	 * (p->sock = inherited, sock closed), a failure at any later setup
+	 * step reaches here with sock == -1 but p->sock still holding the
+	 * inherited activation descriptor. That inherited fd stays open (and
+	 * consumed from the socket-activation set) when the post-take setup
+	 * fails. We intentionally do not close p->sock here: ownership of it
+	 * has been transferred to p and its normal teardown owns it, so
+	 * closing it here risks a double-close.
+	 */
 	if (sock >= 0)
 		close(sock);
 	if (sa)

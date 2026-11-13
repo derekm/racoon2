@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -26,22 +27,74 @@
 static int nlisten = -1;
 static unsigned int used;
 
+/*
+ * Strict base-10 parse of a socket-activation metadata string.
+ *
+ * Returns 0 (treat as absent / inactive) on any of:
+ *   - NULL or empty string
+ *   - ERANGE (value out of long range), or a long that does not fit an int
+ *   - negative values
+ *   - trailing text or other malformed (non-digit) input, e.g. "3junk"
+ *   - input that contains no digits at all
+ * Otherwise stores the parsed value in *valp and returns 1.
+ *
+ * This replaces the old atoi() parsing, which silently accepted trailing
+ * text ("3junk" -> 3) and int-wrapped huge LISTEN_FDS values (a huge value
+ * wrapped negative and made rc_listenfds() silently return 0 via n <= 0,
+ * masquerading as "inactive"). We reject all of that input deterministically
+ * as "not socket-activated", so the activation metadata is handled with no
+ * wrap-around and no trailing-text acceptance.
+ *
+ * Socket-activation policy (used by rc_listenfds):
+ *   - LISTEN_PID must be a valid quoted pid equal to getpid(), else inactive.
+ *   - LISTEN_FDS valid 1..16 -> active with that many descriptors (clamp
+ *     > 16 to 16); malformed / trailing / overflow / negative / empty ->
+ *     treated as absent (rc_listenfds returns 0, not active).
+ */
+static int
+rc_parse_act_meta(const char *s, int *valp)
+{
+	char *end;
+	long v;
+
+	if (s == NULL || *s == '\0')
+		return 0;
+
+	errno = 0;
+	v = strtol(s, &end, 10);
+	if (errno == ERANGE || end == s || *end != '\0')
+		return 0;
+
+	/* strtol yields a long; keep only values representable as an int. */
+	if (v < (long)INT_MIN || v > (long)INT_MAX)
+		return 0;
+
+	*valp = (int)v;
+	if (*valp < 0)
+		return 0;
+
+	return 1;
+}
+
 int
 rc_listenfds(void)
 {
 	const char *e;
-	int n, i;
+	int n, i, nfds, pidv;
 
 	if (nlisten >= 0)
 		return nlisten;
 	nlisten = 0;
+
 	e = getenv("LISTEN_PID");
-	if (e == NULL || (pid_t)atoi(e) != getpid())
+	if (!rc_parse_act_meta(e, &pidv) || (pid_t)pidv != getpid())
 		return 0;
+
 	e = getenv("LISTEN_FDS");
-	if (e == NULL)
+	if (!rc_parse_act_meta(e, &nfds))
 		return 0;
-	n = atoi(e);
+
+	n = nfds;
 	if (n <= 0)
 		return 0;
 	if (n > RC_LISTEN_FDS_MAX)
