@@ -762,12 +762,15 @@ suitable_ifaddr6(const char *ifname, const struct sockaddr *ifaddr)
 
 /*
  * like getaddrinfo(), it return a addrlist structure.
- * "flag" is defined either the following type which the caller wants:
- *   RCT_ADDR_INET : expand the string to the internet address.
- *   RCT_ADDR_FQDN : set the string without expanding even if the string
- *                   is likely either an internet address or a macro string.
- *   RCT_ADDR_MACRO: set the string without expanding and check the string
- *                   is a macro string.
+ * "flag" selects the expected node type / expansion behavior:
+ *   RCT_ADDR_INET : expand the string to an internet address (default).
+ *   RCT_ADDR_MACRO: the string must be a macro name; it is stored as a
+ *                   RCT_ADDR_MACRO node without expanding.
+ *   RCT_ADDR_FQDN  : a non-numeric, non-macro hostname is stored as a
+ *                    RCT_ADDR_FQDN string node without expanding.
+ * A recognizable numeric address or macro name is canonicalized to
+ * RCT_ADDR_INET / RCT_ADDR_MACRO regardless of flag; only a hostname that
+ * cannot be parsed numerically becomes an RCT_ADDR_FQDN string node.
  * if the flag set 0, then it interprets the flag as RCT_ADDR_INET.
  */
 int
@@ -776,7 +779,7 @@ rcs_getaddrlist(const char *addrstr0, const char *portstr0, rc_type flag,
 {
 	struct rc_addrlist *new_head = 0, *new = 0, **lastap, *p;
 	struct addrinfo hints, *ai = 0, *ap;
-	char *addrstr = 0, *mp, *prefstr = 0, *bp;
+	char *addrstr = 0, *mp, *prefstr = 0;
 	int prefixlen = 0;
 	rc_vchar_t *vaddr = 0;
 	int nport;
@@ -800,11 +803,20 @@ rcs_getaddrlist(const char *addrstr0, const char *portstr0, rc_type flag,
 		prefstr = mp + 1;
 	}
 	if (prefstr) {
-		prefixlen = (int)strtol(prefstr, &bp, 10);
-		if (*bp != '\0') {
+		long pl;
+		char *pend;
+
+		/* AS-01: the prefix must be a fully-consumed decimal non-
+		 * negative number within the widest family bound (IPv6 /128).
+		 * A negative, empty, overflowing, or >128 prefix is rejected
+		 * (do not let a wrapped/narrowed strtol produce garbage). */
+		pl = strtol(prefstr, &pend, 10);
+		if (pend == prefstr || *pend != '\0' ||
+		    pl < 0 || pl > 128) {
 			rc_free(addrstr);
 			return EAI_FAIL;
 		}
+		prefixlen = (int)pl;
 	}
 
 	/* extend the port string */
@@ -847,8 +859,10 @@ rcs_getaddrlist(const char *addrstr0, const char *portstr0, rc_type flag,
 		case RCT_ADDR_FQDN:
 		case RCT_ADDR_MACRO:
 			/* just set the macro as is */
-			if ((new = rc_calloc(1, sizeof(*new))) == NULL)
+			if ((new = rc_calloc(1, sizeof(*new))) == NULL) {
+				rc_vfree(vaddr);	/* AS-04 */
 				return EAI_MEMORY;
+			}
 			new->type = RCT_ADDR_MACRO;
 			new->port = nport;
 			new->prefixlen = prefixlen;
@@ -903,6 +917,7 @@ rcs_getaddrlist(const char *addrstr0, const char *portstr0, rc_type flag,
 
 	lastap = &new_head;
 	for (ap = ai; ap; ap = ap->ai_next) {
+		int fam = ap->ai_family;
 		if ((new = rc_calloc(1, sizeof(*new))) == NULL) {
 			rcs_free_addrlist(new_head);
 			freeaddrinfo(ai);
@@ -911,14 +926,24 @@ rcs_getaddrlist(const char *addrstr0, const char *portstr0, rc_type flag,
 		new->type = RCT_ADDR_INET;
 		new->prefixlen = rcs_getsaaddrlen(ap->ai_addr) << 3;
 		if (new->prefixlen == 0) {
+			rc_free(new);	/* AS-04: free the unlinked node */
 			rcs_free_addrlist(new_head);
 			freeaddrinfo(ai);
 			return EAI_FAMILY;
 		}
 		new->port = ntohs(*rcs_getsaport(ap->ai_addr));
-		if (prefstr)
+		if (prefstr) {
+			/* AS-01: enforce the family-specific prefix bound */
+			if (prefixlen > (fam == AF_INET6 ? 128 : 32)) {
+				rc_free(new);	/* AS-04 */
+				rcs_free_addrlist(new_head);
+				freeaddrinfo(ai);
+				return EAI_FAIL;
+			}
 			new->prefixlen = prefixlen;
+		}
 		if ((new->a.ipaddr = rcs_sadup(ap->ai_addr)) == NULL) {
+			rc_free(new);	/* AS-04 */
 			rcs_free_addrlist(new_head);
 			freeaddrinfo(ai);
 			return EAI_MEMORY;
@@ -940,14 +965,21 @@ rcs_getport(const char *str)
 	char *bp;
 
 	if (str == 0)
-		return RC_PORT_ANY;	/* XXX ??? */
+		return RC_PORT_ANY;	/* any port (wildcard sentinel 0) */
 	if (strcmp(str, "any") == 0) {
 		return RC_PORT_ANY;
 	} else if ((ent = getservbyname(str, NULL)) != NULL) {
 		return ntohs(ent->s_port);
 	}
+	/* AS-02: require a consumed digit, no trailing text, and a valid
+	 * 16-bit port (0..65535; 0 is the RC_PORT_ANY wildcard).  Negative
+	 * or overflow values and an empty/underspecified string are invalid
+	 * (return -1, which the caller maps to EAI_SERVICE), so a macro path
+	 * cannot htons() a wrapped or out-of-range port. */
+	errno = 0;
 	nport = (int)strtol(str, &bp, 10);
-	if (*bp != '\0')
+	if (errno == ERANGE || bp == str || *bp != '\0' ||
+	    nport < 0 || nport > 65535)
 		return -1;
 
 	return nport;
