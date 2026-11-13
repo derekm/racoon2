@@ -672,6 +672,62 @@ suitable_ifaddr(const char *ifname, const struct sockaddr *ifaddr)
 	/*NOTREACHED*/
 }
 
+#ifdef __linux__
+/*
+ * IE-02: glibc's getifaddrs() does not expose per-IPv6-address state in
+ * ifa_data (it is NULL for AF_INET6 entries), so the former
+ * *(unsigned int*)ifa->ifa_data read never ran and tentative / DAD-failed
+ * addresses were silently accepted.  Read the real IFA_F_* flags from
+ * /proc/net/if_inet6 and exclude IFA_F_TENTATIVE (0x40) / IFA_F_DADFAILED
+ * (0x08).  Returns 1 if the address is tentative or DAD-failed; 0 otherwise
+ * (an absent /proc or an unmatched line is treated as not-tentative, a
+ * documented presence-only fallback).
+ */
+static int
+linux_ifaddr6_tentative(const char *ifname, const struct in6_addr *addr)
+{
+	FILE *f;
+	char hexi[33];
+	char line[256];
+	int i, r = 0;
+
+	for (i = 0; i < 16; i++)
+		snprintf(&hexi[i * 2], 3, "%02x", addr->s6_addr[i]);
+	hexi[32] = '\0';
+
+	if ((f = fopen("/proc/net/if_inet6", "r")) == NULL)
+		return 0;
+
+	while (fgets(line, sizeof(line), f)) {
+		char a[64] = "";
+		char dev[64] = "";
+		char *p;
+		unsigned long flags = 0;
+
+		/* addr ifindex prefix scope flags [device] */
+		if ((p = strtok(line, " 	\n")) == NULL)
+			continue;
+		snprintf(a, sizeof(a), "%s", p);
+		strtok(NULL, " 	\n");	/* ifindex */
+		strtok(NULL, " 	\n");	/* prefix  */
+		strtok(NULL, " 	\n");	/* scope   */
+		if ((p = strtok(NULL, " 	\n")) == NULL)
+			continue;
+		flags = strtoul(p, NULL, 16);
+		if ((p = strtok(NULL, " 	\n")) != NULL)
+			snprintf(dev, sizeof(dev), "%s", p);
+
+		if (strcmp(a, hexi) == 0 &&
+		    (ifname == NULL || strcmp(dev, ifname) == 0)) {
+			r = (flags & 0x08) || (flags & 0x40) ? 1 : 0;
+			break;
+		}
+	}
+	fclose(f);
+	return r;
+}
+#endif
+
 static int
 suitable_ifaddr6(const char *ifname, const struct sockaddr *ifaddr)
 {
@@ -704,21 +760,12 @@ suitable_ifaddr6(const char *ifname, const struct sockaddr *ifaddr)
 
 	   if (memcmp(&sin6_list->sin6_addr, &sin6_target->sin6_addr, sizeof(struct in6_addr)) == 0)
 	   {
-	       if (ifa->ifa_data)
-	       {
-		   unsigned int flags = *(unsigned int*)ifa->ifa_data;
-
-		   if (flags & IFA_F_DADFAILED || flags & IFA_F_TENTATIVE)
-		       suitable = 0;
-		   else
-		       suitable = 1;
-		   break;
-	       }
-	       else
-	       {
-		   suitable = 1;
-		   break;
-	       }
+	       /* IE-02: glibc leaves ifa_data NULL for AF_INET6, so the old
+	        * IFA_F_* cast never ran; read the real flags from
+	        * /proc/net/if_inet6 and exclude tentative / DAD-failed. */
+	       suitable = linux_ifaddr6_tentative(ifname,
+		   &sin6_target->sin6_addr) ? 0 : 1;
+	       break;
 	   }
 	}
 
