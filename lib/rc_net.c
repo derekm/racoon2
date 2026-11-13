@@ -130,7 +130,11 @@ rcs_is_addr_name(struct rc_addrlist *al, const char *name)
 	macro = rc_vmem2str(al->a.vstr);
 	if (macro == NULL)
 		return 0;	/* scratch ring exhausted (OOM): no match, RB-03 */
-	if (strncmp(macro, name, strlen(macro)))
+	/* exact-name match: the stored macro is a canonical macro name, so
+	 * the comparison must not be prefix-based (an "IP_" or empty stored
+	 * value would otherwise match IP_RW/IP_ANY) - mirror find_addrmacro. */
+	if (strlen(macro) != strlen(name) ||
+	    memcmp(macro, name, strlen(name)))
 		return 0;
 
 	return 1;
@@ -178,8 +182,10 @@ rcs_getaddrlistbymacro(const rc_vchar_t *m, struct rc_addrlist **al0)
 	if ((p = strrchr(buf, '%')) != NULL && *(p + 1) != '\0') {
 		mname_len = p - buf;
 
-		if ((mname = rc_malloc(mname_len + 1)) == NULL)
-		    return EAI_MEMORY;
+		if ((mname = rc_malloc(mname_len + 1)) == NULL) {
+			error = EAI_MEMORY;
+			goto end;	/* free the already-owned buf (AM-02) */
+		}
 		mname_allocated = 1;
 
 		memcpy(mname, buf, mname_len);
