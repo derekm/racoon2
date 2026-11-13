@@ -467,12 +467,18 @@ getifaddrlist(int family, const char *ifname)
 		if (!suitable_ifaddr(ifap->ifa_name, ifap->ifa_addr))
 			continue;
 		if ((new = rc_calloc(1, sizeof(*new))) == NULL) {
+			rcs_free_addrlist(new_head);	/* IE-03: free partial */
 			freeifaddrs(ifa0);
 			return NULL;
 		}
 		new->type = RCT_ADDR_INET;
 		new->port = ntohs(*rcs_getsaport(ifap->ifa_addr));
-		new->a.ipaddr = rcs_sadup(ifap->ifa_addr);
+		if ((new->a.ipaddr = rcs_sadup(ifap->ifa_addr)) == NULL) {
+			rc_free(new);
+			rcs_free_addrlist(new_head);	/* IE-03 + NULL dup */
+			freeifaddrs(ifa0);
+			return NULL;
+		}
 		if (ifap->ifa_addr->sa_family == AF_INET6) {
 			sin6 = (void *)new->a.ipaddr;
 #ifdef __KAME__
@@ -555,6 +561,7 @@ getifaddrlist(int family, const char *ifname)
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		    "ioctl(SIOCGIFCONF) failed: %s\n", strerror(errno));
 		rc_free(iflist);
+		close(s);	/* IE-03: don't leak the socket */
 		return NULL;
 	}
 	close(s);
@@ -569,18 +576,29 @@ getifaddrlist(int family, const char *ifname)
 	for (ifr = ifconf.ifc_req;
 	     ifr < ifr_end;
 	     ifr = (struct ifreq *)((caddr_t)ifr + RCF_IFREQ_LEN(ifr))) {
+		/* IE-04: the fallback must honor the requested ifname, as the
+		 * getifaddrs branch does - otherwise it returns every matching
+		 * interface's addresses. */
+		if (ifname && strcmp(ifname, ifr->ifr_name))
+			continue;
 		if (family != AF_UNSPEC &&
 		    ifr->ifr_addr.sa_family != family)
 			continue;
 		if (!suitable_ifaddr(ifr->ifr_name, &ifr->ifr_addr))
 			continue;
 		if ((new = rc_calloc(1, sizeof(*new))) == NULL) {
+			rcs_free_addrlist(new_head);	/* IE-03: free partial */
 			rc_free(iflist);
 			return NULL;
 		}
 		new->type = RCT_ADDR_INET;
 		new->port = ntohs(*rcs_getsaport(&ifr->ifr_addr));
-		new->a.ipaddr = rcs_sadup(&ifr->ifr_addr);
+		if ((new->a.ipaddr = rcs_sadup(&ifr->ifr_addr)) == NULL) {
+			rc_free(new);
+			rcs_free_addrlist(new_head);	/* IE-03 + NULL dup */
+			rc_free(iflist);
+			return NULL;
+		}
 		if (ifr->ifr_addr.sa_family == AF_INET6) {
 			sin6 = (struct sockaddr_in6 *)new->a.ipaddr;
 			if (IN6_IS_ADDR_LINKLOCAL(&sin6->sin6_addr) ||
@@ -660,7 +678,7 @@ suitable_ifaddr6(const char *ifname, const struct sockaddr *ifaddr)
 #ifdef __linux__
 
 	struct ifaddrs *ifa = 0, *ifl;
-	unsigned int suitable;
+	unsigned int suitable = 0;
 
 	if (ifaddr == NULL || ifaddr->sa_family != AF_INET6)
 	    return 0;
@@ -673,15 +691,16 @@ suitable_ifaddr6(const char *ifname, const struct sockaddr *ifaddr)
 	   if (strcmp(ifa->ifa_name, ifname) != 0)
 	       continue;
 
+	   /* IE-01: validate the CANDIDATE family before touching
+	    * IPv6-specific fields - a same-interface entry may be IPv4 or
+	    * link-layer, whose sockaddr is too short to read sin6_addr
+	    * from.  Also handle a NULL ifa_addr up front. */
+	   if (ifa->ifa_addr == NULL ||
+	       ifa->ifa_addr->sa_family != AF_INET6)
+	       continue;
+
 	   struct sockaddr_in6 *sin6_list = (struct sockaddr_in6*)ifa->ifa_addr;
 	   struct sockaddr_in6 *sin6_target = (struct sockaddr_in6*)ifaddr;
-
-	   if (ifa->ifa_addr == NULL)
-	   {
-	       plog(PLOG_DEBUG, PLOGLOC, NULL,
-		       "iface=%s (ifa_addr is NULL)\n", ifa->ifa_name);
-	       continue;
-	   }
 
 	   if (memcmp(&sin6_list->sin6_addr, &sin6_target->sin6_addr, sizeof(struct in6_addr)) == 0)
 	   {
@@ -705,6 +724,8 @@ suitable_ifaddr6(const char *ifname, const struct sockaddr *ifaddr)
 
 	freeifaddrs(ifl);
 
+	/* suitable is 0 (not suitable) when no candidate matched (IE-01):
+	 * it is no longer left undefined on the no-match path. */
 	return suitable;
 #else
 	struct in6_ifreq ifr6;
