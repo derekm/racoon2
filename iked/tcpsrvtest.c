@@ -603,7 +603,10 @@ main(void)
 
 		memset(&lb, 0, sizeof(lb));
 		lb.sin_family = AF_INET;
-		lb.sin_addr.s_addr = htonl(0x7f000002);	/* 127.0.0.2 */
+		/* 127.0.0.1 on its own ephemeral port: a BSD lo0 carries only
+		 * 127.0.0.1 (no 127/8 local route as on Linux), so binding
+		 * 127.0.0.2 there fails EADDRNOTAVAIL. */
+		lb.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 		lfd2 = tcp_srv_open_listener((struct sockaddr *)&lb, 0);
 		CHECK(lfd2 >= 0, "simul: second listener opened");
 		if (lfd2 < 0)
@@ -627,10 +630,18 @@ main(void)
 		memset(&csrcB, 0, sizeof(csrcB));
 		(void)getsockname(cliA->fd, (struct sockaddr *)&csrcA, &cla);
 		(void)getsockname(cliB->fd, (struct sockaddr *)&csrcB, &clb);
-		fA = tcp_srv_find((struct sockaddr *)&csrcA, (struct sockaddr *)&la);
-		fB = tcp_srv_find((struct sockaddr *)&csrcB, (struct sockaddr *)&lb);
+		/* Both listeners share the address, and tcp_srv_find() is
+		 * address-only, so match each client by its exact source
+		 * addr:port (find_bound), then pin that it was accepted on
+		 * ITS listener's port. */
+		fA = tcp_srv_find_bound((struct sockaddr *)&csrcA, (struct sockaddr *)&la);
+		fB = tcp_srv_find_bound((struct sockaddr *)&csrcB, (struct sockaddr *)&lb);
 		CHECK(fA != NULL, "simul: first-listener client registered");
 		CHECK(fB != NULL, "simul: second-listener client registered");
+		CHECK(fA && fB && fA != fB &&
+		      ((struct sockaddr_in *)&fA->local)->sin_port == la.sin_port &&
+		      ((struct sockaddr_in *)&fB->local)->sin_port == lb.sin_port,
+		      "simul: each client accepted on its own listener");
 		tcp_stream_free(cliA);
 		tcp_stream_free(cliB);
 	}
