@@ -771,13 +771,18 @@ main(void)
 			return 1;
 		CHECK(wait_connect(cli, 3000) == 0,
 		      "close-listeners: client established");
-		(void)tcp_srv_accept_pending();
+		memset(&clsrc, 0, sizeof(clsrc));
+		(void)getsockname(cli->fd, (struct sockaddr *)&clsrc, &cl_len);
+		/* Accept until registered (FreeBSD may defer the passive side
+		 * past wait_connect()), so 'kept' below tests the close, not
+		 * an accept race. */
+		CHECK(accept_until_bound((struct sockaddr *)&clsrc,
+			(struct sockaddr *)&lc, 3000) != NULL,
+		      "close-listeners: stream registered before close");
 
 		tcp_srv_close_listeners();
 		CHECK(tcp_srv_listener_fd() == -1,
 		      "close-listeners: listener sockets freed");
-		memset(&clsrc, 0, sizeof(clsrc));
-		(void)getsockname(cli->fd, (struct sockaddr *)&clsrc, &cl_len);
 		/* exact client addr:port: other 127.0.0.1 streams exist */
 		CHECK(tcp_srv_find_bound((struct sockaddr *)&clsrc,
 			(struct sockaddr *)&lc) != NULL,
