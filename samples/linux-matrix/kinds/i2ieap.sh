@@ -433,6 +433,16 @@ EOF
 	method=EAP-MSCHAPv2; [ "$I2IEAP_TLS" -eq 1 ] && method=EAP-TLS
 	[ "$I2IEAP_MULTI" -eq 1 ] && method="pubkey+EAP-MSCHAPv2 (RFC 4739)"
 	[ "$efail" -eq 0 ] && log "PASS $name ($method + responder cert -> ESTABLISHED, ESP up)"
+	# On a red row, show WHY in the job log (CI keeps no per-row daemon
+	# logs): the tail of each seat's log, so a CI-only failure (runner
+	# FreeRADIUS/AppArmor/charon differences) is diagnosable from the run.
+	if [ "$efail" -ne 0 ]; then
+		for _lf in swanctl-init.log charon-init.log resp-iked.log resp-iked.out resp-spmd.log radiusd.log; do
+			[ -s "$D/$_lf" ] || { log "--- $name $_lf: (missing or empty)"; continue; }
+			log "--- $name $_lf (last 30 lines) ---"
+			tail -n 30 "$D/$_lf" | sed "s/^/    [$_lf] /"
+		done
+	fi
 	# cleanup on EVERY exit path (this row's daemons/sockets/netns): the
 	# old kind only pkilled at START, so a finished row left its daemons
 	# running as live orphan load for the whole sweep.
