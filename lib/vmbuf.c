@@ -222,7 +222,7 @@ rc_vfreez(rc_vchar_t *var)
  * the compiler cannot elide (portable fallback for explicit_bzero).
  */
 void
-vmbuf_cleanse(rc_vchar_t *var)
+rc_vcleanse(rc_vchar_t *var)
 {
 	volatile unsigned char *p;
 	size_t i;

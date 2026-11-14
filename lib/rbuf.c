@@ -159,7 +159,7 @@ rbuf_getvb(size_t len)
 		 * ike_conf.c / ikev2_sa_auth.c callers), so rinse the old bytes
 		 * with a non-elidable wipe BEFORE freeing, so they do not
 		 * persist into the next reuse of this ring slot (VB-03). */
-		vmbuf_cleanse(vbuf[vbuf_num]);
+		rc_vcleanse(vbuf[vbuf_num]);
 		rc_vfree(vbuf[vbuf_num]);
 	}
 	if ((vbuf[vbuf_num] = rc_vmalloc(len)) == NULL)

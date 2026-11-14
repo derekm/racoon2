@@ -22,7 +22,7 @@
  *         pins the old 90b9ff7 bug where a NULL sentinel still returned a
  *         broken `v` (bytes freed before the sentinel).
  *   VB-03 the scratch ring rinses a reused slot's prior (possibly secret)
- *         bytes via a non-elidable wipe (vmbuf_cleanse) + heavy slot
+ *         bytes via a non-elidable wipe (rc_vcleanse) + heavy slot
  *         reuse stays clean under the sanitizer.  The rinse count is
  *         asserted EXACTLY (before + 16 = every ring reuse).
  *   VB-04 rc_vconcat is safe for a compliant-but-overlapping slice caller
@@ -567,16 +567,16 @@ test_mem2str_oom(void)
 
 /* ---------- VB-03 : non-elidable rinse + scratch-slot reuse ---------- */
 
-/* Linked with -Wl,--wrap=vmbuf_cleanse so every vmbuf_cleanse call in the
+/* Linked with -Wl,--wrap=rc_vcleanse so every rc_vcleanse call in the
  * linked vmbuf.lo/rbuf.lo lands here and increments this counter.  The
  * scratch-reuse test asserts the counter advances when rbuf_getvb reuses a
  * ring slot, i.e. it FAILS if the rinse call site is ever deleted. */
 static int s_cleanse_count;
-void __real_vmbuf_cleanse(rc_vchar_t *);
-void __wrap_vmbuf_cleanse(rc_vchar_t *v)
+void __real_rc_vcleanse(rc_vchar_t *);
+void __wrap_rc_vcleanse(rc_vchar_t *v)
 {
 	s_cleanse_count++;
-	__real_vmbuf_cleanse(v);
+	__real_rc_vcleanse(v);
 }
 
 static void
@@ -589,7 +589,7 @@ test_cleanse(void)
 	CHECK(b != NULL);
 	if (!b)
 		return;
-	vmbuf_cleanse(b);
+	rc_vcleanse(b);
 	for (i = 0; i < (int)b->l; i++)
 		if (b->u[i] != 0)
 			allzero = 0;

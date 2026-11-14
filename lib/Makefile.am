@@ -64,7 +64,7 @@ TESTS += vmbuf_test
 check_PROGRAMS += vmbuf_test
 vmbuf_test_SOURCES = vmbuf_test.c
 vmbuf_test_LDADD = vmbuf.lo rbuf.lo $(LTLIBOBJS)
-# Route every vmbuf_cleanse call in the linked vmbuf.lo/rbuf.lo through the
+# Route every rc_vcleanse call in the linked vmbuf.lo/rbuf.lo through the
 # test's counter so the VB-03 scratch-reuse test asserts the rinse call
 # site is present (fails if rbuf_getvb stops cleansing on slot reuse), and
 # route calloc/free through the test's fault-injection stubs so the
@@ -73,7 +73,7 @@ vmbuf_test_LDADD = vmbuf.lo rbuf.lo $(LTLIBOBJS)
 # --wrap=free); --wrap=realloc (with calloc) lets the realloc-failure and
 # scratch-OOM tests inject large-allocation failure deterministically, so
 # they also run under ASan (no RLIMIT_AS cap, no skip flag).
-vmbuf_test_LDFLAGS = -Wl,--wrap=vmbuf_cleanse -Wl,--wrap=calloc -Wl,--wrap=free -Wl,--wrap=realloc
+vmbuf_test_LDFLAGS = -Wl,--wrap=rc_vcleanse -Wl,--wrap=calloc -Wl,--wrap=free -Wl,--wrap=realloc
 if USE_XFRM
 # xfrmnatt and xfrmtmpl talk to the REAL kernel (guarded only by
 # geteuid()/return-77) and are kernel-mutating, so auto-running them from
