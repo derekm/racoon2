@@ -80,7 +80,9 @@ test -x /usr/local/racoon2/sbin/iked
 test -x /usr/local/racoon2/sbin/ikedctl
 
 echo "=== Unit/KAT suites on the production-shaped build ==="
-$MAKE -C lib check
+# print the per-test logs on failure (the bare make output names the
+# failing test but not why; the BSD legs had no other way to see it)
+$MAKE -C lib check || { cat lib/test-suite.log 2>/dev/null; exit 1; }
 # iked unit suite: run the FULL configured TESTS (no static override).  The
 # generated Makefile already conditionally includes addketest/addkekat only
 # under WITH_ADDKE (FreeBSD 15/16 OpenSSL has ML-KEM; 14.x/OpenSSL 3.0 does
@@ -93,7 +95,9 @@ if grep -q "^#define WITH_ADDKE 1" iked/config.h 2>/dev/null; then
 else
 	echo "=== iked unit suite (no WITH_ADDKE: addketest/addkekat excluded) ==="
 fi
-$MAKE -C iked check
+# print the per-test logs on failure (the bare make output names the
+# failing test but not why; the BSD legs had no other way to see it)
+$MAKE -C iked check || { cat iked/test-suite.log 2>/dev/null; exit 1; }
 
 echo "=== FreeBSD build/test OK ==="
 echo "vnet conformance leg runs as the next workflow step (separate script)"
