@@ -77,6 +77,23 @@ accept_until_count(int want, int ms)
 	return n;
 }
 
+/* As accept_until_count(), but until the stream accepted from the client
+ * at `remote` (exact addr:port) on `local` is registered. */
+static struct tcp_stream *
+accept_until_bound(const struct sockaddr *remote, const struct sockaddr *local,
+		   int ms)
+{
+	struct tcp_stream *ts = NULL;
+
+	for (; ms > 0; ms -= 10) {
+		(void)tcp_srv_accept_pending();
+		if ((ts = tcp_srv_find_bound(remote, local)) != NULL)
+			break;
+		(void)poll(NULL, 0, 10);
+	}
+	return ts;
+}
+
 static int
 wait_connect(struct tcp_stream *ts, int ms)
 {
@@ -648,7 +665,6 @@ main(void)
 		 * first listener, so do not count: assert each listener's client
 		 * is actually REGISTERED by address, which a single-fd server
 		 * cannot satisfy for both listeners at once. */
-		(void)tcp_srv_accept_pending();
 		memset(&csrcA, 0, sizeof(csrcA));
 		memset(&csrcB, 0, sizeof(csrcB));
 		(void)getsockname(cliA->fd, (struct sockaddr *)&csrcA, &cla);
@@ -656,9 +672,12 @@ main(void)
 		/* Both listeners share the address, and tcp_srv_find() is
 		 * address-only, so match each client by its exact source
 		 * addr:port (find_bound), then pin that it was accepted on
-		 * ITS listener's port. */
-		fA = tcp_srv_find_bound((struct sockaddr *)&csrcA, (struct sockaddr *)&la);
-		fB = tcp_srv_find_bound((struct sockaddr *)&csrcB, (struct sockaddr *)&lb);
+		 * ITS listener's port.  Accept until registered (bounded):
+		 * FreeBSD may defer the passive side past wait_connect(). */
+		fA = accept_until_bound((struct sockaddr *)&csrcA,
+		    (struct sockaddr *)&la, 3000);
+		fB = accept_until_bound((struct sockaddr *)&csrcB,
+		    (struct sockaddr *)&lb, 3000);
 		CHECK(fA != NULL, "simul: first-listener client registered");
 		CHECK(fB != NULL, "simul: second-listener client registered");
 		CHECK(fA && fB && fA != fB &&
