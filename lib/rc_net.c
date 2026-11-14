@@ -1254,8 +1254,7 @@ rcs_cmpsa(const struct sockaddr *addr1, const struct sockaddr *addr2)
  * entry, so e.g. [A,A] vs [A,B] compared equal in one direction but unequal
  * in the other.  This implementation claims each matched right-hand index at
  * most once.  RCT_ADDR_MACRO entries are not matched here (they fall to the
- * default case), so two lists of identical macros compare unequal; callers
- * that must compare expanded selectors resolve macros before the call.
+ * default case), so two lists of identical macros compare unequal.
  */
 int
 rcs_addrlist_cmp(struct rc_addrlist *a1, struct rc_addrlist *a2)

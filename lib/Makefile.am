@@ -165,10 +165,11 @@ addresspool_test_LDFLAGS = -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=free
 # rc_net_test exercises lib/rc_net.c comparators and mask builders with
 # synthetic lists (CM-01..CM-04): rcs_addrlist_cmp multiset symmetry and
 # duplicate-reuse regression, all 33 IPv4 prefix masks, and zero-on-invalid
-# for both mask builders.  plog is wrapped to a no-op so the invalid-prefix
-# path (which logs before zeroing) runs without a logging context.  No kernel
-# or policy state is touched.  Extensionless test -> the sample-wrapper
-# LOG_COMPILER passes the (ignored) sample config; main() runs its probes.
+# for both mask builders.  plog and plog_location are wrapped to no-ops so
+# the invalid-prefix path (which logs via the PLOGLOC macro before zeroing)
+# runs without a logging context.  No kernel or policy state is touched.
+# Extensionless test -> the sample-wrapper LOG_COMPILER passes the (ignored)
+# sample config; main() runs its probes.
 TESTS += rc_net_test
 check_PROGRAMS += rc_net_test
 rc_net_test_SOURCES = rc_net_test.c

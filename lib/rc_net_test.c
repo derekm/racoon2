@@ -26,10 +26,11 @@
 /* plog/plog_location no-ops so the invalid-prefix path (which logs via the
  * PLOGLOC macro before zeroing) can run without a logging context / rbuf. */
 struct rc_log;
-void __wrap_plog(int tag, const char *location, struct rc_log *plg,
+char *__wrap_plog(int tag, const char *location, struct rc_log *plg,
     const char *fmt, ...)
 {
 	(void)tag; (void)location; (void)plg; (void)fmt;
+	return NULL;
 }
 const char *__wrap_plog_location(const char *file, int line, const char *func)
 {
@@ -62,6 +63,9 @@ mkv4(const char *const *ips, int n)
 
 		memset(&sin, 0, sizeof(sin));
 		sin.sin_family = AF_INET;
+#ifdef HAVE_SA_LEN
+		sin.sin_len = sizeof(sin);	/* BSD: SA_LEN uses sa_len */
+#endif
 		if (inet_pton(AF_INET, ips[i], &sin.sin_addr) != 1) {
 			printf("mkv4: bad ip %s\n", ips[i]);
 			exit(2);
@@ -85,6 +89,21 @@ mkv4(const char *const *ips, int n)
 		lp = &ne->next;
 	}
 	return head;
+}
+
+/* Build a single RCT_ADDR_MACRO node (not matched by rcs_addrlist_cmp). */
+static struct rc_addrlist *
+mkmacro(void)
+{
+	struct rc_addrlist *ne = rc_calloc(1, sizeof(*ne));
+
+	if (ne == NULL)
+		exit(2);
+	ne->type = RCT_ADDR_MACRO;
+	ne->port = 0;
+	ne->prefixlen = 32;
+	ne->a.vstr = rc_vnew("MYIP", 4);
+	return ne;
 }
 
 int
@@ -148,19 +167,30 @@ main(void)
 	  chk("[A,B] vs [B,A] (permutation)", rcs_addrlist_cmp(x, y), 0);
 	  rcs_free_addrlist(x); rcs_free_addrlist(y); }
 
+	/* RCT_ADDR_MACRO is not matched (default case): two identical
+	 * single-macro lists compare unequal. */
+	x = mkmacro(); y = mkmacro();
+	chk("[M] vs [M] (MACRO unmatched)", rcs_addrlist_cmp(x, y), 1);
+	rcs_free_addrlist(x); rcs_free_addrlist(y);
+
 	/* ---- CM-03: all 33 IPv4 prefix masks ---- */
-	for (i = 0; i <= 32; i++) {
-		uint32_t want = (i == 0) ? 0
-		    : (i == 32) ? 0xFFFFFFFFu
-		    : (((uint32_t)0xFFFFFFFFu) << (32 - i));
-		rcs_in_prefixlen2mask(&m, i);
-		if (m != want) {
-			printf("mask /%d = 0x%08x want 0x%08x FAIL\n", i,
-			    (unsigned)m, (unsigned)want);
-			fails++;
+	{
+		int masked_fail = 0;
+
+		for (i = 0; i <= 32; i++) {
+			uint32_t want = (i == 0) ? 0
+			    : (i == 32) ? 0xFFFFFFFFu
+			    : (((uint32_t)0xFFFFFFFFu) << (32 - i));
+			rcs_in_prefixlen2mask(&m, i);
+			if (m != want) {
+				printf("mask /%d = 0x%08x want 0x%08x FAIL\n", i,
+				    (unsigned)m, (unsigned)want);
+				fails++;
+				masked_fail = 1;
+			}
 		}
+		printf("v4 masks 0..32 %s\n", masked_fail ? "FAILED" : "passed");
 	}
-	printf("v4 masks 0..32 passed\n");
 
 	/* ---- CM-04: invalid -> zeroed output (plog is wrapped) ---- */
 	m = 0xDEADBEEFu;
