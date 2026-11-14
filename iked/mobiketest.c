@@ -82,7 +82,8 @@ msleep(int ms)
  * kernel, so the kernel SAD and the in-memory endpoint never disagree
  * ("lying endpoint pair").  We drive ikev2_move_sa_impl through the
  * real mobike_migrate_children and override the migrate callback
- * (sadb_migrate, weak in ike_pfkey.c) with a mock kernel.
+ * (sadb_migrate, redirected with -Wl,--wrap=sadb_migrate) with a mock
+ * kernel.
  * ================================================================= */
 
 extern int ikev2_move_sa_impl(struct ikev2_sa *, struct sockaddr *,
@@ -112,8 +113,10 @@ static int m_migrate_calls;	/* total migrate attempts (diagnostic) */
 static int m_fail_req2_out;	/* script: hard-fail child 2's OUT */
 static struct sockaddr *m_new_l, *m_new_r;
 
+int __wrap_sadb_migrate(struct rcpfk_msg *);
+
 int
-sadb_migrate(struct rcpfk_msg *rc)
+__wrap_sadb_migrate(struct rcpfk_msg *rc)
 {
 	int target_new, idx;
 

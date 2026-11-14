@@ -139,6 +139,9 @@ TESTS += mobiketest
 check_PROGRAMS += mobiketest
 mobiketest_SOURCES = mobiketest.c
 mobiketest_LDADD = $(addtest_ikedsrc) $(LDADD)
+# G07/N6: the mock kernel replaces sadb_migrate via a link-time seam
+# instead of a weak production symbol.
+mobiketest_LDFLAGS = -Wl,--wrap=sadb_migrate
 
 # G02 responder CHILD_SA install failure: the real state dispatcher ->
 # ikev2_create_child_responder_cont -> ikev2_add_ipsec_sa (failed via a
