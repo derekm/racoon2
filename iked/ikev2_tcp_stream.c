@@ -101,7 +101,8 @@ stream_frame_cb(const unsigned char *pkt, size_t len, int is_esp, void *arg)
 }
 
 static struct tcp_stream *
-stream_new(int fd, const struct sockaddr *remote, int expect_prefix,
+stream_new(int fd, const struct sockaddr *remote,
+	   const struct sockaddr *local, int expect_prefix,
 	   tcp_stream_dispatch dispatch, void *arg)
 {
 	struct tcp_stream *ts;
@@ -136,10 +137,30 @@ stream_new(int fd, const struct sockaddr *remote, int expect_prefix,
 		memcpy(&ts->remote, remote, sa_len(remote));
 	sl = sizeof(ts->local);
 	if (getsockname(fd, (struct sockaddr *)&ts->local, &sl) < 0) {
-		free(ts->obuf);
-		free(ts->tb);
-		free(ts);
-		goto fail;
+		/*
+		 * Originator only: a non-blocking connect() that returned
+		 * EINPROGRESS may already have been refused/reset (a loopback
+		 * or LAN RST lands within microseconds).  NetBSD's tcp_close()
+		 * then detaches the PCB from the socket (so_pcb = NULL), so
+		 * getsockname() fails EINVAL even though the fd is valid and
+		 * SO_ERROR still holds the real cause.  Keep the stream with
+		 * the caller's bind address (or a family-only wildcard) as a
+		 * provisional local, and let tcp_stream_connect_done() report
+		 * the SO_ERROR, as on Linux/FreeBSD.  A responder (accepted)
+		 * stream has no such excuse: fail it.
+		 */
+		if (expect_prefix != 0) {
+			free(ts->obuf);
+			free(ts->tb);
+			free(ts);
+			goto fail;
+		}
+		memset(&ts->local, 0, sizeof(ts->local));
+		if (local != NULL)
+			memcpy(&ts->local, local, sa_len(local));
+		else
+			((struct sockaddr *)&ts->local)->sa_family =
+			    remote ? remote->sa_family : AF_UNSPEC;
 	}
 	tcp_decap_init(&ts->decap, expect_prefix);
 	/*
@@ -168,7 +189,8 @@ tcp_stream_accept(int lfd, tcp_stream_dispatch dispatch, void *arg)
 	if (fd < 0)
 		return NULL;
 	/* Accepted connection: we are the responder, the peer sent the prefix. */
-	return stream_new(fd, (struct sockaddr *)&remote, 1, dispatch, arg);
+	return stream_new(fd, (struct sockaddr *)&remote, NULL, 1, dispatch,
+	    arg);
 }
 
 int (*tcp_stream_sock_hook)(int fd, int family) = NULL;
@@ -202,7 +224,7 @@ tcp_stream_connect(const struct sockaddr *remote, const struct sockaddr *local,
 	 * We originated the TCP connection: send the one-time "IKETCP"
 	 * prefix; our peer does not.
 	 */
-	st = stream_new(fd, remote, 0, dispatch, arg);
+	st = stream_new(fd, remote, local, 0, dispatch, arg);
 	if (st != NULL)
 		st->connecting = 1;	/* connect in flight (may be async) */
 	return st;
@@ -228,6 +250,16 @@ tcp_stream_connect_done(struct tcp_stream *ts)
 	if (err != 0) {
 		errno = err;
 		return -1;
+	}
+	/* Now that the connect completed, record the kernel's real local
+	 * endpoint (stream_new may have stored a provisional one). */
+	{
+		struct sockaddr_storage l;
+		socklen_t ll = sizeof(l);
+
+		memset(&l, 0, sizeof(l));
+		if (getsockname(ts->fd, (struct sockaddr *)&l, &ll) == 0)
+			memcpy(&ts->local, &l, sizeof(ts->local));
 	}
 	ts->connecting = 0;	/* connected; queued writes may now flush */
 	return 0;
