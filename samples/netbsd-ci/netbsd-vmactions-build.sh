@@ -100,7 +100,9 @@ $SUDO make install
 # Re-run the unit/KAT suites on the production-shaped build so the compliance
 # report has evidence again (make clean removed the sanitized-run logs; these
 # non-sanitized results are the more representative cells anyway).
-make -C lib check
+# print the per-test logs on failure (the bare make output names the
+# failing test but not why; the BSD legs had no other way to see it)
+make -C lib check || { cat lib/test-suite.log 2>/dev/null; exit 1; }
 # iked unit suite: run the FULL configured TESTS (no static override).  The
 # generated Makefile already conditionally includes addketest/addkekat only
 # under WITH_ADDKE (netbsd 11.0/OpenSSL 3.5.7 has it; 10.x/OpenSSL 3.0 does
@@ -113,7 +115,9 @@ if grep -q "^#define WITH_ADDKE 1" iked/config.h 2>/dev/null; then
 else
 	echo "=== iked unit suite (no WITH_ADDKE: addketest/addkekat excluded) ==="
 fi
-make -C iked check
+# print the per-test logs on failure (the bare make output names the
+# failing test but not why; the BSD legs had no other way to see it)
+make -C iked check || { cat iked/test-suite.log 2>/dev/null; exit 1; }
 
 echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
 if [ -n "$SUDO" ]; then
