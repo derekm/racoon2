@@ -604,7 +604,10 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 	al = sl->src; /* do we need to care multiple entries? - NO, but FQDN/MACRO OK*/
 	switch (al->type) {
 	case RCT_ADDR_MACRO:
-		if (rcs_is_addr_any(al) || rcs_is_addr_rw(al)) {
+		if ((rcs_is_addr_any(al) || rcs_is_addr_rw(al)) &&
+		    sl->dst->type == RCT_ADDR_INET && sl->dst->a.ipaddr) {
+			/* the macro takes its family from the numeric dst
+			 * (a MACRO dst has no a.ipaddr: a.vstr shares it) */
 			af = sl->dst->a.ipaddr->sa_family;
 		} else {
 			SPMD_PLOG(SPMD_L_INTERR,
@@ -617,6 +620,13 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 		for (ipal_tmp=ipal;ipal_tmp;ipal_tmp=ipal_tmp->next) {
 			if (af==ipal_tmp->a.ipaddr->sa_family)
 				break;
+		}
+		if (ipal_tmp == NULL) {
+			SPMD_PLOG(SPMD_L_INTERR,
+				"macro %.*s has no address of the selector family (selector=%.*s)",
+				(int)al->a.vstr->l, al->a.vstr->s,
+				(int)sl->sl_index->l, sl->sl_index->s);
+			goto err;
 		}
 		/* Set the port */
 		switch (af) {
@@ -653,33 +663,43 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 		goto err;
 		break; /* never reach */
 	}
-	rc->pref_src = sl->src->prefixlen;
 	/* AS-01: a macro/numeric src carries its parsed prefix; reject one
-	 * wider than the resolved source address family instead of passing
-	 * it to pref_src (e.g. an IPv4 src with a /64 prefix). */
-	if (rc->sp_src != NULL &&
-	    rc->pref_src > (rc->sp_src->sa_family == AF_INET6 ? 128 : 32)) {
+	 * outside the resolved source address family (e.g. an IPv4 src with
+	 * a /64 prefix) BEFORE narrowing it into the uint8_t pref_src. */
+	if (!rcs_prefixlen_ok(rc->sp_src, sl->src->prefixlen)) {
 		SPMD_PLOG(SPMD_L_INTERR,
-			"prefixlen %u exceeds source address family (selector=%.*s)",
-			rc->pref_src, (int)sl->sl_index->l, sl->sl_index->s);
+			"prefixlen %d invalid for the source address family (selector=%.*s)",
+			sl->src->prefixlen, (int)sl->sl_index->l, sl->sl_index->s);
 		goto err;
 	}
+	rc->pref_src = (uint8_t)sl->src->prefixlen;
 
 	al = sl->dst; /* do we need to care multiple entries? - ditto */
 	switch (al->type) {
 	case RCT_ADDR_MACRO:
-		if (rcs_is_addr_any(al) || rcs_is_addr_rw(al)) {
-			af = sl->src->a.ipaddr->sa_family;
+		/* the source was resolved above (rc->sp_src): take the
+		 * family from it, since a MACRO src has no a.ipaddr */
+		if ((rcs_is_addr_any(al) || rcs_is_addr_rw(al)) &&
+		    rc->sp_src != NULL) {
+			af = rc->sp_src->sa_family;
 		} else {
 			SPMD_PLOG(SPMD_L_INTERR,
 				"macro %.*s not supported, check your configuration file (selector=%.*s)",
 				(int)al->a.vstr->l, al->a.vstr->s,
 				(int)sl->sl_index->l, sl->sl_index->s);
+			goto err;
 		}
 		rcs_getaddrlistbymacro(al->a.vstr, &ipal);
 		for (ipal_tmp=ipal;ipal_tmp;ipal_tmp=ipal_tmp->next) {
 			if (af==ipal_tmp->a.ipaddr->sa_family)
 				break;
+		}
+		if (ipal_tmp == NULL) {
+			SPMD_PLOG(SPMD_L_INTERR,
+				"macro %.*s has no address of the selector family (selector=%.*s)",
+				(int)al->a.vstr->l, al->a.vstr->s,
+				(int)sl->sl_index->l, sl->sl_index->s);
+			goto err;
 		}
 		/* Set the port */
 		switch (af) {
@@ -716,7 +736,15 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 		goto err;
 		break; /* never reach */
 	}
-	rc->pref_dst = sl->dst->prefixlen;
+	/* AS-01: the same family bound for the destination prefix (a MACRO
+	 * dst such as IP_ANY/IP_RW resolves its family from the source) */
+	if (!rcs_prefixlen_ok(rc->sp_dst, sl->dst->prefixlen)) {
+		SPMD_PLOG(SPMD_L_INTERR,
+			"prefixlen %d invalid for the destination address family (selector=%.*s)",
+			sl->dst->prefixlen, (int)sl->sl_index->l, sl->sl_index->s);
+		goto err;
+	}
+	rc->pref_dst = (uint8_t)sl->dst->prefixlen;
 
 	if (set_ul_proto(sl, rc)<0) {
 		SPMD_PLOG(SPMD_L_INTERR, "Can't set upper layer protocol, check your configuration(selector=%.*s)",
@@ -762,6 +790,8 @@ spmd_nonfqdn_sp_add(struct rcf_selector *sl)
 
 	return 0;
 err:
+	if (ipal)
+		rcs_free_addrlist(ipal);	/* a macro list not yet consumed */
 	spmd_free_rcpfk_msg(rc);
 	return -1;
 }
@@ -1462,10 +1492,18 @@ spmd_migrate(struct rcf_selector *sl, struct rcpfk_msg *rc, int urgent)
 		ret = -1;
 		goto fin;
 	}
+	if (!rcs_prefixlen_ok(sl->src->a.ipaddr, sl->src->prefixlen) ||
+	    !rcs_prefixlen_ok(sl->dst->a.ipaddr, sl->dst->prefixlen)) {
+		SPMD_PLOG(SPMD_L_INTERR,
+			"selector prefix invalid for its address family (sl_index=%.*s)",
+			(int)sl->sl_index->l, sl->sl_index->s);
+		ret = -1;
+		goto fin;
+	}
 	rc->sp_src = rcs_sadup(sl->src->a.ipaddr);
-	rc->pref_src = sl->src->prefixlen;
+	rc->pref_src = (uint8_t)sl->src->prefixlen;
 	rc->sp_dst = rcs_sadup(sl->dst->a.ipaddr);
-	rc->pref_dst = sl->dst->prefixlen;
+	rc->pref_dst = (uint8_t)sl->dst->prefixlen;
 
 	if (urgent) {
 		ret = rcpfk_send_migrate(rc);

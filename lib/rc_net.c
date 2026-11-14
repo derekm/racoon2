@@ -1324,6 +1324,28 @@ rcs_addrlist_cmp(struct rc_addrlist *a1, struct rc_addrlist *a2)
 }
 
 /*
+ * Is prefixlen a valid prefix for the family of sa?  0..32 for AF_INET,
+ * 0..128 for AF_INET6 (0 is "the family maximum" or IP_ANY in selector
+ * terms); anything else, a negative value or an unknown/NULL address is
+ * rejected.  Callers must check BEFORE narrowing to a uint8_t field.
+ * Returns 1 if valid, 0 if not.
+ */
+int
+rcs_prefixlen_ok(const struct sockaddr *sa, int prefixlen)
+{
+	if (sa == NULL || prefixlen < 0)
+		return 0;
+	switch (sa->sa_family) {
+	case AF_INET:
+		return prefixlen <= 32;
+	case AF_INET6:
+		return prefixlen <= 128;
+	default:
+		return 0;
+	}
+}
+
+/*
  * convert a prefix length to a netmask for IPv4
  */
 void
