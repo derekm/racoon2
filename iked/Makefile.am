@@ -167,12 +167,16 @@ resumeproptest_LDADD = $(addtest_ikedsrc) $(LDADD)
 # G03/S5: initiator IKE_SA-rekey ADDKE over {ML-KEM-768, NONE, ECP-256}
 # drives the real ikev2_rekey_ikesa_init_addke_complete() through a
 # classical second round; the followup packet build/send is wrapped.
+# ADDKE builds only: the wrapped symbols' callers are linked in every
+# build, but the test's __wrap_ definitions exist only with WITH_ADDKE.
+if ADDKE
 TESTS += ikerekeyaddketest
 check_PROGRAMS += ikerekeyaddketest
 ikerekeyaddketest_SOURCES = ikerekeyaddketest.c
 ikerekeyaddketest_LDADD = $(addtest_ikedsrc) $(LDADD)
 ikerekeyaddketest_LDFLAGS = -Wl,--wrap=ikev2_packet_construct \
 	-Wl,--wrap=ikev2_transmit
+endif
 
 # RFC 8229 / RFC 9329 IKE-over-TCP framing codec (iked/ikev2_tcp.c): the
 # 16-bit Len (including itself) + 4-octet non-ESP marker wire format, prefix

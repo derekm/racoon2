@@ -785,6 +785,20 @@ extern int ikev2_addke_dense_count(const unsigned int *, int);
 extern int ikev2_addke_dense_slot(const unsigned int *, int, int, int *,
 				  unsigned int *);
 
+/*
+ * One ADDKE round's key-exchange state, independent of the SA kind (the
+ * IKE_SA-rekey initiator has no child_sa to hang it on): an ML-KEM
+ * keypair or a classical DH group + our public/private values.  Defined in
+ * every build: the IKE_SA-rekey ctx (ikev2_rekey_ctx.h) embeds it.
+ */
+struct ikev2_addke_kex {
+	unsigned int method;		/* the round's transform type 6 id */
+	void *kem;			/* EVP_PKEY * (ML-KEM rounds) */
+	const struct dhgroup *dh;	/* classical rounds */
+	rc_vchar_t *dh_pub;
+	rc_vchar_t *dh_priv;
+};
+
 /* defined in every build (NULL without WITH_ADDKE): dispose calls it */
 extern struct ikev2_sa *ikev2_rekey_init_stub(struct ikev2_sa *);
 
@@ -798,18 +812,6 @@ extern const struct dhgroup *ikev2_addke_method_dhgroup(unsigned int);
 extern int ikev2_addke_round_keygen(struct ikev2_child_sa *,
 				    unsigned int, rc_vchar_t **);
 extern void ikev2_addke_round_state_clear(struct ikev2_child_sa *);
-/*
- * One ADDKE round's key-exchange state, independent of the SA kind (the
- * IKE_SA-rekey initiator has no child_sa to hang it on): an ML-KEM
- * keypair or a classical DH group + our public/private values.
- */
-struct ikev2_addke_kex {
-	unsigned int method;		/* the round's transform type 6 id */
-	void *kem;			/* EVP_PKEY * (ML-KEM rounds) */
-	const struct dhgroup *dh;	/* classical rounds */
-	rc_vchar_t *dh_pub;
-	rc_vchar_t *dh_priv;
-};
 extern int ikev2_addke_kex_keygen(struct ikev2_addke_kex *, unsigned int,
 				  rc_vchar_t **);
 extern int ikev2_addke_kex_derive(struct ikev2_addke_kex *, rc_vchar_t *,
