@@ -406,10 +406,13 @@ EOF
 	# started its crypto worker pool (non-inline EAP round). This is what
 	# closes the "EAP blocks the select loop" gate.
 	if [ -n "${R2_WORKERS:-}" ] && [ "${R2_WORKERS:-0}" -gt 0 ]; then
-		if ! grep -q "crypto workers: $R2_WORKERS" "$D/resp-iked.log"; then
+		# crypto_workers.c logs "crypto workers: started N of M requested
+		# thread(s)" (+ an "only N of M" warning on a short start)
+		if ! grep -q "crypto workers: started $R2_WORKERS of $R2_WORKERS requested" "$D/resp-iked.log"; then
 			log "FAIL: responder iked did not start crypto workers=$R2_WORKERS (EAP round would block the loop)"
+			grep "crypto workers:" "$D/resp-iked.log" | sed 's/^/    /'
 			efail=1
-		elif grep -q "crypto workers: 0" "$D/resp-iked.log"; then
+		elif grep -q "crypto workers: only " "$D/resp-iked.log"; then
 			log "FAIL: responder iked fell back to workers=0"
 			efail=1
 		else

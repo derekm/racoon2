@@ -340,8 +340,8 @@ iked_apply_workers() {
 		return 1
 	fi
 	if [ "$R2_WORKERS" -gt 0 ]; then
-		grep -q "crypto workers: $R2_WORKERS" /tmp/r2-iked-matrix.log || {
-			log "FAIL: no 'crypto workers: $R2_WORKERS' in log"
+		grep -q "crypto workers: started $R2_WORKERS of $R2_WORKERS requested" /tmp/r2-iked-matrix.log || {
+			log "FAIL: no 'crypto workers: started $R2_WORKERS of $R2_WORKERS requested' in log"
 			return 1
 		}
 	fi

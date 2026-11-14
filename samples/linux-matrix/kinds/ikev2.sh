@@ -196,14 +196,14 @@ EOF
 	if [ "${R2_WORKERS:-0}" -gt 0 ]; then
 		_wk_ok=0
 		for _ in $(seq 1 15); do
-			if grep -q "crypto workers: $R2_WORKERS" "$D/resp-iked.log" 2>/dev/null; then
+			if grep -q "crypto workers: started $R2_WORKERS of $R2_WORKERS requested" "$D/resp-iked.log" 2>/dev/null; then
 				_wk_ok=1
 				break
 			fi
 			sleep 1
 		done
 		if [ "$_wk_ok" != 1 ]; then
-			log "FAIL: no 'crypto workers: $R2_WORKERS' in NSR iked log"
+			log "FAIL: no 'crypto workers: started $R2_WORKERS of $R2_WORKERS requested' in NSR iked log"
 			charon_reset; _ikev2_clean "$NSR" "$NSI" "$C" "$PRIVRES_R"
 			return 1
 		fi
