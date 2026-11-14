@@ -1637,6 +1637,47 @@ test_foreign_delete_event_keeps_op(void)
 	    xfrm_stat_stale_reply);
 }
 
+/* G09/Q2: a NEWSA whose netlink seq collides with an in-flight op but
+ * whose nlmsg_pid is not ours (another KM: pid 999; a kernel-originated
+ * event: pid 0) must not complete or free the op; only our own echo
+ * (nlmsg_pid == the request socket's port id) does. */
+static void
+test_foreign_newsa_seq_collision_keeps_op(void)
+{
+	struct rcpfk_msg rc;
+	struct sockaddr_in s, d;
+	char buf[512];
+	int r;
+
+	setup();
+	fill_sa_rc(&rc, &s, &d, 0x4000b00, 0);
+	CHECK(rcpfk_send_getspi(&rc) == 0, "getspi: %s", rc.estr);
+	(void)kget();
+	kput(k_ntf, buf, mk_sa(buf, XFRM_MSG_NEWSA, 0x4000b00, 999, 0xbad1,
+	    0));
+	kput(k_ntf, buf, mk_sa(buf, XFRM_MSG_NEWSA, 0x4000b00, 0, 0xbad2, 0));
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0, "foreign events: %s", rc.estr);
+	CHECK(n_getspi == 0, "foreign/kernel NEWSA did not complete the "
+	    "ALLOCSPI op (%d)", n_getspi);
+	CHECK(op_find(0x4000b00) != NULL, "op survives the colliding events");
+	kput(k_req, buf, mk_sa(buf, XFRM_MSG_NEWSA, 0x4000b00, PORTID, 0x600d,
+	    0));
+	memset(&rc, 0, sizeof(rc));
+	rc.so = rcm.so;
+	r = rcpfk_handler(&rc);
+	CHECK(r == 0 && n_getspi == 1, "our echo completes it (r=%d n=%d)",
+	    r, n_getspi);
+	CHECK(n_getspi == 1 && last.spi == htonl(0x600d),
+	    "SPI from our echo, not a foreign message (0x%08x)",
+	    ntohl(last.spi));
+	CHECK(op_find(0x4000b00) == NULL && xfrm_nops == 0, "op freed");
+	CHECK(xfrm_stat_stale_reply == 0, "echo not dropped as stale (%lu)",
+	    xfrm_stat_stale_reply);
+}
+
 /* The op table is bounded: a submit that finds it full fails EAGAIN,
  * sends nothing, and never evicts an outstanding op. */
 static void
@@ -1817,6 +1858,7 @@ main(void)
 	test_overlapping_ops_both_complete();
 	test_overlapping_error_attributed();
 	test_foreign_delete_event_keeps_op();
+	test_foreign_newsa_seq_collision_keeps_op();
 	test_op_table_full();
 	test_misaligned_batch();
 	test_migrate_port_only_without_migrate();
