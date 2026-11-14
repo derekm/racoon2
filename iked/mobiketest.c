@@ -90,8 +90,23 @@ extern int ikev2_move_sa_impl(struct ikev2_sa *, struct sockaddr *,
 
 /* mock kernel SAD.  NSLOT leaves headroom for the reqids/dirs used
  * here; slot = 1 when that (reqid, dir) SA sits on the NEW endpoint. */
-#define	M_NSLOT(reqid, dir)	((reqid) * 8 + (dir))
-static int m_slots[64];
+/* rc_type values are large enum constants (RCT_DIR_OUTBOUND is ~98),
+ * so index by the direction's offset, not its raw value (the raw value
+ * indexed far past m_slots: UBSan 'index 106 out of bounds'). */
+#define	M_DIRIDX(dir)		((int)(dir) - (int)RCT_DIR_OUTBOUND)
+#define	M_NSLOT(reqid, dir)	((int)(reqid) * 4 + M_DIRIDX(dir))
+#define	M_SLOTS			64
+static int m_slots[M_SLOTS];
+/* every sadb_migrate call, in order, for the lease-rollback checks */
+#define	M_MAXLOG		64
+static struct m_call {
+	uint32_t reqid;
+	rc_type dir;
+	int target_new;
+	struct sockaddr_storage sp_src, sp_dst;
+} m_log[M_MAXLOG];
+static int m_nlog;
+static int m_bad_index;	/* a (reqid, dir) the slot table cannot hold */
 static int m_new_installs;	/* net SAs currently on the NEW endpoint */
 static int m_migrate_calls;	/* total migrate attempts (diagnostic) */
 static int m_fail_req2_out;	/* script: hard-fail child 2's OUT */
@@ -105,6 +120,12 @@ sadb_migrate(struct rcpfk_msg *rc)
 	m_migrate_calls++;
 	target_new = (rcs_cmpsa(rc->sa2_src, m_new_l) == 0) ||
 	    (rcs_cmpsa(rc->sa2_src, m_new_r) == 0);
+	if (M_DIRIDX(rc->dir) < 0 || M_DIRIDX(rc->dir) > 2 ||
+	    M_NSLOT(rc->reqid, rc->dir) >= M_SLOTS) {
+		m_bad_index++;
+		rc->eno = EINVAL;
+		return -1;
+	}
 	idx = M_NSLOT(rc->reqid, rc->dir);
 
 	/* scripted hard failure: the second child's first (OUT) direction
@@ -125,6 +146,20 @@ sadb_migrate(struct rcpfk_msg *rc)
 	}
 	/* perform the move (target_new: onto the new endpoint; else back
 	 * onto the old one -- the rollback path exercises this reversal). */
+	/* log only performed moves (not the ENOENT 'none left' probes) */
+	if (m_nlog < M_MAXLOG) {
+		struct m_call *l = &m_log[m_nlog++];
+
+		l->reqid = rc->reqid;
+		l->dir = rc->dir;
+		l->target_new = target_new;
+		memset(&l->sp_src, 0, sizeof(l->sp_src));
+		memset(&l->sp_dst, 0, sizeof(l->sp_dst));
+		if (rc->sp_src)
+			memcpy(&l->sp_src, rc->sp_src, SA_LEN(rc->sp_src));
+		if (rc->sp_dst)
+			memcpy(&l->sp_dst, rc->sp_dst, SA_LEN(rc->sp_dst));
+	}
 	m_slots[idx] = target_new ? 1 : 0;
 	m_new_installs += target_new ? 1 : -1;
 	return 0;
@@ -245,6 +280,118 @@ test_migrate_rollback(void)
 	rc_free(_newr);
 }
 
+/* inner (protected peer-side) address of a logged migrate: OUT carries
+ * it as sp_dst, IN as sp_src (ikev2_mobike.c mobike_migrate_children) */
+static int
+m_inner_is(const struct m_call *l, const char *want)
+{
+	const struct sockaddr_in *sin = (const void *)
+	    (l->dir == RCT_DIR_OUTBOUND ? &l->sp_dst : &l->sp_src);
+	struct in_addr w;
+
+	if (sin->sin_family != AF_INET || inet_pton(AF_INET, want, &w) != 1)
+		return 0;
+	return sin->sin_addr.s_addr == w.s_addr;
+}
+
+/* G07 with CP leases: both children carry an address lease, so each
+ * child's inner selector address comes from a per-child lease buffer.
+ * Child 2's OUT hard-fails; the rollback of child 1 must reverse-migrate
+ * with child 1's OWN lease (10.99.0.1), not with whatever the lease
+ * buffer of a later child holds (the trace used to keep a pointer to
+ * the block-scoped buffer: dangling, overwritten by child 2's lease). */
+static void
+test_migrate_rollback_leases(void)
+{
+	struct ikev2_sa sa;
+	struct ikev2_child_sa *c1, *c2;
+	struct rcf_address *l1, *l2;
+	struct sockaddr_storage oldl, oldr, newl, newr;
+	struct sockaddr *_oldl, *_oldr, *_newl, *_newr;
+	struct in_addr a;
+	int ret, i, nback = 0, ngood = 0, nfwd1 = 0, nfwd1good = 0;
+
+	test_make_addr4(&oldl, "192.0.2.2", 500);
+	test_make_addr4(&oldr, "192.0.2.1", 500);
+	test_make_addr4(&newl, "198.51.100.2", 500);
+	test_make_addr4(&newr, "198.51.100.1", 500);
+	_oldl = rcs_sadup((struct sockaddr *)&oldl);
+	_oldr = rcs_sadup((struct sockaddr *)&oldr);
+	_newl = rcs_sadup((struct sockaddr *)&newl);
+	_newr = rcs_sadup((struct sockaddr *)&newr);
+	m_new_l = _newl;
+	m_new_r = _newr;
+	m_new_installs = 0;
+	m_migrate_calls = 0;
+	m_nlog = 0;
+	m_bad_index = 0;
+	m_fail_req2_out = 1;
+	memset(m_slots, 0, sizeof(m_slots));
+
+	memset(&sa, 0, sizeof(sa));
+	IKEV2_CHILD_LIST_INIT(&sa.children);
+	sa.local = rcs_sadup((struct sockaddr *)&oldl);
+	sa.remote = rcs_sadup((struct sockaddr *)&oldr);
+	sa.mobike_supported = 1;
+
+	c1 = calloc(1, sizeof(*c1));
+	c1->selector = m_mk_selector(1, "10.1.1.1", "10.1.1.2");
+	LIST_INIT(&c1->lease_list);
+	l1 = calloc(1, sizeof(*l1));
+	l1->af = AF_INET;
+	inet_pton(AF_INET, "10.99.0.1", &a);
+	memcpy(l1->address, &a, sizeof(a));
+	LIST_INSERT_HEAD(&c1->lease_list, l1, link_sa);
+	IKEV2_CHILD_LIST_LINK(&sa.children, c1);
+
+	c2 = calloc(1, sizeof(*c2));
+	c2->selector = m_mk_selector(2, "10.2.2.1", "10.2.2.2");
+	LIST_INIT(&c2->lease_list);
+	l2 = calloc(1, sizeof(*l2));
+	l2->af = AF_INET;
+	inet_pton(AF_INET, "10.99.0.2", &a);
+	memcpy(l2->address, &a, sizeof(a));
+	LIST_INSERT_HEAD(&c2->lease_list, l2, link_sa);
+	IKEV2_CHILD_LIST_LINK(&sa.children, c2);
+
+	ret = ikev2_move_sa_impl(&sa, _newr, _newl, 1,
+	    "unit: transactional migrate with leases");
+
+	ck(ret == -1, "leases: move_sa_impl returns -1 on child-2 failure");
+	ck(m_bad_index == 0, "leases: every migrate fit the mock SAD");
+	ck(m_new_installs == 0, "leases: kernel SAD rolled back to net zero");
+	for (i = 0; i < m_nlog; i++) {
+		if (m_log[i].reqid != 1)
+			continue;
+		if (m_log[i].target_new) {
+			nfwd1++;
+			nfwd1good += m_inner_is(&m_log[i], "10.99.0.1");
+		} else {
+			nback++;
+			ngood += m_inner_is(&m_log[i], "10.99.0.1");
+		}
+	}
+	printf("leases: child-1 forward=%d (lease ok %d), rollback=%d "
+	    "(lease ok %d)\n", nfwd1, nfwd1good, nback, ngood);
+	ck(nfwd1 == 2 && nfwd1good == 2,
+	    "leases: child-1 OUT+IN moved with its own lease 10.99.0.1");
+	ck(nback == 2 && ngood == 2,
+	    "leases: child-1 rollback reuses child-1's lease, not child-2's");
+
+	m_free_selector(c1->selector);
+	m_free_selector(c2->selector);
+	free(l1);
+	free(l2);
+	free(c1);
+	free(c2);
+	rc_free(sa.remote);
+	rc_free(sa.local);
+	rc_free(_oldl);
+	rc_free(_oldr);
+	rc_free(_newl);
+	rc_free(_newr);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -335,6 +482,7 @@ main(int argc, char *argv[])
 
 	/* G07 transactional kernel migration on a multi-child hard failure */
 	test_migrate_rollback();
+	test_migrate_rollback_leases();
 
 	if (fails) {
 		printf("mobiketest: %d failure(s)\n", fails);

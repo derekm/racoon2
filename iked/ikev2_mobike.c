@@ -298,7 +298,10 @@ struct mobike_mig_trace {
 	rc_type dir;
 	struct sockaddr *cur_s, *cur_d;	/* current kernel location (fwd target) */
 	struct sockaddr *old_s, *old_d;	/* reverse target (fwd source) */
-	struct sockaddr *sp_src, *sp_dst;
+	/* selector addresses are COPIED: the caller's inner address may be
+	 * a per-child stack lease buffer that is gone (or reused by the
+	 * next child) by the time a later failure rolls this entry back */
+	struct sockaddr_storage sp_src, sp_dst;
 	uint8_t pref_src, pref_dst;
 	rc_type samode;
 	uint32_t reqid;
@@ -324,7 +327,8 @@ mobike_migrate_rollback(struct ikev2_sa *ike_sa,
 		m = ikev2_mobike_migrate_dir(ike_sa, tr[i].dir,
 		    tr[i].cur_s, tr[i].cur_d,
 		    tr[i].old_s, tr[i].old_d,
-		    tr[i].sp_src, tr[i].sp_dst, tr[i].pref_src,
+		    (struct sockaddr *)&tr[i].sp_src,
+		    (struct sockaddr *)&tr[i].sp_dst, tr[i].pref_src,
 		    tr[i].pref_dst, tr[i].samode, tr[i].reqid);
 		if (m < 0)
 			isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
@@ -349,21 +353,38 @@ mobike_migrate_dir_track(struct ikev2_sa *ike_sa,
     uint8_t pref_src, uint8_t pref_dst, rc_type samode, uint32_t reqid)
 {
 	int m;
+	size_t ls, ld;
 
+	/* A move that could not be traced could not be rolled back either:
+	 * refuse it (and undo what already moved) before touching the
+	 * kernel, instead of silently migrating untracked SAs. */
+	ls = sp_src ? (size_t)SA_LEN(sp_src) : 0;
+	ld = sp_dst ? (size_t)SA_LEN(sp_dst) : 0;
+	if (*nt >= MAX_MOBIKE_MIGRATES || ls == 0 || ld == 0 ||
+	    ls > sizeof(tr[0].sp_src) || ld > sizeof(tr[0].sp_dst)) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+		    "MOBIKE migrate of reqid %u dir %s cannot be tracked "
+		    "for rollback (%d entries); refusing the move\n",
+		    reqid, rct2str(dir), *nt);
+		mobike_migrate_rollback(ike_sa, tr, *nt);
+		return -1;
+	}
 	m = ikev2_mobike_migrate_dir(ike_sa, dir, old_s, old_d, new_s, new_d,
 	    sp_src, sp_dst, pref_src, pref_dst, samode, reqid);
 	if (m < 0) {
 		mobike_migrate_rollback(ike_sa, tr, *nt);
 		return -1;
 	}
-	if (m > 0 && *nt < MAX_MOBIKE_MIGRATES) {
+	if (m > 0) {
 		tr[*nt].dir = dir;
 		tr[*nt].cur_s = new_s;
 		tr[*nt].cur_d = new_d;
 		tr[*nt].old_s = old_s;
 		tr[*nt].old_d = old_d;
-		tr[*nt].sp_src = sp_src;
-		tr[*nt].sp_dst = sp_dst;
+		memset(&tr[*nt].sp_src, 0, sizeof(tr[*nt].sp_src));
+		memset(&tr[*nt].sp_dst, 0, sizeof(tr[*nt].sp_dst));
+		memcpy(&tr[*nt].sp_src, sp_src, ls);
+		memcpy(&tr[*nt].sp_dst, sp_dst, ld);
 		tr[*nt].pref_src = pref_src;
 		tr[*nt].pref_dst = pref_dst;
 		tr[*nt].samode = samode;
@@ -390,7 +411,7 @@ mobike_migrate_children(struct ikev2_sa *ike_sa,
 	struct ikev2_child_sa *c;
 	struct mobike_mig_trace tr[MAX_MOBIKE_MIGRATES];
 	int nt = 0;
-	uint32_t seen[16];
+	uint32_t seen[MAX_MOBIKE_MIGRATES];
 	int nseen = 0, moved = 0, saw = 0;
 
 	for (c = IKEV2_CHILD_LIST_FIRST(&ike_sa->children);
@@ -429,8 +450,15 @@ mobike_migrate_children(struct ikev2_sa *ike_sa,
 					break;
 			if (i < nseen)
 				continue;
-			if (nseen < 16)
-				seen[nseen++] = reqid;
+			if (nseen >= (int)(sizeof(seen) / sizeof(seen[0]))) {
+				/* cannot dedupe further: fail closed */
+				isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR,
+				    PLOGLOC, "MOBIKE: too many reqids to "
+				    "migrate (%d); refusing the move\n", nseen);
+				mobike_migrate_rollback(ike_sa, tr, nt);
+				return -1;
+			}
+			seen[nseen++] = reqid;
 			saw = 1;
 			samode = ike_ipsec_mode(cs->pl);
 			if (cs->direction == RCT_DIR_INBOUND) {
