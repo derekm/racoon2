@@ -201,9 +201,17 @@ main(void)
 		cr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 		cr.sin_port = htons(1);		/* nothing listening on port 1 */
 		c = tcp_stream_connect((struct sockaddr *)&cr, NULL, capture, NULL);
+		if (c == NULL)
+			printf("refused: tcp_stream_connect: %s\n",
+			    strerror(errno));
 		CHECK(c != NULL, "refused: stream created");
 		if (c) {
 			int wd = wait_done(c, 3000);
+			int werr = errno;
+
+			printf("refused: connect_done=%d errno=%s\n", wd,
+			    wd != 0 ? strerror(werr) : "-");
+			errno = werr;
 			CHECK(wd != 0 && errno == ECONNREFUSED,
 			      "refused: connect_done reports ECONNREFUSED after ERR/HUP wake");
 			tcp_stream_free(c);
