@@ -713,7 +713,7 @@ main(void)
 
 		memset(&lc, 0, sizeof(lc));
 		lc.sin_family = AF_INET;
-		lc.sin_addr.s_addr = htonl(0x7f000003);	/* 127.0.0.3 */
+		lc.sin_addr.s_addr = htonl(INADDR_LOOPBACK);	/* BSD lo0: 127.0.0.1 only */
 		lfd = tcp_srv_open_listener((struct sockaddr *)&lc, 0);
 		CHECK(lfd >= 0, "close-listeners: listener opened");
 		if (lfd < 0)
@@ -733,7 +733,8 @@ main(void)
 		      "close-listeners: listener sockets freed");
 		memset(&clsrc, 0, sizeof(clsrc));
 		(void)getsockname(cli->fd, (struct sockaddr *)&clsrc, &cl_len);
-		CHECK(tcp_srv_find((struct sockaddr *)&clsrc,
+		/* exact client addr:port: other 127.0.0.1 streams exist */
+		CHECK(tcp_srv_find_bound((struct sockaddr *)&clsrc,
 			(struct sockaddr *)&lc) != NULL,
 		      "close-listeners: live stream kept");
 		tcp_stream_free(cli);
