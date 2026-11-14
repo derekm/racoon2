@@ -1247,52 +1247,71 @@ rcs_cmpsa(const struct sockaddr *addr1, const struct sockaddr *addr2)
 }
 
 /*
- * compare 2 rc_adrlists wrt list order
- * OUT: 0: equal
- *     -1: not equal
+ * Compare the CONTENTS of two address lists as unordered multisets: every
+ * entry of one side must be matched by a DISTINCT entry of the other (order
+ * is not significant).  Returns 0 if the multisets are equal, nonzero
+ * otherwise.  The former per-entry "first match" scan reused a matched a2
+ * entry, so e.g. [A,A] vs [A,B] compared equal in one direction but unequal
+ * in the other; an entry used on the left must not be reused on the right.
+ * RCT_ADDR_MACRO nodes must be expanded before the call: they are not
+ * matched here (a MACRO entry therefore never matches).
  */
 int
 rcs_addrlist_cmp(struct rc_addrlist *a1, struct rc_addrlist *a2)
 {
-	struct rc_addrlist *s = NULL, *d = NULL;
-	int count = 0;
+	struct rc_addrlist *s, *d;
+	int n1 = 0, n2 = 0, matched = 0;
+	int *used = NULL;
+	int i, found;
+
+	for (d = a2; d; d = d->next)
+		n2++;
+	for (s = a1; s; s = s->next)
+		n1++;
+	if (n1 != n2) {
+		rc_free(used);
+		return 1;		/* unequal length */
+	}
+	if (n2 != 0 && (used = rc_calloc(n2, sizeof(*used))) == NULL)
+		return 1;		/* OOM: treat as not-equal */
 
 	for (s = a1; s; s = s->next) {
-		count++;
-		for (d = a2; d; d = d->next) {
-			if (s->type != d->type)
-				continue;
-			if (s->port != d->port)
-				continue;
-			if (s->prefixlen != d->prefixlen)
+		found = 0;
+		for (d = a2, i = 0; d; d = d->next, i++) {
+			if (used[i])
+				continue;	/* already claimed (CM-01) */
+			if (s->type != d->type || s->port != d->port ||
+			    s->prefixlen != d->prefixlen)
 				continue;
 			switch (s->type) {
 			case RCT_ADDR_FQDN:
+			case RCT_ADDR_FILE:
 				if (rc_vmemcmp(s->a.vstr, d->a.vstr) == 0)
-					goto match;
+					found = 1;
 				break;
 			case RCT_ADDR_INET:
 				if (rcs_cmpsa(s->a.ipaddr, d->a.ipaddr) == 0)
-					goto match;
-				break;
-			case RCT_ADDR_FILE:
-				if (rc_vmemcmp(s->a.vstr, d->a.vstr) == 0)
-					goto match;
+					found = 1;
 				break;
 			default:
 				break;
 			}
+			if (found) {
+				used[i] = 1;
+				matched++;
+				break;
+			}
 		}
-		return 1;		/* found different addr */
-	match:	;
+		if (!found) {
+			rc_free(used);
+			return 1;	/* unmatched entry in a1 (CM-01) */
+		}
 	}
+	rc_free(used);
 
-	for (d = a2; d; d = d->next)
-		count--;
-	if (count != 0)
-		return 1;		/* there may be unmatched entry in a2 */
-
-	return 0;			/* all addrs match */
+	/* equal counts + each a1 entry consuming a distinct a2 entry implies
+	 * every a2 entry matched (CM-01); matched == n2 then holds */
+	return (matched == n2) ? 0 : 1;
 }
 
 /*
@@ -1309,6 +1328,7 @@ rcs_in_prefixlen2mask(uint32_t *maskp, int len)
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		   "rcs_in_prefixlen2mask: invalid prefix length(%d)\n",
 		    len);
+		memset(maskp, 0, sizeof(*maskp));	/* CM-04: no stale */
 		return;
 	}
 
@@ -1316,9 +1336,9 @@ rcs_in_prefixlen2mask(uint32_t *maskp, int len)
 	bytelen = len / 8;
 	bitlen = len % 8;
 	for (i = 0; i < bytelen; i++)
-		*maskp += 0xff << (8 * (3 - i));
+		*maskp |= ((uint32_t)0xff) << (8 * (3 - i));
 	if (bitlen)
-		*maskp += maskarray[bitlen - 1] << (8 * (3 - bytelen));
+		*maskp |= ((uint32_t)maskarray[bitlen - 1]) << (8 * (3 - bytelen));
 }
 
 /*
@@ -1335,6 +1355,7 @@ rcs_in6_prefixlen2mask(struct in6_addr *maskp, int len)
 		plog(PLOG_PROTOERR, PLOGLOC, NULL,
 		   "rcs_in6_prefixlen2mask: invalid prefix length(%d)\n",
 		    len);
+		memset(maskp, 0, sizeof(*maskp));	/* CM-04: no stale */
 		return;
 	}
 
