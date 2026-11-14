@@ -50,6 +50,10 @@
 
 static int nchecks = 0;
 static int nfails = 0;
+/* absolute path of this binary for the PF-05 re-exec; resolved from
+ * argv[0] in main() (portable: no /proc/self/exe, which FreeBSD and
+ * NetBSD do not provide by default). */
+static char self_path[PATH_MAX];
 
 #define CHECK(cond)							\
 	do {								\
@@ -184,6 +188,23 @@ write_file(const char *path, const char *content)
 	return 0;
 }
 
+/* write exactly len bytes (may contain NULs) */
+static int
+write_bytes(const char *path, const char *content, size_t len)
+{
+	FILE *f = fopen(path, "wb");
+
+	if (f == NULL)
+		return -1;
+	if (len != 0 && fwrite(content, 1, len, f) != len) {
+		fclose(f);
+		return -1;
+	}
+	if (fclose(f) != 0)
+		return -1;
+	return 0;
+}
+
 /* ---------- PF-01 reader probes ---------- */
 
 static void
@@ -245,6 +266,50 @@ run_pf01(const char *dir)
 	test_reader_accept(dir, "  12345  \n",  12345,       "wrapped-ws");
 	/* a positive value <= INT_MAX is accepted regardless of leading zeros */
 	test_reader_accept(dir, "000421\n",     421,         "leading-zeros");
+}
+
+/* rc_read_pidfile reads into a 64-byte stack buffer.  A file of exactly
+ * sizeof(buf) bytes used to fill the buffer completely, the "more data"
+ * probe then hit EOF, and buf[64] = '\0' wrote one byte past the end
+ * (ASan: stack-buffer-overflow).  Pin the boundary on both sides and
+ * reject embedded NULs (they would end the parse early and hide junk). */
+static void
+run_pf01_bounds(const char *dir)
+{
+	char path[512], content[128];
+	pid_t out;
+	int rc;
+	size_t len;
+
+	snprintf(path, sizeof(path), "%s/pf-bounds.dat", dir);
+	for (len = 62; len <= 65; len++) {
+		/* "12345" + spaces + "\n", exactly len bytes */
+		memset(content, ' ', len);
+		memcpy(content, "12345", 5);
+		content[len - 1] = '\n';
+		if (write_bytes(path, content, len) != 0) {
+			CHECK(0);
+			continue;
+		}
+		out = -12345;
+		rc = rc_read_pidfile(&out, path);
+		if (len <= 63) {
+			/* fits with its NUL: a valid padded pid */
+			CHECK(rc == 0 && out == 12345);
+		} else {
+			/* 64 and 65 bytes: too large, rejected untouched */
+			CHECK(rc != 0 && out == -12345);
+		}
+	}
+
+	/* embedded NUL: "123\0junk\n" must be rejected */
+	if (write_bytes(path, "123\0junk\n", 9) != 0) {
+		CHECK(0);
+		return;
+	}
+	out = -12345;
+	rc = rc_read_pidfile(&out, path);
+	CHECK(rc != 0 && out == -12345);
 }
 
 /* ---------- PF-02 writer sim probes ---------- */
@@ -425,8 +490,10 @@ run_pf05(const char *dir)
 		} else if (pid == 0) {
 			/* helper: wait for parent to drop its copy, then exec */
 			sleep(1);
-			execl("/proc/self/exe", "pidfile_test",
+			execl(self_path, "pidfile_test",
 			    "--flockcheck", path, (char *)NULL);
+			fprintf(stderr, "pidfile_test: exec %s: %s\n",
+			    self_path, strerror(errno));
 			_exit(99);	/* exec failed */
 		} else {
 			/* daemon drops its own copy (abrupt death) */
@@ -471,6 +538,11 @@ main(int argc, char **argv)
 	if (argc >= 3 && strcmp(argv[1], "--flockcheck") == 0)
 		return do_flockcheck(argv[2]);
 
+	if (realpath(argv[0], self_path) == NULL) {
+		printf("FAIL: realpath(%s): %s\n", argv[0], strerror(errno));
+		return 1;
+	}
+
 	if (mkdtemp(dir) == NULL) {
 		printf("FAIL: mkdtemp\n");
 		return 1;
@@ -480,6 +552,7 @@ main(int argc, char **argv)
 	 * the green run to mark the harness; see the TDD evidence. */
 	printf("=== pidfile_test (PF) begin ===\n");
 	run_pf01(dir);
+	run_pf01_bounds(dir);
 	run_pf02(dir);
 	run_pf04(dir);
 	run_pf05(dir);

@@ -237,14 +237,15 @@ rc_read_pidfile(pid_t *pid, const char *filename)
 		    "%s: open: %s\n", filename, strerror(errno));
 		return -1;
 	}
-	ret = read(fd, buf, sizeof(buf));
+	/* leave room for the terminating NUL (buf[ret] below) */
+	ret = read(fd, buf, sizeof(buf) - 1);
 	if (ret == -1) {
 		plog(PLOG_INTERR, PLOGLOC, NULL,
 		    "%s: read: %s\n", filename, strerror(errno));
 		close(fd);
 		return -1;
 	}
-	if (ret == (ssize_t)sizeof(buf)) {
+	if (ret == (ssize_t)(sizeof(buf) - 1)) {
 		/* A valid pid (<= 10 digits + newline) is tiny; anything
 		 * that fills the whole buffer may be overlong - probe for
 		 * more data and reject if the file is larger. */
@@ -259,6 +260,10 @@ rc_read_pidfile(pid_t *pid, const char *filename)
 	}
 	close(fd);
 	buf[ret] = '\0';
+	/* an embedded NUL would end the parse early and hide trailing
+	 * junk ("123\0junk"): reject it */
+	if (memchr(buf, '\0', (size_t)ret) != NULL)
+		return -1;
 
 	/* Policy (PF-01): the output must be a positive individual-process
 	 * PID, so a tampered pidfile can never become a process-group or
