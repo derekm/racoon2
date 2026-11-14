@@ -69,7 +69,10 @@ jobs:
           sudo apt-get install -y -qq autoconf automake libtool pkg-config gcc make \
             libssl-dev libkrb5-dev libpcap-dev bison flex strongswan strongswan-charon strongswan-swanctl iproute2 \
             libsystemd-dev iputils-ping xxd iptables conntrack \
-            freeradius freeradius-utils
+            freeradius freeradius-utils libcharon-extra-plugins
+          # libcharon-extra-plugins: charon's eap-identity + eap-tls client
+          # plugins (i2ieap-tls/-multi; without them charon NAKs the
+          # EAP-Identity request).  eap-mschapv2 is libcharon-extauth-plugins.
           # EAP rows (i2ieap-*) relay to a netns-local FreeRADIUS clone; unload
           # Ubuntu's enforcing freeradius AppArmor profile (reads /tmp clone).
           for p in /etc/apparmor.d/usr.sbin.freeradius /etc/apparmor.d/usr.sbin.radiusd; do
