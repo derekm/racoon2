@@ -1252,9 +1252,10 @@ rcs_cmpsa(const struct sockaddr *addr1, const struct sockaddr *addr2)
  * is not significant).  Returns 0 if the multisets are equal, nonzero
  * otherwise.  The former per-entry "first match" scan reused a matched a2
  * entry, so e.g. [A,A] vs [A,B] compared equal in one direction but unequal
- * in the other; an entry used on the left must not be reused on the right.
- * RCT_ADDR_MACRO nodes must be expanded before the call: they are not
- * matched here (a MACRO entry therefore never matches).
+ * in the other.  This implementation claims each matched right-hand index at
+ * most once.  RCT_ADDR_MACRO entries are not matched here (they fall to the
+ * default case), so two lists of identical macros compare unequal; callers
+ * that must compare expanded selectors resolve macros before the call.
  */
 int
 rcs_addrlist_cmp(struct rc_addrlist *a1, struct rc_addrlist *a2)

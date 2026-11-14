@@ -160,4 +160,20 @@ addresspool_test_LDADD = vmbuf.lo rc_type.lo rc_net.lo rc_str.lo if_spmd.lo \
 	$(LTLIBOBJS) -lpcap -lpthread
 addresspool_test_LDFLAGS = -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=free
 
+# rc_net_test exercises lib/rc_net.c comparators and mask builders with
+# synthetic lists (CM-01..CM-04): rcs_addrlist_cmp multiset symmetry and
+# duplicate-reuse regression, all 33 IPv4 prefix masks, and zero-on-invalid
+# for both mask builders.  plog is wrapped to a no-op so the invalid-prefix
+# path (which logs before zeroing) runs without a logging context.  No kernel
+# or policy state is touched.  Extensionless test -> the sample-wrapper
+# LOG_COMPILER passes the (ignored) sample config; main() runs its probes.
+TESTS += rc_net_test
+check_PROGRAMS += rc_net_test
+rc_net_test_SOURCES = rc_net_test.c
+rc_net_test_LDADD = vmbuf.lo rc_type.lo rc_net.lo rc_str.lo if_spmd.lo \
+	cfsetup.lo rc_pcap.lo cftoken.lo cfparse.lo pidfile.lo sd_listenfds.lo \
+	plog.lo safefile.lo version.lo rbuf.lo addresspool.lo rcpfk_util.lo \
+	$(LTLIBOBJS) -lpcap -lpthread
+rc_net_test_LDFLAGS = -Wl,--wrap=plog -Wl,--wrap=plog_location
+
 BUILT_SOURCES = cfparse.h
