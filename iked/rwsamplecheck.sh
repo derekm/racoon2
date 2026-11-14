@@ -15,15 +15,24 @@ printf 'rw-sample-psk-0123456789abcdef\n' >"$T/psk/rw.psk"
 printf 'spmd-pwd\n' >"$T/spmd.pwd"
 printf 'radius-secret\n' >"$T/radius.secret"
 chmod 600 "$T/psk/rw.psk" "$T/spmd.pwd" "$T/radius.secret"
+# openssl stderr goes to $T/openssl.err and is shown on failure; the CA
+# extensions are explicit so the result does not depend on the platform's
+# openssl.cnf defaults (NetBSD's base config differs from Linux's)
+E="$T/openssl.err"
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=rw-ca \
-    -keyout "$T/cert/ca.key" -out "$T/cert/ca.crt" >/dev/null 2>&1 &&
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    -keyout "$T/cert/ca.key" -out "$T/cert/ca.crt" >/dev/null 2>>"$E" &&
 printf 'subjectAltName=DNS:vpn.example.net\nextendedKeyUsage=serverAuth\n' >"$T/cert/gw.ext" &&
 openssl req -new -newkey rsa:2048 -nodes -subj /CN=vpn.example.net \
-    -keyout "$T/cert/gw.key" -out "$T/cert/gw.csr" >/dev/null 2>&1 &&
+    -keyout "$T/cert/gw.key" -out "$T/cert/gw.csr" >/dev/null 2>>"$E" &&
 openssl x509 -req -in "$T/cert/gw.csr" -CA "$T/cert/ca.crt" -CAkey "$T/cert/ca.key" \
-    -CAcreateserial -days 2 -extfile "$T/cert/gw.ext" -out "$T/cert/gw.crt" >/dev/null 2>&1 &&
-openssl verify -CAfile "$T/cert/ca.crt" "$T/cert/gw.crt" >/dev/null 2>&1 ||
-    { echo "FAIL: cannot make test certificates"; exit 1; }
+    -CAcreateserial -days 2 -extfile "$T/cert/gw.ext" -out "$T/cert/gw.crt" >/dev/null 2>>"$E" &&
+openssl verify -CAfile "$T/cert/ca.crt" "$T/cert/gw.crt" >>"$E" 2>&1 || {
+	echo "FAIL: cannot make test certificates ($(openssl version 2>&1))"
+	sed 's/^/    openssl: /' "$E"
+	exit 1
+}
 chmod 600 "$T/cert/"*.key
 rc=0
 n=0
