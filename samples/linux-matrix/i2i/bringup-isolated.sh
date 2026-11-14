@@ -26,7 +26,8 @@ rm -f "$D"/*.log "$D"/*.out "$D"/resp-spmd.log "$D"/init-spmd.log 2>/dev/null
 # purge STALE local-daemon sockets — a leftover /tmp/spmif-* or iked.sock-* from
 # an aborted run has no listener behind it, so `-S` passes and the next iked
 # dies 'SPMIF: Connection refused'.  Must be removed BEFORE any daemon starts.
-rm -f /tmp/spmif-r2i2 /tmp/spmif-i2i /tmp/iked.sock-i2i /tmp/iked.sock-r2r
+rm -f /tmp/r2spmif-i2i/r2i2 /tmp/r2spmif-i2i/i2i /tmp/iked.sock-i2i /tmp/iked.sock-r2r
+install -d -m 0700 /tmp/r2spmif-i2i && chmod 0700 /tmp/r2spmif-i2i   # spmd needs a private socket dir (rc_privatedir)
 # PRIVATE resume dir for the test ikeds (RACOON2_RESUME_DIR) — fully separate
 # from production's /var/lib/racoon2/resume; a stale shared dump would otherwise
 # make the test responder skip a fresh child ("pending ADDKE followup; skipped").
@@ -64,8 +65,8 @@ add_allow "$NSI" "$HI" "$HR"
 # responder stack in nsR
 (ip netns exec "$NSR" "$SBIN/spmd" -F -f "$CONF/responder.conf") >"$D/resp-spmd.log" 2>&1 &
 RSPMD=$!
-i=0; until [ -S /tmp/spmif-r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-[ -S /tmp/spmif-r2i2 ] || { echo "FAIL: responder spmif missing; last stderr:"; tail -5 "$D/resp-spmd.log"; }
+i=0; until [ -S /tmp/r2spmif-i2i/r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+[ -S /tmp/r2spmif-i2i/r2i2 ] || { echo "FAIL: responder spmif missing; last stderr:"; tail -5 "$D/resp-spmd.log"; }
 (ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-r2r \
     RACOON2_RESUME_DIR="$PRIVRES" \
     "$SBIN/iked" -F -f "$CONF/responder.conf" -D 0x0001 -l "$D/resp-iked.log") >"$D/resp-iked.out" 2>&1 &
@@ -74,8 +75,8 @@ RPIKED=$!
 # initiator stack in nsI
 (ip netns exec "$NSI" "$SBIN/spmd" -F -f "$CONF/initiator.conf") >"$D/init-spmd.log" 2>&1 &
 ISPMD=$!
-i=0; until [ -S /tmp/spmif-i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
-[ -S /tmp/spmif-i2i ] || { echo "FAIL: initiator spmif missing; last stderr:"; tail -5 "$D/init-spmd.log"; }
+i=0; until [ -S /tmp/r2spmif-i2i/i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+[ -S /tmp/r2spmif-i2i/i2i ] || { echo "FAIL: initiator spmif missing; last stderr:"; tail -5 "$D/init-spmd.log"; }
 (ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2i \
     RACOON2_RESUME_DIR="$PRIVRES" \
     "$SBIN/iked" -F -f "$CONF/initiator.conf" -D 0x0001 -l "$D/init-iked.log") >"$D/init-iked.out" 2>&1 &

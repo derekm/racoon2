@@ -14,7 +14,8 @@ HI=192.0.2.2; HR=192.0.2.1
 D=/tmp/r2i2i; PREFIX="${R2_I2I_PREFIX:-/usr/local/racoon2-i2i}"; SBIN=$PREFIX/sbin
 CONF="${R2_CONF:-/tmp/r2i2i_boot}"
 mkdir -p "$D"; rm -f "$D"/*.log "$D"/*.out 2>/dev/null
-rm -f /tmp/spmif-r2i2 /tmp/spmif-i2i /tmp/iked.sock-i2i /tmp/iked.sock-r2r
+rm -f /tmp/r2spmif-i2i/r2i2 /tmp/r2spmif-i2i/i2i /tmp/iked.sock-i2i /tmp/iked.sock-r2r
+install -d -m 0700 /tmp/r2spmif-i2i && chmod 0700 /tmp/r2spmif-i2i   # spmd needs a private socket dir (rc_privatedir)
 PRIVRES=/tmp/r2i2i-resume; rm -rf "$PRIVRES"; mkdir -p "$PRIVRES"
 for NS in "$NSI" "$NSR"; do ip netns del "$NS" 2>/dev/null || true; ip netns add "$NS"; ip netns exec "$NS" ip link set lo up; done
 ip link add "$VI" type veth peer name "$VR"
@@ -26,11 +27,11 @@ add_allow(){ ns=$1; L=$2; P=$3; for p in 500 4500; do
 done; }
 add_allow "$NSR" "$HR" "$HI"; add_allow "$NSI" "$HI" "$HR"
 (ip netns exec "$NSR" "$SBIN/spmd" -F -f "$CONF/responder.conf") >"$D/resp-spmd.log" 2>&1 &
-i=0; until [ -S /tmp/spmif-r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+i=0; until [ -S /tmp/r2spmif-i2i/r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 (ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-r2r RACOON2_RESUME_DIR="$PRIVRES" \
     "$SBIN/iked" -F -f "$CONF/responder.conf" -D 0x0001 -l "$D/resp-iked.log") >"$D/resp-iked.out" 2>&1 &
 (ip netns exec "$NSI" "$SBIN/spmd" -F -f "$CONF/initiator.conf") >"$D/init-spmd.log" 2>&1 &
-i=0; until [ -S /tmp/spmif-i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+i=0; until [ -S /tmp/r2spmif-i2i/i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 (ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2i RACOON2_RESUME_DIR="$PRIVRES" \
     "$SBIN/iked" -F -f "$CONF/initiator.conf" -D 0x0001 -l "$D/init-iked.log") >"$D/init-iked.out" 2>&1 &
 sleep 2

@@ -10,7 +10,8 @@ HI=192.0.2.2; HR=192.0.2.1; VI=vi2i; VR=vr2r
 PATT="/usr/local/racoon2-i2i/sbin/"
 mkdir -p "$D"; rm -f "$D"/* 2>/dev/null
 pkill -9 -f "$PATT" 2>/dev/null; sleep 1
-rm -f /tmp/spmif-r2i2 /tmp/spmif-i2i /tmp/iked.sock-i2i /tmp/iked.sock-r2r
+rm -f /tmp/r2spmif-i2i/r2i2 /tmp/r2spmif-i2i/i2i /tmp/iked.sock-i2i /tmp/iked.sock-r2r
+install -d -m 0700 /tmp/r2spmif-i2i && chmod 0700 /tmp/r2spmif-i2i   # spmd needs a private socket dir (rc_privatedir)
 PRIVRES=/tmp/r2i2i-resume; rm -rf "$PRIVRES"; mkdir -p "$PRIVRES"
 for NS in "$NSI" "$NSR"; do ip netns del "$NS" 2>/dev/null; ip netns add "$NS"; ip netns exec "$NS" ip link set lo up; done
 ip link add "$VI" type veth peer name "$VR"
@@ -22,11 +23,11 @@ add_allow(){ ns=$1; L=$2; P=$3; for p in 500 4500; do
 done; }
 add_allow "$NSR" "$HR" "$HI"; add_allow "$NSI" "$HI" "$HR"
 (ip netns exec "$NSR" "$SBIN/spmd" -F -f "$CONF/responder.conf") >"$D/rspmd.log" 2>&1 &
-i=0; until [ -S /tmp/spmif-r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+i=0; until [ -S /tmp/r2spmif-i2i/r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 (ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-r2r RACOON2_RESUME_DIR="$PRIVRES" \
     "$SBIN/iked" -F -f "$CONF/responder.conf" -D 0x0001 -l "$D/rlog") >"$D/ri.out" 2>&1 &
 (ip netns exec "$NSI" "$SBIN/spmd" -F -f "$CONF/initiator.conf") >"$D/ispmd.log" 2>&1 &
-i=0; until [ -S /tmp/spmif-i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+i=0; until [ -S /tmp/r2spmif-i2i/i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 (ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2i RACOON2_RESUME_DIR="$PRIVRES" \
     "$SBIN/iked" -F -f "$CONF/initiator.conf" -D 0x0001 -l "$D/ilog") >"$D/ii.out" 2>&1 &
 # capture BEFORE establish so we get every IKE datagram (incl frags)

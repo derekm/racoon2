@@ -20,7 +20,7 @@ esp_addke_alg; the responder is a passive racoon2 in the host namespace.
   test responder skip a fresh child with "pending ADDKE followup; skipped,
   will rekey").  Verified: test dumps land in /tmp/r2i2i-resume, production
   resume dir untouched.
-- Stale `/tmp/spmif-*` + `iked.sock-*` purged each run (a dead listener made
+- Stale `/tmp/r2spmif-i2i/*` (a private 0700 dir: spmd rejects a socket dir others can access) + `iked.sock-*` purged each run (a dead listener made
   `-S` pass and the next iked die `SPMIF: Connection refused`).
 
 Real code fixes landed (all on `int/gsoc2026`):

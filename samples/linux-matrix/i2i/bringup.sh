@@ -27,7 +27,8 @@ trap cleanup EXIT
 systemctl stop iked spmd 2>/dev/null || true
 sleep 1
 
-rm -f /tmp/spmif-r2i2 /tmp/spmif-i2i /var/run/iked.sock /tmp/iked.sock-i2i
+rm -f /tmp/r2spmif-i2i/r2i2 /tmp/r2spmif-i2i/i2i /var/run/iked.sock /tmp/iked.sock-i2i
+install -d -m 0700 /tmp/r2spmif-i2i && chmod 0700 /tmp/r2spmif-i2i   # spmd needs a private socket dir (rc_privatedir)
 mkdir -p "$D"
 ip netns del "$NS" 2>/dev/null || true
 ip link del "$VH" 2>/dev/null || true
@@ -45,13 +46,13 @@ echo 1 >/proc/sys/net/ipv4/ip_forward
 echo "=== host responder spmd+iked ==="
 (cd "$D" && "$SBIN/spmd" -F -f "$CONF/responder.conf") >"$D/resp-spmd.log" 2>&1 &
 RESP_SPMD=$!
-i=0; while [ ! -S /tmp/spmif-r2i2 ]; do i=$((i+1)); [ "$i" -gt 15 ] && { echo "FAIL: no resp spmif"; break; }; kill -0 "$RESP_SPMD" 2>/dev/null || { echo "FAIL: resp spmd died"; break; }; sleep 1; done
+i=0; while [ ! -S /tmp/r2spmif-i2i/r2i2 ]; do i=$((i+1)); [ "$i" -gt 15 ] && { echo "FAIL: no resp spmif"; break; }; kill -0 "$RESP_SPMD" 2>/dev/null || { echo "FAIL: resp spmd died"; break; }; sleep 1; done
 "$SBIN/iked" -F -f "$CONF/responder.conf" -D 0x0001 -l "$D/resp-iked.log" >"$D/resp-iked.out" 2>&1 &
 RESP_PID=$!
 echo "=== netns initiator spmd+iked ==="
 ip netns exec "$NS" "$SBIN/spmd" -F -f "$CONF/initiator.conf" >"$D/init-spmd.log" 2>&1 &
 INIT_SPMD=$!
-i=0; while [ ! -S /tmp/spmif-i2i ]; do i=$((i+1)); [ "$i" -gt 15 ] && { echo "FAIL: no init spmif"; break; }; sleep 1; done
+i=0; while [ ! -S /tmp/r2spmif-i2i/i2i ]; do i=$((i+1)); [ "$i" -gt 15 ] && { echo "FAIL: no init spmif"; break; }; sleep 1; done
 ip netns exec "$NS" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2i "$SBIN/iked" -F -f "$CONF/initiator.conf" -D 0x0001 -l "$D/init-iked.log" >"$D/init-iked.out" 2>&1 &
 INIT_PID=$!
 # IKE UDP must bypass the auto_ipsec SPD — but only AFTER spmd has finished

@@ -34,14 +34,15 @@ ip netns exec "$NS" tcpdump -i "$VC" -nn -c 4000 udp -w "$D/netns-cap.pcap" \
 TCPID=$!
 sleep 1
 (systemctl start iked spmd 2>/dev/null || true)   # no-op guard signal (unused)
+install -d -m 0700 /tmp/r2spmif-i2i && chmod 0700 /tmp/r2spmif-i2i   # spmd needs a private socket dir (rc_privatedir)
 (cd "$D" && "$SBIN/spmd" -F -f "$CONF/responder.conf") >"$D/resp-spmd.log" 2>&1 &
 RSPMD=$!
-i=0; until [ -S /tmp/spmif-r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+i=0; until [ -S /tmp/r2spmif-i2i/r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 "$SBIN/iked" -F -f "$CONF/responder.conf" -D 0x0001 -l "$D/resp-iked.log" >"$D/resp-iked.out" 2>&1 &
 RPIKED=$!
 ip netns exec "$NS" "$SBIN/spmd" -F -f "$CONF/initiator.conf" >"$D/init-spmd.log" 2>&1 &
 ISPMD=$!
-i=0; until [ -S /tmp/spmif-i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+i=0; until [ -S /tmp/r2spmif-i2i/i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 ip netns exec "$NS" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2i \
     "$SBIN/iked" -F -f "$CONF/initiator.conf" -D 0x0001 -l "$D/init-iked.log" >"$D/init-iked.out" 2>&1 &
 IIKED=$!

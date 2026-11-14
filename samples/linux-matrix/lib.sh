@@ -72,12 +72,26 @@ die() {
 # deliberately NOT namespaced: they bind inside each row's own netns pair,
 # so many rows of one kind may reuse the same subnet.  charon rows keep
 # their host-global /var/run/charon.ctl and are pinned to one sweep shard.
+# spmif_dir NAME: print a per-row PRIVATE directory for spmd's unix
+# socket, creating it (0700, owned by the running uid).  spmd refuses to
+# bind its shell socket in a directory others can read, write or search
+# (rc_privatedir, ENABLE_SECURE; the deployed /var/run/racoon2 and the
+# systemd RuntimeDirectory/DirectoryMode are 0700), so a socket directly
+# in the 1777 /tmp is rejected.  The prefix deliberately does not match
+# the rows' "/tmp/r2-NAME*" scratch globs.
+spmif_dir() {
+	_sd="/tmp/r2spmif-$1"
+	mkdir -p -m 0700 "$_sd" && chmod 0700 "$_sd" || return 1
+	printf '%s\n' "$_sd"
+}
+
 row_ns() {
 	_n=$1
 	_tag=$(printf '%s' "$_n" | cksum | awk '{printf "%06x", $1}')
 	NSR="n${_n}-r"; NSI="n${_n}-i"
 	VR="v${_tag}1"; VI="v${_tag}2"
-	SPMIF_R="/tmp/spmif-${_n}-r"; SPMIF_I="/tmp/spmif-${_n}-i"
+	_spmd_dir=$(spmif_dir "$_n") || { log "FAIL: cannot create private spmif dir for $_n"; return 1; }
+	SPMIF_R="$_spmd_dir/r"; SPMIF_I="$_spmd_dir/i"
 	SOCK_R="/tmp/iked.sock-${_n}-r"; SOCK_I="/tmp/iked.sock-${_n}-i"
 	PRIVRES_R="/tmp/r2-${_n}-resume-r"; PRIVRES_I="/tmp/r2-${_n}-resume-i"
 	D="/tmp/r2-${_n}"; C="/tmp/r2-${_n}-conf"

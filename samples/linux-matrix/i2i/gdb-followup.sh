@@ -18,11 +18,12 @@ add_allow () { ns=$1; L=$2; P=$3; for p in 500 4500; do
   ip netns exec "$ns" ip xfrm policy add src "$L"/32 dst "$P"/32 proto udp sport "$p" dport "$p" dir out ptype main action allow 2>/dev/null || true
 done; }
 add_allow "$NSR" "$HR" "$HI"; add_allow "$NSI" "$HI" "$HR"
+install -d -m 0700 /tmp/r2spmif-i2i && chmod 0700 /tmp/r2spmif-i2i   # spmd needs a private socket dir (rc_privatedir)
 (ip netns exec "$NSR" "$SBIN/spmd" -F -f "$CONF/responder.conf") >"$D/rspmd.log" 2>&1 &
-i=0; until [ -S /tmp/spmif-r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+i=0; until [ -S /tmp/r2spmif-i2i/r2i2 ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 (ip netns exec "$NSR" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-r2r "$SBIN/iked" -F -f "$CONF/responder.conf" -D 0x0001 -l "$D/rlog") >"$D/riked.out" 2>&1 &
 (ip netns exec "$NSI" "$SBIN/spmd" -F -f "$CONF/initiator.conf") >"$D/ispmd.log" 2>&1 &
-i=0; until [ -S /tmp/spmif-i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
+i=0; until [ -S /tmp/r2spmif-i2i/i2i ] || [ "$i" -ge 15 ]; do sleep 1; i=$((i+1)); done
 # INITIATOR UNDER GDB BATCH
 ( ip netns exec "$NSI" env RACOON2_ADMIN_SOCK=/tmp/iked.sock-i2i \
     gdb -q -batch -ex 'set pagination off' -ex run -ex 'bt full' \

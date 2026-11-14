@@ -923,7 +923,10 @@ run_row() {
 	jexec $ji ifconfig lo0 inet 127.0.0.1/8 up 2>/dev/null || true
 
 	echo "=== throwaway CI PSK (random raw bytes, never the box PSK) + configs ==="
-	install -d -m 0755 /tmp/freeb
+	# 0700: the seats' spmd sockets live here, and spmd refuses a socket
+	# directory that others can read, write or search (rc_privatedir under
+	# ENABLE_SECURE; the deployed /var/run/racoon2 is 0700 too).
+	install -d -m 0700 /tmp/freeb && chmod 0700 /tmp/freeb
 	dd if=/dev/urandom of=/tmp/freeb/test.psk bs=32 count=1 2>/dev/null
 	chmod 600 /tmp/freeb/test.psk
 	printf 'ci-spmd-pw\n' > /tmp/freeb/spmd.pwd
@@ -1955,7 +1958,10 @@ run_nat_row() {
 		  jexec $jn ipfw -q add 65000 allow ip from any to any; } ||
 			{ echo "FAIL freebsd-vnet $_name (ipfw nat in the NAT jail)"; return 1; }
 	fi
-	install -d -m 0755 /tmp/freeb
+	# 0700: the seats' spmd sockets live here, and spmd refuses a socket
+	# directory that others can read, write or search (rc_privatedir under
+	# ENABLE_SECURE; the deployed /var/run/racoon2 is 0700 too).
+	install -d -m 0700 /tmp/freeb && chmod 0700 /tmp/freeb
 	dd if=/dev/urandom of=/tmp/freeb/test.psk bs=32 count=1 2>/dev/null; chmod 600 /tmp/freeb/test.psk
 	printf 'ci-spmd-pw\n' > /tmp/freeb/spmd.pwd; chmod 600 /tmp/freeb/spmd.pwd
 	# seat conf: transport mode, selectors on the addresses each seat
@@ -2180,7 +2186,10 @@ run_resume_row() {
 	for _j in $jr $ji; do jexec $_j ifconfig lo0 inet 127.0.0.1/8 up; done
 	jexec $jr ifconfig "${_e}a" inet 192.0.5.1/24 up
 	jexec $ji ifconfig "${_e}b" inet 192.0.5.2/24 up
-	install -d -m 0755 /tmp/freeb
+	# 0700: the seats' spmd sockets live here, and spmd refuses a socket
+	# directory that others can read, write or search (rc_privatedir under
+	# ENABLE_SECURE; the deployed /var/run/racoon2 is 0700 too).
+	install -d -m 0700 /tmp/freeb && chmod 0700 /tmp/freeb
 	_T=/tmp/freeb/resume; rm -rf "$_T"; install -d -m 0700 "$_T" "$_T/tickets"
 	dd if=/dev/urandom of=/tmp/freeb/test.psk bs=32 count=1 2>/dev/null; chmod 600 /tmp/freeb/test.psk
 	printf 'ci-spmd-pw\n' > /tmp/freeb/spmd.pwd; chmod 600 /tmp/freeb/spmd.pwd
@@ -2404,7 +2413,10 @@ run_mobike_row() {
 	jexec $ji ifconfig lo0 inet 10.9.0.2/32 alias
 	jexec $jr route -q add -host 10.9.0.2 -iface "${_e}a"
 	jexec $ji route -q add -host 10.9.0.1 -iface "${_e}b"
-	install -d -m 0755 /tmp/freeb
+	# 0700: the seats' spmd sockets live here, and spmd refuses a socket
+	# directory that others can read, write or search (rc_privatedir under
+	# ENABLE_SECURE; the deployed /var/run/racoon2 is 0700 too).
+	install -d -m 0700 /tmp/freeb && chmod 0700 /tmp/freeb
 	dd if=/dev/urandom of=/tmp/freeb/test.psk bs=32 count=1 2>/dev/null; chmod 600 /tmp/freeb/test.psk
 	printf 'ci-spmd-pw\n' > /tmp/freeb/spmd.pwd; chmod 600 /tmp/freeb/spmd.pwd
 	_mi="mobike_initiate on;"

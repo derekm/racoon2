@@ -67,7 +67,8 @@ kind_i2ike_redirect2() {
 	rst_long_tag=$(printf '%s' "$name" | cksum | awk '{printf "%06x", $1}')
 	VBA="v${rst_long_tag}a"; VBI="v${rst_long_tag}i"; VBC="v${rst_long_tag}c" # hub ends
 	VLA="v${rst_long_tag}A"; VLI="v${rst_long_tag}I"; VLC="v${rst_long_tag}C" # seat ends
-	SPMIF_A="/tmp/spmif-${name}-a"; SPMIF_I="/tmp/spmif-${name}-i"; SPMIF_C="/tmp/spmif-${name}-c"
+	_spmd_dir=$(spmif_dir "$name") || { log "FAIL: cannot create private spmif dir"; return 1; }
+	SPMIF_A="$_spmd_dir/a"; SPMIF_I="$_spmd_dir/i"; SPMIF_C="$_spmd_dir/c"
 	SOCK_A="/tmp/iked.sock-${name}-a"; SOCK_I="/tmp/iked.sock-${name}-i"; SOCK_C="/tmp/iked.sock-${name}-c"
 	PRIVRES_A="/tmp/r2-${name}-resume-a"; PRIVRES_I="/tmp/r2-${name}-resume-i"; PRIVRES_C="/tmp/r2-${name}-resume-c"
 	D="/tmp/r2-${name}"; C="/tmp/r2-${name}-conf"
