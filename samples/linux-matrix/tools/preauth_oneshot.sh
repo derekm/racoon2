@@ -36,7 +36,9 @@ trap cleanup EXIT
 # case that kills iked cannot hide the next one
 start_case() {
 	W=$TOP/$1
-	mkdir -p "$W"
+	# spmd/iked refuse a socket/state dir others can write or list
+	# (doc/secure-files.md), so the per-case dir is private
+	mkdir -p -m 0700 "$W"
 	printf 'oneshot-spmd-password' > "$W/spmd.pwd"
 	printf 'oneshot-psk-not-secret' > "$W/test.psk"
 	chmod 600 "$W/spmd.pwd" "$W/test.psk"
@@ -86,7 +88,7 @@ start_case() {
 	export UBSAN_OPTIONS="log_path=$W/ubsan:print_stacktrace=1"
 	export RACOON2_ADMIN_SOCK="$W/admin.sock"
 	export RACOON2_RESUME_DIR="$W/resume"
-	mkdir -p "$W/resume"
+	mkdir -p -m 0700 "$W/resume"
 
 	"$B/spmd/spmd" -F -f "$W/racoon2.conf" > "$W/spmd.log" 2>&1 &
 	SPMD_PID=$!
