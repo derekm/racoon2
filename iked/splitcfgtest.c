@@ -64,11 +64,18 @@ mk_addrlist(int fam, const char *addrstr, int prefixlen)
 	if (fam == AF_INET) {
 		struct sockaddr_in *sin = (struct sockaddr_in *)&ss;
 		sin->sin_family = AF_INET;
+#ifdef HAVE_SA_LEN
+		/* rcs_sadup() copies sa_len bytes on BSD (S11) */
+		sin->sin_len = sizeof(*sin);
+#endif
 		inet_pton(AF_INET, addrstr, &sin->sin_addr);
 		sa = (struct sockaddr *)sin;
 	} else {
 		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
 		sin6->sin6_family = AF_INET6;
+#ifdef HAVE_SA_LEN
+		sin6->sin6_len = sizeof(*sin6);
+#endif
 		inet_pton(AF_INET6, addrstr, &sin6->sin6_addr);
 		sa = (struct sockaddr *)sin6;
 	}
