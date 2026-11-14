@@ -768,6 +768,11 @@ extern void ikev2_createchild_responder_recv(struct ikev2_sa *, rc_vchar_t *,
 					     struct sockaddr *);
 extern void ikev2_createchild_responder_send(struct ikev2_sa *,
 					     struct ikev2_child_sa *);
+extern int ikev2_createchild_responder_send_error(struct ikev2_sa *,
+						  struct ikev2_child_sa *,
+						  int);
+extern void ikev2_child_responder_install_failed(struct ikev2_child_sa *,
+						 int);
 extern void ikev2_createchild_initiator_recv(struct ikev2_sa *, rc_vchar_t *,
 				     struct sockaddr *,
 				     struct sockaddr *);

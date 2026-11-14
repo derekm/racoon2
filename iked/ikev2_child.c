@@ -220,6 +220,16 @@ ikev2_child_state_set(struct ikev2_child_sa *child_sa,
 		&ikev2_child_dispatch[child_sa->is_initiator ? 0 : 1][state];
 	if (state_info->enter_state) {
 		state_info->enter_state(child_sa);
+		/*
+		 * G02: the enter handler moved the child on (e.g. the
+		 * responder cont aborted a child whose install failed:
+		 * MATURE -> EXPIRED); that nested ikev2_child_state_set
+		 * already ran its own transition side effects.  Running the
+		 * MATURE ones here would fire SCRIPT_PHASE2_UP and persist a
+		 * resume record for a child that was just torn down.
+		 */
+		if (child_sa->state != state)
+			return;
 	}
 
 	if (old_state != IKEV2_CHILD_STATE_MATURE &&
@@ -1851,6 +1861,86 @@ ikev2_addke_wait_timeout(void *param)
 }
 
 /*
+ * G02 / RFC 7296 s2.1, s3.10.1: a responder that cannot install the
+ * CHILD_SA it negotiated MUST still answer the CREATE_CHILD_SA request;
+ * NO_PROPOSAL_CHOSEN is the generic "CHILD_SA could not be created"
+ * error (s1.3 "the responder ... MUST reply with an error Notify").
+ * Silence left the initiator retransmitting the same request until its
+ * IKE SA timed out, tearing down every child, old ones included.  The
+ * response is built from the message ID the request carried (stored in
+ * child_sa->message_id by ikev2_createchild_responder_recv) and is
+ * armed in response_info, so a retransmitted request is answered with
+ * the same error instead of being re-processed.
+ *
+ * Returns 0 if the error response was handed to the transmit path.
+ */
+int
+ikev2_createchild_responder_send_error(struct ikev2_sa *ike_sa,
+				       struct ikev2_child_sa *child_sa,
+				       int notify_type)
+{
+	struct ikev2_payloads payl;
+	rc_vchar_t *n;
+	rc_vchar_t *pkt = 0;
+	int status = -1;
+
+	ikev2_payloads_init(&payl);
+	n = ikev2_notify_payload(IKEV2_NOTIFY_PROTO_NONE, 0, 0, notify_type,
+				 0, 0);
+	if (!n)
+		goto done;
+	ikev2_payloads_push(&payl, IKEV2_PAYLOAD_NOTIFY, n, TRUE);
+	pkt = ikev2_packet_construct(IKEV2EXCH_CREATE_CHILD_SA,
+				     (ike_sa->is_initiator ?
+				      IKEV2FLAG_INITIATOR : 0) |
+				     IKEV2FLAG_RESPONSE, child_sa->message_id,
+				     ike_sa, &payl);
+	if (!pkt)
+		goto done;
+	if (ikev2_transmit_response(ike_sa, pkt, ike_sa->local,
+				    ike_sa->remote) != 0)
+		goto done;
+	pkt = 0;		/* owned by response_info now */
+	status = 0;
+      done:
+	if (pkt)
+		rc_vfree(pkt);
+	ikev2_payloads_destroy(&payl);
+	if (status != 0) {
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "failed sending CREATE_CHILD_SA error response "
+			   "(notify %d)\n", notify_type);
+		++isakmpstat.fail_send_packet;
+	}
+	return status;
+}
+
+/*
+ * G02 responder install-failure arm.  CREATE_CHILD_SA (IKE SA
+ * ESTABLISHED): answer N(NO_PROPOSAL_CHOSEN), then abort the new child;
+ * the old child of a rekey is untouched.  The IKE_AUTH initial child
+ * (RES_IKE_AUTH_RCVD) cannot be answered with a child-only error -- an
+ * IKE_AUTH response must carry IDr/AUTH (RFC 7296 s2.21.3) -- so that
+ * case keeps the pre-existing abort-only behaviour (tracked separately).
+ */
+void
+ikev2_child_responder_install_failed(struct ikev2_child_sa *child_sa,
+				     int err)
+{
+	struct ikev2_sa *ike_sa = child_sa->parent;
+
+	if (ike_sa->state == IKEV2_STATE_ESTABLISHED)
+		(void)ikev2_createchild_responder_send_error(ike_sa, child_sa,
+						IKEV2_NO_PROPOSAL_CHOSEN);
+	else
+		isakmp_log(ike_sa, 0, 0, 0, PLOG_INTERR, PLOGLOC,
+			   "child %p install failed in IKE SA state %d; "
+			   "no CREATE_CHILD_SA error response\n",
+			   child_sa, ike_sa->state);
+	ikev2_child_abort(child_sa, err);
+}
+
+/*
  * ikev2_create_child_responder_cont:
  *     called when child_sa state transits from GETSPI to MATURE
  */
@@ -1899,11 +1989,10 @@ ikev2_create_child_responder_cont(struct ikev2_child_sa *child_sa)
 	 * success: the child was marked MATURE (by the state dispatcher
 	 * that ran this cont) and a success CREATE_CHILD_SA response went
 	 * out for a CHILD_SA that was never installed, deleting the old
-	 * child of an in-flight rekey.  On failure abort the child -- this
-	 * preserves the old child / rekey state (rekey_inprogress cleared,
-	 * backoff armed) and removes the partial new state -- and send NO
-	 * success response (we have no stored request from which to build a
-	 * tailored notify; the initiator's retransmit/timeout handles it).
+	 * child of an in-flight rekey.  On failure answer the request with
+	 * an error and abort the child (ikev2_child_responder_install_failed)
+	 * -- this preserves the old child / rekey state and removes the
+	 * partial new state.
 	 */
 	{
 		int err = ikev2_add_ipsec_sa(child_sa, &child_sa->child_param,
@@ -1914,7 +2003,7 @@ ikev2_create_child_responder_cont(struct ikev2_child_sa *child_sa)
 				   "responder failed adding ipsec SA (err %d); "
 				   "aborting child %p, old child preserved\n",
 				   err, child_sa);
-			ikev2_child_abort(child_sa, EIO);
+			ikev2_child_responder_install_failed(child_sa, EIO);
 			return;
 		}
 	}

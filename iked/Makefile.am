@@ -133,6 +133,20 @@ check_PROGRAMS += mobiketest
 mobiketest_SOURCES = mobiketest.c
 mobiketest_LDADD = $(addtest_ikedsrc) $(LDADD)
 
+# G02 responder CHILD_SA install failure: the real state dispatcher ->
+# ikev2_create_child_responder_cont -> ikev2_add_ipsec_sa (failed via a
+# wrapped ikev2_proposal_to_ipsec) must answer N(NO_PROPOSAL_CHOSEN) and
+# abort the child without the child-up side effects.
+TESTS += childfailtest
+check_PROGRAMS += childfailtest
+childfailtest_SOURCES = childfailtest.c
+childfailtest_LDADD = $(addtest_ikedsrc) $(LDADD)
+childfailtest_LDFLAGS = -Wl,--wrap=ikev2_proposal_to_ipsec \
+	-Wl,--wrap=ikev2_packet_construct \
+	-Wl,--wrap=ikev2_transmit_response \
+	-Wl,--wrap=ikev2_child_script_hook \
+	-Wl,--wrap=ikev2_resume_save
+
 # RFC 8229 / RFC 9329 IKE-over-TCP framing codec (iked/ikev2_tcp.c): the
 # 16-bit Len (including itself) + 4-octet non-ESP marker wire format, prefix
 # validation, Len 0/1 fatal vs Len 2 and keepalive silent-ignore, ESP/IKE
