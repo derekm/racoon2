@@ -1705,7 +1705,6 @@ rcpfk_send_spddump(struct rcpfk_msg *rc)
 #define XFRM_SYNC_TIMEOUT_MS	3000
 static int xfrm_dispatch(struct nlmsghdr *, struct rcpfk_msg *, int);
 static int xfrm_wait_req(int);
-static int xfrm_is_echo(const struct nlmsghdr *);
 static uint32_t xfrm_sync_seq = 0xe0000000u;
 
 struct xfrm_sync_ctx {
@@ -2422,8 +2421,7 @@ userpol_to_rc(const struct xfrm_userpolicy_info *xp, struct rcpfk_msg *rc)
 }
 
 static int
-handle_newsa(struct xfrm_usersa_info *sa, struct rcpfk_msg *rc, uint32_t seq,
-    const struct nlmsghdr *nlh)
+handle_newsa(struct xfrm_usersa_info *sa, struct rcpfk_msg *rc, uint32_t seq)
 {
 	int (*fn)(struct rcpfk_msg *) = NULL;
 	struct xfrm_op *op;
@@ -2698,6 +2696,8 @@ xfrm_classify_error(int e, int ptype)
 	return e;
 }
 
+static int xfrm_is_echo(const struct nlmsghdr *);
+
 static int
 handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 {
@@ -2835,7 +2835,7 @@ handle_nlmsg(struct nlmsghdr *nlh, struct rcpfk_msg *rc)
 	case XFRM_MSG_NEWSA:
 		if (nlh->nlmsg_len < NLMSG_LENGTH(sizeof(struct xfrm_usersa_info)))
 			goto shortmsg;
-		return handle_newsa(NLMSG_DATA(nlh), rc, nlh->nlmsg_seq, nlh);
+		return handle_newsa(NLMSG_DATA(nlh), rc, nlh->nlmsg_seq);
 	case XFRM_MSG_DELSA:
 		/* only OUR delete's echo completes an op; a kernel or foreign
 		 * DELSA event (expiry, other daemon) must not touch any
