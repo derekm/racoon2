@@ -70,8 +70,10 @@ vmbuf_test_LDADD = vmbuf.lo rbuf.lo $(LTLIBOBJS)
 # route calloc/free through the test's fault-injection stubs so the
 # VB-02 sentinel-OOM tests can fail the 1-byte rc_calloc(1,1) inside
 # rc_vrealloc/rc_vreallocf and prove the OOM contract (--wrap=calloc /
-# --wrap=free).
-vmbuf_test_LDFLAGS = -Wl,--wrap=vmbuf_cleanse -Wl,--wrap=calloc -Wl,--wrap=free
+# --wrap=free); --wrap=realloc (with calloc) lets the realloc-failure and
+# scratch-OOM tests inject large-allocation failure deterministically, so
+# they also run under ASan (no RLIMIT_AS cap, no skip flag).
+vmbuf_test_LDFLAGS = -Wl,--wrap=vmbuf_cleanse -Wl,--wrap=calloc -Wl,--wrap=free -Wl,--wrap=realloc
 if USE_XFRM
 # xfrmnatt and xfrmtmpl talk to the REAL kernel (guarded only by
 # geteuid()/return-77) and are kernel-mutating, so auto-running them from

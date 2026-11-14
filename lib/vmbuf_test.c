@@ -43,7 +43,6 @@
 #include <string.h>
 #include <stdint.h>
 #include <malloc.h>		/* malloc_usable_size (glibc/.179) */
-#include <sys/resource.h>
 
 #include "vmbuf.h"
 #include "rbuf.h"
@@ -83,13 +82,28 @@ check_bytes(const char *label, const rc_vchar_t *b, const void *expected, size_t
  * counts frees so a test can prove whether the original bytes were (or
  * were not) released during a sentinel-OOM. */
 static int g_fail_sentinel;	/* when set, calloc(1,1) returns NULL */
+/* when nonzero, any calloc/realloc of at least this many bytes fails
+ * (deterministic large-allocation OOM; replaces the former RLIMIT_AS cap,
+ * which cannot coexist with ASan's shadow reservation and so made the
+ * sanitizer lanes die with "out of memory ... InternalMmapVector") */
+static size_t g_fail_ge;
 static int s_free_count;
 void *__real_calloc(size_t, size_t);
 void *__wrap_calloc(size_t n, size_t s)
 {
 	if (g_fail_sentinel && n == 1 && s == 1)
 		return NULL;
+	if (g_fail_ge != 0 && s != 0 &&
+	    (n >= g_fail_ge / s + (g_fail_ge % s != 0)))
+		return NULL;
 	return __real_calloc(n, s);
+}
+void *__real_realloc(void *, size_t);
+void *__wrap_realloc(void *p, size_t n)
+{
+	if (g_fail_ge != 0 && n >= g_fail_ge)
+		return NULL;
+	return __real_realloc(p, n);
 }
 void __real_free(void *);
 void __wrap_free(void *p)
@@ -438,42 +452,41 @@ test_vreallocf_zero_sentinel_oom(void)
 	CHECK(f1 - f0 == 2);		/* v + var consumed -> FAIL under OLD */
 }
 
-/* Below, the two realloc/scratch-failure tests force rc_malloc/rc_realloc
- * to fail by capping RLIMIT_AS.  That is fine for the plain build, but it
- * conflicts with ASan (which reserves a huge shadow address space), so the
- * sanitizer run injects -DVMBUF_TEST_NO_RLIMIT to skip them while still
- * covering the zero-size and cleanse paths that ASan is used to prove. */
-#ifndef VMBUF_TEST_NO_RLIMIT
+/* Below, the two realloc/scratch-failure tests force rc_realloc/rc_calloc
+ * to fail through the --wrap fault injector (g_fail_ge), so they run in
+ * every build, sanitizers included (no RLIMIT_AS, no skip flag). */
 
 static void
 test_realloc_failure_semantics(void)
 {
-	struct rlimit rl;
 	rc_vchar_t *b;
 	rc_vchar_t *r;
 	void *origv;
 	size_t orgl;
+	int f0, f1;
 
-	/* Force rc_realloc (= realloc) to fail for a huge non-zero size by
-	 * capping the address space.  rc_vrealloc must PRESERVE the
-	 * original; rc_vreallocf must CONSUME (free) it. */
-	rl.rlim_cur = rl.rlim_max = (1UL << 30);	/* 1 GiB AS cap */
-	(void)setrlimit(RLIMIT_AS, &rl);
-
+	/* rc_vrealloc must PRESERVE the original on realloc failure;
+	 * rc_vreallocf must CONSUME (free) it. */
 	b = rc_vnew("abcdef", 6);
 	origv = b->v; orgl = b->l;
-	r = rc_vrealloc(b, (1ULL << 40));	/* 1 TiB: realloc fails */
+	g_fail_ge = (1ULL << 30);
+	r = rc_vrealloc(b, (1ULL << 30));	/* injected realloc failure */
+	g_fail_ge = 0;
 	CHECK(r == NULL);
 	CHECK(b->v == origv);		/* preserved */
 	CHECK(b->l == orgl);
+	CHECK(memcmp(b->v, "abcdef", 6) == 0);
 	rc_vfree(b);
 
 	b = rc_vnew("abcdef", 6);
-	r = rc_vreallocf(b, (1ULL << 40));
+	f0 = s_free_count;
+	g_fail_ge = (1ULL << 30);
+	r = rc_vreallocf(b, (1ULL << 30));
+	g_fail_ge = 0;
+	f1 = s_free_count;
 	CHECK(r == NULL);		/* consumed; do not free b again */
+	CHECK(f1 - f0 == 2);		/* v + var released */
 }
-
-#endif /* VMBUF_TEST_NO_RLIMIT */
 
 /* ---------- VB-05 : rc_vmemcmp sign across INT_MAX ---------- */
 
@@ -515,29 +528,29 @@ test_memcmp(void)
 	CHECK(rc_vmemcmp(&s2, &s1) < 0);
 }
 
-#ifndef VMBUF_TEST_NO_RLIMIT
-
 static void
 test_mem2str_oom(void)
 {
 	static unsigned char dummy[8] = { 0 };
-	struct rlimit rl;
 	rc_vchar_t src;
 	const char *s;
 
-	/* request a scratch bigger than the (capped) address space so
-	 * rbuf_getvb -> rc_vmalloc fails; rc_vmem2str must return NULL
-	 * and NOT dereference the NULL scratch (UNFIXED: SEGV). */
+	/* make the scratch allocation fail so rbuf_getvb -> rc_vmalloc /
+	 * rc_vrealloc returns NULL; rc_vmem2str must return NULL and NOT
+	 * dereference the NULL scratch (UNFIXED: SEGV).  src.v is never
+	 * read on this path (the copy needs the scratch first). */
 	src.l = (300ULL << 20);		/* 300 MB */
 	src.v = dummy;
-	rl.rlim_cur = rl.rlim_max = (256ULL << 20);	/* 256 MiB AS cap */
-	(void)setrlimit(RLIMIT_AS, &rl);
-
+	g_fail_ge = (256ULL << 20);
 	s = rc_vmem2str(&src);
+	g_fail_ge = 0;
 	CHECK(s == NULL);
-}
 
-#endif /* VMBUF_TEST_NO_RLIMIT */
+	/* and the scratch ring still works afterwards */
+	src.l = 3; src.v = (void *)"abc";
+	s = rc_vmem2str(&src);
+	CHECK(s != NULL && strcmp(s, "abc") == 0);
+}
 
 /* ---------- VB-03 : non-elidable rinse + scratch-slot reuse ---------- */
 
@@ -621,7 +634,7 @@ main(int ac, char **av)
 		return 1;
 	}
 
-	/* normal / empty / boundary first (RLIMIT_AS still unlimited) */
+	/* normal / empty / boundary first */
 	test_mem2str_normal();
 	test_prepend_normal();
 	test_concat_normal();
@@ -640,13 +653,9 @@ main(int ac, char **av)
 	test_concat_rejects_wrap();
 	test_mem2str_rejects_wrap();
 
-	/* realloc-failure semantics + scratch-OOM (these lower RLIMIT_AS,
-	 * so run them after the normal-input tests; skipped in the ASan
-	 * build via VMBUF_TEST_NO_RLIMIT) */
-#ifndef VMBUF_TEST_NO_RLIMIT
+	/* realloc-failure semantics + scratch-OOM (injected, every build) */
 	test_mem2str_oom();
 	test_realloc_failure_semantics();
-#endif
 
 	if (nfails) {
 		printf("vmbuf_test: %d/%d checks FAILED\n", nfails, nchecks);
