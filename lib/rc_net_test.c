@@ -3,7 +3,8 @@
  *   CM-01 rcs_addrlist_cmp is a distinct-consumption multiset compare
  *        (symmetry, duplicate reuse, multiplicity, permutation, empties);
  *   CM-03 rcs_in_prefixlen2mask builds all 33 IPv4 masks correctly;
- *   CM-04 invalid prefixes leave the output zeroed (both v4 and v6);
+ *   CM-04 invalid prefixes leave the output zeroed (both v4 and v6) and
+ *         (N9) are reported with -1, valid ones with 0;
  *   AS-02 rcs_getport rejects out-of-range/truncating/malformed ports;
  *   AS-01 rcs_prefixlen_ok / rcs_getaddrlist bound a prefix by family;
  *   N1    rcs_ifreq_name_eq never over-reads an unterminated ifr_name.
@@ -208,8 +209,7 @@ main(void)
 			uint32_t want = (i == 0) ? 0
 			    : (i == 32) ? 0xFFFFFFFFu
 			    : (((uint32_t)0xFFFFFFFFu) << (32 - i));
-			rcs_in_prefixlen2mask(&m, i);
-			if (m != want) {
+			if (rcs_in_prefixlen2mask(&m, i) != 0 || m != want) {
 				printf("mask /%d = 0x%08x want 0x%08x FAIL\n", i,
 				    (unsigned)m, (unsigned)want);
 				fails++;
@@ -221,19 +221,22 @@ main(void)
 
 	/* ---- CM-04: invalid -> zeroed output (plog is wrapped) ---- */
 	m = 0xDEADBEEFu;
-	rcs_in_prefixlen2mask(&m, -1);
+	chk("v4 invalid -1 reports", rcs_in_prefixlen2mask(&m, -1), -1);
 	chk("v4 invalid -1", m == 0, 1);
 	m = 0xDEADBEEFu;
-	rcs_in_prefixlen2mask(&m, 33);
+	chk("v4 invalid 33 reports", rcs_in_prefixlen2mask(&m, 33), -1);
 	chk("v4 invalid 33", m == 0, 1);
 
 	memset(&m6, 0xEE, sizeof(m6));
-	rcs_in6_prefixlen2mask(&m6, 129);
+	chk("v6 invalid 129 reports", rcs_in6_prefixlen2mask(&m6, 129), -1);
 	for (i = 0; i < 16; i++)
 		if (m6.s6_addr[i] != 0)
 			break;
 	chk("v6 invalid 129 zeroed", i == 16, 1);
 
+	chk("v6 /64 ok", rcs_in6_prefixlen2mask(&m6, 64), 0);
+	chk("v6 invalid -1 reports", rcs_in6_prefixlen2mask(&m6, -1), -1);
+	chk("v6 /128 reports 0", rcs_in6_prefixlen2mask(&m6, 128), 0);
 	rcs_in6_prefixlen2mask(&m6, 64);
 	for (i = 0; i < 16; i++) {
 		int want = (i < 8) ? 0xff : 0;

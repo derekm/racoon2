@@ -1294,7 +1294,6 @@ rcs_addrlist_cmp(struct rc_addrlist *a1, struct rc_addrlist *a2)
 	for (s = a1; s; s = s->next)
 		n1++;
 	if (n1 != n2) {
-		rc_free(used);
 		return 1;		/* unequal length */
 	}
 	if (n2 != 0 && (used = rc_calloc(n2, sizeof(*used))) == NULL)
@@ -1364,7 +1363,7 @@ rcs_prefixlen_ok(const struct sockaddr *sa, int prefixlen)
 /*
  * convert a prefix length to a netmask for IPv4
  */
-void
+int
 rcs_in_prefixlen2mask(uint32_t *maskp, int len)
 {
 	static const u_char maskarray[8] = {0x80, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc, 0xfe, 0xff};
@@ -1376,7 +1375,7 @@ rcs_in_prefixlen2mask(uint32_t *maskp, int len)
 		   "rcs_in_prefixlen2mask: invalid prefix length(%d)\n",
 		    len);
 		memset(maskp, 0, sizeof(*maskp));	/* CM-04: no stale */
-		return;
+		return -1;	/* N9: a zero mask means "match all"; tell the caller */
 	}
 
 	memset(maskp, 0, sizeof(*maskp));
@@ -1386,12 +1385,13 @@ rcs_in_prefixlen2mask(uint32_t *maskp, int len)
 		*maskp |= ((uint32_t)0xff) << (8 * (3 - i));
 	if (bitlen)
 		*maskp |= ((uint32_t)maskarray[bitlen - 1]) << (8 * (3 - bytelen));
+	return 0;
 }
 
 /*
  * convert a prefix length to a netmask for IPv6
  */
-void
+int
 rcs_in6_prefixlen2mask(struct in6_addr *maskp, int len)
 {
 	static const u_char maskarray[8] = {0x80, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc, 0xfe, 0xff};
@@ -1403,7 +1403,7 @@ rcs_in6_prefixlen2mask(struct in6_addr *maskp, int len)
 		   "rcs_in6_prefixlen2mask: invalid prefix length(%d)\n",
 		    len);
 		memset(maskp, 0, sizeof(*maskp));	/* CM-04: no stale */
-		return;
+		return -1;	/* N9: a zero mask means "match all"; tell the caller */
 	}
 
 	memset(maskp, 0, sizeof(*maskp));
@@ -1413,6 +1413,7 @@ rcs_in6_prefixlen2mask(struct in6_addr *maskp, int len)
 		maskp->s6_addr[i] = 0xff;
 	if (bitlen)
 		maskp->s6_addr[bytelen] = maskarray[bitlen - 1];
+	return 0;
 }
 
 uint32_t *
@@ -1504,7 +1505,9 @@ rcs_matchaddr(const struct rc_addrlist *addr, const struct sockaddr *si)
 		 	 * peer's masked address, match the peer's address */
 			if (address->prefixlen > 0 && address->prefixlen < 32) {
 				uint32_t mask = 0;
-				rcs_in_prefixlen2mask(&mask, address->prefixlen);
+				if (rcs_in_prefixlen2mask(&mask,
+				    address->prefixlen) != 0)
+					break;	/* never match on a bad mask */
 				if(((sin->sin_addr.s_addr ^
 				    san->sin_addr.s_addr) & ntohl(mask)) == 0) {
 					return 1;
@@ -1536,7 +1539,9 @@ rcs_matchaddr(const struct rc_addrlist *addr, const struct sockaddr *si)
 
 			if (address->prefixlen > 0 && address->prefixlen < 128) {
 				struct in6_addr mask6 = _IN6MASK0;
-				rcs_in6_prefixlen2mask(&mask6, address->prefixlen);
+				if (rcs_in6_prefixlen2mask(&mask6,
+				    address->prefixlen) != 0)
+					break;	/* never match on a bad mask */
 				if(_IN6_ARE_MASKED_ADDR_EQUAL(&san6->sin6_addr,
 					&sin6->sin6_addr, &mask6)) {
 					return 1;

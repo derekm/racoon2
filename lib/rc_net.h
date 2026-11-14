@@ -51,8 +51,9 @@ extern const char *rcs_addrlist2str (const struct rc_addrlist *);
 extern int rcs_cmpsa_wop (const struct sockaddr *, const struct sockaddr *);
 extern int rcs_cmpsa (const struct sockaddr *, const struct sockaddr *);
 extern int rcs_addrlist_cmp(struct rc_addrlist *, struct rc_addrlist *);
-extern void rcs_in_prefixlen2mask(uint32_t *, int len);
-extern void rcs_in6_prefixlen2mask(struct in6_addr *, int len);
+/* 0 = mask built; -1 = invalid len (mask zeroed, which would match all) */
+extern int rcs_in_prefixlen2mask(uint32_t *, int len);
+extern int rcs_in6_prefixlen2mask(struct in6_addr *, int len);
 extern int rcs_prefixlen_ok(const struct sockaddr *, int);
 /* ifname vs (possibly unterminated) IFNAMSIZ ifr_name; 1 = equal */
 extern int rcs_ifreq_name_eq(const char *, const char *);
