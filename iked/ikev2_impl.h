@@ -1103,6 +1103,12 @@ void ikev2_migrate_script_hook(struct ikev2_sa *,
 			       struct sockaddr *, struct sockaddr *);
 
 int ikev2_resume_save(struct ikev2_sa *);
+/* resume child-proposal snapshot/rebuild (exported for resumeproptest) */
+struct r2rs_child;
+struct prop_pair *ikev2_resume_prop_new(int proto, uint32_t spi_host);
+int ikev2_resume_prop_add_trns(struct prop_pair *, uint8_t type, uint16_t id,
+    uint16_t keylen);
+void ikev2_resume_suite_from_prop(struct prop_pair *, struct r2rs_child *);
 void ikev2_resume_forget(struct ikev2_sa *);
 void ikev2_resume_dump_all(void);
 void ikev2_resume_load(void);

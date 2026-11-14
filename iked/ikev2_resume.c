@@ -288,8 +288,8 @@ resume_filename(char *buf, size_t buflen, const uint8_t i_ck[8],
 	r2rs_filename_in(buf, buflen, r2_resume_dir(), i_ck, r_ck);
 }
 
-static struct prop_pair *
-spi_prop(int proto, uint32_t spi_host)
+struct prop_pair *
+ikev2_resume_prop_new(int proto, uint32_t spi_host)
 {
 	struct prop_pair *p;
 	struct isakmp_pl_p *prop;
@@ -319,8 +319,9 @@ spi_prop(int proto, uint32_t spi_host)
 	return p;
 }
 
-static int
-prop_add_trns(struct prop_pair *p, uint8_t type, uint16_t id, uint16_t keylen)
+int
+ikev2_resume_prop_add_trns(struct prop_pair *p, uint8_t type, uint16_t id,
+    uint16_t keylen)
 {
 	struct prop_pair *t, *tail;
 	struct ikev2transform *tr;
@@ -373,8 +374,8 @@ prop_add_trns(struct prop_pair *p, uint8_t type, uint16_t id, uint16_t keylen)
 	return 0;
 }
 
-static void
-suite_from_prop(struct prop_pair *p, struct r2rs_child *c)
+void
+ikev2_resume_suite_from_prop(struct prop_pair *p, struct r2rs_child *c)
 {
 	struct prop_pair *t;
 
@@ -592,7 +593,8 @@ ikev2_resume_save(struct ikev2_sa *sa)
 			memcpy(rec.child[n].lease_addr, a->address, 16);
 		}
 		if (ch->my_proposal && ch->my_proposal[1])
-			suite_from_prop(ch->my_proposal[1], &rec.child[n]);
+			ikev2_resume_suite_from_prop(ch->my_proposal[1],
+			    &rec.child[n]);
 		n++;
 	}
 	rec.nchild = (uint32_t)n;
@@ -942,17 +944,19 @@ restore_one(const char *path)
 		ch->my_proposal = proplist_new();
 		if (!ch->my_proposal)
 			goto fail;
-		ch->my_proposal[1] = spi_prop(IKEV2PROPOSAL_ESP, c->in_spi);
-		ch->peer_proposal = spi_prop(IKEV2PROPOSAL_ESP, c->out_spi);
+		ch->my_proposal[1] = ikev2_resume_prop_new(IKEV2PROPOSAL_ESP,
+		    c->in_spi);
+		ch->peer_proposal = ikev2_resume_prop_new(IKEV2PROPOSAL_ESP,
+		    c->out_spi);
 		if (!ch->my_proposal[1] || !ch->peer_proposal)
 			goto fail;
 		if (c->encr_id) {
-			if (prop_add_trns(ch->my_proposal[1],
+			if (ikev2_resume_prop_add_trns(ch->my_proposal[1],
 			    IKEV2TRANSFORM_TYPE_ENCR, c->encr_id,
 			    c->encr_klen) != 0)
 				goto fail;
 			if (c->integr_id &&
-			    prop_add_trns(ch->my_proposal[1],
+			    ikev2_resume_prop_add_trns(ch->my_proposal[1],
 			    IKEV2TRANSFORM_TYPE_INTEGR, c->integr_id, 0) != 0)
 				goto fail;
 			if (c->dh_id) {
@@ -966,11 +970,11 @@ restore_one(const char *path)
 				if (!dhdef)
 					goto fail;
 				ch->dhgrp = dhdef;
-				if (prop_add_trns(ch->my_proposal[1],
+				if (ikev2_resume_prop_add_trns(ch->my_proposal[1],
 				    IKEV2TRANSFORM_TYPE_DH, c->dh_id, 0) != 0)
 					goto fail;
 			}
-			if (prop_add_trns(ch->my_proposal[1],
+			if (ikev2_resume_prop_add_trns(ch->my_proposal[1],
 			    IKEV2TRANSFORM_TYPE_ESN, c->esn ? 1 : 0, 0) != 0)
 				goto fail;
 		}

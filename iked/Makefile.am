@@ -154,6 +154,13 @@ childfailtest_LDFLAGS = -Wl,--wrap=ikev2_proposal_to_ipsec \
 	-Wl,--wrap=ikev2_child_script_hook \
 	-Wl,--wrap=ikev2_resume_save
 
+# Q8/G05: resume-restored child proposal through the real packer,
+# wire parser and matcher (more bits, transform topology, suite).
+TESTS += resumeproptest
+check_PROGRAMS += resumeproptest
+resumeproptest_SOURCES = resumeproptest.c
+resumeproptest_LDADD = $(addtest_ikedsrc) $(LDADD)
+
 # G03/S5: initiator IKE_SA-rekey ADDKE over {ML-KEM-768, NONE, ECP-256}
 # drives the real ikev2_rekey_ikesa_init_addke_complete() through a
 # classical second round; the followup packet build/send is wrapped.
