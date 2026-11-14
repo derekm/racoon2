@@ -516,6 +516,8 @@ rct2str(int type)
 		return "HMAC-SHA-512";
 	case RCT_ALG_AES_XCBC:
 		return "AES-XCBC-96";
+	case RCT_ALG_AES_CMAC:
+		return "AES-CMAC-96";
 	case RCT_ALG_DES_MAC:
 		return "DES-MAC";
 	case RCT_ALG_KPDK_MD5:
@@ -610,8 +612,10 @@ rct2str(int type)
 		return "RSAREV";
 	case RCT_ALG_GSSAPI_KRB:
 		return "GSSAPI";
+	case RCT_ALG_EAP:
+		return "EAP";
 
-		/* remote */
+	/* remote */
 	case RCT_KMP_IKEV1:
 		return "IKEv1";
 	case RCT_KMP_IKEV2:
