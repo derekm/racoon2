@@ -3,7 +3,8 @@
  *   CM-01 rcs_addrlist_cmp is a distinct-consumption multiset compare
  *        (symmetry, duplicate reuse, multiplicity, permutation, empties);
  *   CM-03 rcs_in_prefixlen2mask builds all 33 IPv4 masks correctly;
- *   CM-04 invalid prefixes leave the output zeroed (both v4 and v6).
+ *   CM-04 invalid prefixes leave the output zeroed (both v4 and v6);
+ *   AS-02 rcs_getport rejects out-of-range/truncating/malformed ports.
  *
  * The invalid-mask path logs via plog() before zeroing; plog needs a live
  * logging context, so plog is wrapped (--wrap=plog) to a no-op here, which
@@ -214,6 +215,23 @@ main(void)
 			break;
 	}
 	chk("v6 /64 correct", i == 16, 1);
+
+	/* ---- AS-02: rcs_getport range/format ---- */
+	chk("port 0 (any)", rcs_getport("0"), 0);
+	chk("port 500", rcs_getport("500"), 500);
+	chk("port 65535", rcs_getport("65535"), 65535);
+	chk("port 65536 rejected", rcs_getport("65536"), -1);
+	chk("port -1 rejected", rcs_getport("-1"), -1);
+	chk("port empty rejected", rcs_getport(""), -1);
+	chk("port 80x rejected", rcs_getport("80x"), -1);
+	chk("port ' 80' rejected", rcs_getport(" 80"), -1);
+	chk("port +80 rejected", rcs_getport("+80"), -1);
+	/* 2^32 + 1: fits a 64-bit long, (int) truncation would give 1 */
+	chk("port 4294967297 rejected", rcs_getport("4294967297"), -1);
+	chk("port 4294967296 rejected", rcs_getport("4294967296"), -1);
+	chk("port 2^64+80 rejected (ERANGE)",
+	    rcs_getport("18446744073709551696"), -1);
+	chk("port any", rcs_getport("any"), 0);
 
 	printf("RC_NET_TEST_FAILS=%d\n", fails);
 	return fails ? 1 : 0;
