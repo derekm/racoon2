@@ -194,6 +194,41 @@ static int spmd_pfkey_spddump_cb(struct rcpfk_msg *);
  * Initilization at boot time
  ************************************************************************/
 /*
+ * RB-03 / S6: queue one FQDN selector at startup (add its FQDN end(s) to
+ * fqdn_db, then sp_queue_add it for resolution).  The rc_vmem2str scratch
+ * can fail (OOM, VB-05); skipping the selector would start spmd with a
+ * policy silently missing from the SPD, so the caller fails closed.
+ */
+static int
+spmd_pfkey_init_fqdn_sp(struct rcf_selector *sl, int add_src, int add_dst)
+{
+	const char *str;
+
+	if (add_src) {
+		str = rc_vmem2str(sl->src->a.vstr);
+		if (str == NULL)
+			goto oom;
+		add_fqdn_db(str, strlen(str));
+	}
+	if (add_dst) {
+		str = rc_vmem2str(sl->dst->a.vstr);
+		if (str == NULL)
+			goto oom;
+		add_fqdn_db(str, strlen(str));
+	}
+	str = rc_vmem2str(sl->sl_index);
+	if (str == NULL)
+		goto oom;
+	sp_queue_add(str, sl->src, sl->dst);
+	return 0;
+oom:
+	SPMD_PLOG(SPMD_L_INTERR,
+	    "Out of memory queueing FQDN selector %.*s; refusing to start "
+	    "with an incomplete SPD", (int)sl->sl_index->l, sl->sl_index->s);
+	return -1;
+}
+
+/*
  * main initilization function, maybe called by main()
  */
 int
@@ -202,8 +237,6 @@ spmd_pfkey_init(void)
 	struct rcf_selector *sl_head = NULL;
 	struct rcf_selector *sl = NULL;
 	int spd_add_skip = 0;
-	const char *fqdn_str = NULL;
-	size_t fqdn_strlen = 0;
 	struct rc_addrlist *rcals = NULL, *rcald = NULL;
 	struct task *t = NULL;
 	int resolver_off;
@@ -263,21 +296,9 @@ spmd_pfkey_init(void)
 					(int)sl->sl_index->l, sl->sl_index->s);
 				continue;
 			}
-			fqdn_str = rc_vmem2str(rcals->a.vstr); /* add src to fqdn_db */
-			if (fqdn_str != NULL) {
-				fqdn_strlen = strlen(fqdn_str);
-				add_fqdn_db(fqdn_str, fqdn_strlen);
-			}
-			fqdn_str = rc_vmem2str(rcald->a.vstr); /* add dst to fqdn_db */
-			if (fqdn_str != NULL) {
-				fqdn_strlen = strlen(fqdn_str);
-				add_fqdn_db(fqdn_str, fqdn_strlen);
-			}
-			/* add sp_queue */
-			{
-				const char *slidex = rc_vmem2str(sl->sl_index);
-				if (slidex != NULL)
-					sp_queue_add(slidex, rcals, rcald);
+			if (spmd_pfkey_init_fqdn_sp(sl, 1, 1) < 0) {
+				rcf_free_selector(sl_head);
+				return -1;	/* fail closed (RB-03) */
 			}
 			spd_add_skip=1;
 		}
@@ -290,16 +311,9 @@ spmd_pfkey_init(void)
 					(int)sl->sl_index->l, sl->sl_index->s);
 				continue;
 			}
-			fqdn_str = rc_vmem2str(rcals->a.vstr); /* add src to fqdn_db */
-			if (fqdn_str != NULL) {
-				fqdn_strlen = strlen(fqdn_str);
-				add_fqdn_db(fqdn_str, fqdn_strlen);
-			}
-			/* add sp_queue */
-			{
-				const char *slidex = rc_vmem2str(sl->sl_index);
-				if (slidex != NULL)
-					sp_queue_add(slidex, rcals, rcald);
+			if (spmd_pfkey_init_fqdn_sp(sl, 1, 0) < 0) {
+				rcf_free_selector(sl_head);
+				return -1;	/* fail closed (RB-03) */
 			}
 			spd_add_skip=1;
 		}
@@ -312,16 +326,9 @@ spmd_pfkey_init(void)
 					(int)sl->sl_index->l, sl->sl_index->s);
 				continue;
 			}
-			fqdn_str = rc_vmem2str(rcald->a.vstr); /* add dst to fqdn_db */
-			if (fqdn_str != NULL) {
-				fqdn_strlen = strlen(fqdn_str);
-				add_fqdn_db(fqdn_str, fqdn_strlen);
-			}
-			/* add sp_queue */
-			{
-				const char *slidex = rc_vmem2str(sl->sl_index);
-				if (slidex != NULL)
-					sp_queue_add(slidex, rcals, rcald);
+			if (spmd_pfkey_init_fqdn_sp(sl, 0, 1) < 0) {
+				rcf_free_selector(sl_head);
+				return -1;	/* fail closed (RB-03) */
 			}
 			spd_add_skip=1;
 		}
@@ -1068,11 +1075,29 @@ retry:
 	}
 #endif
 	rc->seq = pfkey_seq_next();
+	{
+		/* RB-03/S6: without the seq->slid binding the kernel policy
+		 * would be installed but never deletable by selector
+		 * ("No spid_data entry"); do not send the update. */
+		const char *sidx = rc_vmem2str(sl->sl_index);
+		int sret;
+
+		if (sidx == NULL) {
+			SPMD_PLOG(SPMD_L_INTERR, "Out of memory binding "
+			    "selector for SP update; not installed");
+			goto bind_fail;
+		}
 #ifdef HAVE_SPDUPDATE_BUG
-	spid_data_add(rc->seq, rc_vmem2str(sl->sl_index), rc->sp_src, rc->sp_dst);
+		sret = spid_data_add(rc->seq, sidx, rc->sp_src, rc->sp_dst);
 #else
-	spid_data_add(rc->seq, rc_vmem2str(sl->sl_index));
+		sret = spid_data_add(rc->seq, sidx);
 #endif
+		if (sret < 0) {
+			SPMD_PLOG(SPMD_L_INTERR, "Can't record spid binding "
+			    "for selector %s; SP not installed", sidx);
+			goto bind_fail;
+		}
+	}
 	rc->slid = 0; /* clear 0 */
 
 	if (urgent) {
@@ -1097,6 +1122,16 @@ retry:
 		rc = fwd_rc;
 		goto retry;
 	}
+#endif
+
+	goto fin;
+bind_fail:
+	ret = -1;
+#ifdef __linux__
+	/* the caller owns (and frees) only the rc it passed in: drop the
+	 * FWD snapshot we made, whichever pass failed */
+	if (fwd_rc)
+		spmd_free_rcpfk_msg(fwd_rc);
 #endif
 
 fin:
@@ -1150,14 +1185,24 @@ spmd_spd_delete(uint32_t spid, int urgent)
 	}
 
 	if (rcf_get_selectorlist(&sl_head) < 0) {
-		SPMD_PLOG(SPMD_L_INTERR, "Can't get selector list in your configuration file (selector=%.*s)",
-			  (int)sl->sl_index->l, sl->sl_index->s);
+		/* (sl is still NULL here: do not dereference it) */
+		SPMD_PLOG(SPMD_L_INTERR, "Can't get selector list in your configuration file (spid=%u)",
+			  spid);
+		ret = -1;
 		goto err_fin;
 	}
 	for (sl = sl_head;sl;sl=sl->next) {
 		const char *sidx = rc_vmem2str(sl->sl_index);
-		if (sidx == NULL)
-			continue;	/* scratch OOM: skip this selector (RB-03) */
+		if (sidx == NULL) {
+			/* scratch OOM (RB-03/S6): a skipped selector could be
+			 * the target, so fail the delete loudly instead of
+			 * reporting "not found" or deleting nothing */
+			SPMD_PLOG(SPMD_L_INTERR, "Out of memory matching "
+			    "selectors for spid(%u)", spid);
+			rcf_free_selector(sl_head);
+			ret = -1;
+			goto err_fin;
+		}
 		len = strlen(sidx);
 		if ( (len == strlen(sidx)) && (!strncmp(sidx, slid, len)) ) {
 			if (!sl->pl) {
@@ -1251,14 +1296,24 @@ spmd_spd_match_delete(uint32_t spid, rc_type samode,
 	}
 
 	if (rcf_get_selectorlist(&sl_head) < 0) {
-		SPMD_PLOG(SPMD_L_INTERR, "Can't get selector list in your configuration file (selector=%.*s)",
-			  (int)sl->sl_index->l, sl->sl_index->s);
+		/* (sl is still NULL here: do not dereference it) */
+		SPMD_PLOG(SPMD_L_INTERR, "Can't get selector list in your configuration file (spid=%u)",
+			  spid);
+		ret = -1;
 		goto err_fin;
 	}
 	for (sl = sl_head;sl;sl=sl->next) {
 		const char *sidx = rc_vmem2str(sl->sl_index);
-		if (sidx == NULL)
-			continue;	/* scratch OOM: skip this selector (RB-03) */
+		if (sidx == NULL) {
+			/* scratch OOM (RB-03/S6): a skipped selector could be
+			 * the target, so fail the delete loudly instead of
+			 * reporting "not found" or deleting nothing */
+			SPMD_PLOG(SPMD_L_INTERR, "Out of memory matching "
+			    "selectors for spid(%u)", spid);
+			rcf_free_selector(sl_head);
+			ret = -1;
+			goto err_fin;
+		}
 		len = strlen(sidx);
 		if ( (len == strlen(sidx)) && (!strncmp(sidx, slid, len)) ) {
 			if (!sl->pl) {
@@ -2145,7 +2200,9 @@ sp_queue_add(const char *sl_index, const struct rc_addrlist *src, const struct r
 	new_spq->src_type = src->type;
 	if (new_spq->src_type == RCT_ADDR_FQDN) {
 		fqdn_str = rc_vmem2str(src->a.vstr);
-		fqdn_strlen = fqdn_str ? strlen(fqdn_str) : 0;	/* RB-03 */
+		if (fqdn_str == NULL)
+			goto err;	/* scratch OOM (RB-03) */
+		fqdn_strlen = strlen(fqdn_str);
 		fl = find_fqdn_db(fqdn_str, fqdn_strlen);
 		if (!fl) {
 			goto err;
@@ -2161,7 +2218,9 @@ sp_queue_add(const char *sl_index, const struct rc_addrlist *src, const struct r
 	new_spq->dst_type = dst->type;
 	if (new_spq->dst_type == RCT_ADDR_FQDN) {
 		fqdn_str = rc_vmem2str(dst->a.vstr);
-		fqdn_strlen = fqdn_str ? strlen(fqdn_str) : 0;	/* RB-03 */
+		if (fqdn_str == NULL)
+			goto err;	/* scratch OOM (RB-03) */
+		fqdn_strlen = strlen(fqdn_str);
 		fl = find_fqdn_db(fqdn_str, fqdn_strlen);
 		if (!fl) {
 			goto err;

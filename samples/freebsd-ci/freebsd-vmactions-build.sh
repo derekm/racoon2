@@ -98,6 +98,7 @@ fi
 # print the per-test logs on failure (the bare make output names the
 # failing test but not why; the BSD legs had no other way to see it)
 $MAKE -C iked check || { cat iked/test-suite.log 2>/dev/null; exit 1; }
+$MAKE -C spmd check || { cat spmd/test-suite.log 2>/dev/null; exit 1; }
 
 echo "=== FreeBSD build/test OK ==="
 echo "vnet conformance leg runs as the next workflow step (separate script)"

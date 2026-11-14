@@ -327,6 +327,8 @@ shell_init(void)
 				char host[NI_MAXHOST];
 
 				fqdn = rc_vmem2str(rcl->a.vstr);
+				if (fqdn == NULL)
+					continue;	/* scratch OOM (RB-03) */
 				memset(portstr, 0, sizeof(portstr));
 				if (rcl->port == 0) {
 					snprintf(portstr, sizeof(portstr), "%d", SPMD_SHELL_PORT);

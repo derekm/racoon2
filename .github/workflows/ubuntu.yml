@@ -77,6 +77,9 @@ jobs:
       - name: 'Unit suite (iked: full configured TESTS, incl. resumetest fragtest cfgwalktest)'
         run: make -C iked check
 
+      - name: 'Unit suite (spmd: RB-03 fail-closed OOM seams)'
+        run: make -C spmd check || { cat spmd/test-suite.log; exit 1; }
+
       - name: 'Generate compliance report (KAT evidence from this build)'
         run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/${{ github.job }}-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log
 
@@ -201,6 +204,9 @@ jobs:
 
       - name: 'Unit suite (iked: full configured TESTS, incl. resumetest fragtest cfgwalktest)'
         run: make -C iked check
+
+      - name: 'Unit suite (spmd: RB-03 fail-closed OOM seams)'
+        run: make -C spmd check || { cat spmd/test-suite.log; exit 1; }
 
       - name: 'Generate compliance report (KAT evidence from this build)'
         run: bash samples/linux-matrix/ci-comply-report.sh "$GITHUB_WORKSPACE/${{ github.job }}-compliance.md" iked/ndcppkats.log iked/test-suite.log lib/test-suite.log

@@ -118,6 +118,7 @@ fi
 # print the per-test logs on failure (the bare make output names the
 # failing test but not why; the BSD legs had no other way to see it)
 make -C iked check || { cat iked/test-suite.log 2>/dev/null; exit 1; }
+make -C spmd check || { cat spmd/test-suite.log 2>/dev/null; exit 1; }
 
 echo "=== rc.d smoke (spmd then iked, UDP 500, PF_KEY) ==="
 if [ -n "$SUDO" ]; then
