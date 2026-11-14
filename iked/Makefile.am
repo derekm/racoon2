@@ -126,7 +126,9 @@ rekeybackofftest_SOURCES = rekeybackofftest.c ikev2_rekey_backoff.c
 TESTS += schedtest
 check_PROGRAMS += schedtest
 schedtest_SOURCES = schedtest.c schedule.c
-schedtest_LDFLAGS = -Wl,--wrap=time -Wl,--wrap=clock_gettime
+# NetBSD links time()/clock_gettime() as __time50/__clock_gettime50.
+schedtest_LDFLAGS = -Wl,--wrap=time -Wl,--wrap=clock_gettime \
+	-Wl,--wrap=__time50 -Wl,--wrap=__clock_gettime50
 
 TESTS += notifytest
 check_PROGRAMS += notifytest

@@ -12,6 +12,11 @@
  *   3. the returned select() timeout tracks the monotonic deadline;
  *   4. with no monotonic clock at sched_init the wall-clock base is used
  *      (fallback still schedules correctly).
+ *
+ * NetBSD's <time.h> renames time() and clock_gettime() to __time50 and
+ * __clock_gettime50 (__RENAME), so the link-time symbols differ there;
+ * Makefile.am wraps both spellings and step 0 fails loudly if the
+ * injected clock is not in effect.
  */
 #include "config.h"
 #include <sys/types.h>
@@ -54,6 +59,23 @@ __wrap_clock_gettime(clockid_t id, struct timespec *ts)
 	return 0;
 }
 
+#if defined(__NetBSD__)
+time_t __wrap___time50(time_t *);
+int __wrap___clock_gettime50(clockid_t, struct timespec *);
+
+time_t
+__wrap___time50(time_t *t)
+{
+	return __wrap_time(t);
+}
+
+int
+__wrap___clock_gettime50(clockid_t id, struct timespec *ts)
+{
+	return __wrap_clock_gettime(id, ts);
+}
+#endif
+
 static int fails;
 static int fired;
 
@@ -86,6 +108,20 @@ main(void)
 	struct timeval *tv;
 
 	plog_setmode(RCT_LOGMODE_DEBUG, NULL, "schedtest", 1, 1);
+
+	/* 0: the injected clock must be what the scheduler sees */
+	{
+		struct timespec ts;
+
+		ck(time(NULL) == fake_wall, "0: time() is the injected clock");
+		ck(clock_gettime(CLOCK_MONOTONIC, &ts) == 0 &&
+		   ts.tv_sec == fake_mono,
+		   "0: clock_gettime(CLOCK_MONOTONIC) is the injected clock");
+		if (fails) {
+			printf("schedtest: FAILED (clock wrap not in effect)\n");
+			return 1;
+		}
+	}
 
 	/* 1: wall steps back 1 h while 10 s elapse */
 	sched_init();
