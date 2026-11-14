@@ -798,6 +798,23 @@ extern const struct dhgroup *ikev2_addke_method_dhgroup(unsigned int);
 extern int ikev2_addke_round_keygen(struct ikev2_child_sa *,
 				    unsigned int, rc_vchar_t **);
 extern void ikev2_addke_round_state_clear(struct ikev2_child_sa *);
+/*
+ * One ADDKE round's key-exchange state, independent of the SA kind (the
+ * IKE_SA-rekey initiator has no child_sa to hang it on): an ML-KEM
+ * keypair or a classical DH group + our public/private values.
+ */
+struct ikev2_addke_kex {
+	unsigned int method;		/* the round's transform type 6 id */
+	void *kem;			/* EVP_PKEY * (ML-KEM rounds) */
+	const struct dhgroup *dh;	/* classical rounds */
+	rc_vchar_t *dh_pub;
+	rc_vchar_t *dh_priv;
+};
+extern int ikev2_addke_kex_keygen(struct ikev2_addke_kex *, unsigned int,
+				  rc_vchar_t **);
+extern int ikev2_addke_kex_derive(struct ikev2_addke_kex *, rc_vchar_t *,
+				  rc_vchar_t **);
+extern void ikev2_addke_kex_clear(struct ikev2_addke_kex *);
 extern int ikev2_addke_mlkem_keygen(unsigned int, rc_vchar_t **,
 				    EVP_PKEY **);
 extern int ikev2_addke_mlkem_encap(unsigned int, rc_vchar_t *,

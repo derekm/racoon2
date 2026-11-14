@@ -147,6 +147,16 @@ childfailtest_LDFLAGS = -Wl,--wrap=ikev2_proposal_to_ipsec \
 	-Wl,--wrap=ikev2_child_script_hook \
 	-Wl,--wrap=ikev2_resume_save
 
+# G03/S5: initiator IKE_SA-rekey ADDKE over {ML-KEM-768, NONE, ECP-256}
+# drives the real ikev2_rekey_ikesa_init_addke_complete() through a
+# classical second round; the followup packet build/send is wrapped.
+TESTS += ikerekeyaddketest
+check_PROGRAMS += ikerekeyaddketest
+ikerekeyaddketest_SOURCES = ikerekeyaddketest.c
+ikerekeyaddketest_LDADD = $(addtest_ikedsrc) $(LDADD)
+ikerekeyaddketest_LDFLAGS = -Wl,--wrap=ikev2_packet_construct \
+	-Wl,--wrap=ikev2_transmit
+
 # RFC 8229 / RFC 9329 IKE-over-TCP framing codec (iked/ikev2_tcp.c): the
 # 16-bit Len (including itself) + 4-octet non-ESP marker wire format, prefix
 # validation, Len 0/1 fatal vs Len 2 and keepalive silent-ignore, ESP/IKE

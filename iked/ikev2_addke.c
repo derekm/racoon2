@@ -218,6 +218,120 @@ ikev2_addke_round_keygen(struct ikev2_child_sa *child_sa,
 }
 
 /*
+ * SA-kind-neutral round keygen / derive (G03, S5): the same ML-KEM vs
+ * classical-DH dispatch ikev2_addke_round_keygen() /
+ * ikev2_initiator_followup_complete() do for a child, on an explicit
+ * struct ikev2_addke_kex so the IKE_SA-rekey initiator can run a
+ * classical round (e.g. {36, NONE, 19}: round 2 is ECP-256).
+ *
+ * keygen: generate the round keypair for `method`, return our public
+ * value (the KEi payload body) in *pub.  0 / -1; on failure *pub is NULL
+ * and kx holds no key material.
+ */
+int
+ikev2_addke_kex_keygen(struct ikev2_addke_kex *kx, unsigned int method,
+		       rc_vchar_t **pub)
+{
+	*pub = NULL;
+	ikev2_addke_kex_clear(kx);
+	if (ikev2_addke_method_is_mlkem(method)) {
+		EVP_PKEY *kp = NULL;
+
+		if (ikev2_addke_mlkem_keygen(method, pub, &kp) < 0 ||
+		    !*pub || !kp) {
+			rc_vfree(*pub);
+			*pub = NULL;
+			EVP_PKEY_free(kp);
+			return -1;
+		}
+		kx->kem = kp;
+	} else {
+		const struct dhgroup *dh = ikev2_addke_method_dhgroup(method);
+		rc_vchar_t *priv = NULL;
+
+		if (dh == NULL)
+			return -1;
+		if (oakley_dh_generate((struct dhgroup *)dh, pub, &priv) < 0 ||
+		    !*pub || !priv) {
+			rc_vfree(*pub);
+			rc_vfreez(priv);
+			*pub = NULL;
+			return -1;
+		}
+		kx->dh_pub = rc_vnew((*pub)->v, (*pub)->l);
+		if (kx->dh_pub == NULL) {
+			rc_vfree(*pub);
+			rc_vfreez(priv);
+			*pub = NULL;
+			return -1;
+		}
+		kx->dh = dh;
+		kx->dh_priv = priv;
+	}
+	kx->method = method;
+	return 0;
+}
+
+/*
+ * derive: this round's shared secret from the peer's KEr body (ML-KEM
+ * ciphertext, or the peer's DH public value).  Consumes and clears the
+ * round state whatever the outcome.  0 / -1 (*ss NULL on failure).
+ */
+int
+ikev2_addke_kex_derive(struct ikev2_addke_kex *kx, rc_vchar_t *peer,
+		       rc_vchar_t **ss)
+{
+	int ret = -1;
+
+	*ss = NULL;
+	if (peer == NULL)
+		goto out;
+	if (ikev2_addke_method_is_mlkem(kx->method)) {
+		if (kx->kem == NULL)
+			goto out;
+		if (ikev2_addke_mlkem_decap((EVP_PKEY *)kx->kem, peer, ss) < 0 ||
+		    *ss == NULL ||
+		    (*ss)->l != OSSL_ML_KEM_SHARED_SECRET_BYTES)
+			goto out;
+	} else {
+		if (kx->dh == NULL || kx->dh_pub == NULL || kx->dh_priv == NULL)
+			goto out;
+		if (oakley_dh_compute((struct dhgroup *)kx->dh, kx->dh_pub,
+		    kx->dh_priv, peer, ss) < 0 || *ss == NULL)
+			goto out;
+	}
+	ret = 0;
+out:
+	if (ret != 0 && *ss) {
+		rc_vfreez(*ss);
+		*ss = NULL;
+	}
+	ikev2_addke_kex_clear(kx);
+	return ret;
+}
+
+void
+ikev2_addke_kex_clear(struct ikev2_addke_kex *kx)
+{
+	if (kx == NULL)
+		return;
+	if (kx->kem) {
+		EVP_PKEY_free((EVP_PKEY *)kx->kem);
+		kx->kem = NULL;
+	}
+	if (kx->dh_pub) {
+		rc_vfreez(kx->dh_pub);
+		kx->dh_pub = NULL;
+	}
+	if (kx->dh_priv) {
+		rc_vfreez(kx->dh_priv);
+		kx->dh_priv = NULL;
+	}
+	kx->dh = NULL;
+	kx->method = 0;
+}
+
+/*
  * Release this ADDKE round's private state -- the ML-KEM EVP_PKEY or the
  * classical-DH group/public/private values -- and NULL every field, so a
  * later caller (the next round's keygen, an error path, or child-SA

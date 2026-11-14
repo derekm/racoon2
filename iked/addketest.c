@@ -1724,7 +1724,7 @@ round_internal_tests(void)
 }
 
 /* --- G03: NONE/gap round offers drive the REAL (non-NONE) rounds ---
- * A lawful offer ADDKE1=mlkem768, ADDKE2=NONE, ADDKE3=mlkem1024 lands in
+ * A lawful offer ADDKE1=mlkem768, ADDKE2=NONE, ADDKE3=ecp256 (19) lands in
  * the type-indexed negotiated list as {36, 0, 19} with addke_nrounds 3
  * (highest slot + 1).  The round-carrying consumers must collapse that to
  * the two REAL rounds (36 then 19); indexing densely (addke_methods[round])

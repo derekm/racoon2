@@ -53,6 +53,7 @@
 #include "ikev2.h"
 #include "isakmp_impl.h"
 #include "ikev2_impl.h"
+#include "ikev2_rekey_ctx.h"
 #include "ikev2_notify.h"
 #include "ikev2_addke_rekey.h"
 #include "ike_conf.h"
@@ -1389,27 +1390,8 @@ ikev2_rekey_ikesa_responder_dh_done(int rc, void *arg)
 }
 
 /**** async compute helpers (defined after ikev2_rekey_ikesa_init_recv) ****/
-struct ikev2_rekey_init_recv_ctx {
-	struct ikev2_sa *old_sa;
-	struct ikev2_sa *new_sa;
-	int serial;	/* old_sa->serial_number, for liveness check */
-	struct prop_pair **parsed_sa;
-	rc_vchar_t *g_ir;
-	/* RFC 9370 ADDKE (initiator IKE_SA-rekey): the rekeyed IKE_SA
-	 * offered type-6, so SKEYSEED is deferred until the IKE_FOLLOWUP_KE
-	 * response supplies SK(1).  g_ir (DH) and the followup response both
-	 * arrive async; install only when both are present. */
-	int addke_deferred;	/* defer SKEYSEED pending the followup */
-	void *addke_priv;	/* EVP_PKEY * (ML-KEM private key) */
-	int addke_method;	/* negotiated ADDKE method id */
-	int addke_round;	/* completed followup rounds */
-	int addke_nrounds;	/* negotiated rounds (1 if legacy) */
-	int addke_final;	/* last followup response decapsulated */
-	rc_vchar_t *addke_link;	/* link echoed in N(16441) */
-	uint32_t addke_followup_msgid;
-	rc_vchar_t *addke_sk;	/* SK(1) once the followup response lands */
-	int addke_g_ir_ready;	/* DH g_ir computed (async) */
-};
+/* struct ikev2_rekey_init_recv_ctx: ikev2_rekey_ctx.h (shared with
+ * ikerekeyaddketest, which parks one to drive the real completion). */
 static void ikev2_rekey_init_recv_ctx_free(struct ikev2_rekey_init_recv_ctx *);
 static void ikev2_rekey_ikesa_init_recv_tail(struct ikev2_rekey_init_recv_ctx *);
 static void ikev2_rekey_ikesa_init_recv_dh_done(int, void *);
@@ -1557,25 +1539,23 @@ ikev2_rekey_ikesa_init_recv(struct ikev2_child_sa *child_sa, rc_vchar_t *msg)
 		/*
 		 * RFC 9370 ADDKE on IKE-SA rekey (initiator): the rekeyed
 		 * IKE_SA carried type-6, so SKEYSEED needs SK(1) from the
-		 * IKE_FOLLOWUP_KE exchange.  Generate our ML-KEM keypair,
-		 * send the followup request with our public key now, park
+		 * IKE_FOLLOWUP_KE exchange.  Generate our round keypair
+		 * (ML-KEM or classical DH), send the followup request with
+		 * our public value now, park
 		 * this ctx on old_sa, and defer the install until the
 		 * followup response supplies SK(1) (g_ir is computed
 		 * async below; install only when both are present).
 		 */
 		rc_vchar_t *pub = NULL;
-		EVP_PKEY *kp = NULL;
 
-		if (ikev2_addke_mlkem_keygen(new_sa->negotiated_sa->addke,
-					     &pub, &kp) != 0 || !pub || !kp) {
-			rc_vfree(pub);
-			EVP_PKEY_free(kp);
+		if (ikev2_addke_kex_keygen(&ctx->addke_kex,
+					   new_sa->negotiated_sa->addke,
+					   &pub) != 0) {
 			ikev2_rekey_init_recv_ctx_free(ctx);
 			TRACE((PLOGLOC, "ADDKE keygen failed (IKE-SA rekey)\n"));
 			goto fail;
 		}
 		ctx->addke_deferred = 1;
-		ctx->addke_priv = kp;
 		ctx->addke_method = new_sa->negotiated_sa->addke;
 		ctx->addke_round = 0;
 		/* Dense round count: only the real (non-NONE) ADDKE
@@ -1719,8 +1699,7 @@ ikev2_rekey_init_recv_ctx_free(struct ikev2_rekey_init_recv_ctx *ctx)
 	if (ctx->g_ir)
 		rc_vfreez(ctx->g_ir);
 #ifdef WITH_ADDKE
-	if (ctx->addke_priv)
-		EVP_PKEY_free((EVP_PKEY *)ctx->addke_priv);
+	ikev2_addke_kex_clear(&ctx->addke_kex);
 	if (ctx->addke_link)
 		rc_vfreez(ctx->addke_link);
 	if (ctx->addke_sk)
@@ -1798,7 +1777,6 @@ ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *old_sa,
 				      size_t next_link_len)
 {
 	struct ikev2_rekey_init_recv_ctx *ctx;
-	EVP_PKEY *kp;
 	rc_vchar_t *ss = NULL;
 	rc_vchar_t *acc;
 	int nrounds;
@@ -1810,17 +1788,9 @@ ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *old_sa,
 		SCHED_KILL(old_sa->addke_rekey_timer);
 		old_sa->addke_rekey_timer = NULL;
 	}
-	kp = (EVP_PKEY *)ctx->addke_priv;
-	ctx->addke_priv = NULL;
-	if (!kp || !ct) {
-		EVP_PKEY_free(kp);
+	/* ML-KEM decap or classical g^xy; consumes the round state */
+	if (ikev2_addke_kex_derive(&ctx->addke_kex, ct, &ss) != 0)
 		return -1;
-	}
-	if (ikev2_addke_mlkem_decap(kp, ct, &ss) < 0 || ss == NULL) {
-		EVP_PKEY_free(kp);
-		return -1;
-	}
-	EVP_PKEY_free(kp);
 	acc = rc_vmalloc((ctx->addke_sk ? ctx->addke_sk->l : 0) + ss->l);
 	if (!acc) {
 		rc_vfree(ss);
@@ -1838,7 +1808,6 @@ ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *old_sa,
 	if (ctx->addke_round + 1 < nrounds) {
 		unsigned int next;
 		rc_vchar_t *pub = NULL;
-		EVP_PKEY *nkp = NULL;
 
 		if (!next_link || next_link_len == 0 || next_link_len > 64) {
 			isakmp_log(old_sa, 0, 0, 0, PLOG_PROTOERR, PLOGLOC,
@@ -1869,20 +1838,17 @@ ikev2_rekey_ikesa_init_addke_complete(struct ikev2_sa *old_sa,
 			}
 			next = nm;
 		}
-		if (ikev2_addke_mlkem_keygen(next, &pub, &nkp) != 0 ||
-		    !pub || !nkp) {
-			rc_vfree(pub);
-			EVP_PKEY_free(nkp);
+		/* the next round may be classical (S5: {36, NONE, 19}
+		 * runs ECP-256 second), so dispatch on the method */
+		if (ikev2_addke_kex_keygen(&ctx->addke_kex, next, &pub) != 0)
 			return -1;
-		}
 		rc_vfreez(ctx->addke_link);
 		ctx->addke_link = rc_vnew(next_link, next_link_len);
 		if (!ctx->addke_link) {
 			rc_vfree(pub);
-			EVP_PKEY_free(nkp);
+			ikev2_addke_kex_clear(&ctx->addke_kex);
 			return -1;
 		}
-		ctx->addke_priv = nkp;
 		ctx->addke_method = (int)next;
 		ctx->addke_round++;
 		if (ikev2_rekey_ikesa_init_followup_send(old_sa, ctx,

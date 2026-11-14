@@ -120,7 +120,8 @@ ikev2_addke_collect_rounds(struct prop_pair *proposal,
  * transform type IKEV2TRANSFORM_TYPE_ADDKE + r); addke_nrounds is the
  * highest occupied slot + 1, so NONE (0) rounds leave exposed "gaps" in
  * the middle (e.g. an offer of ADDKE1=mlkem768, ADDKE2=NONE, ADDKE3=
- * mlkem1024 is {36, 0, 19} with addke_nrounds 3).  The wire emitter and
+ * ecp256 is {36, 0, 19} with addke_nrounds 3; 19 is the classical
+ * ECP-256 group, ML-KEM-1024 would be 37).  The wire emitter and
  * the storage are correct and iterate the slots, skipping 0; only the
  * ROUND-DRIVING consumers (which walk real rounds one at a time) must
  * collapse the array to its non-NONE entries.  These two helpers provide
