@@ -76,7 +76,10 @@ Landed (do not re-open these as gaps):
   types 6..12): a multi-round initial offer is echoed in full and N
   IKE_INTERMEDIATE rounds run (iked/ikev2.c initial-ADDKE collect loop); the
   IKE_SA-rekey and child-rekey ADDKE paths are also multi-round
-  (ikev2_addke_rounds.c).
+  (ikev2_addke_rounds.c), and every round may be ML-KEM or a classical DH
+  group, NONE gaps skipped (e.g. {ML-KEM-768, NONE, ECP-256}; the
+  IKE_SA-rekey initiator gained classical rounds in the S5 fix, pinned by
+  iked/ikerekeyaddketest).
 - **IKE_SA-rekey ADDKE on both roles** — matrix row `i2ikesa-addke` proves
   racoon2-as-initiator driving an IKE_SA rekey that negotiates ADDKE and
   completes SK(1) via IKE_FOLLOWUP_KE.
