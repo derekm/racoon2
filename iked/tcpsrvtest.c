@@ -717,6 +717,9 @@ main(void)
 		lc.sin_family = AF_INET;
 		lc.sin_addr.s_addr = htonl(INADDR_LOOPBACK);	/* BSD lo0: 127.0.0.1 only */
 		lfd = tcp_srv_open_listener((struct sockaddr *)&lc, 0);
+		if (lfd < 0)
+			printf("close-listeners: open_listener: %s\n",
+			    strerror(errno));
 		CHECK(lfd >= 0, "close-listeners: listener opened");
 		if (lfd < 0)
 			return 1;
