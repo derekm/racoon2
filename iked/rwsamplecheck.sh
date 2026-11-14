@@ -19,6 +19,11 @@ chmod 600 "$T/psk/rw.psk" "$T/spmd.pwd" "$T/radius.secret"
 # extensions are explicit so the result does not depend on the platform's
 # openssl.cnf defaults (NetBSD's base config differs from Linux's)
 E="$T/openssl.err"
+# NetBSD (and other minimal installs) ship no /etc/openssl/openssl.cnf and
+# openssl req refuses to run without one: use a minimal private config
+printf '[req]\ndistinguished_name = req_dn\n[req_dn]\n' >"$T/openssl.cnf"
+OPENSSL_CONF="$T/openssl.cnf"
+export OPENSSL_CONF
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=rw-ca \
     -addext "basicConstraints=critical,CA:TRUE" \
     -addext "keyUsage=critical,keyCertSign,cRLSign" \
