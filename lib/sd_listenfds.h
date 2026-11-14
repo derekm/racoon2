@@ -11,6 +11,10 @@
 /* Number of fds passed by systemd, or 0 if not socket-activated. */
 int rc_listenfds(void);
 
+/* Strict decimal parse of LISTEN_PID/LISTEN_FDS (exported for tests):
+ * 1 and *valp set on success, 0 and *valp untouched otherwise. */
+int rc_parse_act_meta(const char *, int *);
+
 /*
  * Consume one inherited fd matching family + socktype.
  * port_host is host-order UDP/TCP port; 0 matches any (unix).

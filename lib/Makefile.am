@@ -188,4 +188,14 @@ rc_pcap_test_SOURCES = rc_pcap_test.c
 rc_pcap_test_LDADD = $(rc_net_test_LDADD)
 rc_pcap_test_LDFLAGS = -Wl,--wrap=plog -Wl,--wrap=plog_location
 
+# sd_listenfds_test pins SA-01/N4: strict LISTEN_PID/LISTEN_FDS decimal
+# parse (no whitespace, sign or trailing text; out-param untouched on
+# rejection) and rc_listenfds() end to end in a forked child per case.
+# Extensionless test -> the sample-wrapper LOG_COMPILER passes the (ignored)
+# sample config.
+TESTS += sd_listenfds_test
+check_PROGRAMS += sd_listenfds_test
+sd_listenfds_test_SOURCES = sd_listenfds_test.c
+sd_listenfds_test_LDADD = sd_listenfds.lo $(LTLIBOBJS)
+
 BUILT_SOURCES = cfparse.h

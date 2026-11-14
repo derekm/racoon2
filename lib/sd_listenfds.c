@@ -33,10 +33,11 @@ static unsigned int used;
  * Returns 0 (treat as absent / inactive) on any of:
  *   - NULL or empty string
  *   - ERANGE (value out of long range), or a long that does not fit an int
- *   - negative values
+ *   - negative values, a leading '+', leading/trailing whitespace
  *   - trailing text or other malformed (non-digit) input, e.g. "3junk"
  *   - input that contains no digits at all
- * Otherwise stores the parsed value in *valp and returns 1.
+ * Otherwise stores the parsed value in *valp and returns 1; *valp is left
+ * untouched on every rejection.
  *
  * This replaces the old atoi() parsing, which silently accepted trailing
  * text ("3junk" -> 3) and int-wrapped huge LISTEN_FDS values (a huge value
@@ -51,28 +52,33 @@ static unsigned int used;
  *     > 16 to 16); malformed / trailing / overflow / negative / empty ->
  *     treated as absent (rc_listenfds returns 0, not active).
  */
-static int
+int
 rc_parse_act_meta(const char *s, int *valp)
 {
 	char *end;
 	long v;
+	const char *q;
 
-	if (s == NULL || *s == '\0')
+	if (s == NULL || *s == '\0' || valp == NULL)
 		return 0;
+	/* N4: digits only.  strtol() alone also takes leading whitespace,
+	 * a '+' and a '-'; systemd writes a plain decimal. */
+	for (q = s; *q; q++)
+		if (*q < '0' || *q > '9')
+			return 0;
 
 	errno = 0;
 	v = strtol(s, &end, 10);
 	if (errno == ERANGE || end == s || *end != '\0')
 		return 0;
 
-	/* strtol yields a long; keep only values representable as an int. */
-	if (v < (long)INT_MIN || v > (long)INT_MAX)
+	/* strtol yields a long; keep only values representable as an int
+	 * (digits only, so v >= 0 here). */
+	if (v < 0 || v > (long)INT_MAX)
 		return 0;
 
+	/* N4: *valp is written only on success */
 	*valp = (int)v;
-	if (*valp < 0)
-		return 0;
-
 	return 1;
 }
 
