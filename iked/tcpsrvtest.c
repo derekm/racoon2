@@ -758,6 +758,9 @@ main(void)
 			c3.sin_family = AF_INET;
 			c3.sin_port = lc.sin_port;	/* same port as the closed listener */
 			c3.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			if (lfd3 < 0)
+				printf("reopen: open_listener: %s\n",
+				    strerror(errno));
 			CHECK(lfd3 >= 0, "reopen: listener rebinds on the same port");
 			if (lfd3 < 0)
 				return 1;
