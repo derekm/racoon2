@@ -4,7 +4,8 @@
  *        (symmetry, duplicate reuse, multiplicity, permutation, empties);
  *   CM-03 rcs_in_prefixlen2mask builds all 33 IPv4 masks correctly;
  *   CM-04 invalid prefixes leave the output zeroed (both v4 and v6);
- *   AS-02 rcs_getport rejects out-of-range/truncating/malformed ports.
+ *   AS-02 rcs_getport rejects out-of-range/truncating/malformed ports;
+ *   AS-01 rcs_prefixlen_ok / rcs_getaddrlist bound a prefix by family.
  *
  * The invalid-mask path logs via plog() before zeroing; plog needs a live
  * logging context, so plog is wrapped (--wrap=plog) to a no-op here, which
@@ -232,6 +233,42 @@ main(void)
 	chk("port 2^64+80 rejected (ERANGE)",
 	    rcs_getport("18446744073709551696"), -1);
 	chk("port any", rcs_getport("any"), 0);
+
+	/* ---- AS-01: prefix length bounded by the address family ---- */
+	{
+		struct sockaddr_in s4;
+		struct sockaddr_in6 s6;
+		struct sockaddr sx;
+		struct rc_addrlist *al = NULL;
+		int e;
+
+		memset(&s4, 0, sizeof(s4)); s4.sin_family = AF_INET;
+		memset(&s6, 0, sizeof(s6)); s6.sin6_family = AF_INET6;
+		memset(&sx, 0, sizeof(sx)); sx.sa_family = AF_UNIX;
+		chk("v4 /0 ok", rcs_prefixlen_ok((void *)&s4, 0), 1);
+		chk("v4 /32 ok", rcs_prefixlen_ok((void *)&s4, 32), 1);
+		chk("v4 /33 rejected", rcs_prefixlen_ok((void *)&s4, 33), 0);
+		chk("v4 /64 rejected (family mismatch)",
+		    rcs_prefixlen_ok((void *)&s4, 64), 0);
+		chk("v4 /-1 rejected", rcs_prefixlen_ok((void *)&s4, -1), 0);
+		/* 288 & 0xff == 32: must be rejected before uint8_t narrowing */
+		chk("v4 /288 rejected", rcs_prefixlen_ok((void *)&s4, 288), 0);
+		chk("v6 /128 ok", rcs_prefixlen_ok((void *)&s6, 128), 1);
+		chk("v6 /129 rejected", rcs_prefixlen_ok((void *)&s6, 129), 0);
+		chk("unknown family rejected", rcs_prefixlen_ok(&sx, 8), 0);
+		chk("NULL address rejected", rcs_prefixlen_ok(NULL, 8), 0);
+
+		e = rcs_getaddrlist("192.0.2.0/24", NULL, RCT_ADDR_INET, &al);
+		chk("getaddrlist 192.0.2.0/24 ok", e == 0 && al != NULL &&
+		    al->prefixlen == 24, 1);
+		rcs_free_addrlist(al); al = NULL;
+		e = rcs_getaddrlist("192.0.2.0/33", NULL, RCT_ADDR_INET, &al);
+		chk("getaddrlist 192.0.2.0/33 rejected", e != 0 && al == NULL, 1);
+		rcs_free_addrlist(al); al = NULL;
+		e = rcs_getaddrlist("2001:db8::/129", NULL, RCT_ADDR_INET, &al);
+		chk("getaddrlist 2001:db8::/129 rejected", e != 0 && al == NULL, 1);
+		rcs_free_addrlist(al); al = NULL;
+	}
 
 	printf("RC_NET_TEST_FAILS=%d\n", fails);
 	return fails ? 1 : 0;
