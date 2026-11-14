@@ -121,6 +121,13 @@ TESTS += rekeybackofftest
 check_PROGRAMS += rekeybackofftest
 rekeybackofftest_SOURCES = rekeybackofftest.c ikev2_rekey_backoff.c
 
+# SCH-01/S7: scheduler deadlines run on elapsed (monotonic) time; time()
+# and clock_gettime() are link-wrapped to an injected clock.
+TESTS += schedtest
+check_PROGRAMS += schedtest
+schedtest_SOURCES = schedtest.c schedule.c
+schedtest_LDFLAGS = -Wl,--wrap=time -Wl,--wrap=clock_gettime
+
 TESTS += notifytest
 check_PROGRAMS += notifytest
 notifytest_SOURCES = notifytest.c

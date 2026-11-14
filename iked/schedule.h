@@ -35,7 +35,7 @@
 /* scheduling table */
 /* the head is the nearest event. */
 struct sched {
-	time_t xtime;		/* event time which is as time(3). */
+	time_t xtime;		/* event time: seconds since sched_init() (monotonic) */
 				/*
 				 * if defined FIXY2038PROBLEM, this time
 				 * is from the time when called sched_init().

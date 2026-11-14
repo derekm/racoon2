@@ -70,6 +70,17 @@ static struct timeval timeout;
 static time_t launched;		/* time when the program launched. */
 static time_t deltaY2038;
 #endif
+#ifdef CLOCK_MONOTONIC
+/*
+ * SCH-01: deadlines run on CLOCK_MONOTONIC (elapsed time since
+ * sched_init) so a wall-clock step -- NTP correction, `date` set-back or
+ * set-forward -- neither stalls nor prematurely fires timers.  Wall time
+ * stays in sched->created (logging/dump only).  If the monotonic clock is
+ * unavailable at sched_init the FIXY2038 wall-clock base below is used.
+ */
+static struct timespec launched_mono;
+static int use_mono;
+#endif
 
 static TAILQ_HEAD(_schedtree, sched) sctree;
 
@@ -156,8 +167,9 @@ sched_new(time_t tick, void (*func) (void *), void *param)
 }
 
 /*
- * Seconds until this event. FIXY2038PROBLEM makes xtime relative to
- * sched_init(), so callers must not treat xtime as time(3).
+ * Seconds until this event. xtime is elapsed time since sched_init()
+ * (CLOCK_MONOTONIC, or the FIXY2038PROBLEM wall base), so callers must not
+ * treat xtime as time(3).
  */
 time_t
 sched_remaining(const struct sched *sc)
@@ -198,7 +210,19 @@ current_time(void)
 	time_t n;
 #ifdef FIXY2038PROBLEM
 	time_t t;
+#endif
 
+#ifdef CLOCK_MONOTONIC
+	if (use_mono) {
+		struct timespec ts;
+
+		if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+			n = ts.tv_sec - launched_mono.tv_sec;
+			return n < 0 ? 0 : n;
+		}
+	}
+#endif
+#ifdef FIXY2038PROBLEM
 	time(&n);
 	t = n - launched;
 	/*
@@ -301,6 +325,9 @@ sched_init(void)
 	time(&launched);
 
 	deltaY2038 = Y2038TIME_T - launched;
+#endif
+#ifdef CLOCK_MONOTONIC
+	use_mono = (clock_gettime(CLOCK_MONOTONIC, &launched_mono) == 0);
 #endif
 
 	TAILQ_INIT(&sctree);
