@@ -346,6 +346,55 @@ static void test_ap05(void)
 
 	unlink("ap_olap.conf");
 	unlink("ap_nolap.conf");
+
+	/* Every rcf_fix_addresspool rejection must release what it built so
+	 * far (the unlinked item, the pool being filled and the pools
+	 * already chained).  These are LeakSanitizer-gated in the ASan
+	 * lanes: a leak on any of these paths fails the test binary. */
+	{
+		static const struct {
+			const char *label, *cfg;
+		} bad[] = {
+		    { "overlap after a valid earlier pool",
+		      "addresspool ap_ok {\n"
+		      "  \"10.9.0.1\" - \"10.9.0.9\";\n"
+		      "};\n"
+		      "addresspool ap_bad {\n"
+		      "  \"10.9.1.1\" - \"10.9.1.9\";\n"
+		      "  \"10.9.2.1\" - \"10.9.2.9\";\n"
+		      "  \"10.9.2.5\" - \"10.9.2.20\";\n"
+		      "};\n" },
+		    { "reversed range",
+		      "addresspool ap_rev {\n"
+		      "  \"10.8.0.1\" - \"10.8.0.9\";\n"
+		      "  \"10.8.1.9\" - \"10.8.1.1\";\n"
+		      "};\n" },
+		    { "start/end family mismatch",
+		      "addresspool ap_fam {\n"
+		      "  \"10.7.0.1\" - \"10.7.0.9\";\n"
+		      "  \"10.7.1.1\" - \"2001:db8::9\";\n"
+		      "};\n" },
+		    { "unparsable address",
+		      "addresspool ap_junk {\n"
+		      "  \"10.6.0.1\" - \"10.6.0.9\";\n"
+		      "  \"not-an-address\" - \"10.6.1.9\";\n"
+		      "};\n" },
+		};
+		size_t i;
+		int rr;
+
+		for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+			if (write_cfg("ap_bad.conf", bad[i].cfg)) {
+				CHECK(0, "AP-05 could not write config file");
+				continue;
+			}
+			rr = rcf_read("ap_bad.conf", 0);
+			printf("   (reject: %s)\n", bad[i].label);
+			CHECK(rr != 0, "AP-05 invalid addresspool rejected");
+			rcf_clean();
+		}
+		unlink("ap_bad.conf");
+	}
 }
 
 int

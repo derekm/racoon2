@@ -3766,10 +3766,11 @@ rcf_fix_addresspool(struct rcf_addresspool **dst0)
 	rc_vchar_t	*end_str = 0;
 	int	start_af;
 	int	end_af;
-	struct rcf_address_pool_item	*r;
+	struct rcf_address_pool_item	*r = NULL;
 
 	new_head = 0;
 	new_tail = &new_head;
+	pool = NULL;
 
 	for (n = cf_lists->cf_addresspool_head; n; n = n->nexts) {
 		pool = rc_calloc(1, sizeof(struct rcf_addresspool));
@@ -3850,6 +3851,7 @@ rcf_fix_addresspool(struct rcf_addresspool **dst0)
 				}
 			}
 			LIST_INSERT_HEAD(&pool->pool_list, r, link);
+			r = NULL;	/* now owned by pool->pool_list */
 
 			rc_vfree(start_str);
 			rc_vfree(end_str);
@@ -3858,16 +3860,27 @@ rcf_fix_addresspool(struct rcf_addresspool **dst0)
 
 		*new_tail = pool;
 		new_tail = &pool->next;
+		pool = NULL;	/* now owned by new_head */
 	}
 
 	*dst0 = new_head;
 	return 0;
 
  err:
+	/* release everything built so far: the unlinked range item, the
+	 * pool being filled (its index and linked ranges) and every pool
+	 * already chained on new_head; *dst0 is left untouched. */
 	if (start_str)
 		rc_vfree(start_str);
 	if (end_str)
 		rc_vfree(end_str);
+	if (r)
+		rc_free(r);
+	if (pool) {
+		pool->next = NULL;
+		rcf_clean_addresspool_list(pool);
+	}
+	rcf_clean_addresspool_list(new_head);
 	return -1;
 }
 
