@@ -188,6 +188,15 @@ rc_pcap_test_SOURCES = rc_pcap_test.c
 rc_pcap_test_LDADD = $(rc_net_test_LDADD)
 rc_pcap_test_LDFLAGS = -Wl,--wrap=plog -Wl,--wrap=plog_location
 
+# rc_str_test pins the SX-04 rc_strex() budgets (Q6): the output budget
+# bounds the expanded string, not the sum over nested passes; growth and
+# self cycles still fail.  $[ENV] getter only; plog wrapped to a no-op.
+TESTS += rc_str_test
+check_PROGRAMS += rc_str_test
+rc_str_test_SOURCES = rc_str_test.c
+rc_str_test_LDADD = $(rc_net_test_LDADD)
+rc_str_test_LDFLAGS = -Wl,--wrap=plog -Wl,--wrap=plog_location
+
 # sd_listenfds_test pins SA-01/N4: strict LISTEN_PID/LISTEN_FDS decimal
 # parse (no whitespace, sign or trailing text; out-param untouched on
 # rejection) and rc_listenfds() end to end in a forked child per case.

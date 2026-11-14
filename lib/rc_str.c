@@ -55,7 +55,7 @@
 
 /*
  * Per-call expansion budgets (SX-04): bound the total number of macro
- * substitutions and the total size of accumulated output within a single
+ * substitutions and the size of the expanded string within a single
  * rc_strex() call, so a self/mutual reference or runaway growth returns -1
  * (fatal) instead of hanging or dying in the allocator.  A legitimate
  * finite expansion (even deeply nested / cross-type) needs nowhere near
@@ -234,7 +234,6 @@ rc_strex(char *src, char **dst)
 	struct strex_t *st;
 	size_t i;
 	unsigned long nsub = 0;	/* macro substitutions performed (SX-04) */
-	size_t outtotal = 0;	/* total bytes of accumulated output (SX-04) */
 
 	if ((mid = strdup(src)) == NULL)
 		return -1;
@@ -287,9 +286,14 @@ rc_strex(char *src, char **dst)
 					rc_free(mid);
 					return -1;
 				}
-				outtotal += strlen(vv);
-				/* output-size budget (SX-04) */
-				if (outtotal > RC_STREX_MAX_OUT) {
+				/* output-size budget (SX-04, Q6): bound the size
+				 * of the string being built (reslen is its exact
+				 * allocation, length + 1), not the sum over
+				 * passes -- a long legitimate value that needs a
+				 * few nested passes must not be charged once per
+				 * pass.  Runaway growth still trips this; a
+				 * non-growing cycle trips the nsub budget. */
+				if (reslen > (size_t)RC_STREX_MAX_OUT + 1) {
 					rc_free(vv);
 					rc_free(res);
 					rc_free(mid);
@@ -310,8 +314,7 @@ rc_strex(char *src, char **dst)
 				rc_free(mid);
 				return -1;
 			}
-			outtotal += strlen(mid) - (vs - mid);
-			if (outtotal > RC_STREX_MAX_OUT) {
+			if (reslen > (size_t)RC_STREX_MAX_OUT + 1) {
 				rc_free(res);
 				rc_free(mid);
 				return -1;
