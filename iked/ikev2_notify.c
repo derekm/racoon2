@@ -1769,6 +1769,11 @@ ikev2_redirect_gw_sadup(uint8_t type, rc_vchar_t *ident)
 		memcpy(&((struct sockaddr_in *)&ss)->sin_addr,
 		       ident->u, sizeof(struct in_addr));
 		((struct sockaddr_in *)&ss)->sin_port = htons(isakmp_port_dest);
+#ifdef HAVE_SA_LEN
+		/* rcs_sadup() copies SA_LEN() bytes: on BSD that is sa_len,
+		 * so an unset length duplicated nothing (S11, notifytest) */
+		((struct sockaddr_in *)&ss)->sin_len = sizeof(struct sockaddr_in);
+#endif
 		break;
 	case 2:
 		if (ident->l != 16)
@@ -1778,6 +1783,10 @@ ikev2_redirect_gw_sadup(uint8_t type, rc_vchar_t *ident)
 		       ident->u, sizeof(struct in6_addr));
 		((struct sockaddr_in6 *)&ss)->sin6_port =
 		    htons(isakmp_port_dest);
+#ifdef HAVE_SA_LEN
+		((struct sockaddr_in6 *)&ss)->sin6_len =
+		    sizeof(struct sockaddr_in6);
+#endif
 		break;
 	default:
 		return NULL;
