@@ -608,6 +608,8 @@ main(void)
 		 * 127.0.0.2 there fails EADDRNOTAVAIL. */
 		lb.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 		lfd2 = tcp_srv_open_listener((struct sockaddr *)&lb, 0);
+		if (lfd2 < 0)
+			printf("simul: open_listener: %s\n", strerror(errno));
 		CHECK(lfd2 >= 0, "simul: second listener opened");
 		if (lfd2 < 0)
 			return 1;
