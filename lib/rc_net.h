@@ -54,6 +54,8 @@ extern int rcs_addrlist_cmp(struct rc_addrlist *, struct rc_addrlist *);
 extern void rcs_in_prefixlen2mask(uint32_t *, int len);
 extern void rcs_in6_prefixlen2mask(struct in6_addr *, int len);
 extern int rcs_prefixlen_ok(const struct sockaddr *, int);
+/* ifname vs (possibly unterminated) IFNAMSIZ ifr_name; 1 = equal */
+extern int rcs_ifreq_name_eq(const char *, const char *);
 
 #ifdef HAVE_SA_LEN
 #define SA_LEN(sa) ((sa)->sa_len)

@@ -5,7 +5,8 @@
  *   CM-03 rcs_in_prefixlen2mask builds all 33 IPv4 masks correctly;
  *   CM-04 invalid prefixes leave the output zeroed (both v4 and v6);
  *   AS-02 rcs_getport rejects out-of-range/truncating/malformed ports;
- *   AS-01 rcs_prefixlen_ok / rcs_getaddrlist bound a prefix by family.
+ *   AS-01 rcs_prefixlen_ok / rcs_getaddrlist bound a prefix by family;
+ *   N1    rcs_ifreq_name_eq never over-reads an unterminated ifr_name.
  *
  * The invalid-mask path logs via plog() before zeroing; plog needs a live
  * logging context, so plog is wrapped (--wrap=plog) to a no-op here, which
@@ -22,6 +23,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <net/if.h>
 #include "racoon.h"
 #include "rc_net.h"
 
@@ -121,6 +123,29 @@ main(void)
 	uint32_t m;
 	struct in6_addr m6;
 	int i;
+
+	/* ---- N1/IE-04: ifname vs unterminated IFNAMSIZ ifr_name ---- */
+	{
+		char full[IFNAMSIZ], term[IFNAMSIZ];
+		char longreq[IFNAMSIZ + 4];
+
+		memset(full, 'e', sizeof(full));	/* no NUL anywhere */
+		memset(term, 0, sizeof(term));
+		memcpy(term, "eth0", 4);
+		memset(longreq, 'e', sizeof(longreq) - 1);
+		longreq[sizeof(longreq) - 1] = '\0';
+		chk("ifreq eq terminated", rcs_ifreq_name_eq("eth0", term), 1);
+		chk("ifreq ne terminated", rcs_ifreq_name_eq("eth1", term), 0);
+		chk("ifreq prefix ne", rcs_ifreq_name_eq("eth", term), 0);
+		/* full-width unterminated name: never read past IFNAMSIZ, and
+		 * a request that cannot fit never matches */
+		chk("ifreq unterminated vs long req",
+		    rcs_ifreq_name_eq(longreq, full), 0);
+		longreq[IFNAMSIZ - 1] = '\0';	/* 15 chars: fits */
+		chk("ifreq unterminated vs 15-char req",
+		    rcs_ifreq_name_eq(longreq, full), 0);
+		chk("ifreq NULL", rcs_ifreq_name_eq(NULL, term), 0);
+	}
 
 	/* ---- CM-01: multiset compare ---- */
 	x = mkv4(aa, 2); y = mkv4(aa, 2);

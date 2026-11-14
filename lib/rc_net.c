@@ -580,7 +580,7 @@ getifaddrlist(int family, const char *ifname)
 		/* IE-04: the fallback must honor the requested ifname, as the
 		 * getifaddrs branch does - otherwise it returns every matching
 		 * interface's addresses. */
-		if (ifname && strcmp(ifname, ifr->ifr_name))
+		if (ifname && !rcs_ifreq_name_eq(ifname, ifr->ifr_name))
 			continue;
 		if (family != AF_UNSPEC &&
 		    ifr->ifr_addr.sa_family != family)
@@ -644,6 +644,22 @@ if_maxindex()
 /*
  * it return all addresses.
  */
+/*
+ * N1: compare a requested interface name against an ifreq ifr_name,
+ * which is IFNAMSIZ bytes and need not be NUL-terminated.  A request
+ * that cannot fit in ifr_name never matches (rather than matching a
+ * truncated prefix).
+ */
+int
+rcs_ifreq_name_eq(const char *want, const char *ifrname)
+{
+	if (!want || !ifrname)
+		return 0;
+	if (strnlen(want, IFNAMSIZ) >= IFNAMSIZ)
+		return 0;
+	return strncmp(want, ifrname, IFNAMSIZ) == 0;
+}
+
 int
 rcs_getifaddrlist(struct rc_addrlist **al0)
 {
