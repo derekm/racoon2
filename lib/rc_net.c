@@ -58,6 +58,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <string.h>
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 
@@ -1019,6 +1020,7 @@ int
 rcs_getport(const char *str)
 {
 	int nport = 0;
+	long lport;
 	struct servent *ent;
 	char *bp;
 
@@ -1034,11 +1036,18 @@ rcs_getport(const char *str)
 	 * or overflow values and an empty/underspecified string are invalid
 	 * (return -1, which the caller maps to EAI_SERVICE), so a macro path
 	 * cannot htons() a wrapped or out-of-range port. */
-	errno = 0;
-	nport = (int)strtol(str, &bp, 10);
-	if (errno == ERANGE || bp == str || *bp != '\0' ||
-	    nport < 0 || nport > 65535)
+	/* Range-check the long BEFORE narrowing: on LP64 a value such as
+	 * "4294967297" fits a long (no ERANGE) but (int) truncates it to 1,
+	 * which used to pass the 0..65535 check.  Plain decimal digits only
+	 * (strtol would also take leading blanks and a sign). */
+	if (!isdigit((unsigned char)str[0]))
 		return -1;
+	errno = 0;
+	lport = strtol(str, &bp, 10);
+	if (errno == ERANGE || bp == str || *bp != '\0' ||
+	    lport < 0 || lport > 65535)
+		return -1;
+	nport = (int)lport;
 
 	return nport;
 }
