@@ -56,6 +56,27 @@ capture(rc_vchar_t *pkt, struct sockaddr *remote, struct sockaddr *local,
 	return 0;
 }
 
+/* The client's connect can complete before the server side is accept()able:
+ * on FreeBSD the loopback ACK that finishes the passive handshake is
+ * deferred through netisr, so a single tcp_srv_accept_pending() right after
+ * wait_connect() may still see EAGAIN (Linux processes it inline).  Keep
+ * accepting, as the iked main loop would on the next listener wake, until
+ * the registry holds `want` streams or `ms` pass.  Returns the number
+ * accepted. */
+static int
+accept_until_count(int want, int ms)
+{
+	int n = 0;
+
+	for (; ms > 0; ms -= 10) {
+		n += tcp_srv_accept_pending();
+		if (tcp_srv_count() >= want)
+			break;
+		(void)poll(NULL, 0, 10);
+	}
+	return n;
+}
+
 static int
 wait_connect(struct tcp_stream *ts, int ms)
 {
@@ -192,7 +213,7 @@ main(void)
 	CHECK(wait_connect(cli1, 3000) == 0 && wait_connect(cli2, 3000) == 0,
 	      "connect: both completed");
 
-	CHECK(tcp_srv_accept_pending() == 2 && tcp_srv_count() == 2,
+	CHECK(accept_until_count(2, 3000) == 2 && tcp_srv_count() == 2,
 	      "accept: 2 streams registered");
 
 	/* find: the registered stream resolves by (client src, listener local) */
