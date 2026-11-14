@@ -70,7 +70,8 @@ run_secure_tests(void)
 {
 	char dir[] = "/tmp/r2safefileXXXXXX";
 	char secret_ok[512], secret_world[512], foreign[512], nonreg[512];
-	char pub_ok[512], pub_wr[512], priv_ok[512], priv_loose[512];
+	char pub_ok[512], pub_wr[512], pub_gw[512], pub_ow[512];
+	char priv_ok[512], priv_loose[512];
 	uid_t me = getuid();
 
 	umask(0);
@@ -115,18 +116,54 @@ run_secure_tests(void)
 	}
 
 	/*
-	 * non-secret files: public readability / group+other-write are ACCEPTED
-	 * for sec=0 (the permission gate is intentionally secret-only).
+	 * non-secret files (SF-02): public readability and group write are
+	 * ACCEPTED for sec=0; world write is REJECTED (integrity of trust
+	 * anchors / peer keys).  The secret gate is unchanged.
 	 */
 	snprintf(pub_ok, sizeof pub_ok, "%s/pub_ok", dir);
 	snprintf(pub_wr, sizeof pub_wr, "%s/pub_wr", dir);
-	if (touch_file(pub_ok, 0644) < 0 || touch_file(pub_wr, 0666) < 0) {
+	snprintf(pub_gw, sizeof pub_gw, "%s/pub_gw", dir);
+	snprintf(pub_ow, sizeof pub_ow, "%s/pub_ow", dir);
+	if (touch_file(pub_ok, 0644) < 0 || touch_file(pub_wr, 0666) < 0 ||
+	    touch_file(pub_gw, 0664) < 0 || touch_file(pub_ow, 0602) < 0) {
 		fprintf(stderr, "fixture setup failed\n");
 		return 2;
 	}
 	check("safefile public 0644 sec=0", RC_SAFEFILE_SAFE, rc_safefile(pub_ok, 0));
-	check("safefile group/other-wr 0666 sec=0", RC_SAFEFILE_SAFE,
+	check("safefile group-wr 0664 sec=0", RC_SAFEFILE_SAFE,
+	      rc_safefile(pub_gw, 0));
+	check("safefile world-wr 0666 sec=0", RC_SAFEFILE_PERMISSION,
 	      rc_safefile(pub_wr, 0));
+	check("safefile world-wr-only 0602 sec=0", RC_SAFEFILE_PERMISSION,
+	      rc_safefile(pub_ow, 0));
+	check("safefile world-wr 0666 sec=1", RC_SAFEFILE_PERMISSION,
+	      rc_safefile(pub_wr, 1));
+
+	/* SF-05: errno path reports the stat(2) failure */
+	{
+		char missing[600];
+		int rc;
+		const char *msg;
+
+		snprintf(missing, sizeof missing, "%s/does-not-exist", dir);
+		errno = 0;
+		rc = rc_safefile(missing, 0);
+		msg = rc_safefile_strerror(rc);
+		check("safefile missing -> ERRNO", RC_SAFEFILE_ERRNO, rc);
+		check("safefile missing errno ENOENT", ENOENT, errno);
+		check("safefile missing message", 0,
+		      strcmp(msg, strerror(ENOENT)));
+		/* every defined code has its own message; out of range
+		 * stays guarded */
+		check("strerror code 5", 0, strcmp(rc_safefile_strerror(
+		      RC_SAFEFILE_PERMISSION), "weak file permission"));
+		check("strerror code 4", 0, strcmp(rc_safefile_strerror(
+		      RC_SAFEFILE_NOTDIR), "not a directory"));
+		check("strerror out of range", 0,
+		      strcmp(rc_safefile_strerror(6), "unknown error"));
+		check("strerror negative", 0,
+		      strcmp(rc_safefile_strerror(-2), "unknown error"));
+	}
 
 	/* rc_privatedir: 0700 accept, 0777 reject RC_SAFEFILE_PERMISSION (5) */
 	snprintf(priv_ok, sizeof priv_ok, "%s/priv_ok", dir);
@@ -144,6 +181,8 @@ run_secure_tests(void)
 	unlink(foreign);
 	unlink(pub_ok);
 	unlink(pub_wr);
+	unlink(pub_gw);
+	unlink(pub_ow);
 	rmdir(nonreg);
 	rmdir(priv_ok);
 	rmdir(priv_loose);

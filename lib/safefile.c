@@ -36,6 +36,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <string.h>
 #include <unistd.h>
 #include <inttypes.h>
 
@@ -55,6 +56,9 @@ rc_safefile_strerror(int err)
 		"weak file permission"
 	};
 
+	/* SF-05: RC_SAFEFILE_ERRNO formats the ambient errno, so call this
+	 * (or strerror(errno)) before anything else can clobber it; every
+	 * in-tree caller formats immediately after rc_safefile(). */
 	if (err == RC_SAFEFILE_ERRNO)
 		return strerror(errno);
 	else if (err < 0 || (size_t)err >= ARRAYLEN(msgs))
@@ -107,6 +111,15 @@ rc_safefile(const char *path, int secret)
 		if ((s.st_mode & S_IRWXG) != 0 || (s.st_mode & S_IRWXO) != 0)
 			return RC_SAFEFILE_PERMISSION; /* the file has weak file permission */
 	}
+	/*
+	 * SF-02: non-secret files (certificates, peer public keys, CA
+	 * files) need integrity, not confidentiality.  A world-writable
+	 * one lets any local user substitute a trust anchor or peer key,
+	 * so refuse it.  Group write stays accepted: shared admin groups
+	 * are a supported deployment (doc/secure-files.md).
+	 */
+	if ((s.st_mode & S_IWOTH) != 0)
+		return RC_SAFEFILE_PERMISSION;
 #endif
 
 	return 0;

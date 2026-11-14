@@ -6311,8 +6311,8 @@ ike_conf_check_ikev2(struct rcf_remote *rmconf, int *err, int *warn,
 					case -1:
 						++*err;
 						plog(PLOG_INTERR, PLOGLOC, 0,
-						     "remote %s ikev2 section, failed accessing pre_shared_key file %s\n",
-						     rm_index, path);
+						     "remote %s ikev2 section, failed accessing pre_shared_key file %s: %s\n",
+						     rm_index, path, strerror(errno));
 						break;
 					default:
 						++*err;
