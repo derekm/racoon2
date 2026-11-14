@@ -28,9 +28,10 @@
  *   VB-04 rc_vconcat is safe for a compliant-but-overlapping slice caller
  *         (snapshot before the relocating rc_vrealloc / memmove) and keeps
  *         normal non-alias output equal to dest followed by data.  The
- *         overlap test forces rc_realloc to actually MOVE the buffer (via
- *         malloc_usable_size size classes) so the snapshot branch is
- *         genuinely required.
+ *         overlap test forces rc_realloc to actually MOVE the buffer so
+ *         the snapshot branch is genuinely required; the move is forced
+ *         by __wrap_realloc (g_move_oldlen: allocate new, copy, poison +
+ *         free the old block), portable to every libc.
  *   VB-05 rc_vmemcmp keeps the correct ordering sign when the length
  *         difference exceeds INT_MAX, plus equal/unequal/empty; rc_vmem2str
  *         returns NULL (not a crash) when the scratch allocation fails.
@@ -42,7 +43,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <malloc.h>		/* malloc_usable_size (glibc/.179) */
 
 #include "vmbuf.h"
 #include "rbuf.h"
@@ -98,14 +98,31 @@ void *__wrap_calloc(size_t n, size_t s)
 		return NULL;
 	return __real_calloc(n, s);
 }
+/* when nonzero, the NEXT realloc of a non-NULL block is forced to
+ * relocate: new block, copy min(g_move_oldlen, n) bytes, poison the old
+ * block (0xa5) and free it, so a stale read of the moved-away source
+ * returns wrong bytes (and is a use-after-free under ASan).  One-shot. */
+static size_t g_move_oldlen;
 void *__real_realloc(void *, size_t);
+void __real_free(void *);
 void *__wrap_realloc(void *p, size_t n)
 {
 	if (g_fail_ge != 0 && n >= g_fail_ge)
 		return NULL;
+	if (g_move_oldlen != 0 && p != NULL && n != 0) {
+		size_t old = g_move_oldlen;
+		void *q = malloc(n);
+
+		g_move_oldlen = 0;
+		if (q == NULL)
+			return NULL;
+		memcpy(q, p, old < n ? old : n);
+		memset(p, 0xa5, old);
+		__real_free(p);
+		return q;
+	}
 	return __real_realloc(p, n);
 }
-void __real_free(void *);
 void __wrap_free(void *p)
 {
 	s_free_count++;
@@ -241,10 +258,10 @@ test_mem2str_normal(void)
 static void
 test_concat_overlap(void)
 {
-	size_t L = 16384;	/* vmbuf length: glibc usable ~16.4 KiB */
+	size_t L = 16384;
 	rc_vchar_t *b, *r;
-	void *blk[4], *origv;
-	size_t i, j;
+	void *origv;
+	size_t i;
 	int ok;
 
 	/* MOVING-REALLOC OVERLAP RED TEST: force rc_realloc (realloc) to
@@ -252,15 +269,14 @@ test_concat_overlap(void)
 	 * branch is genuinely required — a deleted snapshot lets the source
 	 * slice read the old, moved-away memory -> wrong bytes.
 	 *
-	 * glibc/.179: a dest chunk has usable malloc_usable_size(dest->v)
-	 * (~16.4 KiB for a 16 KiB request).  Growing it past that capacity is
-	 * guaranteed to RELOCATE when four LIVE blocker chunks are allocated
-	 * immediately after dest (so realloc cannot extend in place; verified
-	 * 1500/1500 with and without the snapshot allocation).  All payload
-	 * bytes are distinct (index & 0xff) so a stale post-move read of the
-	 * source yields a wrong tail -> FAIL.  (The move must hold in BOTH
-	 * the snapshot and snapshotless builds so the red only fires on the
-	 * real bug, not on a construction assumption.) */
+	 * The relocation is forced by __wrap_realloc (g_move_oldlen), which
+	 * poisons and frees the old block, so it holds on every libc and in
+	 * BOTH the snapshot and snapshotless builds: the red only fires on
+	 * the real bug, not on a heap-layout assumption.  (The former
+	 * malloc_usable_size + blocker-chunk construction was glibc-only and
+	 * did not link on NetBSD.)  All payload bytes are distinct
+	 * (index & 0xff) so a stale post-move read of the source yields a
+	 * wrong tail -> FAIL. */
 
 	/* (A) self-append (data == dest->v, len == dest->l) forced to move */
 	b = rc_vmalloc(L);
@@ -269,11 +285,11 @@ test_concat_overlap(void)
 		return;
 	for (i = 0; i < L; i++)
 		((unsigned char *)b->v)[i] = (unsigned char)(i & 0xff);
-	CHECK(malloc_usable_size(b->v) < 2 * L);/* append must exceed usable */
-	for (j = 0; j < 4; j++)
-		blk[j] = malloc(2 * L);		/* live chunks right after dest */
 	origv = b->v;
+	g_move_oldlen = L;			/* force the regrow to move */
 	r = rc_vconcat(b, b->v, b->l);		/* data aliases dest->v (self) */
+	CHECK(g_move_oldlen == 0);	/* the regrow went through realloc */
+	g_move_oldlen = 0;
 	CHECK(r != NULL);
 	if (!r)
 		goto done_ab;
@@ -287,8 +303,6 @@ test_concat_overlap(void)
 	CHECK(ok);	/* exactly dest followed by src */
 done_ab:
 	rc_vfree(b);
-	for (j = 0; j < 4; j++)
-		free(blk[j]);
 
 	/* (B) mid-buffer slice (data = dest->v + L/4, len = L/2): fresh dest,
 	 * same relocating construction */
@@ -298,10 +312,11 @@ done_ab:
 		return;
 	for (i = 0; i < L; i++)
 		((unsigned char *)b->v)[i] = (unsigned char)(i & 0xff);
-	for (j = 0; j < 4; j++)
-		blk[j] = malloc(2 * L);		/* live chunks right after dest */
 	origv = b->v;
+	g_move_oldlen = L;
 	r = rc_vconcat(b, b->v + L / 4, L / 2);	/* regrow to 1.5 * L -> move */
+	CHECK(g_move_oldlen == 0);
+	g_move_oldlen = 0;
 	CHECK(r != NULL);
 	if (!r)
 		goto done_cd;
@@ -315,8 +330,6 @@ done_ab:
 	CHECK(ok);	/* exactly dest followed by the slice */
 done_cd:
 	rc_vfree(b);
-	for (j = 0; j < 4; j++)
-		free(blk[j]);
 }
 
 /* ---------- VB-02 : zero-size / empty-buffer semantics ---------- */
