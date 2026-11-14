@@ -690,18 +690,37 @@ suitable_ifaddr(const char *ifname, const struct sockaddr *ifaddr)
 }
 
 #ifdef __linux__
+#include <linux/if_addr.h>	/* IFA_F_TENTATIVE, IFA_F_DADFAILED */
+#endif
+/* Linux ABI values of the if_inet6 flags column, for non-Linux builds
+ * of the (portable) parser below. */
+#ifndef IFA_F_DADFAILED
+#define IFA_F_DADFAILED	0x08
+#endif
+#ifndef IFA_F_TENTATIVE
+#define IFA_F_TENTATIVE	0x40
+#endif
+
 /*
  * IE-02: glibc's getifaddrs() does not expose per-IPv6-address state in
  * ifa_data (it is NULL for AF_INET6 entries), so the former
  * *(unsigned int*)ifa->ifa_data read never ran and tentative / DAD-failed
  * addresses were silently accepted.  Read the real IFA_F_* flags from
- * /proc/net/if_inet6 and exclude IFA_F_TENTATIVE (0x40) / IFA_F_DADFAILED
- * (0x08).  Returns 1 if the address is tentative or DAD-failed; 0 otherwise
- * (an absent /proc or an unmatched line is treated as not-tentative, a
- * documented presence-only fallback).
+ * /proc/net/if_inet6 (format: addr ifindex prefix scope flags device, all
+ * hex but the device) and exclude IFA_F_TENTATIVE / IFA_F_DADFAILED.
+ *
+ * rcs_if_inet6_tentative() takes the file path so the parser can be pinned
+ * against fixtures; it returns 1 if the address is tentative or
+ * DAD-failed, 0 if listed and usable or not listed, and -1 if the file
+ * cannot be opened.  The caller treats -1 as "usable" on purpose (N7
+ * decision): without /proc (chroot, non-Linux emulation) refusing every
+ * IPv6 address would be a regression, and the kernel itself refuses to
+ * source from a tentative address, so failing open here only loses the
+ * early filtering.
  */
-static int
-linux_ifaddr6_tentative(const char *ifname, const struct in6_addr *addr)
+int
+rcs_if_inet6_tentative(const char *path, const char *ifname,
+    const struct in6_addr *addr)
 {
 	FILE *f;
 	char hexi[33];
@@ -712,36 +731,48 @@ linux_ifaddr6_tentative(const char *ifname, const struct in6_addr *addr)
 		snprintf(&hexi[i * 2], 3, "%02x", addr->s6_addr[i]);
 	hexi[32] = '\0';
 
-	if ((f = fopen("/proc/net/if_inet6", "r")) == NULL)
-		return 0;
+	if ((f = fopen(path, "r")) == NULL)
+		return -1;
 
 	while (fgets(line, sizeof(line), f)) {
 		char a[64] = "";
 		char dev[64] = "";
-		char *p;
+		char *p, *end;
 		unsigned long flags = 0;
 
 		/* addr ifindex prefix scope flags [device] */
-		if ((p = strtok(line, " 	\n")) == NULL)
+		if ((p = strtok(line, " \t\n")) == NULL)
 			continue;
 		snprintf(a, sizeof(a), "%s", p);
-		strtok(NULL, " 	\n");	/* ifindex */
-		strtok(NULL, " 	\n");	/* prefix  */
-		strtok(NULL, " 	\n");	/* scope   */
-		if ((p = strtok(NULL, " 	\n")) == NULL)
+		if (strtok(NULL, " \t\n") == NULL ||	/* ifindex */
+		    strtok(NULL, " \t\n") == NULL ||	/* prefix  */
+		    strtok(NULL, " \t\n") == NULL)	/* scope   */
 			continue;
-		flags = strtoul(p, NULL, 16);
-		if ((p = strtok(NULL, " 	\n")) != NULL)
+		if ((p = strtok(NULL, " \t\n")) == NULL)
+			continue;
+		flags = strtoul(p, &end, 16);
+		if (end == p || *end != '\0')
+			continue;	/* malformed flags field */
+		if ((p = strtok(NULL, " \t\n")) != NULL)
 			snprintf(dev, sizeof(dev), "%s", p);
 
 		if (strcmp(a, hexi) == 0 &&
 		    (ifname == NULL || strcmp(dev, ifname) == 0)) {
-			r = (flags & 0x08) || (flags & 0x40) ? 1 : 0;
+			r = (flags & (IFA_F_DADFAILED | IFA_F_TENTATIVE)) ?
+			    1 : 0;
 			break;
 		}
 	}
 	fclose(f);
 	return r;
+}
+
+#ifdef __linux__
+static int
+linux_ifaddr6_tentative(const char *ifname, const struct in6_addr *addr)
+{
+	/* -1 (no /proc) is treated as usable; see rcs_if_inet6_tentative */
+	return rcs_if_inet6_tentative("/proc/net/if_inet6", ifname, addr) == 1;
 }
 #endif
 

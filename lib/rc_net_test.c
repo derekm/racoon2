@@ -7,7 +7,8 @@
  *         (N9) are reported with -1, valid ones with 0;
  *   AS-02 rcs_getport rejects out-of-range/truncating/malformed ports;
  *   AS-01 rcs_prefixlen_ok / rcs_getaddrlist bound a prefix by family;
- *   N1    rcs_ifreq_name_eq never over-reads an unterminated ifr_name.
+ *   N1    rcs_ifreq_name_eq never over-reads an unterminated ifr_name;
+ *   N7    rcs_if_inet6_tentative parses /proc/net/if_inet6 fixtures.
  *
  * The invalid-mask path logs via plog() before zeroing; plog needs a live
  * logging context, so plog is wrapped (--wrap=plog) to a no-op here, which
@@ -19,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <stdint.h>
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -146,6 +148,52 @@ main(void)
 		chk("ifreq unterminated vs 15-char req",
 		    rcs_ifreq_name_eq(longreq, full), 0);
 		chk("ifreq NULL", rcs_ifreq_name_eq(NULL, term), 0);
+	}
+
+	/* ---- N7/IE-02: /proc/net/if_inet6 parser on fixtures ---- */
+	{
+		char path[] = "/tmp/r2ifinet6XXXXXX";
+		int fd = mkstemp(path);
+		FILE *f;
+		struct in6_addr a1, a2, a3, a4, a5;
+
+		if (fd < 0 || (f = fdopen(fd, "w")) == NULL)
+			exit(2);
+		/* addr ifindex prefix scope flags dev  (flags hex: 0x80
+		 * PERMANENT, 0x40 TENTATIVE, 0x08 DADFAILED, 0x20 DEPRECATED) */
+		fprintf(f,
+		    "20010db8000000000000000000000001 02 40 00 80     eth0\n"
+		    "20010db8000000000000000000000002 02 40 00 c0     eth0\n"
+		    "20010db8000000000000000000000003 02 40 00 88     eth0\n"
+		    "20010db8000000000000000000000004 03 40 00 a0     eth1\n"
+		    "20010db8000000000000000000000004 02 40 00 40     eth0\n"
+		    "20010db8000000000000000000000005 02 40 00 zz     eth0\n"
+		    "20010db8000000000000000000000005 02 40\n");
+		fclose(f);
+		inet_pton(AF_INET6, "2001:db8::1", &a1);
+		inet_pton(AF_INET6, "2001:db8::2", &a2);
+		inet_pton(AF_INET6, "2001:db8::3", &a3);
+		inet_pton(AF_INET6, "2001:db8::4", &a4);
+		inet_pton(AF_INET6, "2001:db8::5", &a5);
+		chk("if_inet6 permanent usable",
+		    rcs_if_inet6_tentative(path, "eth0", &a1), 0);
+		chk("if_inet6 tentative",
+		    rcs_if_inet6_tentative(path, "eth0", &a2), 1);
+		chk("if_inet6 dadfailed",
+		    rcs_if_inet6_tentative(path, "eth0", &a3), 1);
+		chk("if_inet6 deprecated (not tentative) on eth1",
+		    rcs_if_inet6_tentative(path, "eth1", &a4), 0);
+		chk("if_inet6 same addr tentative on eth0",
+		    rcs_if_inet6_tentative(path, "eth0", &a4), 1);
+		chk("if_inet6 any-if first match",
+		    rcs_if_inet6_tentative(path, NULL, &a4), 0);
+		chk("if_inet6 malformed/short lines skipped",
+		    rcs_if_inet6_tentative(path, "eth0", &a5), 0);
+		chk("if_inet6 unlisted",
+		    rcs_if_inet6_tentative(path, "eth9", &a1), 0);
+		unlink(path);
+		chk("if_inet6 missing file -> -1",
+		    rcs_if_inet6_tentative(path, "eth0", &a1), -1);
 	}
 
 	/* ---- CM-01: multiset compare ---- */

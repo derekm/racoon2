@@ -57,6 +57,9 @@ extern int rcs_in6_prefixlen2mask(struct in6_addr *, int len);
 extern int rcs_prefixlen_ok(const struct sockaddr *, int);
 /* ifname vs (possibly unterminated) IFNAMSIZ ifr_name; 1 = equal */
 extern int rcs_ifreq_name_eq(const char *, const char *);
+/* /proc/net/if_inet6-format parser: 1 tentative/DAD-failed, 0 not, -1 no file */
+extern int rcs_if_inet6_tentative(const char *path, const char *ifname,
+    const struct in6_addr *);
 
 #ifdef HAVE_SA_LEN
 #define SA_LEN(sa) ((sa)->sa_len)
