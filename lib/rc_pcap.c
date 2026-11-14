@@ -53,6 +53,12 @@
 #include <netinet/ip6.h>
 #include <netinet/udp.h>
 
+/* glibc only defines the BSD IPV6_VERSION from 2.39 on (jammy/bookworm
+ * lack it); the version is the high nibble of the first byte (PC-01). */
+#ifndef IPV6_VERSION
+#define IPV6_VERSION	0x60
+#endif
+
 #include <stdlib.h>
 #include <pcap.h>
 
@@ -71,26 +77,34 @@ rc_pcap_push(struct sockaddr *src, struct sockaddr *dst, rc_vchar_t *data)
 	struct pcap_pkthdr hdr;
 	char dummy_hdr[128];
 	rc_vchar_t *packet = 0;
-	struct ether_header *ehdr;
-	struct ip *ip;
-	struct ip6_hdr *ip6;
-	struct udphdr *udp;
+	/* Build each header in its own (correctly aligned) object and copy
+	 * it into the byte buffer: the IP header sits at offset 14 of
+	 * dummy_hdr, so writing it through a struct ip / ip6_hdr pointer
+	 * there is a misaligned access (UBSan: "member access within
+	 * misaligned address ... struct ip6_hdr"). */
+	struct ether_header eh, *ehdr = &eh;
+	struct ip ip4h, *ip = &ip4h;
+	struct ip6_hdr ip6h, *ip6 = &ip6h;
+	struct udphdr udph, *udp = &udph;
 	int header_len;
 
 	/* create dummy ether/ip header */
 	memset(dummy_hdr, 0, sizeof(dummy_hdr));
-	ehdr = (void *)dummy_hdr;
+	memset(&eh, 0, sizeof(eh));
+	memset(&ip4h, 0, sizeof(ip4h));
+	memset(&ip6h, 0, sizeof(ip6h));
+	memset(&udph, 0, sizeof(udph));
 	header_len = sizeof(*ehdr);
 	switch (src->sa_family) {
 	case AF_INET:
 		ehdr->ether_type = htons(ETHERTYPE_IP);
-		ip = (void *)&dummy_hdr[header_len];
 		ip->ip_hl = sizeof(*ip) >> 2;
 		ip->ip_v = IPVERSION;
 		ip->ip_len = htons(sizeof(*ip) + sizeof(*udp) + data->l);
 		ip->ip_p = IPPROTO_UDP;
 		memcpy(&ip->ip_src, rcs_getsaaddr(src), sizeof(ip->ip_src));
 		memcpy(&ip->ip_dst, rcs_getsaaddr(dst), sizeof(ip->ip_dst));
+		memcpy(&dummy_hdr[header_len], ip, sizeof(*ip));
 		header_len += sizeof(*ip);
 		break;
 	case AF_INET6:
@@ -99,7 +113,6 @@ rc_pcap_push(struct sockaddr *src, struct sockaddr *dst, rc_vchar_t *data)
 #else
 		ehdr->ether_type = htons(ETHERTYPE_IPV6);
 #endif
-		ip6 = (void *)&dummy_hdr[header_len];
 		/* IPv6 version is the HIGH 4 bits of the first byte, so the value
 		 * is 0x60 (version 6), NOT a literal 6 (0x06 = version 0).  The
 		 * Linux branch previously wrote 6, so the synthetic header did
@@ -109,6 +122,7 @@ rc_pcap_push(struct sockaddr *src, struct sockaddr *dst, rc_vchar_t *data)
 		ip6->ip6_nxt = IPPROTO_UDP;
 		memcpy(&ip6->ip6_src, rcs_getsaaddr(src), sizeof(ip6->ip6_src));
 		memcpy(&ip6->ip6_dst, rcs_getsaaddr(dst), sizeof(ip6->ip6_dst));
+		memcpy(&dummy_hdr[header_len], ip6, sizeof(*ip6));
 		header_len += sizeof(*ip6);
 		break;
 	default:
@@ -116,7 +130,7 @@ rc_pcap_push(struct sockaddr *src, struct sockaddr *dst, rc_vchar_t *data)
 		    "unknown protocol %d\n", src->sa_family);
 		return;
 	}
-	udp = (void *)&dummy_hdr[header_len];
+	memcpy(dummy_hdr, ehdr, sizeof(*ehdr));
 #ifdef __linux__
 #ifdef ALWAYS_PORT500
 	udp->source = 500;
@@ -139,6 +153,7 @@ rc_pcap_push(struct sockaddr *src, struct sockaddr *dst, rc_vchar_t *data)
 #endif
 	udp->uh_ulen = htons((uint16_t)(sizeof(*udp) + data->l));
 #endif
+	memcpy(&dummy_hdr[header_len], udp, sizeof(*udp));
 	header_len += sizeof(*udp);
 
 	/* Reject a payload that would overflow the 16-bit IP/UDP length

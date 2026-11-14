@@ -179,4 +179,13 @@ rc_net_test_LDADD = vmbuf.lo rc_type.lo rc_net.lo rc_str.lo if_spmd.lo \
 	$(LTLIBOBJS) -lpcap -lpthread
 rc_net_test_LDFLAGS = -Wl,--wrap=plog -Wl,--wrap=plog_location
 
+# rc_pcap_test checks the synthetic capture records lib/rc_pcap.c writes
+# (PC-01 v6 version nibble, PC-02 length guard/consistency, PC-03 stream
+# global, PC-05 snaplen) by parsing the file it produces.
+TESTS += rc_pcap_test
+check_PROGRAMS += rc_pcap_test
+rc_pcap_test_SOURCES = rc_pcap_test.c
+rc_pcap_test_LDADD = $(rc_net_test_LDADD)
+rc_pcap_test_LDFLAGS = -Wl,--wrap=plog -Wl,--wrap=plog_location
+
 BUILT_SOURCES = cfparse.h
