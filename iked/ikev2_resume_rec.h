@@ -12,6 +12,7 @@
 #define IKEV2_RESUME_REC_H
 
 #include <sys/types.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -65,9 +66,9 @@ struct r2rs_child {
 			 * 0 = none).  Persisted so a restarted child's recovery
 			 * rekey re-offers the SAME group the SA was established
 			 * with instead of the config default.  (v7 grew the
-			 * child record by 2 octets; a v6 dump no longer matches
-			 * the v7 record size and is skipped by the loader, so
-			 * the field is always present on anything we restore.) */
+			 * child record by 2 octets; r2rs_parse() re-expands a
+			 * v3..v6 dump into this layout with dh_id = 0, which
+			 * restore treats as "no recorded group, use config".) */
 	uint8_t is_initiator;	/* who created this child (was reserved pad byte):
 				 * 1 = we did, 0 = peer did.  Previously hard-
 				 * coded 0 on restore, which broke rekey
@@ -124,6 +125,19 @@ struct r2rs_sa {
 	 * a v5 dump).  Appended so a v5-sized file still loads. */
 	uint32_t cert_due;
 } __attribute__((packed));
+
+/*
+ * On-disk size a record of the given version was written with (0 for
+ * an unknown version), and the parser that turns such an image into the
+ * current struct.  r2rs_parse() requires the exact size for the version
+ * in the header and re-expands v3..v6 images (shorter child records, and
+ * shorter tails) into the current layout, zero-filling the fields that
+ * version did not carry.  Returns 0 on success, -1 on a bad magic,
+ * unknown version, or a size/version mismatch.  Run r2rs_validate()
+ * on the result as usual.
+ */
+size_t r2rs_wire_size(uint32_t version);
+int r2rs_parse(struct r2rs_sa *, const void *buf, size_t len);
 
 int r2rs_key_from_vchar(struct r2rs_key *, const rc_vchar_t *);
 rc_vchar_t *r2rs_key_to_vchar(const struct r2rs_key *);

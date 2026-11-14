@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <stddef.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -109,6 +110,110 @@ r2rs_filename_in(char *buf, size_t buflen, const char *dir,
 	    r_ck[4], r_ck[5], r_ck[6], r_ck[7]);
 }
 
+/*
+ * Legacy (v3..v6) on-disk layouts.  Every pre-v7 record shares the v7
+ * header up to child[], but each child is 2 octets shorter (no dh_id,
+ * inserted by v7 between esn and is_initiator), and the tail after the
+ * child array grew per version:
+ *   v3: nothing
+ *   v4: resp_msgid(4) resp_len(2) resp_buf[2048]
+ *   v5: resp_msgid(4) resp_len(2) resp_nfrags(2) resp_frag_len[8] resp_buf[4608]
+ *   v6: v5 + cert_due(4)
+ * The record is a raw packed struct, so an older dump can only be read
+ * by re-expanding it into the current layout; matching sizes against
+ * the current struct (what the loader used to do) rejected all of them.
+ */
+#define R2RS_V4_MAXRESP	2048
+#define R2RS_LEG_CHILD	(sizeof(struct r2rs_child) - sizeof(uint16_t))
+#define R2RS_LEG_HEAD	(offsetof(struct r2rs_sa, child))
+#define R2RS_LEG_TAIL	(R2RS_LEG_HEAD + R2RS_MAXCHILD * R2RS_LEG_CHILD)
+#define R2RS_V5_TAIL	(offsetof(struct r2rs_sa, cert_due) - \
+			 offsetof(struct r2rs_sa, resp_msgid))
+
+size_t
+r2rs_wire_size(uint32_t version)
+{
+	switch (version) {
+	case 3:
+		return R2RS_LEG_TAIL;
+	case 4:
+		return R2RS_LEG_TAIL + 4 + 2 + R2RS_V4_MAXRESP;
+	case 5:
+		return R2RS_LEG_TAIL + R2RS_V5_TAIL;
+	case 6:
+		return R2RS_LEG_TAIL + R2RS_V5_TAIL + sizeof(uint32_t);
+	case R2RS_VERSION:
+		return sizeof(struct r2rs_sa);
+	default:
+		return 0;
+	}
+}
+
+int
+r2rs_parse(struct r2rs_sa *rec, const void *buf, size_t len)
+{
+	const uint8_t *p = buf;
+	uint32_t magic, version;
+	size_t want, off, i;
+	const size_t dhoff = offsetof(struct r2rs_child, dh_id);
+
+	if (!rec || !buf)
+		return -1;
+	memset(rec, 0, sizeof(*rec));
+	if (len < 2 * sizeof(uint32_t))
+		return -1;
+	memcpy(&magic, p, sizeof(magic));
+	memcpy(&version, p + sizeof(magic), sizeof(version));
+	if (magic != R2RS_MAGIC)
+		return -1;
+	/* the length must be exactly the size that version wrote; a
+	 * record whose version and size disagree is truncated or
+	 * corrupt, never "a prefix of something newer". */
+	want = r2rs_wire_size(version);
+	if (want == 0 || len != want)
+		return -1;
+	if (version == R2RS_VERSION) {
+		memcpy(rec, p, sizeof(*rec));
+		return 0;
+	}
+
+	memcpy(rec, p, R2RS_LEG_HEAD);
+	off = R2RS_LEG_HEAD;
+	for (i = 0; i < R2RS_MAXCHILD; i++) {
+		uint8_t *c = (uint8_t *)&rec->child[i];
+
+		memcpy(c, p + off, dhoff);
+		/* dh_id stays 0 (memset): pre-v7 never recorded the
+		 * child's PFS group, so restore falls back to config. */
+		memcpy(c + dhoff + sizeof(uint16_t), p + off + dhoff,
+		    R2RS_LEG_CHILD - dhoff);
+		off += R2RS_LEG_CHILD;
+	}
+	switch (version) {
+	case 4: {
+		uint16_t rlen;
+
+		memcpy(&rec->resp_msgid, p + off, 4);
+		memcpy(&rlen, p + off + 4, 2);
+		if (rlen > R2RS_V4_MAXRESP)
+			return -1;
+		rec->resp_len = rlen;
+		memcpy(rec->resp_buf, p + off + 6, R2RS_V4_MAXRESP);
+		break;
+	}
+	case 5:
+	case 6:
+		memcpy(&rec->resp_msgid, p + off, R2RS_V5_TAIL);
+		off += R2RS_V5_TAIL;
+		if (version == 6)
+			memcpy(&rec->cert_due, p + off, sizeof(rec->cert_due));
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
 int
 r2rs_validate(const struct r2rs_sa *rec)
 {
@@ -124,7 +229,7 @@ r2rs_validate(const struct r2rs_sa *rec)
 		return -1;
 	if (rec->resp_nfrags > R2RS_MAXFRAGS)
 		return -1;
-	if (rec->version >= R2RS_VERSION) {
+	if (rec->version >= 5) {	/* v5 introduced the fragment form */
 		uint32_t f, total = 0;
 
 		/* exactly one response form: whole packet (resp_len) or

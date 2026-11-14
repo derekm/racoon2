@@ -708,22 +708,23 @@ restore_one(const char *path)
 	fd = open(path, O_RDONLY);
 	if (fd < 0)
 		return -1;
-	memset(&rec, 0, sizeof(rec));
 	{
-		ssize_t nr = read(fd, &rec, sizeof(rec));
+		/* one byte of slack so an oversized file is seen as such
+		 * rather than silently truncated to a "valid" record. */
+		static uint8_t raw[sizeof(struct r2rs_sa) + 1];
+		ssize_t nr = read(fd, raw, sizeof(raw));
+
 		close(fd);
 		if (nr < 0)
 			return -1;
-		if (nr != (ssize_t)sizeof(rec)) {
-			/* v5 dump is the current record minus the trailing
-			 * cert_due.  v3/v4 are shorter prefixes.  Tail is
-			 * already zero from the memset above. */
-			if (nr == (ssize_t)sizeof(rec) - (ssize_t)sizeof(rec.cert_due) ||
-			    nr == (ssize_t)offsetof(struct r2rs_sa, resp_msgid) ||
-			    nr == (ssize_t)offsetof(struct r2rs_sa, resp_nfrags))
-				;
-			else
-				return -1;
+		/* v3..v6 dumps are re-expanded into the v7 layout (child
+		 * dh_id = 0); a size that does not match the header's
+		 * version is refused. */
+		if (r2rs_parse(&rec, raw, (size_t)nr) != 0) {
+			plog(PLOG_INTWARN, PLOGLOC, 0,
+			    "resume: %s: unrecognised record (%zd bytes)\n",
+			    path, nr);
+			return -1;
 		}
 	}
 
@@ -828,7 +829,7 @@ restore_one(const char *path)
 			sa->response_info.src = rcs_sadup(sa->local);
 			sa->response_info.dest = rcs_sadup(sa->remote);
 		}
-	} else if (rec.version >= R2RS_VERSION && rec.resp_nfrags > 0 &&
+	} else if (rec.version >= 5 && rec.resp_nfrags > 0 &&
 		   rec.resp_nfrags <= R2RS_MAXFRAGS) {
 		size_t off = 0;
 		int f;

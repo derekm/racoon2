@@ -20,6 +20,7 @@
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "vmbuf.h"
@@ -298,6 +299,184 @@ test_validate(void)
 	CHECK(r2rs_validate(NULL) != 0, "validate NULL refused");
 }
 
+/*
+ * Legacy-record loader.  The mirror structs below are the v3..v6
+ * on-disk layouts copied from the headers that wrote them (child record
+ * without the v7 dh_id, v4 resp_buf[2048], v5 frag table, v6 cert_due),
+ * written independently of r2rs_parse()'s offset arithmetic.  The
+ * literal sizes are what those builds wrote to disk.
+ */
+struct leg_child {
+	uint32_t in_spi, out_spi, expire_at;
+	uint8_t satype, lease_af, lease_addr[16];
+	char sl_index[R2RS_MAXSTR];
+	uint16_t encr_id, integr_id, encr_klen;
+	uint8_t esn;
+	uint8_t is_initiator;
+	uint8_t addke_pending, addke_link_len;
+	uint16_t addke_method;
+	char addke_link[R2RS_MAXSTR];
+} __attribute__((packed));
+
+#define LEG_HEAD_FIELDS							\
+	uint8_t head[offsetof(struct r2rs_sa, child)];			\
+	struct leg_child child[R2RS_MAXCHILD];
+
+struct leg_v3 { LEG_HEAD_FIELDS } __attribute__((packed));
+struct leg_v4 { LEG_HEAD_FIELDS
+	uint32_t resp_msgid; uint16_t resp_len; uint8_t resp_buf[2048];
+} __attribute__((packed));
+struct leg_v6 { LEG_HEAD_FIELDS
+	uint32_t resp_msgid; uint16_t resp_len; uint16_t resp_nfrags;
+	uint16_t resp_frag_len[R2RS_MAXFRAGS]; uint8_t resp_buf[R2RS_MAXRESP];
+	uint32_t cert_due;
+} __attribute__((packed));
+
+static void
+leg_fill(uint8_t *head, struct leg_child *ch, uint32_t version,
+    struct r2rs_sa *ref)
+{
+	int i;
+
+	fill_rec(ref);
+	ref->version = version;
+	ref->nchild = 2;
+	for (i = 0; i < 2; i++) {
+		struct r2rs_child *c = &ref->child[i];
+
+		c->in_spi = 0x1000 + i;
+		c->out_spi = 0x2000 + i;
+		c->expire_at = 1900000000u + i;
+		c->satype = 3;
+		c->lease_af = AF_INET;
+		c->lease_addr[3] = 10 + i;
+		snprintf(c->sl_index, sizeof(c->sl_index), "sl%d", i);
+		c->encr_id = 12;
+		c->integr_id = 12 + i;
+		c->encr_klen = 256;
+		c->esn = 1;
+		c->dh_id = 0;	/* not on disk before v7 */
+		c->is_initiator = (uint8_t)i;
+		c->addke_pending = (uint8_t)i;
+		c->addke_link_len = i ? 5 : 0;
+		c->addke_method = i ? 36 : 0;
+		if (i)
+			memcpy(c->addke_link, "LINK!", 5);
+
+		ch[i].in_spi = c->in_spi;
+		ch[i].out_spi = c->out_spi;
+		ch[i].expire_at = c->expire_at;
+		ch[i].satype = c->satype;
+		ch[i].lease_af = c->lease_af;
+		memcpy(ch[i].lease_addr, c->lease_addr, 16);
+		memcpy(ch[i].sl_index, c->sl_index, R2RS_MAXSTR);
+		ch[i].encr_id = c->encr_id;
+		ch[i].integr_id = c->integr_id;
+		ch[i].encr_klen = c->encr_klen;
+		ch[i].esn = c->esn;
+		ch[i].is_initiator = c->is_initiator;
+		ch[i].addke_pending = c->addke_pending;
+		ch[i].addke_link_len = c->addke_link_len;
+		ch[i].addke_method = c->addke_method;
+		memcpy(ch[i].addke_link, c->addke_link, R2RS_MAXSTR);
+	}
+	memcpy(head, ref, offsetof(struct r2rs_sa, child));
+}
+
+static void
+test_legacy(void)
+{
+	static struct leg_v3 v3;
+	static struct leg_v4 v4;
+	static struct leg_v6 v6;
+	static struct r2rs_sa ref, got;
+	static uint8_t big[sizeof(struct r2rs_sa) + 1];
+	int ok;
+
+	/* sizes those builds actually wrote */
+	CHECK(sizeof(v3) == 2258 && r2rs_wire_size(3) == 2258, "v3 size 2258");
+	CHECK(sizeof(v4) == 4312 && r2rs_wire_size(4) == 4312, "v4 size 4312");
+	CHECK(r2rs_wire_size(5) == 6890, "v5 size 6890");
+	CHECK(sizeof(v6) == 6894 && r2rs_wire_size(6) == 6894, "v6 size 6894");
+	CHECK(r2rs_wire_size(R2RS_VERSION) == sizeof(struct r2rs_sa),
+	    "current size");
+	CHECK(r2rs_wire_size(2) == 0 && r2rs_wire_size(R2RS_VERSION + 1) == 0,
+	    "unknown versions sized 0");
+
+	/* v6: whole record carried over, child dh_id = 0 */
+	memset(&v6, 0, sizeof(v6));
+	leg_fill(v6.head, v6.child, 6, &ref);
+	ref.resp_msgid = v6.resp_msgid = 9;
+	ref.resp_nfrags = v6.resp_nfrags = 2;
+	ref.resp_frag_len[0] = v6.resp_frag_len[0] = 500;
+	ref.resp_frag_len[1] = v6.resp_frag_len[1] = 300;
+	memset(ref.resp_buf, 0x5c, 800);
+	memset(v6.resp_buf, 0x5c, 800);
+	ref.cert_due = v6.cert_due = 1999999999u;
+	ok = r2rs_parse(&got, &v6, sizeof(v6)) == 0;
+	CHECK(ok, "v6 parses");
+	CHECK(ok && memcmp(&got, &ref, sizeof(got)) == 0,
+	    "v6 re-expanded field-for-field (child dh_id 0)");
+	CHECK(ok && r2rs_validate(&got) == 0, "v6 validates");
+	/* v6 frag table is still bounds-checked (gate is v5, not current) */
+	got.resp_frag_len[0] = R2RS_MAXFRAG + 1;
+	CHECK(r2rs_validate(&got) != 0, "v6 frag overrun refused");
+
+	/* v5 == v6 minus cert_due */
+	{
+		uint32_t five = 5;
+
+		memcpy(v6.head + 4, &five, 4);
+		ref.version = 5;
+		ref.cert_due = 0;
+		ok = r2rs_parse(&got, &v6, 6890) == 0;
+		CHECK(ok && memcmp(&got, &ref, sizeof(got)) == 0,
+		    "v5 re-expanded (cert_due 0)");
+		CHECK(r2rs_parse(&got, &v6, sizeof(v6)) != 0,
+		    "v5 header with v6 size refused");
+	}
+
+	/* v4: 2048-byte resp_buf */
+	memset(&v4, 0, sizeof(v4));
+	leg_fill(v4.head, v4.child, 4, &ref);
+	ref.resp_msgid = v4.resp_msgid = 4;
+	ref.resp_len = v4.resp_len = 2048;
+	memset(ref.resp_buf, 0x77, 2048);
+	memset(v4.resp_buf, 0x77, 2048);
+	ok = r2rs_parse(&got, &v4, sizeof(v4)) == 0;
+	CHECK(ok && memcmp(&got, &ref, sizeof(got)) == 0, "v4 re-expanded");
+	v4.resp_len = 2049;
+	CHECK(r2rs_parse(&got, &v4, sizeof(v4)) != 0,
+	    "v4 resp_len beyond its 2048 buffer refused");
+
+	/* v3: no tail */
+	memset(&v3, 0, sizeof(v3));
+	leg_fill(v3.head, v3.child, 3, &ref);
+	ok = r2rs_parse(&got, &v3, sizeof(v3)) == 0;
+	CHECK(ok && memcmp(&got, &ref, sizeof(got)) == 0, "v3 re-expanded");
+
+	/* current version round-trips byte for byte */
+	fill_rec(&ref);
+	ref.child[0].dh_id = 19;
+	ok = r2rs_parse(&got, &ref, sizeof(ref)) == 0;
+	CHECK(ok && memcmp(&got, &ref, sizeof(got)) == 0 &&
+	    got.child[0].dh_id == 19, "current record verbatim");
+
+	/* size/version disagreement and junk */
+	CHECK(r2rs_parse(&got, &ref, sizeof(ref) - 1) != 0,
+	    "current version truncated refused");
+	memcpy(big, &ref, sizeof(ref));
+	CHECK(r2rs_parse(&got, big, sizeof(big)) != 0,
+	    "current version oversized refused");
+	CHECK(r2rs_parse(&got, &ref, 6894) != 0,
+	    "current header at v6 size refused");
+	ref.magic ^= 1;
+	CHECK(r2rs_parse(&got, &ref, sizeof(ref)) != 0, "bad magic refused");
+	CHECK(r2rs_parse(&got, &ref, 4) != 0, "short header refused");
+	CHECK(r2rs_parse(NULL, &ref, sizeof(ref)) != 0 &&
+	    r2rs_parse(&got, NULL, sizeof(ref)) != 0, "NULL refused");
+}
+
 int
 main(void)
 {
@@ -305,6 +484,7 @@ main(void)
 	test_sockaddrs();
 	test_filename();
 	test_validate();
+	test_legacy();
 
 	printf("1..%d\n", checks);
 	if (failures) {
