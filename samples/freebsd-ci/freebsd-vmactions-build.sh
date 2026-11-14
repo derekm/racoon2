@@ -98,6 +98,11 @@ fi
 # print the per-test logs on failure (the bare make output names the
 # failing test but not why; the BSD legs had no other way to see it)
 $MAKE -C iked check || { cat iked/test-suite.log 2>/dev/null; exit 1; }
+# RFC 9329 socket errno evidence from the TCP tests (passing test logs
+# are not printed by automake): which errno the refused connect reported.
+grep -hE '^(refused|simul|close-listeners|reopen): ' \
+    iked/tcpobjtest.log iked/tcpsrvtest.log 2>/dev/null | \
+    grep -E 'errno|open_listener|tcp_stream_connect' || true
 $MAKE -C spmd check || { cat spmd/test-suite.log 2>/dev/null; exit 1; }
 
 echo "=== FreeBSD build/test OK ==="
