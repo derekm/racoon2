@@ -618,8 +618,15 @@ hosts_cache_update(void)
 
 		err = getaddrinfo(ap, NULL, &hints, &res);
 		if (err) {
-			 SPMD_PLOG(SPMD_L_INTERR, "Failed to convert into canonical address:%s", gai_strerror(err));
-			 return -1;
+			/* Skip an unparseable /etc/hosts line instead of aborting
+			 * spmd startup: a single non-numeric/unsupported host token
+			 * (e.g. a zone-scoped or non-address entry) must not take
+			 * the IPsec daemons down.  Well-formed lines are still
+			 * cached; the entry is logged as a warning only. */
+			SPMD_PLOG(SPMD_L_INTWARN,
+			    "Skipping unparseable hosts entry:%s (%s)",
+			    ap, gai_strerror(err));
+			continue;
 		}
 
 
