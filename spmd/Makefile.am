@@ -30,6 +30,7 @@ check_PROGRAMS = spmdoomtest
 spmdoomtest_SOURCES = spmdoomtest.c dns.c udp.c query.c task.c signal.c \
 	shell.c utils.c cache.c spmd_pfkey.c fqdn_query.c
 spmdoomtest_LDFLAGS = -Wl,--wrap=rc_vmem2str \
+	-Wl,--wrap=fopen \
 	-Wl,--wrap=rcf_get_selectorlist -Wl,--wrap=rcf_free_selector \
 	-Wl,--wrap=rcf_spmd_resolver -Wl,--wrap=rcf_get_remotebyindex \
 	-Wl,--wrap=rcpfk_init -Wl,--wrap=rcpfk_send_spddump \

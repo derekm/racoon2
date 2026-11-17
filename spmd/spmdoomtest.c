@@ -50,6 +50,19 @@ __wrap_rc_vmem2str(const rc_vchar_t *v)
 	return __real_rc_vmem2str(v);
 }
 
+/* --- hosts-cache seam: redirect /etc/hosts to a fixture for
+ * hosts_cache_update (CI: a non-numeric host line must be skipped, not a
+ * fatal spmd startup abort).  All other fopen goes through unmodified. */
+static const char *hosts_fixture = NULL;
+FILE *__real_fopen(const char *path, const char *mode);
+FILE *
+__wrap_fopen(const char *path, const char *mode)
+{
+	if (hosts_fixture && strcmp(path, "/etc/hosts") == 0)
+		path = hosts_fixture;
+	return __real_fopen(path, mode);
+}
+
 static struct rcf_selector *g_sl;
 int
 __wrap_rcf_get_selectorlist(struct rcf_selector **slp)
@@ -207,6 +220,46 @@ reset(void)
 	n_spdupdate = n_read_tasks = n_write_tasks = 0;
 }
 
+/* D: hosts_cache_update must skip a line whose first field is not a numeric
+ * IP (AI_NUMERICHOST -> EAI_NONAME) instead of returning -1, which main.c
+ * turns into spmd_exit.  Goes red if the skip is reverted to `return -1`.
+ * (Address population for a fresh FQDN is intentionally gated on config-
+ * referenced FQDNs in fqdn_list_top, so this pins only the no-abort
+ * behavior, not cache population.) */
+static void
+test_hosts_skip(void)
+{
+	const char *fp = "/tmp/spmdoomtest_hosts";
+	FILE *f;
+	int r;
+	char what[160];
+
+	f = fopen(fp, "w");
+	if (!f) {
+		CK(0, "D: cannot write hosts fixture");
+		return;
+	}
+	fprintf(f, "203.0.113.77 fresh.local\nnotanip 192.0.2.2 bad.local\n");
+	fclose(f);
+	hosts_fixture = fp;
+
+	r = hosts_cache_update();
+	snprintf(what, sizeof(what),
+	    "D: bad line skipped, no abort (r=%d)", r);
+	CK(r == 0, what);
+
+	f = fopen(fp, "w");
+	fprintf(f, "notanip 192.0.2.2 bad.local\n");
+	fclose(f);
+	r = hosts_cache_update();
+	snprintf(what, sizeof(what),
+	    "D: bad-only line -> no abort, nothing cached (r=%d)", r);
+	CK(r == 0, what);
+
+	hosts_fixture = NULL;
+	remove(fp);
+}
+
 int
 main(void)
 {
@@ -278,6 +331,7 @@ main(void)
 	   "C control: delete by slid queues the SPDDELETE");
 
 	g_sl = NULL;
+	test_hosts_skip();
 	free_sel(fsel);
 	free_sel(isel);
 	printf("spmdoomtest: %s\n", fails ? "FAILED" : "OK");

@@ -618,11 +618,12 @@ hosts_cache_update(void)
 
 		err = getaddrinfo(ap, NULL, &hints, &res);
 		if (err) {
-			/* Skip an unparseable /etc/hosts line instead of aborting
-			 * spmd startup: a single non-numeric/unsupported host token
-			 * (e.g. a zone-scoped or non-address entry) must not take
-			 * the IPsec daemons down.  Well-formed lines are still
-			 * cached; the entry is logged as a warning only. */
+			/* A /etc/hosts line whose first field is not a numeric IP
+			 * fails AI_NUMERICHOST (EAI_NONAME, "Name or service not
+			 * known"); aborting spmd startup over one such entry takes
+			 * the IPsec daemons down.  Skip the line (warn) instead;
+			 * well-formed lines are still cached.  Every getaddrinfo
+			 * error (incl. EAI_MEMORY) is skipped the same way. */
 			SPMD_PLOG(SPMD_L_INTWARN,
 			    "Skipping unparseable hosts entry:%s (%s)",
 			    ap, gai_strerror(err));
