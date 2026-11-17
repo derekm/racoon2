@@ -618,16 +618,29 @@ hosts_cache_update(void)
 
 		err = getaddrinfo(ap, NULL, &hints, &res);
 		if (err) {
-			/* A /etc/hosts line whose first field is not a numeric IP
-			 * fails AI_NUMERICHOST (EAI_NONAME, "Name or service not
-			 * known"); aborting spmd startup over one such entry takes
-			 * the IPsec daemons down.  Skip the line (warn) instead;
-			 * well-formed lines are still cached.  Every getaddrinfo
-			 * error (incl. EAI_MEMORY) is skipped the same way. */
-			SPMD_PLOG(SPMD_L_INTWARN,
-			    "Skipping unparseable hosts entry:%s (%s)",
+			/* A name-resolution failure means this line's first field
+			 * is not a resolvable numeric IP (EAI_NONAME in the CI
+			 * case) or an unsupported family (EAI_FAMILY): skip the
+			 * line (warn) and keep going, so one bad /etc/hosts
+			 * entry does not abort spmd startup.  A real resource or
+			 * system failure (EAI_MEMORY / EAI_SYSTEM) must still
+			 * abort, or main.c would treat an OOMed hosts cache as a
+			 * success. */
+			if (err == EAI_NONAME
+#ifdef EAI_FAMILY
+			    || err == EAI_FAMILY
+#endif
+			   ) {
+				SPMD_PLOG(SPMD_L_INTWARN,
+				    "Skipping unparseable hosts entry:%s (%s)",
+				    ap, gai_strerror(err));
+				continue;
+			}
+			SPMD_PLOG(SPMD_L_INTERR,
+			    "Failed to resolve hosts entry:%s (%s)",
 			    ap, gai_strerror(err));
-			continue;
+			fclose(fp);
+			return -1;
 		}
 
 
