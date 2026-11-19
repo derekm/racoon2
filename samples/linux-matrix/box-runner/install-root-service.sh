@@ -13,6 +13,15 @@ if id -nG github | tr ' ' '\n' | grep -qxE 'wheel|sudo'; then
   echo "Refusing to install: github must not belong to wheel or sudo." >&2
   exit 1
 fi
+sudo_output=$(sudo -n -l -U github 2>&1 || true)
+case "$sudo_output" in
+  *"is not allowed to run sudo"*) ;;
+  *)
+    echo "Cannot verify that github lacks sudo privileges; refusing to install." >&2
+    printf '%s\n' "$sudo_output" >&2
+    exit 1
+    ;;
+esac
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 install -o root -g root -m 0755 "$here/racoon2-box-test" /usr/local/sbin/racoon2-box-test
