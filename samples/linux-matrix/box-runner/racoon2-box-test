@@ -6,18 +6,19 @@ if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
   exit 64
 fi
 base=/var/lib/racoon2-box-test
-run_dir="$base/runs/$sha"
 lock="$base/test.lock"
-install -d -o root -g github -m 2750 "$base" "$base/runs" "$run_dir"
-install -d -o root -g root -m 0755 "$run_dir/src" "$run_dir/stage"
-install -o root -g github -m 0640 /dev/null "$run_dir/runner.log"
-install -o root -g github -m 0640 /dev/null "$run_dir/exit-code.txt"
+umask 027
+install -d -o root -g github -m 2750 "$base" "$base/runs"
 exec 9>"$lock"
 if ! flock -n 9; then
   echo "Another racoon2 box test is already running." >&2
   exit 75
 fi
-umask 027
+run_dir="$base/runs/$sha"
+install -d -o root -g github -m 2750 "$run_dir"
+install -d -o root -g root -m 0755 "$run_dir/src" "$run_dir/stage"
+install -o root -g github -m 0640 /dev/null "$run_dir/runner.log"
+install -o root -g github -m 0640 /dev/null "$run_dir/exit-code.txt"
 exec > >(tee -a "$run_dir/runner.log") 2>&1
 finish() {
   rc=$?
