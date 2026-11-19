@@ -5,7 +5,7 @@ polkit.addRule(function(action, subject) {
         action.id === "org.freedesktop.systemd1.manage-units" &&
         verb === "start" &&
         unit !== null &&
-        /^racoon2-box-test@[0-9a-f]{40}\.service$/.test(unit)) {
+        /^racoon2-box-test@[0-9a-f]{40}-[0-9]+-[0-9]+\.service$/.test(unit)) {
         return polkit.Result.YES;
     }
 });

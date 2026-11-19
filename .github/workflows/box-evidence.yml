@@ -25,21 +25,43 @@ jobs:
       - name: Start fixed root-owned test service
         env:
           TEST_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           case "$TEST_SHA" in
             (*[!0-9a-f]*|'') echo "Invalid commit SHA" >&2; exit 2 ;;
           esac
           [ "${#TEST_SHA}" -eq 40 ] || { echo "Invalid commit SHA length" >&2; exit 2; }
-          systemctl start --wait "racoon2-box-test@${TEST_SHA}.service"
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid workflow run ID" >&2; exit 2; }
+          [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid workflow run attempt" >&2; exit 2; }
+          systemctl start --wait "racoon2-box-test@${TEST_SHA}-${RUN_ID}-${RUN_ATTEMPT}.service"
+
+      - name: Check artifacts are from this attempt
+        id: artifact_check
+        if: always()
+        env:
+          TEST_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          result_dir="/var/lib/racoon2-box-test/runs/${TEST_SHA}/${RUN_ID}-${RUN_ATTEMPT}"
+          if [[ -f "$result_dir/runner.log" ]] \
+            && grep -Fxq "Requested commit: $TEST_SHA" "$result_dir/runner.log" \
+            && grep -Fxq "Run ID: $RUN_ID attempt: $RUN_ATTEMPT" "$result_dir/runner.log"; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No artifacts for this workflow attempt; skipping upload."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload box test log and structured results
-        if: always()
+        if: always() && steps.artifact_check.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: box-dpd-${{ github.sha }}
+          name: box-dpd-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /var/lib/racoon2-box-test/runs/${{ github.sha }}/runner.log
-            /var/lib/racoon2-box-test/runs/${{ github.sha }}/results.tsv
-            /var/lib/racoon2-box-test/runs/${{ github.sha }}/exit-code.txt
-            /var/lib/racoon2-box-test/runs/${{ github.sha }}/diagnostics/*.log
+            /var/lib/racoon2-box-test/runs/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/runner.log
+            /var/lib/racoon2-box-test/runs/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/results.tsv
+            /var/lib/racoon2-box-test/runs/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/exit-code.txt
+            /var/lib/racoon2-box-test/runs/${{ github.sha }}/${{ github.run_id }}-${{ github.run_attempt }}/diagnostics/*.log
           if-no-files-found: error

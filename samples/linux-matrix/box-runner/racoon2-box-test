@@ -1,10 +1,13 @@
 #!/usr/bin/bash
 set -Eeuo pipefail
-sha=${1:-}
-if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "usage: racoon2-box-test <40-character commit SHA>" >&2
+instance=${1:-}
+if [[ ! "$instance" =~ ^([0-9a-f]{40})-([0-9]+)-([0-9]+)$ ]]; then
+  echo "usage: racoon2-box-test <commit-SHA>-<run-id>-<run-attempt>" >&2
   exit 64
 fi
+sha=${BASH_REMATCH[1]}
+run_id=${BASH_REMATCH[2]}
+run_attempt=${BASH_REMATCH[3]}
 base=/var/lib/racoon2-box-test
 lock="$base/test.lock"
 umask 027
@@ -14,8 +17,8 @@ if ! flock -n 9; then
   echo "Another racoon2 box test is already running." >&2
   exit 75
 fi
-run_dir="$base/runs/$sha"
-install -d -o root -g github -m 2750 "$run_dir"
+run_dir="$base/runs/$sha/$run_id-$run_attempt"
+install -d -o root -g github -m 2750 "$base/runs/$sha" "$run_dir"
 install -d -o root -g root -m 0755 "$run_dir/src" "$run_dir/stage"
 install -o root -g github -m 0640 /dev/null "$run_dir/runner.log"
 install -o root -g github -m 0640 /dev/null "$run_dir/exit-code.txt"
@@ -39,7 +42,8 @@ finish() {
 trap finish EXIT
 repo=https://github.com/derekm/racoon2.git
 branch=int/gsoc2026
-printf 'Requested commit: %s\nRepository: %s\nBranch: %s\n' "$sha" "$repo" "$branch"
+printf 'Requested commit: %s\nRepository: %s\nBranch: %s\nRun ID: %s attempt: %s\n' \
+  "$sha" "$repo" "$branch" "$run_id" "$run_attempt"
 rm -rf "$run_dir/src" "$run_dir/stage" "$run_dir/diagnostics"
 rm -f "$run_dir/results.tsv"
 install -d -o root -g root -m 0755 "$run_dir/src" "$run_dir/stage"

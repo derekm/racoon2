@@ -9,7 +9,7 @@ account, which must not be in `wheel`/`sudo` and must not have a sudoers grant.
 The repository is public. The workflow intentionally has only `schedule` and
 `workflow_dispatch` triggers, is restricted to `int/gsoc2026`, and has no
 `pull_request` trigger. The unprivileged runner may start only
-`racoon2-box-test@<40-lowercase-hex-sha>.service` through Polkit. The root-owned
+`racoon2-box-test@<sha>-<run-id>-<attempt>.service` through Polkit. The root-owned
 wrapper re-fetches the public branch and refuses to run unless the requested
 SHA is exactly its current tip. It builds under `/var/lib/racoon2-box-test`
 using `DESTDIR`, so it does not install binaries or systemd units into the host.
@@ -43,5 +43,6 @@ The workflow runs nightly and can be started manually on `int/gsoc2026`. It
 runs only the `i2ike-silence` DPD gate, requires a non-empty live result, and
 uploads the runner log, structured TSV, exit code, and captured row/daemon logs
 as an artifact. Test files are placed under
-`/var/lib/racoon2-box-test/runs/<sha>/`; the root service stages project files
-and test artifacts there for the unprivileged runner to read.
+`/var/lib/racoon2-box-test/runs/<sha>/<run-id>-<attempt>/`, so a failed service
+start cannot cause an earlier run's files to be uploaded. The root service
+stages project files and test artifacts there for the unprivileged runner to read.
