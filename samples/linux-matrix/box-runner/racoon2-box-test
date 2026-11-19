@@ -1,0 +1,104 @@
+#!/usr/bin/bash
+set -Eeuo pipefail
+sha=${1:-}
+if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "usage: racoon2-box-test <40-character commit SHA>" >&2
+  exit 64
+fi
+base=/var/lib/racoon2-box-test
+run_dir="$base/runs/$sha"
+lock="$base/test.lock"
+install -d -o root -g github -m 2750 "$base" "$base/runs" "$run_dir"
+install -d -o root -g root -m 0755 "$run_dir/src" "$run_dir/stage"
+install -o root -g github -m 0640 /dev/null "$run_dir/runner.log"
+install -o root -g github -m 0640 /dev/null "$run_dir/exit-code.txt"
+exec 9>"$lock"
+if ! flock -n 9; then
+  echo "Another racoon2 box test is already running." >&2
+  exit 75
+fi
+umask 027
+exec > >(tee -a "$run_dir/runner.log") 2>&1
+finish() {
+  rc=$?
+  printf '%s\n' "$rc" > "$run_dir/exit-code.txt"
+  for f in "$run_dir/results.tsv" "$run_dir/exit-code.txt"; do
+    if [[ -f "$f" ]]; then
+      chown root:github "$f"
+      chmod 0640 "$f"
+    fi
+  done
+  if [[ -d "$run_dir/diagnostics" ]]; then
+    chown -R root:github "$run_dir/diagnostics"
+    find "$run_dir/diagnostics" -type d -exec chmod 0750 {} +
+    find "$run_dir/diagnostics" -type f -exec chmod 0640 {} +
+  fi
+  exit "$rc"
+}
+trap finish EXIT
+repo=https://github.com/derekm/racoon2.git
+branch=int/gsoc2026
+printf 'Requested commit: %s\nRepository: %s\nBranch: %s\n' "$sha" "$repo" "$branch"
+rm -rf "$run_dir/src" "$run_dir/stage" "$run_dir/diagnostics"
+rm -f "$run_dir/results.tsv"
+install -d -o root -g root -m 0755 "$run_dir/src" "$run_dir/stage"
+git clone --quiet --depth 1 --single-branch --branch "$branch" "$repo" "$run_dir/src"
+tip=$(git -C "$run_dir/src" rev-parse HEAD)
+printf 'Fetched branch tip: %s\n' "$tip"
+if [[ "$tip" != "$sha" ]]; then
+  echo "Refusing to run: requested SHA is not the current $branch tip." >&2
+  exit 65
+fi
+src="$run_dir/src"
+stage="$run_dir/stage"
+cd "$src"
+autoreconf -fi
+./configure --prefix=/usr/local/racoon2
+make -j"$(nproc)"
+# Stage installation under the per-commit work directory; never write binaries
+# or unit files into the host's /usr or /usr/local.
+make DESTDIR="$stage" install
+prefix="$stage/usr/local/racoon2"
+for f in iked ikedctl spmd; do
+  test -x "$prefix/sbin/$f" || {
+    echo "Missing installed binary: $prefix/sbin/$f" >&2
+    exit 66
+  }
+done
+mkdir -p "$run_dir/diagnostics"
+export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+test -r "$prefix/lib/libracoon.so.0" || {
+  echo "Missing staged shared library: $prefix/lib/libracoon.so.0" >&2
+  exit 67
+}
+ldd "$prefix/sbin/spmd" > "$run_dir/diagnostics/ldd-spmd.log"
+if grep -q 'not found' "$run_dir/diagnostics/ldd-spmd.log"; then
+  cat "$run_dir/diagnostics/ldd-spmd.log" >&2
+  exit 68
+fi
+mkdir -p "$prefix/etc/racoon2/psk"
+printf 'racoon2-ci-psk-0123456789abcdef' > "$prefix/etc/racoon2/psk/macos.psk"
+printf '%s\n' 'racoon2-ci-pwd' > "$prefix/etc/racoon2/spmd.pwd"
+chmod 0600 "$prefix/etc/racoon2/psk/macos.psk" "$prefix/etc/racoon2/spmd.pwd"
+export R2_DPD=yes
+export R2_REQUIRE_LIVE=1
+export R2_LANE=racoon2-box
+export R2_MIN_PASS=1
+export R2_RESULTS="$run_dir/results.tsv"
+export R2_PREFIX="$prefix"
+printf 'Starting the root-required DPD gate at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+set +e
+bash "$src/samples/linux-matrix/run.sh" \
+  --src "$src" \
+  --prefix "$prefix" \
+  --cases '^i2ike-silence '
+test_rc=$?
+set -e
+mkdir -p "$run_dir/diagnostics"
+for f in /tmp/r2-row-i2ike-silence.out /tmp/r2-iked-matrix.log /tmp/r2-i2ike-silence/*.log; do
+  [[ -f "$f" ]] && cp -f "$f" "$run_dir/diagnostics/"
+done
+if [[ "$test_rc" -eq 0 ]]; then
+  printf 'Test suite returned successfully.\n'
+fi
+exit "$test_rc"

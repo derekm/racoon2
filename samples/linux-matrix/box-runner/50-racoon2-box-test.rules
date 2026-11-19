@@ -1,0 +1,11 @@
+polkit.addRule(function(action, subject) {
+    var unit = action.lookup("unit");
+    var verb = action.lookup("verb");
+    if (subject.user === "github" &&
+        action.id === "org.freedesktop.systemd1.manage-units" &&
+        verb === "start" &&
+        unit !== null &&
+        /^racoon2-box-test@[0-9a-f]{40}\.service$/.test(unit)) {
+        return polkit.Result.YES;
+    }
+});

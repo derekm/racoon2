@@ -1,0 +1,15 @@
+[Unit]
+Description=Racoon2 isolated box DPD test for commit %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/racoon2-box-test %i
+TimeoutStartSec=30min
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/racoon2-box-test /run/netns /var/run/netns

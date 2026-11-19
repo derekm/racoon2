@@ -41,4 +41,5 @@ jobs:
             /var/lib/racoon2-box-test/runs/${{ github.sha }}/runner.log
             /var/lib/racoon2-box-test/runs/${{ github.sha }}/results.tsv
             /var/lib/racoon2-box-test/runs/${{ github.sha }}/exit-code.txt
+            /var/lib/racoon2-box-test/runs/${{ github.sha }}/diagnostics/*.log
           if-no-files-found: error
